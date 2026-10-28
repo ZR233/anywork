@@ -146,8 +146,9 @@ home 导致工作区绝对路径失效。重开仍需原 fixture 端口；结束
 - 发现回执的 missing/null/非数组、空或重复 ID、超过20条均失败；原 callId/name/query
   参数必须对应，不复用旧多词查询结果。没有空 query、通配或一次截断列表的漏检捷径。
 - 普通 executor/explorer 的 authored Turn 正常脚本仍是四次真实 discover 模型响应加一次
-  final 响应，共五次 provider 请求。typed reviewer 则是四次隔离发现，再真实发现 read_file、
-  读取 `work/review-surface.txt`，最后真实 `finish_turn(review)`；同步工具路径共七次请求，
+  final 响应，共五次 provider 请求。typed reviewer 则是四次隔离发现，再分别真实发现
+  `exec` 与 `get_tool_task`，通过宿主平台的读取命令取得 `work/review-surface.txt` 的完整
+  正文并校验 SHA-256，最后真实 `finish_turn(review)`；同步工具路径共八次请求，
   后台受理会增加必要的真实等待请求，不以固定调用次数代替完整终态。审查结论不再
   从自然 final 文案猜测。四个隔离 callId 使用同 Turn 前缀及各自索引，父新 authored 返修
   输入有新的前缀，不重复调用身份、不提高生产 step limit。review-feedback 的自动回送没有
@@ -595,7 +596,11 @@ Simple 只避免无关 Plan 交互；这不能证明 Task 的提示词、模型�
    复用命令级 Git 身份与 hooks 约束，不授权提交真实业务改动。执行者仅获 `work` directory
    范围。root 通过真实查询选 A/shared executor 和 B/shared reviewer，并等待原执行者
    完整交付、真实目录 idle、公开最新完成 Turn 后，才以真实 targetID 创建 fresh Review，
-   显式 `reviewFeedback:toExecutor`。reviewer 必须真实 `read_file` 取得完整内容/hash，
+   显式 `reviewFeedback:toExecutor`。reviewer 必须真实 `exec` 读取完整内容，核成功退出、
+   无 stderr、正文与受控文件完全一致，再从实际正文计算 hash；Windows 复用现有
+   PowerShell `[IO.File]::ReadAllText`、Unix 复用 `cat` 读取方式，不从调用参数推断内容。
+   Immediate 使用真实 exec 预览，Pending 按原任务身份等待并读取完整终态载荷，核退出码、
+   截断标志与字节数；不把 ACK 或 capture 阅读日志当原始文件正文。
    把 `work/review-surface.txt sha256:…` 填入 reviewedVersion；供应商只模拟结论，不冒充
    真正业务代码审查，也不以 marker 代替实际版本证据。
 2. 正常 reviewer 通过真实 `finish_turn` 提交 needsChanges。完整 message 包含
@@ -634,7 +639,8 @@ Simple 只避免无关 Plan 交互；这不能证明 Task 的提示词、模型�
 ### 三种确定性交错与后态
 
 busy/changed/closed 均先获得真实 idle target 交付，再创建冻结 Review。供应商在 reviewer
-即将发起 read_file 的模型响应处 hold，不拦截或伪造 read_file 工具回执；root 等实际请求
+即将发起审查文件读取 `exec` 的模型响应处 hold，按该读取 callId 而非任意 exec 定位，
+不拦截或伪造 exec 工具回执；root 等实际请求
 到达后才推进，不以 sleep 猜 reviewer 状态。
 
 - **busy**：root 真实 send 自己的新要求，等目标实际响应到达并 hold，真实 list_agents

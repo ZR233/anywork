@@ -1,7 +1,7 @@
-import '../../../models.dart';
 import '../../../anywork_client.dart' show ReadModel;
-import 'domain_sync.dart';
-import 'canonical_clock.dart';
+import '../../studio/stores/canonical_clock.dart';
+import '../../studio/stores/domain_sync.dart';
+import 'mode_catalog_models.dart';
 
 class ModeCatalogStore
     extends ReadModel<CanonicalClockState<ThreadModeCatalogView>> {

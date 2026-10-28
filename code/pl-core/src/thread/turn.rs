@@ -334,16 +334,16 @@ impl Owner {
                     step = completed;
                     continue;
                 }
-                Err(ThreadError::ModelOutput(ModelOutputViolation::SoloBatch { ref tool_ids }))
-                    if corrections < 2 && !input.max_model_steps.reached(completed) =>
+                Err(ThreadError::ModelOutput(ref reason))
+                    if reason.is_correctable()
+                        && corrections < 2
+                        && !input.max_model_steps.reached(completed) =>
                 {
                     if input.cancellation.is_cancelled() || self.interrupt.is_closing() {
                         return Err(ThreadError::Cancelled);
                     }
                     content = vec![ContextContent::Text {
-                        text: Arc::from(format!(
-                            "No tools in this batch were executed. Tools {tool_ids:?} must each be called alone in a model response. Generate a corrected response using the committed results; do not repeat completed tools."
-                        )),
+                        text: Arc::from(reason.correction_feedback()),
                     }];
                     correction_source = Some(format!("{}:{step}", input.attempt_prefix));
                     corrections += 1;

@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 import 'package:pretty_qr_code/pretty_qr_code.dart';
 
 import '../../app/theme/studio_tokens.dart';
@@ -13,7 +14,6 @@ import '../../presentation/providers/client_provider.dart';
 import '../../presentation/providers/account_domains.dart';
 import '../../shared/studio_driver_keys.dart';
 import '../../shared/model_route_selector.dart';
-import '../shell/studio_shell.dart';
 import 'settings_agent_routes.dart';
 
 import 'package:anywork_client/studio_client.dart';
@@ -229,10 +229,10 @@ class _BotsTabState extends ConsumerState<BotsTab> {
                 );
               }
             },
-            onSelectChat: (id) => Navigator.of(context).push<void>(
-              MaterialPageRoute(
-                builder: (_) => BotDetailsPage(botId: selected.id, chatId: id),
-              ),
+            onSelectChat: (id) => context.pushNamed(
+              'bot-details',
+              pathParameters: {'botId': selected.id},
+              queryParameters: {'chatId': id},
             ),
             onEnabled: (enabled) => _run(
               () => _client.botsCommands.setEnabled(
@@ -330,11 +330,8 @@ class _BotsTabState extends ConsumerState<BotsTab> {
                 )
                 .toList(),
             selectedId: null,
-            onSelect: (id) {
-              Navigator.of(context).push<void>(
-                MaterialPageRoute(builder: (_) => BotDetailsPage(botId: id)),
-              );
-            },
+            onSelect: (id) =>
+                context.pushNamed('bot-details', pathParameters: {'botId': id}),
           ),
         ],
       ],
@@ -523,8 +520,9 @@ class _BotsTabState extends ConsumerState<BotsTab> {
           .where((bot) => bot.appId == draft.appId)
           .firstOrNull;
       if (created != null) {
-        await Navigator.of(context).push<void>(
-          MaterialPageRoute(builder: (_) => BotDetailsPage(botId: created.id)),
+        await context.pushNamed(
+          'bot-details',
+          pathParameters: {'botId': created.id},
         );
       }
     });
@@ -678,52 +676,13 @@ class _BotsTabState extends ConsumerState<BotsTab> {
     await _run(() async {
       await _client.directoryCommands.selectThread(threadId);
       if (!mounted) return;
-      await Navigator.of(context).push<void>(
-        MaterialPageRoute(
-          builder: (context) => Scaffold(
-            appBar: AppBar(
-              leading: BackButton(key: StudioDriverKeys.botsChatBack),
-              title: Text(
-                conversation.name ?? bot.name,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-              ),
-              actions: [
-                IconButton(
-                  tooltip: context.l10n.settingsBotsOpenChat,
-                  icon: const Icon(Icons.open_in_new),
-                  onPressed: () => _openBotLink(
-                    feishuChatAppLink(
-                      conversation.chatId,
-                      browser:
-                          ref
-                              .read(feishuClientAvailableProvider)
-                              .asData
-                              ?.value !=
-                          true,
-                    ),
-                  ),
-                ),
-                IconButton(
-                  key: StudioDriverKeys.botsPlatformTools,
-                  tooltip: context.l10n.botsPlatformTools,
-                  icon: const Icon(Icons.more_horiz),
-                  onPressed: () {
-                    Navigator.of(context).push<void>(
-                      MaterialPageRoute(
-                        builder: (_) => BotDetailsPage(
-                          botId: bot.id,
-                          chatId: conversation.chatId,
-                        ),
-                      ),
-                    );
-                  },
-                ),
-              ],
-            ),
-            body: const AgentWorkspacePane(),
-          ),
-        ),
+      await context.pushNamed(
+        'bot-chat',
+        pathParameters: {'botId': bot.id},
+        queryParameters: {
+          'chatId': conversation.chatId,
+          'title': conversation.name ?? bot.name,
+        },
       );
     });
   }

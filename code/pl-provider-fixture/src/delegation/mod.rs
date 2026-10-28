@@ -1,6 +1,7 @@
 //! Scripted external provider for explicit native delegation acceptance.
 //! Product tools, routing, evaluation writes and persistence are always real.
 
+mod exec;
 mod flow;
 mod journeys;
 mod lifecycle;

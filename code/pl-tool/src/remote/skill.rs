@@ -72,7 +72,7 @@ impl SkillProvider for RemoteSkillProvider {
                 .collect::<BTreeSet<_>>();
             let mut candidates = Vec::new();
             let mut warnings = Vec::new();
-            let mut traversal = self.backend.walk(root.clone(), false).await?;
+            let mut traversal = self.backend.walk(root.clone()).await?;
             use futures::StreamExt;
             let mut local_order = 0;
             while let Some(entry) = traversal.next().await {

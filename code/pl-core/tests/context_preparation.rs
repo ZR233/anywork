@@ -798,6 +798,7 @@ impl pl_core::model::ModelSession for VisibilityModel {
         );
         let calls = if self.emit_hidden {
             vec![pl_core::model::ModelToolCall {
+                rejection: None,
                 call_id: "hallucinated".into(),
                 tool_id: "hidden".into(),
                 arguments: pl_core::context::OpaquePayload::text("must be rejected"),

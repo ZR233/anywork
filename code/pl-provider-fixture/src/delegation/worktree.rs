@@ -4,7 +4,6 @@ mod absent;
 mod admission;
 mod branch_journey;
 mod evidence;
-mod exec;
 mod git;
 mod guards;
 mod no_head;
@@ -12,7 +11,7 @@ mod partial_close;
 mod reopen;
 mod review;
 
-use super::{Environment, SHARED_MODEL, flow::*, journeys::Decision, wire::*};
+use super::{Environment, SHARED_MODEL, exec, flow::*, journeys::Decision, wire::*};
 use anyhow::{Context, Result};
 use evidence::*;
 use git::{Action, Git};

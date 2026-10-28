@@ -7,13 +7,18 @@ import 'package:anywork_client/studio_client.dart'
         WorkflowPreviewSnapshot,
         WorkflowState,
         WorkflowStateKind,
-        WorkflowTransition;
+        WorkflowTransition,
+        definitionWith,
+        documentWithDefinition,
+        documentWithWorkflow,
+        stateTitle,
+        workflowWith;
 import 'package:flutter/material.dart';
 
 import '../../../app/theme/studio_tokens.dart';
 import '../../../l10n/app_localizations.dart';
+import '../mode_editor_support.dart';
 import 'mode_editor_fields.dart';
-import 'mode_editor_support.dart';
 
 class ModeJsonPanel extends StatefulWidget {
   const ModeJsonPanel({

@@ -231,25 +231,26 @@ pub(super) fn finish_review(
     disposition: Disposition,
     note: &str,
 ) -> Progress<Decision> {
-    let discovered = flow.discovered("review-file-tools", "read_file")?;
+    for tool in ["exec", "get_tool_task"] {
+        let discovered = flow.discovered(&format!("review-file-tools-{tool}"), tool)?;
+        require(
+            discovered.tool_ids.iter().any(|id| id == tool),
+            "reviewer could not discover the real command/result tool",
+        )?;
+    }
+    // Native acceptance runs on the fixture's host platform, as do the existing
+    // tool-scroll commands. Preserve the file's actual newline bytes on Windows.
+    let command = if cfg!(windows) {
+        format!("[Console]::Out.Write([IO.File]::ReadAllText('{SURFACE}'))")
+    } else {
+        format!("cat -- '{SURFACE}'")
+    };
+    let text = super::exec::read_stdout(flow, "review-surface", command)?;
     require(
-        discovered.tool_ids.iter().any(|tool| tool == "read_file"),
-        "reviewer could not discover the real read_file tool",
-    )?;
-    let read: FileRead = flow.read(
-        "review-surface",
-        "read_file",
-        json!({"path":SURFACE,"startLine":1,"maxLines":10}),
-    )?;
-    require(
-        read.path == SURFACE
-            && read.start_line == 1
-            && read.next_start_line.is_none()
-            && read.text == SURFACE_TEXT
-            && read.content_hash == digest(&read.text),
+        text == SURFACE_TEXT,
         "reviewer did not read the real complete review surface",
     )?;
-    let version = format!("{} {}", read.path, read.content_hash);
+    let version = format!("{} {}", SURFACE, digest(&text));
     let id = format!("{}-review-finish", flow.prefix);
     require(
         flow.request.declared("finish_turn"),

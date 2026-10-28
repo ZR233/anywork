@@ -74,11 +74,9 @@ pub(super) fn decide(request: &Request, environment: &Environment) -> Result<Dec
     match result {
         Ok(decision) => Ok(decision),
         Err(Stop::Call(mut decision)) => {
-            if decision
-                .call
-                .as_ref()
-                .is_some_and(|call| call.name == "read_file")
-            {
+            if decision.call.as_ref().is_some_and(|call| {
+                call.name == "exec" && call.id == format!("{}-review-surface", flow.prefix)
+            }) {
                 for case in ["busy", "changed", "closed"] {
                     if prompt.starts_with(&format!("[[delegation:child:rf-review:{case}]]")) {
                         decision.note = format!("rf-review-{case}-arrived");

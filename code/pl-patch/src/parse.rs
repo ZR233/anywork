@@ -57,6 +57,7 @@ pub(crate) struct UpdateChunk {
     pub(crate) context: Option<String>,
     pub(crate) old_lines: Vec<String>,
     pub(crate) new_lines: Vec<String>,
+    pub(crate) context_line_indices: Vec<(usize, usize)>,
     pub(crate) eof: bool,
 }
 
@@ -280,6 +281,7 @@ fn parse_update_chunk(lines: &[&str], line_number: usize) -> PatchResult<(Update
 
     let mut old_lines = Vec::new();
     let mut new_lines = Vec::new();
+    let mut context_line_indices = Vec::new();
     let mut eof = false;
     while index < lines.len() {
         let line = lines[index];
@@ -292,17 +294,12 @@ fn parse_update_chunk(lines: &[&str], line_number: usize) -> PatchResult<(Update
             break;
         }
         match line.chars().next() {
-            Some(' ') => {
-                old_lines.push(line[1..].to_string());
-                new_lines.push(line[1..].to_string());
-            }
             Some('+') => new_lines.push(line[1..].to_string()),
             Some('-') => old_lines.push(line[1..].to_string()),
-            None => {
-                old_lines.push(String::new());
-                new_lines.push(String::new());
-            }
-            Some(_) => {
+            _ => {
+                // 宽松解析的空行、无前缀行也具有明确的上下文身份。
+                let line = line.strip_prefix(' ').unwrap_or(line);
+                context_line_indices.push((old_lines.len(), new_lines.len()));
                 old_lines.push(line.to_string());
                 new_lines.push(line.to_string());
             }
@@ -321,6 +318,7 @@ fn parse_update_chunk(lines: &[&str], line_number: usize) -> PatchResult<(Update
             context,
             old_lines,
             new_lines,
+            context_line_indices,
             eof,
         },
         index,

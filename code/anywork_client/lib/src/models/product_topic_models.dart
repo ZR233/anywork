@@ -6,6 +6,7 @@ import 'agent_profile_models.dart';
 import 'bot_models.dart';
 import 'persistence_models.dart';
 import 'runtime_models.dart';
+import '../modes/domain/mode_catalog_models.dart';
 import 'studio_state_snapshots.dart';
 import 'thread_directory_models.dart';
 
