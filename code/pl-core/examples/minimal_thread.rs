@@ -35,6 +35,7 @@ impl ModelSession for DemonstrationModel {
                 Vec::new()
             } else {
                 vec![ModelToolCall {
+                    rejection: None,
                     call_id: "echo-call".into(),
                     tool_id: "echo".into(),
                     arguments: OpaquePayload::text("  arbitrary syntax: 你好\n"),

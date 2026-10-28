@@ -2086,13 +2086,33 @@ pub struct ActiveModelProgress {
     pub progress: ModelProgress,
 }
 
-/// An executable local call normalized by the model implementation.
+/// Why a model call could not be resolved against this request's declarations.
+/// Names here are diagnostic wire names, never executable stable tool identities.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
+#[serde(
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    tag = "kind"
+)]
+pub enum ModelToolCallRejection {
+    #[error("unknown tool name {name:?}")]
+    UnknownTool { name: String },
+    #[error("invalid arguments for tool {name:?}: {reason}")]
+    InvalidArguments { name: String, reason: String },
+}
+
+/// A local call candidate normalized by the model implementation.
+/// Rejected candidates retain raw wire arguments and must never execute. An unknown name has no
+/// stable tool identity; a known tool whose argument conversion failed retains its stable identity.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelToolCall {
     pub call_id: String,
     pub tool_id: String,
     pub arguments: OpaquePayload,
+    /// Absent in successful calls and old history; absence does not imply a historical rejection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rejection: Option<ModelToolCallRejection>,
 }
 
 /// A proposed step. The Thread commits its content and private context together.
