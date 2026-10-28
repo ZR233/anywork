@@ -185,6 +185,37 @@ if(CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT)
   set(CMAKE_INSTALL_PREFIX "${BUILD_BUNDLE_DIR}" CACHE PATH "..." FORCE)
 endif()
 
+# Install the compiler-provided Release runtime beside the executable.
+set(CMAKE_INSTALL_SYSTEM_RUNTIME_DESTINATION "${CMAKE_INSTALL_PREFIX}")
+set(CMAKE_INSTALL_SYSTEM_RUNTIME_COMPONENT Runtime)
+set(CMAKE_INSTALL_DEBUG_LIBRARIES FALSE)
+set(CMAKE_INSTALL_DEBUG_LIBRARIES_ONLY FALSE)
+set(CMAKE_INSTALL_MFC_LIBRARIES FALSE)
+set(CMAKE_INSTALL_OPENMP_LIBRARIES FALSE)
+set(CMAKE_INSTALL_UCRT_LIBRARIES FALSE)
+include(InstallRequiredSystemLibraries)
+if(NOT CMAKE_INSTALL_SYSTEM_RUNTIME_LIBS)
+  message(FATAL_ERROR
+    "CMake could not find the compiler's redistributable runtime libraries. "
+    "InstallRequiredSystemLibraries must detect them to build the Windows bundle.")
+endif()
+set(_anywork_detected_runtime_dlls)
+foreach(_anywork_runtime_path IN LISTS CMAKE_INSTALL_SYSTEM_RUNTIME_LIBS)
+  get_filename_component(_anywork_runtime_name "${_anywork_runtime_path}" NAME)
+  string(TOLOWER "${_anywork_runtime_name}" _anywork_runtime_name)
+  list(APPEND _anywork_detected_runtime_dlls "${_anywork_runtime_name}")
+endforeach()
+foreach(_anywork_required_runtime IN ITEMS
+    msvcp140.dll
+    vcruntime140.dll
+    vcruntime140_1.dll)
+  if(NOT _anywork_required_runtime IN_LIST _anywork_detected_runtime_dlls)
+    message(FATAL_ERROR
+      "The compiler's redistributable runtime is missing required "
+      "${_anywork_required_runtime}; refusing to build an incomplete Windows bundle.")
+  endif()
+endforeach()
+
 set(INSTALL_BUNDLE_DATA_DIR "${CMAKE_INSTALL_PREFIX}/data")
 set(INSTALL_BUNDLE_LIB_DIR "${CMAKE_INSTALL_PREFIX}")
 

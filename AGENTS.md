@@ -124,6 +124,7 @@ gh pr view PR_NUMBER --repo OWNER/REPO --json body --jq .body
   ```
 
 - `build-gui` 基于已提交的 `Cargo.lock` 与 `code/anywork/pubspec.lock` 确定性构建。它允许同步缺失的远程包，但 Flutter 使用 `pub get --enforce-lockfile`，Cargo 使用 `--locked`，不会更新 lockfile 或重新解析版本；`cargo xtask`、`cargo flutter` 和 `cargo dart` 包装命令本身也使用 `--locked`。依赖升级必须手动运行对应的依赖更新命令并审查提交新的 lockfile。
+- Windows 稳定发布先用 `cargo xtask build-gui` 生成 bundle，再用 `release-gui stage --version <x.y.z> --bundle <路径>` 显式打包已校验的预构建输入；`stage` 不再隐式编译。CI 下游直接执行同次构建归档且已核验身份的发布工具，不重新编译工具。仅重跑失败或指定的下游作业可复用该次 run 的构件；完整重跑与过期构件不属于断点续跑保证，见 [发布与更新](design/23-release-update.md#231-版本与发布流)。
 
 - 不支持直接执行 `flutter build windows|linux` 或 `flutter run -d windows|linux`，也不新增 PowerShell GUI wrapper。
 - `run-gui --release` 直接启动已有 `dist/anywork-release` 原生程序，不执行构建或依赖解析；缺失时提示先执行 `build-gui`。它与 `--demo`、`--driver`、`--profile` 互斥，并沿用平台进程树管理。
@@ -148,7 +149,7 @@ gh pr view PR_NUMBER --repo OWNER/REPO --json body --jq .body
 - 不得手工修改生成文件，也不得直接调用单个生成器。
 - 修改生成输入后运行 `cargo xtask check-gui-generated` 检查 canonical 输出，并分开审查生成 diff 与手写 diff。已授权的代码修改或生成一致性验证包含这些命令所需的生成操作，不为常规生成另行确认；用户明确限定只读时，不运行会改写跟踪文件的命令，报告未验证项。
 - 普通 `run-gui` 和 `build-gui` 只消费当前源码，不运行生成器或可写格式化；修改生成输入后必须先显式运行 `cargo xtask generate-gui`。
-- `check-gui-generated`、`verify-gui` 和 `build-gui --check-generated` 会重新生成并检查 canonical 输出，适用于提交前及 PR 质量门禁。稳定发布的 `release-gui stage` 与 RC 构建直接消费已提交的生成文件，不重复质量门禁；批准发布前须确认前序验证完成（见 [发布与更新](design/23-release-update.md)）。
+- `check-gui-generated`、`verify-gui` 和 `build-gui --check-generated` 会重新生成并检查 canonical 输出，适用于提交前及 PR 质量门禁。稳定发布的编译阶段与 RC 构建直接消费已提交的生成文件，后置 `release-gui stage` 只打包预构建 bundle，不重复质量门禁；批准发布前须确认前序验证完成（见 [发布与更新](design/23-release-update.md)）。
 - Git 索引与普通源码统一使用 LF；PowerShell、RC 和 Inno Setup 文件使用 CRLF，`.gitattributes` 与 `.editorconfig` 必须保持一致。不得通过全局 Git 配置、构建后索引刷新或全仓 renormalize 修复行尾。
 
 ### 预置系统技能
