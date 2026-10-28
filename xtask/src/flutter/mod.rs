@@ -544,22 +544,11 @@ fn run_gui_args<'a>(
 }
 
 pub(crate) fn build_gui(options: BuildGuiOptions) -> Result<()> {
-    build_gui_with_version(options, None)
-}
-
-pub(crate) fn build_gui_release(options: BuildGuiOptions, version: &str) -> Result<()> {
-    build_gui_with_version(options, Some(version))
-}
-
-fn build_gui_with_version(options: BuildGuiOptions, release_version: Option<&str>) -> Result<()> {
     let workspace_root = paths::workspace_root()?;
     let app_dir = paths::studio_app_dir(&workspace_root);
     let dist_dir = paths::release_dist_dir(&workspace_root);
     let target = DesktopTarget::current()?;
     let app_version = studio_version::read(&app_dir)?;
-    if release_version.is_some_and(|version| version != app_version.to_string()) {
-        bail!("release version does not match pubspec.yaml version {app_version}");
-    }
     print_context(&workspace_root, &app_dir);
     ensure_desktop_build_environment(target)?;
     ensure_flutter_dependencies_for_build(&workspace_root, &app_dir)?;

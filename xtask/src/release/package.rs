@@ -1,6 +1,4 @@
 use super::asset_name;
-use crate::cli::BuildGuiOptions;
-use crate::flutter;
 use anyhow::{Context, Result, bail};
 use pl_dev_support::{paths, process};
 use semver::Version;
@@ -10,23 +8,20 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-pub(super) fn stage(workspace_root: &Path, release_dir: &Path, version: &Version) -> Result<()> {
+pub(super) fn stage(
+    workspace_root: &Path,
+    release_dir: &Path,
+    version: &Version,
+    source_bundle: &Path,
+) -> Result<()> {
     ensure_windows()?;
+    validate_bundle(source_bundle)?;
     reject_existing_release(release_dir)?;
     fs::create_dir_all(release_dir)
         .with_context(|| format!("failed to create {}", release_dir.display()))?;
 
-    flutter::build_gui_release(
-        BuildGuiOptions {
-            demo: false,
-            no_clean: false,
-            // Release staging consumes the generated files validated by the PR quality gate.
-            check_generated: false,
-        },
-        &version.to_string(),
-    )?;
     let bundle_dir = release_dir.join("bundle");
-    copy_filtered_bundle(&paths::release_dist_dir(workspace_root), &bundle_dir)?;
+    copy_filtered_bundle(source_bundle, &bundle_dir)?;
     fs::copy(workspace_root.join("LICENSE"), bundle_dir.join("LICENSE"))
         .context("failed to add LICENSE to release bundle")?;
     fs::copy(
@@ -41,6 +36,39 @@ pub(super) fn stage(workspace_root: &Path, release_dir: &Path, version: &Version
     fs::remove_dir_all(&bundle_dir)
         .with_context(|| format!("failed to remove staging bundle {}", bundle_dir.display()))?;
     println!("Staged stable release: {}", release_dir.display());
+    Ok(())
+}
+
+fn validate_bundle(bundle: &Path) -> Result<()> {
+    if !bundle.is_dir() {
+        bail!(
+            "prebuilt Windows bundle directory not found: {}",
+            bundle.display()
+        );
+    }
+    for required in [
+        "anywork.exe",
+        "flutter_windows.dll",
+        "pl_studio_bridge.dll",
+        "data/flutter_assets",
+        "data/remote-helper/x86_64-unknown-linux-musl/pl-remote-helper.zst",
+        "data/remote-helper/x86_64-unknown-linux-musl/pl-remote-helper.metadata.json",
+        "data/remote-helper/aarch64-unknown-linux-musl/pl-remote-helper.zst",
+        "data/remote-helper/aarch64-unknown-linux-musl/pl-remote-helper.metadata.json",
+    ] {
+        let path = bundle.join(required);
+        let present = if required == "data/flutter_assets" {
+            path.is_dir()
+        } else {
+            path.is_file()
+        };
+        if !present {
+            bail!(
+                "prebuilt Windows bundle is missing required input: {}",
+                path.display()
+            );
+        }
+    }
     Ok(())
 }
 

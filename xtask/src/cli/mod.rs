@@ -142,11 +142,14 @@ pub(crate) struct BuildGuiOptions {
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
 pub(crate) enum ReleaseGuiOptions {
-    /// Prepare a release staging directory.
+    /// Prepare a release staging directory from a prebuilt Windows bundle.
     Stage {
         /// Stable SemVer matching code/anywork/pubspec.yaml.
         #[arg(long)]
         version: String,
+        /// Path to the prebuilt Windows release bundle.
+        #[arg(long, value_name = "PATH")]
+        bundle: std::path::PathBuf,
     },
     /// Sign and finalize staged release artifacts.
     Finalize {
