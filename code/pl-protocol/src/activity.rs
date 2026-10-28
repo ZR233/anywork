@@ -30,6 +30,8 @@ pub enum ThreadActivityKind {
     /// 两种情况都**不代表**正在压缩上下文，也不代表已经向供应商派出了请求：只有 provider 调用真正开始
     /// 执行之后的等待才归 [`Self::WaitingApi`]。绝不从缺失字段推断具体上下文操作。
     Preparing,
+    /// 正在执行上下文压缩（core 显式报告 `CompactingContext`）。
+    Compacting,
     /// provider 调用已经真正开始执行，但还没有任何已观测的流式事实：attempt 运行中，或 core 报告
     /// provider 调用已经在执行（`Running`）。
     WaitingApi,
@@ -54,6 +56,7 @@ impl ThreadActivityKind {
     pub const fn label(self) -> &'static str {
         match self {
             Self::Preparing => "preparing",
+            Self::Compacting => "compacting",
             Self::WaitingApi => "waitingApi",
             Self::Thinking => "thinking",
             Self::Responding => "responding",
@@ -177,6 +180,12 @@ pub struct ThreadActivity {
     /// 摘要是否因长度上限被截断。
     #[serde(default)]
     pub summary_truncated: bool,
+    /// 当前活跃 Turn 内最新的思考摘要（Markdown 单段文本）；在后续工具执行阶段保持粘性，直到出现新摘要或进入回复/Turn 结束。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking_summary: Option<String>,
+    /// 当前或最近一次思考阶段的耗时秒数。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking_seconds: Option<u64>,
     #[serde(default)]
     pub tools: ThreadActivityTools,
 }

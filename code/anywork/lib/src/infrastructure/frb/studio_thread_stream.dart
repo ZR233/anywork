@@ -122,6 +122,8 @@ ThreadActivityView _threadActivityFromFrb(
     kind: switch (value.kind) {
       frb_activity.BridgeThreadActivityKind.preparing =>
         ThreadActivityKind.preparing,
+      frb_activity.BridgeThreadActivityKind.compacting =>
+        ThreadActivityKind.compacting,
       frb_activity.BridgeThreadActivityKind.waitingApi =>
         ThreadActivityKind.waitingApi,
       frb_activity.BridgeThreadActivityKind.thinking =>
@@ -141,6 +143,8 @@ ThreadActivityView _threadActivityFromFrb(
     },
     summary: value.summary,
     summaryTruncated: value.summaryTruncated,
+    thinkingSummary: value.thinkingSummary,
+    thinkingSeconds: value.thinkingSeconds?.toInt(),
     tools: ThreadActivityTools(
       count: value.tools.count,
       background: value.tools.background,

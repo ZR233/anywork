@@ -248,6 +248,7 @@ impl ContextPreparationHook for StudioCompaction {
         // ride only on the successful replacement: an unreached, failed, cancelled or rejected
         // preparation keeps its activation set, and historical Skill Items stay durable.
         let skill_clears = skill_activation_clears(&request.extensions);
+        request.enter_compacting();
         let mut model_request = request.model;
         model_request.context = request.committed_context;
         model_request.attempt_id = id.clone();
