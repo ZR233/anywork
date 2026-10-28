@@ -64,6 +64,7 @@ class _ModeWorkspacePageState extends ConsumerState<ModeWorkspacePage>
   String? _notice;
   Timer? _noticeTimer;
   bool _opening = false;
+  bool _narrowDetailOpen = false;
 
   @override
   void initState() {
@@ -345,12 +346,41 @@ class _ModeWorkspacePageState extends ConsumerState<ModeWorkspacePage>
     ref.read(modeWorkspaceControllerProvider.notifier).closeDetail();
   }
 
+  void _openNarrowDetail(ModeDetailSelection? selection) {
+    if (!mounted ||
+        _narrowDetailOpen ||
+        selection == null ||
+        MediaQuery.sizeOf(context).width >= modeWorkspaceWideBreakpoint) {
+      return;
+    }
+    _narrowDetailOpen = true;
+    final query = switch (selection) {
+      ModeStageSelection(:final stateId) => {'stage': stateId},
+      ModeTransitionSelection(:final sourceStateId, :final targetStateId) => {
+        'edge': 'edge:$sourceStateId->$targetStateId',
+      },
+    };
+    unawaited(
+      context
+          .pushNamed<void>(
+            'mode-detail',
+            pathParameters: {'modeId': widget.modeId},
+            queryParameters: query,
+          )
+          .whenComplete(() => _narrowDetailOpen = false),
+    );
+  }
+
   // ---------------------------------------------------------------------------
   // 布局
   // ---------------------------------------------------------------------------
 
   @override
   Widget build(BuildContext context) {
+    ref.listen(
+      modeWorkspaceControllerProvider.select((state) => state.selection),
+      (_, selection) => _openNarrowDetail(selection),
+    );
     final editor = ref.watch(modeEditorStateProvider);
     final viewState = ref.watch(modeWorkspaceControllerProvider);
     final document = editor.document;
@@ -688,11 +718,18 @@ class _ModeWorkspacePageState extends ConsumerState<ModeWorkspacePage>
       l10n: context.l10n,
       dimmedStateIds: dimmed,
       onDocumentChanged: _replace,
-      onSelectStage: (id) =>
-          ref.read(modeWorkspaceControllerProvider.notifier).selectStage(id),
-      onSelectTransition: (id) => ref
-          .read(modeWorkspaceControllerProvider.notifier)
-          .selectTransition(id),
+      onSelectStage: (id) {
+        ref.read(modeWorkspaceControllerProvider.notifier).selectStage(id);
+        if (id != null) _openNarrowDetail(ModeDetailSelection.stage(id));
+      },
+      onSelectTransition: (id) {
+        ref.read(modeWorkspaceControllerProvider.notifier).selectTransition(id);
+        if (id != null) {
+          _openNarrowDetail(
+            ref.read(modeWorkspaceControllerProvider).selection,
+          );
+        }
+      },
       onAddStage: () {
         final notice = addWorkflowStage(ref, context.l10n, finalStage: false);
         if (notice != null) _showNotice(notice);
