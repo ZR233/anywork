@@ -5550,7 +5550,7 @@ mod storage_fault_tests {
     async fn long_user_answer_stays_in_budgeted_fields_and_expands_by_identity() -> Result<()> {
         let directory = tempfile::tempdir()?;
         let path = directory.path().join("history.sqlite");
-        let thread_id = "qa-long";
+        let thread_id = "qa-多字节";
         let fixture = question_fixture();
         let long_answer = "preserved line\n".repeat(20_000);
         let mut item = question_tool_item("call-long", thread_id, 3);
@@ -5605,6 +5605,18 @@ mod storage_fault_tests {
         let meta = String::from_utf8_lossy(&complete.meta).to_string();
         assert!(!meta.contains("preserved line"));
         assert!(!meta.contains("secret-deployment-token"));
+        // 持久化本地身份读出后，应与同一权威交互的产品投影严格关联。
+        let projected = crate::thread_assembler::project_user_input(thread_id, &record)?;
+        let decoded = crate::studio::runtime::timeline_content::preview::timeline_item(&complete)?;
+        let pl_protocol::TimelineDescriptor::Tool(tool) = &decoded.descriptor else {
+            anyhow::bail!("persisted question did not project as a tool");
+        };
+        let input = tool.user_input.as_ref().context("projected Q&A identity")?;
+        assert_eq!(input.interaction_id, projected.interaction_id);
+        assert_eq!(
+            crate::thread_assembler::decode_interaction_key(&input.interaction_id)?,
+            (thread_id, record.request.id.as_str())
+        );
         let answer_field = crate::studio::runtime::chat_item::user_input_answer_field(0, 0);
         assert_eq!(
             complete.field(&answer_field).map(|block| block.text()),
@@ -5613,6 +5625,29 @@ mod storage_fault_tests {
         // 完整条目按身份回源可还原全部正文，条目身份不变。
         let restored = crate::studio::runtime::chat_item::canonical_item(&complete)?;
         assert_eq!(restored, item);
+        let reprojected = crate::studio::runtime::chat_item::typed_item(restored, true)?;
+        assert_eq!(reprojected.meta, complete.meta);
+
+        // 只污染本次读取的内存副本；恢复不能接受本地 ID、畸形 wire 或其他 Thread。
+        for invalid_id in [
+            record.request.id.clone(),
+            "studio-interaction:invalid".into(),
+            crate::thread_assembler::encode_interaction_key("other-thread", &record.request.id),
+        ] {
+            let mut altered = complete.clone();
+            let mut altered_meta: serde_json::Value = serde_json::from_slice(&altered.meta)?;
+            *altered_meta
+                .pointer_mut("/descriptor/data/userInput/interactionId")
+                .context("Q&A wire identity in the persisted item's projection")? =
+                invalid_id.into();
+            altered.meta = serde_json::to_vec(&altered_meta)?.into();
+            let error = crate::studio::runtime::chat_item::canonical_item(&altered)
+                .expect_err("invalid or foreign product identity must not restore");
+            assert!(matches!(
+                error.downcast_ref::<pl_core::chat::ChatError>(),
+                Some(pl_core::chat::ChatError::History(_))
+            ));
+        }
 
         // 分页预览只交付有界正文，并把省略量交给消费者按身份补齐。
         let session = pl_core::chat::Session::new(store.clone());

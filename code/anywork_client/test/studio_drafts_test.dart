@@ -1,3 +1,6 @@
+import 'support/timeline_transport.dart';
+import 'support/conversation_delivery.dart';
+
 import 'dart:async';
 import 'dart:typed_data';
 
@@ -12,7 +15,7 @@ import 'support/accounts_test_runtime.dart';
 final class _DraftTransport extends AccountsTestTransport {
   _DraftTransport() {
     addTearDown(() => frames.close());
-    addTearDown(() => startEvents.close());
+    addTearDown(() => _startEvents?.close());
   }
   final StreamController<ThreadStreamFrame> frames =
       StreamController<ThreadStreamFrame>.broadcast();
@@ -30,8 +33,16 @@ final class _DraftTransport extends AccountsTestTransport {
   >
   startEntered = Completer();
   final Completer<StartNewThreadResult> startReply = Completer();
-  final StreamController<NewThreadStartEvent> startEvents =
-      StreamController.broadcast();
+  Completer<void>? startCancelGate;
+  StreamController<NewThreadStartEvent>? _startEvents;
+  StreamController<NewThreadStartEvent> get startEvents =>
+      _startEvents ??= startCancelGate == null
+      ? StreamController<NewThreadStartEvent>.broadcast()
+      : StreamController<NewThreadStartEvent>(
+          onCancel: () => startCancelGate?.future,
+        );
+  ConversationBaseline? Function(String threadId)? initialForThread;
+  int feedOpens = 0;
   int startCalls = 0;
   final List<String> removed = [];
   int promptCalls = 0;
@@ -46,14 +57,16 @@ final class _DraftTransport extends AccountsTestTransport {
   Object? admissionFailure;
   int settingsWrites = 0;
   bool removeSucceeds = true;
-  final window = _DraftConnection();
-
+  late _DraftConnection window;
   @override
-  Stream<ThreadStreamFrame> subscribeThread(String threadId) => frames.stream;
-
-  @override
-  Future<StudioTimelineConnection> openTimeline(String threadId) async =>
-      window;
+  Future<ConversationFeed> openConversationFeed(String threadId) async {
+    feedOpens++;
+    return window = _DraftConnection(
+      threadId: threadId,
+      states: frames.stream,
+      initial: initialForThread?.call(threadId),
+    );
+  }
 
   @override
   Future<SubmitPromptReceipt> submitPrompt(
@@ -157,70 +170,28 @@ final class _DraftTransport extends AccountsTestTransport {
 }
 
 /// A controlled content source driven through the production timeline channel.
-final class _DraftConnection implements StudioTimelineConnection {
-  _DraftConnection();
-
-  Completer<StudioTimelineUpdate?>? _next;
+final class _DraftConnection extends ScriptedConversationFeed {
+  _DraftConnection({
+    required super.threadId,
+    required super.states,
+    ConversationBaseline? initial,
+  }) : super(
+         initial:
+             initial ?? baseline(1, subscriptionId: 'draft', items: const []),
+       );
   int _version = 1;
-  bool _closed = false;
-
-  @override
-  Future<StudioTimelineBaseline> initial() async => StudioTimelineBaseline(
-    subscriptionId: 'draft',
-    version: _version,
-    items: const [],
-    before: null,
-    hasOlder: false,
-  );
-
-  @override
-  Future<StudioTimelineUpdate?> next() {
-    if (_closed) return Future.value(null);
-    if (_next != null) throw StateError('Two outstanding next calls');
-    final pending = Completer<StudioTimelineUpdate?>();
-    _next = pending;
-    return pending.future.whenComplete(() {
-      _next = null;
-    });
-  }
-
-  Future<void> emit(StudioTimelineChange change) async {
-    final pending = _next;
-    if (pending == null) throw StateError('No pending content read');
-    final from = _version;
-    _version = from + 1;
-    pending.complete(
-      StudioTimelinePatch(
-        subscriptionId: 'draft',
-        from: from,
-        to: _version,
-        changes: [change],
-        priority: StudioTimelinePriority.immediate,
+  Future<void> emit(ConversationChange change) async {
+    final from = _version++;
+    await deliver(
+      ConversationUpdateEvent(
+        update: patch(
+          from,
+          _version,
+          subscriptionId: 'draft',
+          changes: [change],
+        ),
       ),
     );
-  }
-
-  @override
-  Future<StudioTimelinePage> page({String? before, int? limit}) => Future.value(
-    const StudioTimelinePage(items: [], before: null, hasOlder: false),
-  );
-
-  @override
-  Future<StudioTimelineDetailChunk> readDetail({
-    required String itemId,
-    required StudioTimelineDetailQuery query,
-  }) => Future.error(UnsupportedError('draft test has no detail body'));
-
-  @override
-  void requestClose() {
-    _closed = true;
-    final pending = _next;
-    if (pending != null && !pending.isCompleted) pending.complete(null);
-  }
-
-  @override
-  Future<void> close() async {
-    requestClose();
   }
 }
 
@@ -241,39 +212,42 @@ StudioThread _thread([String id = 'thread']) => StudioThread(
   workspacePath: _project.path,
 );
 
-ThreadWorkspace _workspace({int revision = 1, StudioTurnView? turn}) =>
-    ThreadWorkspace(
-      thread: _thread(),
-      revision: revision,
-      interactions: const [],
-      activeTurn: turn,
-      latestTurn: turn,
-      runtime: const ThreadRuntimeView(
-        modelId: 'alpha',
-        contextTokens: 0,
-        contextWindow: 100,
-        totalTokens: 0,
-        costLabel: '',
-        activeSkills: [],
-        activeMcpServers: [],
-        activeLspServers: [],
-        modelRoute: ThreadModelRouteView(
-          accountId: 'account',
-          modelId: 'alpha',
-          effort: 'medium',
-          revision: 1,
-          available: true,
-        ),
-      ),
-    );
+ThreadWorkspace _workspace({
+  int revision = 1,
+  StudioTurnView? turn,
+  StudioThread? thread,
+}) => ThreadWorkspace(
+  thread: thread ?? _thread(),
+  revision: revision,
+  interactions: const [],
+  activeTurn: turn,
+  latestTurn: turn,
+  runtime: const ThreadRuntimeView(
+    modelId: 'alpha',
+    contextTokens: 0,
+    contextWindow: 100,
+    totalTokens: 0,
+    costLabel: '',
+    activeSkills: [],
+    activeMcpServers: [],
+    activeLspServers: [],
+    modelRoute: ThreadModelRouteView(
+      accountId: 'account',
+      modelId: 'alpha',
+      effort: 'medium',
+      revision: 1,
+      available: true,
+    ),
+  ),
+);
 
-AnyworkClient _client(
+Future<AnyworkClient> _client(
   _DraftTransport transport, {
   String id = 'client',
   ResourceBudget? budget,
   Future<String?> Function(Uint8List)? stage,
   Future<void> Function(String)? cleanup,
-}) {
+}) async {
   final resourcesBudget = budget ?? ResourceBudget();
   final coordinator = SettingsWriteCoordinator();
   final board = MutationBoard(clientId: id, budget: resourcesBudget);
@@ -349,41 +323,483 @@ AnyworkClient _client(
     domains.acceptFrame(frame);
   }
   client.selection.selectProject(_project.id);
+  client.conversations.setVisibleThread('thread');
+  await scriptedFeed('thread');
   return client;
 }
 
 Future<void> _close(AnyworkClient client, _DraftTransport transport) async {
-  await client.startDraft.close();
-  await client.composer('thread').close();
-  await client.attachments.close();
+  await client.drafts.startDraft.close();
+  await client.drafts.composer('thread').close();
+  await client.drafts.attachments.close();
   await client.close();
   await transport.frames.close();
 }
 
+ConversationItem _inputTurn(
+  String inputId,
+  StudioTurnState state, {
+  String threadId = 'thread',
+  String itemId = 'turn-item',
+  bool saved = false,
+  int revision = 1,
+}) => ConversationItem(
+  header: ConversationItemHeader(
+    id: itemId,
+    threadId: threadId,
+    turnId: 'turn',
+    ordinal: 1,
+    createdAt: DateTime.utc(2026),
+    updatedAt: DateTime.utc(2026),
+  ),
+  revision: revision,
+  descriptor: ConversationTurnDescriptor(
+    ThreadTurnItemStateView(state, inputId: inputId),
+  ),
+  saved: saved,
+  lifecycle: state.isTerminal
+      ? ConversationLifecycle.terminal
+      : ConversationLifecycle.streaming,
+  fields: const [],
+);
+
 void main() {
+  for (final evictBeforeReceipt in [false, true]) {
+    test(
+      'pre-dispatch input evidence survives unrelated patches and tail eviction=$evictBeforeReceipt',
+      () async {
+        final transport = _DraftTransport();
+        final client = await _client(transport);
+        await client.conversations
+            .session('thread')
+            .deliverWorkspace(_workspace());
+        final baselineObservers = client.budget.used(ResourceKind.observer);
+        final owner = client.drafts.composer('thread');
+        owner.updateDraft('evidence before receipt');
+        final submitting = owner.submit();
+        final input = await transport.promptEntered.future;
+        final operation = client.mutations.lookup(OperationId(input.inputId))!;
+        expect(
+          client.budget.used(ResourceKind.observer),
+          baselineObservers + 1,
+        );
+        await transport.window.emit(
+          ConversationAdd(
+            _inputTurn(
+              input.inputId,
+              const CompletedStudioTurnState(
+                startedAt: 1,
+                completedAt: 2,
+                completion: StudioTurnCompletion.normal,
+              ),
+            ),
+          ),
+        );
+        // Descriptor is deliberately omitted: the conversation reducer supplies
+        // input identity and typed status from its already reduced current item.
+        await transport.window.emit(
+          ConversationUpdateItem(
+            itemId: 'turn-item',
+            expectedRevision: 1,
+            revision: 1,
+            saved: true,
+            lifecycle: ConversationLifecycle.terminal,
+            header: ConversationItemHeader(
+              id: 'turn-item',
+              threadId: 'thread',
+              turnId: 'rebound-turn',
+              ordinal: 1,
+              createdAt: DateTime.utc(2026),
+              updatedAt: DateTime.utc(2026, 2),
+            ),
+            fields: const [],
+          ),
+        );
+        if (evictBeforeReceipt) {
+          for (var index = 0; index < 101; index++) {
+            await transport.window.emit(
+              ConversationAdd(
+                timelineItem(index + 2, id: 'tail-$index', ordinal: index + 2),
+              ),
+            );
+          }
+        }
+        await transport.window.emit(
+          ConversationAdd(
+            timelineItem(200, id: 'unrelated-last', ordinal: 200),
+          ),
+        );
+        expect(
+          (client.conversations.session('thread').content.lastDeliveredFrame!
+                  as ConversationPatchFrame)
+              .patch
+              .changes
+              .single,
+          isA<ConversationAdd>().having(
+            (change) => change.item.id,
+            'unrelated final frame',
+            'unrelated-last',
+          ),
+        );
+        expect(operation.state.value.receipt, isNull);
+        expect(
+          operation.state.value.durable,
+          isFalse,
+          reason: 'Evidence alone is not backend acceptance',
+        );
+        transport.promptReply.complete(
+          SubmitPromptReceipt(
+            threadId: 'thread',
+            inputId: input.inputId,
+            cursor: 7,
+          ),
+        );
+        await submitting;
+        expect(operation.state.value.observed, isTrue);
+        expect(operation.state.value.effective, isTrue);
+        expect(operation.state.value.durable, isTrue);
+        expect(owner.state.draft, isEmpty);
+        expect(client.budget.used(ResourceKind.observer), baselineObservers);
+        expect(
+          transport.feedOpens,
+          1,
+          reason: 'Input evidence never opens a hidden feed',
+        );
+        await _close(client, transport);
+      },
+    );
+  }
+
+  test('new-thread first baseline before result future binds its pre-registered evidence', () async {
+    final transport = _DraftTransport()..startCancelGate = Completer<void>();
+    final client = await _client(transport);
+    addTearDown(() {
+      if (!transport.startCancelGate!.isCompleted)
+        transport.startCancelGate!.complete();
+    });
+    final initialObservers = client.budget.used(ResourceKind.observer);
+    final owner = client.drafts.startDraft;
+    owner.updateDraft(_project.id, 'new input');
+    final submission = owner.submit(_project.id);
+    final request = await transport.startEntered.future;
+    final operation = client.mutations.lookup(
+      OperationId(request.input.inputId),
+    )!;
+    transport.initialForThread = (id) => baseline(
+      1,
+      subscriptionId: 'draft',
+      items: [
+        _inputTurn(
+          request.input.inputId,
+          const CompletedStudioTurnState(
+            startedAt: 1,
+            completedAt: 2,
+            completion: StudioTurnCompletion.normal,
+          ),
+          threadId: id,
+          saved: true,
+        ),
+      ],
+    );
+    final selected = client.selection.source.watch((state) {
+      if (state.selectedThreadId == 'new-thread')
+        client.conversations.setVisibleThread('new-thread');
+    });
+    transport.startReply.complete(
+      StartNewThreadResult(
+        thread: _thread('new-thread'),
+        receipt: SubmitPromptReceipt(
+          threadId: 'new-thread',
+          inputId: request.input.inputId,
+          cursor: 8,
+        ),
+      ),
+    );
+    final feed = await scriptedFeed('new-thread');
+    await feed.acknowledged(1);
+    expect(client.selection.state.selectedThreadId, 'new-thread');
+    expect(
+      operation.state.value.receipt,
+      isNull,
+      reason: 'ThreadCommands still joins its start stream',
+    );
+    expect(operation.state.value.durable, isFalse);
+    transport.startCancelGate!.complete();
+    expect(await submission, isTrue);
+    expect(operation.state.value.observed, isTrue);
+    expect(operation.state.value.effective, isTrue);
+    expect(operation.state.value.durable, isTrue);
+    expect(client.budget.used(ResourceKind.observer), initialObservers);
+    selected.cancel();
+    await _close(client, transport);
+  });
+
+  test('new-thread accepts a valid result before conflicting earlier-thread evidence fails synchronization', () async {
+    final transport = _DraftTransport();
+    final client = await _client(transport);
+    final initialObservers = client.budget.used(ResourceKind.observer);
+    final owner = client.drafts.startDraft;
+    owner.updateDraft(_project.id, 'preserve conflicted new-thread draft');
+    final submission = owner.submit(_project.id);
+    final request = await transport.startEntered.future;
+    final operation = client.mutations.lookup(
+      OperationId(request.input.inputId),
+    )!;
+    await transport.window.emit(
+      ConversationAdd(
+        _inputTurn(
+          request.input.inputId,
+          const CompletedStudioTurnState(
+            startedAt: 1,
+            completedAt: 2,
+            completion: StudioTurnCompletion.normal,
+          ),
+          saved: true,
+        ),
+      ),
+    );
+    transport.startReply.complete(
+      StartNewThreadResult(
+        thread: _thread('new-thread'),
+        receipt: SubmitPromptReceipt(
+          threadId: 'new-thread',
+          inputId: request.input.inputId,
+          cursor: 8,
+        ),
+      ),
+    );
+    expect(await submission, isFalse);
+    final state = operation.state.value;
+    expect(state.phase, OperationPhase.syncFailed);
+    expect(state.receipt, isNotNull);
+    final stamp = state.receipt!.targets.single as ResourceStamp;
+    expect(stamp.resourceKey, 'input:new-thread:${request.input.inputId}');
+    expect(stamp.ownerEpoch, 'new-thread');
+    expect(stamp.revision, 8);
+    expect(state.observed, isFalse);
+    expect(state.effective, isFalse);
+    expect(state.durable, isFalse);
+    expect(
+      owner.state.forProject(_project.id).text,
+      'preserve conflicted new-thread draft',
+    );
+    expect(client.budget.used(ResourceKind.observer), initialObservers);
+    await _close(client, transport);
+  });
+
+  test('conflicting registered input identities after acceptance are sync failures, not rejection', () async {
+    final transport = _DraftTransport();
+    final client = await _client(transport);
+    await client.conversations.session('thread').deliverWorkspace(_workspace());
+    final owner = client.drafts.composer('thread')
+      ..updateDraft('keep conflicting submission');
+    final baselineObservers = client.budget.used(ResourceKind.observer);
+    final submitting = owner.submit();
+    final input = await transport.promptEntered.future;
+    for (final id in ['turn-item', 'conflicting-turn-item']) {
+      await transport.window.emit(
+        ConversationAdd(
+          _inputTurn(
+            input.inputId,
+            const RunningStudioTurnState(
+              startedAt: 1,
+              activity: StudioTurnActivity.thinking,
+            ),
+            itemId: id,
+          ),
+        ),
+      );
+    }
+    transport.promptReply.complete(
+      SubmitPromptReceipt(
+        threadId: 'thread',
+        inputId: input.inputId,
+        cursor: 7,
+      ),
+    );
+    await submitting;
+    final operation = client.mutations
+        .lookup(OperationId(input.inputId))!
+        .state
+        .value;
+    expect(operation.phase, OperationPhase.syncFailed);
+    expect(operation.receipt, isNotNull);
+    expect(operation.durable, isFalse);
+    expect(owner.state.draft, 'keep conflicting submission');
+    expect(client.budget.used(ResourceKind.observer), baselineObservers);
+    await _close(client, transport);
+  });
+
+  test('preparation failure cancels pre-registered input evidence without dispatch', () async {
+    final transport = _DraftTransport();
+    final client = await _client(transport);
+    await client.conversations.session('thread').deliverWorkspace(_workspace());
+    final owner = client.drafts.composer('thread')
+      ..updateDraft('prepare failure');
+    final count = client.budget.used(ResourceKind.observer);
+    await owner.submit(
+      beforeSubmit: () async {
+        expect(client.budget.used(ResourceKind.observer), count + 1);
+        throw StateError('preparation failed');
+      },
+    );
+    expect(client.budget.used(ResourceKind.observer), count);
+    expect(transport.promptCalls, 0);
+    expect(client.mutations.operations.single.phase, OperationPhase.rejected);
+    expect(owner.state.draft, 'prepare failure');
+    await _close(client, transport);
+  });
+
+  test('synchronous composer notification reuses submission and close cancels before dispatch', () async {
+    final transport = _DraftTransport();
+    final client = await _client(transport);
+    await client.conversations.session('thread').deliverWorkspace(_workspace());
+    final owner = client.drafts.composer('thread')..updateDraft('reentrant');
+    Future<void>? nested;
+    Future<void>? closing;
+    final watch = owner.source.watch((state) {
+      if (state.isSubmissionPending && nested == null) {
+        nested = owner.submit();
+        closing = owner.close();
+      }
+    });
+    final submission = owner.submit();
+    expect(identical(nested, submission), isTrue);
+    await submission;
+    await closing;
+    expect(transport.promptCalls, 0);
+    expect(client.mutations.operations.single.phase, OperationPhase.rejected);
+    watch.cancel();
+    await _close(client, transport);
+  });
+
+  test('synchronous command notification reuses submission and close joins the one actual RPC', () async {
+    final transport = _DraftTransport();
+    final client = await _client(transport);
+    await client.conversations.session('thread').deliverWorkspace(_workspace());
+    final owner = client.drafts.composer('thread')..updateDraft('one RPC');
+    Future<void>? nested;
+    Future<void>? closing;
+    var closed = false;
+    final watch = client.threadCommands.source.watch((state) {
+      if (state.commands['submit:thread']?.phase == CommandPhase.pending &&
+          nested == null) {
+        nested = owner.submit();
+        closing = owner.close().then((_) {
+          closed = true;
+        });
+      }
+    });
+    final submission = owner.submit();
+    final input = await transport.promptEntered.future;
+    expect(identical(nested, submission), isTrue);
+    expect(transport.promptCalls, 1);
+    expect(closed, isFalse);
+    transport.promptReply.complete(
+      SubmitPromptReceipt(
+        threadId: 'thread',
+        inputId: input.inputId,
+        cursor: 7,
+      ),
+    );
+    await submission;
+    await closing;
+    expect(closed, isTrue);
+    expect(transport.promptCalls, 1);
+    expect(
+      client.mutations.lookup(OperationId(input.inputId))!.state.value.receipt,
+      isNotNull,
+    );
+    watch.cancel();
+    await _close(client, transport);
+  });
+
+  test('new-thread synchronous notification rejects reentrant submission and close joins preparation', () async {
+    final transport = _DraftTransport();
+    final client = await _client(transport);
+    final owner = client.drafts.startDraft;
+    owner.updateDraft(_project.id, 'one new-thread preparation');
+    final initialObservers = client.budget.used(ResourceKind.observer);
+    Future<bool>? nested;
+    Future<void>? closing;
+    var closed = false;
+    final watch = owner.source.watch((state) {
+      if (state.submitting && nested == null) {
+        nested = owner.submit(_project.id);
+        closing = owner.close().then((_) {
+          closed = true;
+        });
+      }
+    });
+    final submission = owner.submit(_project.id);
+    expect(nested, isNotNull);
+    expect(closed, isFalse, reason: 'Close joins the registered preparation');
+    expect(await nested, isFalse);
+    expect(await submission, isFalse);
+    await closing;
+    expect(closed, isTrue);
+    expect(transport.startCalls, 0);
+    expect(client.mutations.operations.single.phase, OperationPhase.rejected);
+    expect(client.budget.used(ResourceKind.observer), initialObservers);
+    expect(
+      owner.state.forProject(_project.id).text,
+      'one new-thread preparation',
+    );
+    watch.cancel();
+    await _close(client, transport);
+  });
+
+  test('child conversation is read-only before submission preparation or attachment admission', () async {
+    final transport = _DraftTransport();
+    final client = await _client(transport);
+    await client.conversations
+        .session('thread')
+        .deliverWorkspace(
+          _workspace(thread: _thread().copyWith(parentThreadId: 'parent')),
+        );
+    final owner = client.drafts.composer('thread');
+    owner.updateDraft('  子会话只读\n');
+    var prepared = false;
+    await owner.submit(
+      beforeSubmit: () async {
+        prepared = true;
+      },
+    );
+    await owner.addLocalAttachments(['/child.bin']);
+    expect(prepared, isFalse);
+    expect(transport.promptCalls, 0);
+    expect(transport.admissionCalls, 0);
+    expect(owner.state.draft, '  子会话只读\n');
+    expect(owner.state.attachments, isEmpty);
+    expect(owner.state.isSubmissionPending, isFalse);
+    expect(owner.state.error, isNotNull);
+    expect(client.mutations.operations, isEmpty);
+    await _close(client, transport);
+  });
+
   test('new Thread attachments freeze the selected route and recover after rejection', () async {
     final transport = _DraftTransport();
     final staged = Completer<String?>();
     final cleaned = <String>[];
-    final client = _client(
+    final client = await _client(
       transport,
       stage: (_) => staged.future,
       cleanup: (path) async => cleaned.add(path),
     );
-    final owner = client.startDraft;
+    final owner = client.drafts.startDraft;
     owner.updateDraft(_project.id, 'keep this draft');
     owner.setModelIntent(ThreadModeId.simple, 'account', 'beta');
-    await client.attachments.admitNewThread(
+    await client.drafts.attachments.admitNewThread(
       projectId: _project.id,
       mode: ThreadModeId.simple,
       sources: [const AttachmentDraftSource.localFile('/first.bin')],
     );
-    await client.attachments.addNewThreadRemote(
+    await client.drafts.attachments.addNewThreadRemote(
       projectId: _project.id,
       mode: ThreadModeId.simple,
       url: 'https://example.invalid/second.bin',
     );
-    final paste = client.attachments.addNewThreadClipboard(
+    final paste = client.drafts.attachments.addNewThreadClipboard(
       projectId: _project.id,
       mode: ThreadModeId.simple,
       pngBytes: Uint8List.fromList([1, 2, 3]),
@@ -400,7 +816,7 @@ void main() {
       reason: 'All sources use the selection at admission intent, including before staging',
     );
     expect(cleaned, ['/clipboard.png']);
-    final admitted = client.attachments.state
+    final admitted = client.drafts.attachments.state
         .newThread(_project.id)
         .attachments;
     transport.admissionFailure = const StudioFailure(
@@ -409,23 +825,23 @@ void main() {
       retryable: false,
       correlationId: 'rejected-file',
     );
-    await client.attachments.admitNewThread(
+    await client.drafts.attachments.admitNewThread(
       projectId: _project.id,
       mode: ThreadModeId.simple,
       sources: [const AttachmentDraftSource.localFile('/unsupported.bin')],
     );
-    final rejected = client.attachments.state.newThread(_project.id);
+    final rejected = client.drafts.attachments.state.newThread(_project.id);
     expect(rejected.error, contains('Unsupported file media type'));
     expect(rejected.attachments, admitted);
     expect(owner.state.forProject(_project.id).text, 'keep this draft');
     expect(client.budget.used(ResourceKind.attachment), 3);
     transport.admissionFailure = null;
-    await client.attachments.admitNewThread(
+    await client.drafts.attachments.admitNewThread(
       projectId: _project.id,
       mode: ThreadModeId.simple,
       sources: [const AttachmentDraftSource.localFile('/supported.bin')],
     );
-    final recovered = client.attachments.state.newThread(_project.id);
+    final recovered = client.drafts.attachments.state.newThread(_project.id);
     expect(recovered.error, isNull);
     expect(recovered.attachments.length, 4);
     final last =
@@ -439,11 +855,11 @@ void main() {
 
   test('actual composer preserves revision 9 text and attachments after revision 8 ACK', () async {
     final transport = _DraftTransport();
-    final client = _client(transport);
-    final session = client.session('thread');
-    session.applySnapshot(_workspace());
-    final owner = client.composer('thread');
-    owner.updateDraft('submitted text');
+    final client = await _client(transport);
+    final session = client.conversations.session('thread');
+    await session.deliverWorkspace(_workspace());
+    final owner = client.drafts.composer('thread');
+    owner.updateDraft('  submitted text\n');
     await owner.addLocalAttachments(['/first.bin']);
     final submitted = owner.submit();
     final input = await transport.promptEntered.future;
@@ -459,7 +875,10 @@ void main() {
       updatedAt: DateTime.utc(2026),
     );
     // Frame arrives before the command receipt. Atomic watchLatest must see it.
-    session.applySnapshot(_workspace(revision: 2, turn: queued));
+    await session.deliverWorkspace(_workspace(revision: 2, turn: queued));
+    await transport.window.emit(
+      ConversationAdd(_inputTurn(input.inputId, queued.state)),
+    );
     transport.promptReply.complete(
       SubmitPromptReceipt(
         threadId: 'thread',
@@ -469,7 +888,7 @@ void main() {
     );
     await submitted;
 
-    expect(input.text, 'submitted text');
+    expect(input.text, '  submitted text\n');
     expect(transport.promptRouteRevision, 1);
     expect(input.attachmentDraftIds, ['attachment-1-0']);
     expect(owner.state.draft, 'new text typed during submission');
@@ -492,7 +911,7 @@ void main() {
     );
     expect(operation.durable, isFalse);
 
-    session.applySnapshot(
+    await session.deliverWorkspace(
       _workspace(
         revision: 3,
         turn: StudioTurnView(
@@ -505,6 +924,19 @@ void main() {
             activity: StudioTurnActivity.thinking,
           ),
           updatedAt: DateTime.utc(2026),
+        ),
+      ),
+    );
+    await transport.window.emit(
+      ConversationAdd(
+        _inputTurn(
+          input.inputId,
+          const CompletedStudioTurnState(
+            startedAt: 1,
+            completedAt: 2,
+            completion: StudioTurnCompletion.normal,
+          ),
+          revision: 2,
         ),
       ),
     );
@@ -521,8 +953,8 @@ void main() {
 
   test('actual start owner freezes complete route without settings writes and preserves later edits', () async {
     final transport = _DraftTransport();
-    final client = _client(transport);
-    final owner = client.startDraft;
+    final client = await _client(transport);
+    final owner = client.drafts.startDraft;
     void defaults(
       int revision,
       DelegationMode mode,
@@ -551,7 +983,7 @@ void main() {
     owner.updateDraft('other-project', 'independent draft');
     owner.setDelegationModeOverride('other-project', DelegationMode.profile);
     defaults(2, DelegationMode.automatic, DelegationPreference.economy);
-    await client.attachments.admitNewThread(
+    await client.drafts.attachments.admitNewThread(
       projectId: _project.id,
       mode: ThreadModeId.simple,
       sources: [const AttachmentDraftSource.localFile('/one.bin')],
@@ -596,7 +1028,7 @@ void main() {
       owner.state.preparations[_project.id]?.workspaceMode,
       ThreadWorkspaceMode.worktree,
     );
-    await client.attachments.admitNewThread(
+    await client.drafts.attachments.admitNewThread(
       projectId: _project.id,
       mode: ThreadModeId.simple,
       sources: [const AttachmentDraftSource.localFile('/two.bin')],
@@ -664,7 +1096,7 @@ void main() {
       DelegationMode.automatic,
     );
     expect(
-      client.attachments.state
+      client.drafts.attachments.state
           .newThread(_project.id)
           .attachments
           .map((item) => item.id),
@@ -681,12 +1113,12 @@ void main() {
 
   test('new Thread completion does not replace a newer A to B to A navigation intent', () async {
     final transport = _DraftTransport();
-    final client = _client(transport);
+    final client = await _client(transport);
     const other = StudioProject(id: 'other', name: 'Other', path: '/other');
     client.project.applyProjectDirectory(
       ProjectDirectoryState(values: [_project, other], revision: 2),
     );
-    final owner = client.startDraft;
+    final owner = client.drafts.startDraft;
     owner.updateDraft(_project.id, 'prepare a session');
     final submitted = owner.submit(_project.id);
     final request = await transport.startEntered.future;
@@ -711,10 +1143,10 @@ void main() {
 
   test('definite preparation failure retains the failed stage, newer draft and attachments', () async {
     final transport = _DraftTransport();
-    final client = _client(transport);
-    final owner = client.startDraft;
+    final client = await _client(transport);
+    final owner = client.drafts.startDraft;
     owner.updateDraft(_project.id, 'first request');
-    await client.attachments.admitNewThread(
+    await client.drafts.attachments.admitNewThread(
       projectId: _project.id,
       mode: ThreadModeId.simple,
       sources: [const AttachmentDraftSource.localFile('/one.bin')],
@@ -755,7 +1187,11 @@ void main() {
     expect(preparation.failure, same(failure));
     expect(owner.state.forProject(_project.id).text, 'newer request');
     expect(
-      client.attachments.state.newThread(_project.id).attachments.single.id,
+      client.drafts.attachments.state
+          .newThread(_project.id)
+          .attachments
+          .single
+          .id,
       'attachment-1-0',
     );
     expect(
@@ -786,8 +1222,8 @@ void main() {
 
   test('EOF without a creation outcome remains unknown and never automatically resubmits', () async {
     final transport = _DraftTransport();
-    final client = _client(transport);
-    final owner = client.startDraft;
+    final client = await _client(transport);
+    final owner = client.drafts.startDraft;
     owner.updateDraft(_project.id, 'do not duplicate this request');
     final submitted = owner.submit(_project.id);
     await transport.startEntered.future;
@@ -814,9 +1250,9 @@ void main() {
     'stream errors cannot replace the missing typed creation outcome',
     () async {
       final transport = _DraftTransport();
-      final client = _client(transport);
+      final client = await _client(transport);
       addTearDown(() => _close(client, transport));
-      final owner = client.startDraft;
+      final owner = client.drafts.startDraft;
       owner.updateDraft(_project.id, 'keep an uncertain request');
       final submitted = owner.submit(_project.id);
       await transport.startEntered.future;
@@ -849,8 +1285,8 @@ void main() {
 
   test('closing the start owner joins its creation while ignoring later display updates', () async {
     final transport = _DraftTransport();
-    final client = _client(transport);
-    final owner = client.startDraft;
+    final client = await _client(transport);
+    final owner = client.drafts.startDraft;
     owner.updateDraft(_project.id, 'prepare before close');
     final submitted = owner.submit(_project.id);
     final request = await transport.startEntered.future;
@@ -887,17 +1323,16 @@ void main() {
 
   test('actual accepted input waits for its Chat Turn saved flag after execution completes', () async {
     final transport = _DraftTransport();
-    final client = _client(transport);
-    final session = client.session('thread');
-    session.applySnapshot(_workspace());
-    session.start();
-    await session.timeline.ready;
+    final client = await _client(transport);
+    final session = client.conversations.session('thread');
+    await session.deliverWorkspace(_workspace());
+    await session.content.ready;
     final baselineObservers = client.budget.used(ResourceKind.observer);
-    final owner = client.composer('thread');
+    final owner = client.drafts.composer('thread');
     owner.updateDraft('durable input');
     final submission = owner.submit();
     final input = await transport.promptEntered.future;
-    session.applySnapshot(
+    await session.deliverWorkspace(
       _workspace(
         revision: 2,
         turn: StudioTurnView(
@@ -910,6 +1345,17 @@ void main() {
             activity: StudioTurnActivity.thinking,
           ),
           updatedAt: DateTime.utc(2026),
+        ),
+      ),
+    );
+    await transport.window.emit(
+      ConversationAdd(
+        _inputTurn(
+          input.inputId,
+          const RunningStudioTurnState(
+            startedAt: 1,
+            activity: StudioTurnActivity.thinking,
+          ),
         ),
       ),
     );
@@ -927,38 +1373,33 @@ void main() {
     expect(operation.state.value.durable, isFalse);
     expect(client.budget.used(ResourceKind.observer), baselineObservers + 1);
 
-    final terminal = ThreadItemView(
-      id: 'turn-item',
-      threadId: 'thread',
-      turnId: 'turn',
-      ordinal: 1,
+    final terminal = ConversationItem(
+      header: ConversationItemHeader(
+        id: 'turn-item',
+        threadId: 'thread',
+        turnId: 'turn',
+        ordinal: 1,
+        createdAt: DateTime.utc(2026),
+        updatedAt: DateTime.utc(2026),
+      ),
       revision: 2,
-      createdAt: DateTime.utc(2026),
-      updatedAt: DateTime.utc(2026),
       saved: false,
-      executionTerminal: true,
-      state: ThreadTurnItemStateView(
-        const CompletedStudioTurnState(
-          startedAt: 1,
-          completedAt: 2,
-          completion: StudioTurnCompletion.normal,
-        ),
-        inputId: input.inputId,
-      ),
-    );
-    await transport.window.emit(
-      StudioTimelineAdd(
-        StudioTimelineItem(
-          item: terminal,
-          saved: false,
-          lifecycle: StudioTimelineLifecycle.terminal,
-          omittedBytes: 0,
-          details: const [],
+      lifecycle: ConversationLifecycle.terminal,
+      descriptor: ConversationTurnDescriptor(
+        ThreadTurnItemStateView(
+          const CompletedStudioTurnState(
+            startedAt: 1,
+            completedAt: 2,
+            completion: StudioTurnCompletion.normal,
+          ),
+          inputId: input.inputId,
         ),
       ),
+      fields: const [],
     );
-    await session.timeline.state.waitFor(
-      (state) => state.snapshot is StudioTimelinePatchFrame,
+    await transport.window.emit(ConversationAdd(terminal));
+    await session.content.state.waitFor(
+      (state) => state.snapshot is ConversationPatchFrame,
     );
     expect(
       operation.state.value.durable,
@@ -967,58 +1408,44 @@ void main() {
     );
     expect(client.budget.used(ResourceKind.observer), baselineObservers + 1);
     await transport.window.emit(
-      const StudioTimelineUpdateItem(
+      const ConversationUpdateItem(
         itemId: 'turn-item',
         expectedRevision: 2,
         revision: 2,
-        omittedBytes: 0,
         saved: true,
-        lifecycle: StudioTimelineLifecycle.terminal,
+        lifecycle: ConversationLifecycle.terminal,
         fields: [],
       ),
     );
-    await session.timeline.state.waitFor(
+    await session.content.state.waitFor(
       (state) =>
-          state.snapshot is StudioTimelinePatchFrame &&
-          (state.snapshot! as StudioTimelinePatchFrame).patch.to == 3,
+          state.snapshot is ConversationPatchFrame &&
+          (state.snapshot! as ConversationPatchFrame).patch.to == 4,
     );
     expect(operation.state.value.durable, isTrue);
     expect(client.budget.used(ResourceKind.observer), baselineObservers);
     await _close(client, transport);
   });
 
-  test('accepted input observer budget failure preserves the draft and attachments', () async {
+  test('pre-dispatch input observer budget failure never sends and preserves draft references', () async {
     final transport = _DraftTransport();
-    final defaults = ResourceBudget().capacities;
-    final client = _client(
+    final client = await _client(
       transport,
       budget: ResourceBudget(
-        capacities: {...defaults, ResourceKind.observer: 0},
+        capacities: {...ResourceBudget().capacities, ResourceKind.observer: 0},
       ),
     );
-    client.session('thread').applySnapshot(_workspace());
-    final owner = client.composer('thread');
-    owner.updateDraft('keep after local sync failure');
+    await client.conversations.session('thread').deliverWorkspace(_workspace());
+    final owner = client.drafts.composer('thread');
+    owner.updateDraft('keep after observation admission failure');
     await owner.addLocalAttachments(['/payload.bin']);
-    final submission = owner.submit();
-    final input = await transport.promptEntered.future;
-    transport.promptReply.complete(
-      SubmitPromptReceipt(
-        threadId: 'thread',
-        inputId: input.inputId,
-        cursor: 7,
-      ),
-    );
-    await submission;
-    final operation = client.mutations.lookup(OperationId(input.inputId))!;
-    expect(operation.state.value.phase, OperationPhase.syncFailed);
-    expect(operation.state.value.error, isA<ResourceBudgetExceeded>());
-    expect(
-      operation.state.value.receipt,
-      isNotNull,
-      reason: 'Local observation failure does not erase backend acceptance',
-    );
-    expect(owner.state.draft, 'keep after local sync failure');
+    await owner.submit();
+    expect(transport.promptCalls, 0);
+    final operation = client.mutations.operations.single;
+    expect(operation.phase, OperationPhase.rejected);
+    expect(operation.error, isA<ResourceBudgetExceeded>());
+    expect(operation.receipt, isNull);
+    expect(owner.state.draft, 'keep after observation admission failure');
     expect(owner.state.attachments.single.id, 'attachment-1-0');
     expect(transport.removed, isEmpty);
     expect(client.budget.used(ResourceKind.attachment), 1);
@@ -1028,9 +1455,9 @@ void main() {
 
   test('actual composer queued submission keeps its frozen route revision and preserves rejected draft', () async {
     final transport = _DraftTransport();
-    final client = _client(transport);
-    final session = client.session('thread');
-    session.applySnapshot(_workspace());
+    final client = await _client(transport);
+    final session = client.conversations.session('thread');
+    await session.deliverWorkspace(_workspace());
     const blockerInput = StudioPromptInput(
       inputId: 'earlier-input',
       text: 'earlier command',
@@ -1043,12 +1470,12 @@ void main() {
     );
     await transport.promptEntered.future;
 
-    final owner = client.composer('thread');
+    final owner = client.drafts.composer('thread');
     owner.updateDraft('draft frozen on route one');
     await owner.addLocalAttachments(['/payload.bin']);
     final queued = owner.submit();
     final changed = _workspace(revision: 2);
-    session.applySnapshot(
+    await session.deliverWorkspace(
       changed.copyWith(
         runtime: changed.runtime.copyWith(
           modelRoute: const ThreadModelRouteView(
@@ -1088,9 +1515,11 @@ void main() {
     'the preparation hook runs after freezing and before the backend submit',
     () async {
       final transport = _DraftTransport();
-      final client = _client(transport);
-      client.session('thread').applySnapshot(_workspace());
-      final owner = client.composer('thread');
+      final client = await _client(transport);
+      await client.conversations
+          .session('thread')
+          .deliverWorkspace(_workspace());
+      final owner = client.drafts.composer('thread');
       owner.updateDraft('prepare before sending');
       await owner.addLocalAttachments(['/payload.bin']);
 
@@ -1123,9 +1552,9 @@ void main() {
 
   test('a failing preparation is a known non-submission and keeps the draft usable', () async {
     final transport = _DraftTransport();
-    final client = _client(transport);
-    client.session('thread').applySnapshot(_workspace());
-    final owner = client.composer('thread');
+    final client = await _client(transport);
+    await client.conversations.session('thread').deliverWorkspace(_workspace());
+    final owner = client.drafts.composer('thread');
     owner.updateDraft('send after display preparation');
     await owner.addLocalAttachments(['/payload.bin']);
     const failure = StudioFailure(
@@ -1166,9 +1595,10 @@ void main() {
 
   test('unknown actual submission retains attachment owner and never automatically replays', () async {
     final transport = _DraftTransport();
-    final client = _client(transport);
-    client.session('thread').applySnapshot(_workspace());
-    final owner = client.composer('thread');
+    final client = await _client(transport);
+    await client.conversations.session('thread').deliverWorkspace(_workspace());
+    final observers = client.budget.used(ResourceKind.observer);
+    final owner = client.drafts.composer('thread');
     owner.updateDraft('request with uncertain reply');
     await owner.addLocalAttachments(['/payload.bin']);
     final submission = owner.submit();
@@ -1183,6 +1613,11 @@ void main() {
     client.workspace.hideSettings();
     await owner.submit();
     expect(transport.promptCalls, 1);
+    expect(
+      client.budget.used(ResourceKind.observer),
+      observers + 1,
+      reason: 'Unknown outcome retains the original registered evidence, without re-registering or resending',
+    );
     await owner.discard();
     expect(
       transport.removed,
@@ -1190,22 +1625,26 @@ void main() {
       reason: 'Discarding the visible draft cannot release an unknown submission owner',
     );
     expect(client.budget.used(ResourceKind.attachment), 1);
+    await owner.close();
+    expect(client.budget.used(ResourceKind.observer), observers);
     await _close(client, transport);
   });
 
   test('actual attachment cleanup failure retains budget until explicit successful retry', () async {
     final transport = _DraftTransport();
-    final client = _client(transport);
-    client.session('thread').applySnapshot(_workspace());
-    final owner = client.composer('thread');
+    final client = await _client(transport);
+    await client.conversations.session('thread').deliverWorkspace(_workspace());
+    final owner = client.drafts.composer('thread');
     await owner.addLocalAttachments(['/payload.bin']);
     transport.removeSucceeds = false;
     await owner.discard();
-    expect(client.attachments.unresolvedAttachmentIds, ['attachment-1-0']);
+    expect(client.drafts.attachments.unresolvedAttachmentIds, [
+      'attachment-1-0',
+    ]);
     expect(client.budget.used(ResourceKind.attachment), 1);
     transport.removeSucceeds = true;
-    await client.attachments.retryCleanup();
-    expect(client.attachments.unresolvedAttachmentIds, isEmpty);
+    await client.drafts.attachments.retryCleanup();
+    expect(client.drafts.attachments.unresolvedAttachmentIds, isEmpty);
     expect(client.budget.used(ResourceKind.attachment), 0);
     await _close(client, transport);
   });
@@ -1213,33 +1652,33 @@ void main() {
   test('closed actual attachment owner retries cleanup without reopening admissions', () async {
     final transport = _DraftTransport();
     var staged = 0;
-    final client = _client(
+    final client = await _client(
       transport,
       stage: (_) async {
         staged += 1;
         return '/unexpected-staging.png';
       },
     );
-    client.session('thread').applySnapshot(_workspace());
-    final owner = client.composer('thread');
+    await client.conversations.session('thread').deliverWorkspace(_workspace());
+    final owner = client.drafts.composer('thread');
     await owner.addLocalAttachments(['/payload.bin']);
     transport.removeSucceeds = false;
     await owner.discard();
-    final closing = client.attachments.close();
+    final closing = client.drafts.attachments.close();
     await expectLater(closing, throwsA(isA<AttachmentCleanupUnresolved>()));
-    expect(identical(closing, client.attachments.close()), isTrue);
+    expect(identical(closing, client.drafts.attachments.close()), isTrue);
     expect(client.budget.used(ResourceKind.attachment), 1);
 
     transport.removeSucceeds = true;
-    await client.attachments.retryCleanup();
-    expect(client.attachments.unresolvedAttachmentIds, isEmpty);
+    await client.drafts.attachments.retryCleanup();
+    expect(client.drafts.attachments.unresolvedAttachmentIds, isEmpty);
     expect(client.budget.used(ResourceKind.attachment), 0);
     await owner.addLocalAttachments(['/forbidden.bin']);
     await owner.addClipboardImage(Uint8List.fromList([1, 2, 3]));
     expect(transport.admissionCalls, 1);
     expect(staged, 0);
     expect(
-      identical(closing, client.attachments.close()),
+      identical(closing, client.drafts.attachments.close()),
       isTrue,
       reason: 'Explicit cleanup does not rewrite the original close result',
     );
@@ -1251,21 +1690,21 @@ void main() {
     () async {
       final transport = _DraftTransport();
       var staged = 0;
-      final client = _client(
+      final client = await _client(
         transport,
         stage: (_) async {
           staged += 1;
           return '/unexpected-staging.png';
         },
       );
-      final session = client.session('thread');
-      session.applySnapshot(_workspace());
-      final owner = client.composer('thread');
+      final session = client.conversations.session('thread');
+      await session.deliverWorkspace(_workspace());
+      final owner = client.drafts.composer('thread');
       owner.updateDraft('accepted during exit');
       await owner.addLocalAttachments(['/payload.bin']);
       final submission = owner.submit();
       final input = await transport.promptEntered.future;
-      client.attachments.sealAdmissions();
+      await client.drafts.attachments.close();
       await owner.addLocalAttachments(['/forbidden.bin']);
       await owner.addClipboardImage(Uint8List.fromList([1, 2, 3]));
       expect(transport.admissionCalls, 1);
@@ -1276,7 +1715,7 @@ void main() {
         reason: 'The pending operation still owns its admitted attachment',
       );
 
-      session.applySnapshot(
+      await session.deliverWorkspace(
         _workspace(
           revision: 2,
           turn: StudioTurnView(
@@ -1315,7 +1754,7 @@ void main() {
     final staged = Completer<String?>();
     final cleanupEntered = Completer<String>();
     final cleaned = Completer<void>();
-    final client = _client(
+    final client = await _client(
       transport,
       stage: (_) {
         stageEntered.complete();
@@ -1326,23 +1765,24 @@ void main() {
         return cleaned.future;
       },
     );
-    final admission = client.attachments.addNewThreadClipboard(
+    final admission = client.drafts.attachments.addNewThreadClipboard(
       projectId: _project.id,
       mode: ThreadModeId.simple,
       pngBytes: Uint8List.fromList([1, 2, 3]),
     );
     addTearDown(() async {
-      client.attachments.sealAdmissions();
+      final attachmentClosing = client.drafts.attachments.close();
       if (!staged.isCompleted) staged.complete('/clipboard-staging.png');
       if (!cleaned.isCompleted) cleaned.complete();
       await admission;
+      await attachmentClosing;
       await client.close();
       await client.retryCleanup();
     });
     await stageEntered.future;
     expect(client.budget.used(ResourceKind.attachment), 1);
-    expect(client.attachments.unresolvedAttachmentIds, isEmpty);
-    expect(client.attachments.unresolvedStagingPaths, isEmpty);
+    expect(client.drafts.attachments.unresolvedAttachmentIds, isEmpty);
+    expect(client.drafts.attachments.unresolvedStagingPaths, isEmpty);
 
     final pastDeadline = DateTime.fromMillisecondsSinceEpoch(0, isUtc: true);
     final closing = client.close(deadline: pastDeadline);
@@ -1350,7 +1790,7 @@ void main() {
     expect(firstReport.complete, isFalse);
     expect(
       firstReport.unresolved.map((entry) => entry.owner),
-      contains('attachments'),
+      contains('drafts'),
     );
     expect(staged.isCompleted, isFalse);
 
@@ -1362,10 +1802,10 @@ void main() {
     expect(pendingStageReport.complete, isFalse);
     expect(
       pendingStageReport.unresolved.map((entry) => entry.owner),
-      contains('attachments'),
+      contains('drafts'),
     );
-    expect(client.attachments.unresolvedAttachmentIds, isEmpty);
-    expect(client.attachments.unresolvedStagingPaths, isEmpty);
+    expect(client.drafts.attachments.unresolvedAttachmentIds, isEmpty);
+    expect(client.drafts.attachments.unresolvedStagingPaths, isEmpty);
     expect(client.budget.used(ResourceKind.attachment), 1);
     expect(identical(closing, client.close(deadline: pastDeadline)), isTrue);
 
@@ -1382,7 +1822,7 @@ void main() {
     expect(pendingCleanupReport.complete, isFalse);
     expect(
       pendingCleanupReport.unresolved.map((entry) => entry.owner),
-      contains('attachments'),
+      contains('drafts'),
     );
     expect(
       client.budget.used(ResourceKind.attachment),
@@ -1410,7 +1850,7 @@ void main() {
       final staged = Completer<String?>();
       final cleanupStarted = Completer<String>();
       final cleaned = Completer<void>();
-      final client = _client(
+      final client = await _client(
         transport,
         stage: (_) => staged.future,
         cleanup: (path) {
@@ -1418,13 +1858,13 @@ void main() {
           return cleaned.future;
         },
       );
-      final admission = client.attachments.addNewThreadClipboard(
+      final admission = client.drafts.attachments.addNewThreadClipboard(
         projectId: _project.id,
         mode: ThreadModeId.simple,
         pngBytes: Uint8List.fromList([1, 2, 3]),
       );
       var closed = false;
-      final closing = client.attachments.close().then((_) {
+      final closing = client.drafts.attachments.close().then((_) {
         closed = true;
       });
       expect(closed, isFalse);
@@ -1446,19 +1886,19 @@ void main() {
   test('clipboard staging cleanup failure remains owned through close and explicit retry', () async {
     final transport = _DraftTransport();
     var cleanupSucceeds = false;
-    final client = _client(
+    final client = await _client(
       transport,
       stage: (_) async => '/clipboard-staging.png',
       cleanup: (path) async {
         if (!cleanupSucceeds) throw StateError('staging file is still in use');
       },
     );
-    await client.attachments.addNewThreadClipboard(
+    await client.drafts.attachments.addNewThreadClipboard(
       projectId: _project.id,
       mode: ThreadModeId.simple,
       pngBytes: Uint8List.fromList([1, 2, 3]),
     );
-    expect(client.attachments.unresolvedStagingPaths, [
+    expect(client.drafts.attachments.unresolvedStagingPaths, [
       '/clipboard-staging.png',
     ]);
     expect(
@@ -1466,24 +1906,24 @@ void main() {
       2,
       reason: 'Native draft and staging cleanup are distinct owned resources',
     );
-    await client.attachments.discardProject(_project.id);
+    await client.drafts.attachments.discardProject(_project.id);
     expect(client.budget.used(ResourceKind.attachment), 1);
     await expectLater(
-      client.attachments.close(),
+      client.drafts.attachments.close(),
       throwsA(isA<AttachmentCleanupUnresolved>()),
     );
     cleanupSucceeds = true;
-    await client.attachments.retryCleanup();
-    expect(client.attachments.unresolvedStagingPaths, isEmpty);
+    await client.drafts.attachments.retryCleanup();
+    expect(client.drafts.attachments.unresolvedStagingPaths, isEmpty);
     expect(client.budget.used(ResourceKind.attachment), 0);
     await client.close();
   });
 
   test('a child target rejection stays typed, keeps the draft and never becomes unknown', () async {
     final transport = _DraftTransport();
-    final client = _client(transport);
-    client.session('thread').applySnapshot(_workspace());
-    final owner = client.composer('thread');
+    final client = await _client(transport);
+    await client.conversations.session('thread').deliverWorkspace(_workspace());
+    final owner = client.drafts.composer('thread');
     owner.updateDraft('继续这个子任务');
     await owner.addLocalAttachments(['/child.bin']);
     final attachmentIds = owner.state.attachments

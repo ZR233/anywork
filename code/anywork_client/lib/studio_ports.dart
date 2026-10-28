@@ -3,16 +3,14 @@ import 'dart:typed_data';
 
 import 'models.dart';
 import 'transport_ports.dart';
-import 'src/studio/thread_frames.dart';
 import 'src/studio/bootstrap.dart';
 
 export 'src/studio/thread_frames.dart';
-export 'src/studio/timeline_contract.dart';
+export 'src/conversation/domain/conversation_models.dart';
 export 'src/studio/bootstrap.dart';
 
 abstract interface class RuntimeTransport {
   Stream<ProductTopicFrame> subscribeProductTopic(ProductTopic topic);
-  Stream<ThreadStreamFrame> subscribeThread(String threadId);
 }
 
 abstract interface class AttachmentTransport {
@@ -117,7 +115,7 @@ abstract class StudioTransport
         RuntimeTransport,
         AttachmentTransport,
         BootstrapTransport,
-        TimelineTransport,
+        ConversationTransport,
         CommandTransport,
         ModeEditorTransport {
   /// Exit admission belongs to this application transport instance.
@@ -246,7 +244,6 @@ abstract class StudioTransport
   /// 只重建该 topic（cancel 后重新订阅、以新 Baseline 首帧恢复），不做全量重读。
   Stream<ProductTopicFrame> subscribeProductTopic(ProductTopic topic);
 
-  Stream<ThreadStreamFrame> subscribeThread(String threadId);
   Stream<StudioShutdownProgress> subscribeShutdownProgress();
 
   /// 按活动身份按需读取当前活动的完整内容（reasoning / 输出正文 / 工具参数与输出）。

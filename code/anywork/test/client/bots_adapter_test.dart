@@ -164,8 +164,10 @@ void main() {
         ),
       );
       await graph.client.bootstrap();
-      await graph.client.directoryCommands.selectThread('thread-main');
-      expect(graph.client.activeSession, isNotNull);
+      await (graph..setConversationPageVisible(true)).client.directoryCommands
+          .selectThread('thread-main');
+      final session = graph.client.conversations.existingSession('thread-main');
+      expect(session, isNotNull);
       final container = ProviderContainer(
         overrides: [appGraphProvider.overrideWithValue(graph)],
       );
@@ -174,8 +176,11 @@ void main() {
         BridgeSettingsScopeKind.bots,
         null,
       );
-      expect(graph.client.activeSession, isNotNull);
-      expect(graph.client.sessionState('thread-main'), isNotNull);
+      expect(
+        graph.client.conversations.existingSession('thread-main'),
+        same(session),
+      );
+      expect(graph.client.conversations.sessionState('thread-main'), isNotNull);
     },
   );
 }

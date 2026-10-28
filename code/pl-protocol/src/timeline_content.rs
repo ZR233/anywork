@@ -3,14 +3,14 @@
 //! 这里没有窗口、焦点、方向翻页或“展开整条”的操作回执。三个入口分别对应 core 的三条能力：
 //! 一页升序预览、一条有界尾部连接（基线 + 连续补丁／显式重同步）、一段按字段与版本绑定的详情块。
 //!
-//! [`TimelineItem`] 复用封闭 typed 的 canonical [`ThreadItem`] 形状来表达**预览值**：它不是完整原文
-//! 入口，动态正文按 [`ThreadContentField`] 的身份与完整字节数记录在 [`TimelineDetailRef`] 中。工具
+//! [`TimelineItem`] 使用独立描述与带身份的字段表达预览值，不重建持久化条目。工具
 //! output artifacts、原始记录正文和问答正文都是内容字段，不允许藏进静态元数据绕过预算。
 
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use crate::ThreadItem;
+mod descriptor;
+pub use descriptor::*;
 
 /// 每页默认条目数。
 pub const TIMELINE_PAGE_ITEMS: usize = 32;
@@ -25,8 +25,8 @@ const DETAIL_CURSOR_PREFIX: &str = "tld1.";
 
 /// 条目的执行终态事实，与保存水位 `saved` 严格独立。
 ///
-/// 生产者不再推进该身份的内容时为 `Terminal`；它与 `saved`（writer 已确认该 revision 落盘）互不
-/// 推导，因此“已终态但未落盘”与“已落盘但仍在流式”都能如实表达。
+/// `Terminal` 表示执行终态，允许后续可靠内容修订及 Append；它与内容 revision、订阅版本、
+/// `saved`（writer 已确认该 revision 落盘）互不推导。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum TimelineLifecycle {
@@ -156,22 +156,51 @@ pub struct TimelineDetailRef {
 
 /// 一条时间线条目的预览值。
 ///
-/// `preview` 是 canonical 条目形状的有界预览：身份、顺序、静态度量如实保留，动态正文可能被省略。
-/// 需要完整正文时按 [`TimelineDetailRef`] 走详情读取，不能把预览当原文。
+/// 身份、描述与正文分离；完整性、省略量与详情引用从当前字段及 revision 派生，不驻留冗余副本。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TimelineItem {
-    pub preview: ThreadItem,
+    pub header: TimelineItemHeader,
+    pub revision: u64,
+    pub descriptor: TimelineDescriptor,
     /// 只读来源语义，不是持久化字段或 GUI 分组结果。
     pub source: TimelineItemSource,
     pub saved: bool,
     pub lifecycle: TimelineLifecycle,
-    /// 预览省略的正文总字节数；零表示所有字段都是完整正文。
-    #[serde(default)]
-    pub omitted_bytes: u64,
-    /// 逐字段的详情引用。
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub details: Vec<TimelineDetailRef>,
+    pub fields: Vec<TimelineFieldPreview>,
+}
+
+/// 实际预览长度直接由 `text` 的 UTF-8 字节长度取得。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TimelineFieldPreview {
+    pub field: ThreadContentField,
+    pub text: String,
+    pub total_bytes: u64,
+}
+
+impl TimelineFieldPreview {
+    pub fn preview_bytes(&self) -> u64 {
+        self.text.len() as u64
+    }
+}
+
+impl TimelineItem {
+    /// 按当前修订派生详情引用，不缓存另一份字段长度或版本。
+    pub fn details(&self) -> impl Iterator<Item = TimelineDetailRef> + '_ {
+        self.fields.iter().map(|field| TimelineDetailRef {
+            field: field.field,
+            revision: self.revision,
+            total_bytes: field.total_bytes,
+            preview_bytes: field.preview_bytes(),
+        })
+    }
+
+    pub fn omitted_bytes(&self) -> u64 {
+        self.fields.iter().fold(0, |total: u64, field| {
+            total.saturating_add(field.total_bytes.saturating_sub(field.preview_bytes()))
+        })
+    }
 }
 
 /// 原始条目的来源；展示端不解析内部身份或本地化提示文案。
@@ -298,13 +327,13 @@ pub enum TimelineChange {
         item_id: String,
         expected_revision: u64,
         revision: u64,
-        /// 条目级省略量：全部字段完整长度与本次预览字节数之差的合计。
-        omitted_bytes: u64,
         saved: bool,
         lifecycle: TimelineLifecycle,
-        /// 静态结构或状态迁移时携带不含动态正文的最新条目骨架。
+        /// 元数据改变时携带当前头部与描述，不传输持久化正文外壳。
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        item_shell: Option<Box<ThreadItem>>,
+        header: Option<TimelineItemHeader>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        descriptor: Option<Box<TimelineDescriptor>>,
         fields: Vec<TimelineFieldUpdate>,
     },
     /// 真实删除：该身份不再存在。预览缓存退出不是删除。

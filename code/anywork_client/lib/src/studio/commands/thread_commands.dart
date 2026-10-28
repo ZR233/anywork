@@ -1,3 +1,6 @@
+import '../../../conversation.dart';
+import '../../../drafts_ports.dart';
+
 import 'dart:async';
 
 import '../../../models.dart';
@@ -12,22 +15,27 @@ import '../../../anywork_client.dart'
         Observation,
         ResourceKind,
         ResourcePermit,
-        LatestValue;
+        ValueObservation;
 import '../anywork_client.dart';
 import '../agent_directory_queries.dart';
 import '../stores/child_interaction_store.dart';
 import '../stores/domain_sync.dart';
 import '../stores/project_store.dart';
-import '../thread_session_state.dart';
 import 'command_lane.dart';
 
 int _wallClockMs() => DateTime.now().millisecondsSinceEpoch;
 
-class ThreadCommands extends ReadModel<ThreadCommandBoard> {
-  ThreadCommands(this._client, {int Function()? nowMs})
-    : _nowMs = nowMs ?? _wallClockMs,
-      super(const ThreadCommandBoard());
+class ThreadCommands extends ReadModel<ThreadCommandBoard>
+    implements DraftSubmissionCommands {
+  ThreadCommands(
+    this._client, {
+    required ChildInteractionStore childInteractions,
+    int Function()? nowMs,
+  }) : _childInteractions = childInteractions,
+       _nowMs = nowMs ?? _wallClockMs,
+       super(const ThreadCommandBoard());
   final AnyworkClient _client;
+  final ChildInteractionStore _childInteractions;
 
   /// 命令登记时间来源；界面用自己的墙钟比较，因此这里使用 Unix 毫秒。
   final int Function() _nowMs;
@@ -123,18 +131,16 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
     );
   }
 
-  Future<void> setThreadMode(ThreadModeId mode) {
+  Future<void> setThreadMode(ThreadModeId mode, {required String threadId}) {
     _ensureOpen();
-    // 点击时冻结目标：排队期间切换会话不改变命令目标。
-    final threadId = _client.selection.state.selectedThreadId;
-    if (threadId == null) return Future<void>.value();
+    // 调用方传入渲染时冻结的目标，不重新读取全局选择。
     final key = 'mode:$threadId';
     final operation = _client.mutations.begin(target: key);
     _begin(key, label: mode.id);
     _watchObservation(operation, () => _clear(key));
     return _lane.enqueue(() async {
       final thread = _directoryThread(threadId);
-      final runtime = _client.session(threadId).state.runtime;
+      final runtime = _client.conversations.session(threadId).state.runtime;
       if (thread == null ||
           !thread.isRoot ||
           thread.status != ThreadStatusView.idle ||
@@ -204,7 +210,7 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
     _ensureOpen();
     final key = 'interaction:$threadId';
     final operation = _client.mutations.begin(target: key);
-    final displayed = _client
+    final displayed = _client.conversations
         .session(threadId)
         .state
         .interactions
@@ -228,12 +234,12 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
       rethrow;
     }
     return _lane.enqueue(() async {
-      final active = [..._client.session(threadId).state.interactions]
-        ..sort(
-          (left, right) =>
-              interactionPriority(left.kind)
-                  .compareTo(interactionPriority(right.kind)),
-        );
+      final active =
+          [..._client.conversations.session(threadId).state.interactions]..sort(
+            (left, right) =>
+                interactionPriority(left.kind)
+                    .compareTo(interactionPriority(right.kind)),
+          );
       if (turnId == null ||
           active.firstOrNull?.id != interactionId ||
           active.firstOrNull?.turnId != turnId) {
@@ -368,7 +374,11 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
         requireCurrentCanonical: false,
       );
     }
-    final execution = _client.session(threadId).state.runtime?.execution;
+    final execution = _client.conversations
+        .session(threadId)
+        .state
+        .runtime
+        ?.execution;
     if (execution == null) {
       return Future<ThreadStopOutcome>.value(
         StopNoExecution(threadId: threadId),
@@ -511,7 +521,7 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
       } else {
         _watchPredicate(
           operation,
-          _client.session(threadId).source,
+          _client.conversations.session(threadId).source,
           (state) =>
               state.hasSnapshot && state.runtime?.execution?.id != executionId,
           () => _clear(key),
@@ -529,7 +539,11 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
       final current = requireCurrentCanonical
           ? (fromDirectory
                 ? _agentEntry(threadId)?.execution
-                : _client.session(threadId).state.runtime?.execution)
+                : _client.conversations
+                      .session(threadId)
+                      .state
+                      .runtime
+                      ?.execution)
           : null;
       if (requireCurrentCanonical &&
           (current == null || current.id != executionId)) {
@@ -642,7 +656,7 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
     try {
       _watchPredicate(
         operation,
-        _client.session(threadId).source,
+        _client.conversations.session(threadId).source,
         (state) =>
             state.hasSnapshot &&
             (state.runtime?.execution != null ||
@@ -666,7 +680,15 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
             !reply.receipt.requiresIdentityObservation) {
           throw StateError('Continue receipt did not match the stable target');
         }
-        operation.accept(reply.receipt.toCommitReceipt());
+        try {
+          operation.accept(reply.receipt.toCommitReceipt());
+        } finally {
+          // Synchronous observation may clear this command or admit a newer
+          // intent. A recorded receipt survives later synchronization failure.
+          if (_isLatest(operation) && operation.state.value.receipt != null) {
+            _markAccepted(key);
+          }
+        }
         return reply;
       } catch (error) {
         _failOperation(operation, error);
@@ -696,8 +718,11 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
   /// 该会话当前继续点的规范投影；未打开或没有未完成工作时为空。
   ///
   /// 只读访问器：不激活会话、不新建操作，也不在本地推断继续资格。
-  ContinuationView? continuation(String threadId) =>
-      _client.existingSession(threadId)?.state.runtime?.continuation;
+  ContinuationView? continuation(String threadId) => _client.conversations
+      .existingSession(threadId)
+      ?.state
+      .runtime
+      ?.continuation;
 
   /// 读取主会话可见的子任务待决交互只读投影。
   ///
@@ -712,10 +737,15 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
         StateError('Thread access is blocked by recovery'),
       );
     }
+    final read = _childInteractions.beginRead();
     return _lane.run(() async {
-      final sequence = _client.childInteractions.beginRead();
       final items = await _api.readChildInteractions(hostThreadId);
-      _client.childInteractions.apply(hostThreadId, items, sequence: sequence);
+      _childInteractions.apply(
+        hostThreadId,
+        items,
+        sequence: read.sequence,
+        readDisplayGeneration: read.displayGeneration,
+      );
       return items;
     });
   }
@@ -724,7 +754,8 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
   ///
   /// 宿主身份固定为主会话，原交互身份与版本原样透传；决议结果落在原交互所属的子会话。
   /// 子会话侧没有等价入口，这里也拒绝把子会话当作宿主。
-  Future<void> resolveChildInteraction(
+  /// 合法回执受理后返回本次真实操作；调用方观察其状态，不以回调成功推断决议已生效。
+  Future<OperationHandle> resolveChildInteraction(
     String hostThreadId,
     ChildInteractionSummary summary,
     InteractionResolutionCommand resolution,
@@ -740,7 +771,7 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
         correlationId: 'client-child-interaction-host',
         reason: StudioFailureReason.interactionNotHosted,
       );
-      return Future<void>.error(failure);
+      return Future<OperationHandle>.error(failure);
     }
     final key = 'interaction:$hostThreadId';
     final operation = _client.mutations.begin(target: key);
@@ -760,7 +791,7 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
     } catch (error) {
       operation.reject(error);
       if (_isLatest(operation)) _fail(key, summary.interactionId, error);
-      return Future<void>.error(error);
+      return Future<OperationHandle>.error(error);
     }
     return _lane.enqueue(() async {
       try {
@@ -778,7 +809,17 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
             'Child interaction receipt did not match the stable target',
           );
         }
-        operation.accept(response.receipt.toCommitReceipt());
+        try {
+          operation.accept(response.receipt.toCommitReceipt());
+        } finally {
+          // Acceptance can synchronously observe this command or admit a newer
+          // intent. Keep a recorded receipt even if later synchronization fails,
+          // but never recreate a cleared command or mark the newer intent.
+          if (_isLatest(operation) && operation.state.value.receipt != null) {
+            _markAccepted(key);
+          }
+        }
+        return operation;
       } catch (error) {
         _failOperation(operation, error);
         if (_isLatest(operation)) _fail(key, summary.interactionId, error);
@@ -850,7 +891,9 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
         final result = response.result;
         if (!_client.isClosed) {
           for (final id in result.removedThreadIds) {
-            _client.releaseSession(id);
+            if (_client.selection.state.selectedThreadId == id) {
+              _client.conversations.setVisibleThread(null);
+            }
           }
           final selected = _client.selection.state.selectedThreadId;
           if (selected != null && result.removedThreadIds.contains(selected)) {
@@ -954,7 +997,7 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
     String? effort,
   }) async {
     _client.settingsWrites.requireOwner(owner);
-    final session = _client.session(threadId).state;
+    final session = _client.conversations.session(threadId).state;
     final route = session.runtime?.modelRoute;
     final target = _findModel(accountId, modelId);
     if (!session.hasSnapshot || route == null || target == null) {
@@ -986,7 +1029,7 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
     _client.settingsWrites.requireOwner(owner);
     if (settings == null || !!_client.isClosed) return false;
     try {
-      await _client.session(threadId).resyncRuntime();
+      await _client.conversations.session(threadId).resyncRuntime();
     } catch (_) {
       _client.settingsWrites.requireOwner(owner);
       // Only a fresh owner baseline permits another CAS attempt. Observation
@@ -1250,7 +1293,7 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
   ) {
     _watchPredicate<ThreadSessionState>(
       operation,
-      _client.session(threadId).source,
+      _client.conversations.session(threadId).source,
       predicate,
       onObserved,
     );
@@ -1263,7 +1306,7 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
   /// 是同一同步事务，帧先到和回执先到都不漏确认。
   void _watchPredicate<S>(
     OperationHandle operation,
-    LatestValue<S> source,
+    ValueObservation<S> source,
     bool Function(S) predicate,
     void Function() onObserved,
   ) {

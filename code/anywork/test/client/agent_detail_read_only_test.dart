@@ -1,6 +1,6 @@
 import 'package:anywork/src/app/app_graph.dart';
 import 'package:anywork/src/app/theme/material3_theme.dart';
-import 'package:anywork/src/features/interaction/composer_dock.dart';
+import 'package:anywork/src/features/conversation/composer/connectors/composer_dock_connector.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
 import 'package:anywork_client/studio_client.dart';
@@ -50,21 +50,23 @@ final class _Fixture {
 
   final AppGraph graph;
 
-  StudioThreadSession get child => graph.client.session(_childId);
+  ConversationSession get child => graph.client.conversations.session(_childId);
 
-  void publishInteraction() {
+  Future<void> publishInteraction() async {
     final workspace = child.state.workspace!;
-    child.applySnapshot(workspace.copyWith(interactions: const [_approval]));
+    await (graph.client.transport as RecordingDemoTransport).publishWorkspace(
+      workspace.copyWith(interactions: const [_approval]),
+    );
   }
 
   /// 只替换 canonical 运行时里的执行身份与继续点。
-  void publishRuntime({
+  Future<void> publishRuntime({
     Object? execution = _unset,
     Object? continuation = _unset,
-  }) {
+  }) async {
     final workspace = child.state.workspace!;
     final runtime = workspace.runtime;
-    child.applySnapshot(
+    await (graph.client.transport as RecordingDemoTransport).publishWorkspace(
       workspace.copyWith(
         runtime: runtime.copyWith(
           execution: identical(execution, _unset)
@@ -96,7 +98,8 @@ Future<_Fixture> _fixture(WidgetTester tester) async {
   await pumpClientFuture(tester, graph.client.bootstrap(), 'child bootstrap');
   await pumpClientFuture(
     tester,
-    graph.client.directoryCommands.selectThread('thread-main'),
+    (graph..setConversationPageVisible(true)).client.directoryCommands
+        .selectThread('thread-main'),
     'select root thread',
   );
   // 子成员身份来自 canonical 智能体目录；选择详情不建立它的执行许可。
@@ -124,12 +127,13 @@ Future<_Fixture> _fixture(WidgetTester tester) async {
   // 用户对子会话只有列表停止；打开详情只是查看，不是继续执行。
   await pumpClientFuture(
     tester,
-    graph.client.directoryCommands.selectAgentThread(_childId),
+    (graph..setConversationPageVisible(true)).client.directoryCommands
+        .selectAgentThread(_childId),
     'open child detail',
   );
   await pumpClientUntil(
     tester,
-    () => graph.client.session(_childId).state.hasSnapshot,
+    () => graph.client.conversations.session(_childId).state.hasSnapshot,
     'child snapshot',
   );
   return _Fixture(graph);
@@ -148,7 +152,7 @@ Future<void> _pump(WidgetTester tester, _Fixture fixture) async {
           body: SizedBox(
             width: 900,
             height: 500,
-            child: ComposerDock(threadId: _childId),
+            child: ComposerDockConnector(threadId: _childId),
           ),
         ),
       ),
@@ -186,13 +190,13 @@ void main() {
     expect(find.byKey(const ValueKey('agent-readonly-waiting')), findsNothing);
 
     // 执行中的成员只显示真实阶段，不能同时说「等待调度」。
-    fixture.publishRuntime(execution: _running);
+    await fixture.publishRuntime(execution: _running);
     await tester.pump();
     expect(find.byKey(const ValueKey('agent-readonly-waiting')), findsNothing);
     expect(find.byKey(StudioDriverKeys.agentReadOnlyPanel), findsOneWidget);
 
     // canonical 确实有未认领继续点且没有当前执行时才说明等待调度。
-    fixture.publishRuntime(execution: null, continuation: _continuation);
+    await fixture.publishRuntime(execution: null, continuation: _continuation);
     await tester.pump();
     expect(
       find.text('Waiting for the main agent to schedule this member.'),
@@ -214,7 +218,7 @@ void main() {
     expect(find.byType(TextField), findsNothing);
 
     // 待决交互只是同一事实的只读投影：不出现答题、审批或决议控件。
-    fixture.publishInteraction();
+    await fixture.publishInteraction();
     await tester.pump();
     expect(
       find.byKey(const ValueKey('agent-readonly-pending')),

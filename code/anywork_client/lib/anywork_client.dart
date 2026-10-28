@@ -2,15 +2,13 @@
 library;
 
 export 'src/application/studio_client.dart';
-export 'src/chat/timeline_channel.dart';
-export 'src/chat/chat_models.dart';
-export 'src/studio/timeline_contract.dart';
 export 'src/commands/mutation_board.dart';
 export 'src/contracts/stamps.dart';
-export 'src/drafts/draft_store.dart';
 export 'src/lifecycle/resource_budget.dart';
 export 'src/observation/latest_value.dart';
 export 'src/observation/read_model.dart';
 export 'transport_ports.dart';
 
 export 'src/studio/remote_actions.dart';
+export 'conversation.dart';
+export 'drafts.dart';

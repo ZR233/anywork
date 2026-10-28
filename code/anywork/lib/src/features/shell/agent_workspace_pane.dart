@@ -206,7 +206,10 @@ class _AgentWorkspacePaneState extends ConsumerState<AgentWorkspacePane> {
         }
         final splitPlan =
             planOpen && !fullWidthReading && presentedPlan != null;
-        final timelineDisplay = ref.watch(timelineDisplayStateProvider);
+        final timelineDisplay = ref
+            .watch(timelineViewModelProvider(threadId))
+            .asData
+            ?.value;
         final readingArea = _buildReadingArea(
           threadId: threadId,
           pendingPlan: pendingPlan,
@@ -358,7 +361,7 @@ class _AgentWorkspacePaneState extends ConsumerState<AgentWorkspacePane> {
   /// 并先标 reconnecting，避免失败条在新帧到达前一直盖住时间线。
   /// `selectThread` 对已选中会话只 `markOpened`，不能重开已关闭的流。
   void _retryThreadLoad(String threadId) {
-    ref.read(anyworkClientProvider).retrySession(threadId);
+    ref.read(anyworkClientProvider).conversations.session(threadId).refresh();
   }
 
   void _togglePlan(String threadId, String identity) {
@@ -416,7 +419,7 @@ class _AgentWorkspacePaneState extends ConsumerState<AgentWorkspacePane> {
     required bool fullWidth,
     required bool sideBySideFeasible,
   }) {
-    return PlanDetailPanel(
+    return PlanDetailConnector(
       identity: presentation.identity,
       markdown: presentation.markdown,
       awaitingConfirmation: presentation.pending,
@@ -852,7 +855,29 @@ class _StudioStartPage extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final projection = ref.watch(startPageComposerViewProvider);
+    final state = ref.watch(startPageComposerViewModelProvider);
+    final projection = state.asData?.value;
+    if (projection == null) {
+      return Scaffold(
+        key: StudioDriverKeys.startPage,
+        backgroundColor: context.colors.surface,
+        body: Center(
+          child: state.hasError
+              ? Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(state.error.toString()),
+                    TextButton(
+                      onPressed: () =>
+                          ref.invalidate(startPageComposerViewModelProvider),
+                      child: Text(context.l10n.sidebarRetry),
+                    ),
+                  ],
+                )
+              : const CircularProgressIndicator(),
+        ),
+      );
+    }
     final project = projection.project;
     final preparation = projection.preparation;
     return Scaffold(
@@ -907,7 +932,7 @@ class _StudioStartPage extends ConsumerWidget {
                           ),
                         ],
                         const SizedBox(height: 28),
-                        const StartPageComposerDock(),
+                        const StartPageComposerDockConnector(),
                       ],
                     ),
                   ),
@@ -936,7 +961,7 @@ class _AgentTimelineHost extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    return TimelineSessionConnector(
+    return TimelineConnector(
       threadId: threadId,
       planConfirmation: planConfirmation,
       planExpanded: planExpanded,

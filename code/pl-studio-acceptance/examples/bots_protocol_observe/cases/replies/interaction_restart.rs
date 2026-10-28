@@ -35,6 +35,7 @@ const MESSAGE_ID: &str = "om_restart_interact";
 const PROMPT: &str = "Bots restart interaction fixture: confirm the release wording";
 const Q1_ID: &str = "wording";
 const Q1_ANSWER: &str = "lightweight receipt";
+const Q1_OPERATION_ID: &str = "op-bots-restart-q1";
 const PLAN_MD: &str = "# Bots restart reply plan\n\n- Ask the operator for the wording once.\n- Confirm the plan in the local Studio app.\n- Send exactly one final confirmation reply.";
 const FINAL_TEXT: &str =
     "Bots restart final reply: lightweight receipt wording confirmed after plan approval.";
@@ -144,7 +145,7 @@ async fn interaction_restart_inner(
         .resolve_interaction(
             &q1.interaction_id,
             &ResolveInteractionRequest {
-                operation_id: "op-bots-restart-q1".into(),
+                operation_id: Q1_OPERATION_ID.into(),
                 // 宿主就是重建后观察到的会话本身；版本取重建快照里的当前版本。
                 host_thread_id: rebuilt_q1.scope.thread_id.clone(),
                 expected_revision: rebuilt_q1.revision,
@@ -354,7 +355,7 @@ impl ThreadWatch {
 }
 
 pub(crate) fn interaction_restart_model_steps() -> Vec<Step> {
-    let continuation = answers_json(&[(Q1_ID, Q1_ANSWER)]);
+    let continuation = answers_json(Q1_OPERATION_ID, &[(Q1_ID, Q1_ANSWER)]);
     vec![
         optional_title_step(0, PROMPT),
         Step::prompt(

@@ -97,6 +97,8 @@ impl Session {
     /// read awaits can be missed. The baseline itself is captured by
     /// [`Session::capture_latest_baseline`], i.e. by the same consistent read a resynchronization
     /// uses, so a first frame and a later resync can never disagree about the newest page.
+    /// The registered receiver stays owned by this future until the tail takes it; a failed or
+    /// cancelled baseline capture drops it and releases demand without spawning background work.
     ///
     /// # Errors
     /// The host's own typed storage and preview failures.

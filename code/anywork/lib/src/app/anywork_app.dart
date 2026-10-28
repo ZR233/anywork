@@ -8,6 +8,7 @@ import 'package:go_router/go_router.dart';
 import 'package:anywork_client/studio_client.dart';
 
 import '../features/settings/settings.dart';
+import '../features/settings/settings_bots_tab.dart';
 import '../features/settings/mode_editor/mode_editor_dialogs.dart';
 import '../features/settings/accounts/connectors/account_navigation.dart';
 import '../features/shell/studio_shell.dart';
@@ -16,6 +17,8 @@ import '../presentation/providers/studio_update_controller.dart';
 import '../l10n/app_localizations.dart';
 import '../l10n/studio_l10n.dart';
 import '../platform/error_log.dart';
+import '../shared/studio_routes.dart';
+import 'conversation_route_binding.dart';
 import 'studio_host_lifecycle.dart';
 import 'app_graph.dart';
 import 'studio_shutdown.dart';
@@ -34,22 +37,25 @@ class AnyworkApp extends ConsumerStatefulWidget {
 
 class _AnyworkAppState extends ConsumerState<AnyworkApp> {
   late final GoRouter _router;
+  late final AppGraph _graph;
+  late final ConversationRouteBinding _conversationRoutes;
 
   @override
   void initState() {
     super.initState();
-    unawaited(ref.read(appGraphProvider).initialize());
+    _graph = ref.read(appGraphProvider);
+    unawaited(_graph.initialize());
     _router = GoRouter(
       restorationScopeId: 'anywork-router',
       routes: [
         GoRoute(
           path: '/',
-          name: 'studio',
+          name: StudioRoutes.studio,
           builder: (context, state) => const StudioShell(),
           routes: [
             GoRoute(
               path: 'settings',
-              name: 'settings',
+              name: StudioRoutes.settings,
               onExit: (context, state) async {
                 if (!await confirmLeaveModeEditor(context, ref)) return false;
                 return context.mounted &&
@@ -60,14 +66,48 @@ class _AnyworkAppState extends ConsumerState<AnyworkApp> {
                 child: SettingsPage(),
               ),
             ),
+            GoRoute(
+              path: 'bots/:botId',
+              name: StudioRoutes.botDetails,
+              builder: (context, state) => BotDetailsPage(
+                key: ValueKey((state.pathParameters['botId'], null)),
+                botId: state.pathParameters['botId']!,
+              ),
+            ),
+            GoRoute(
+              path: 'bots/:botId/chats/:chatId/platform',
+              name: StudioRoutes.botPlatformTools,
+              builder: (context, state) => BotDetailsPage(
+                key: ValueKey((
+                  state.pathParameters['botId'],
+                  state.pathParameters['chatId'],
+                )),
+                botId: state.pathParameters['botId']!,
+                chatId: state.pathParameters['chatId']!,
+              ),
+            ),
+            GoRoute(
+              path: 'bots/:botId/chats/:chatId/threads/:threadId',
+              name: StudioRoutes.botConversation,
+              builder: (context, state) => BotChatPage(
+                botId: state.pathParameters['botId']!,
+                chatId: state.pathParameters['chatId']!,
+                threadId: state.pathParameters['threadId']!,
+                activation: _conversationRoutes.activation,
+                onRetry: _conversationRoutes.retry,
+              ),
+            ),
           ],
         ),
       ],
     );
+    _conversationRoutes = ConversationRouteBinding(_router, _graph);
   }
 
   @override
   void dispose() {
+    _conversationRoutes.close();
+    _graph.setConversationPageVisible(false);
     _router.dispose();
     super.dispose();
   }
@@ -121,6 +161,7 @@ class _StudioLifecycleCoordinatorState
   late final StudioTransport _api;
   late final StudioShutdownProgressState _shutdownProgress;
   late final StudioExitCoordinator _coordinator;
+  late final AppGraph _graph;
 
   @override
   void initState() {
@@ -130,6 +171,13 @@ class _StudioLifecycleCoordinatorState
     _api = ref.read(appGraphProvider).client.transport;
     _shutdownProgress = ref.read(studioShutdownProgressStateProvider.notifier);
     final graph = ref.read(appGraphProvider);
+    _graph = graph;
+    final lifecycle = WidgetsBinding.instance.lifecycleState;
+    graph.setHostVisible(
+      lifecycle != AppLifecycleState.hidden &&
+          lifecycle != AppLifecycleState.paused &&
+          lifecycle != AppLifecycleState.detached,
+    );
     _coordinator = StudioExitCoordinator(
       _api,
       // dispose 之后 overlay 与 account container 均已销毁：不再向已销毁的
@@ -156,6 +204,13 @@ class _StudioLifecycleCoordinatorState
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _graph.setHostVisible(true);
+    } else if (state == AppLifecycleState.hidden ||
+        state == AppLifecycleState.paused ||
+        state == AppLifecycleState.detached) {
+      _graph.setHostVisible(false);
+    }
     // 隐藏到托盘会进入 hidden/inactive，而不是 detached：只有真实 engine
     // detach 才进入退出协调器，隐藏不会取消正在运行的 Turn、工具或保存。
     if (state == AppLifecycleState.detached) {

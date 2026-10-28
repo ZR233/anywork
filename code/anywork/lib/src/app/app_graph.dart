@@ -86,6 +86,10 @@ class AppGraph {
     );
     client.updates.attach();
     timeline = TimelineSessionOwner(client: client);
+    final selection = client.selection.source.watchLatest((_) {
+      _syncVisibleConversation();
+    });
+    _selectionObservation = selection.observation;
   }
 
   factory AppGraph.production() => AppGraph(
@@ -137,7 +141,54 @@ class AppGraph {
   ModelsRepository get models => accountDomains.models;
   AccountUsageRepository get accountUsage => accountDomains.usage;
   AcpService get acp => accountDomains.acp;
+  Observation? _selectionObservation;
+  bool _conversationPageVisible = false;
+  String? _expectedConversationThreadId;
+  bool _hostVisible = true;
+  bool _closed = false;
+  String? _visibleThreadId;
   Future<CloseReport>? _closing;
+
+  /// Navigation, not a selected ID or a mounted offstage route, owns demand.
+  /// A resource-bound destination may restrict demand to its expected selection;
+  /// that restriction never supplies a second selection or opens another thread.
+  void setConversationPageVisible(bool visible, {String? expectedThreadId}) {
+    if (_closed ||
+        (_conversationPageVisible == visible &&
+            _expectedConversationThreadId == expectedThreadId)) {
+      return;
+    }
+    _conversationPageVisible = visible;
+    _expectedConversationThreadId = expectedThreadId;
+    _syncVisibleConversation();
+  }
+
+  /// Losing focus alone does not hide the conversation; minimizing does.
+  void setHostVisible(bool visible) {
+    if (_closed || _hostVisible == visible) return;
+    _hostVisible = visible;
+    _syncVisibleConversation();
+  }
+
+  void _syncVisibleConversation() {
+    if (_closed) return;
+    final selection = client.selection.state;
+    final target =
+        _conversationPageVisible &&
+            _hostVisible &&
+            !selection.needsOpen &&
+            (_expectedConversationThreadId == null ||
+                selection.selectedThreadId == _expectedConversationThreadId)
+        ? selection.selectedThreadId
+        : null;
+    if (_visibleThreadId == target) return;
+    _visibleThreadId = target;
+    // Revoke the old presentation before retiring the feed. A -> B -> A
+    // never gives a late callback permission to publish into the new lease.
+    timeline.select(null);
+    client.conversations.setVisibleThread(target);
+    if (target != null) timeline.select(target);
+  }
 
   Future<CloseReport> close({required DateTime deadline}) =>
       _closing ??= _close(deadline);
@@ -148,6 +199,9 @@ class AppGraph {
   /// 才允许 lease 销毁 controller 并观察 stock stream done。树仍借用 controller 时不会
   /// 提前 ACK，重复 close 得到同一个释放结果（design/26 §26.8）。
   Future<CloseReport> _close(DateTime deadline) async {
+    _closed = true;
+    _selectionObservation?.cancel();
+    _selectionObservation = null;
     final timelineClose = timeline.close(deadline: deadline);
     final clientClose = client.close(deadline: deadline);
     final statisticsClose = statisticsRepository.close(deadline: deadline);

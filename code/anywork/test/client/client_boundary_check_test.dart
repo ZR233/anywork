@@ -267,7 +267,7 @@ void observe(dynamic ref, dynamic source) {
   final observation = source.watchLatest((next) {});
   ref.onDispose(observation.cancel);
 }
-Object? existing(dynamic client, String id) => client.existingSession(id);
+Object? existing(dynamic client, String id) => client.conversations.existingSession(id);
 Object descriptor(String id) => new ThreadRuntimeTopic(id);
 ''',
         ),

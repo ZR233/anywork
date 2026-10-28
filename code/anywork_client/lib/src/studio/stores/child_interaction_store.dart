@@ -1,4 +1,4 @@
-import '../../../anywork_client.dart' show ReadModel;
+import '../../../anywork_client.dart' show ReadModel, ValueObservation;
 import '../../../models.dart';
 import '../../models/collection_equality.dart';
 
@@ -6,25 +6,49 @@ import '../../models/collection_equality.dart';
 ///
 /// 投影本身没有后端 revision：它由显式读取刷新，因此这里只维护「哪一次读取发布了
 /// 当前内容」的本地序号，最新意图胜出；迟到的读取不能覆盖更新的宿主或更新的结果。
-final class ChildInteractionStore extends ReadModel<ChildInteractionsState> {
+abstract interface class ChildInteractionsView {
+  ChildInteractionsState get state;
+  ValueObservation<ChildInteractionsState> get source;
+}
+
+final class ChildInteractionStore extends ReadModel<ChildInteractionsState>
+    implements ChildInteractionsView {
   ChildInteractionStore() : super(const ChildInteractionsState());
 
   int _sequence = 0;
 
-  /// 捕获一次读取的意图序号；结果必须带上它才能发布。
-  int beginRead() => ++_sequence;
+  /// 只撤销展示资格；导航不是 canonical 查询结果或决议观察事实。
+  void setVisibleHostThread(String? threadId) {
+    final current = state;
+    if (current.visibleHostThreadId == threadId) return;
+    state = ChildInteractionsState(
+      hostThreadId: current.hostThreadId,
+      items: current.items,
+      sequence: current.sequence,
+      loaded: current.loaded,
+      visibleHostThreadId: threadId,
+      displayGeneration: current.displayGeneration + 1,
+      readDisplayGeneration: current.readDisplayGeneration,
+    );
+  }
+
+  /// 在任何异步派发前捕获读取意图和展示代次。
+  ({int sequence, int displayGeneration}) beginRead() =>
+      (sequence: ++_sequence, displayGeneration: state.displayGeneration);
 
   /// 发布一次宿主会话的子交互投影。
   bool apply(
     String hostThreadId,
     List<ChildInteractionSummary> items, {
     required int sequence,
+    required int readDisplayGeneration,
   }) {
-    if (sequence < state.sequence) return false;
+    if (sequence != _sequence) return false;
     final List<ChildInteractionSummary> frozen = List.unmodifiable(items);
     if (state.loaded &&
         state.hostThreadId == hostThreadId &&
         state.sequence == sequence &&
+        state.readDisplayGeneration == readDisplayGeneration &&
         listEquals(state.items, frozen)) {
       return false;
     }
@@ -33,6 +57,9 @@ final class ChildInteractionStore extends ReadModel<ChildInteractionsState> {
       items: frozen,
       sequence: sequence,
       loaded: true,
+      visibleHostThreadId: state.visibleHostThreadId,
+      displayGeneration: state.displayGeneration,
+      readDisplayGeneration: readDisplayGeneration,
     );
     return true;
   }
@@ -45,6 +72,9 @@ final class ChildInteractionsState {
     this.items = const [],
     this.sequence = 0,
     this.loaded = false,
+    this.visibleHostThreadId,
+    this.displayGeneration = 0,
+    this.readDisplayGeneration,
   });
 
   /// 该投影属于哪个主会话；为空表示尚未读取。
@@ -52,6 +82,17 @@ final class ChildInteractionsState {
   final List<ChildInteractionSummary> items;
   final int sequence;
   final bool loaded;
+  final String? visibleHostThreadId;
+  final int displayGeneration;
+  final int? readDisplayGeneration;
+
+  /// 只有当前可见宿主、当前展示代次的真实查询结果才可呈现。
+  List<ChildInteractionSummary> get visibleItems =>
+      loaded &&
+          hostThreadId == visibleHostThreadId &&
+          readDisplayGeneration == displayGeneration
+      ? items
+      : const [];
 
   /// 一条子任务决议是否已经在原交互事实上生效。
   ///
@@ -79,9 +120,19 @@ final class ChildInteractionsState {
           hostThreadId == other.hostThreadId &&
           sequence == other.sequence &&
           loaded == other.loaded &&
+          visibleHostThreadId == other.visibleHostThreadId &&
+          displayGeneration == other.displayGeneration &&
+          readDisplayGeneration == other.readDisplayGeneration &&
           listEquals(items, other.items);
 
   @override
-  int get hashCode =>
-      Object.hash(hostThreadId, sequence, loaded, Object.hashAll(items));
+  int get hashCode => Object.hash(
+    hostThreadId,
+    sequence,
+    loaded,
+    visibleHostThreadId,
+    displayGeneration,
+    readDisplayGeneration,
+    Object.hashAll(items),
+  );
 }

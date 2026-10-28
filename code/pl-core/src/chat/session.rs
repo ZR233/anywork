@@ -9,6 +9,8 @@
 //! 2. 存储读取在锁外完成；
 //! 3. 提交前在同一次时间线临界区内把读取期间发布的新 revision、保存确认与终态事实合回候选；
 //! 4. 通知只是唤醒信号（最新值），不是内容事件日志：内容帧由订阅者相对自己的交付基线各算一次。
+//!    `send_replace` 在零接收者时仍保留轻量版本值，但不会交付通知或构建对外正文帧；权威事实、
+//!    有界日志与热预览照常维护，不能根据订阅需求跳过。
 
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
@@ -254,6 +256,17 @@ impl Session {
         WeakSession(Arc::downgrade(&self.0))
     }
 
+    /// Whether a tail observation is open or capturing its initial baseline.
+    ///
+    /// This is an instantaneous delivery-demand hint, not a synchronization boundary: another
+    /// observer may register or close immediately after it returns. It must never gate authoritative
+    /// facts, reliable history, previews or continuity-log maintenance, nor replace the registration
+    /// and consistent baseline hand-off in [`Session::subscribe_tail`]. A closed [`super::ChatTail`]
+    /// no longer contributes demand even if the object itself is retained.
+    pub fn has_subscribers(&self) -> bool {
+        self.0.changed.receiver_count() != 0
+    }
+
     /// Runs `read` under the timeline lock. The closure must not await or perform storage IO.
     pub(crate) fn with_timeline<R>(&self, read: impl FnOnce(&TimelineState) -> R) -> R {
         let state = self.lock_timeline();
@@ -278,8 +291,8 @@ impl Session {
     /// the preview cache), and never cleared by a save acknowledgement. It stays false while an
     /// acknowledged identity still runs (a background tool result keeps streaming). A producer uses
     /// it to decide whether a late speculative frame is new content or a stale update to a row
-    /// durable history owns: the position and body of a committed identity are final, so a preview
-    /// for it is ignored instead of replacing — and later releasing — committed content.
+    /// reliable history owns: speculative previews may no longer replace — and later release —
+    /// committed content. Later reliable terminal revisions remain legal.
     pub fn is_committed(&self, item_id: &str) -> bool {
         committed_identity(&self.lock_timeline(), item_id)
     }
@@ -471,9 +484,10 @@ impl Session {
             return Err(ChatError::Conflict(item.item_id));
         }
         // A speculative preview never reopens or overwrites an identity this session already holds as
-        // terminal: the committed body, its position and its terminal revision are final. That
-        // decision belongs to the two branches that already own it below — the resident row and the
-        // terminal marker — so a late preview keeps reporting the same typed conflict the public
+        // terminal: its order and terminal lifecycle are fixed, and only reliable terminal revisions
+        // may advance its committed body. That decision belongs to the two branches that already
+        // own it below — the resident row and the terminal marker — so a late preview keeps
+        // reporting the same typed conflict the public
         // contract has always reported, and, because it never replaces the committed row, the writer's
         // later preview release cannot erase that row either.
         if state

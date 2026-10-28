@@ -1,3 +1,7 @@
+import 'support/mapped_conversation_feed.dart';
+
+import 'package:anywork_client/conversation_ports.dart';
+
 import 'support/test_statistics_feed.dart';
 
 import 'package:anywork/src/presentation/providers/client_provider.dart';
@@ -12,8 +16,8 @@ import 'package:anywork/src/presentation/providers/account_domains.dart';
 import 'package:anywork/src/presentation/providers/selection_store.dart';
 import 'package:anywork/src/presentation/providers/settings_store.dart';
 import 'package:anywork/src/domain/models/studio_models.dart';
-import 'package:anywork/src/features/interaction/composer_dock.dart';
-import 'package:anywork/src/features/interaction/composer_view.dart';
+import 'package:anywork/src/features/conversation/composer/connectors/composer_dock_connector.dart';
+import 'package:anywork/src/features/conversation/composer/view_models/composer_view_model.dart';
 import 'package:anywork/src/presentation/providers/start_session_controller.dart';
 import 'package:anywork/src/features/status/session_selectors.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
@@ -35,13 +39,12 @@ import 'package:anywork_client/studio_client.dart'
         ThreadDirectoryPage,
         ThreadDirectoryTopic,
         ThreadDirectoryWindow,
-        ThreadRuntimeUpdate,
-        ThreadStreamFrame;
+        ThreadRuntimeUpdate;
 
 /// 用户可见症状的回归证据：主界面（起始页）的会话模式与思考强度选择器必须在不发生
 /// 任何页面跳转的情况下显示新值，菜单行的选中态也必须随同一事实移动。
 ///
-/// 起始页事实是 Client 持有的逻辑草稿，经 [startPageComposerViewProvider] 组合显示：
+/// 起始页事实是 Client 持有的逻辑草稿，经 [startPageComposerViewModelProvider] 组合显示：
 /// 选中即所见，不依赖设置页往返，也不把草稿写回 settings canonical。真实 Rust
 /// bridge/native 的语义另由 `cargo xtask manual-gui` 验收，不能由这里的 Demo 代替。
 void main() {
@@ -178,7 +181,7 @@ void main() {
     expect(find.text('任务'), findsOneWidget, reason: '选中的模式必须立即出现在触发器上');
     expect(find.text('简洁'), findsNothing, reason: '旧模式不得残留');
     expect(
-      container.read(startPageComposerViewProvider).mode,
+      container.read(startPageComposerViewModelProvider).requireValue.mode,
       ThreadModeId.task,
       reason: '触发器与起始页草稿是同一事实，不能停在本地副本',
     );
@@ -247,7 +250,9 @@ void main() {
   });
 
   testWidgets('切换模型后触发器与菜单选中态立即更新，无需页面往返', (tester) async {
-    final initial = container.read(startPageComposerViewProvider);
+    final initial = container
+        .read(startPageComposerViewModelProvider)
+        .requireValue;
     final route = initial.displayRoute(initial.mode);
     expect(route, isNotNull);
     final options = modelOptions(initial.accounts);
@@ -281,7 +286,8 @@ void main() {
     expect(find.text(next.displayName), findsOneWidget);
     expect(find.text(before), findsNothing);
     final after = container
-        .read(startPageComposerViewProvider)
+        .read(startPageComposerViewModelProvider)
+        .requireValue
         .displayRoute(initial.mode);
     expect(after?.accountId, next.accountId);
     expect(after?.modelId, next.modelId);
@@ -315,7 +321,7 @@ void main() {
       await container.pump();
     });
 
-    await tester.pumpWidget(harness(const StartPageComposerDock()));
+    await tester.pumpWidget(harness(const StartPageComposerDockConnector()));
     await tester.pumpAndSettle();
 
     final input = tester.widget<TextField>(
@@ -324,7 +330,9 @@ void main() {
     expect(input.enabled, isFalse, reason: '未打开项目不能提交新会话');
 
     final accounts = container.read(modelSelectionAccountsProvider);
-    final before = container.read(startPageComposerViewProvider);
+    final before = container
+        .read(startPageComposerViewModelProvider)
+        .requireValue;
     final routeBefore = before.displayRoute(before.mode)!;
     // 选一个与当前路由不同、且带有多个强度候选的模型：证明选择真的落到草稿上。
     final candidates = modelOptions(accounts)
@@ -353,7 +361,9 @@ void main() {
     await tester.tap(modelRow);
     await tester.pumpAndSettle();
 
-    final afterModel = container.read(startPageComposerViewProvider);
+    final afterModel = container
+        .read(startPageComposerViewModelProvider)
+        .requireValue;
     final modelRoute = afterModel.displayRoute(afterModel.mode)!;
     expect(modelRoute.accountId, next.accountId, reason: '草稿路由真的换了账号');
     expect(modelRoute.modelId, next.modelId, reason: '草稿路由真的换了模型');
@@ -381,7 +391,9 @@ void main() {
         find.byKey(StudioDriverKeys.reasoningEffortOption(nextEffort)),
       );
       await tester.pumpAndSettle();
-      final afterEffort = container.read(startPageComposerViewProvider);
+      final afterEffort = container
+          .read(startPageComposerViewModelProvider)
+          .requireValue;
       expect(
         afterEffort.displayRoute(afterEffort.mode)!.effort,
         nextEffort,
@@ -467,7 +479,7 @@ void main() {
   testWidgets('打开项目后原生输入框与工作区选择都更新新会话草稿', (tester) async {
     final projectId = container.read(selectionStoreProvider).selectedProjectId!;
 
-    await tester.pumpWidget(harness(const StartPageComposerDock()));
+    await tester.pumpWidget(harness(const StartPageComposerDockConnector()));
     await tester.pumpAndSettle();
 
     final input = find.byKey(StudioDriverKeys.composerInput);
@@ -510,7 +522,7 @@ void main() {
   testWidgets(
     'composer keeps Shift+Enter editing and official Enter submission',
     (tester) async {
-      await tester.pumpWidget(harness(const StartPageComposerDock()));
+      await tester.pumpWidget(harness(const StartPageComposerDockConnector()));
       await tester.pumpAndSettle();
 
       final input = find.byKey(StudioDriverKeys.composerInput);
@@ -524,7 +536,12 @@ void main() {
       await tester.pump();
 
       expect(
-        container.read(anyworkClientProvider).startDraft.state.submitting,
+        container
+            .read(anyworkClientProvider)
+            .drafts
+            .startDraft
+            .state
+            .submitting,
         isFalse,
         reason:
             'Shift+Enter must remain an editing action, not submit the draft',
@@ -557,7 +574,12 @@ void main() {
         reason: '插入后光标落在新行起点',
       );
       expect(
-        container.read(anyworkClientProvider).startDraft.state.submitting,
+        container
+            .read(anyworkClientProvider)
+            .drafts
+            .startDraft
+            .state
+            .submitting,
         isFalse,
         reason: '替换选区仍是编辑动作，不是提交',
       );
@@ -566,20 +588,34 @@ void main() {
 
       // The engine translates Enter into the field's text input action; sending
       // that action is the real Enter submission path shared with the button.
+      // 模拟提交后仍可见的会话宿主：创建前没有选中会话，不会提前产生 feed。
+      graph.setConversationPageVisible(true);
       await tester.testTextInput.receiveAction(TextInputAction.send);
       await tester.pump();
       expect(
-        container.read(anyworkClientProvider).startDraft.state.submitting,
+        container
+            .read(anyworkClientProvider)
+            .drafts
+            .startDraft
+            .state
+            .submitting,
         isTrue,
         reason:
             'an unmodified Enter must share the send button submission path',
       );
       await pumpClientFuture(
         tester,
-        graph.client.startDraft.source.waitFor((state) => !state.submitting),
+        graph.client.drafts.startDraft.source.waitFor(
+          (state) => !state.submitting,
+        ),
         'Enter submission terminal',
       );
       final createdThreadId = graph.client.selection.state.selectedThreadId!;
+      await pumpClientFuture(
+        tester,
+        graph.client.conversations.session(createdThreadId).content.ready,
+        'Enter submission observed through the visible conversation feed',
+      );
       final created = await pumpClientFuture(
         tester,
         graph.client.threadDirectory.source.waitFor(
@@ -627,14 +663,15 @@ void main() {
         overrides: [appGraphProvider.overrideWithValue(graph)],
       );
       await graph.client.bootstrap();
-      await graph.client.directoryCommands.selectThread(threadId);
-      // ComposerDock 只在 Client 已持有该会话草稿时渲染输入区。
-      graph.client.composer(threadId);
+      await (graph..setConversationPageVisible(true)).client.directoryCommands
+          .selectThread(threadId);
+      // ComposerDockConnector 只在 Client 已持有该会话草稿时渲染输入区。
+      graph.client.drafts.composer(threadId);
       composerHold = workflowContainer.listen(
-        composerDockViewProvider(threadId),
+        composerDockViewModelProvider(threadId),
         (_, _) {},
       );
-      await graph.client
+      await graph.client.conversations
           .session(threadId)
           .source
           .waitFor((state) => state.hasSnapshot);
@@ -669,7 +706,7 @@ void main() {
             localizationsDelegates: AppLocalizations.localizationsDelegates,
             supportedLocales: AppLocalizations.supportedLocales,
             home: const Scaffold(
-              body: Center(child: ComposerDock(threadId: threadId)),
+              body: Center(child: ComposerDockConnector(threadId: threadId)),
             ),
           ),
         ),
@@ -679,7 +716,8 @@ void main() {
 
     int routeRevision() =>
         workflowContainer
-            .read(composerDockViewProvider(threadId))
+            .read(composerDockViewModelProvider(threadId))
+            .requireValue
             .modelRoute
             ?.revision ??
         -1;
@@ -688,7 +726,9 @@ void main() {
       await openScenario(status: ThreadStatusView.running);
       await pumpDock(tester);
 
-      final view = workflowContainer.read(composerDockViewProvider(threadId));
+      final view = workflowContainer
+          .read(composerDockViewModelProvider(threadId))
+          .requireValue;
       expect(view.hasActiveWorkflow, isTrue, reason: '场景前提：workflow active');
       expect(view.thread?.status, ThreadStatusView.running);
       final revisionBefore = routeRevision();
@@ -714,9 +754,9 @@ void main() {
       await openScenario();
       await pumpDock(tester);
 
-      final initial = workflowContainer.read(
-        composerDockViewProvider(threadId),
-      );
+      final initial = workflowContainer
+          .read(composerDockViewModelProvider(threadId))
+          .requireValue;
       expect(initial.hasActiveWorkflow, isTrue);
       expect(initial.thread?.status, ThreadStatusView.idle);
       final workflowRunBefore = initial.workflow?.currentRun?.runId;
@@ -763,9 +803,9 @@ void main() {
       await tester.tap(find.byKey(nextKey));
       await tester.pumpAndSettle();
 
-      final settled = workflowContainer.read(
-        composerDockViewProvider(threadId),
-      );
+      final settled = workflowContainer
+          .read(composerDockViewModelProvider(threadId))
+          .requireValue;
       expect(settled.modelRoute?.accountId, next.accountId);
       expect(settled.modelRoute?.modelId, next.modelId);
       expect(settled.modelRoute?.revision, revisionBefore + 1);
@@ -798,9 +838,9 @@ void main() {
       );
       await tester.pumpAndSettle();
 
-      final afterEffort = workflowContainer.read(
-        composerDockViewProvider(threadId),
-      );
+      final afterEffort = workflowContainer
+          .read(composerDockViewModelProvider(threadId))
+          .requireValue;
       expect(afterEffort.modelRoute?.effort, targetEffort);
       expect(afterEffort.routePending, isFalse);
       expect(
@@ -823,9 +863,9 @@ void main() {
       // 只推进到提交受理后、Demo Turn 完成脚本（120ms 起）之前，保持运行中可停止。
       await tester.pump(const Duration(milliseconds: 50));
 
-      final running = workflowContainer.read(
-        composerDockViewProvider(threadId),
-      );
+      final running = workflowContainer
+          .read(composerDockViewModelProvider(threadId))
+          .requireValue;
       expect(running.isBusy, isTrue, reason: '提交受理后 Turn 进入运行态');
       final stopButton = find.byKey(StudioDriverKeys.composerStop);
       expect(stopButton, findsOneWidget, reason: '草稿清空后停止按钮必须出现');
@@ -833,9 +873,9 @@ void main() {
       await tester.tap(stopButton);
       await tester.pumpAndSettle();
 
-      final stopped = workflowContainer.read(
-        composerDockViewProvider(threadId),
-      );
+      final stopped = workflowContainer
+          .read(composerDockViewModelProvider(threadId))
+          .requireValue;
       expect(stopped.isBusy, isFalse, reason: '停止必须等到 canonical 终态，不是 ACK');
       expect(
         stopped.hasActiveWorkflow,
@@ -843,9 +883,9 @@ void main() {
         reason: '停止 Turn 不得结束 workflow',
       );
 
-      final initial = workflowContainer.read(
-        composerDockViewProvider(threadId),
-      );
+      final initial = workflowContainer
+          .read(composerDockViewModelProvider(threadId))
+          .requireValue;
       final options = modelOptions(initial.accounts);
       final route = initial.displayRoute!;
       final next = options.firstWhere(
@@ -860,9 +900,9 @@ void main() {
       );
       await tester.pumpAndSettle();
 
-      final settled = workflowContainer.read(
-        composerDockViewProvider(threadId),
-      );
+      final settled = workflowContainer
+          .read(composerDockViewModelProvider(threadId))
+          .requireValue;
       expect(settled.modelRoute?.modelId, next.modelId);
       expect(settled.routePending, isFalse);
       expect(settled.hasActiveWorkflow, isTrue);
@@ -876,13 +916,17 @@ class _ModeSelectorHost extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final page = ref.watch(startPageComposerViewProvider);
+    final page = ref.watch(startPageComposerViewModelProvider).requireValue;
     final projectId = page.project?.id;
     return SessionModeSelector(
       mode: page.mode,
       onSelected: (mode) {
         if (projectId == null) return;
-        ref.read(anyworkClientProvider).startDraft.setMode(projectId, mode);
+        ref
+            .read(anyworkClientProvider)
+            .drafts
+            .startDraft
+            .setMode(projectId, mode);
       },
     );
   }
@@ -893,7 +937,7 @@ class _EffortSelectorHost extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final page = ref.watch(startPageComposerViewProvider);
+    final page = ref.watch(startPageComposerViewModelProvider).requireValue;
     final route = page.displayRoute(page.mode);
     if (route == null) return const SizedBox.shrink();
     return ReasoningEffortSelector(
@@ -904,6 +948,7 @@ class _EffortSelectorHost extends ConsumerWidget {
       onEffortSelected: (effort) {
         ref
             .read(anyworkClientProvider)
+            .drafts
             .startDraft
             .setEffortIntent(page.mode, effort);
       },
@@ -916,7 +961,7 @@ class _ModelSelectorHost extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final page = ref.watch(startPageComposerViewProvider);
+    final page = ref.watch(startPageComposerViewModelProvider).requireValue;
     final route = page.displayRoute(page.mode);
     if (route == null) return const SizedBox.shrink();
     return Wrap(
@@ -929,6 +974,7 @@ class _ModelSelectorHost extends ConsumerWidget {
           onModelSelected: (accountId, model) {
             ref
                 .read(anyworkClientProvider)
+                .drafts
                 .startDraft
                 .setModelIntent(page.mode, accountId, model);
           },
@@ -941,6 +987,7 @@ class _ModelSelectorHost extends ConsumerWidget {
           onEffortSelected: (effort) {
             ref
                 .read(anyworkClientProvider)
+                .drafts
                 .startDraft
                 .setEffortIntent(page.mode, effort);
           },
@@ -951,13 +998,13 @@ class _ModelSelectorHost extends ConsumerWidget {
 }
 
 String? _currentEffort(ProviderContainer container) {
-  final page = container.read(startPageComposerViewProvider);
+  final page = container.read(startPageComposerViewModelProvider).requireValue;
   return page.displayRoute(page.mode)?.effort;
 }
 
 /// 当前显示路由模型声明的、与 [current] 不同的思考强度候选。
 String? _otherEffort(ProviderContainer container, String current) {
-  final page = container.read(startPageComposerViewProvider);
+  final page = container.read(startPageComposerViewModelProvider).requireValue;
   final route = page.displayRoute(page.mode);
   if (route == null) return null;
   final model = modelForRoute(page.accounts, route.accountId, route.modelId);
@@ -1047,33 +1094,30 @@ class _WorkflowScenarioTransport extends DemoStudioTransport {
       );
 
   @override
-  Stream<ThreadStreamFrame> subscribeThread(String threadId) {
-    return super
-        .subscribeThread(threadId)
-        .map(
-          (frame) => switch (frame) {
-            ThreadSnapshotFrame(:final workspace) => ThreadSnapshotFrame(
-              workspace: workspace.copyWith(
-                runtime: _runtime(workspace.runtime),
+  Future<ConversationFeed> openConversationFeed(String threadId) async {
+    return MappedConversationFeed(
+      await super.openConversationFeed(threadId),
+      (frame) => switch (frame) {
+        ThreadSnapshotFrame(:final workspace) => ThreadSnapshotFrame(
+          workspace: workspace.copyWith(runtime: _runtime(workspace.runtime)),
+        ),
+        ThreadNotificationFrame() => switch (frame.update) {
+          ThreadRuntimeUpdate(:final runtime, :final todo) =>
+            ThreadNotificationFrame(
+              threadId: frame.threadId,
+              revision: frame.revision,
+              epoch: frame.epoch,
+              baseRevision: frame.baseRevision,
+              update: ThreadRuntimeUpdate(
+                runtime: _runtime(runtime),
+                todo: todo,
               ),
             ),
-            ThreadNotificationFrame() => switch (frame.update) {
-              ThreadRuntimeUpdate(:final runtime, :final todo) =>
-                ThreadNotificationFrame(
-                  threadId: frame.threadId,
-                  revision: frame.revision,
-                  epoch: frame.epoch,
-                  baseRevision: frame.baseRevision,
-                  update: ThreadRuntimeUpdate(
-                    runtime: _runtime(runtime),
-                    todo: todo,
-                  ),
-                ),
-              _ => frame,
-            },
-            _ => frame,
-          },
-        );
+          _ => frame,
+        },
+        _ => frame,
+      },
+    );
   }
 
   @override

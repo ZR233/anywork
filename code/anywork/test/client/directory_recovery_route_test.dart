@@ -40,7 +40,8 @@ void main() {
       );
       await pumpClientFuture(
         tester,
-        graph.client.directoryCommands.selectThread('thread-main'),
+        (graph..setConversationPageVisible(true)).client.directoryCommands
+            .selectThread('thread-main'),
         'select closing thread',
       );
       await tester.pumpWidget(
@@ -57,15 +58,15 @@ void main() {
       await pumpClientUntil(
         tester,
         () =>
-            graph.client
+            graph.client.conversations
                 .existingSession('thread-main')!
-                .timeline
+                .content
                 .lastDeliveredFrame !=
             null,
         'Client delivers the initial content baseline',
       );
       await tester.pumpAndSettle();
-      final openedWindows = transport.timelines.length;
+      final openedWindows = transport.feeds.length;
       await pumpClientFuture(
         tester,
         graph.close(deadline: DateTime.now().add(const Duration(seconds: 5))),
@@ -75,9 +76,9 @@ void main() {
         await tester.pump(const Duration(milliseconds: 16));
         expect(tester.takeException(), isNull);
       }
-      expect(transport.timelines, hasLength(openedWindows));
+      expect(transport.feeds, hasLength(openedWindows));
       expect(
-        transport.timelines.every((entry) => entry.joined.isCompleted),
+        transport.feeds.every((entry) => entry.joined.isCompleted),
         isTrue,
       );
     },

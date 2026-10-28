@@ -2649,8 +2649,13 @@ mod storage_fault_tests {
             .channel
             .next_unprojected()
             .context("the admitted fact is owed a projection")?;
-        let (_, prepared) =
-            projection.advance(chat, &sink.0.thread, &write.effect, &write.checkpoint.state)?;
+        let (_, prepared) = projection.advance(
+            chat,
+            &sink.0.thread,
+            &write.effect,
+            &write.checkpoint.state,
+            true,
+        )?;
         assert!(sink.0.channel.prepare(prepared));
         Ok(())
     }
@@ -2793,6 +2798,7 @@ mod storage_fault_tests {
             &sink.0.thread,
             &accepted.effect,
             &accepted.checkpoint.state,
+            true,
         )?;
         assert_eq!(
             shown_item(&chat, &item_id).await.revision,

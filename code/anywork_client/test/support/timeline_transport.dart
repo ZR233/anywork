@@ -1,173 +1,179 @@
 import 'dart:async';
+import 'dart:convert';
 
-import 'package:anywork_client/anywork_client.dart';
-import 'package:anywork_client/models.dart';
+import 'package:anywork_client/studio_client.dart';
 
-/// 一条 timeline 条目在测试里的最小预览值（正文用 [body] 承载）。
-StudioTimelineItem timelineItem(
+ConversationItem timelineItem(
   int revision, {
   String id = 'item',
   String body = 'body',
   String threadId = 'thread',
   int ordinal = 0,
   bool saved = false,
-  StudioTimelineLifecycle lifecycle = StudioTimelineLifecycle.streaming,
-  int omittedBytes = 0,
-  List<StudioTimelineDetailRef> details = const [],
-}) => StudioTimelineItem(
-  item: ThreadItemView(
+  ConversationLifecycle lifecycle = ConversationLifecycle.streaming,
+  int? totalBytes,
+}) => ConversationItem(
+  header: ConversationItemHeader(
     id: id,
     threadId: threadId,
     turnId: 'turn',
     ordinal: ordinal,
-    revision: revision,
     createdAt: DateTime.utc(2026),
     updatedAt: DateTime.utc(2026),
-    state: ThreadTextItemStateView(
-      channel: ThreadTextChannel.finalAnswer,
-      text: body,
-      attachments: const <ThreadAttachmentView>[],
-      lifecycle: lifecycle == StudioTimelineLifecycle.terminal
-          ? CompletedThreadContentView(DateTime.utc(2026))
-          : const StreamingThreadContentView(),
-    ),
-    saved: saved,
+  ),
+  revision: revision,
+  descriptor: ConversationTextDescriptor(
+    channel: ThreadTextChannel.finalAnswer,
+    attachments: const [],
+    lifecycle: lifecycle == ConversationLifecycle.terminal
+        ? CompletedThreadContentView(DateTime.utc(2026))
+        : const StreamingThreadContentView(),
   ),
   saved: saved,
   lifecycle: lifecycle,
-  omittedBytes: omittedBytes,
-  details: details,
+  fields: [
+    ConversationFieldPreview(
+      field: const ThreadTextFieldView(),
+      text: body,
+      totalBytes: totalBytes ?? utf8.encode(body).length,
+    ),
+  ],
 );
-
-StudioTimelineBaseline baseline(
+ConversationBaseline baseline(
   int version, {
   String subscriptionId = 'sub',
-  List<StudioTimelineItem>? items,
+  List<ConversationItem>? items,
   String? before,
   bool hasOlder = false,
-}) => StudioTimelineBaseline(
+}) => ConversationBaseline(
   subscriptionId: subscriptionId,
   version: version,
   items: items ?? [timelineItem(version)],
   before: before,
   hasOlder: hasOlder,
 );
-
-StudioTimelinePatch patch(
+ConversationPatch patch(
   int from,
   int to, {
   String subscriptionId = 'sub',
-  List<StudioTimelineChange> changes = const [],
-}) => StudioTimelinePatch(
+  List<ConversationChange> changes = const [],
+}) => ConversationPatch(
   subscriptionId: subscriptionId,
   from: from,
   to: to,
   changes: changes,
-  priority: StudioTimelinePriority.coalesced,
+  priority: ConversationPriority.coalesced,
 );
 
-/// 记录 open/initial/next/page/readDetail/close 的测试替身。
-///
-/// 它只模拟生命周期交错，不实现业务内容：所有返回值都由测试显式给出。
-final class TestTimelineTransport implements TimelineTransport {
-  final List<Completer<TestTimelineConnection>> opens = [];
-
+/// A scripted external source, never an alternate reducer. It allows malformed
+/// envelopes for rejection tests. Normal producers wait for acknowledgement.
+class TestConversationFeed implements ConversationFeed {
+  TestConversationFeed({this.threadId = 'thread', this.subscriptionId = 'sub'});
   @override
-  Future<TestTimelineConnection> openTimeline(String threadId) {
-    final pending = Completer<TestTimelineConnection>();
-    opens.add(pending);
-    return pending.future;
-  }
-}
-
-final class TestTimelineConnection implements StudioTimelineConnection {
-  TestTimelineConnection({StudioTimelineBaseline? initial}) {
-    if (initial != null) initialResult.complete(initial);
-  }
-
-  final Completer<StudioTimelineBaseline> initialResult = Completer();
-  final Completer<void> initialStarted = Completer();
-  final Completer<void> nextStarted = Completer();
-  final Completer<void> closeCompleted = Completer();
-  final Completer<void> closeStarted = Completer();
+  final String threadId;
+  @override
+  final String subscriptionId;
+  final StreamController<ConversationFrame> _events = StreamController(
+    sync: true,
+  );
+  final List<int> acknowledgements = [];
+  final Map<int, Completer<void>> _acked = {};
+  int _sequence = 0;
+  bool _requested = false;
+  final requestCloseStarted = Completer<void>();
+  final closeStarted = Completer<void>();
+  final closeCompleted = Completer<void>();
   Completer<void>? closeGate;
-  Completer<StudioTimelinePage>? pageResult;
-  final List<({String? before, int? limit})> pageRequests = [];
-  final List<({String itemId, StudioTimelineDetailQuery query})>
-  detailRequests = [];
-  Completer<StudioTimelineDetailChunk>? detailResult;
-  Completer<StudioTimelineUpdate?>? _pending;
-  bool _closed = false;
-  int initialCalls = 0;
-  int nextCalls = 0;
+  Object? closeFailure;
+  Object? ackFailure;
+  Completer<void>? ackGate;
   int closeCalls = 0;
   int requestCloseCalls = 0;
-  Object? closeFailure;
+  int eventConsumers = 0;
+  Future<ConversationPage> Function(String?, int?)? onPage;
+  Future<ConversationDetailChunk> Function(String, ConversationDetailQuery)?
+  onDetail;
+  final List<({String? before, int? limit})> pageRequests = [];
+  final List<({String itemId, ConversationDetailQuery query})> detailRequests =
+      [];
+  @override
+  Stream<ConversationFrame> get events {
+    if (++eventConsumers != 1) throw StateError('A feed permits one consumer');
+    return _events.stream;
+  }
+
+  int send(
+    ConversationEvent event, {
+    int? sequence,
+    String? frameThread,
+    String? frameSubscription,
+  }) {
+    final terminal =
+        event is ConversationClosedEvent || event is ConversationFailureEvent;
+    final number = sequence ?? (terminal ? _sequence : ++_sequence);
+    if (_requested) return number;
+    _events.add(
+      ConversationFrame(
+        threadId: frameThread ?? threadId,
+        subscriptionId: frameSubscription ?? subscriptionId,
+        deliverySequence: number,
+        event: event,
+      ),
+    );
+    return number;
+  }
+
+  Future<void> deliver(ConversationEvent event) async {
+    if (_requested) throw StateError('Cannot deliver to a closed feed');
+    if (event is ConversationClosedEvent || event is ConversationFailureEvent) {
+      send(event);
+      return;
+    }
+    final number = _sequence + 1;
+    final ack = acknowledged(number);
+    send(event);
+    await ack;
+  }
+
+  Future<void> acknowledged(int sequence) {
+    if (acknowledgements.contains(sequence)) return Future.value();
+    return (_acked[sequence] ??= Completer<void>()).future;
+  }
 
   @override
-  Future<StudioTimelineBaseline> initial() {
-    initialCalls++;
-    if (!initialStarted.isCompleted) initialStarted.complete();
-    return initialResult.future;
+  Future<void> acknowledge(int deliverySequence) async {
+    await ackGate?.future;
+    if (ackFailure case final failure?) throw failure;
+    acknowledgements.add(deliverySequence);
+    _acked.remove(deliverySequence)?.complete();
   }
 
   @override
-  Future<StudioTimelineUpdate?> next() {
-    if (_closed) return Future.value(null);
-    if (_pending != null) throw StateError('Two concurrent next calls');
-    nextCalls++;
-    final pending = Completer<StudioTimelineUpdate?>();
-    _pending = pending;
-    if (!nextStarted.isCompleted) nextStarted.complete();
-    return pending.future;
-  }
-
-  void emit(StudioTimelineUpdate? update) {
-    final pending = _pending;
-    if (pending == null) throw StateError('No pending content read');
-    _pending = null;
-    pending.complete(update);
-  }
-
-  void emitError(Object error, [StackTrace? stackTrace]) {
-    final pending = _pending;
-    if (pending == null) throw StateError('No pending content read');
-    _pending = null;
-    pending.completeError(error, stackTrace);
-  }
-
-  @override
-  Future<StudioTimelinePage> page({String? before, int? limit}) {
+  Future<ConversationPage> page({String? before, int? limit}) {
     pageRequests.add((before: before, limit: limit));
-    // 每次页调用都是一次独立 RPC：复用同一个 Completer 会让第二次调用直接
-    // 卡在已完成的 future 上（或抛 Future already completed）。
-    final result = Completer<StudioTimelinePage>();
-    pageResult = result;
-    return result.future;
+    return onPage?.call(before, limit) ??
+        Future.value(
+          const ConversationPage(items: [], before: null, hasOlder: false),
+        );
   }
 
   @override
-  Future<StudioTimelineDetailChunk> readDetail({
+  Future<ConversationDetailChunk> readDetail({
     required String itemId,
-    required StudioTimelineDetailQuery query,
+    required ConversationDetailQuery query,
   }) {
     detailRequests.add((itemId: itemId, query: query));
-    // 每次详情读取都是一次独立 RPC：复用同一个 Completer 会让按块续读直接崩。
-    final result = Completer<StudioTimelineDetailChunk>();
-    detailResult = result;
-    return result.future;
+    return onDetail?.call(itemId, query) ??
+        Future.error(UnsupportedError('Unscripted detail'));
   }
 
   @override
   void requestClose() {
     requestCloseCalls++;
-    _closed = true;
-    if (initialCalls > 0 && !initialResult.isCompleted) {
-      initialResult.completeError(const StaleTimelineAttempt());
-    }
-    final pending = _pending;
-    _pending = null;
-    pending?.complete(null);
+    if (_requested) return;
+    _requested = true;
+    if (!requestCloseStarted.isCompleted) requestCloseStarted.complete();
+    unawaited(_events.close());
   }
 
   @override
@@ -176,17 +182,69 @@ final class TestTimelineConnection implements StudioTimelineConnection {
     requestClose();
     if (!closeStarted.isCompleted) closeStarted.complete();
     await closeGate?.future;
-    if (closeFailure case final error?) throw error;
+    if (closeFailure case final failure?) throw failure;
     if (!closeCompleted.isCompleted) closeCompleted.complete();
   }
 }
 
-StudioTimelineChannel timelineChannel(
-  TestTimelineTransport transport, {
-  ResourceBudget? budget,
-}) => StudioTimelineChannel(
-  threadId: 'thread',
-  transport: transport,
-  retryPolicy: const RetryPolicy(delays: []),
-  budget: budget,
-);
+class TestConversationTransport implements StudioTransport {
+  final List<({String threadId, Completer<ConversationFeed> result})> opens =
+      [];
+  final Map<int, Completer<void>> _opening = {};
+  @override
+  Future<ConversationFeed> openConversationFeed(String threadId) {
+    final result = Completer<ConversationFeed>();
+    final index = opens.length;
+    opens.add((threadId: threadId, result: result));
+    _opening.remove(index)?.complete();
+    return result.future;
+  }
+
+  Future<void> opened(int index) => opens.length > index
+      ? Future.value()
+      : (_opening[index] ??= Completer<void>()).future;
+  @override
+  Stream<ProductTopicFrame> subscribeProductTopic(ProductTopic topic) =>
+      const Stream.empty();
+  @override
+  dynamic noSuchMethod(Invocation invocation) => throw UnsupportedError(
+    'Unscripted transport capability: ${invocation.memberName}',
+  );
+}
+
+class ConversationFixture {
+  ConversationFixture({
+    ResourceBudget? budget,
+    TestConversationTransport? transport,
+  }) : transport = transport ?? TestConversationTransport() {
+    client = AnyworkClient(
+      transport: this.transport,
+      clientId: 'conversation-test',
+      budget: budget,
+    );
+  }
+  final TestConversationTransport transport;
+  late final AnyworkClient client;
+  ConversationRepository get repository => client.conversations;
+  ConversationSession session([String id = 'thread']) => repository.session(id);
+  Future<TestConversationFeed> open({
+    String threadId = 'thread',
+    ConversationBaseline? initial,
+    int index = 0,
+  }) async {
+    repository.setVisibleThread(threadId);
+    await transport.opened(index);
+    final feed = TestConversationFeed(
+      threadId: threadId,
+      subscriptionId: initial?.subscriptionId ?? 'sub',
+    );
+    transport.opens[index].result.complete(feed);
+    await feed.deliver(
+      ConversationBaselineEvent(baseline: initial ?? baseline(1)),
+    );
+    return feed;
+  }
+
+  Future<CloseReport> close({DateTime? deadline}) =>
+      client.close(deadline: deadline);
+}

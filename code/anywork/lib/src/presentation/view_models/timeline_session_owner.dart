@@ -1,119 +1,22 @@
 import 'dart:async';
 
 import 'package:anywork_client/studio_client.dart';
-import 'package:flutter/foundation.dart' show Key, ValueKey;
+import 'package:flutter/foundation.dart'
+    show Key, Listenable, ValueKey, ValueListenable, ValueNotifier;
+import 'package:flyer_chat_text_stream_message/flyer_chat_text_stream_message.dart';
 import 'package:flutter/widgets.dart' show ScrollController;
 import 'package:flutter_chat_core/flutter_chat_core.dart';
 
 import '../../domain/models/timeline_commands.dart';
-import '../../domain/models/timeline_presentation.dart';
+import '../../features/conversation/timeline/state/timeline_entry.dart';
+import '../../features/conversation/timeline/state/timeline_image_resources.dart';
+import '../../features/conversation/timeline/state/timeline_view_state.dart';
+import '../../features/conversation/timeline/state/timeline_ui_controllers.dart';
+import '../../features/conversation/timeline/view_models/timeline_message_controller.dart';
+
+export '../../features/conversation/timeline/state/timeline_view_state.dart';
 
 const Object _unset = Object();
-
-/// 公开给 view 的只读展示元数据。
-///
-/// 它**不含**任何已加载行/正文列表：唯一已加载消息集合在 [TimelineDisplayLease] 借出的
-/// `InMemoryChatController.messages` 里，这里只描述模式、代次、连接、分页与新输出提示
-/// （design/26 §26.8）。
-class TimelineSessionViewState {
-  const TimelineSessionViewState({
-    required this.threadId,
-    required this.generation,
-    required this.mode,
-    required this.connection,
-    required this.connectionError,
-    required this.olderCursor,
-    required this.hasOlder,
-    required this.isLoadingOlder,
-    required this.olderError,
-    required this.hasNewOutput,
-    required this.isPreparingLive,
-  });
-
-  final String threadId;
-
-  /// 展示代次；0 表示还没有建立展示（连接中或失败）。
-  final int generation;
-  final TimelineDisplayMode mode;
-
-  /// 内容连接阶段；与 Thread 状态同步完全独立。
-  final TimelineConnectionPhase connection;
-  final Object? connectionError;
-
-  /// 继续向前翻页的不透明边界；`null` 表示本代次没有更早边界。
-  final String? olderCursor;
-  final bool hasOlder;
-  final bool isLoadingOlder;
-
-  /// 分页失败保留内容并可显式重试；不为空即显示重试入口。
-  final Object? olderError;
-
-  /// History 下后台已有更新输出：只作为提示，不改冻结展示。
-  final bool hasNewOutput;
-
-  /// 正在建立新展示代次（显式回实时/发送前准备）。
-  final bool isPreparingLive;
-
-  TimelineSessionViewState copyWith({
-    int? generation,
-    TimelineDisplayMode? mode,
-    TimelineConnectionPhase? connection,
-    Object? connectionError = _unset,
-    Object? olderCursor = _unset,
-    bool? hasOlder,
-    bool? isLoadingOlder,
-    Object? olderError = _unset,
-    bool? hasNewOutput,
-    bool? isPreparingLive,
-  }) => TimelineSessionViewState(
-    threadId: threadId,
-    generation: generation ?? this.generation,
-    mode: mode ?? this.mode,
-    connection: connection ?? this.connection,
-    connectionError: identical(connectionError, _unset)
-        ? this.connectionError
-        : connectionError,
-    olderCursor: identical(olderCursor, _unset)
-        ? this.olderCursor
-        : olderCursor as String?,
-    hasOlder: hasOlder ?? this.hasOlder,
-    isLoadingOlder: isLoadingOlder ?? this.isLoadingOlder,
-    olderError: identical(olderError, _unset) ? this.olderError : olderError,
-    hasNewOutput: hasNewOutput ?? this.hasNewOutput,
-    isPreparingLive: isPreparingLive ?? this.isPreparingLive,
-  );
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is TimelineSessionViewState &&
-          threadId == other.threadId &&
-          generation == other.generation &&
-          mode == other.mode &&
-          connection == other.connection &&
-          connectionError == other.connectionError &&
-          olderCursor == other.olderCursor &&
-          hasOlder == other.hasOlder &&
-          isLoadingOlder == other.isLoadingOlder &&
-          olderError == other.olderError &&
-          hasNewOutput == other.hasNewOutput &&
-          isPreparingLive == other.isPreparingLive;
-
-  @override
-  int get hashCode => Object.hash(
-    threadId,
-    generation,
-    mode,
-    connection,
-    connectionError,
-    olderCursor,
-    hasOlder,
-    isLoadingOlder,
-    olderError,
-    hasNewOutput,
-    isPreparingLive,
-  );
-}
 
 /// 一个展示代次借给 view 的 handle。
 ///
@@ -121,67 +24,60 @@ class TimelineSessionViewState {
 /// `ScrollController(keepScrollOffset: false)`。视图只在真实子树初始化时 [bind]、在真实
 /// 子树 dispose 时 [unbind]；退役先停止发布与查询，等已挂载旧代次真正解绑后才销毁 controller
 /// 并观察 stock operations stream 真正 done（design/26 §26.8）。
-final class TimelineDisplayLease {
+final class TimelineDisplayLease implements TimelineUiControllers {
   TimelineDisplayLease({
     required this.threadId,
     required this.generation,
-    required this.openQueries,
-  }) : _controller = InMemoryChatController() {
-    _presentation = TimelinePresentationController(
+    required this.content,
+  }) : _controller = InMemoryChatController(),
+       imageResources = TimelineImageResources(threadId: threadId) {
+    _presentation = TimelineMessageController(
       _controller,
       generation: generation,
+      imageResources: imageResources,
     );
   }
 
   /// 固定 Thread 身份与展示代次；两者都不随 tail 版本变化。
   final String threadId;
   final int generation;
+  final ConversationContent content;
+  final TimelineImageResources imageResources;
 
-  /// 每次 attempt 变化后按需重建查询 scope 的入口（由 owner 提供）。
-  final StudioTimelineQueryScope? Function(int generation) openQueries;
   final InMemoryChatController _controller;
   final ScrollController _scrollController = ScrollController(
     keepScrollOffset: false,
   );
 
-  late final TimelinePresentationController _presentation;
+  late final TimelineMessageController _presentation;
 
-  /// 已覆盖范围的最早 canonical 键（`(ordinal, id)`）。
-  ///
-  /// 真实删除会让行消失，但**不**抹掉已经覆盖的范围边界；否则尾部更早身份的 `Add`
-  /// 会被误当成已覆盖范围内的新身份插入，凭空制造分页前缀空洞（design/26 §26.7）。
   (int, String)? _floor;
-
-  /// 已覆盖范围的最新 canonical 键；只随基线/前插/尾部插入单调外扩。
-  (int, String)? _ceiling;
-
-  /// 被有意忽略的更早身份及其 canonical 键（只存身份与位置，不存正文）。
-  ///
-  /// 保留位置是为了在后续页把这段范围纳入覆盖时，能核对“已知存在的身份”是否真的被这
-  /// 一页交付：页快照可能线性化在尾部 `Add` 之前，游标一旦越过它就会永久缺消息。
-  final Map<String, (int, String)> _excluded = {};
-  static const int _excludedIdentities = 128;
-  bool _excludedOverflow = false;
-
   final Completer<void> _released = Completer<void>();
+  final ValueNotifier<bool> retirement = ValueNotifier(false);
 
   TimelineDisplayMode _mode = TimelineDisplayMode.live;
   int? _appliedVersion;
   String? _olderCursor;
   bool _hasOlder = false;
-  StudioTimelineQueryScope? _queries;
+  ConversationPageCoverage? _pageCoverage;
+  ConversationQueryScope? _queries;
+  final Set<ConversationQueryScope> _ownedQueries = {};
+  Object? queryCleanupError;
   bool _queriesSettled = false;
   bool _mounted = false;
   bool _retired = false;
   bool _disposed = false;
 
   /// Chat 子树的 key：新代次必须换 key，不能沿用旧列表 state。
+  @override
   Key get chatKey => ValueKey('timeline-chat:$threadId:$generation');
 
   /// 唯一已加载消息集合由库持有；这里只借用同一个 controller。
+  @override
   ChatController get controller => _controller;
 
   /// 只用于库、Scrollbar、被动观察与诊断；应用不写 pixels。
+  @override
   ScrollController get scrollController => _scrollController;
 
   TimelineDisplayMode get mode => _mode;
@@ -189,36 +85,63 @@ final class TimelineDisplayLease {
   String? get olderCursor => _olderCursor;
   bool get hasOlder => _hasOlder;
   int get loadedCount => _presentation.length;
-  Iterable<TimelineMessagePayload> get payloads => _presentation.payloads;
-  TimelinePresentationItem? presentationFor(String itemId) =>
+  int get activeStreamCount => _presentation.activeStreamCount;
+  Iterable<ConversationItem> get items => _presentation.items;
+  TimelineEntry? presentationFor(String itemId) =>
       _presentation.ownerOf(itemId);
-  void addItemListener(TimelineItemListener listener) =>
-      _presentation.addItemListener(listener);
-  void removeItemListener(TimelineItemListener listener) =>
-      _presentation.removeItemListener(listener);
+  Listenable? memberObservation(String itemId) =>
+      _presentation.memberObservation(itemId);
+  @override
+  ValueListenable<StreamState>? streamFor(String itemId) =>
+      _presentation.streamFor(itemId);
   bool get isMounted => _mounted;
+  @override
   bool get isRetired => _retired;
   bool get isReleased => _released.isCompleted;
 
-  /// 本代次的查询 scope：attempt 变化后按需重建，仍绑定同一个展示代次。
-  StudioTimelineQueryScope? get queries {
+  /// 只借用本代次已取得的分页资格；旧 History 不从当前 tail 重建资格。
+  ConversationQueryScope? get queries {
+    if (_retired || _pageCoverage == null) return null;
     final current = _queries;
     if (current != null && current.isActive) return current;
+    _queries = null;
+    if (current != null) unawaited(_settleQueries(current));
+    final next = content.openScope(
+      generation: generation,
+      coverage: _pageCoverage,
+    );
+    if (next != null) _ownedQueries.add(next);
+    return _queries = next;
+  }
+
+  ConversationQueryScope? openDetailQueries() {
     if (_retired) return null;
-    return _queries = openQueries(generation);
+    final scope = content.openScope(generation: generation);
+    if (scope != null) _ownedQueries.add(scope);
+    return scope;
+  }
+
+  Future<void> closeDetailQueries(ConversationQueryScope scope) async {
+    await _settleQueries(scope);
+    if (_ownedQueries.contains(scope)) {
+      throw StateError(
+        'The detail query scope has not closed: $queryCleanupError',
+      );
+    }
   }
 
   /// 该字段按需读取全文的入口；null 表示本代次没有加载该身份或字段。
-  StudioTimelineDetailRef? detailRef(
+  ConversationDetailRef? detailRef(
     String itemId,
     ThreadContentFieldView field,
-  ) => _presentation.payload(itemId)?.detailFor(field);
+  ) => _presentation.item(itemId)?.detailFor(field);
 
   /// 真实子树挂载。
   ///
   /// 退役不等于已释放：控制器尚存时发生的迟到真实挂载仍计入卸载等待，否则会在旧子树
   /// 还持有控制器时销毁它。已经释放的代次必须显式拒绝，不能静默把已销毁的控制器交给
   /// 子树（design/26 §26.8）。
+  @override
   void bind() {
     if (_disposed) {
       throw StateError(
@@ -230,11 +153,12 @@ final class TimelineDisplayLease {
   }
 
   /// 本代次已加载身份的 typed 载荷；只读当前 Message，不复制正文。
-  TimelineMessagePayload? payloadOf(String itemId) {
-    return _presentation.payload(itemId);
+  ConversationItem? itemOf(String itemId) {
+    return _presentation.item(itemId);
   }
 
   /// 真实子树卸载：解绑并允许销毁。
+  @override
   Future<void> unbind() {
     _mounted = false;
     _releaseIfReady();
@@ -246,29 +170,45 @@ final class TimelineDisplayLease {
 
   /// 退役：停止发布、拒绝新查询，然后等待真实卸载。
   Future<void> retire() {
-    if (_retired) return _released.future;
+    if (_retired) {
+      for (final scope in _ownedQueries.toList()) {
+        unawaited(_settleQueries(scope));
+      }
+      return _released.future;
+    }
     _retired = true;
-    final scope = _queries;
+    imageResources.retire();
+    retirement.value = true;
     _queries = null;
-    if (scope == null) {
+    if (_ownedQueries.isEmpty) {
       _queriesSettled = true;
     } else {
       // 先拒绝新工作与迟到发布，再等**已经受理**的真实查询退出；不丢 scope、不假装
       // 成功（design/26 §26.8）。
-      scope.retire();
-      unawaited(_settleQueries(scope));
+      for (final scope in _ownedQueries.toList()) {
+        scope.retire();
+        unawaited(_settleQueries(scope));
+      }
     }
     _releaseIfReady();
     return _released.future;
   }
 
-  Future<void> _settleQueries(StudioTimelineQueryScope scope) async {
+  Future<void> _settleQueries(ConversationQueryScope scope) async {
+    scope.retire();
     try {
-      await scope.close();
-    } finally {
-      _queriesSettled = true;
-      _releaseIfReady();
+      final report = await scope.close();
+      if (report.complete) {
+        _ownedQueries.remove(scope);
+        if (_ownedQueries.isEmpty) queryCleanupError = null;
+      } else {
+        queryCleanupError = report;
+      }
+    } catch (error) {
+      queryCleanupError = error;
     }
+    _queriesSettled = _ownedQueries.isEmpty;
+    _releaseIfReady();
   }
 
   void _releaseIfReady() {
@@ -282,162 +222,89 @@ final class TimelineDisplayLease {
       },
     );
     _presentation.dispose();
+    imageResources.release();
+    retirement.dispose();
     _controller.dispose();
     _scrollController.dispose();
   }
 
   // ---- owner 内部：基线/差量应用 ----------------------------------------
 
-  void adoptBaseline(StudioTimelineBaseline baseline) {
-    _presentation.reset();
-    _excluded.clear();
-    _excludedOverflow = false;
-    final ordered = [...baseline.items]
-      ..sort(
-        (left, right) => _compareCanonical(
-          (left.item.ordinal, left.id),
-          (right.item.ordinal, right.id),
-        ),
-      );
-    for (final item in ordered) {
-      _presentation.add(TimelineMessagePayload.fromItem(item));
-    }
+  void adoptBaseline(
+    ConversationBaseline baseline, {
+    ConversationPageCoverage? pageCoverage,
+  }) {
+    final ordered = [...baseline.items]..sort(compareItems);
+    _presentation.prepend(ordered);
     _appliedVersion = baseline.version;
     _olderCursor = baseline.before;
     _hasOlder = baseline.hasOlder;
+    _pageCoverage = pageCoverage;
     _floor = ordered.isEmpty
         ? null
-        : (ordered.first.item.ordinal, ordered.first.id);
-    _ceiling = ordered.isEmpty
-        ? null
-        : (ordered.last.item.ordinal, ordered.last.id);
+        : (ordered.first.header.ordinal, ordered.first.id);
   }
 
-  /// 应用一帧连续补丁；返回 false 表示本代次无法证明连续，需要显式新基线。
-  ///
-  /// History 下已展示内容/结构/saved 全部冻结：不写 Message、不改版本水位。
-  bool applyPatch(StudioTimelinePatch patch) {
+  bool applyPatch(ConversationPatch patch) {
     if (_mode == TimelineDisplayMode.history) return true;
+    // Subscription/field/revision validation belongs to the SDK. The display
+    // only checks whether it has consumed the immediately preceding frame.
     if (_appliedVersion != patch.from) return false;
-    for (final change in patch.changes) {
-      final applied = switch (change) {
-        StudioTimelineAdd(:final item) => _applyAdded(item),
-        StudioTimelineUpdateItem() => _applyUpdated(change),
-        StudioTimelineRemove(:final itemId) => _applyRemoved(itemId),
-      };
-      if (!applied) return false;
-    }
-    _appliedVersion = patch.to;
-    return true;
-  }
-
-  /// 一条权威整条预览落进本代次：已加载身份原位收敛，新身份按 canonical 顺序插入。
-  ///
-  /// `Add` 不保证该身份从未被页查询加载，也不保证随后会补发 `UpdateItem`，因此不能把
-  /// 已加载身份直接跳过。更早且未被本代次覆盖的新身份不插入（避免在分页前缀里造洞）、
-  /// 也不另存待回放正文；它们由后续页查询取当时的权威值。
-  bool _applyAdded(StudioTimelineItem incoming) {
-    final payload = _presentation.payload(incoming.id);
-    if (payload != null) {
-      final next = payload.applyAdd(incoming);
-      if (next == null) return false;
-      if (!identical(next, payload)) _presentation.replace(incoming.id, next);
-      return true;
-    }
-    final key = (incoming.item.ordinal, incoming.id);
-    final floor = _floor;
-    if (floor != null && _compareCanonical(key, floor) < 0) {
-      _rememberExcluded(incoming.id, key);
-      return true;
-    }
-    _excluded.remove(incoming.id);
-    _presentation.add(TimelineMessagePayload.fromItem(incoming));
-    final ceiling = _ceiling;
-    if (ceiling == null || _compareCanonical(key, ceiling) > 0) _ceiling = key;
-    return true;
-  }
-
-  bool _applyUpdated(StudioTimelineUpdateItem change) {
-    final current = _presentation.payload(change.itemId);
-    if (current != null) {
-      final next = current.applyUpdate(change);
-      if (next == null) return false;
-      _presentation.replace(change.itemId, next);
-      return true;
-    }
-    // 未知身份：只有能证明它属于被有意忽略的更早范围时才能安静跳过。
-    final shell = change.itemShell;
-    final floor = _floor;
-    if (shell != null) {
-      if (shell.id != change.itemId) return false;
-      final key = (shell.ordinal, shell.id);
-      if (floor != null && _compareCanonical(key, floor) < 0) {
-        _rememberExcluded(change.itemId, key);
-        return true;
+    try {
+      // Frame-local preparation only: no row is published until the SDK has
+      // reconciled every affected historical value through its same reducer.
+      final prepared = <String, ConversationItem?>{};
+      ConversationItem? currentFor(String id) =>
+          prepared.containsKey(id) ? prepared[id] : _presentation.item(id);
+      for (final change in patch.changes) {
+        switch (change) {
+          case ConversationAdd(:final item):
+            final current = currentFor(item.id);
+            if (current != null) {
+              prepared[item.id] = content.mergeItem(current, item);
+            } else if (_floor == null ||
+                _compareCanonical((item.header.ordinal, item.id), _floor!) >=
+                    0) {
+              prepared[item.id] = item;
+            }
+          case ConversationUpdateItem(:final itemId):
+            final current = currentFor(itemId);
+            if (current != null) {
+              prepared[itemId] = content.reduceItem(current, change);
+            }
+          case ConversationRemove(:final itemId):
+            prepared[itemId] = null;
+        }
       }
-      // 已覆盖范围内的空洞：本代次漏了一条事实，必须显式重同步。
+      for (final entry in prepared.entries) {
+        final item = entry.value;
+        if (item == null) {
+          _presentation.remove(entry.key);
+        } else if (_presentation.item(entry.key) == null) {
+          _presentation.add(item);
+        } else {
+          _presentation.replace(entry.key, item);
+        }
+      }
+      _appliedVersion = patch.to;
+      return true;
+    } on Object {
       return false;
     }
-    return _excluded.containsKey(change.itemId);
   }
 
-  bool _applyRemoved(String itemId) {
-    // 真实删除清掉该身份的忽略证据，但**不**抹掉已经覆盖的范围下界。
-    _excluded.remove(itemId);
-    _presentation.remove(itemId);
-    return true;
-  }
-
-  /// 前插一页更早消息；重叠身份不重复插入，返回实际前插条数。
-  ///
-  /// 返回 null 表示这页与已覆盖范围无法证明连续（例如页游标之后又发布过更早身份）：
-  /// 调用方必须显式重同步，不能把更早身份插进已覆盖范围造成空洞。
-  int? prependOlder(StudioTimelinePage page) {
-    final floor = _floor;
-    final accepted = <(StudioTimelineItem, (int, String))>[];
+  int prependOlder(ConversationPage page) {
+    final accepted = <ConversationItem>[];
     for (final item in page.items) {
-      final key = (item.item.ordinal, item.id);
-      if (floor != null && _compareCanonical(key, floor) >= 0) {
-        // 已加载的重叠身份直接去重；未加载却在已覆盖范围内说明页前缀与本代次不连续。
-        if (_presentation.contains(item.id)) continue;
-        return null;
-      }
-      if (_presentation.contains(item.id)) continue;
-      accepted.add((item, key));
+      if (_presentation.item(item.id) != null) continue;
+      accepted.add(item);
+      final key = (item.header.ordinal, item.id);
+      if (_floor == null || _compareCanonical(key, _floor!) < 0) _floor = key;
     }
-    accepted.sort((left, right) => _compareCanonical(left.$2, right.$2));
-    // 这一页会把 [新下界, 旧下界) 纳入覆盖：区间里已知存在、但页快照没有交付的身份
-    // 会被游标永久越过。已知证据不完整时（有界元数据已淘汰）同样不能声称完整。
-    if (floor != null && accepted.isNotEmpty) {
-      if (_excludedOverflow) return null;
-      final newFloor = accepted.first.$2;
-      final delivered = {for (final item in page.items) item.id};
-      for (final entry in _excluded.entries) {
-        final key = entry.value;
-        if (_compareCanonical(key, floor) >= 0) continue;
-        if (_compareCanonical(key, newFloor) < 0) continue;
-        if (delivered.contains(entry.key)) continue;
-        return null;
-      }
-    }
-    for (final entry in accepted) {
-      _presentation.add(TimelineMessagePayload.fromItem(entry.$1));
-      _excluded.remove(entry.$1.id);
-    }
-    if (accepted.isNotEmpty) _floor = accepted.first.$2;
+    _presentation.prepend(accepted);
     _olderCursor = page.before;
     _hasOlder = page.hasOlder;
     return accepted.length;
-  }
-
-  /// 记住“更早范围里已知存在但本代次不展示”的身份与位置；退出有界容量后不再声称完整。
-  void _rememberExcluded(String itemId, (int, String) key) {
-    if (_excluded.length >= _excludedIdentities &&
-        !_excluded.containsKey(itemId)) {
-      _excluded.remove(_excluded.keys.first);
-      _excludedOverflow = true;
-    }
-    _excluded[itemId] = key;
   }
 
   void enterHistory() => _mode = TimelineDisplayMode.history;
@@ -454,21 +321,12 @@ int _compareCanonical((int, String) left, (int, String) right) {
 /// 每个 AppGraph 一个。它只拥有当前 Thread 的展示 lease 与展示元数据；已加载消息只存在于
 /// lease 的 stock controller 里，不镜像 SDK 的有界尾部，也不保留 rows/ids/versions 快照。
 final class TimelineSessionOwner {
-  TimelineSessionOwner({required AnyworkClient client}) : _client = client {
-    final watched = client.selection.source.watchLatest(_selectionChanged);
-    _selectionObservation = watched.observation;
-    _sessionObservation = client
-        .watchActiveSession((_) => _selectionChanged(client.selection.state))
-        .observation;
-    _selectionChanged(watched.value);
-  }
+  TimelineSessionOwner({required this._client});
 
   final AnyworkClient _client;
   final LatestValue<TimelineSessionViewState?> source = LatestValue(null);
-  Observation? _selectionObservation;
-  Observation? _sessionObservation;
   Observation? _timelineObservation;
-  StudioThreadSession? _observedSession;
+  ConversationSession? _observedSession;
   String? _observedThread;
 
   TimelineDisplayLease? _current;
@@ -487,14 +345,16 @@ final class TimelineSessionOwner {
         : null;
   }
 
-  StudioThreadSession? _sessionOf(String threadId) =>
-      _client.existingSession(threadId);
+  ConversationSession? _sessionOf(String threadId) =>
+      _client.conversations.existingSession(threadId);
 
-  void _selectionChanged(SelectionStoreState selection) {
+  /// Navigation may explicitly detach presentation while retaining selection
+  /// (for example, settings). This does not change business subscription demand.
+  void select(String? threadId) {
     if (_closed) return;
-    final threadId = selection.needsOpen ? null : selection.selectedThreadId;
-    final active = _client.activeSession;
-    final session = active?.threadId == threadId ? active : null;
+    final session = threadId == null
+        ? null
+        : _client.conversations.session(threadId);
     if (_observedThread == threadId &&
         identical(_observedSession, session) &&
         _timelineObservation != null) {
@@ -542,7 +402,7 @@ final class TimelineSessionOwner {
       }
       return;
     }
-    final watched = session.timeline.state.watchLatest(
+    final watched = session.content.state.watchLatest(
       (state) => _onTimelineState(threadId, state),
     );
     _timelineObservation = watched.observation;
@@ -560,35 +420,35 @@ final class TimelineSessionOwner {
 
   void _onTimelineState(
     String threadId,
-    ChatUiState<StudioTimelineFrame> state,
+    ChatUiState<ConversationContentFrame> state,
   ) {
     if (_closed || _observedThread != threadId) return;
     switch (state) {
-      case ChatIdle<StudioTimelineFrame>():
+      case ChatIdle<ConversationContentFrame>():
         _publishState(connection: TimelineConnectionPhase.idle);
-      case ChatOpening<StudioTimelineFrame>():
+      case ChatOpening<ConversationContentFrame>():
         _publishState(
           connection: TimelineConnectionPhase.opening,
           connectionError: null,
         );
-      case ChatReady<StudioTimelineFrame>(:final snapshot):
+      case ChatReady<ConversationContentFrame>(:final snapshot):
         _publishState(
           connection: TimelineConnectionPhase.ready,
           connectionError: null,
         );
         _applyFrame(threadId, snapshot);
-      case ChatReconnecting<StudioTimelineFrame>(:final error):
+      case ChatReconnecting<ConversationContentFrame>(:final error):
         _publishState(
           connection: TimelineConnectionPhase.reconnecting,
           connectionError: error,
         );
-      case ChatFailed<StudioTimelineFrame>(:final error):
+      case ChatFailed<ConversationContentFrame>(:final error):
         _publishState(
           connection: TimelineConnectionPhase.failed,
           connectionError: error,
         );
         _failPendingSwitch(error);
-      case ChatClosed<StudioTimelineFrame>():
+      case ChatClosed<ConversationContentFrame>():
         _publishState(connection: TimelineConnectionPhase.closed);
         _failPendingSwitch(
           StateError('The timeline content connection was closed'),
@@ -596,33 +456,33 @@ final class TimelineSessionOwner {
     }
   }
 
-  void _applyFrame(String threadId, StudioTimelineFrame frame) {
+  void _applyFrame(String threadId, ConversationContentFrame frame) {
     switch (frame) {
-      case StudioTimelineBaselineFrame(:final baseline):
+      case ConversationBaselineFrame(:final baseline, :final pageCoverage):
         final pending = _pendingSwitch;
         if (pending != null && pending.threadId == threadId) {
           _pendingSwitch = null;
-          _startGeneration(threadId, baseline);
+          _startGeneration(threadId, baseline, pageCoverage: pageCoverage);
           _publishNewGeneration(isPreparingLive: false);
           if (!pending.result.isCompleted) pending.result.complete();
           return;
         }
         final current = _current;
         if (current == null) {
-          _startGeneration(threadId, baseline);
+          _startGeneration(threadId, baseline, pageCoverage: pageCoverage);
           _publishNewGeneration();
           return;
         }
         if (current.mode == TimelineDisplayMode.live) {
           // 同连接重同步/重连基线：Live 采用同一种新代次语义，
           // 不把旧基线拼成应用侧第二套恢复算法。
-          _startGeneration(threadId, baseline);
+          _startGeneration(threadId, baseline, pageCoverage: pageCoverage);
           _publishNewGeneration();
           return;
         }
         // History：只更新连接与提示，不替换冻结展示。
         _publishState(hasNewOutput: true);
-      case StudioTimelinePatchFrame(:final patch):
+      case ConversationPatchFrame(:final patch):
         final current = _current;
         if (current == null) {
           _requestResync();
@@ -651,31 +511,36 @@ final class TimelineSessionOwner {
   /// 下全部 `Unchanged` 且字段总长不变的帧只是保存/省略量等元数据，不算。
   bool _historyShowsNewContent(
     TimelineDisplayLease lease,
-    StudioTimelinePatch patch,
+    ConversationPatch patch,
   ) {
     for (final change in patch.changes) {
       switch (change) {
-        case StudioTimelineAdd():
-        case StudioTimelineRemove():
+        case ConversationAdd():
+        case ConversationRemove():
           return true;
-        case StudioTimelineUpdateItem(
+        case ConversationUpdateItem(
           :final itemId,
           :final expectedRevision,
           :final revision,
           :final lifecycle,
-          :final itemShell,
+          :final header,
+          :final descriptor,
           :final fields,
         ):
-          final current = lease.payloadOf(itemId);
+          final current = lease.itemOf(itemId);
           if (current == null) return true;
           if (revision != expectedRevision) return true;
-          if (lifecycle == StudioTimelineLifecycle.terminal &&
+          if (descriptor != null &&
+              !identical(descriptor, current.descriptor)) {
+            return true;
+          }
+          if (lifecycle == ConversationLifecycle.terminal &&
               !current.terminal) {
             return true;
           }
-          if (itemShell != null &&
-              (itemShell.turnId != current.item.turnId ||
-                  itemShell.updatedAt != current.item.updatedAt)) {
+          if (header != null &&
+              (header.turnId != current.header.turnId ||
+                  header.updatedAt != current.header.updatedAt)) {
             return true;
           }
           for (final update in fields) {
@@ -692,18 +557,21 @@ final class TimelineSessionOwner {
   void _requestResync() {
     final threadId = _observedThread;
     if (threadId == null) return;
-    _sessionOf(threadId)?.timeline.refresh();
+    _sessionOf(threadId)?.content.refresh();
   }
 
-  void _startGeneration(String threadId, StudioTimelineBaseline baseline) {
+  void _startGeneration(
+    String threadId,
+    ConversationBaseline baseline, {
+    required ConversationPageCoverage pageCoverage,
+  }) {
     final previous = _current;
     final lease = TimelineDisplayLease(
       threadId: threadId,
       generation: ++_generation,
-      openQueries: (generation) =>
-          _sessionOf(threadId)?.timeline.openScope(generation: generation),
+      content: _sessionOf(threadId)!.content,
     );
-    lease.adoptBaseline(baseline);
+    lease.adoptBaseline(baseline, pageCoverage: pageCoverage);
     _current = lease;
     _olderInFlight = null;
     if (previous != null) unawaited(_retire(previous));
@@ -732,6 +600,12 @@ final class TimelineSessionOwner {
     }
   }
 
+  Future<void> retire() {
+    final current = _current;
+    select(null);
+    return current?.released ?? Future.value();
+  }
+
   // ---- 发布 --------------------------------------------------------------
 
   void _publishState({
@@ -752,13 +626,17 @@ final class TimelineSessionOwner {
       generation: lease?.generation ?? current.generation,
       mode: mode ?? lease?.mode ?? current.mode,
       connection: connection ?? current.connection,
-      connectionError: connectionError,
+      connectionError: identical(connectionError, _unset)
+          ? current.connectionError
+          : connectionError,
       olderCursor: identical(olderCursor, _unset)
           ? (lease == null ? current.olderCursor : lease.olderCursor)
-          : olderCursor,
+          : olderCursor as String?,
       hasOlder: hasOlder ?? lease?.hasOlder ?? current.hasOlder,
       isLoadingOlder: isLoadingOlder ?? current.isLoadingOlder,
-      olderError: olderError,
+      olderError: identical(olderError, _unset)
+          ? current.olderError
+          : olderError,
       hasNewOutput: hasNewOutput ?? current.hasNewOutput,
       isPreparingLive: isPreparingLive ?? current.isPreparingLive,
     );
@@ -821,7 +699,7 @@ final class TimelineSessionOwner {
     _pendingSwitch = pending;
     _publishState(isPreparingLive: true, hasNewOutput: false);
     // 采用新订阅避免把「页请求返回前已交付的 tail」拼成应用侧第二套恢复算法。
-    session.timeline.refresh();
+    session.content.refresh();
     try {
       await pending.result.future;
     } finally {
@@ -875,22 +753,31 @@ final class TimelineSessionOwner {
       return;
     }
     final generation = current.generation;
+    final session = _observedSession;
+    final attemptId = current.content.currentAttemptId;
     final before = current.olderCursor;
     _publishState(isLoadingOlder: true, olderError: null);
-    StudioTimelineQueryScope? scope;
+    ConversationQueryScope? scope;
     try {
       scope = current.queries;
       if (scope == null) {
-        throw const StudioFailure(
+        throw StudioFailure(
           code: StudioFailureCode.unavailable,
-          message: 'The timeline content connection is not ready',
+          message: current._pageCoverage == null
+              ? 'The timeline has no page coverage. Return to live to reload.'
+              : 'The timeline content connection is not ready',
           retryable: true,
           correlationId: 'timeline-owner-no-scope',
         );
       }
       final page = await scope.page(before: before);
       final still = lease(threadId);
-      if (still == null || still.generation != generation) return;
+      if (!identical(still, current) || still?.generation != generation) return;
+      if (!scope.isActive ||
+          current.isRetired ||
+          !identical(current._queries, scope)) {
+        return;
+      }
       if (page.hasOlder && (page.before == null || page.before == before)) {
         throw const StudioFailure(
           code: StudioFailureCode.protocol,
@@ -899,32 +786,56 @@ final class TimelineSessionOwner {
           correlationId: 'timeline-page-no-progress',
         );
       }
-      final inserted = still.prependOlder(page);
-      if (inserted == null) {
-        // 页前缀与本代次已覆盖范围无法证明连续：显式重建，不静默漏掉事实。
+      final pageCoverage = scope.pageCoverage;
+      if (pageCoverage == null) {
+        throw const ConversationContinuityError(
+          'The page scope has no display coverage',
+        );
+      }
+      current._pageCoverage = pageCoverage;
+      current.prependOlder(page);
+      _publishState(isLoadingOlder: false, olderError: null);
+    } catch (error) {
+      final still = lease(threadId);
+      if (!identical(still, current) || still?.generation != generation) return;
+      if (current.isRetired ||
+          error is StaleConversationScope ||
+          error is StaleConversationAttempt ||
+          (scope != null && !scope.isActive)) {
+        _publishState(isLoadingOlder: false);
+        return;
+      }
+      if (error is ConversationContinuityError) {
+        // Record the original display's failure before refresh retires scopes.
         _publishState(
           isLoadingOlder: false,
           olderError: const StudioFailure(
             code: StudioFailureCode.protocol,
-            message:
-                'The history page is not continuous with the current display',
+            message: 'The history page is no longer continuous. Return to live to reload.',
             retryable: true,
-            correlationId: 'timeline-page-not-continuous',
+            correlationId: 'timeline-page-continuity',
           ),
         );
-        _requestResync();
-        return;
-      }
-      _publishState(isLoadingOlder: false, olderError: null);
-    } catch (error) {
-      final still = lease(threadId);
-      if (still == null || still.generation != generation) return;
-      if (scope != null && !scope.isActive) {
-        _publishState(isLoadingOlder: false);
+        // Publication may navigate synchronously; never refresh a new A or B.
+        if (identical(lease(threadId), current) &&
+            !current.isRetired &&
+            _observedThread == threadId &&
+            source.value?.threadId == threadId &&
+            identical(_observedSession, session) &&
+            identical(session?.content, current.content) &&
+            current.content.currentAttemptId == attemptId &&
+            (scope == null || scope.isActive)) {
+          current.content.refresh();
+        }
         return;
       }
       // 失败保留内容并暴露可重试错误；错误/取消/EOF 都必须收束 loading。
       _publishState(isLoadingOlder: false, olderError: error);
+    } finally {
+      if (identical(lease(threadId), current) &&
+          source.value?.isLoadingOlder == true) {
+        _publishState(isLoadingOlder: false);
+      }
     }
   }
 
@@ -937,10 +848,6 @@ final class TimelineSessionOwner {
     final existing = _closing;
     if (existing != null) return existing;
     _closed = true;
-    _selectionObservation?.cancel();
-    _selectionObservation = null;
-    _sessionObservation?.cancel();
-    _sessionObservation = null;
     _detachTimeline();
     final pending = _pendingSwitch;
     _pendingSwitch = null;
@@ -985,7 +892,7 @@ final class TimelineSessionOwner {
               owner: 'timeline-display:${lease.threadId}',
               attemptId: AttemptId(lease.generation),
               reason: StateError(
-                'The mounted timeline generation has not been released',
+                'The timeline generation has not been released: ${lease.queryCleanupError ?? "waiting for subtree detach"}',
               ),
             ),
       ],

@@ -9,6 +9,7 @@ use pl_core::chat::{
     ChatError, ChatField, ChatResyncReason, ChatTailUpdate, ChatUpdatePriority, FieldChange,
     Session, TailChange,
 };
+use pretty_assertions::assert_eq;
 use timeline_support::*;
 
 fn next_patch(update: ChatTailUpdate) -> pl_core::chat::ChatTailPatch {
@@ -25,7 +26,13 @@ async fn a_new_tail_captures_the_latest_small_page_and_continues_from_it() {
     let session = Session::new(Stored::with(
         (1..=40).map(|order| item(order, 1, "x", true)),
     ));
+    // With no observer, content and save facts still advance and belong in the next baseline.
+    assert!(!session.has_subscribers());
+    session.publish(item(40, 2, "\nlatest\n", true)).unwrap();
+    session.confirm_saved("item-40", 2);
+    assert!(!session.has_subscribers());
     let mut tail = session.subscribe_tail().await.unwrap();
+    assert!(session.has_subscribers());
     assert!(
         matches!(tail.next().await, Err(ChatError::Conflict(_))),
         "the first frame must be taken before awaiting updates"
@@ -36,6 +43,11 @@ async fn a_new_tail_captures_the_latest_small_page_and_continues_from_it() {
     assert_eq!(baseline.items.len(), 32);
     assert_eq!(baseline.items.first().unwrap().order, 9);
     assert_eq!(baseline.items.last().unwrap().order, 40);
+    assert_eq!(
+        baseline.items.last(),
+        Some(&saved_item(40, 2, "\nlatest\n", true))
+    );
+    assert!(baseline.version > 0);
     assert!(
         matches!(tail.initial(), Err(ChatError::Conflict(_))),
         "the first frame is a one-shot handover"
@@ -207,13 +219,14 @@ async fn one_publication_that_changes_two_fields_commits_one_revision() {
     }
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn two_tails_keep_independent_baselines_and_closing_one_leaves_the_other_working() {
     let session = Session::new(Stored::default());
     let mut first = session.subscribe_tail().await.unwrap();
     let first_baseline = first.initial().expect("its own first frame");
     assert!(first_baseline.items.is_empty());
-    session.publish(item(1, 1, "one", false)).unwrap();
+    let original = item(1, 1, "one", false);
+    session.publish(original.clone()).unwrap();
     let patch = next_patch(first.next().await.unwrap().unwrap());
     assert!(matches!(&patch.changes[..], [TailChange::Add { .. }]));
     // The second observation starts from the newer baseline, so it is not missing anything.
@@ -222,12 +235,56 @@ async fn two_tails_keep_independent_baselines_and_closing_one_leaves_the_other_w
     assert_eq!(second_baseline.items.len(), 1);
     assert_eq!(second_baseline.items[0].item_id, "item-1");
 
+    // Both observers receive the very same body delta, but own separate delivery watermarks.
+    let continued = appended(&original, 2, "\n\ntwo\n");
+    session.publish(continued.clone()).unwrap();
+    let first_append = next_patch(first.next().await.unwrap().unwrap());
+    let second_append = next_patch(second.next().await.unwrap().unwrap());
+    assert_eq!(first_append.from, patch.to);
+    assert_eq!(second_append.from, second_baseline.version);
+    assert_eq!(first_append, second_append);
+    match &first_append.changes[..] {
+        [
+            TailChange::UpdateItem {
+                expected_revision,
+                revision,
+                fields,
+                ..
+            },
+        ] => {
+            assert_eq!((*expected_revision, *revision), (1, 2));
+            assert_eq!(
+                fields,
+                &[pl_core::chat::FieldUpdate {
+                    field: ChatField::Body,
+                    change: FieldChange::Append("\n\ntwo\n".to_owned()),
+                    total_bytes: 9,
+                    preview_bytes: 9,
+                }]
+            );
+        }
+        other => panic!("expected the original newline-preserving append, got {other:?}"),
+    }
+    session.publish(appended(&continued, 3, "three")).unwrap();
+    let ahead = next_patch(first.next().await.unwrap().unwrap());
+
     first.close();
+    first.close();
+    assert!(
+        session.has_subscribers(),
+        "the second observation still owns demand"
+    );
     assert!(
         matches!(first.initial(), Err(ChatError::Cancelled)),
         "close releases the content"
     );
     assert!(matches!(first.next().await, Err(ChatError::Cancelled)));
+    let catching_up = next_patch(second.next().await.unwrap().unwrap());
+    assert_eq!(catching_up.from, second_append.to);
+    assert_eq!(
+        catching_up, ahead,
+        "the first reader cannot consume the second reader's progress"
+    );
 
     session.publish(item(2, 1, "two", false)).unwrap();
     let patch = next_patch(second.next().await.unwrap().unwrap());
@@ -235,6 +292,45 @@ async fn two_tails_keep_independent_baselines_and_closing_one_leaves_the_other_w
         [TailChange::Add { item }] => assert_eq!(item.item_id, "item-2"),
         other => panic!("expected the surviving observation to deliver, got {other:?}"),
     }
+
+    // Cancel the caller-owned next future before close; its temporary waiter must not leak demand.
+    {
+        let mut pending = Box::pin(second.next());
+        assert!(futures::poll!(&mut pending).is_pending());
+    }
+    second.close();
+    second.close();
+    assert!(
+        !session.has_subscribers(),
+        "closed objects still exist but own no receivers"
+    );
+    assert!(matches!(second.initial(), Err(ChatError::Cancelled)));
+    assert!(matches!(second.next().await, Err(ChatError::Cancelled)));
+
+    session.publish(item(3, 1, "after close", true)).unwrap();
+    session.confirm_saved("item-3", 1);
+    assert_eq!(
+        visible(&session, 32).await,
+        vec![
+            appended(&continued, 3, "three"),
+            item(2, 1, "two", false),
+            saved_item(3, 1, "after close", true),
+        ]
+    );
+    assert!(!session.has_subscribers(), "paging is not a subscription");
+    let reopened = session.subscribe_tail().await.unwrap();
+    assert!(session.has_subscribers());
+    drop(reopened);
+    assert!(
+        !session.has_subscribers(),
+        "dropping an unconsumed tail releases demand too"
+    );
+    let weak_session = session.downgrade();
+    drop(session);
+    assert!(
+        weak_session.upgrade().is_none(),
+        "closed tails must not pin the session either"
+    );
 }
 
 #[tokio::test]
@@ -242,9 +338,20 @@ async fn a_slow_observation_resynchronizes_instead_of_stitching_disjoint_facts()
     let session = Session::new(Stored::default());
     let mut tail = session.subscribe_tail().await.unwrap();
     let _first_frame = take_initial(&mut tail);
+    let mut fast = session.subscribe_tail().await.unwrap();
+    let mut fast_version = take_initial(&mut fast).version;
     // Far more publications than the bounded continuity window can describe.
     for order in 1..=700 {
         session.publish(item(order, 1, "x", true)).unwrap();
+        let patch = next_patch(fast.next().await.unwrap().unwrap());
+        assert_eq!(patch.from, fast_version);
+        assert_eq!(
+            patch.changes,
+            vec![TailChange::Add {
+                item: item(order, 1, "x", true)
+            }]
+        );
+        fast_version = patch.to;
     }
 
     let resync_version = match tail.next().await.unwrap().unwrap() {
@@ -257,11 +364,84 @@ async fn a_slow_observation_resynchronizes_instead_of_stitching_disjoint_facts()
         }
         ChatTailUpdate::Patch(patch) => panic!("expected a resync, got patch {patch:?}"),
     };
+    assert_eq!(resync_version, fast_version);
     // The observation continues from the new baseline.
     session.publish(item(701, 1, "x", true)).unwrap();
     let patch = next_patch(tail.next().await.unwrap().unwrap());
     assert_eq!(patch.from, resync_version);
     assert!(patch.to > patch.from);
+    let fast_patch = next_patch(fast.next().await.unwrap().unwrap());
+    assert_eq!(
+        fast_patch, patch,
+        "one observation's resync cannot reset another's baseline"
+    );
+}
+
+#[tokio::test]
+async fn a_failed_initial_capture_releases_demand_and_can_be_retried() {
+    let history = FailsOnce::new(Stored::default());
+    let fail_next_page = history.fail_next_page.clone();
+    let session = Session::new(history);
+    session
+        .publish(item(1, 1, "before failure", false))
+        .unwrap();
+    fail_next_page.store(true, std::sync::atomic::Ordering::SeqCst);
+
+    assert!(matches!(
+        session.subscribe_tail().await,
+        Err(ChatError::History(_))
+    ));
+    assert!(!session.has_subscribers(), "a failed open owns no receiver");
+
+    let current = item(1, 2, "after failure", true);
+    session.publish(current.clone()).unwrap();
+    let mut tail = session.subscribe_tail().await.unwrap();
+    assert!(session.has_subscribers());
+    let baseline = take_initial(&mut tail);
+    assert_eq!(baseline.items, vec![current]);
+    drop(tail);
+    assert!(!session.has_subscribers());
+}
+
+#[tokio::test]
+async fn cancelling_an_initial_capture_releases_its_registered_receiver() {
+    let mut history = GatedHistory::new(Stored::default());
+    let gate = Arc::new(HistoryGate::new());
+    history.page_gate = Some(gate.clone());
+    let session = Session::new(history);
+
+    let mut opening = Box::pin(session.subscribe_tail());
+    assert!(futures::poll!(&mut opening).is_pending());
+    gate.entered().await;
+    assert!(
+        session.has_subscribers(),
+        "opening registers before awaiting history"
+    );
+    let current = item(1, 1, "published while opening", true);
+    session.publish(current.clone()).unwrap();
+    drop(opening);
+    assert!(
+        !session.has_subscribers(),
+        "cancelled opening releases its receiver"
+    );
+
+    let mut reopening = Box::pin(session.subscribe_tail());
+    assert!(futures::poll!(&mut reopening).is_pending());
+    gate.entered().await;
+    let revised = item(1, 2, "published during the successful capture", true);
+    session.publish(revised.clone()).unwrap();
+    gate.release();
+    let mut tail = reopening.await.unwrap();
+    let baseline = take_initial(&mut tail);
+    assert_eq!(baseline.items, vec![revised]);
+    tail.close();
+    // Closing with a still-unconsumed initial frame also prioritizes cancellation over conflict.
+    gate.release();
+    let mut unconsumed = session.subscribe_tail().await.unwrap();
+    unconsumed.close();
+    assert!(!session.has_subscribers());
+    assert!(matches!(unconsumed.initial(), Err(ChatError::Cancelled)));
+    assert!(matches!(unconsumed.next().await, Err(ChatError::Cancelled)));
 }
 
 #[tokio::test]

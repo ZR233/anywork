@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_row.dart';
 import 'package:anywork/src/shared/studio_driver_state.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
@@ -85,6 +86,8 @@ class ToolProbeExtension extends CommandExtension {
         }
         expanded =
             (expansibles.first.widget as Expansible).controller.isExpanded;
+      } else if (_activityHeader(target) case final header?) {
+        expanded = (header.widget as TimelineActivityRow).expanded;
       }
       final production = jsonDecode(StudioDriverState.snapshotJson());
       final scroll = production is Map ? production['timelineScroll'] : null;
@@ -168,7 +171,13 @@ class ToolProbeExtension extends CommandExtension {
       _removeMouse();
     } else if (probe.action == 'tap') {
       // Header, not the center of the whole expanded tile.
-      await prober.tapAt(top + Offset(30, 20));
+      final header = _activityHeader(target);
+      final headerBox = header?.renderObject;
+      await prober.tapAt(
+        headerBox is RenderBox
+            ? headerBox.localToGlobal(headerBox.size.center(Offset.zero))
+            : top + Offset(30, 20),
+      );
     } else if (probe.action == 'wheelOutside') {
       GestureBinding.instance.handlePointerEvent(
         PointerScrollEvent(
@@ -216,6 +225,31 @@ class ToolProbeExtension extends CommandExtension {
       samples.add(sample());
     }
     return _ProbeResult(samples);
+  }
+
+  Element? _activityHeader(Finder target) {
+    final widget = target.evaluate().single.widget;
+    final key = widget.key;
+    if (widget is! Column ||
+        key is! ValueKey<String> ||
+        !key.value.startsWith('timeline-block-') ||
+        widget.children.isEmpty) {
+      return null;
+    }
+    // Bind the member's actual first header, not a detail notice that happens
+    // to reuse TimelineActivityRow later in the subtree.
+    final selection = widget.children.first;
+    if (selection is! SelectionContainer) return null;
+    final ink = selection.child;
+    if (ink is! InkWell || ink.child is! TimelineActivityRow) return null;
+    return find
+        .descendant(
+          of: target,
+          matching: find.byWidget(ink.child!, skipOffstage: false),
+          skipOffstage: false,
+        )
+        .evaluate()
+        .single;
   }
 
   void _removeMouse() {

@@ -23,7 +23,7 @@ use pl_core::{
         AggregateChannel, ContentBlock, ModelTextChannel, ObservedItemKind, ObservedPart,
         ObservedPartIdentity, ObservedPartKind,
     },
-    thread::{ThreadEffectBatch, ThreadSnapshot, TurnRecord, TurnState},
+    thread::{ThreadEffectBatch, ThreadSnapshot, TurnState},
 };
 use pl_protocol::{
     InteractionRequest, SkillActivationCause, SkillActivationResourceBase, ThreadAgentItem,
@@ -901,6 +901,9 @@ impl LiveProjection {
     /// save queue, so "the writer confirmed this identity" always means "the session already holds
     /// it": there is no save-before-publish interleaving and no hidden confirmation table.
     ///
+    /// `deliver` controls only outward frame materialization. Phase, hidden-input and Turn identity
+    /// maintenance, session publication and the reliable prepared batch never depend on demand.
+    ///
     /// # Errors
     /// Returns a projection failure when the effect references facts this projection cannot resolve
     /// from memory. The caller reports it, so the durable barrier fails closed with the real reason
@@ -911,7 +914,8 @@ impl LiveProjection {
         thread: &pl_protocol::Thread,
         effect: &ThreadEffectBatch,
         state: &ThreadSnapshot,
-    ) -> Result<(Vec<LiveEvent>, Arc<PreparedEffect>), ProjectionError> {
+        deliver: bool,
+    ) -> Result<(Option<Vec<LiveEvent>>, Arc<PreparedEffect>), ProjectionError> {
         let prepared = self.project(chat, thread, effect, state)?;
         for item in &prepared.items {
             chat.publish(
@@ -920,10 +924,12 @@ impl LiveProjection {
             )
             .map_err(|error| ProjectionError::History(error.to_string()))?;
         }
-        let mut events = Vec::new();
+        let mut events = deliver.then(Vec::new);
         self.emit_frames(thread, effect, state, &mut events)?;
-        if let Some(canonical) = super::prepared_terminal_turn(&prepared) {
-            for event in &mut events {
+        if let Some(events) = events.as_mut()
+            && let Some(canonical) = super::prepared_terminal_turn(&prepared)
+        {
+            for event in events {
                 if let LiveEvent::Turn { turn, .. } = event
                     && turn.id == canonical.id
                 {
@@ -1099,7 +1105,7 @@ impl LiveProjection {
                         previous.updated_at,
                     )
                 });
-            let changed = self.content_changed(item.id.as_str(), item, &existing);
+            let changed = self.content_changed(item.id.as_str(), item, &existing)?;
             item.revision = match (self.revisions.get(item.id.as_str()).copied(), changed) {
                 (Some(current), false) => current,
                 _ => self.bump_content_revision(&item.id),
@@ -1488,7 +1494,8 @@ impl LiveProjection {
                     LivePreview {
                         fields: crate::studio::runtime::chat_item::content_fields(
                             committed.state(),
-                        ),
+                        )
+                        .map_err(|error| ProjectionError::History(error.to_string()))?,
                         // A tool-output preview is keyed by the call identity, not by a provider
                         // observation, so it never enters the provider observation index.
                         observed: None,
@@ -1621,27 +1628,29 @@ impl LiveProjection {
         id: &str,
         item: &ThreadItem,
         existing: &BTreeMap<String, ThreadItem>,
-    ) -> bool {
-        let candidate_fields = crate::studio::runtime::chat_item::content_fields(item.state());
+    ) -> Result<bool, ProjectionError> {
+        let candidate_fields = crate::studio::runtime::chat_item::content_fields(item.state())
+            .map_err(|error| ProjectionError::History(error.to_string()))?;
         let candidate_shape = static_state(item.state());
         if let Some(preview) = self.previews.get(id) {
-            return preview.shape != candidate_shape
-                || !fields_equal(&candidate_fields, &preview.fields);
+            return Ok(preview.shape != candidate_shape
+                || !fields_equal(&candidate_fields, &preview.fields));
         }
         // A committed fact resident in memory wins; on cold recovery the canonical fact resolved by
         // this pass is compared the same way, so a payload identical to the stored one is not treated
         // as a first delivery and does not raise the version for nothing.
-        match self.items.get(id).or_else(|| existing.get(id)) {
+        Ok(match self.items.get(id).or_else(|| existing.get(id)) {
             Some(previous) => {
                 previous.turn_id != item.turn_id
                     || static_state(previous.state()) != candidate_shape
                     || !fields_equal(
                         &candidate_fields,
-                        &crate::studio::runtime::chat_item::content_fields(previous.state()),
+                        &crate::studio::runtime::chat_item::content_fields(previous.state())
+                            .map_err(|error| ProjectionError::History(error.to_string()))?,
                     )
             }
             None => true,
-        }
+        })
     }
 
     /// Resolves one effect's identities: canonical payloads this projection holds, plus the orders a
@@ -1753,7 +1762,7 @@ impl LiveProjection {
         }
     }
 
-    /// Emits the Turn and interaction frames one committed effect produced.
+    /// Maintains lifecycle continuity and optionally emits this effect's Turn and interaction frames.
     ///
     /// The frames are derived from the same effect-matched state the content was projected from, so
     /// a live subscriber and durable history describe one commit rather than two drifting views.
@@ -1762,7 +1771,7 @@ impl LiveProjection {
         thread: &pl_protocol::Thread,
         effect: &ThreadEffectBatch,
         state: &ThreadSnapshot,
-        events: &mut Vec<LiveEvent>,
+        events: &mut Option<Vec<LiveEvent>>,
     ) -> Result<(), ProjectionError> {
         if let Some(record) = &effect.turn {
             let event = if record.state == TurnState::Running {
@@ -1775,14 +1784,6 @@ impl LiveProjection {
                 self.turns_seen.insert(record.turn_id.clone());
                 TurnEvent::Completed
             };
-            let turn = super::turns::project_turn(
-                &thread.id,
-                state,
-                record,
-                effect.committed_at,
-                effect.committed_at,
-                effect.sequence,
-            )?;
             if record.state == TurnState::Running {
                 self.turn_phases.insert(
                     record.turn_id.clone(),
@@ -1791,45 +1792,67 @@ impl LiveProjection {
             } else {
                 self.turn_phases.remove(&record.turn_id);
             }
-            events.push(LiveEvent::Turn { turn, event });
+            if let Some(events) = events.as_mut() {
+                let turn = super::turns::project_turn(
+                    &thread.id,
+                    state,
+                    record,
+                    effect.committed_at,
+                    effect.committed_at,
+                    effect.sequence,
+                )?;
+                events.push(LiveEvent::Turn { turn, event });
+            }
         }
         // A Turn record is only committed when a Turn starts or finishes, but a task start, a tool
         // completion or a model attempt commit changes the running Turn's derived phase. Publishing
         // each real phase transition keeps the activity row on the canonical phase instead of the
         // phase captured at Turn start. The frame carries the same revision as the item updates of
         // this effect, so a late busy frame can never outrank the terminal Turn.
-        for record in self.phase_advances(state) {
+        for record in state.turns.iter() {
+            if record.state != TurnState::Running {
+                continue;
+            }
+            let phase = super::turns::phase(state, &record.turn_id);
+            if self.turn_phases.get(&record.turn_id) == Some(&phase) {
+                continue;
+            }
+            self.turn_phases.insert(record.turn_id.clone(), phase);
             let event = if self.turns_seen.insert(record.turn_id.clone()) {
                 TurnEvent::Started
             } else {
                 TurnEvent::Updated
             };
-            let turn = super::turns::project_turn(
-                &thread.id,
-                state,
-                &record,
-                effect.committed_at,
-                effect.committed_at,
-                effect.sequence,
-            )?;
-            events.push(LiveEvent::Turn { turn, event });
-        }
-        for record in effect.interactions.iter() {
-            if let Ok(Some(interaction)) = crate::thread_assembler::project_thread_interaction(
-                &thread.id,
-                &record.request.id,
-                state,
-            ) {
-                events.push(LiveEvent::Interaction(Box::new(interaction)));
+            if let Some(events) = events.as_mut() {
+                let turn = super::turns::project_turn(
+                    &thread.id,
+                    state,
+                    record,
+                    effect.committed_at,
+                    effect.committed_at,
+                    effect.sequence,
+                )?;
+                events.push(LiveEvent::Turn { turn, event });
             }
         }
-        for permission in effect.permissions.iter() {
-            if let Ok(Some(interaction)) = crate::thread_assembler::project_thread_interaction(
-                &thread.id,
-                &permission.id,
-                state,
-            ) {
-                events.push(LiveEvent::Interaction(Box::new(interaction)));
+        if let Some(events) = events.as_mut() {
+            for record in effect.interactions.iter() {
+                if let Ok(Some(interaction)) = crate::thread_assembler::project_thread_interaction(
+                    &thread.id,
+                    &record.request.id,
+                    state,
+                ) {
+                    events.push(LiveEvent::Interaction(Box::new(interaction)));
+                }
+            }
+            for permission in effect.permissions.iter() {
+                if let Ok(Some(interaction)) = crate::thread_assembler::project_thread_interaction(
+                    &thread.id,
+                    &permission.id,
+                    state,
+                ) {
+                    events.push(LiveEvent::Interaction(Box::new(interaction)));
+                }
             }
         }
         let mut active_inputs = state
@@ -1845,23 +1868,6 @@ impl LiveProjection {
         self.hidden_inputs
             .retain(|id| active_inputs.contains(id.as_str()));
         Ok(())
-    }
-
-    /// Running Turns whose canonical phase changed since the last published Turn frame.
-    fn phase_advances(&mut self, state: &ThreadSnapshot) -> Vec<TurnRecord> {
-        let mut advanced = Vec::new();
-        for record in state.turns.iter() {
-            if record.state != TurnState::Running {
-                continue;
-            }
-            let phase = super::turns::phase(state, &record.turn_id);
-            if self.turn_phases.get(&record.turn_id) == Some(&phase) {
-                continue;
-            }
-            self.turn_phases.insert(record.turn_id.clone(), phase);
-            advanced.push(record.clone());
-        }
-        advanced
     }
 
     /// Records one projected payload and keeps its revision strictly monotonic.

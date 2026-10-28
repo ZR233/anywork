@@ -175,13 +175,12 @@ impl SessionTool {
                     .rev()
                     .filter(|item| {
                         matches!(
-                            item.preview.kind(),
-                            pl_protocol::ThreadItemKind::Turn
-                                | pl_protocol::ThreadItemKind::Inference
+                            &item.descriptor,
+                            pl_protocol::TimelineDescriptor::Turn(_)
+                                | pl_protocol::TimelineDescriptor::Inference(_)
                         )
                     })
                     .take(4)
-                    .map(|item| item.preview)
                     .collect::<Vec<_>>();
                 let pending = snapshot.interactions.iter().take(32).map(|interaction| {
                     let kind = match &interaction.content {

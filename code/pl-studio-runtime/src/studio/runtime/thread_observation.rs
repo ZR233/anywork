@@ -154,15 +154,21 @@ impl ThreadLiveFeed {
         self.storage.send_replace(storage);
     }
 
-    fn publish(&self, event: ThreadLiveEvent) {
-        // A feed with no subscriber is the normal state of a Thread without an open GUI; the
-        // projection owner still consumed and published the fact.
-        let _ = self.events.send(event);
+    fn has_subscribers(&self) -> bool {
+        self.events.receiver_count() != 0
+    }
+
+    fn publish(&self, event: impl FnOnce() -> ThreadLiveEvent) {
+        // Demand is advisory, not the registration barrier. Facts and retained watches are updated
+        // independently; no outward envelope (or its dedicated clone) is built without a receiver.
+        if self.has_subscribers() {
+            let _ = self.events.send(event());
+        }
     }
 
     /// Tells every subscriber that the owner re-seeded and continuity is no longer provable.
     fn rebase(&self, dropped: u64) {
-        self.publish(ThreadLiveEvent::Rebase { dropped });
+        self.publish(|| ThreadLiveEvent::Rebase { dropped });
     }
 }
 
@@ -785,10 +791,16 @@ impl LiveOwner {
     /// Folds one admitted write into the shared session and the reliable save channel.
     fn project_write(&mut self, write: &ThreadWrite) -> Result<()> {
         let effect = &write.effect;
+        let deliver = self.feed.has_subscribers();
         let projected = (|| {
             crate::studio::thread_projection::fold_effect_accounting(&mut self.usage, effect)?;
-            self.projection
-                .advance(&self.chat, &self.thread, effect, &write.checkpoint.state)
+            self.projection.advance(
+                &self.chat,
+                &self.thread,
+                effect,
+                &write.checkpoint.state,
+                deliver,
+            )
         })();
         let (changes, prepared) = match projected {
             Ok(projected) => projected,
@@ -803,20 +815,17 @@ impl LiveOwner {
                 return Err(anyhow::anyhow!("live Thread projection failed: {error}"));
             }
         };
-        self.channel.prepare(prepared);
-        // Retain the terminal Turn of this commit as the owner's own last-turn fact before the frame
-        // is broadcast: `turnCompleted` reaches only the subscribers that exist right now, so the
-        // value a later subscriber is told has to be the very frame this commit produced.
-        if let Some(turn) = changes.iter().rev().find_map(|change| match change {
-            LiveEvent::Turn { turn, .. } if turn.state.is_terminal() => Some(turn),
-            _ => None,
-        }) {
-            self.feed.publish_last_turn(Arc::new(turn.clone()));
+        // Retain the canonical fact even without delivery-only changes, before reliable handoff.
+        if let Some(turn) = crate::studio::thread_projection::prepared_terminal_turn(&prepared) {
+            self.feed.publish_last_turn(Arc::new(turn));
         }
-        self.feed.publish(ThreadLiveEvent::Committed {
-            sequence: effect.sequence,
-            changes,
-        });
+        self.channel.prepare(prepared);
+        if let Some(changes) = changes {
+            self.feed.publish(|| ThreadLiveEvent::Committed {
+                sequence: effect.sequence,
+                changes,
+            });
+        }
         self.publish_retained();
         Ok(())
     }
@@ -928,9 +937,9 @@ impl LiveOwner {
         }
         runtime.updated_at = crate::studio::unix_seconds();
         runtime.usage.updated_at = runtime.updated_at;
-        self.runtime_published = Some(runtime.clone());
-        self.feed.publish(ThreadLiveEvent::Runtime {
-            runtime: Arc::new(runtime),
+        let runtime = self.runtime_published.insert(runtime);
+        self.feed.publish(|| ThreadLiveEvent::Runtime {
+            runtime: Arc::new(runtime.clone()),
         });
         Ok(())
     }
@@ -946,10 +955,10 @@ impl LiveOwner {
         if activity == self.activity_published {
             return;
         }
-        self.activity_published = activity.clone();
+        self.activity_published = activity;
         // One shared handle per published change: every subscriber clones that handle, never the body.
-        self.feed.publish(ThreadLiveEvent::Activity {
-            activity: activity.map(Arc::new),
+        self.feed.publish(|| ThreadLiveEvent::Activity {
+            activity: self.activity_published.clone().map(Arc::new),
         });
     }
 
@@ -1450,6 +1459,14 @@ impl ProjectionWorker {
         let owner_product = live.thread.clone();
         let mut newest_commit_at = 0_i64;
         while let Some(write) = live.channel.next_unprojected() {
+            // Core admits effects before publishing its snapshot. Do not cross that publication
+            // boundary: after a zero-demand decision, a later receiver registers before capturing a
+            // snapshot that must already cover this effect. Otherwise admission could race receiver
+            // registration and leave a skipped commit out of both baseline and feed. The existing
+            // snapshot watch wakes us when this watermark advances; the reliable queue retains work.
+            if write.effect.sequence > snapshot.commit_sequence {
+                break;
+            }
             let sequence = write.effect.sequence;
             if sequence <= recovered_through {
                 // A fact the owner committed before this projection existed: it is already part of
@@ -1693,7 +1710,7 @@ mod storage_fault_tests {
         // 没有补读时这张投影无法完成这份回答：这是缺 body 的真实失败，而不是可接受的限制。
         assert!(
             projection
-                .advance(&chat, &thread, &answer_effect, &answered_state)
+                .advance(&chat, &thread, &answer_effect, &answered_state, true)
                 .is_err()
         );
         // owner 按 identity 补读那一条 durable 正文后，同一次投影就能完成。
@@ -1704,7 +1721,8 @@ mod storage_fault_tests {
             &answer_effect,
         )
         .await?;
-        let (_, prepared) = projection.advance(&chat, &thread, &answer_effect, &answered_state)?;
+        let (_, prepared) =
+            projection.advance(&chat, &thread, &answer_effect, &answered_state, true)?;
 
         // 3) 走真实 writer：回答必须落盘在原条目上，身份/顺序/创建时间不变。
         let answer_write = ThreadWrite {
@@ -1802,7 +1820,7 @@ mod storage_fault_tests {
         crate::studio::thread_projection::fold_effect_accounting(&mut usage, &effect)?;
         assert_eq!(usage.inference_count, 1);
         let mut projection = LiveProjection::new();
-        let (_, prepared) = projection.advance(&chat, &thread, &effect, &state)?;
+        let (_, prepared) = projection.advance(&chat, &thread, &effect, &state, true)?;
         let write = ThreadWrite {
             effect: Arc::new(effect),
             checkpoint: ThreadCheckpoint::capture_transfer(thread.id.clone(), 1, state),
@@ -1881,7 +1899,7 @@ mod storage_fault_tests {
         sink.admit(&thread.id, write.clone())?;
         let mut projection = LiveProjection::new();
         let (_, prepared) =
-            projection.advance(&chat, &thread, &write.effect, &write.checkpoint.state)?;
+            projection.advance(&chat, &thread, &write.effect, &write.checkpoint.state, true)?;
         assert!(channel.prepare(prepared));
         tokio::time::timeout(Duration::from_secs(5), sink.flush(&thread.id, 1)).await??;
         drop(projection);

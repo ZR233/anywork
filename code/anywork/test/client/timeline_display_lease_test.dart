@@ -1,4 +1,6 @@
-import 'package:anywork/src/domain/models/timeline_presentation.dart';
+import 'support/conversation_fixtures.dart';
+
+import 'package:anywork/src/features/conversation/timeline/state/timeline_entry.dart';
 import 'package:anywork/src/presentation/view_models/timeline_session_owner.dart';
 import 'package:anywork_client/studio_client.dart';
 import 'package:flutter_chat_core/flutter_chat_core.dart';
@@ -7,42 +9,37 @@ import 'package:flutter_test/flutter_test.dart';
 /// 展示 lease 的缺陷敏感度：唯一 loadedMessage 集合、身份稳定、真实删除、重叠页去重、
 /// History 冻结与真实卸载释放（design/26 §26.3、§26.8）。
 void main() {
-  StudioTimelineItem item(
+  ConversationItem item(
     String id,
     int revision, {
     String body = 'body',
     bool saved = false,
-    StudioTimelineLifecycle lifecycle = StudioTimelineLifecycle.streaming,
+    ConversationLifecycle lifecycle = ConversationLifecycle.streaming,
     String turnId = 'turn',
-  }) => StudioTimelineItem(
-    item: ThreadItemView(
-      id: id,
-      threadId: 'thread',
-      turnId: turnId,
-      ordinal: revision,
-      revision: revision,
-      createdAt: DateTime.utc(2026),
-      updatedAt: DateTime.utc(2026),
-      state: ThreadTextItemStateView(
-        channel: ThreadTextChannel.finalAnswer,
-        text: body,
-        attachments: const [],
-        lifecycle: lifecycle == StudioTimelineLifecycle.terminal
-            ? CompletedThreadContentView(DateTime.utc(2026))
-            : const StreamingThreadContentView(),
-      ),
-      saved: saved,
-    ),
+  }) => conversationFixture(
+    id: id,
+    threadId: 'thread',
+    turnId: turnId,
+    ordinal: revision,
+    revision: revision,
+    createdAt: DateTime.utc(2026),
+    updatedAt: DateTime.utc(2026),
     saved: saved,
     lifecycle: lifecycle,
-    omittedBytes: 0,
-    details: const [],
+    descriptor: ConversationTextDescriptor(
+      channel: ThreadTextChannel.finalAnswer,
+      attachments: const [],
+      lifecycle: lifecycle == ConversationLifecycle.terminal
+          ? CompletedThreadContentView(DateTime.utc(2026))
+          : const StreamingThreadContentView(),
+    ),
+    fields: {const ThreadTextFieldView(): body},
   );
 
   TimelineDisplayLease lease() => TimelineDisplayLease(
     threadId: 'thread',
     generation: 1,
-    openQueries: (_) => null,
+    content: conversationContentFixture(threadId: 'thread'),
   );
 
   List<String> messageIds(TimelineDisplayLease value) => [
@@ -52,7 +49,7 @@ void main() {
   test('baseline becomes the唯一 loaded message collection', () {
     final display = lease();
     display.adoptBaseline(
-      StudioTimelineBaseline(
+      ConversationBaseline(
         subscriptionId: 'sub',
         version: 4,
         items: [item('a', 1), item('b', 2)],
@@ -70,7 +67,7 @@ void main() {
   test('add/update/remove keep canonical identity and never re-create it', () {
     final display = lease();
     display.adoptBaseline(
-      StudioTimelineBaseline(
+      ConversationBaseline(
         subscriptionId: 'sub',
         version: 1,
         items: [item('a', 1)],
@@ -83,39 +80,39 @@ void main() {
     // 重复交付已加载身份：不 remove/reinsert、不改 ID；稳定身份不要求同一 Dart 实例。
     expect(
       display.applyPatch(
-        StudioTimelinePatch(
+        ConversationPatch(
           subscriptionId: 'sub',
           from: 1,
           to: 2,
-          changes: [StudioTimelineAdd(item('a', 1))],
-          priority: StudioTimelinePriority.immediate,
+          changes: [ConversationAdd(item('a', 1))],
+          priority: ConversationPriority.immediate,
         ),
       ),
       isTrue,
     );
     expect(display.controller.messages.single.id, before.id);
     expect(
-      timelinePayloadOf(display.controller.messages.single)!.revision,
-      timelinePayloadOf(before)!.revision,
+      timelineEntryOf(display.controller.messages.single)!.first.revision,
+      timelineEntryOf(before)!.first.revision,
     );
 
     // 原位更新：同一身份、新正文。
     expect(
       display.applyPatch(
-        StudioTimelinePatch(
+        ConversationPatch(
           subscriptionId: 'sub',
           from: 2,
           to: 3,
           changes: [
-            StudioTimelineUpdateItem(
+            ConversationUpdateItem(
               itemId: 'a',
               expectedRevision: 1,
               revision: 2,
-              omittedBytes: 0,
+
               saved: true,
-              lifecycle: StudioTimelineLifecycle.terminal,
+              lifecycle: ConversationLifecycle.terminal,
               fields: const [
-                StudioFieldUpdateView(
+                ConversationFieldUpdate(
                   field: ThreadTextFieldView(),
                   change: AppendThreadFieldChangeView(' more'),
                   totalBytes: 9,
@@ -124,28 +121,28 @@ void main() {
               ],
             ),
           ],
-          priority: StudioTimelinePriority.coalesced,
+          priority: ConversationPriority.coalesced,
         ),
       ),
       isTrue,
     );
     final updated = display.controller.messages.single;
-    final payload = timelinePayloadOf(updated)!;
+    final payload = timelineEntryOf(updated)!.first;
     expect(payload.id, 'a');
     expect(payload.saved, isTrue, reason: '保存水位独立于执行终态');
     expect(payload.terminal, isTrue);
-    final text = payload.item.state as ThreadTextItemStateView;
-    expect(text.text, 'body more');
+    final text = timelineText(payload);
+    expect(text, 'body more');
 
     // 真实删除：即使该身份不在 SDK 有界尾部里也必须交付给展示。
     expect(
       display.applyPatch(
-        StudioTimelinePatch(
+        ConversationPatch(
           subscriptionId: 'sub',
           from: 3,
           to: 4,
-          changes: const [StudioTimelineRemove('a')],
-          priority: StudioTimelinePriority.immediate,
+          changes: const [ConversationRemove('a')],
+          priority: ConversationPriority.immediate,
         ),
       ),
       isTrue,
@@ -157,7 +154,7 @@ void main() {
   test('a revision the display cannot continue asks for a new baseline', () {
     final display = lease();
     display.adoptBaseline(
-      StudioTimelineBaseline(
+      ConversationBaseline(
         subscriptionId: 'sub',
         version: 1,
         items: [item('a', 1)],
@@ -167,12 +164,12 @@ void main() {
     );
     expect(
       display.applyPatch(
-        StudioTimelinePatch(
+        ConversationPatch(
           subscriptionId: 'sub',
           from: 7,
           to: 8,
           changes: const [],
-          priority: StudioTimelinePriority.coalesced,
+          priority: ConversationPriority.coalesced,
         ),
       ),
       isFalse,
@@ -183,7 +180,7 @@ void main() {
   test('older pages prepend without duplicating loaded identities', () {
     final display = lease();
     display.adoptBaseline(
-      StudioTimelineBaseline(
+      ConversationBaseline(
         subscriptionId: 'sub',
         version: 9,
         items: [item('c', 3)],
@@ -192,7 +189,7 @@ void main() {
       ),
     );
     final inserted = display.prependOlder(
-      StudioTimelinePage(
+      ConversationPage(
         items: [item('a', 1), item('b', 2), item('c', 3)],
         before: 'tlp1.a',
         hasOlder: true,
@@ -208,7 +205,7 @@ void main() {
   test('History freezes content, structure and saved facts', () {
     final display = lease();
     display.adoptBaseline(
-      StudioTimelineBaseline(
+      ConversationBaseline(
         subscriptionId: 'sub',
         version: 1,
         items: [item('a', 1)],
@@ -220,23 +217,23 @@ void main() {
     display.enterHistory();
     expect(
       display.applyPatch(
-        StudioTimelinePatch(
+        ConversationPatch(
           subscriptionId: 'sub',
           from: 1,
           to: 2,
           changes: [
-            StudioTimelineAdd(item('new', 1)),
-            StudioTimelineUpdateItem(
+            ConversationAdd(item('new', 1)),
+            ConversationUpdateItem(
               itemId: 'a',
               expectedRevision: 1,
               revision: 2,
-              omittedBytes: 0,
+
               saved: true,
-              lifecycle: StudioTimelineLifecycle.terminal,
+              lifecycle: ConversationLifecycle.terminal,
               fields: const [],
             ),
           ],
-          priority: StudioTimelinePriority.immediate,
+          priority: ConversationPriority.immediate,
         ),
       ),
       isTrue,
@@ -244,7 +241,7 @@ void main() {
     expect(display.controller.messages.single, same(frozen));
     expect(display.appliedVersion, 1, reason: 'frozen display watermark stays');
     expect(
-      timelinePayloadOf(frozen)!.saved,
+      timelineEntryOf(frozen)!.first.saved,
       isFalse,
       reason: 'saved confirmations are frozen too',
     );
@@ -275,262 +272,269 @@ void main() {
     final first = TimelineDisplayLease(
       threadId: 'thread',
       generation: 1,
-      openQueries: (_) => null,
+      content: conversationContentFixture(threadId: 'thread'),
     );
     final second = TimelineDisplayLease(
       threadId: 'thread',
       generation: 2,
-      openQueries: (_) => null,
+      content: conversationContentFixture(threadId: 'thread'),
     );
     expect(first.chatKey, isNot(second.chatKey));
     expect(first.scrollController.keepScrollOffset, isFalse);
     expect(first.controller, isA<InMemoryChatController>());
   });
 
-  StudioTimelineItem waitCall(
+  ConversationItem waitCall(
     String id,
     int order, {
     String turnId = 'turn',
     ThreadWaitStateView state = ThreadWaitStateView.waiting,
-    ThreadToolLifecycleView? lifecycle,
-    StudioTimelineLifecycle itemLifecycle = StudioTimelineLifecycle.streaming,
-  }) => StudioTimelineItem(
-    item: ThreadItemView(
-      id: id,
-      threadId: 'thread',
-      turnId: turnId,
-      ordinal: order,
-      revision: 1,
-      createdAt: DateTime.utc(2026),
-      updatedAt: DateTime.utc(2026),
-      state: ThreadToolItemStateView(
-        invocation: ThreadToolInvocationView(
-          toolCallId: id,
-          name: 'wait',
-          arguments: '{"taskIds":["task:exec-1"],"timeoutMs":60000}',
-        ),
-        lifecycle: lifecycle ?? const RunningThreadToolView(''),
-        wait: ThreadWaitPresentationView(
-          intent: ThreadWaitEventsIntentView(
-            targets: [
-              ThreadWaitTargetView(
-                taskId: 'task:exec-1',
-                toolName: 'exec',
-                summary: 'cargo test',
-                status: ThreadWaitTargetStatusView.running,
-              ),
-            ],
-            timeoutMs: 60000,
-          ),
-          state: state,
-        ),
-      ),
-    ),
+    ConversationToolState? lifecycle,
+    int revision = 1,
+    String result = '',
+    ConversationLifecycle itemLifecycle = ConversationLifecycle.streaming,
+  }) => conversationFixture(
+    id: id,
+    threadId: 'thread',
+    turnId: turnId,
+    ordinal: order,
+    revision: revision,
+    createdAt: DateTime.utc(2026),
+    updatedAt: DateTime.utc(2026),
     saved: false,
     lifecycle: itemLifecycle,
-    omittedBytes: 0,
-    details: const [],
-  );
-
-  StudioTimelineItem sleepCall(
-    String id,
-    int order, {
-    String turnId = 'turn',
-  }) => StudioTimelineItem(
-    item: ThreadItemView(
-      id: id,
-      threadId: 'thread',
-      turnId: turnId,
-      ordinal: order,
-      revision: 1,
-      createdAt: DateTime.utc(2026),
-      updatedAt: DateTime.utc(2026),
-      state: ThreadToolItemStateView(
-        invocation: ThreadToolInvocationView(
-          toolCallId: id,
-          name: 'sleep',
-          arguments: '{"durationMs":3000}',
+    descriptor: ConversationToolDescriptor(
+      invocation: ConversationToolInvocation(toolCallId: id, name: 'wait'),
+      wait: ThreadWaitPresentationView(
+        intent: ThreadWaitEventsIntentView(
+          targets: [
+            ThreadWaitTargetView(
+              taskId: 'task:exec-1',
+              toolName: 'exec',
+              summary: 'cargo test',
+              status: ThreadWaitTargetStatusView.running,
+            ),
+          ],
+          timeoutMs: 60000,
         ),
-        lifecycle: const RunningThreadToolView(''),
-        wait: const ThreadWaitPresentationView(
-          intent: ThreadWaitTimerIntentView(durationMs: 3000),
-          state: ThreadWaitStateView.waiting,
-        ),
+        state: state,
       ),
+      state: lifecycle ?? ConversationToolRunning(),
     ),
-    saved: false,
-    lifecycle: StudioTimelineLifecycle.streaming,
-    omittedBytes: 0,
-    details: const [],
+    fields: {
+      const ThreadToolArgumentsFieldView():
+          '{"taskIds":["task:exec-1"],"timeoutMs":60000}',
+      const ThreadToolResultFieldView(): result,
+    },
   );
 
-  StudioTimelineItem activity(
+  ConversationItem sleepCall(String id, int order, {String turnId = 'turn'}) =>
+      conversationFixture(
+        id: id,
+        threadId: 'thread',
+        turnId: turnId,
+        ordinal: order,
+        revision: 1,
+        createdAt: DateTime.utc(2026),
+        updatedAt: DateTime.utc(2026),
+        saved: false,
+        lifecycle: ConversationLifecycle.streaming,
+        descriptor: ConversationToolDescriptor(
+          invocation: ConversationToolInvocation(toolCallId: id, name: 'sleep'),
+          wait: const ThreadWaitPresentationView(
+            intent: ThreadWaitTimerIntentView(durationMs: 3000),
+            state: ThreadWaitStateView.waiting,
+          ),
+          state: ConversationToolRunning(),
+        ),
+        fields: {const ThreadToolArgumentsFieldView(): '{"durationMs":3000}'},
+      );
+
+  ConversationItem activity(
     String id,
     int order, {
     String? toolName,
     int revision = 1,
     String turnId = 'turn',
     ThreadContentLifecycleView? contentLifecycle,
-    StudioTimelineLifecycle itemLifecycle = StudioTimelineLifecycle.streaming,
-  }) => StudioTimelineItem(
-    item: ThreadItemView(
-      id: id,
-      threadId: 'thread',
-      turnId: turnId,
-      ordinal: order,
-      revision: revision,
-      createdAt: DateTime.utc(2026),
-      updatedAt: DateTime.utc(2026),
-      state: toolName == null
-          ? ThreadThinkingItemStateView(
-              summary: const ['Investigating'],
-              content: const [],
-              lifecycle: contentLifecycle ?? const StreamingThreadContentView(),
-            )
-          : ThreadToolItemStateView(
-              invocation: ThreadToolInvocationView(
-                toolCallId: id,
-                name: toolName,
-                arguments: '{}',
-              ),
-              lifecycle: const RunningThreadToolView(''),
-            ),
-    ),
+    ConversationLifecycle itemLifecycle = ConversationLifecycle.streaming,
+  }) => conversationFixture(
+    id: id,
+    threadId: 'thread',
+    turnId: turnId,
+    ordinal: order,
+    revision: revision,
+    createdAt: DateTime.utc(2026),
+    updatedAt: DateTime.utc(2026),
     saved: false,
     lifecycle: itemLifecycle,
-    omittedBytes: 0,
-    details: const [],
-  );
-
-  StudioTimelineItem userInputCall(String id, int order) => StudioTimelineItem(
-    item: ThreadItemView(
-      id: id,
-      threadId: 'thread',
-      turnId: 'turn',
-      ordinal: order,
-      revision: 1,
-      createdAt: DateTime.utc(2026),
-      updatedAt: DateTime.utc(2026),
-      state: ThreadToolItemStateView(
-        invocation: ThreadToolInvocationView(
-          toolCallId: id,
-          name: 'ask_user',
-          arguments: '{}',
-        ),
-        lifecycle: const RunningThreadToolView(''),
-        userInput: ThreadToolUserInputView(
-          interactionId: 'ask-$id',
-          questions: const [
-            UserQuestionView(
-              id: 'q1',
-              header: 'Pick one',
-              question: 'Which option should the agent use?',
-              isOther: false,
-              isSecret: false,
-              options: [
-                UserQuestionOptionView(label: 'A', description: 'first option'),
-              ],
-            ),
-          ],
-          state: const PendingThreadToolUserInputView(),
-        ),
-      ),
-    ),
-    saved: false,
-    lifecycle: StudioTimelineLifecycle.streaming,
-    omittedBytes: 0,
-    details: const [],
-  );
-
-  StudioTimelineItem planReceiptCall(String id, int order) =>
-      StudioTimelineItem(
-        item: ThreadItemView(
-          id: id,
-          threadId: 'thread',
-          turnId: 'turn',
-          ordinal: order,
-          revision: 1,
-          createdAt: DateTime.utc(2026),
-          updatedAt: DateTime.utc(2026),
-          state: ThreadToolItemStateView(
-            invocation: ThreadToolInvocationView(
+    descriptor: toolName == null
+        ? ConversationThinkingDescriptor(
+            lifecycle: contentLifecycle ?? const StreamingThreadContentView(),
+          )
+        : ConversationToolDescriptor(
+            invocation: ConversationToolInvocation(
               toolCallId: id,
-              name: 'confirm_plan',
-              arguments: '{}',
+              name: toolName,
             ),
-            lifecycle: const RunningThreadToolView(''),
-            userInput: ThreadToolUserInputView(
-              interactionId: 'plan-$id',
-              questions: const [
-                UserQuestionView(
-                  id: agentSessionPlanConfirmationQuestionId,
-                  header: 'Plan',
-                  question: '# Plan title\n\n- step one',
-                  isOther: false,
-                  isSecret: false,
-                  options: [],
-                ),
-              ],
-              state: const PendingThreadToolUserInputView(),
-            ),
+            state: ConversationToolRunning(),
           ),
-        ),
-        saved: false,
-        lifecycle: StudioTimelineLifecycle.streaming,
-        omittedBytes: 0,
-        details: const [],
-      );
+    fields: toolName == null
+        ? {ThreadThinkingSummaryFieldView(0): 'Investigating'}
+        : {const ThreadToolArgumentsFieldView(): '{}'},
+  );
+
+  ConversationItem userInputCall(String id, int order) => conversationFixture(
+    id: id,
+    threadId: 'thread',
+    turnId: 'turn',
+    ordinal: order,
+    revision: 1,
+    createdAt: DateTime.utc(2026),
+    updatedAt: DateTime.utc(2026),
+    saved: false,
+    lifecycle: ConversationLifecycle.streaming,
+    descriptor: ConversationToolDescriptor(
+      invocation: ConversationToolInvocation(toolCallId: id, name: 'ask_user'),
+      userInput: (conversationInputFixture(
+        interactionId: 'ask-$id',
+        questions: const [
+          UserQuestionView(
+            id: 'q1',
+            header: 'Pick one',
+            question: 'Which option should the agent use?',
+            isOther: false,
+            isSecret: false,
+            options: [
+              UserQuestionOptionView(label: 'A', description: 'first option'),
+            ],
+          ),
+        ],
+        state: const ConversationUserInputPending(),
+        answers: const <String, List<String>>{},
+      )).descriptor,
+      state: ConversationToolRunning(),
+    ),
+    fields: {
+      const ThreadToolArgumentsFieldView(): '{}',
+      ...(conversationInputFixture(
+        interactionId: 'ask-$id',
+        questions: const [
+          UserQuestionView(
+            id: 'q1',
+            header: 'Pick one',
+            question: 'Which option should the agent use?',
+            isOther: false,
+            isSecret: false,
+            options: [
+              UserQuestionOptionView(label: 'A', description: 'first option'),
+            ],
+          ),
+        ],
+        state: const ConversationUserInputPending(),
+        answers: const <String, List<String>>{},
+      )).fields,
+    },
+  );
+
+  ConversationItem planReceiptCall(String id, int order) => conversationFixture(
+    id: id,
+    threadId: 'thread',
+    turnId: 'turn',
+    ordinal: order,
+    revision: 1,
+    createdAt: DateTime.utc(2026),
+    updatedAt: DateTime.utc(2026),
+    saved: false,
+    lifecycle: ConversationLifecycle.streaming,
+    descriptor: ConversationToolDescriptor(
+      invocation: ConversationToolInvocation(
+        toolCallId: id,
+        name: 'confirm_plan',
+      ),
+      userInput: (conversationInputFixture(
+        interactionId: 'plan-$id',
+        questions: const [
+          UserQuestionView(
+            id: agentSessionPlanConfirmationQuestionId,
+            header: 'Plan',
+            question: '# Plan title\n\n- step one',
+            isOther: false,
+            isSecret: false,
+            options: [],
+          ),
+        ],
+        state: const ConversationUserInputPending(),
+        answers: const <String, List<String>>{},
+      )).descriptor,
+      state: ConversationToolRunning(),
+    ),
+    fields: {
+      const ThreadToolArgumentsFieldView(): '{}',
+      ...(conversationInputFixture(
+        interactionId: 'plan-$id',
+        questions: const [
+          UserQuestionView(
+            id: agentSessionPlanConfirmationQuestionId,
+            header: 'Plan',
+            question: '# Plan title\n\n- step one',
+            isOther: false,
+            isSecret: false,
+            options: [],
+          ),
+        ],
+        state: const ConversationUserInputPending(),
+        answers: const <String, List<String>>{},
+      )).fields,
+    },
+  );
 
   /// 一次 `skill_view` 调用：它的 tool call 身份是技能激活的 typed 来源。
-  StudioTimelineItem skillCall(
+  ConversationItem skillCall(
     String id,
     int order, {
     String name = 'skill_view',
     String arguments = '{"name":"pdf"}',
     String result = '{"name":"pdf","instructions":"..."}',
     bool succeeded = true,
-    ThreadToolLifecycleView? lifecycle,
+    ConversationToolState? lifecycle,
     String turnId = 'turn',
     int revision = 1,
-  }) => StudioTimelineItem(
-    item: ThreadItemView(
-      id: id,
-      threadId: 'thread',
-      turnId: turnId,
-      ordinal: order,
-      revision: revision,
-      createdAt: DateTime.utc(2026),
-      updatedAt: DateTime.utc(2026),
-      state: ThreadToolItemStateView(
-        invocation: ThreadToolInvocationView(
-          toolCallId: id,
-          name: name,
-          arguments: arguments,
-        ),
-        lifecycle:
-            lifecycle ??
-            (succeeded
-                ? SucceededThreadToolView(
-                    DateTime.utc(2026),
-                    ThreadToolOutputView(
-                      result: result,
-                      attachments: const [],
-                      outputArtifacts: const [],
-                    ),
-                  )
-                : const RunningThreadToolView('')),
-      ),
-    ),
+  }) => conversationFixture(
+    id: id,
+    threadId: 'thread',
+    turnId: turnId,
+    ordinal: order,
+    revision: revision,
+    createdAt: DateTime.utc(2026),
+    updatedAt: DateTime.utc(2026),
     saved: false,
     lifecycle: lifecycle != null || succeeded
-        ? StudioTimelineLifecycle.terminal
-        : StudioTimelineLifecycle.streaming,
-    omittedBytes: 0,
-    details: const [],
+        ? ConversationLifecycle.terminal
+        : ConversationLifecycle.streaming,
+    descriptor: ConversationToolDescriptor(
+      invocation: ConversationToolInvocation(toolCallId: id, name: name),
+      state:
+          lifecycle ??
+          (succeeded
+              ? ConversationToolSucceeded(
+                  completedAt: DateTime.utc(2026),
+                  output: ConversationToolOutputDescriptor(
+                    attachments: const [],
+                  ),
+                )
+              : ConversationToolRunning()),
+    ),
+    fields: {
+      const ThreadToolArgumentsFieldView(): arguments,
+      const ThreadToolResultFieldView(): lifecycle == null && succeeded
+          ? result
+          : '',
+    },
   );
 
   /// 一条终态技能激活：来源是同 Turn 的 tool call 或用户手势。
-  StudioTimelineItem skillActivation(
+  ConversationItem skillActivation(
     String id,
     int order, {
     String name = 'pdf',
@@ -543,16 +547,18 @@ void main() {
       SkillResourceBaseKind.directory,
       '.agents/skills/pdf',
     ),
-  }) => StudioTimelineItem(
-    item: ThreadItemView(
-      id: id,
-      threadId: 'thread',
-      turnId: turnId,
-      ordinal: order,
-      revision: revision,
-      createdAt: DateTime.utc(2026),
-      updatedAt: DateTime.utc(2026),
-      state: ThreadSkillItemStateView(
+  }) => conversationFixture(
+    id: id,
+    threadId: 'thread',
+    turnId: turnId,
+    ordinal: order,
+    revision: revision,
+    createdAt: DateTime.utc(2026),
+    updatedAt: DateTime.utc(2026),
+    saved: true,
+    lifecycle: ConversationLifecycle.terminal,
+    descriptor: ConversationSkillDescriptor(
+      ThreadSkillItemStateView(
         name: name,
         source: source,
         providerId: 'project',
@@ -569,10 +575,7 @@ void main() {
         activatedAt: DateTime.utc(2026),
       ),
     ),
-    saved: true,
-    lifecycle: StudioTimelineLifecycle.terminal,
-    omittedBytes: 0,
-    details: const [],
+    fields: {},
   );
 
   test(
@@ -580,7 +583,7 @@ void main() {
     () {
       final display = lease();
       display.adoptBaseline(
-        StudioTimelineBaseline(
+        ConversationBaseline(
           subscriptionId: 'sub',
           version: 1,
           before: null,
@@ -611,7 +614,7 @@ void main() {
     final display = lease();
     addTearDown(display.retire);
     display.adoptBaseline(
-      StudioTimelineBaseline(
+      ConversationBaseline(
         subscriptionId: 'sub',
         version: 1,
         before: null,
@@ -626,12 +629,10 @@ void main() {
         ],
       ),
     );
-    final groups = display.controller.messages
-        .map(timelinePresentationOf)
-        .toList();
+    final groups = display.controller.messages.map(timelineEntryOf).toList();
     expect(groups, hasLength(1));
     final group = groups.single!;
-    expect(group.kind, TimelinePresentationKind.activity);
+    expect(group.kind, TimelineEntryKind.activity);
     expect(group.memberIds, [
       'thinking',
       'command',
@@ -642,15 +643,21 @@ void main() {
     ]);
     expect(group.id, isNot('wait-1'));
     expect(group.id, isNot('sleep-1'));
-    expect(group.id, startsWith('presentation:'));
-    final wait = group.payload('wait-1')!.item.tool!.wait!;
+    expect(group.id, startsWith('timeline-group:'));
+    final wait =
+        (group.members.firstWhere((item) => item.id == 'wait-1').descriptor
+                as ConversationToolDescriptor)
+            .wait!;
     expect(wait.state, ThreadWaitStateView.waiting);
     expect(wait.intent, isA<ThreadWaitEventsIntentView>());
     final waitIntent = wait.intent as ThreadWaitEventsIntentView;
     expect(waitIntent.targets.single.taskId, 'task:exec-1');
     expect(waitIntent.targets.single.toolName, 'exec');
     expect(waitIntent.timeoutMs, 60000);
-    final sleep = group.payload('sleep-1')!.item.tool!.wait!;
+    final sleep =
+        (group.members.firstWhere((item) => item.id == 'sleep-1').descriptor
+                as ConversationToolDescriptor)
+            .wait!;
     expect(sleep.state, ThreadWaitStateView.waiting);
     expect(sleep.intent, isA<ThreadWaitTimerIntentView>());
     expect((sleep.intent as ThreadWaitTimerIntentView).durationMs, 3000);
@@ -662,7 +669,7 @@ void main() {
       final display = lease();
       addTearDown(display.retire);
       display.adoptBaseline(
-        StudioTimelineBaseline(
+        ConversationBaseline(
           subscriptionId: 'sub',
           version: 1,
           before: null,
@@ -675,12 +682,10 @@ void main() {
           ],
         ),
       );
-      final groups = display.controller.messages
-          .map(timelinePresentationOf)
-          .toList();
+      final groups = display.controller.messages.map(timelineEntryOf).toList();
       expect(groups, hasLength(1), reason: '技能不单独划分活动组边界');
       final group = groups.single!;
-      expect(group.kind, TimelinePresentationKind.activity);
+      expect(group.kind, TimelineEntryKind.activity);
       expect(group.memberIds, [
         'thinking',
         'skill-view-1',
@@ -698,10 +703,18 @@ void main() {
       ], reason: 'canonical 成员、顺序与身份不因视觉去重被删改');
       expect(group.visibleMemberIds, ['thinking', 'skill-1', 'command']);
       expect(group.pairedToolId('skill-1'), 'skill-view-1');
-      expect(group.memberIsVisible('skill-view-1'), isFalse);
+      expect(group.visibleMemberIds.contains('skill-view-1'), isFalse);
       expect(group.skillCount, 1);
       expect(group.toolCount, 1, reason: '同一次加载不重复计成工具与技能两种活动');
-      expect(group.runningToolCount, 1);
+      expect(
+        group.members.where(
+          (item) =>
+              item.descriptor is ConversationToolDescriptor &&
+              (item.descriptor as ConversationToolDescriptor).state
+                  is ConversationToolRunning,
+        ),
+        hasLength(1),
+      );
     },
   );
 
@@ -709,7 +722,7 @@ void main() {
     final display = lease();
     addTearDown(display.retire);
     display.adoptBaseline(
-      StudioTimelineBaseline(
+      ConversationBaseline(
         subscriptionId: 'sub',
         version: 1,
         items: [
@@ -722,7 +735,7 @@ void main() {
     );
     expect(
       display.prependOlder(
-        StudioTimelinePage(
+        ConversationPage(
           items: [skillCall('skill-view-1', 10)],
           before: null,
           hasOlder: false,
@@ -730,9 +743,7 @@ void main() {
       ),
       1,
     );
-    final groups = display.controller.messages
-        .map(timelinePresentationOf)
-        .toList();
+    final groups = display.controller.messages.map(timelineEntryOf).toList();
     expect(groups, hasLength(1));
     expect(groups.single!.memberIds, ['skill-view-1', 'skill-1', 'command']);
     expect(groups.single!.visibleMemberIds, ['skill-1', 'command']);
@@ -745,7 +756,7 @@ void main() {
     final display = lease();
     addTearDown(display.retire);
     display.adoptBaseline(
-      StudioTimelineBaseline(
+      ConversationBaseline(
         subscriptionId: 'sub',
         version: 1,
         before: null,
@@ -758,8 +769,8 @@ void main() {
         ],
       ),
     );
-    final group = timelinePresentationOf(display.controller.messages.single)!;
-    expect(group.kind, TimelinePresentationKind.activity);
+    final group = timelineEntryOf(display.controller.messages.single)!;
+    expect(group.kind, TimelineEntryKind.activity);
     expect(group.memberIds, [
       'skill-view-1',
       'skill-1',
@@ -782,7 +793,7 @@ void main() {
       final display = lease();
       addTearDown(display.retire);
       display.adoptBaseline(
-        StudioTimelineBaseline(
+        ConversationBaseline(
           subscriptionId: 'sub',
           version: 1,
           before: null,
@@ -800,12 +811,12 @@ void main() {
       expect(group.toolCount, 0);
       expect(
         display.applyPatch(
-          StudioTimelinePatch(
+          ConversationPatch(
             subscriptionId: 'sub',
             from: 1,
             to: 2,
-            priority: StudioTimelinePriority.immediate,
-            changes: [StudioTimelineAdd(skillCall('skill-view-1', 3))],
+            priority: ConversationPriority.immediate,
+            changes: [ConversationAdd(skillCall('skill-view-1', 3))],
           ),
         ),
         isTrue,
@@ -823,7 +834,7 @@ void main() {
     final display = lease();
     addTearDown(display.retire);
     display.adoptBaseline(
-      StudioTimelineBaseline(
+      ConversationBaseline(
         subscriptionId: 'sub',
         version: 1,
         before: null,
@@ -838,13 +849,13 @@ void main() {
     expect(group.toolCount, 1);
     expect(
       display.applyPatch(
-        StudioTimelinePatch(
+        ConversationPatch(
           subscriptionId: 'sub',
           from: 1,
           to: 2,
-          priority: StudioTimelinePriority.immediate,
+          priority: ConversationPriority.immediate,
           changes: [
-            StudioTimelineAdd(
+            ConversationAdd(
               skillActivation('skill-1', 2, toolCallId: 'skill-view-1'),
             ),
           ],
@@ -862,7 +873,7 @@ void main() {
     final display = lease();
     addTearDown(display.retire);
     display.adoptBaseline(
-      StudioTimelineBaseline(
+      ConversationBaseline(
         subscriptionId: 'sub',
         version: 1,
         before: null,
@@ -887,9 +898,7 @@ void main() {
         ],
       ),
     );
-    final groups = display.controller.messages
-        .map(timelinePresentationOf)
-        .toList();
+    final groups = display.controller.messages.map(timelineEntryOf).toList();
     final first = groups.first!;
     expect(first.memberIds, [
       'skill-view-running',
@@ -919,7 +928,7 @@ void main() {
     final display = lease();
     addTearDown(display.retire);
     display.adoptBaseline(
-      StudioTimelineBaseline(
+      ConversationBaseline(
         subscriptionId: 'sub',
         version: 1,
         before: null,
@@ -936,12 +945,12 @@ void main() {
     expect(group.visibleMemberIds, ['thinking', 'skill-1']);
     expect(
       display.applyPatch(
-        StudioTimelinePatch(
+        ConversationPatch(
           subscriptionId: 'sub',
           from: 1,
           to: 2,
-          priority: StudioTimelinePriority.immediate,
-          changes: [const StudioTimelineRemove('skill-1')],
+          priority: ConversationPriority.immediate,
+          changes: [const ConversationRemove('skill-1')],
         ),
       ),
       isTrue,
@@ -957,7 +966,7 @@ void main() {
     final display = lease();
     addTearDown(display.retire);
     display.adoptBaseline(
-      StudioTimelineBaseline(
+      ConversationBaseline(
         subscriptionId: 'sub',
         version: 1,
         before: null,
@@ -976,23 +985,23 @@ void main() {
     // 正文划分活动边界：技能与其调用分到两组的半对仍各自可读。
     expect(
       display.applyPatch(
-        StudioTimelinePatch(
+        ConversationPatch(
           subscriptionId: 'sub',
           from: 1,
           to: 2,
-          priority: StudioTimelinePriority.immediate,
-          changes: [StudioTimelineAdd(item('answer', 25))],
+          priority: ConversationPriority.immediate,
+          changes: [ConversationAdd(item('answer', 25))],
         ),
       ),
       isTrue,
     );
     final afterSplit = display.controller.messages
-        .map(timelinePresentationOf)
+        .map(timelineEntryOf)
         .toList();
     expect(afterSplit.map((g) => g!.kind), [
-      TimelinePresentationKind.activity,
-      TimelinePresentationKind.single,
-      TimelinePresentationKind.activity,
+      TimelineEntryKind.activity,
+      TimelineEntryKind.single,
+      TimelineEntryKind.activity,
     ]);
     expect(afterSplit.first!.visibleMemberIds, ['thinking', 'skill-view-1']);
     expect(afterSplit.first!.toolCount, 1);
@@ -1007,7 +1016,7 @@ void main() {
     final display = lease();
     addTearDown(display.retire);
     display.adoptBaseline(
-      StudioTimelineBaseline(
+      ConversationBaseline(
         subscriptionId: 'sub',
         version: 1,
         before: null,
@@ -1024,18 +1033,26 @@ void main() {
     expect(group.pairedToolId('skill-1'), isNull);
     expect(group.toolCount, 1);
     expect(group.skillCount, 1);
-    final member = group.member('skill-view-1');
+    const memberId = 'skill-view-1';
+    final member = group.member(memberId);
     // 监听器里只记录它看到的派生事实，断言在派发结束后进行。
     final seen = <String>[];
     member.addListener(() {
       seen.add(
         [
-          member.value.item.status,
+          switch ((member.item.descriptor as ConversationToolDescriptor)
+              .state) {
+            ConversationToolSucceeded() => 'succeeded',
+            ConversationToolFailed() => 'failed',
+            _ => 'other',
+          },
           group.visibleMemberIds.join('|'),
-          group.memberIsVisible('skill-view-1') ? 'visible' : 'hidden',
+          group.visibleMemberIds.contains('skill-view-1')
+              ? 'visible'
+              : 'hidden',
           group.pairedToolId('skill-1') ?? 'unpaired',
           'tools=${group.toolCount}',
-          'running=${group.runningToolCount}',
+          'running=${group.members.where((item) => item.descriptor is ConversationToolDescriptor && (item.descriptor as ConversationToolDescriptor).state is ConversationToolRunning).length}',
           'skills=${group.skillCount}',
           identical(display.presentationFor('skill-view-1'), group)
               ? 'same-owner'
@@ -1045,14 +1062,12 @@ void main() {
     });
     expect(
       display.applyPatch(
-        StudioTimelinePatch(
+        ConversationPatch(
           subscriptionId: 'sub',
           from: 1,
           to: 2,
-          priority: StudioTimelinePriority.immediate,
-          changes: [
-            StudioTimelineAdd(skillCall('skill-view-1', 3, revision: 2)),
-          ],
+          priority: ConversationPriority.immediate,
+          changes: [ConversationAdd(skillCall('skill-view-1', 3, revision: 2))],
         ),
       ),
       isTrue,
@@ -1068,7 +1083,7 @@ void main() {
     final display = lease();
     addTearDown(display.retire);
     display.adoptBaseline(
-      StudioTimelineBaseline(
+      ConversationBaseline(
         subscriptionId: 'sub',
         version: 1,
         before: null,
@@ -1083,14 +1098,22 @@ void main() {
     final group = display.presentationFor('skill-1')!;
     expect(group.visibleMemberIds, ['thinking', 'skill-1']);
     expect(group.pairedToolId('skill-1'), 'skill-view-1');
-    final member = group.member('skill-view-1');
+    const memberId = 'skill-view-1';
+    final member = group.member(memberId);
     final seen = <String>[];
     member.addListener(() {
       seen.add(
         [
-          member.value.item.status,
+          switch ((member.item.descriptor as ConversationToolDescriptor)
+              .state) {
+            ConversationToolSucceeded() => 'succeeded',
+            ConversationToolFailed() => 'failed',
+            _ => 'other',
+          },
           group.visibleMemberIds.join('|'),
-          group.memberIsVisible('skill-view-1') ? 'visible' : 'hidden',
+          group.visibleMemberIds.contains('skill-view-1')
+              ? 'visible'
+              : 'hidden',
           group.pairedToolId('skill-1') ?? 'unpaired',
           'tools=${group.toolCount}',
           'skills=${group.skillCount}',
@@ -1102,24 +1125,23 @@ void main() {
     });
     expect(
       display.applyPatch(
-        StudioTimelinePatch(
+        ConversationPatch(
           subscriptionId: 'sub',
           from: 1,
           to: 2,
-          priority: StudioTimelinePriority.immediate,
+          priority: ConversationPriority.immediate,
           changes: [
-            StudioTimelineAdd(
+            ConversationAdd(
               skillCall(
                 'skill-view-1',
                 2,
                 revision: 2,
-                lifecycle: FailedThreadToolView(
-                  DateTime.utc(2026),
-                  const ThreadToolFailureView(
+                lifecycle: ConversationToolFailed(
+                  failedAt: DateTime.utc(2026),
+                  failure: const ThreadToolFailureView(
                     kind: ThreadToolFailureKindView.execution,
                     message: 'skill load failed',
                   ),
-                  null,
                 ),
               ),
             ),
@@ -1139,7 +1161,7 @@ void main() {
     final display = lease();
     addTearDown(display.retire);
     display.adoptBaseline(
-      StudioTimelineBaseline(
+      ConversationBaseline(
         subscriptionId: 'sub',
         version: 1,
         before: null,
@@ -1154,14 +1176,21 @@ void main() {
     final group = display.presentationFor('skill-1')!;
     expect(group.visibleMemberIds, ['thinking', 'skill-1']);
     expect(group.pairedToolId('skill-1'), 'skill-view-1');
-    final member = group.member('skill-1');
+    const memberId = 'skill-1';
+    final member = group.member(memberId);
     final seen = <String>[];
     member.addListener(() {
       seen.add(
         [
-          (member.value.item.state as ThreadSkillItemStateView).cause.kind.name,
+          (member.item.descriptor as ConversationSkillDescriptor)
+              .value
+              .cause
+              .kind
+              .name,
           group.visibleMemberIds.join('|'),
-          group.memberIsVisible('skill-view-1') ? 'visible' : 'hidden',
+          group.visibleMemberIds.contains('skill-view-1')
+              ? 'visible'
+              : 'hidden',
           group.pairedToolId('skill-1') ?? 'unpaired',
           'tools=${group.toolCount}',
           'skills=${group.skillCount}',
@@ -1171,16 +1200,16 @@ void main() {
         ].join(','),
       );
     });
-    void replaceCause(StudioTimelineItem item) {
+    void replaceCause(ConversationItem item) {
       final from = display.appliedVersion!;
       expect(
         display.applyPatch(
-          StudioTimelinePatch(
+          ConversationPatch(
             subscriptionId: 'sub',
             from: from,
             to: from + 1,
-            priority: StudioTimelinePriority.immediate,
-            changes: [StudioTimelineAdd(item)],
+            priority: ConversationPriority.immediate,
+            changes: [ConversationAdd(item)],
           ),
         ),
         isTrue,
@@ -1214,7 +1243,7 @@ void main() {
       final display = lease();
       addTearDown(display.retire);
       display.adoptBaseline(
-        StudioTimelineBaseline(
+        ConversationBaseline(
           subscriptionId: 'sub',
           version: 1,
           before: null,
@@ -1222,11 +1251,16 @@ void main() {
           items: [waitCall('wait-only', 1)],
         ),
       );
-      final group = timelinePresentationOf(display.controller.messages.single)!;
-      expect(group.kind, TimelinePresentationKind.activity);
+      final group = timelineEntryOf(display.controller.messages.single)!;
+      expect(group.kind, TimelineEntryKind.activity);
       expect(group.memberIds, ['wait-only']);
       expect(group.id, isNot('wait-only'));
-      expect(group.payload('wait-only')!.item.tool?.wait, isNotNull);
+      expect(
+        (group.members.firstWhere((item) => item.id == 'wait-only').descriptor
+                as ConversationToolDescriptor)
+            .wait!,
+        isNotNull,
+      );
     },
   );
 
@@ -1234,7 +1268,7 @@ void main() {
     final display = lease();
     addTearDown(display.retire);
     display.adoptBaseline(
-      StudioTimelineBaseline(
+      ConversationBaseline(
         subscriptionId: 'sub',
         version: 1,
         items: [activity('command', 30, toolName: 'run_command')],
@@ -1242,13 +1276,11 @@ void main() {
         hasOlder: true,
       ),
     );
-    final original = timelinePresentationOf(
-      display.controller.messages.single,
-    )!;
-    original.setExpanded(true);
+    final original = timelineEntryOf(display.controller.messages.single)!;
+    original.expanded = true;
     expect(
       display.prependOlder(
-        StudioTimelinePage(
+        ConversationPage(
           items: [activity('thinking', 10), waitCall('wait-older', 20)],
           before: null,
           hasOlder: false,
@@ -1258,11 +1290,14 @@ void main() {
     );
     expect(display.controller.messages, hasLength(1));
     expect(display.controller.messages.single.id, original.id);
-    expect(original.kind, TimelinePresentationKind.activity);
+    expect(original.kind, TimelineEntryKind.activity);
     expect(original.memberIds, ['thinking', 'wait-older', 'command']);
     expect(original.expanded, isTrue);
     expect(
-      original.payload('wait-older')!.item.tool!.wait!.state,
+      (original.members.firstWhere((item) => item.id == 'wait-older').descriptor
+              as ConversationToolDescriptor)
+          .wait!
+          .state,
       ThreadWaitStateView.waiting,
     );
   });
@@ -1273,7 +1308,7 @@ void main() {
       final display = lease();
       addTearDown(display.retire);
       display.adoptBaseline(
-        StudioTimelineBaseline(
+        ConversationBaseline(
           subscriptionId: 'sub',
           version: 1,
           before: null,
@@ -1285,31 +1320,29 @@ void main() {
           ],
         ),
       );
-      final group = timelinePresentationOf(display.controller.messages.single)!;
-      group.setExpanded(true);
+      final group = timelineEntryOf(display.controller.messages.single)!;
+      group.expanded = true;
       final groupId = group.id;
       expect(
         display.applyPatch(
-          StudioTimelinePatch(
+          ConversationPatch(
             subscriptionId: 'sub',
             from: 1,
             to: 2,
-            priority: StudioTimelinePriority.immediate,
+            priority: ConversationPriority.immediate,
             changes: [
-              StudioTimelineAdd(
+              ConversationAdd(
                 waitCall(
                   'wait-1',
                   2,
                   state: ThreadWaitStateView.ready,
-                  lifecycle: SucceededThreadToolView(
-                    DateTime.utc(2026),
-                    const ThreadToolOutputView(
-                      result: '{"tasks":[{"taskId":"task:exec-1","status":"succeeded"}],"timedOut":false}',
-                      attachments: [],
-                      outputArtifacts: [],
-                    ),
+                  revision: 2,
+                  result: '{"tasks":[{"taskId":"task:exec-1","status":"succeeded"}],"timedOut":false}',
+                  lifecycle: ConversationToolSucceeded(
+                    completedAt: DateTime.utc(2026),
+                    output: ConversationToolOutputDescriptor(attachments: []),
                   ),
-                  itemLifecycle: StudioTimelineLifecycle.terminal,
+                  itemLifecycle: ConversationLifecycle.terminal,
                 ),
               ),
             ],
@@ -1322,11 +1355,20 @@ void main() {
       expect(group.id, groupId);
       expect(group.expanded, isTrue);
       expect(group.memberIds, ['thinking', 'wait-1', 'command']);
-      final wait = group.payload('wait-1')!.item.tool!.wait!;
+      final wait =
+          (group.members.firstWhere((item) => item.id == 'wait-1').descriptor
+                  as ConversationToolDescriptor)
+              .wait!;
       expect(wait.state, ThreadWaitStateView.ready);
-      expect(group.payload('wait-1')!.terminal, isTrue);
       expect(
-        group.payload('wait-1')!.item.tool!.result,
+        group.members.firstWhere((item) => item.id == 'wait-1').terminal,
+        isTrue,
+      );
+      expect(
+        group.members
+            .firstWhere((item) => item.id == 'wait-1')
+            .fieldFor(const ThreadToolResultFieldView())
+            ?.text,
         contains('task:exec-1'),
       );
     },
@@ -1336,7 +1378,7 @@ void main() {
     final display = lease();
     addTearDown(display.retire);
     display.adoptBaseline(
-      StudioTimelineBaseline(
+      ConversationBaseline(
         subscriptionId: 'sub',
         version: 1,
         before: null,
@@ -1355,17 +1397,15 @@ void main() {
         ],
       ),
     );
-    final groups = display.controller.messages
-        .map(timelinePresentationOf)
-        .toList();
+    final groups = display.controller.messages.map(timelineEntryOf).toList();
     expect(groups.map((g) => g!.kind).toList(), [
-      TimelinePresentationKind.activity,
-      TimelinePresentationKind.single,
-      TimelinePresentationKind.activity,
-      TimelinePresentationKind.single,
-      TimelinePresentationKind.activity,
-      TimelinePresentationKind.single,
-      TimelinePresentationKind.activity,
+      TimelineEntryKind.activity,
+      TimelineEntryKind.single,
+      TimelineEntryKind.activity,
+      TimelineEntryKind.single,
+      TimelineEntryKind.activity,
+      TimelineEntryKind.single,
+      TimelineEntryKind.activity,
     ]);
     expect(groups.map((g) => g!.memberIds).toList(), [
       ['thinking', 'wait-1'],
@@ -1376,43 +1416,48 @@ void main() {
       ['plan-1'],
       ['turn-b-thinking', 'wait-turn-b'],
     ]);
-    expect(groups[0]!.payload('wait-1')!.item.tool?.wait, isNotNull);
-    expect(groups[2]!.payload('wait-2')!.item.tool?.wait, isNotNull);
-    expect(groups[3]!.kind, TimelinePresentationKind.single);
+    expect(
+      (groups[0]!.members.firstWhere((item) => item.id == 'wait-1').descriptor
+              as ConversationToolDescriptor)
+          .wait,
+      isNotNull,
+    );
+    expect(
+      (groups[2]!.members.firstWhere((item) => item.id == 'wait-2').descriptor
+              as ConversationToolDescriptor)
+          .wait,
+      isNotNull,
+    );
+    expect(groups[3]!.kind, TimelineEntryKind.single);
     expect(groups[3]!.id, 'ask-1');
-    expect(groups[5]!.kind, TimelinePresentationKind.single);
+    expect(groups[5]!.kind, TimelineEntryKind.single);
     expect(groups[5]!.id, 'plan-1');
-    expect(groups[6]!.first.item.turnId, 'turn-b');
-    expect(groups[0]!.first.item.turnId, 'turn');
+    expect(groups[6]!.first.header.turnId, 'turn-b');
+    expect(groups[0]!.first.header.turnId, 'turn');
   });
 
   test('retry and result records of one attempt share one GUI item', () {
-    StudioTimelineItem recovery(
+    ConversationItem recovery(
       String id,
       int order,
-      StudioTimelineRecoveryNotice notice,
-    ) => StudioTimelineItem(
-      item: item(id, order).item,
-      source: StudioTimelineRecoverySource(
-        attemptId: 'attempt',
-        notice: notice,
-      ),
+      ConversationRecoveryNotice notice,
+    ) => conversationCopyFixture(
+      item(id, order),
+      source: ConversationRecoverySource(attemptId: 'attempt', notice: notice),
       saved: true,
-      lifecycle: StudioTimelineLifecycle.terminal,
-      omittedBytes: 0,
-      details: const [],
+      lifecycle: ConversationLifecycle.terminal,
     );
     final display = lease();
     display.adoptBaseline(
-      StudioTimelineBaseline(
+      ConversationBaseline(
         subscriptionId: 'sub',
         version: 1,
         before: null,
         hasOlder: false,
         items: [
-          recovery('retry-1', 1, StudioTimelineRecoveryNotice.retry),
-          recovery('retry-2', 2, StudioTimelineRecoveryNotice.retry),
-          recovery('result', 3, StudioTimelineRecoveryNotice.result),
+          recovery('retry-1', 1, ConversationRecoveryNotice.retry),
+          recovery('retry-2', 2, ConversationRecoveryNotice.retry),
+          recovery('result', 3, ConversationRecoveryNotice.result),
         ],
       ),
     );
@@ -1430,7 +1475,7 @@ void main() {
       final display = lease();
       addTearDown(display.retire);
       display.adoptBaseline(
-        StudioTimelineBaseline(
+        ConversationBaseline(
           subscriptionId: 'sub',
           version: 1,
           items: [activity('c', 30), activity('d', 40)],
@@ -1438,13 +1483,11 @@ void main() {
           hasOlder: true,
         ),
       );
-      final original = timelinePresentationOf(
-        display.controller.messages.single,
-      )!;
-      original.setExpanded(true);
+      final original = timelineEntryOf(display.controller.messages.single)!;
+      original.expanded = true;
       expect(
         display.prependOlder(
-          StudioTimelinePage(
+          ConversationPage(
             items: [activity('a', 10), activity('b', 20)],
             before: null,
             hasOlder: false,
@@ -1457,40 +1500,37 @@ void main() {
       expect(original.expanded, isTrue);
       expect(
         display.applyPatch(
-          StudioTimelinePatch(
-            priority: StudioTimelinePriority.immediate,
+          ConversationPatch(
+            priority: ConversationPriority.immediate,
             subscriptionId: 'sub',
             from: 1,
             to: 2,
-            changes: [StudioTimelineAdd(item('divider', 25))],
+            changes: [ConversationAdd(item('divider', 25))],
           ),
         ),
         isTrue,
       );
       expect(display.controller.messages.length, 3);
-      expect(
-        timelinePresentationOf(display.controller.messages.last),
-        same(original),
-      );
+      expect(timelineEntryOf(display.controller.messages.last), same(original));
       expect(original.memberIds, ['c', 'd']);
-      final prefix = timelinePresentationOf(display.controller.messages.first)!;
+      final prefix = timelineEntryOf(display.controller.messages.first)!;
       expect(prefix.memberIds, ['a', 'b']);
       expect(prefix.expanded, isTrue);
       expect(
         display.applyPatch(
-          StudioTimelinePatch(
-            priority: StudioTimelinePriority.immediate,
+          ConversationPatch(
+            priority: ConversationPriority.immediate,
             subscriptionId: 'sub',
             from: 2,
             to: 3,
-            changes: [const StudioTimelineRemove('divider')],
+            changes: [const ConversationRemove('divider')],
           ),
         ),
         isTrue,
       );
       expect(display.controller.messages.single.id, original.id);
       expect(original.memberIds, ['a', 'b', 'c', 'd']);
-      expect(display.payloads.map((p) => p.id), ['a', 'b', 'c', 'd']);
+      expect(display.items.map((p) => p.id), ['a', 'b', 'c', 'd']);
     },
   );
 
@@ -1498,7 +1538,7 @@ void main() {
     final display = lease();
     addTearDown(display.retire);
     display.adoptBaseline(
-      StudioTimelineBaseline(
+      ConversationBaseline(
         subscriptionId: 'sub',
         version: 1,
         items: [activity('a', 1), activity('b', 2)],
@@ -1506,26 +1546,26 @@ void main() {
         hasOlder: false,
       ),
     );
-    final group = timelinePresentationOf(display.controller.messages.single)!;
+    final group = timelineEntryOf(display.controller.messages.single)!;
     var changed = 0;
     var unaffected = 0;
     var structural = 0;
     group.member('a').addListener(() => changed++);
     group.member('b').addListener(() => unaffected++);
-    group.structure.addListener(() => structural++);
+    group.addListener(() => structural++);
     expect(
       display.applyPatch(
-        StudioTimelinePatch(
-          priority: StudioTimelinePriority.immediate,
+        ConversationPatch(
+          priority: ConversationPriority.immediate,
           subscriptionId: 'sub',
           from: 1,
           to: 2,
-          changes: [StudioTimelineAdd(activity('a', 1, revision: 2))],
+          changes: [ConversationAdd(activity('a', 1, revision: 2))],
         ),
       ),
       isTrue,
     );
-    expect(group.member('a').value.revision, 2);
+    expect(display.itemOf('a')!.revision, 2);
     expect(changed, 1);
     expect(unaffected, 0);
     expect(structural, 0);
@@ -1533,21 +1573,21 @@ void main() {
     display.enterHistory();
     expect(
       display.applyPatch(
-        StudioTimelinePatch(
-          priority: StudioTimelinePriority.immediate,
+        ConversationPatch(
+          priority: ConversationPriority.immediate,
           subscriptionId: 'sub',
           from: 2,
           to: 3,
           changes: [
-            StudioTimelineAdd(activity('a', 1, revision: 3)),
-            const StudioTimelineRemove('b'),
+            ConversationAdd(activity('a', 1, revision: 3)),
+            const ConversationRemove('b'),
           ],
         ),
       ),
       isTrue,
     );
     expect(group.memberIds, ['a', 'b']);
-    expect(group.member('a').value.revision, 2);
+    expect(display.itemOf('a')!.revision, 2);
     expect(changed, 1);
   });
 
@@ -1555,7 +1595,7 @@ void main() {
     final display = lease();
     addTearDown(display.retire);
     display.adoptBaseline(
-      StudioTimelineBaseline(
+      ConversationBaseline(
         subscriptionId: 'sub',
         version: 1,
         items: [activity('a', 10)],
@@ -1564,40 +1604,42 @@ void main() {
       ),
     );
     final group = display.presentationFor('a')!;
-    group.structure.addListener(() {
+    group.addListener(() {
       for (final id in group.memberIds) {
         expect(display.presentationFor(id), same(group));
-        expect(display.payloadOf(id), same(group.member(id).value));
+        expect(
+          display.itemOf(id),
+          same(group.members.firstWhere((item) => item.id == id)),
+        );
       }
     });
     display.applyPatch(
-      StudioTimelinePatch(
+      ConversationPatch(
         subscriptionId: 'sub',
         from: 1,
         to: 2,
-        priority: StudioTimelinePriority.immediate,
-        changes: [StudioTimelineAdd(activity('b', 20))],
+        priority: ConversationPriority.immediate,
+        changes: [ConversationAdd(activity('b', 20))],
       ),
     );
     final member = group.member('a');
     member.addListener(() {
-      expect(display.payloadOf('a'), same(member.value));
+      expect(display.itemOf('a'), same(member.item));
       expect(display.presentationFor('a')!.member('a'), same(member));
     });
     display.applyPatch(
-      StudioTimelinePatch(
+      ConversationPatch(
         subscriptionId: 'sub',
         from: 2,
         to: 3,
-        priority: StudioTimelinePriority.immediate,
+        priority: ConversationPriority.immediate,
         changes: [
-          StudioTimelineAdd(
-            StudioTimelineItem(
-              item: item('a', 2).item.copyWith(ordinal: 10),
+          ConversationAdd(
+            conversationCopyFixture(
+              item('a', 2),
               saved: false,
-              lifecycle: StudioTimelineLifecycle.streaming,
-              omittedBytes: 0,
-              details: const [],
+              lifecycle: ConversationLifecycle.streaming,
+              ordinal: 10,
             ),
           ),
         ],
@@ -1612,7 +1654,7 @@ void main() {
       final display = lease();
       addTearDown(display.retire);
       display.adoptBaseline(
-        StudioTimelineBaseline(
+        ConversationBaseline(
           subscriptionId: 'sub',
           version: 1,
           items: [activity('a', 10), activity('b', 20)],
@@ -1620,25 +1662,23 @@ void main() {
           hasOlder: false,
         ),
       );
-      final group = display.presentationFor('a')!..setExpanded(true);
+      final group = display.presentationFor('a')!..expanded = true;
       display.applyPatch(
-        StudioTimelinePatch(
+        ConversationPatch(
           subscriptionId: 'sub',
           from: 1,
           to: 2,
-          priority: StudioTimelinePriority.immediate,
+          priority: ConversationPriority.immediate,
           changes: [
-            const StudioTimelineRemove('a'),
-            StudioTimelineAdd(item('divider', 15)),
+            const ConversationRemove('a'),
+            ConversationAdd(item('divider', 15)),
           ],
         ),
       );
       expect(display.presentationFor('b'), same(group));
       expect(group.expanded, isTrue);
       expect(
-        display.controller.messages.map(
-          (m) => timelinePresentationOf(m)!.memberIds,
-        ),
+        display.controller.messages.map((m) => timelineEntryOf(m)!.memberIds),
         [
           ['divider'],
           ['b'],
@@ -1653,7 +1693,7 @@ void main() {
       final display = lease();
       addTearDown(display.retire);
       display.adoptBaseline(
-        StudioTimelineBaseline(
+        ConversationBaseline(
           subscriptionId: 'sub',
           version: 1,
           items: [
@@ -1666,81 +1706,71 @@ void main() {
           hasOlder: false,
         ),
       );
-      final groups = display.controller.messages
-          .map(timelinePresentationOf)
-          .toList();
+      final groups = display.controller.messages.map(timelineEntryOf).toList();
       expect(groups.map((g) => g!.kind), [
-        TimelinePresentationKind.images,
-        TimelinePresentationKind.activity,
-        TimelinePresentationKind.images,
+        TimelineEntryKind.images,
+        TimelineEntryKind.activity,
+        TimelineEntryKind.images,
       ]);
       expect(groups.first!.memberIds, ['image-a', 'image-b']);
       expect(groups.last!.memberIds, ['image-c']);
     },
   );
 
-  StudioTimelineItem toolTerminal(
+  ConversationItem toolTerminal(
     String id,
     int order, {
-    required ThreadToolLifecycleView lifecycle,
+    required ConversationToolState lifecycle,
     ThreadWaitStateView? waitState,
-  }) => StudioTimelineItem(
-    item: ThreadItemView(
-      id: id,
-      threadId: 'thread',
-      turnId: 'turn',
-      ordinal: order,
-      revision: 2,
-      createdAt: DateTime.utc(2026),
-      updatedAt: DateTime.utc(2026),
-      state: ThreadToolItemStateView(
-        invocation: ThreadToolInvocationView(
-          toolCallId: id,
-          name: 'run_command',
-          arguments: '{}',
-        ),
-        lifecycle: lifecycle,
-        wait: waitState == null
-            ? null
-            : ThreadWaitPresentationView(
-                intent: ThreadWaitEventsIntentView(
-                  targets: [
-                    ThreadWaitTargetView(
-                      taskId: 'task:exec-1',
-                      toolName: 'exec',
-                      summary: 'cargo test',
-                      status: ThreadWaitTargetStatusView.cancelled,
-                    ),
-                  ],
-                  timeoutMs: 60000,
-                ),
-                state: waitState,
-              ),
-      ),
-    ),
+  }) => conversationFixture(
+    id: id,
+    threadId: 'thread',
+    turnId: 'turn',
+    ordinal: order,
+    revision: 2,
+    createdAt: DateTime.utc(2026),
+    updatedAt: DateTime.utc(2026),
     saved: false,
-    lifecycle: StudioTimelineLifecycle.terminal,
-    omittedBytes: 0,
-    details: const [],
+    lifecycle: ConversationLifecycle.terminal,
+    descriptor: ConversationToolDescriptor(
+      invocation: ConversationToolInvocation(
+        toolCallId: id,
+        name: 'run_command',
+      ),
+      wait: waitState == null
+          ? null
+          : ThreadWaitPresentationView(
+              intent: ThreadWaitEventsIntentView(
+                targets: [
+                  ThreadWaitTargetView(
+                    taskId: 'task:exec-1',
+                    toolName: 'exec',
+                    summary: 'cargo test',
+                    status: ThreadWaitTargetStatusView.cancelled,
+                  ),
+                ],
+                timeoutMs: 60000,
+              ),
+              state: waitState,
+            ),
+      state: lifecycle,
+    ),
+    fields: {const ThreadToolArgumentsFieldView(): '{}'},
   );
 
-  StudioTimelineItem turnCall(String id, int order, StudioTurnState state) =>
-      StudioTimelineItem(
-        item: ThreadItemView(
-          id: id,
-          threadId: 'thread',
-          turnId: 'turn',
-          ordinal: order,
-          revision: 1,
-          createdAt: DateTime.utc(2026),
-          updatedAt: DateTime.utc(2026),
-          state: ThreadTurnItemStateView(state),
-          saved: false,
-        ),
+  ConversationItem turnCall(String id, int order, StudioTurnState state) =>
+      conversationFixture(
+        id: id,
+        threadId: 'thread',
+        turnId: 'turn',
+        ordinal: order,
+        revision: 1,
+        createdAt: DateTime.utc(2026),
+        updatedAt: DateTime.utc(2026),
         saved: false,
-        lifecycle: StudioTimelineLifecycle.terminal,
-        omittedBytes: 0,
-        details: const [],
+        lifecycle: ConversationLifecycle.terminal,
+        descriptor: ConversationTurnDescriptor(ThreadTurnItemStateView(state)),
+        fields: {},
       );
 
   test(
@@ -1749,7 +1779,7 @@ void main() {
       final display = lease();
       addTearDown(display.retire);
       display.adoptBaseline(
-        StudioTimelineBaseline(
+        ConversationBaseline(
           subscriptionId: 'sub',
           version: 1,
           before: null,
@@ -1761,20 +1791,20 @@ void main() {
           ],
         ),
       );
-      final group = timelinePresentationOf(display.controller.messages.single)!;
-      group.setExpanded(true);
+      final group = timelineEntryOf(display.controller.messages.single)!;
+      group.expanded = true;
       expect(group.issueCount, 0);
 
       // 真实 canonical 终态：用户停止后工具 interrupted、等待 cancelled。
       expect(
         display.applyPatch(
-          StudioTimelinePatch(
+          ConversationPatch(
             subscriptionId: 'sub',
             from: 1,
             to: 2,
-            priority: StudioTimelinePriority.immediate,
+            priority: ConversationPriority.immediate,
             changes: [
-              StudioTimelineAdd(
+              ConversationAdd(
                 activity(
                   'thinking',
                   1,
@@ -1783,26 +1813,26 @@ void main() {
                     DateTime.utc(2026),
                     'Interrupted',
                   ),
-                  itemLifecycle: StudioTimelineLifecycle.terminal,
+                  itemLifecycle: ConversationLifecycle.terminal,
                 ),
               ),
-              StudioTimelineAdd(
+              ConversationAdd(
                 toolTerminal(
                   'command',
                   2,
-                  lifecycle: InterruptedThreadToolView(
-                    DateTime.utc(2026),
-                    'Interrupted',
+                  lifecycle: ConversationToolInterrupted(
+                    interruptedAt: DateTime.utc(2026),
+                    reason: 'Interrupted',
                   ),
                 ),
               ),
-              StudioTimelineAdd(
+              ConversationAdd(
                 toolTerminal(
                   'wait-1',
                   3,
-                  lifecycle: CancelledThreadToolView(
-                    DateTime.utc(2026),
-                    'Cancelled',
+                  lifecycle: ConversationToolCancelled(
+                    cancelledAt: DateTime.utc(2026),
+                    reason: 'Cancelled',
                   ),
                   waitState: ThreadWaitStateView.cancelled,
                 ),
@@ -1814,13 +1844,19 @@ void main() {
       );
 
       expect(display.presentationFor('command'), same(group));
-      expect(group.id, startsWith('presentation:'));
+      expect(group.id, startsWith('timeline-group:'));
       expect(group.memberIds, ['thinking', 'command', 'wait-1']);
       expect(group.expanded, isTrue, reason: '展开意图不因终态重置');
       expect(group.issueCount, 0, reason: '取消与中断不是问题');
       expect(group.activeCount, 0);
-      expect(group.payload('command')!.terminal, isTrue);
-      expect(group.payload('wait-1')!.terminal, isTrue);
+      expect(
+        group.members.firstWhere((item) => item.id == 'command').terminal,
+        isTrue,
+      );
+      expect(
+        group.members.firstWhere((item) => item.id == 'wait-1').terminal,
+        isTrue,
+      );
     },
   );
 
@@ -1828,7 +1864,7 @@ void main() {
     final display = lease();
     addTearDown(display.retire);
     display.adoptBaseline(
-      StudioTimelineBaseline(
+      ConversationBaseline(
         subscriptionId: 'sub',
         version: 1,
         before: null,
@@ -1842,13 +1878,13 @@ void main() {
     );
     expect(
       display.applyPatch(
-        StudioTimelinePatch(
+        ConversationPatch(
           subscriptionId: 'sub',
           from: 1,
           to: 2,
-          priority: StudioTimelinePriority.immediate,
+          priority: ConversationPriority.immediate,
           changes: [
-            StudioTimelineAdd(
+            ConversationAdd(
               activity(
                 'thinking',
                 1,
@@ -1857,30 +1893,29 @@ void main() {
                   DateTime.utc(2026),
                   'Interrupted',
                 ),
-                itemLifecycle: StudioTimelineLifecycle.terminal,
+                itemLifecycle: ConversationLifecycle.terminal,
               ),
             ),
-            StudioTimelineAdd(
+            ConversationAdd(
               toolTerminal(
                 'broken',
                 2,
-                lifecycle: FailedThreadToolView(
-                  DateTime.utc(2026),
-                  const ThreadToolFailureView(
+                lifecycle: ConversationToolFailed(
+                  failedAt: DateTime.utc(2026),
+                  failure: const ThreadToolFailureView(
                     kind: ThreadToolFailureKindView.execution,
                     message: 'exit code 1',
                   ),
-                  null,
                 ),
               ),
             ),
-            StudioTimelineAdd(
+            ConversationAdd(
               toolTerminal(
                 'stopped',
                 3,
-                lifecycle: InterruptedThreadToolView(
-                  DateTime.utc(2026),
-                  'Interrupted',
+                lifecycle: ConversationToolInterrupted(
+                  interruptedAt: DateTime.utc(2026),
+                  reason: 'Interrupted',
                 ),
               ),
             ),
@@ -1889,7 +1924,7 @@ void main() {
       ),
       isTrue,
     );
-    final group = timelinePresentationOf(display.controller.messages.single)!;
+    final group = timelineEntryOf(display.controller.messages.single)!;
     expect(group.memberIds, ['thinking', 'broken', 'stopped']);
     expect(group.issueCount, 1, reason: '只有真实失败计入问题数量');
     expect(group.activeCount, 0);
@@ -1899,7 +1934,7 @@ void main() {
     final display = lease();
     addTearDown(display.retire);
     display.adoptBaseline(
-      StudioTimelineBaseline(
+      ConversationBaseline(
         subscriptionId: 'sub',
         version: 1,
         before: null,
@@ -1909,13 +1944,13 @@ void main() {
     );
     expect(
       display.applyPatch(
-        StudioTimelinePatch(
+        ConversationPatch(
           subscriptionId: 'sub',
           from: 1,
           to: 2,
-          priority: StudioTimelinePriority.immediate,
+          priority: ConversationPriority.immediate,
           changes: [
-            StudioTimelineAdd(
+            ConversationAdd(
               turnCall(
                 'turn-end',
                 2,
@@ -1932,15 +1967,18 @@ void main() {
       ),
       isTrue,
     );
-    final payload = display.payloadOf('turn-end')!;
-    expect(payload.item.error, isNotEmpty);
+    final payload = display.itemOf('turn-end')!;
     expect(
-      timelinePayloadIsVisible(payload),
+      (payload.descriptor as ConversationTurnDescriptor).value.state,
+      isA<CancelledStudioTurnState>(),
+    );
+    expect(
+      timelineKind(payload) != TimelineEntryKind.hidden,
       isTrue,
       reason: '停止终态必须可见，不能被当作空内容隐藏',
     );
     expect(
-      timelinePresentationOf(display.controller.messages.last)!.issueCount,
+      timelineEntryOf(display.controller.messages.last)!.issueCount,
       0,
       reason: 'interrupted turn 不产生问题指示',
     );

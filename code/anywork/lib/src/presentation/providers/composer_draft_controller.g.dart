@@ -78,7 +78,7 @@ final class ComposerDraftControllerProvider
 }
 
 String _$composerDraftControllerHash() =>
-    r'3fe1f08e2473ffafec0c5a8ae65c74621d47826f';
+    r'da63615e8f08463eb258ee5403260c748fe74aad';
 
 /// This observer borrows the Client's logical draft across routes.
 

@@ -1,4 +1,4 @@
-import 'package:anywork_client/studio_client.dart' show ComposerThreadState;
+import 'package:anywork_client/models.dart' show ComposerThreadState;
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
 import 'client_provider.dart';
@@ -9,7 +9,10 @@ part 'composer_draft_controller.g.dart';
 /// This observer borrows the Client's logical draft across routes.
 @riverpod
 ComposerThreadState composerDraftController(Ref ref, String threadId) {
-  final owner = ref.read(anyworkClientProvider).existingComposer(threadId);
+  final owner = ref
+      .read(anyworkClientProvider)
+      .drafts
+      .existingComposer(threadId);
   if (owner != null) {
     return observeClient(ref, owner.source, (_) => ref.invalidateSelf());
   }

@@ -25,6 +25,7 @@ final class TimelineDisplayFacts {
     required this.loadingOlder,
     required this.olderError,
     required this.olderErrorCode,
+    required this.olderErrorCorrelationId,
     required this.hasNewOutput,
     required this.preparingLive,
     List<TimelineItemFacts> items = const [],
@@ -43,6 +44,7 @@ final class TimelineDisplayFacts {
   final bool loadingOlder;
   final String? olderError;
   final StudioFailureCode? olderErrorCode;
+  final String? olderErrorCorrelationId;
   final bool hasNewOutput;
   final bool preparingLive;
   final List<TimelineItemFacts> items;
@@ -118,7 +120,7 @@ final class TimelineItemFacts {
   final String text;
 
   /// 文本条目的权威频道（commentary / finalAnswer / user / parentAgent）；
-  /// 非文本条目为 null。它来自 `ThreadTextItemStateView.channel`，不从 kind 或文本推测：
+  /// 非文本条目为 null。它来自 `ConversationTextDescriptor.channel`，不从 kind 或文本推测：
   /// `agentMessage` 同时覆盖 commentary 与 finalAnswer。
   final ThreadTextChannel? channel;
   final List<TimelineDetailFacts> details;
@@ -1189,6 +1191,7 @@ abstract final class StudioDriverState {
       'loadingOlder': timeline.loadingOlder,
       'olderError': timeline.olderError,
       'olderErrorCode': timeline.olderErrorCode?.name,
+      'olderErrorCorrelationId': timeline.olderErrorCorrelationId,
       'hasNewOutput': timeline.hasNewOutput,
       'preparingLive': timeline.preparingLive,
       'items': [

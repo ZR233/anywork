@@ -24,10 +24,13 @@ void main() {
       );
       addTearDown(() => graph.close(deadline: _deadline()));
       await graph.client.bootstrap();
-      await graph.client.directoryCommands.selectThread('thread-main');
-      final session = graph.client.existingSession('thread-main')!;
-      await session.timeline.state.waitFor(
-        (state) => state.snapshot is StudioTimelineBaselineFrame,
+      await (graph..setConversationPageVisible(true)).client.directoryCommands
+          .selectThread('thread-main');
+      final session = graph.client.conversations.existingSession(
+        'thread-main',
+      )!;
+      await session.content.state.waitFor(
+        (state) => state.snapshot is ConversationBaselineFrame,
       );
       final initial = session.state.workspace!;
       final summaries = graph.accounts.observeSummaries();
@@ -60,7 +63,9 @@ void main() {
           available: true,
         ),
       );
-      session.applySnapshot(initial.copyWith(runtime: frozen));
+      await (graph.client.transport as RecordingDemoTransport).publishWorkspace(
+        initial.copyWith(runtime: frozen),
+      );
       final container = ProviderContainer(
         overrides: [appGraphProvider.overrideWithValue(graph)],
       );
@@ -155,15 +160,16 @@ void main() {
     );
     addTearDown(() => graph.close(deadline: _deadline()));
     await graph.client.bootstrap();
-    await graph.client.directoryCommands.selectThread('thread-main');
-    final session = graph.client.existingSession('thread-main')!;
-    await session.timeline.state.waitFor(
-      (state) => state.snapshot is StudioTimelineBaselineFrame,
+    await (graph..setConversationPageVisible(true)).client.directoryCommands
+        .selectThread('thread-main');
+    final session = graph.client.conversations.existingSession('thread-main')!;
+    await session.content.state.waitFor(
+      (state) => state.snapshot is ConversationBaselineFrame,
     );
-    final composer = graph.client.existingComposer('thread-main')!;
+    final composer = graph.client.drafts.existingComposer('thread-main')!;
     composer.updateDraft('keep this draft');
     final initial = session.state.workspace!;
-    session.applySnapshot(
+    await (graph.client.transport as RecordingDemoTransport).publishWorkspace(
       initial.copyWith(
         runtime: initial.runtime.copyWith(
           contextTokens: 100,
@@ -207,9 +213,9 @@ void main() {
     contextNotifications = 0;
     chromeNotifications = 0;
     final observersBefore = graph.client.budget.used(ResourceKind.observer);
-    final timelineConnections = transport.timelines.length;
+    final timelineConnections = transport.feeds.length;
 
-    session.applyNotification(
+    await transport.feeds.last.emitStateAndWait(
       _runtimeFrame(
         session,
         session.state.runtime!.copyWith(
@@ -239,7 +245,7 @@ void main() {
       reason: 'FRB-style equal capability lists must not rebuild chrome',
     );
 
-    session.applyNotification(
+    await transport.feeds.last.emitStateAndWait(
       _runtimeFrame(
         session,
         session.state.runtime!.copyWith(
@@ -272,7 +278,7 @@ void main() {
     );
     expect(chromeNotifications, 0);
 
-    session.applyNotification(
+    await transport.feeds.last.emitStateAndWait(
       ThreadNotificationFrame(
         threadId: 'thread-main',
         epoch: session.state.streamEpoch ?? 1,
@@ -290,7 +296,7 @@ void main() {
         ),
       ),
     );
-    session.applyNotification(
+    await transport.feeds.last.emitStateAndWait(
       ThreadNotificationFrame(
         threadId: 'thread-main',
         epoch: session.state.streamEpoch ?? 1,
@@ -306,7 +312,7 @@ void main() {
     expect(contextNotifications, 0);
     expect(chromeNotifications, 0);
 
-    session.applyNotification(
+    await transport.feeds.last.emitStateAndWait(
       _runtimeFrame(
         session,
         session.state.runtime!.copyWith(
@@ -322,8 +328,11 @@ void main() {
     expect(throughputNotifications, 1);
     expect(contextNotifications, 0);
 
-    expect(transport.timelines, hasLength(timelineConnections));
-    expect(graph.client.existingSession('thread-main'), same(session));
+    expect(transport.feeds, hasLength(timelineConnections));
+    expect(
+      graph.client.conversations.existingSession('thread-main'),
+      same(session),
+    );
 
     final alt = container.listen(
       statusThroughputProjectionProvider('thread-alt'),
@@ -336,8 +345,14 @@ void main() {
     context.close();
     chrome.close();
     await container.pump();
-    expect(graph.client.existingSession('thread-main'), same(session));
-    expect(graph.client.composer('thread-main').state.draft, 'keep this draft');
+    expect(
+      graph.client.conversations.existingSession('thread-main'),
+      same(session),
+    );
+    expect(
+      graph.client.drafts.composer('thread-main').state.draft,
+      'keep this draft',
+    );
     expect(
       graph.client.budget.used(ResourceKind.observer),
       lessThan(observersBefore),
@@ -346,7 +361,7 @@ void main() {
 }
 
 ThreadNotificationFrame _runtimeFrame(
-  StudioThreadSession session,
+  ConversationSession session,
   ThreadRuntimeView runtime,
 ) {
   return ThreadNotificationFrame(

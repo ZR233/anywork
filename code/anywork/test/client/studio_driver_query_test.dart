@@ -1,3 +1,6 @@
+import 'support/mapped_conversation_feed.dart';
+import 'support/conversation_fixtures.dart';
+
 import 'support/test_statistics_feed.dart';
 import 'support/unused_account_ports.dart';
 
@@ -12,7 +15,7 @@ import 'dart:convert';
 import 'package:anywork/src/app/app_graph.dart';
 import 'package:anywork/src/domain/models/agent_workspace_view.dart';
 import 'package:anywork/src/domain/models/plan_confirmation_ownership.dart';
-import 'package:anywork/src/features/interaction/composer_view.dart';
+import 'package:anywork/src/features/conversation/composer/view_models/composer_view_model.dart';
 import 'package:anywork/src/features/shell/shell_view.dart';
 import 'package:anywork/src/features/status/status_view.dart';
 import 'package:anywork/src/shared/studio_driver_projection.dart';
@@ -223,7 +226,7 @@ void main() {
       'nested',
       'faulted',
     ]);
-    expect(client.sessionStates, isEmpty);
+    expect(client.conversations.sessionStates, isEmpty);
     expect(
       transport.calls,
       0,
@@ -259,7 +262,7 @@ void main() {
       'faulted',
     ], reason: 'Even root metadata availability is not a membership condition');
     expect(sidebar.read().selectedRootThreadId, root.id);
-    expect(client.sessionStates, isEmpty);
+    expect(client.conversations.sessionStates, isEmpty);
     expect(transport.calls, 0);
     header.close();
   });
@@ -356,7 +359,7 @@ void main() {
             .frozenModel,
         frozen,
       );
-      expect(client.existingSession(child.id), isNull);
+      expect(client.conversations.existingSession(child.id), isNull);
       final cold = AgentDirectoryQueries.forRoot(
         rootThreadId: root.id,
         agents: [saved(const IdleStudioAgent())],
@@ -420,14 +423,15 @@ void main() {
     );
     final client = graph.client;
     await client.bootstrap();
-    await client.directoryCommands.selectThread('thread-main');
-    final session = client.existingSession('thread-main')!;
-    await session.timeline.state.waitFor(
-      (state) => state.snapshot is StudioTimelineBaselineFrame,
+    await (graph..setConversationPageVisible(true)).client.directoryCommands
+        .selectThread('thread-main');
+    final session = client.conversations.existingSession('thread-main')!;
+    await session.content.state.waitFor(
+      (state) => state.snapshot is ConversationBaselineFrame,
     );
     final initial = session.state.workspace!;
     // A runtime baseline may predate the directory's terminal/title/mode frame.
-    session.applySnapshot(
+    await (client.transport as RecordingDemoTransport).publishWorkspace(
       initial.copyWith(
         thread: initial.thread.copyWith(status: ThreadStatusView.running),
       ),
@@ -445,7 +449,7 @@ void main() {
       (_, _) {},
     );
     final composer = container.listen(
-      composerDockViewProvider('thread-main'),
+      composerDockViewModelProvider('thread-main'),
       (_, _) {},
     );
     addTearDown(workspace.close);
@@ -464,7 +468,7 @@ void main() {
     );
     // The directory frame can arrive before an already captured runtime
     // baseline. Unix-second timestamps cannot order these resource domains.
-    session.applySnapshot(
+    await (client.transport as RecordingDemoTransport).publishWorkspace(
       initial.copyWith(
         thread: initial.thread.copyWith(status: ThreadStatusView.running),
       ),
@@ -519,7 +523,7 @@ void main() {
     expect(facts.workspace!.thread, same(canonical));
     expect(workspace.read()!.thread, same(canonical));
     expect(status.read()!.thread, same(canonical));
-    expect(composer.read().thread, same(canonical));
+    expect(composer.read().requireValue.thread, same(canonical));
   });
 
   test(
@@ -570,8 +574,8 @@ void main() {
         reason: '没有展示 lease 就没有几何，也不回放上一代',
       );
       expect(timeline.lease('thread'), isNull);
-      expect(client.sessionStates, isEmpty);
-      expect(client.composerState('thread'), isNull);
+      expect(client.conversations.sessionStates, isEmpty);
+      expect(client.drafts.existingComposer('thread')?.state, isNull);
       expect(client.ownedSkills, isEmpty);
       expect(client.ownedSessionCosts, isEmpty);
       expect(transport.calls, 0);
@@ -610,8 +614,8 @@ void main() {
         usageRepository: graph.accountUsage,
         acpService: graph.acp,
       );
-      expect(client.sessionStates, isEmpty);
-      expect(client.composerState('thread'), isNull);
+      expect(client.conversations.sessionStates, isEmpty);
+      expect(client.drafts.existingComposer('thread')?.state, isNull);
       expect(client.budget.usage.length, usageBefore);
       expect(
         transport.calls,
@@ -957,8 +961,13 @@ void main() {
       revision: 1,
     );
     final timeline = graph.timeline;
-    client.workspace.selectThread('thread', projectId: 'project');
-    await timeline.source.waitFor((state) => state?.generation != 0);
+    (graph..setConversationPageVisible(true)).client.workspace.selectThread(
+      'thread',
+      projectId: 'project',
+    );
+    await timeline.source.waitFor(
+      (state) => state != null && state.generation > 0,
+    );
 
     bindStudioDriver(
       client,
@@ -1047,8 +1056,13 @@ void main() {
         revision: 1,
       );
       final timeline = graph.timeline;
-      client.workspace.selectThread('thread', projectId: 'project');
-      await timeline.source.waitFor((state) => state?.generation != 0);
+      (graph..setConversationPageVisible(true)).client.workspace.selectThread(
+        'thread',
+        projectId: 'project',
+      );
+      await timeline.source.waitFor(
+        (state) => state != null && state.generation > 0,
+      );
 
       bindStudioDriver(
         client,
@@ -1384,67 +1398,28 @@ AgentWorkspaceView _identityWorkspace({required ThreadModelRouteView? route}) {
 }
 
 /// 受控最小 content connection：只交付一份首帧基线，尾部保持静默。
-final class _FactsConnection implements StudioTimelineConnection {
-  _FactsConnection(this._baseline);
-
-  final StudioTimelineBaseline Function() _baseline;
-  final Completer<StudioTimelineUpdate?> _pending = Completer();
-  int closeCalls = 0;
-  bool closed = false;
-
-  @override
-  Future<StudioTimelineBaseline> initial() async => _baseline();
-
-  @override
-  Future<StudioTimelineUpdate?> next() => _pending.future;
-
-  @override
-  Future<StudioTimelinePage> page({String? before, int? limit}) async =>
-      const StudioTimelinePage(items: [], before: null, hasOlder: false);
-
-  @override
-  Future<StudioTimelineDetailChunk> readDetail({
-    required String itemId,
-    required StudioTimelineDetailQuery query,
-  }) async => StudioTimelineDetailChunk(
-    itemId: itemId,
-    field: query.field,
-    revision: query.revision,
-    text: '',
-    totalBytes: 0,
-    continuation: null,
-  );
-
-  @override
-  void requestClose() {
-    closed = true;
-    if (!_pending.isCompleted) _pending.complete(null);
-  }
-
-  @override
-  Future<void> close() async {
-    closeCalls++;
-    requestClose();
-  }
+final class _FactsConnection extends ScriptedConversationFeed {
+  _FactsConnection(String threadId, ConversationBaseline Function() baseline)
+    : super(
+        threadId: threadId,
+        subscriptionId: baseline().subscriptionId,
+        baseline: baseline,
+      );
 }
 
 final class _ScriptedTimelineTransport extends UnusedAccountPorts
     implements StudioTransport {
-  _ScriptedTimelineTransport({StudioTimelineBaseline Function()? baseline})
+  _ScriptedTimelineTransport({ConversationBaseline Function()? baseline})
     : _baseline = baseline ?? _factsBaseline;
 
-  final StudioTimelineBaseline Function() _baseline;
+  final ConversationBaseline Function() _baseline;
   int opens = 0;
 
   @override
-  Future<StudioTimelineConnection> openTimeline(String threadId) async {
+  Future<ConversationFeed> openConversationFeed(String threadId) async {
     opens++;
-    return _FactsConnection(_baseline);
+    return _FactsConnection(threadId, _baseline);
   }
-
-  @override
-  Stream<ThreadStreamFrame> subscribeThread(String threadId) =>
-      const Stream.empty();
 
   @override
   dynamic noSuchMethod(Invocation invocation) => throw UnsupportedError(
@@ -1462,71 +1437,64 @@ UserQuestionView _factsQuestion({required String id, String text = 'Q'}) =>
       options: const [],
     );
 
-StudioTimelineItem _textItem(
+ConversationItem _textItem(
   String id,
   int ordinal,
   ThreadTextChannel channel, {
   List<ThreadAttachmentView> attachments = const [],
-}) => StudioTimelineItem(
-  item: ThreadItemView(
-    id: id,
-    threadId: 'thread',
-    turnId: 'turn',
-    ordinal: ordinal,
-    revision: 1,
-    createdAt: DateTime.utc(2026),
-    updatedAt: DateTime.utc(2026),
-    saved: true,
-    executionTerminal: true,
-    state: ThreadTextItemStateView(
-      channel: channel,
-      text: 'body-$id',
-      attachments: attachments,
-      lifecycle: CompletedThreadContentView(DateTime.utc(2026)),
-    ),
-  ),
+}) => conversationFixture(
+  id: id,
+  threadId: 'thread',
+  turnId: 'turn',
+  ordinal: ordinal,
+  revision: 1,
+  createdAt: DateTime.utc(2026),
+  updatedAt: DateTime.utc(2026),
   saved: true,
-  lifecycle: StudioTimelineLifecycle.terminal,
-  omittedBytes: 0,
-  details: const [],
+  lifecycle: ConversationLifecycle.terminal,
+  descriptor: ConversationTextDescriptor(
+    channel: channel,
+    attachments: attachments,
+    lifecycle: CompletedThreadContentView(DateTime.utc(2026)),
+  ),
+  fields: {const ThreadTextFieldView(): 'body-$id'},
 );
 
-StudioTimelineItem _toolItem(
+ConversationItem _toolItem(
   String id,
   int ordinal, {
-  ThreadToolUserInputView? userInput,
-  ThreadToolLifecycleView lifecycle = const RunningThreadToolView(''),
-  StudioTimelineLifecycle itemLifecycle = StudioTimelineLifecycle.streaming,
+  ConversationInputFixture? userInput,
+  ConversationToolState lifecycle = const ConversationToolRunning(),
+  ConversationLifecycle itemLifecycle = ConversationLifecycle.streaming,
   String name = 'ask_user',
-}) => StudioTimelineItem(
-  item: ThreadItemView(
-    id: id,
-    threadId: 'thread',
-    turnId: 'turn',
-    ordinal: ordinal,
-    revision: 1,
-    createdAt: DateTime.utc(2026),
-    updatedAt: DateTime.utc(2026),
-    saved: true,
-    executionTerminal: true,
-    state: ThreadToolItemStateView(
-      invocation: ThreadToolInvocationView(
-        toolCallId: id,
-        callId: id,
-        name: name,
-        arguments: '{}',
-      ),
-      lifecycle: lifecycle,
-      userInput: userInput,
-    ),
-  ),
+  String result = '',
+}) => conversationFixture(
+  id: id,
+  threadId: 'thread',
+  turnId: 'turn',
+  ordinal: ordinal,
+  revision: 1,
+  createdAt: DateTime.utc(2026),
+  updatedAt: DateTime.utc(2026),
   saved: true,
   lifecycle: itemLifecycle,
-  omittedBytes: 0,
-  details: const [],
+  descriptor: ConversationToolDescriptor(
+    invocation: ConversationToolInvocation(
+      toolCallId: id,
+      callId: id,
+      name: name,
+    ),
+    userInput: userInput?.descriptor,
+    state: lifecycle,
+  ),
+  fields: {
+    const ThreadToolArgumentsFieldView(): '{}',
+    const ThreadToolResultFieldView(): result,
+    ...?userInput?.fields,
+  },
 );
 
-StudioTimelineBaseline _factsBaseline() => StudioTimelineBaseline(
+ConversationBaseline _factsBaseline() => ConversationBaseline(
   subscriptionId: 'facts',
   version: 1,
   before: null,
@@ -1538,19 +1506,28 @@ StudioTimelineBaseline _factsBaseline() => StudioTimelineBaseline(
     _toolItem(
       'qa-normal',
       4,
-      userInput: ThreadToolUserInputView(
+      userInput: conversationInputFixture(
         interactionId: 'normal',
         questions: [_factsQuestion(id: 'q1')],
-        state: const ResolvedThreadToolUserInputView([
-          ThreadUserInputAnswerView(questionId: 'q1', answers: ['A']),
-        ]),
+        state: ConversationUserInputResolved(
+          answers: [
+            ConversationAnswerDescriptor(
+              questionId: 'q1',
+              answerCount: (['A']).length,
+              redacted: false,
+            ),
+          ],
+        ),
+        answers: {
+          'q1': ['A'],
+        },
       ),
     ),
     _toolItem(
       'qa-plan-pending',
       5,
       name: planSubmitToolName,
-      userInput: ThreadToolUserInputView(
+      userInput: conversationInputFixture(
         interactionId: 'plan-pending',
         questions: [
           _factsQuestion(
@@ -1558,14 +1535,15 @@ StudioTimelineBaseline _factsBaseline() => StudioTimelineBaseline(
             text: '# Plan',
           ),
         ],
-        state: const PendingThreadToolUserInputView(),
+        state: const ConversationUserInputPending(),
+        answers: const <String, List<String>>{},
       ),
     ),
     _toolItem(
       'qa-plan-cancelled',
       6,
       name: planSubmitToolName,
-      userInput: ThreadToolUserInputView(
+      userInput: conversationInputFixture(
         interactionId: 'plan-cancelled',
         questions: [
           _factsQuestion(
@@ -1573,14 +1551,15 @@ StudioTimelineBaseline _factsBaseline() => StudioTimelineBaseline(
             text: '# Plan',
           ),
         ],
-        state: const CancelledThreadToolUserInputView(),
+        state: const ConversationUserInputCancelled(),
+        answers: const <String, List<String>>{},
       ),
     ),
     _toolItem(
       'qa-plan-approved',
       7,
       name: planSubmitToolName,
-      userInput: ThreadToolUserInputView(
+      userInput: conversationInputFixture(
         interactionId: 'plan-approved',
         questions: [
           _factsQuestion(
@@ -1588,19 +1567,27 @@ StudioTimelineBaseline _factsBaseline() => StudioTimelineBaseline(
             text: '# Plan',
           ),
         ],
-        state: const ResolvedThreadToolUserInputView([
-          ThreadUserInputAnswerView(
-            questionId: agentSessionPlanConfirmationQuestionId,
-            answers: [agentSessionPlanApproveAnswer],
-          ),
-        ]),
+        state: ConversationUserInputResolved(
+          answers: [
+            ConversationAnswerDescriptor(
+              questionId: agentSessionPlanConfirmationQuestionId,
+              answerCount: ([agentSessionPlanApproveAnswer]).length,
+              redacted: false,
+            ),
+          ],
+        ),
+        answers: {
+          agentSessionPlanConfirmationQuestionId: [
+            agentSessionPlanApproveAnswer,
+          ],
+        },
       ),
     ),
     // 旧历史的普通问答工具复用过保留的问题 ID：它仍必须报告为普通问答。
     _toolItem(
       'qa-plan-legacy',
       8,
-      userInput: ThreadToolUserInputView(
+      userInput: conversationInputFixture(
         interactionId: 'plan-legacy',
         questions: [
           _factsQuestion(
@@ -1608,12 +1595,20 @@ StudioTimelineBaseline _factsBaseline() => StudioTimelineBaseline(
             text: '# Plan',
           ),
         ],
-        state: const ResolvedThreadToolUserInputView([
-          ThreadUserInputAnswerView(
-            questionId: agentSessionPlanConfirmationQuestionId,
-            answers: [agentSessionPlanApproveAnswer],
-          ),
-        ]),
+        state: ConversationUserInputResolved(
+          answers: [
+            ConversationAnswerDescriptor(
+              questionId: agentSessionPlanConfirmationQuestionId,
+              answerCount: ([agentSessionPlanApproveAnswer]).length,
+              redacted: false,
+            ),
+          ],
+        ),
+        answers: {
+          agentSessionPlanConfirmationQuestionId: [
+            agentSessionPlanApproveAnswer,
+          ],
+        },
       ),
     ),
   ],
@@ -1654,7 +1649,7 @@ const _toolVideo = ThreadAttachmentView(
 
 /// 用户条目带图片/文件附件，工具条目带真实成功输出附件：投影必须同时保留
 /// 顶层附件行与 nested 工具附件，且 modality 是 canonical enum 名。
-StudioTimelineBaseline _attachmentBaseline() => StudioTimelineBaseline(
+ConversationBaseline _attachmentBaseline() => ConversationBaseline(
   subscriptionId: 'attachments',
   version: 1,
   before: null,
@@ -1670,13 +1665,12 @@ StudioTimelineBaseline _attachmentBaseline() => StudioTimelineBaseline(
       'tool-output',
       2,
       name: 'bash',
-      itemLifecycle: StudioTimelineLifecycle.terminal,
-      lifecycle: SucceededThreadToolView(
-        DateTime.utc(2026),
-        const ThreadToolOutputView(
-          result: 'ok',
+      result: 'ok',
+      itemLifecycle: ConversationLifecycle.terminal,
+      lifecycle: ConversationToolSucceeded(
+        completedAt: DateTime.utc(2026),
+        output: ConversationToolOutputDescriptor(
           attachments: [_toolImage, _toolVideo],
-          outputArtifacts: [],
         ),
       ),
     ),

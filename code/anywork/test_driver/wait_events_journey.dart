@@ -1146,9 +1146,8 @@ class WaitEventsJourney {
       final summary = 'timeline-activity-summary-${group.id}';
       final summaryFinder = find.byValueKey(summary);
       await driver.waitFor(summaryFinder, timeout: const Duration(seconds: 10));
-      final summaryHeader = _headerOf(summaryFinder);
-      await _scrollHeaderIntoView(summaryHeader);
-      await driver.rawTap(summaryHeader);
+      await _scrollHeaderIntoView(summaryFinder);
+      await driver.rawTap(summaryFinder);
       await waitFor(
         (snapshot) {
           final current = TimelineObservation.optional(snapshot);
@@ -1307,9 +1306,8 @@ class WaitEventsJourney {
     final summary = 'timeline-activity-summary-$groupId';
     final summaryFinder = find.byValueKey(summary);
     await driver.waitFor(summaryFinder, timeout: const Duration(seconds: 10));
-    final summaryHeader = _headerOf(summaryFinder);
-    await _scrollHeaderIntoView(summaryHeader);
-    await driver.rawTap(summaryHeader);
+    await _scrollHeaderIntoView(summaryFinder);
+    await driver.rawTap(summaryFinder);
     await waitFor(
       (snapshot) {
         final current = TimelineObservation.optional(snapshot);
@@ -1321,15 +1319,8 @@ class WaitEventsJourney {
     );
   }
 
-  /// ListTile ancestor of a summary text key such as
-  /// `timeline-activity-summary-<id>`. Wait-card panels already contain their
-  /// ListTile, so their header is a descendant of the ExpansionTile.
-  SerializableFinder _headerOf(SerializableFinder child) => find.ancestor(
-    of: child,
-    matching: find.byType('ListTile'),
-    firstMatchOnly: true,
-  );
-
+  /// Activity summary keys identify the real InkWell control. Wait-card
+  /// panels still use the ListTile inside their official ExpansionTile.
   Future<void> _scrollHeaderIntoView(SerializableFinder header) async {
     await driver.scrollUntilVisible(
       find.byValueKey('timeline-scrollable'),

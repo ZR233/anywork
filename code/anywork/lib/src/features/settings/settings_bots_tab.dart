@@ -2,7 +2,9 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 import 'package:pretty_qr_code/pretty_qr_code.dart';
 
 import '../../app/theme/studio_tokens.dart';
@@ -12,6 +14,8 @@ import '../../platform/feishu_app_links.dart';
 import '../../presentation/providers/client_provider.dart';
 import '../../presentation/providers/account_domains.dart';
 import '../../shared/studio_driver_keys.dart';
+import '../../shared/studio_routes.dart';
+import '../../presentation/providers/selection_store.dart';
 import '../../shared/model_route_selector.dart';
 import '../shell/studio_shell.dart';
 import 'settings_agent_routes.dart';
@@ -25,6 +29,7 @@ import 'settings_views.dart';
 part 'settings_bots_editor.dart';
 part 'settings_bots_detail.dart';
 part 'settings_bots_registration.dart';
+part 'settings_bot_conversation_page.dart';
 
 /// 飞书中国版开发者后台固定入口；仅本机点击打开，不携带凭据或票据。
 const _feishuDeveloperConsoleUrl = 'https://open.feishu.cn/app';
@@ -110,6 +115,24 @@ class _BotsTabState extends ConsumerState<BotsTab> {
         ref.watch(feishuClientAvailableProvider).asData?.value == true;
     final snapshot = view.snapshot ?? const BotsStateSnapshot.empty();
     final selected = _selectedBot(snapshot);
+    if (widget.botId != null && view.loaded && selected == null) {
+      return SettingsPane(
+        header: SettingsHeader(
+          title: context.l10n.settingsBotsTitle,
+          subtitle: context.l10n.botsPlatformFeishu,
+          leading: BackButton(
+            key: StudioDriverKeys.botsBack,
+            onPressed: () => context.pop(),
+          ),
+        ),
+        children: [
+          Text(
+            context.l10n.settingsBotsOperationFailed,
+            key: const ValueKey('bot-destination-unavailable'),
+          ),
+        ],
+      );
+    }
     final registration = snapshot.registration;
     final registering = switch (registration?.status) {
       BotRegistrationPreparing() ||
@@ -132,7 +155,7 @@ class _BotsTabState extends ConsumerState<BotsTab> {
             : IconButton(
                 key: StudioDriverKeys.botsBack,
                 tooltip: MaterialLocalizations.of(context).backButtonTooltip,
-                onPressed: () => Navigator.of(context).pop(),
+                onPressed: () => context.pop(),
                 icon: const Icon(Icons.arrow_back),
               ),
         trailing: selected != null
@@ -229,10 +252,10 @@ class _BotsTabState extends ConsumerState<BotsTab> {
                 );
               }
             },
-            onSelectChat: (id) => Navigator.of(context).push<void>(
-              MaterialPageRoute(
-                builder: (_) => BotDetailsPage(botId: selected.id, chatId: id),
-              ),
+            onSelectChat: (id) => StudioRoutes.openBotPlatformTools(
+              context,
+              botId: selected.id,
+              chatId: id,
             ),
             onEnabled: (enabled) => _run(
               () => _client.botsCommands.setEnabled(
@@ -330,11 +353,7 @@ class _BotsTabState extends ConsumerState<BotsTab> {
                 )
                 .toList(),
             selectedId: null,
-            onSelect: (id) {
-              Navigator.of(context).push<void>(
-                MaterialPageRoute(builder: (_) => BotDetailsPage(botId: id)),
-              );
-            },
+            onSelect: (id) => StudioRoutes.openBotDetails(context, id),
           ),
         ],
       ],
@@ -523,9 +542,7 @@ class _BotsTabState extends ConsumerState<BotsTab> {
           .where((bot) => bot.appId == draft.appId)
           .firstOrNull;
       if (created != null) {
-        await Navigator.of(context).push<void>(
-          MaterialPageRoute(builder: (_) => BotDetailsPage(botId: created.id)),
-        );
+        await StudioRoutes.openBotDetails(context, created.id);
       }
     });
   }
@@ -676,54 +693,11 @@ class _BotsTabState extends ConsumerState<BotsTab> {
       return;
     }
     await _run(() async {
-      await _client.directoryCommands.selectThread(threadId);
-      if (!mounted) return;
-      await Navigator.of(context).push<void>(
-        MaterialPageRoute(
-          builder: (context) => Scaffold(
-            appBar: AppBar(
-              leading: BackButton(key: StudioDriverKeys.botsChatBack),
-              title: Text(
-                conversation.name ?? bot.name,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-              ),
-              actions: [
-                IconButton(
-                  tooltip: context.l10n.settingsBotsOpenChat,
-                  icon: const Icon(Icons.open_in_new),
-                  onPressed: () => _openBotLink(
-                    feishuChatAppLink(
-                      conversation.chatId,
-                      browser:
-                          ref
-                              .read(feishuClientAvailableProvider)
-                              .asData
-                              ?.value !=
-                          true,
-                    ),
-                  ),
-                ),
-                IconButton(
-                  key: StudioDriverKeys.botsPlatformTools,
-                  tooltip: context.l10n.botsPlatformTools,
-                  icon: const Icon(Icons.more_horiz),
-                  onPressed: () {
-                    Navigator.of(context).push<void>(
-                      MaterialPageRoute(
-                        builder: (_) => BotDetailsPage(
-                          botId: bot.id,
-                          chatId: conversation.chatId,
-                        ),
-                      ),
-                    );
-                  },
-                ),
-              ],
-            ),
-            body: const AgentWorkspacePane(),
-          ),
-        ),
+      await StudioRoutes.openBotConversation(
+        context,
+        botId: bot.id,
+        chatId: conversation.chatId,
+        threadId: threadId,
       );
     });
   }

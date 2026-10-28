@@ -183,12 +183,14 @@ class DirectoryCommands extends ReadModel<DirectoryCommandState> {
           .map((thread) => thread.id)
           .toSet();
       // Capture logical draft owners before directory removal can arrive.
-      final draftOwners = _client.projectComposers(projectId);
+      final draftOwners = _client.drafts.projectComposers(projectId);
       await _api.archiveProject(projectId);
       if (_client.isClosed) return;
-      await _client.discardProjectDrafts(projectId, draftOwners);
+      await _client.drafts.discardProjectDrafts(projectId, draftOwners);
       for (final id in loadedIds) {
-        _client.releaseSession(id);
+        if (_client.selection.state.selectedThreadId == id) {
+          _client.conversations.setVisibleThread(null);
+        }
       }
     });
   }
@@ -402,7 +404,13 @@ class DirectoryCommands extends ReadModel<DirectoryCommandState> {
     if (selection.selectedProjectId != projectId) return false;
     final threadId = selection.selectedThreadId;
     if (threadId == null) return false;
-    return _client.session(threadId).state.activeTurn?.state.isBusy ?? false;
+    return _client.conversations
+            .session(threadId)
+            .state
+            .activeTurn
+            ?.state
+            .isBusy ??
+        false;
   }
 
   bool _blocksProject(String projectId) =>

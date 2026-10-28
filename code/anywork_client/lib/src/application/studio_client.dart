@@ -11,12 +11,16 @@ final class WorkspaceSelection {
   final bool settingsOpen;
 }
 
-/// Settings navigation changes presentation only; it never changes Chat demand.
+/// Navigation owns visible conversation demand independently of selection.
 final class WorkspaceController {
-  WorkspaceController({required void Function(String?) onThreadChanged})
-    : _onThreadChanged = onThreadChanged;
+  WorkspaceController({
+    required void Function(String?) onThreadChanged,
+    required void Function(String?) onVisibleThreadChanged,
+  }) : _onThreadChanged = onThreadChanged,
+       _onVisibleThreadChanged = onVisibleThreadChanged;
 
   final void Function(String?) _onThreadChanged;
+  final void Function(String?) _onVisibleThreadChanged;
   final LatestValue<WorkspaceSelection> state = LatestValue(
     const WorkspaceSelection(),
   );
@@ -31,6 +35,7 @@ final class WorkspaceController {
       ),
     );
     if (current.threadId != threadId) _onThreadChanged(threadId);
+    _onVisibleThreadChanged(current.settingsOpen ? null : threadId);
   }
 
   void openNewSession({String? projectId}) {
@@ -42,12 +47,14 @@ final class WorkspaceController {
       ),
     );
     if (current.threadId != null) _onThreadChanged(null);
+    _onVisibleThreadChanged(null);
   }
 
   void showSettings() => _settings(true);
   void hideSettings() => _settings(false);
 
   void _settings(bool open) {
+    _onVisibleThreadChanged(open ? null : state.value.threadId);
     final current = state.value;
     state.publish(
       WorkspaceSelection(

@@ -39,12 +39,15 @@ void main() {
     );
     await client.bootstrap();
     final projectId = client.selection.state.selectedProjectId!;
-    client.startDraft.updateDraft(projectId, 'closed project draft');
-    final composer = client.composer('thread-main')
+    client.drafts.startDraft.updateDraft(projectId, 'closed project draft');
+    final composer = client.drafts.composer('thread-main')
       ..updateDraft('closed Thread draft');
     await client.directoryCommands.archiveProject(projectId);
-    expect(client.startDraft.state.projects.containsKey(projectId), isFalse);
-    expect(client.composerState('thread-main'), isNull);
+    expect(
+      client.drafts.startDraft.state.projects.containsKey(projectId),
+      isFalse,
+    );
+    expect(client.drafts.existingComposer('thread-main')?.state, isNull);
     expect(composer.state.draft, isEmpty);
     expect(client.budget.used(ResourceKind.draft), 0);
     expect((await client.close()).complete, isTrue);
@@ -98,7 +101,7 @@ void main() {
         report.unresolved.any((item) => item.owner == 'bootstrap'),
         isTrue,
       );
-      expect(() => client.composer('late'), throwsStateError);
+      expect(() => client.drafts.composer('late'), throwsStateError);
       transport.release.complete();
       await boot;
       expect(client.applicationTopics, isEmpty);

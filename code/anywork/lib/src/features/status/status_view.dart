@@ -163,7 +163,10 @@ T? _observeSession<T>(
   T Function(ThreadSessionState session) project, {
   bool Function(T left, T right)? equals,
 }) {
-  final owner = ref.read(anyworkClientProvider).existingSession(threadId);
+  final owner = ref
+      .read(anyworkClientProvider)
+      .conversations
+      .existingSession(threadId);
   if (owner == null) {
     observeClientDemand(
       ref,

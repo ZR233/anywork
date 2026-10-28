@@ -7,6 +7,9 @@ import '../../model_directory.dart';
 import '../../anywork_client.dart';
 import '../../models.dart';
 import '../../studio_ports.dart';
+import '../conversation/data/conversation_repository_impl.dart';
+import '../drafts/data/drafts_repository_impl.dart';
+import '../drafts/data/drafts_dependencies.dart';
 import 'bridge/studio_channels.dart';
 import 'bridge/product_topic_registry.dart';
 import 'commands/directory_commands.dart';
@@ -15,13 +18,8 @@ import 'commands/bots_queries.dart';
 import 'commands/settings_commands.dart';
 import 'commands/thread_commands.dart';
 import 'commands/command_lane.dart';
-import 'drafts/attachment_drafts.dart';
-import 'drafts/composer_draft_owner.dart';
-import 'drafts/start_session_draft_owner.dart';
 import 'mode_editor_owner.dart';
 import 'agent_directory_queries.dart';
-import 'thread_session.dart';
-import 'thread_session_state.dart';
 import 'stores/project_store.dart';
 import 'stores/settings_store.dart';
 import 'stores/selection_store.dart';
@@ -67,14 +65,42 @@ class AnyworkClient {
     botsCommands = BotsCommands(this);
     botsQueries = BotsQueries(this);
     // Test seam: the wall clock used to record command start facts.
-    threadCommands = ThreadCommands(this, nowMs: threadCommandsClock);
-    remote = RemoteActions(transport);
-    attachments = AttachmentDraftsOwner(
+    threadCommands = ThreadCommands(
       this,
+      childInteractions: _childInteractions,
+      nowMs: threadCommandsClock,
+    );
+    remote = RemoteActions(transport);
+    final conversationOwner = ConversationRepositoryImpl(
+      transport: transport,
+      directory: threadDirectory,
+      budget: this.budget,
+      onRevision: observeResource,
+      onVisibleThreadChanged: _childInteractions.setVisibleHostThread,
+    );
+    conversations = conversationOwner;
+    drafts = DraftsRepositoryImpl(
+      DraftsDependencies(
+        budget: this.budget,
+        mutations: mutations,
+        conversations: conversations,
+        inputFacts: conversationOwner,
+        settings: settings.source,
+        project: project.source,
+        selection: selection.source,
+        recovery: recovery.source,
+        modelAccounts: () => modelAccounts,
+        threads: () => [
+          ...threadDirectory.state.window.threads,
+          ...threadDirectory.state.overlayThreads,
+        ],
+        findThread: findThread,
+        threadCommands: threadCommands,
+        transport: transport,
+      ),
       clipboardImageStager: clipboardImageStager,
       clipboardImageCleanup: clipboardImageCleanup,
     );
-    startDraft = StartSessionDraftOwner(this);
     updates = StudioUpdateClient(
       api: updateApi ?? const _DisabledUpdateApi(),
       updater: updater,
@@ -82,6 +108,7 @@ class AnyworkClient {
       budget: this.budget,
     );
     workspace = WorkspaceController(
+      onVisibleThreadChanged: conversations.setVisibleThread,
       onThreadChanged: (id) {
         if (id == null) {
           selection.beginNewThread();
@@ -202,8 +229,8 @@ class AnyworkClient {
   late final BotsQueries botsQueries;
   late final ThreadCommands threadCommands;
   late final RemoteActions remote;
-  late final AttachmentDraftsOwner attachments;
-  late final StartSessionDraftOwner startDraft;
+  late final ConversationRepository conversations;
+  late final DraftsRepository drafts;
   late final StudioUpdateClient updates;
   final project = ProjectStore();
   final settings = SettingsStore();
@@ -217,20 +244,17 @@ class AnyworkClient {
   final persistence = PersistenceStore();
   final bots = BotsStore();
   final botsSends = BotsSendStore();
-  final childInteractions = ChildInteractionStore();
+  final _childInteractions = ChildInteractionStore();
+  ChildInteractionsView get childInteractions => _childInteractions;
   final bootstrapState = LatestValue(const StudioBootstrapState());
   final Map<String, SkillsStore> _skills = {};
   final Map<String, SessionCostsStore> _sessionCosts = {};
-  final Map<String, StudioThreadSession> _sessions = {};
-  final Map<String, ComposerDraftOwner> _composers = {};
-  final Map<String, Future<CloseReport>> _retiring = {};
   final Map<String, UnresolvedResource> _unresolved = {};
   final Map<String, CloseReport> _closeReports = {};
   final Map<String, int> _reportGenerations = {};
   final Map<String, Future<void>> _pendingJoins = {};
   final resourceFailure = LatestValue<UnresolvedResource?>(null);
 
-  final _activeSession = LatestValue<StudioThreadSession?>(null);
   final Map<String, ResourcePermit> _mirrorPermits = {};
   final CommandLane _queries = CommandLane();
   int _querySequence = 0;
@@ -240,7 +264,6 @@ class AnyworkClient {
   BridgeTopicLeaseBundle? _applicationTopics;
   BridgeTopicLeaseBundle? _selectionTopics;
   String? _selectionTopicKey;
-  String? _activeThread;
   Future<void>? _bootstrapping;
   Future<CloseReport>? _closing;
   bool _closed = false;
@@ -261,85 +284,12 @@ class AnyworkClient {
       ),
   ]);
 
-  ThreadSessionState? sessionState(String threadId) =>
-      _sessions[threadId]?.state;
-  StudioThreadSession? existingSession(String threadId) => _sessions[threadId];
-
-  /// The selected, admitted Session owner. Reading never admits a resource.
-  StudioThreadSession? get activeSession => _activeSession.value;
-
-  /// Atomically observes availability with its current snapshot. The publisher
-  /// stays private; an admission retry publishes the owner stored in _sessions.
-  LatestWatch<StudioThreadSession?> watchActiveSession(
-    void Function(StudioThreadSession?) listener,
-  ) => _activeSession.watchLatest(listener);
-
-  /// Resource admission is an explicit workspace action, never an observation.
-  void retrySession(String threadId) {
-    _ensureOpen();
-    final selected = selection.state;
-    if (selected.selectedThreadId != threadId ||
-        selected.needsOpen ||
-        _activeThread != threadId)
-      return;
-    _selectionChanged(selected);
-    try {
-      final owner = session(threadId);
-      if (owner.isActive) {
-        owner.retry();
-      } else {
-        owner.start();
-      }
-      _activeSession.publish(owner);
-      if (resourceFailure.value?.owner == 'session:$threadId') {
-        resourceFailure.publish(null);
-      }
-    } catch (error) {
-      resourceFailure.publish(
-        UnresolvedResource(
-          owner: 'session:$threadId',
-          attemptId: const AttemptId(0),
-          reason: error,
-        ),
-      );
-    }
-  }
-
-  Iterable<ThreadSessionState> get sessionStates =>
-      List.unmodifiable(_sessions.values.map((owner) => owner.state));
-  ComposerThreadState? composerState(String threadId) =>
-      _composers[threadId]?.state;
-  ComposerDraftOwner? existingComposer(String threadId) => _composers[threadId];
   SkillsStore? existingSkills(String projectId) => _skills[projectId];
   SessionCostsStore? existingSessionCosts(String rootThreadId) =>
       _sessionCosts[rootThreadId];
   Iterable<SkillsStore> get ownedSkills => List.unmodifiable(_skills.values);
   Iterable<SessionCostsStore> get ownedSessionCosts =>
       List.unmodifiable(_sessionCosts.values);
-  List<ComposerDraftOwner> projectComposers(String projectId) =>
-      List.unmodifiable([
-        for (final entry in _composers.entries)
-          if ((_sessions[entry.key]?.state.workspace?.thread.projectId ??
-                  findThread(entry.key)?.projectId) ==
-              projectId)
-            entry.value,
-      ]);
-  Future<void> discardProjectDrafts(
-    String projectId,
-    List<ComposerDraftOwner> owners,
-  ) async {
-    await Future.wait<void>([
-      startDraft.discardProject(projectId),
-      for (final owner in owners)
-        () async {
-          await owner.discard();
-          await owner.close();
-          if (identical(_composers[owner.threadId], owner))
-            _composers.remove(owner.threadId);
-        }(),
-    ]);
-  }
-
   List<ProductTopic> get applicationTopics =>
       _applicationTopics?.topics ?? const [];
 
@@ -355,38 +305,6 @@ class AnyworkClient {
           () => SessionCostsStore(rootThreadId),
         ),
       );
-  ComposerDraftOwner composer(String threadId) {
-    final existing = _composers[threadId];
-    if (existing != null) return existing;
-    _ensureOpen();
-    return _composers.putIfAbsent(
-      threadId,
-      () => ComposerDraftOwner(this, threadId),
-    );
-  }
-
-  StudioThreadSession session(String threadId) => _sessions.putIfAbsent(
-    threadId,
-    () => _mirror('session:$threadId', () {
-      final owner = StudioThreadSession(
-        threadId,
-        transport: transport,
-        directory: threadDirectory,
-        budget: budget,
-      );
-      _canonicalObservations.add(
-        owner.source.watch((value) {
-          if (value.hasSnapshot)
-            observeResource('thread-state:$threadId', value.revision);
-          final route = value.runtime?.modelRoute;
-          if (route != null)
-            observeResource('thread-route:$threadId', route.revision);
-        }),
-      );
-      return owner;
-    }),
-  );
-
   void observeResource(String key, int revision) {
     final epoch = _runtimeOwnerEpoch;
     if (epoch == null) return;
@@ -613,73 +531,9 @@ class AnyworkClient {
       }
     }
     final draftId = next.selectedThreadId;
-    if (draftId != null && !_composers.containsKey(draftId)) {
-      try {
-        composer(draftId);
-        if (resourceFailure.value?.owner == 'composer:$draftId') {
-          resourceFailure.publish(null);
-        }
-      } catch (error) {
-        resourceFailure.publish(
-          UnresolvedResource(
-            owner: 'composer:$draftId',
-            attemptId: const AttemptId(0),
-            reason: error,
-          ),
-        );
-      }
-    }
-    final nextId = next.needsOpen ? null : next.selectedThreadId;
-    if (_activeThread == nextId) return;
-    final old = _activeThread;
-    _activeThread = nextId;
-    _activeSession.publish(null);
-    if (old != null) _retireSession(old);
-    if (nextId != null) {
-      try {
-        final owner = session(nextId);
-        owner.start();
-        _activeSession.publish(owner);
-      } catch (error) {
-        resourceFailure.publish(
-          UnresolvedResource(
-            owner: 'session:$nextId',
-            attemptId: const AttemptId(0),
-            reason: error,
-          ),
-        );
-      }
-    }
-  }
-
-  void _retireSession(String id) {
-    final owner = _sessions[id];
-    if (owner == null) return;
-    final retirement = owner.retire();
-    final reportOwner = 'session:$id';
-    final generation = (_reportGenerations[reportOwner] ?? 0) + 1;
-    _reportGenerations[reportOwner] = generation;
-    _retiring[id] = retirement;
-    unawaited(
-      retirement.then(
-        (report) {
-          if (identical(_retiring[id], retirement)) {
-            unawaited(_retiring.remove(id));
-            if (_reportGenerations[reportOwner] == generation) {
-              _closeReports[reportOwner] = report;
-            }
-          }
-        },
-        onError: (Object error, StackTrace stack) {
-          if (_reportGenerations[reportOwner] != generation) return;
-          _unresolved['session:$id'] = UnresolvedResource(
-            owner: 'session:$id',
-            attemptId: const AttemptId(0),
-            reason: error,
-          );
-        },
-      ),
-    );
+    if (draftId != null) drafts.composer(draftId);
+    // Selection is not presentation demand. AppGraph/navigation explicitly
+    // invokes conversations.setVisibleThread; settings must pass null.
   }
 
   void reconcileSelectedProject() {
@@ -693,7 +547,9 @@ class AnyworkClient {
 
   void reconcileRemovedThreads(Set<String> removed) {
     for (final id in removed) {
-      releaseSession(id);
+      // A removed identity has no visible conversation demand.
+      if (selection.state.selectedThreadId == id)
+        conversations.setVisibleThread(null);
     }
     final selected = selection.state.selectedThreadId;
     if (selected == null || !removed.contains(selected)) return;
@@ -706,26 +562,16 @@ class AnyworkClient {
     );
   }
 
-  void releaseSession(String id) {
-    _retireSession(id);
-  }
-
   Future<CloseReport> close({DateTime? deadline}) =>
       _closing ??= _close(deadline);
 
   Future<CloseReport> _close(DateTime? deadline) async {
     _closed = true;
-    _activeSession.publish(null);
-    _activeSession.close();
     _selectionObservation.cancel();
     _queries.seal();
-    attachments.sealAdmissions();
-    // All independent owners are sealed and begin closing before the first
-    // await. A blocked draft/open cannot consume the other owners' deadline.
-    final draftWork = Future.wait<void>([
-      startDraft.close(),
-      for (final owner in _composers.values) owner.close(),
-    ]);
+    // Both domains seal synchronously before independent close joins await.
+    final draftWork = drafts.close();
+    final conversationWork = conversations.close(deadline: deadline);
     final work = <Future<void>>[
       _joinOwner('drafts', draftWork, deadline),
       _joinOwner('settings-commands', settingsCommands.close(), deadline),
@@ -736,12 +582,7 @@ class AnyworkClient {
       _joinOwner('mode-editor', modeEditor.close(), deadline),
       _joinOwner('remote-commands', remote.close(), deadline),
       _joinOwner('queries', _queries.join(), deadline),
-      for (final entry in _sessions.entries)
-        _joinReport(
-          'session:${entry.key}',
-          entry.value.close(deadline: deadline),
-          deadline,
-        ),
+      _joinReport('conversations', conversationWork, deadline),
       _joinReport('topics', channels.dispose(deadline: deadline), deadline),
       _joinReport('updates', updates.close(deadline: deadline), deadline),
       if (_bootstrapping case final boot?)
@@ -757,15 +598,6 @@ class AnyworkClient {
           deadline,
         ),
     ];
-    Future<void> closeAttachments() async {
-      try {
-        await draftWork;
-      } finally {
-        await attachments.close();
-      }
-    }
-
-    work.add(_joinOwner('attachments', closeAttachments(), deadline));
     await Future.wait(work);
     for (final observation in _canonicalObservations) {
       observation.cancel();
@@ -845,12 +677,11 @@ class AnyworkClient {
   Future<CloseReport> retryCleanup({DateTime? deadline}) async {
     final pending = Map.of(_pendingJoins);
     final work = <Future<void>>[
-      for (final entry in _sessions.entries)
-        _joinReport(
-          'session:${entry.key}',
-          entry.value.retryCleanup(deadline: deadline),
-          deadline,
-        ),
+      _joinReport(
+        'conversations',
+        conversations.retryCleanup(deadline: deadline),
+        deadline,
+      ),
       _joinReport(
         'topics',
         channels.retryCleanup(deadline: deadline),
@@ -862,7 +693,7 @@ class AnyworkClient {
           updates.retryCleanup(deadline: deadline),
           deadline,
         ),
-      _joinOwner('attachments', attachments.retryCleanup(), deadline),
+      _joinOwner('drafts', drafts.retryCleanup(), deadline),
       for (final entry in pending.entries)
         if (identical(_pendingJoins[entry.key], entry.value))
           _joinOwner(entry.key, entry.value, deadline),

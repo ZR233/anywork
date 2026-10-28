@@ -9,12 +9,15 @@ import 'package:anywork/src/features/settings/statistics/view_models/statistics_
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/platform/host_app_icons.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
+import 'package:anywork/src/shared/studio_routes.dart';
 import 'package:anywork_client/studio_client.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:go_router/go_router.dart';
 
 import 'support/recording_demo_transport.dart';
+import 'support/conversation_fixtures.dart';
 import 'support/pump_client_future.dart';
 
 void main() {
@@ -88,7 +91,7 @@ void main() {
       expect(find.byKey(StudioDriverKeys.startPage), findsOneWidget);
       expect(transport.bootstrapCalls, 1);
       final projectId = graph.client.selection.state.selectedProjectId!;
-      final startOwner = graph.client.startDraft;
+      final startOwner = graph.client.drafts.startDraft;
       await tester.enterText(
         find.byKey(StudioDriverKeys.composerInput),
         'start draft entered before Settings',
@@ -98,7 +101,7 @@ void main() {
 
       await _settingsRoundTrip(tester);
 
-      expect(graph.client.startDraft, same(startOwner));
+      expect(graph.client.drafts.startDraft, same(startOwner));
       expect(startOwner.state.revision, startRevision);
       expect(
         startOwner.state.forProject(projectId).text,
@@ -106,27 +109,37 @@ void main() {
       );
       expect(_composerText(tester), 'start draft entered before Settings');
       expect(
-        transport.timelines,
+        transport.feeds,
         isEmpty,
         reason: 'Settings navigation does not create a Thread',
       );
 
+      transport.seedConversationItems('thread-main', [
+        for (var i = 0; i < 40; i++)
+          conversationFixture(
+            id: 'route-item-$i',
+            threadId: 'thread-main',
+            ordinal: 100 + i,
+          ),
+      ]);
       await tester.tap(find.byKey(StudioDriverKeys.threadRow('thread-main')));
       await pumpClientUntil(
         tester,
         () =>
-            graph.client
+            graph.client.conversations
                 .existingSession('thread-main')
-                ?.timeline
+                ?.content
                 .lastDeliveredFrame !=
             null,
         'selected Thread timeline baseline',
       );
       await tester.pumpAndSettle();
-      final session = graph.client.existingSession('thread-main')!;
-      final attemptId = session.timeline.currentAttemptId?.value;
-      final connection = transport.timelines.single;
-      final composer = graph.client.composer('thread-main');
+      final session = graph.client.conversations.existingSession(
+        'thread-main',
+      )!;
+      final attemptId = session.content.currentAttemptId?.value;
+      final connection = transport.feeds.single;
+      final composer = graph.client.drafts.composer('thread-main');
       final startedAt = DateTime.now().millisecondsSinceEpoch ~/ 1000;
       final running = transport.emitTurn(
         RunningStudioTurnState(
@@ -162,16 +175,47 @@ void main() {
       await tester.pump();
       final composerStamp = composer.stamp;
 
+      // Turn/执行事实可能伴随内容重同步；分页属于此刻实际挂载的展示代次。
+      final oldLease = graph.timeline.lease('thread-main')!;
+      final oldPage = Completer<ConversationPage>();
+      connection.scriptedPage = oldPage;
+      final loading = graph.timeline.loadOlder(
+        'thread-main',
+        generation: oldLease.generation,
+      );
+      await pumpClientUntil(
+        tester,
+        () => connection.pageCalls == 1,
+        'old page entered',
+      );
+      var hiddenFrames = 0;
+      var hiddenAcks = 0;
+
       await _settingsRoundTrip(
         tester,
         whileSettingsOpen: () async {
-          // This notification must reach the application owner with both of its
-          // business observers hidden by the real Settings route.
+          // 真正 push Settings 撤销 GUI demand，不能向已经关闭的旧 feed 注入帧。
           expect(find.byKey(StudioDriverKeys.composerInput), findsNothing);
           expect(find.byKey(StudioDriverKeys.timeline), findsNothing);
           expect(session.state.activeTurn, running);
-          expect(transport.runtimeSubscriptions, 1);
-          expect(transport.runtimeCancellations, 0);
+          await pumpClientUntil(
+            tester,
+            () => connection.joined.isCompleted,
+            'hidden feed actual close',
+          );
+          expect(connection.requestCloseCalls, greaterThanOrEqualTo(1));
+          expect(connection.closeCalls, 1);
+          expect(graph.timeline.lease('thread-main'), isNull);
+          expect(oldLease.isRetired, isTrue);
+          hiddenFrames = connection.deliveredFrames;
+          hiddenAcks = connection.acknowledgements.length;
+          expect(composer.state.draft, 'Thread draft entered before Settings');
+          expect(composer.stamp, composerStamp);
+          expect(
+            session.state.runtime?.execution,
+            runningExecution.execution,
+            reason: 'GUI退订不取消已经运行的业务执行身份',
+          );
           final completed = transport.emitTurn(
             CompletedStudioTurnState(
               startedAt: startedAt,
@@ -179,38 +223,70 @@ void main() {
               completion: StudioTurnCompletion.normal,
             ),
           );
-          await pumpClientUntil(
-            tester,
-            () =>
-                session.state.workspace?.latestTurn == completed &&
-                session.state.activeTurn == null,
-            'completed Turn while Settings hides the workspace',
-          );
-          // 轮次结束即执行结束；停止入口与发送语义随之回到普通发送。
-          transport.emitExecution(session.state.runtime!, null);
-          await pumpClientUntil(
-            tester,
-            () => session.state.runtime?.execution == null,
-            'execution ended with the Turn',
-          );
+          expect(completed.state, isA<CompletedStudioTurnState>());
+          expect(transport.runtimeCancellations, 1);
+          expect(session.state.activeTurn, running, reason: '隐藏镜像不以独立订阅追赶后台事实');
+          expect(connection.deliveredFrames, hiddenFrames);
+          expect(connection.acknowledgements, hasLength(hiddenAcks));
           expect(find.byKey(StudioDriverKeys.settingsPage), findsOneWidget);
           expect(find.byKey(StudioDriverKeys.composerInput), findsNothing);
           expect(find.byKey(StudioDriverKeys.timeline), findsNothing);
-          expect(graph.client.existingSession('thread-main'), same(session));
-          expect(session.timeline.currentAttemptId?.value, attemptId);
-          expect(connection.requestCloseCalls, 0);
-          expect(connection.closeCalls, 0);
+          expect(
+            graph.client.conversations.existingSession('thread-main'),
+            same(session),
+          );
+          expect(transport.feeds, hasLength(1));
         },
       );
 
-      expect(graph.client.composer('thread-main'), same(composer));
+      await pumpClientUntil(
+        tester,
+        () =>
+            transport.feeds.length == 2 &&
+            graph.timeline.lease('thread-main') != null &&
+            session.state.activeTurn == null &&
+            session.state.runtime?.execution == null,
+        'fresh visible feed reads hidden completion',
+      );
+      final newConnection = transport.feeds.last;
+      final newLease = graph.timeline.lease('thread-main')!;
+      expect(newConnection.subscriptionId, isNot(connection.subscriptionId));
+      expect(newLease, isNot(same(oldLease)));
+      final currentMessages = [...newLease.controller.messages];
+      final currentVersion = newLease.appliedVersion;
+      oldPage.complete(
+        ConversationPage(
+          items: [
+            conversationFixture(
+              id: 'late-old-page',
+              threadId: 'thread-main',
+              ordinal: 1,
+            ),
+          ],
+          before: null,
+          hasOlder: false,
+        ),
+      );
+      await pumpClientFuture(tester, loading, 'late page from retired lease');
+      expect(newLease.controller.messages, currentMessages);
+      expect(newLease.appliedVersion, currentVersion);
+      expect(newLease.itemOf('late-old-page'), isNull);
+
+      expect(graph.client.drafts.composer('thread-main'), same(composer));
       expect(composer.stamp, composerStamp);
       expect(composer.state.draft, 'Thread draft entered before Settings');
       expect(_composerText(tester), 'Thread draft entered before Settings');
       expect(session.state.activeTurn, isNull);
       expect(
-        session.state.workspace?.latestTurn?.state,
-        isA<CompletedStudioTurnState>(),
+        newLease.items
+            .where((item) => item.descriptor is ConversationTurnDescriptor)
+            .map(
+              (item) =>
+                  (item.descriptor as ConversationTurnDescriptor).value.state,
+            )
+            .whereType<CompletedStudioTurnState>(),
+        isNotEmpty,
+        reason: '新内容基线包含隐藏期间真正提交的终态事实',
       );
       expect(find.byKey(StudioDriverKeys.composerStop), findsNothing);
       final submit = find.byKey(StudioDriverKeys.composerSubmit);
@@ -224,14 +300,178 @@ void main() {
         startOwner.state.forProject(projectId).text,
         'start draft entered before Settings',
       );
-      expect(session.timeline.currentAttemptId?.value, attemptId);
-      expect(session.timeline.lastDeliveredFrame != null, isTrue);
-      expect(transport.timelines, hasLength(1));
-      expect(connection.requestCloseCalls, 0);
-      expect(connection.closeCalls, 0);
+      expect(session.content.currentAttemptId?.value, isNot(attemptId));
+      expect(session.content.lastDeliveredFrame != null, isTrue);
+      expect(transport.feeds, hasLength(2));
+      expect(connection.requestCloseCalls, greaterThanOrEqualTo(1));
+      expect(connection.closeCalls, 1);
+      expect(connection.deliveredFrames, hiddenFrames);
+      expect(connection.acknowledgements, hasLength(hiddenAcks));
       expect(transport.bootstrapCalls, 1);
-      expect(transport.runtimeSubscriptions, 1);
-      expect(transport.runtimeCancellations, 0);
+      expect(transport.runtimeSubscriptions, 2);
+      expect(transport.runtimeCancellations, 1);
+
+      transport.botProjectId = projectId;
+      final bots = await pumpClientFuture(
+        tester,
+        graph.client.botsCommands.saveBot(
+          expectedConfigRevision: 0,
+          name: 'Route acceptance bot',
+          projectId: projectId,
+          appId: 'route-acceptance-app',
+          secret: const BotSecretPreserve(),
+        ),
+        'prepare bot through the canonical command',
+      );
+      final botId = bots.bots.single.id;
+      // Navigate the real Settings -> bot detail -> chat -> platform pages.
+      // Hand-built routes would miss production registration and ID wiring.
+      await _settingsRoundTrip(
+        tester,
+        whileSettingsOpen: () async {
+          await tester.ensureVisible(
+            find.byKey(StudioDriverKeys.settingsTab('bots')),
+          );
+          await tester.tap(find.byKey(StudioDriverKeys.settingsTab('bots')));
+          await pumpClientUntil(
+            tester,
+            () => find
+                .byKey(StudioDriverKeys.botsRow(botId))
+                .evaluate()
+                .isNotEmpty,
+            'real bot overview',
+          );
+          await tester.pumpAndSettle();
+          await tester.ensureVisible(find.byKey(StudioDriverKeys.botsRow(botId)));
+          await tester.tap(find.byKey(StudioDriverKeys.botsRow(botId)));
+          await pumpClientUntil(
+            tester,
+            () => find
+                .byKey(StudioDriverKeys.botsConversation('route-chat'))
+                .evaluate()
+                .isNotEmpty,
+            'real bound chat row',
+          );
+          await tester.pumpAndSettle();
+          final router = GoRouter.of(
+            tester.element(find.byKey(StudioDriverKeys.botsBack)),
+          );
+          expect(router.routerDelegate.state.name, StudioRoutes.botDetails);
+          expect(router.routerDelegate.state.pathParameters, {'botId': botId});
+          expect(graph.client.conversations.visibleThreadId.value, isNull);
+          await tester.tap(
+            find.byKey(StudioDriverKeys.botsConversation('route-chat')),
+          );
+          await pumpClientUntil(
+            tester,
+            () =>
+                graph.client.conversations.visibleThreadId.value ==
+                    'thread-main' &&
+                graph.timeline.lease('thread-main') != null &&
+                session.content.lastDeliveredFrame != null,
+            'registered bot chat receives a fresh baseline',
+          );
+          await tester.pumpAndSettle();
+          final botFeed = transport.feeds.last;
+          final botLease = graph.timeline.lease('thread-main')!;
+          expect(botLease, isNot(same(newLease)));
+          expect(
+            router.routerDelegate.state.name,
+            StudioRoutes.botConversation,
+          );
+          expect(router.routerDelegate.state.pathParameters, {
+            'botId': botId,
+            'chatId': 'route-chat',
+            'threadId': 'thread-main',
+          });
+          expect(_composerText(tester), 'Thread draft entered before Settings');
+          final currentPage = router.routerDelegate.state.pageKey;
+          await StudioRoutes.openBotConversation(
+            tester.element(find.byKey(StudioDriverKeys.botsChatBack)),
+            botId: botId,
+            chatId: 'route-chat',
+            threadId: 'thread-main',
+          );
+          await tester.pumpAndSettle();
+          expect(router.routerDelegate.state.pageKey, currentPage);
+          expect(graph.timeline.lease('thread-main'), same(botLease));
+
+          unawaited(
+            showDialog<void>(
+              context: tester.element(find.byKey(StudioDriverKeys.timeline)),
+              builder: (_) => const AlertDialog(content: Text('Dialog')),
+            ),
+          );
+          await tester.pumpAndSettle();
+          expect(graph.timeline.lease('thread-main'), same(botLease));
+          expect(botFeed.requestCloseCalls, 0);
+          Navigator.of(tester.element(find.byType(AlertDialog))).pop();
+          await tester.pumpAndSettle();
+
+          await tester.tap(find.byKey(StudioDriverKeys.botsPlatformTools));
+          await pumpClientUntil(
+            tester,
+            () => botFeed.joined.isCompleted,
+            'platform tools close the hidden bot chat feed',
+          );
+          await tester.pumpAndSettle();
+          expect(graph.client.conversations.visibleThreadId.value, isNull);
+          expect(graph.timeline.lease('thread-main'), isNull);
+          expect(
+            router.routerDelegate.state.name,
+            StudioRoutes.botPlatformTools,
+          );
+          expect(router.routerDelegate.state.pathParameters, {
+            'botId': botId,
+            'chatId': 'route-chat',
+          });
+          await tester.tap(find.byKey(StudioDriverKeys.botsBack));
+          await pumpClientUntil(
+            tester,
+            () =>
+                graph.timeline.lease('thread-main') != null &&
+                session.content.lastDeliveredFrame != null,
+            'returning from platform tools acquires a new bot baseline',
+          );
+          await tester.pumpAndSettle();
+          final returnedFeed = transport.feeds.last;
+          expect(graph.timeline.lease('thread-main'), isNot(same(botLease)));
+          await tester.tap(find.byKey(StudioDriverKeys.botsChatBack));
+          await pumpClientUntil(
+            tester,
+            () => returnedFeed.joined.isCompleted,
+            'returning to bot details retires the bot chat',
+          );
+          await tester.pumpAndSettle();
+          expect(graph.client.conversations.visibleThreadId.value, isNull);
+          expect(graph.timeline.lease('thread-main'), isNull);
+          expect(composer.stamp, composerStamp);
+          expect(router.routerDelegate.state.name, StudioRoutes.botDetails);
+          unawaited(
+            StudioRoutes.openBotConversation(
+              tester.element(find.byKey(StudioDriverKeys.botsBack)),
+              botId: botId,
+              chatId: 'route-chat',
+              threadId: 'missing-thread',
+            ),
+          );
+          await pumpClientUntil(
+            tester,
+            () => find
+                .byKey(const ValueKey('bot-conversation-unavailable'))
+                .evaluate()
+                .isNotEmpty,
+            'unavailable route does not display the previous selection',
+          );
+          expect(graph.client.conversations.visibleThreadId.value, isNull);
+          expect(find.byKey(StudioDriverKeys.timeline), findsNothing);
+          await tester.tap(find.byKey(StudioDriverKeys.botsChatBack));
+          await tester.pumpAndSettle();
+          await tester.tap(find.byKey(StudioDriverKeys.botsBack));
+          await tester.pumpAndSettle();
+          expect(router.routerDelegate.state.name, StudioRoutes.settings);
+        },
+      );
 
       // Unmount through the real lifecycle coordinator. Only the host channel is
       // mocked, so the test cannot ask the native runner to exit this test process.
@@ -257,6 +497,8 @@ void main() {
         isTrue,
       );
       expect(connection.joined.isCompleted, isTrue);
+      expect(newConnection.joined.isCompleted, isTrue);
+      expect(transport.feeds.every((feed) => feed.joined.isCompleted), isTrue);
       expect(tester.takeException(), isNull);
     },
   );
@@ -289,70 +531,61 @@ String _composerText(WidgetTester tester) => tester
 
 DateTime _deadline() => DateTime.now().add(const Duration(seconds: 5));
 
-/// The fixture wraps the production Demo state subscription, adding only a
-/// controllable producer of typed Turn notifications. It adds no UI observer,
-/// does not call a Client setter, and never claims to exercise native FRB.
+/// 只选择权威发布时点；状态与正文均由 Demo 自身发布点生成，不向旧 feed 注入事实。
 final class _RouteTurnTransport extends RecordingDemoTransport {
-  MultiStreamController<ThreadStreamFrame>? _runtime;
-  int? _revision;
   int _turnUpdates = 0;
   int runtimeSubscriptions = 0;
   int runtimeCancellations = 0;
+  late String botProjectId;
 
   @override
-  Stream<ThreadStreamFrame> subscribeThread(String threadId) {
-    if (threadId != 'thread-main') return super.subscribeThread(threadId);
-    return Stream<ThreadStreamFrame>.multi((controller) {
-      runtimeSubscriptions++;
-      _runtime = controller;
-      final owner = super
-          .subscribeThread(threadId)
-          .listen(
-            (frame) {
-              _revision = switch (frame) {
-                ThreadSnapshotFrame(:final workspace) => workspace.revision,
-                ThreadNotificationFrame(:final revision) => revision,
-                ThreadResyncRequiredFrame() => _revision,
-              };
-              controller.addSync(frame);
-            },
-            onError: controller.addErrorSync,
-            onDone: controller.closeSync,
-          );
-      controller.onPause = owner.pause;
-      controller.onResume = owner.resume;
-      controller.onCancel = () async {
-        runtimeCancellations++;
-        if (identical(_runtime, controller)) _runtime = null;
-        await owner.cancel();
-      };
-    });
+  Future<BotConversationPage> listBotConversations(
+    ListBotConversationsRequest request,
+  ) async => BotConversationPage(
+    botId: request.botId,
+    conversations: [
+      BotConversation(
+        chatId: 'route-chat',
+        kind: BotConversationKind.direct,
+        source: BotConversationSource.observedDirect,
+        name: 'Bound route conversation',
+        threadBinding: BotConversationThreadBinding(
+          botId: request.botId,
+          chatId: 'route-chat',
+          projectId: botProjectId,
+          threadId: 'thread-main',
+          revision: 1,
+          state: BotConversationThreadState.bound,
+        ),
+      ),
+    ],
+  );
+
+  @override
+  Future<ConversationFeed> openConversationFeed(String threadId) async {
+    final feed = await super.openConversationFeed(threadId);
+    if (threadId != 'thread-main') return feed;
+    final owner = feed as RecordingConversationFeed;
+    runtimeSubscriptions++;
+    owner.onClosed = () {
+      runtimeCancellations++;
+    };
+    return owner;
   }
 
   StudioTurnView emitTurn(StudioTurnState state) {
-    final runtime = _runtime;
-    final base = _revision;
-    if (runtime == null || base == null) {
-      throw StateError('The selected Thread must own its state subscription');
-    }
-    final revision = base + 1;
-    _revision = revision;
     final turn = StudioTurnView(
       turnId: 'settings-route-turn',
       threadId: 'thread-main',
-      revision: revision,
+      revision: 0, // Demo 权威发布点分配真实 revision。
       state: state,
       updatedAt: DateTime.now().add(Duration(seconds: ++_turnUpdates)),
     );
-    runtime.addSync(
-      ThreadNotificationFrame(
-        threadId: 'thread-main',
-        baseRevision: base,
-        revision: revision,
-        update: ThreadTurnUpdate(turn),
-      ),
+    final workspace = seedConversationState(
+      'thread-main',
+      ThreadTurnUpdate(turn),
     );
-    return turn;
+    return workspace.activeTurn ?? turn;
   }
 
   /// 发布一次 canonical 运行时投影，只用于给出该轮次的执行身份。
@@ -362,22 +595,10 @@ final class _RouteTurnTransport extends RecordingDemoTransport {
     ThreadRuntimeView current,
     AgentExecutionView? execution,
   ) {
-    final runtime = _runtime;
-    final base = _revision;
-    if (runtime == null || base == null) {
-      throw StateError('The selected Thread must own its state subscription');
-    }
-    final revision = base + 1;
-    _revision = revision;
     final next = current.copyWith(execution: execution);
-    runtime.addSync(
-      ThreadNotificationFrame(
-        threadId: 'thread-main',
-        baseRevision: base,
-        revision: revision,
-        update: ThreadRuntimeUpdate(runtime: next, todo: null),
-      ),
-    );
-    return next;
+    return seedConversationState(
+      'thread-main',
+      ThreadRuntimeUpdate(runtime: next, todo: null),
+    ).runtime;
   }
 }

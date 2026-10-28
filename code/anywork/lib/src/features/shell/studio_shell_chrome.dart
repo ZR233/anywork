@@ -738,6 +738,6 @@ class _ComposerHost extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final threadId = ref.watch(shellSelectionProvider).selectedThreadId;
     if (threadId == null) return const SizedBox.shrink();
-    return ComposerDock(threadId: threadId, compact: compact);
+    return ComposerDockConnector(threadId: threadId, compact: compact);
   }
 }
