@@ -350,16 +350,7 @@ pub(super) fn stdin_unavailable(target: &pl_core::thread::task::TaskRecord) -> T
     };
     let output = serde_json::to_string(&receipt)
         .map_err(ToolError::new)
-        .and_then(|text| {
-            let payload =
-                OpaquePayload::new("pl.tool.stdin", 2, text.clone()).map_err(ToolError::new)?;
-            Ok(ToolOutput::new(
-                payload,
-                vec![ContextContent::Text {
-                    text: Arc::from(text),
-                }],
-            ))
-        });
+        .and_then(|text| receipt_output("pl.tool.stdin", text));
     let error = ToolError::new(super::ExecFailure::TaskUnavailable {
         task_id: target.id.clone(),
         status: target.status,
@@ -396,16 +387,7 @@ pub fn permission_denied(source: impl std::error::Error + Send + Sync + 'static)
     };
     let output = serde_json::to_string(&receipt)
         .map_err(ToolError::new)
-        .and_then(|text| {
-            let payload =
-                OpaquePayload::new("pl.tool.exec", 2, text.clone()).map_err(ToolError::new)?;
-            Ok(ToolOutput::new(
-                payload,
-                vec![ContextContent::Text {
-                    text: Arc::from(text),
-                }],
-            ))
-        });
+        .and_then(|text| receipt_output("pl.tool.exec", text));
     match output {
         Ok(output) => ToolError::new(source).with_output(output),
         Err(error) => error,
@@ -456,16 +438,7 @@ pub(super) fn start_error(
     };
     let output = serde_json::to_string(&receipt)
         .map_err(ToolError::new)
-        .and_then(|text| {
-            let payload =
-                OpaquePayload::new("pl.tool.exec", 2, text.clone()).map_err(ToolError::new)?;
-            Ok(ToolOutput::new(
-                payload,
-                vec![ContextContent::Text {
-                    text: Arc::from(text),
-                }],
-            ))
-        });
+        .and_then(|text| receipt_output("pl.tool.exec", text));
     let error = if cancelled {
         ToolError::new(pl_core::thread::ThreadError::Cancelled)
     } else {
@@ -475,4 +448,21 @@ pub(super) fn start_error(
         Ok(output) => error.with_output(output),
         Err(error) => error,
     }
+}
+
+/// Error receipts obey the same serialized-content budget as successful exec projections.
+/// The immutable payload keeps complete identities even when metadata alone exceeds the cap.
+pub(super) fn receipt_output(format: &'static str, text: String) -> Result<ToolOutput, ToolError> {
+    let payload = OpaquePayload::new(format, 2, text.clone()).map_err(ToolError::new)?;
+    let mut content = vec![ContextContent::Text {
+        text: Arc::from(text),
+    }];
+    if serde_json::to_vec(&content).map_err(ToolError::new)?.len() > super::MAX_MODEL_OUTPUT_BYTES {
+        content = vec![ContextContent::Text {
+            text: Arc::from(
+                "{\"diagnostic\":{\"code\":\"exec.metadata_too_large\",\"nextAction\":\"query_original_payload\"},\"wasTruncated\":true}",
+            ),
+        }];
+    }
+    Ok(ToolOutput::new(payload, content))
 }

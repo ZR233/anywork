@@ -18,7 +18,7 @@ pub const TOOL_WRITE_STDIN: &str = "write_stdin";
 const DEFAULT_TIMEOUT_SECS: u64 = 60;
 /// `maxOutputChars` 缺省/上限对应的模型可见输出预算，单位是**字节**（见 [`ExecInput`]）。
 ///
-/// 历史上它按"字符"命名，实际计量一直是 `String` 的字节长度；这里只改名不改语义。
+/// 保留历史字段名；按 stdout/stderr 合计的 UTF-8 字节计量。
 const MAX_MODEL_OUTPUT_BYTES: usize = 64 * 1024;
 /// `exec` 的结构化输入。
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -34,16 +34,16 @@ pub struct ExecInput {
     /// Positive seconds from process-manager admission, including startup (default: 60).
     /// Approval time is excluded; receiving a background receipt does not reset this deadline.
     #[serde(default)]
-    #[schemars(range(min = 1))]
+    // Keep zero expressible so the shared semantic validator can reject the original value
+    // before authorization, without a model substituting null/default to satisfy the schema.
     pub timeout_seconds: Option<u64>,
-    /// Combined stdout + stderr UTF-8 byte budget (default and maximum: 65536).
+    /// Positive combined stdout + stderr UTF-8 byte budget (default and maximum: 65536).
     ///
     /// The wire field name keeps the historical `maxOutputChars`, but the unit is bytes: the
     /// projection truncates the visible stdout/stderr text by `String` byte length, so multi-byte
     /// characters are charged for their real encoded size. A backend may additionally declare its
     /// own byte ceiling through `CommandBackend::model_output_bytes_cap`.
     #[serde(default)]
-    #[schemars(range(min = 1))]
     pub max_output_chars: Option<usize>,
 }
 
@@ -58,8 +58,7 @@ pub struct WriteStdinInput {
     /// Close stdin after the requested text is accepted. Empty text sends only EOF.
     #[serde(default)]
     pub close_stdin: bool,
-    /// Combined stdout + stderr UTF-8 byte budget, clamped to 65536.
+    /// Positive combined stdout + stderr UTF-8 byte budget, clamped to 65536.
     #[serde(default)]
-    #[schemars(range(min = 1))]
     pub max_output_chars: Option<usize>,
 }

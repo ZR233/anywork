@@ -1,4 +1,5 @@
 //! 用独立 stdio helper 验证物理磁盘预算、双流与无归档长流，不需要产品实例。
+#[cfg(target_os = "linux")]
 use anyhow::Context as _;
 use pl_protocol::remote::{
     REMOTE_PROTOCOL_VERSION, RemoteCapture, RemoteErrorCode, RemoteRequest, RemoteResponse,

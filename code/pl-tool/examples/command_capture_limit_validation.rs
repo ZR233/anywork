@@ -179,6 +179,7 @@ async fn exec_input_contract() -> anyhow::Result<()> {
             pl_core::model::DynModelSession::new(SingleExecModel {
                 raw: raw.into(),
                 first: true,
+                call_id: "exec-input-call".into(),
             }),
         )?;
         thread
@@ -228,6 +229,61 @@ async fn exec_input_contract() -> anyhow::Result<()> {
         anyhow::ensure!(pl_tool::exec::parse_and_validate_stdin_input(raw).is_ok() == valid);
     }
     println!("OK  strict input, original source/field, no-start diagnostics, EOF validation");
+    let (backend, _root) = scripted_backend(
+        Arc::new(CaptureFacts::default()),
+        ScriptedBehavior::finite_multibyte(),
+        None,
+    )?;
+    let archive = Arc::new(FixedArchive::default());
+    let tool = ThreadExecTool::new(
+        Arc::new(backend),
+        archive.clone(),
+        CommandAccess::WorkspaceOnly,
+    );
+    let thread = pl_core::thread::ThreadHandle::start(
+        "exec-large-error-metadata".into(),
+        pl_core::model::DynModelSession::new(SingleExecModel {
+            raw: format!(
+                r#"{{"command":"must-not-run","timeoutSeconds":{}}}"#,
+                u64::MAX
+            ),
+            first: true,
+            call_id: "m".repeat(70000),
+        }),
+    )?;
+    thread
+        .register_tools(
+            tool.registrations(OpaquePayload::text("exec"), OpaquePayload::text("stdin"))?,
+        )
+        .await?;
+    thread
+        .run_turn(pl_core::thread::TurnInput {
+            turn_id: "large-error-turn".into(),
+            attempt_prefix: "large-error".into(),
+            content: vec![],
+            max_model_steps: pl_core::thread::ModelStepLimit::Limited(
+                std::num::NonZeroU32::new(2).unwrap(),
+            ),
+            cancellation: CancellationToken::new(),
+        })
+        .await?;
+    let effects = thread.effects().await?;
+    let delivery = effects
+        .iter()
+        .flat_map(|effect| effect.deliveries.iter())
+        .find(|delivery| delivery.tool_id == "exec")
+        .context("missing range error")?;
+    anyhow::ensure!(
+        serde_json::to_vec(delivery.output.context())?.len() <= 65536,
+        "start error metadata exceeded model projection budget"
+    );
+    let record: serde_json::Value = serde_json::from_str(delivery.output.payload().content())?;
+    anyhow::ensure!(record["taskId"] == format!("task:{}", "m".repeat(70000)));
+    anyhow::ensure!(record["processStarted"] == false);
+    anyhow::ensure!(record["diagnostic"]["code"] == "exec.argument_out_of_range");
+    anyhow::ensure!(archive.calls.load(Ordering::SeqCst) == 0);
+    thread.close().await?;
+    println!("OK  oversized start-error identity keeps full payload and bounded model receipt");
     Ok(())
 }
 
@@ -1654,6 +1710,7 @@ fn capture_files_len(root: &Path) -> anyhow::Result<u64> {
 struct SingleExecModel {
     raw: String,
     first: bool,
+    call_id: String,
 }
 impl pl_core::model::ModelSession for SingleExecModel {
     async fn prepare(
@@ -1662,7 +1719,7 @@ impl pl_core::model::ModelSession for SingleExecModel {
     ) -> Result<pl_core::model::PreparedModelCall, pl_core::model::ModelError> {
         let calls = if std::mem::take(&mut self.first) {
             vec![pl_core::model::ModelToolCall {
-                call_id: "exec-input-call".into(),
+                call_id: self.call_id.clone(),
                 tool_id: "exec".into(),
                 arguments: OpaquePayload::text(self.raw.clone()),
                 rejection: None,

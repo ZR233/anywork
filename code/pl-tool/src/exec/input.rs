@@ -1,11 +1,8 @@
 //! One input contract shared by authorization and direct tool execution.
 use super::{ExecInput, WriteStdinInput};
-use pl_core::{
-    context::{ContextContent, OpaquePayload},
-    tool::{ToolOutput, opaque::ToolError},
-};
+use pl_core::tool::opaque::ToolError;
 use serde::{Serialize, de::DeserializeOwned};
-use std::{path::Path, sync::Arc};
+use std::path::Path;
 
 /// Validated exec arguments. Only this module can construct a validated value.
 #[derive(Debug)]
@@ -80,16 +77,7 @@ impl ExecInputError {
         };
         let output = serde_json::to_string(&receipt)
             .map_err(ToolError::new)
-            .and_then(|text| {
-                let payload =
-                    OpaquePayload::new("pl.tool.exec", 2, text.clone()).map_err(ToolError::new)?;
-                Ok(ToolOutput::new(
-                    payload,
-                    vec![ContextContent::Text {
-                        text: Arc::from(text),
-                    }],
-                ))
-            });
+            .and_then(|text| super::output::receipt_output("pl.tool.exec", text));
         match output {
             Ok(output) => ToolError::new(self).with_output(output),
             Err(error) => error,
