@@ -220,9 +220,10 @@ impl StudioRuntime {
             if host.parent_thread_id.is_some()
                 || target.parent_thread_id.as_deref() != Some(thread_id)
             {
-            return Err(StudioError::invalid_argument(
+                return Err(StudioError::invalid_argument(
                     "Interaction is not owned by the original host or its direct child",
-                ).into());
+                )
+                .into());
             }
         }
         if expected.is_some_and(|identity| identity.wire_id != id || identity.local_id != local) {
@@ -262,11 +263,15 @@ impl StudioRuntime {
                     .into());
                 }
                 if owner != thread_id
-                    && !matches!(value.scope.purpose, pl_protocol::InteractionPurpose::General)
+                    && !matches!(
+                        value.scope.purpose,
+                        pl_protocol::InteractionPurpose::General
+                    )
                 {
                     return Err(StudioError::invalid_argument(
                         "Child Plan confirmations are diagnostics, not hosted decisions",
-                    ).into());
+                    )
+                    .into());
                 }
                 if exact.replace(value).is_some() {
                     return Err(StudioError::new(

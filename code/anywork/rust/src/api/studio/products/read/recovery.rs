@@ -42,10 +42,18 @@ impl From<protocol::WorktreeRecoveryPreviewRead> for BridgeWorktreeRecoveryPrevi
     fn from(value: protocol::WorktreeRecoveryPreviewRead) -> Self {
         Self {
             inspection: match value.inspection {
-                protocol::WorktreeInspection::Available => crate::api::studio::types::BridgeWorktreeInspection::Available,
-                protocol::WorktreeInspection::Missing => crate::api::studio::types::BridgeWorktreeInspection::Missing,
-                protocol::WorktreeInspection::IdentityMismatch => crate::api::studio::types::BridgeWorktreeInspection::IdentityMismatch,
-                protocol::WorktreeInspection::Unavailable => crate::api::studio::types::BridgeWorktreeInspection::Unavailable,
+                protocol::WorktreeInspection::Available => {
+                    crate::api::studio::types::BridgeWorktreeInspection::Available
+                }
+                protocol::WorktreeInspection::Missing => {
+                    crate::api::studio::types::BridgeWorktreeInspection::Missing
+                }
+                protocol::WorktreeInspection::IdentityMismatch => {
+                    crate::api::studio::types::BridgeWorktreeInspection::IdentityMismatch
+                }
+                protocol::WorktreeInspection::Unavailable => {
+                    crate::api::studio::types::BridgeWorktreeInspection::Unavailable
+                }
             },
             owner_kind: value.owner_kind.into(),
             owner_thread_id: value.owner_thread_id.into(),
@@ -80,7 +88,11 @@ impl From<protocol::RecoveryIssueRead> for BridgeRecoveryIssueRead {
             id: value.id.into(),
             scope: value.scope.into(),
             category: value.category.into(),
-            available_actions: value.available_actions.into_iter().map(Into::into).collect(),
+            available_actions: value
+                .available_actions
+                .into_iter()
+                .map(Into::into)
+                .collect(),
             project_id: value.project_id.map(Into::into),
             thread_id: value.thread_id.map(Into::into),
             message: value.message.into(),

@@ -65,10 +65,10 @@ pub use protocol::{
     StudioPendingPersistence, StudioProductBaseline, StudioProductBaselineState,
     StudioProductEventEnvelope, StudioProductEventKind, StudioProductFrame, StudioProductTopic,
     StudioProductTopicScopeError, StudioProjectDirectoryData, StudioProjectDirectoryState,
-    StudioPurposeCostSnapshot, StudioRecoveryStateSnapshot, StudioSessionCostSnapshot,
-    StudioSessionCostsState, StudioSettingsConfigStateSnapshot, StudioShutdownIssue,
-    StudioShutdownOutcome, StudioShutdownProgress, StudioShutdownReport, StudioSkillsStateSnapshot,
-    StudioStartupStage, StudioStateSnapshot, StudioThreadDirectoryData, StudioThreadDirectoryDelta,
+    StudioPurposeCostSnapshot, StudioSessionCostSnapshot, StudioSessionCostsState,
+    StudioSettingsConfigStateSnapshot, StudioShutdownIssue, StudioShutdownOutcome,
+    StudioShutdownProgress, StudioShutdownReport, StudioSkillsStateSnapshot, StudioStartupStage,
+    StudioStateSnapshot, StudioThreadDirectoryData, StudioThreadDirectoryDelta,
     StudioThreadDirectoryPage, StudioThreadDirectoryPageData, StudioThreadDirectoryState,
 };
 
@@ -125,10 +125,9 @@ pub use studio::{
     StudioRuntimeLifecycleState, StudioRuntimeOptions, StudioRuntimeSnapshot,
     StudioRuntimeStateKind, StudioStartNewThreadResponse, StudioStartupError,
     StudioStartupErrorKind, StudioStartupRecovery, StudioStore, StudioThreadMetricsSource,
-    StudioUpdateStateSnapshot, StudioWorktreeInspection, StudioWorktreeRecoveryPreview,
-    StudioThreadSubscription,
-    ThreadPreparationObserver, ThreadPreparationProgress, ThreadPreparationStage, ThreadRecord,
-    TimelineContentReader, TimelineTailStream,
+    StudioThreadSubscription, StudioUpdateStateSnapshot, StudioWorktreeInspection,
+    StudioWorktreeRecoveryPreview, ThreadPreparationObserver, ThreadPreparationProgress,
+    ThreadPreparationStage, ThreadRecord, TimelineContentReader, TimelineTailStream,
 };
 pub use updater::{
     PreparedStudioUpdate, StudioUpdate, StudioUpdateAsset, StudioUpdateCancellation,

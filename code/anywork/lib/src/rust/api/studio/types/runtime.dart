@@ -10,25 +10,7 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'package:freezed_annotation/freezed_annotation.dart' hide protected;
 part 'runtime.freezed.dart';
 
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
-
-class BridgeActiveTurn {
-  final String threadId;
-  final String turnId;
-
-  const BridgeActiveTurn({required this.threadId, required this.turnId});
-
-  @override
-  int get hashCode => threadId.hashCode ^ turnId.hashCode;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is BridgeActiveTurn &&
-          runtimeType == other.runtimeType &&
-          threadId == other.threadId &&
-          turnId == other.turnId;
-}
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
 
 class BridgeAgentDirectoryEntryDto {
   final String id;
@@ -292,24 +274,6 @@ class BridgeFailedResource {
           revision == other.revision &&
           failedAt == other.failedAt &&
           operation == other.operation &&
-          error == other.error;
-}
-
-class BridgeFailedRuntimeState {
-  final PlatformInt64 failedAt;
-  final BridgeStateError error;
-
-  const BridgeFailedRuntimeState({required this.failedAt, required this.error});
-
-  @override
-  int get hashCode => failedAt.hashCode ^ error.hashCode;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is BridgeFailedRuntimeState &&
-          runtimeType == other.runtimeType &&
-          failedAt == other.failedAt &&
           error == other.error;
 }
 
@@ -591,22 +555,6 @@ class BridgeReadyResource {
           lastCheckedAt == other.lastCheckedAt;
 }
 
-enum BridgeRecoveryIssueAction {
-  retry,
-  cleanupThread,
-  removeProject,
-  cleanupWorktree,
-}
-
-enum BridgeRecoveryIssueCategory {
-  processLease,
-  toolCatalog,
-  repository,
-  storage,
-}
-
-enum BridgeRecoveryIssueScope { application, project, thread }
-
 class BridgeRefreshingResource {
   final BigInt revision;
   final BridgeStateOperation operation;
@@ -658,41 +606,6 @@ class BridgeRunningAgent {
           turnId == other.turnId;
 }
 
-@freezed
-sealed class BridgeRuntimeState with _$BridgeRuntimeState {
-  const BridgeRuntimeState._();
-
-  const factory BridgeRuntimeState.uninitialized(
-    BridgeRuntimeTimestamp field0,
-  ) = BridgeRuntimeState_Uninitialized;
-  const factory BridgeRuntimeState.initializing(BridgeRuntimeTimestamp field0) =
-      BridgeRuntimeState_Initializing;
-  const factory BridgeRuntimeState.ready(BridgeRuntimeTimestamp field0) =
-      BridgeRuntimeState_Ready;
-  const factory BridgeRuntimeState.shuttingDown(BridgeRuntimeTimestamp field0) =
-      BridgeRuntimeState_ShuttingDown;
-  const factory BridgeRuntimeState.stopped(BridgeRuntimeTimestamp field0) =
-      BridgeRuntimeState_Stopped;
-  const factory BridgeRuntimeState.failed(BridgeFailedRuntimeState field0) =
-      BridgeRuntimeState_Failed;
-}
-
-class BridgeRuntimeTimestamp {
-  final PlatformInt64 at;
-
-  const BridgeRuntimeTimestamp({required this.at});
-
-  @override
-  int get hashCode => at.hashCode;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is BridgeRuntimeTimestamp &&
-          runtimeType == other.runtimeType &&
-          at == other.at;
-}
-
 class BridgeStaleResource {
   final BigInt revision;
   final PlatformInt64 staleAt;
@@ -716,31 +629,6 @@ class BridgeStaleResource {
           revision == other.revision &&
           staleAt == other.staleAt &&
           lastCheckedAt == other.lastCheckedAt;
-}
-
-class BridgeStartupRecovery {
-  final String backupPath;
-  final String reason;
-  final PlatformInt64 createdAt;
-
-  const BridgeStartupRecovery({
-    required this.backupPath,
-    required this.reason,
-    required this.createdAt,
-  });
-
-  @override
-  int get hashCode =>
-      backupPath.hashCode ^ reason.hashCode ^ createdAt.hashCode;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is BridgeStartupRecovery &&
-          runtimeType == other.runtimeType &&
-          backupPath == other.backupPath &&
-          reason == other.reason &&
-          createdAt == other.createdAt;
 }
 
 /// Startup state can be observed before a Studio runtime has been installed.
@@ -817,53 +705,6 @@ class BridgeStoppedResource {
           stoppedAt == other.stoppedAt;
 }
 
-class BridgeStudioRecoveryIssueDto {
-  final String id;
-  final BridgeRecoveryIssueScope scope;
-  final BridgeRecoveryIssueCategory category;
-  final List<BridgeRecoveryIssueAction> availableActions;
-  final String? projectId;
-  final String? threadId;
-  final String detail;
-  final BridgeWorktreeRecoveryPreviewDto? worktree;
-
-  const BridgeStudioRecoveryIssueDto({
-    required this.id,
-    required this.scope,
-    required this.category,
-    required this.availableActions,
-    this.projectId,
-    this.threadId,
-    required this.detail,
-    this.worktree,
-  });
-
-  @override
-  int get hashCode =>
-      id.hashCode ^
-      scope.hashCode ^
-      category.hashCode ^
-      availableActions.hashCode ^
-      projectId.hashCode ^
-      threadId.hashCode ^
-      detail.hashCode ^
-      worktree.hashCode;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is BridgeStudioRecoveryIssueDto &&
-          runtimeType == other.runtimeType &&
-          id == other.id &&
-          scope == other.scope &&
-          category == other.category &&
-          availableActions == other.availableActions &&
-          projectId == other.projectId &&
-          threadId == other.threadId &&
-          detail == other.detail &&
-          worktree == other.worktree;
-}
-
 class BridgeUninitializedResource {
   final BigInt revision;
   final PlatformInt64 updatedAt;
@@ -931,99 +772,3 @@ enum BridgeWorktreeInspection {
 
 /// Worktree lease 的归属来源；显式清理必须与 durable lease 的归属一致。
 enum BridgeWorktreeOwner { session, child }
-
-class BridgeWorktreeRecoveryPreviewDto {
-  final BridgeWorktreeInspection inspection;
-
-  /// Worktree 归属来源：`session` 为会话自身工作区，`child` 为子智能体工作区。
-  final BridgeWorktreeOwner ownerKind;
-  final String ownerThreadId;
-  final BigInt leaseRevision;
-  final String state;
-  final String repositoryRoot;
-  final String path;
-  final String branch;
-  final String baseCommit;
-  final String? headCommit;
-  final bool? dirty;
-  final List<String>? changedFiles;
-
-  const BridgeWorktreeRecoveryPreviewDto({
-    required this.inspection,
-    required this.ownerKind,
-    required this.ownerThreadId,
-    required this.leaseRevision,
-    required this.state,
-    required this.repositoryRoot,
-    required this.path,
-    required this.branch,
-    required this.baseCommit,
-    this.headCommit,
-    this.dirty,
-    this.changedFiles,
-  });
-
-  @override
-  int get hashCode =>
-      inspection.hashCode ^
-      ownerKind.hashCode ^
-      ownerThreadId.hashCode ^
-      leaseRevision.hashCode ^
-      state.hashCode ^
-      repositoryRoot.hashCode ^
-      path.hashCode ^
-      branch.hashCode ^
-      baseCommit.hashCode ^
-      headCommit.hashCode ^
-      dirty.hashCode ^
-      changedFiles.hashCode;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is BridgeWorktreeRecoveryPreviewDto &&
-          runtimeType == other.runtimeType &&
-          inspection == other.inspection &&
-          ownerKind == other.ownerKind &&
-          ownerThreadId == other.ownerThreadId &&
-          leaseRevision == other.leaseRevision &&
-          state == other.state &&
-          repositoryRoot == other.repositoryRoot &&
-          path == other.path &&
-          branch == other.branch &&
-          baseCommit == other.baseCommit &&
-          headCommit == other.headCommit &&
-          dirty == other.dirty &&
-          changedFiles == other.changedFiles;
-}
-
-class RuntimeSnapshot {
-  final BigInt revision;
-  final BridgeStartupRecovery? startupRecovery;
-  final BridgeRuntimeState state;
-  final List<BridgeActiveTurn> activeTurns;
-
-  const RuntimeSnapshot({
-    required this.revision,
-    this.startupRecovery,
-    required this.state,
-    required this.activeTurns,
-  });
-
-  @override
-  int get hashCode =>
-      revision.hashCode ^
-      startupRecovery.hashCode ^
-      state.hashCode ^
-      activeTurns.hashCode;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is RuntimeSnapshot &&
-          runtimeType == other.runtimeType &&
-          revision == other.revision &&
-          startupRecovery == other.startupRecovery &&
-          state == other.state &&
-          activeTurns == other.activeTurns;
-}

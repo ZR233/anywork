@@ -59,7 +59,11 @@ async fn seed() -> (tempfile::TempDir, SqliteSessionOptions) {
     }
     // A storage-history head also includes independent resources, so it is not an effect sequence.
     store
-        .register_resource("owner", "zz-independent", OpaquePayload::text("saved metadata"))
+        .register_resource(
+            "owner",
+            "zz-independent",
+            OpaquePayload::text("saved metadata"),
+        )
         .unwrap();
     store.flush().await.unwrap();
     store.shutdown().await.unwrap();
@@ -79,11 +83,8 @@ async fn seed_checkpoint() -> (tempfile::TempDir, SqliteSessionOptions) {
     };
     let store = SqliteSessionStore::open(options.clone()).await.unwrap();
     let (model, _) = support::ScriptedModel::new(&[]);
-    let thread = ThreadHandle::start(
-        "owner".into(),
-        pl_core::model::DynModelSession::new(model),
-    )
-    .unwrap();
+    let thread =
+        ThreadHandle::start("owner".into(), pl_core::model::DynModelSession::new(model)).unwrap();
     thread
         .attach_storage(pl_core::thread::cold::ColdStoreHandle::new(store.clone()))
         .await
@@ -314,11 +315,19 @@ async fn task_index_migration_rejects_an_effect_gap() {
         // The middle fault leaves both endpoints and the complete immutable history untouched.
         // A late backfill rejection is not enough: the shared assertion also forbids ledger writes.
         let sql = match damage {
-            "first" => "DELETE FROM session_entries WHERE id='pl.resource.thread-commit.00000000000000000001'",
-            "middle" => "DELETE FROM session_entries WHERE id='pl.resource.thread-commit.00000000000000000004'",
-            "tail" => "DELETE FROM session_entries WHERE id='pl.resource.thread-commit.00000000000000000005'",
+            "first" => {
+                "DELETE FROM session_entries WHERE id='pl.resource.thread-commit.00000000000000000001'"
+            }
+            "middle" => {
+                "DELETE FROM session_entries WHERE id='pl.resource.thread-commit.00000000000000000004'"
+            }
+            "tail" => {
+                "DELETE FROM session_entries WHERE id='pl.resource.thread-commit.00000000000000000005'"
+            }
             "empty" => "DELETE FROM session_entries WHERE session_id='owner'",
-            "checkpoint-only" => "DELETE FROM session_entries WHERE session_id='owner'; DELETE FROM session_entry_history WHERE session_id='owner'; DELETE FROM session_history_heads WHERE session_id='owner'",
+            "checkpoint-only" => {
+                "DELETE FROM session_entries WHERE session_id='owner'; DELETE FROM session_entry_history WHERE session_id='owner'; DELETE FROM session_history_heads WHERE session_id='owner'"
+            }
             _ => unreachable!(),
         };
         db.execute_unprepared(sql).await.unwrap();

@@ -14,16 +14,55 @@ use crate::studio::{
     StudioRecoveryIssue, StudioRecoveryIssueAction, StudioRecoveryIssueCategory,
     StudioRecoveryIssueScope, StudioRecoveryWorktreeOwner, StudioWorktreeInspection,
 };
-use pl_tool::workspace::resolve_workspace_root;
 
 use super::super::StudioRuntime;
+use crate::studio::recovery_registry::diagnostic;
 
 fn background_git_command() -> tokio::process::Command {
     let mut command = tokio::process::Command::new("git");
+    command.env("LC_ALL", "C");
     #[cfg(windows)]
     command.args(["-c", "core.longpaths=true"]);
     pl_remote_helper::process::configure_background_command(&mut command);
     command
+}
+
+/// Git's existing CLI discovery has no structured NotRepository result. Only these complete
+/// C-locale discovery answers prove an ordinary non-Git project; other exit-128 failures do not.
+fn is_non_git_project(output: &std::process::Output) -> bool {
+    if output.status.code() != Some(128) || !output.stdout.is_empty() {
+        return false;
+    }
+    let Ok(stderr) = std::str::from_utf8(&output.stderr) else {
+        return false;
+    };
+    let mut lines = stderr.lines();
+    let Some(discovery) = lines.next() else {
+        return false;
+    };
+    if discovery == "fatal: not a git repository (or any of the parent directories): .git" {
+        return lines.next().is_none();
+    }
+    discovery
+        .strip_prefix("fatal: not a git repository (or any parent up to mount point ")
+        .and_then(|mount| mount.strip_suffix(')'))
+        .is_some_and(|mount| !mount.is_empty())
+        && lines.next()
+            == Some("Stopping at filesystem boundary (GIT_DISCOVERY_ACROSS_FILESYSTEM not set).")
+        && lines.next().is_none()
+}
+
+fn discovery_git_failure(args: &str, output: std::process::Output) -> WorktreeError {
+    let args = args.to_owned();
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    match output.status.code() {
+        Some(exit_code) => WorktreeError::GitExited {
+            args,
+            exit_code,
+            stderr,
+        },
+        None => WorktreeError::GitStatusUnknown { args, stderr },
+    }
 }
 
 impl StudioRuntime {
@@ -66,23 +105,76 @@ impl StudioRuntime {
                 .args(["rev-parse", "--show-toplevel"])
                 .current_dir(&project_path)
                 .output()
-                .await;
-            let Ok(root) = root else {
-                continue;
-            };
+                .await
+                .map_err(|source| WorktreeError::LocalIo {
+                    operation: "discover worktrees: launch git repository discovery",
+                    source,
+                })?;
             if !root.status.success() {
-                continue;
+                if is_non_git_project(&root) {
+                    continue;
+                }
+                return Err(discovery_git_failure("rev-parse --show-toplevel", root).into());
             }
-            let root = normalized_local_path(Path::new(String::from_utf8(root.stdout)?.trim()));
+            let root = String::from_utf8(root.stdout)?;
+            if root.trim().is_empty() {
+                return Err(WorktreeError::GitStatusUnknown {
+                    args: "rev-parse --show-toplevel".into(),
+                    stderr: "repository discovery returned an empty root".into(),
+                }
+                .into());
+            }
+            let root = normalized_local_path(Path::new(root.trim()));
             let managed = root.join(".anywork/worktrees");
             let mut found = BTreeSet::new();
-            if let Ok(mut parents) = tokio::fs::read_dir(&managed).await {
-                while let Some(parent) = parents.next_entry().await? {
-                    if !parent.file_type().await?.is_dir() {
+            let parents = match tokio::fs::read_dir(&managed).await {
+                Ok(parents) => Some(parents),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                Err(source) => {
+                    return Err(WorktreeError::LocalIo {
+                        operation: "discover worktrees: read managed directory",
+                        source,
+                    }
+                    .into());
+                }
+            };
+            if let Some(mut parents) = parents {
+                while let Some(parent) =
+                    parents
+                        .next_entry()
+                        .await
+                        .map_err(|source| WorktreeError::LocalIo {
+                            operation: "discover worktrees: read managed directory entry",
+                            source,
+                        })?
+                {
+                    if !parent
+                        .file_type()
+                        .await
+                        .map_err(|source| WorktreeError::LocalIo {
+                            operation: "discover worktrees: inspect parent directory entry",
+                            source,
+                        })?
+                        .is_dir()
+                    {
                         continue;
                     }
-                    let mut children = tokio::fs::read_dir(parent.path()).await?;
-                    while let Some(child) = children.next_entry().await? {
+                    let mut children =
+                        tokio::fs::read_dir(parent.path()).await.map_err(|source| {
+                            WorktreeError::LocalIo {
+                                operation: "discover worktrees: read parent directory",
+                                source,
+                            }
+                        })?;
+                    while let Some(child) =
+                        children
+                            .next_entry()
+                            .await
+                            .map_err(|source| WorktreeError::LocalIo {
+                                operation: "discover worktrees: read child directory entry",
+                                source,
+                            })?
+                    {
                         found.insert(normalized_local_path(&child.path()));
                     }
                 }
@@ -91,13 +183,16 @@ impl StudioRuntime {
                 .args(["worktree", "list", "--porcelain", "-z"])
                 .current_dir(&root)
                 .output()
-                .await?;
-            anyhow::ensure!(
-                registered.status.success(),
-                "cannot inspect registered worktrees for {}: {}",
-                project.id,
-                String::from_utf8_lossy(&registered.stderr)
-            );
+                .await
+                .map_err(|source| WorktreeError::LocalIo {
+                    operation: "discover worktrees: launch git worktree list",
+                    source,
+                })?;
+            if !registered.status.success() {
+                return Err(
+                    discovery_git_failure("worktree list --porcelain -z", registered).into(),
+                );
+            }
             for field in registered.stdout.split(|byte| *byte == 0) {
                 if let Some(path) = field.strip_prefix(b"worktree ") {
                     let path = normalized_local_path(Path::new(std::str::from_utf8(path)?));
@@ -111,7 +206,7 @@ impl StudioRuntime {
                     id: format!("unregistered-worktree:{}:{}", project.id, pl_core::context::content_hash(path.to_string_lossy().as_bytes())),
                     scope: StudioRecoveryIssueScope::Project, category: StudioRecoveryIssueCategory::Repository,
                     action: StudioRecoveryIssueAction::Retry, project_id: Some(project.id.clone()), thread_id: None,
-                    message: format!("Unregistered worktree preserved at {}; ownership must be inspected before explicit cleanup", path.display()), worktree: None,
+                    message: "Unregistered managed worktree preserved; ownership must be inspected before explicit cleanup".into(), worktree: None,
                 });
             }
         }
@@ -195,7 +290,7 @@ impl StudioRuntime {
             Ok(_) => {}
             Err(error) => {
                 message.push_str("; cannot confirm workspace owner: ");
-                message.push_str(&super::shutdown::redacted_chain(error));
+                message.push_str(&diagnostic::failure(error.as_ref()));
             }
         }
         let can_cleanup = matches!(&facts.owner, Ok(WorktreeOwnerFacts { live: false, .. }))
@@ -222,7 +317,7 @@ impl StudioRuntime {
             // — and retirable — by that child alone; attributing it to the root made activation unable
             // to clear its own entry and let a root activation clear a different child's entry.
             thread_id: Some(lease.owner_thread_id.clone()),
-            message: bounded_diagnostic(&message),
+            message: diagnostic::bounded(&message),
             worktree: Some(crate::StudioWorktreeRecoveryPreview {
                 inspection: facts.inspection(),
                 owner_kind: recovery_owner(lease.owner_kind),
@@ -358,10 +453,7 @@ impl StudioRuntime {
         lease.transition(WorktreeLeaseState::Cleaned);
         self.agent_facility.worktrees.record(lease.clone())?;
         self.agent_facility.worktrees.flush().await?;
-        let issues = self.recovery.remove(&worktree_issue_id(owner_thread_id));
-        self.agent_facility
-            .product_events
-            .emit_recovery_state(issues);
+        self.recovery.remove(&worktree_issue_id(owner_thread_id));
         Ok(())
     }
 
@@ -437,21 +529,13 @@ impl StudioRuntime {
         };
         issue.id = issue_id.clone();
         issue.thread_id = Some(thread.id.clone());
-        let diagnostic = super::shutdown::redacted_chain(error);
-        issue.message = bounded_diagnostic(&format!(
+        let diagnostic = diagnostic::failure(error.as_ref());
+        issue.message = diagnostic::bounded(&format!(
             "Thread cannot use its saved workspace and was not moved to the main workspace: {diagnostic}; {}",
             issue.message
         ));
-        self.recovery.update_if_current(
-            &issue_id,
-            Some(issue),
-            || true,
-            |issues| {
-                self.agent_facility
-                    .product_events
-                    .emit_recovery_state(issues);
-            },
-        );
+        self.recovery
+            .update_if_current(&issue_id, Some(issue), || true);
     }
 
     /// Publishes (or refreshes) the Recovery of one worktree lease from its **current**
@@ -474,16 +558,8 @@ impl StudioRuntime {
         };
         let issue = self.worktree_issue(lease, &facts, message);
         let issue_id = issue.id.clone();
-        self.recovery.update_if_current(
-            &issue_id,
-            Some(issue),
-            || true,
-            |issues| {
-                self.agent_facility
-                    .product_events
-                    .emit_recovery_state(issues);
-            },
-        );
+        self.recovery
+            .update_if_current(&issue_id, Some(issue), || true);
     }
 
     pub(in crate::studio::runtime) async fn append_unavailable_project_recovery_issues(
@@ -494,7 +570,30 @@ impl StudioRuntime {
             if project.ssh_alias.is_some() {
                 continue;
             }
-            let Err(error) = resolve_workspace_root(Path::new(&project.path)) else {
+            let inspection = async {
+                // Availability needs the directory fact, not a Git-root search whose legacy
+                // string error discards the original IO kind before this publication boundary.
+                let canonical = tokio::fs::canonicalize(&project.path)
+                    .await
+                    .map_err(|source| WorktreeError::LocalIo {
+                        operation: "resolve project workspace",
+                        source,
+                    })?;
+                let metadata = tokio::fs::metadata(canonical).await.map_err(|source| {
+                    WorktreeError::LocalIo {
+                        operation: "inspect project workspace directory",
+                        source,
+                    }
+                })?;
+                if !metadata.is_dir() {
+                    return Err(WorktreeError::InvalidResource(
+                        "project workspace is not a directory".into(),
+                    ));
+                }
+                Ok::<_, WorktreeError>(())
+            }
+            .await;
+            let Err(error) = inspection else {
                 continue;
             };
             if recovery_issues.iter().any(|issue| {
@@ -510,7 +609,10 @@ impl StudioRuntime {
                 action: StudioRecoveryIssueAction::RemoveProject,
                 project_id: Some(project.id),
                 thread_id: None,
-                message: format!("Project workspace is unavailable: {error}"),
+                message: diagnostic::bounded(&format!(
+                    "Project workspace inspection failed: {}",
+                    diagnostic::failure(&error)
+                )),
                 worktree: None,
             });
         }
@@ -566,10 +668,6 @@ impl WorktreeIssueFacts {
     }
 }
 
-fn bounded_diagnostic(message: &str) -> String {
-    message.chars().take(2048).collect()
-}
-
 fn worktree_error_diagnostic(error: &WorktreeError) -> String {
     error.safe_diagnostic()
 }
@@ -577,10 +675,10 @@ fn worktree_error_diagnostic(error: &WorktreeError) -> String {
 /// Describes a lease by its actual ownership and state instead of assuming `preserved`.
 fn worktree_state_message(lease: &WorktreeLease) -> String {
     format!(
-        "Pure {} worktree {} is {} and needs explicit review",
+        "Pure {} worktree is {} and needs explicit review; lease_revision={}",
         lease.owner_kind.label(),
-        lease.branch,
-        lease.state.label()
+        lease.state.label(),
+        lease.revision
     )
 }
 
@@ -589,5 +687,210 @@ fn worktree_handle(lease: &WorktreeLease) -> WorktreeHandle {
         path: PathBuf::from(&lease.path),
         branch: lease.branch.clone(),
         base_commit: lease.base_commit.clone(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::studio::runtime::recovery::StudioRecoverySourceStatusRead;
+    use crate::studio::test_support::RuntimeFixture;
+    use anyhow::Context;
+    use pl_protocol::products::feed::recovery::{RecoveryEvent, RecoveryFrame};
+    use pl_protocol::products::identity::ProductReadOrigin;
+    use pl_protocol::products::source::ProductSourceStatusReadHeader;
+    use pl_protocol::studio::{FeedCloseOutcome, ReadText};
+
+    async fn join_scan(runtime: &StudioRuntime) -> Result<()> {
+        let task = runtime.recovery_task.lock().await.clone();
+        if let Some(task) = task {
+            tokio::time::timeout(std::time::Duration::from_secs(10), task.join())
+                .await?
+                .map_err(|error| anyhow::anyhow!("fixture recovery task failed: {error}"))?;
+        }
+        Ok(())
+    }
+
+    async fn source_text(read: &StudioRecoverySourceStatusRead, text: ReadText) -> Result<String> {
+        match text {
+            ReadText::Inline { text } => Ok(text),
+            ReadText::Deferred { field_id, .. } => {
+                let chunk = read.text(field_id, 0, 8192).await?;
+                anyhow::ensure!(
+                    chunk.next_offset.is_none(),
+                    "bounded diagnostic must fit its read budget"
+                );
+                Ok(chunk.text)
+            }
+        }
+    }
+
+    /// Runs the real background scan, then reads only the status reference exposed by its
+    /// original typed feed. No test publication or diagnostic formatter substitutes for scanning.
+    async fn published_scan_diagnostic(runtime: &StudioRuntime) -> Result<Option<String>> {
+        join_scan(runtime).await?;
+        runtime.start_recovery_scan().await;
+        join_scan(runtime).await?;
+        let feed = runtime.open_recovery().await?;
+        feed.claim()?;
+        let mut sent = None;
+        assert!(feed.send_pending(|frame| {
+            sent = Some(frame);
+            Ok(())
+        })?);
+        let Some(RecoveryFrame::Data {
+            delivery_sequence,
+            event: RecoveryEvent::Baseline {
+                identity, value, ..
+            },
+        }) = sent
+        else {
+            anyhow::bail!("scan did not expose its original Recovery baseline");
+        };
+        feed.ack_through(delivery_sequence)?;
+        let read = runtime
+            .open_recovery_source_status_read(
+                value.header.source.status,
+                ProductReadOrigin {
+                    owner_epoch: identity.owner_epoch,
+                    incarnation: identity.incarnation,
+                },
+            )
+            .await?;
+        let diagnostic = match read.header().await? {
+            ProductSourceStatusReadHeader::Ready { .. } => None,
+            ProductSourceStatusReadHeader::Degraded { error, .. }
+            | ProductSourceStatusReadHeader::Failed { error, .. } => {
+                assert_eq!(source_text(&read, error.code).await?, "recoveryCheckFailed");
+                Some(source_text(&read, error.message).await?)
+            }
+            other => anyhow::bail!("joined scan has no final source status: {other:?}"),
+        };
+        assert!(matches!(
+            read.close().await.outcome,
+            FeedCloseOutcome::Clean
+        ));
+        feed.request_close();
+        Ok(diagnostic)
+    }
+
+    #[tokio::test]
+    async fn unregistered_scan_skips_plain_projects_but_not_git_discovery_failures() -> Result<()> {
+        let fixture = RuntimeFixture::new().await?;
+        join_scan(&fixture.runtime).await?;
+        let root = PathBuf::from(&fixture.project.path);
+        let managed = root.join(".anywork/worktrees");
+        assert!(matches!(tokio::fs::symlink_metadata(&managed).await,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound));
+        let plain = root.with_file_name("ordinary-private-project");
+        tokio::fs::create_dir(&plain).await?;
+        fixture.runtime.open_project(&plain).await?;
+        assert!(
+            published_scan_diagnostic(&fixture.runtime).await?.is_none(),
+            "ordinary non-Git projects and an absent managed directory are valid scan results"
+        );
+        assert!(fixture.runtime.recovery_issues().is_empty());
+
+        // A malformed gitfile also exits 128. It must not be confused with the exact ordinary
+        // non-repository answer, even though the project remains a readable directory.
+        tokio::fs::write(plain.join(".git"), "private invalid Git metadata\n").await?;
+        let failure = fixture
+            .runtime
+            .append_worktree_recovery_issues(&mut Vec::new())
+            .await
+            .unwrap_err();
+        assert!(matches!(failure.downcast_ref::<WorktreeError>(),
+            Some(WorktreeError::GitExited { args, exit_code: 128, .. }) if args == "rev-parse --show-toplevel"));
+        let diagnostic = published_scan_diagnostic(&fixture.runtime)
+            .await?
+            .context("Git failure must be published")?;
+        assert!(diagnostic.contains("rev-parse --show-toplevel") && diagnostic.contains("128"));
+        assert!(diagnostic.chars().count() <= 2048);
+        assert!(!diagnostic.contains(&fixture.project.path));
+        assert!(
+            !diagnostic.contains("ordinary-private-project")
+                && !diagnostic.contains("private invalid Git metadata")
+        );
+        tokio::fs::remove_file(plain.join(".git")).await?;
+        assert!(published_scan_diagnostic(&fixture.runtime).await?.is_none());
+        fixture.finish().await
+    }
+
+    #[tokio::test]
+    async fn unregistered_scan_keeps_diagnostics_on_directory_and_git_launch_failures() -> Result<()>
+    {
+        let fixture = RuntimeFixture::new().await?;
+        join_scan(&fixture.runtime).await?;
+        let root = PathBuf::from(&fixture.project.path);
+        let managed = root.join(".anywork/worktrees");
+        tokio::fs::create_dir_all(managed.join("orphan-root/orphan-child")).await?;
+        assert!(published_scan_diagnostic(&fixture.runtime).await?.is_none());
+        let issues = fixture.runtime.recovery_issues();
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].action, StudioRecoveryIssueAction::Retry);
+
+        // NotADirectory is deterministic for an owned ordinary file, unlike chmod under root.
+        // Keep the discovered site intact while blocking only access to its managed parent.
+        let retained = root.join(".anywork/retained-private-worktrees");
+        tokio::fs::rename(&managed, &retained).await?;
+        tokio::fs::write(&managed, "private managed-directory obstruction").await?;
+        let failure = fixture
+            .runtime
+            .append_worktree_recovery_issues(&mut Vec::new())
+            .await
+            .unwrap_err();
+        assert!(matches!(failure.downcast_ref::<WorktreeError>(),
+            Some(WorktreeError::LocalIo { operation, source })
+                if *operation == "discover worktrees: read managed directory"
+                    && source.kind() == std::io::ErrorKind::NotADirectory));
+        let diagnostic = published_scan_diagnostic(&fixture.runtime)
+            .await?
+            .context("directory failure must be published")?;
+        assert!(
+            diagnostic.contains("read managed directory") && diagnostic.contains("NotADirectory")
+        );
+        assert!(diagnostic.chars().count() <= 2048);
+        assert!(
+            !diagnostic.contains(&fixture.project.path)
+                && !diagnostic.contains("private managed-directory obstruction")
+        );
+        assert_eq!(
+            fixture.runtime.recovery_issues(),
+            issues,
+            "failed scans cannot replace known diagnostics with success"
+        );
+        tokio::fs::remove_file(&managed).await?;
+        tokio::fs::rename(&retained, &managed).await?;
+        assert!(published_scan_diagnostic(&fixture.runtime).await?.is_none());
+
+        // Failure to enter Git's cwd is a typed launch failure, not evidence that the managed
+        // directory is absent. No PATH/environment mutation or process-wide injection is used.
+        let retained = root.with_file_name("retained-private-workspace");
+        tokio::fs::rename(&root, &retained).await?;
+        let failure = fixture
+            .runtime
+            .append_worktree_recovery_issues(&mut Vec::new())
+            .await
+            .unwrap_err();
+        assert!(matches!(failure.downcast_ref::<WorktreeError>(),
+            Some(WorktreeError::LocalIo { operation, source })
+                if *operation == "discover worktrees: launch git repository discovery"
+                    && source.kind() == std::io::ErrorKind::NotFound));
+        let diagnostic = published_scan_diagnostic(&fixture.runtime)
+            .await?
+            .context("Git launch failure must be published")?;
+        assert!(
+            diagnostic.contains("launch git repository discovery")
+                && diagnostic.contains("NotFound")
+        );
+        assert!(diagnostic.chars().count() <= 2048);
+        assert!(
+            !diagnostic.contains(&fixture.project.path)
+                && !diagnostic.contains("retained-private-workspace")
+        );
+        assert_eq!(fixture.runtime.recovery_issues(), issues);
+        tokio::fs::rename(&retained, &root).await?;
+        assert!(published_scan_diagnostic(&fixture.runtime).await?.is_none());
+        fixture.finish().await
     }
 }

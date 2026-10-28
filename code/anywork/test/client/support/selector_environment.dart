@@ -306,7 +306,11 @@ final class SelectorEnvironment {
       if (!call.reply.isCompleted) call.reply.completeError(failure);
     }
     for (final call in commands.continues.values) {
-      if (!call.reply.isCompleted) call.reply.completeError(CommandDispatchFailure.rejected(failure: failure));
+      if (!call.reply.isCompleted) {
+        call.reply.completeError(
+          CommandDispatchFailure.rejected(failure: failure),
+        );
+      }
     }
     for (final call in commands.continuationReads.values) {
       if (!call.reply.isCompleted) call.reply.complete(null);

@@ -52,25 +52,16 @@ Future<BridgeContinuationOperationView> readContinuationOperation({
       operationId: operationId,
     );
 
-/// 主会话可见的子任务待决交互只读摘要；列举不激活任何子会话。
-Future<List<BridgeChildInteractionSummary>> readChildInteractions({
-  required String threadId,
-}) => RustLib.instance.api.crateApiStudioHandlersPromptReadChildInteractions(
-  threadId: threadId,
-);
-
 Future<BridgeInteractionCommandReply> respondInteraction({
   required String operationId,
   required String hostThreadId,
   required BigInt expectedRevision,
   required String interactionId,
-  required BigInt expectedInteractionRevision,
   required BridgeInteractionResolution resolution,
 }) => RustLib.instance.api.crateApiStudioHandlersPromptRespondInteraction(
   operationId: operationId,
   hostThreadId: hostThreadId,
   expectedRevision: expectedRevision,
   interactionId: interactionId,
-  expectedInteractionRevision: expectedInteractionRevision,
   resolution: resolution,
 );

@@ -49,6 +49,7 @@ abstract interface class ConversationCommandPort {
     String threadId,
     String inputId,
   );
+
   /// Adapter dispatch boundary for native Control/ContinuationAccepted facts.
   /// accepted=true with these exact Thread/operation IDs is confirmed acceptance,
   /// even when the native error code is Busy. With no usable native receipt map

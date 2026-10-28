@@ -34,11 +34,20 @@ void main() {
     final selection = fixture.workspace.state.value.selection;
     final ticket = fixture.workspace.restoreThread('archived-root');
     final call = await fixture.directory.native.restoreOpened(0);
-    call.reply.complete(fixtureThread('archived-root').copyWith(
-      workspaceMode: ThreadWorkspaceMode.worktree, workspacePath: '/preserved-or-missing'));
+    call.reply.complete(
+      fixtureThread('archived-root').copyWith(
+        workspaceMode: ThreadWorkspaceMode.worktree,
+        workspacePath: '/preserved-or-missing',
+      ),
+    );
     final result = await ticket.result;
     expect(result, isA<AcknowledgedCommandResult<WorkspaceSelectionResult>>());
-    expect((result as AcknowledgedCommandResult<WorkspaceSelectionResult>).value.selection, selection);
+    expect(
+      (result as AcknowledgedCommandResult<WorkspaceSelectionResult>)
+          .value
+          .selection,
+      selection,
+    );
     expect(fixture.workspace.state.value.selection, selection);
     expect(fixture.conversations.repository.active.value, isNull);
     expect(fixture.directory.activations, isEmpty);

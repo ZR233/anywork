@@ -2695,7 +2695,10 @@ async fn cold_child_open_and_parent_recovery_prepare_checkpoint_envelopes() -> R
         loop {
             use crate::thread_execution::DeliveryStep;
             match execution.send_next(|frame| {
-                if !matches!(frame, pl_protocol::thread_facets::execution::ExecutionFrame::Data { .. }) {
+                if !matches!(
+                    frame,
+                    pl_protocol::thread_facets::execution::ExecutionFrame::Data { .. }
+                ) {
                     return Err(pl_protocol::studio::StudioError::invalid_argument(
                         "missing hosted execution baseline",
                     ));
@@ -2704,7 +2707,9 @@ async fn cold_child_open_and_parent_recovery_prepare_checkpoint_envelopes() -> R
             })? {
                 DeliveryStep::Waiting => execution.ready().await,
                 DeliveryStep::Data => break,
-                DeliveryStep::Terminal => anyhow::bail!("execution source ended before its baseline"),
+                DeliveryStep::Terminal => {
+                    anyhow::bail!("execution source ended before its baseline")
+                }
             }
         }
         execution.request_close();
@@ -3562,12 +3567,24 @@ async fn studio_databases_adopt_current_files_and_refuse_future_writes() -> Resu
     use sea_orm::{DatabaseBackend, Statement};
     for family in ["product", "history", "calls"] {
         for fault in [
-            "format", "migration", "missing_table", "checkpoint", "trigger", "view", "unversioned_view",
+            "format",
+            "migration",
+            "missing_table",
+            "checkpoint",
+            "trigger",
+            "view",
+            "unversioned_view",
+            "legacy_19",
+            "legacy_20",
+            "legacy_21",
         ] {
             if fault == "checkpoint" && family != "history" {
                 continue;
             }
             if matches!(fault, "trigger" | "view" | "unversioned_view") && family != "product" {
+                continue;
+            }
+            if fault.starts_with("legacy_") && family != "product" {
                 continue;
             }
             let directory = tempfile::tempdir()?;
@@ -3621,7 +3638,8 @@ async fn studio_databases_adopt_current_files_and_refuse_future_writes() -> Resu
                     "DELETE FROM seaql_migrations;
                      CREATE TRIGGER unexpected_ledger_write AFTER INSERT ON seaql_migrations
                      BEGIN DELETE FROM studio_objects; END;",
-                ).await?;
+                )
+                .await?;
             } else if fault == "view" {
                 db.execute_unprepared(
                     "DROP TABLE seaql_migrations; CREATE VIEW unexpected_view AS SELECT id FROM threads",
@@ -3631,7 +3649,13 @@ async fn studio_databases_adopt_current_files_and_refuse_future_writes() -> Resu
                     "DROP TABLE seaql_migrations; DROP TABLE agent_evaluations; DROP TABLE threads;
                      DROP TABLE studio_objects; DROP TABLE app_settings; DROP TABLE projects;
                      CREATE VIEW unexpected_view AS SELECT 1 AS retained; PRAGMA user_version=0;",
-                ).await?;
+                )
+                .await?;
+            } else if let Some(version) = fault.strip_prefix("legacy_") {
+                db.execute_unprepared(&format!(
+                    "DROP TABLE seaql_migrations; PRAGMA user_version={version}"
+                ))
+                .await?;
             } else if fault == "checkpoint" {
                 let mut checkpoint =
                     ThreadCheckpoint::capture("adoption".into(), 0, ThreadSnapshot::default());
@@ -3662,6 +3686,29 @@ async fn studio_databases_adopt_current_files_and_refuse_future_writes() -> Resu
                 }
             };
             assert!(failure.is_err(), "future {family} {fault} was accepted");
+            if fault.starts_with("legacy_") {
+                assert!(
+                    matches!(
+                        failure
+                            .as_ref()
+                            .unwrap_err()
+                            .downcast_ref::<crate::studio::StudioDatabaseError>(),
+                        Some(crate::studio::StudioDatabaseError::StorageMigrationRequired)
+                    ),
+                    "older product formats must retain their original startup classification: {failure:?}"
+                );
+                let db = raw_database(&path).await?;
+                assert!(
+                    db.query_one_raw(Statement::from_string(
+                        DatabaseBackend::Sqlite,
+                        "SELECT 1 FROM sqlite_schema WHERE name='seaql_migrations'"
+                    ))
+                    .await?
+                    .is_none(),
+                    "classification must precede creation of the migration ledger"
+                );
+                db.close().await?;
+            }
             assert_eq!(
                 tokio::fs::read(&path).await?,
                 before,

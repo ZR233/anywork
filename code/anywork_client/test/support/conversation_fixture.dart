@@ -27,10 +27,20 @@ final class ConversationFixture {
     operations = OperationRegistry(clientId: clientId, budget: this.budget);
     agents = ResourceSource(
       const AgentDirectoryState(
-        projection: ProductProjection(stamp: null, header: null,
-          sync: ResourceSyncState(phase: ResourceSyncPhase.idle, error: null, retryExhausted: false)),
-        sourceStatus: null, agents: CollectionMirror.unavailable(lastKnown: null)),
-      this.budget, 'fixture-agent-directory',
+        projection: ProductProjection(
+          stamp: null,
+          header: null,
+          sync: ResourceSyncState(
+            phase: ResourceSyncPhase.idle,
+            error: null,
+            retryExhausted: false,
+          ),
+        ),
+        sourceStatus: null,
+        agents: CollectionMirror.unavailable(lastKnown: null),
+      ),
+      this.budget,
+      'fixture-agent-directory',
     );
     final assembly = createConversationRepository(
       port: facets,
@@ -135,13 +145,17 @@ class UnscriptedConversationCommands implements ConversationCommandPort {
     required OperationId operationId,
   }) => throw UnsupportedError('Unscripted exact Turn interrupt');
   @override
-  Future<ContinueThreadReply> continueThread(String threadId, {
-    required OperationId operationId, required String expectedContinuationId,
+  Future<ContinueThreadReply> continueThread(
+    String threadId, {
+    required OperationId operationId,
+    required String expectedContinuationId,
     required int expectedModelRouteRevision,
   }) => throw UnsupportedError('Unscripted continuation');
   @override
-  Future<ContinuationOperationView?> readContinuationOperation(String threadId, OperationId operationId) =>
-      throw UnsupportedError('Unscripted continuation operation read');
+  Future<ContinuationOperationView?> readContinuationOperation(
+    String threadId,
+    OperationId operationId,
+  ) => throw UnsupportedError('Unscripted continuation operation read');
 }
 
 WorkspaceThreadRecord fixtureThread(
@@ -229,14 +243,25 @@ final class FixtureConversationPort implements ConversationObservationPort {
     ThreadFacetStamp,
   )?
   interactionOpen;
-  Future<InteractionIndexReadConnection> Function(String, InteractionIndexRef, ThreadFacetStamp)? interactionIndexOpen;
+  Future<InteractionIndexReadConnection> Function(
+    String,
+    InteractionIndexRef,
+    ThreadFacetStamp,
+  )?
+  interactionIndexOpen;
 
   @override
-  Future<InteractionIndexReadConnection> openInteractionIndexRead(String threadId, InteractionIndexRef reference, {required ThreadFacetStamp origin}) {
+  Future<InteractionIndexReadConnection> openInteractionIndexRead(
+    String threadId,
+    InteractionIndexRef reference, {
+    required ThreadFacetStamp origin,
+  }) {
     final action = interactionIndexOpen;
-    if (action == null) throw UnsupportedError('Unscripted interaction index read');
+    if (action == null)
+      throw UnsupportedError('Unscripted interaction index read');
     return action(threadId, reference, origin);
   }
+
   Future<ThreadConfigurationReadConnection> Function(
     String,
     ThreadConfigurationReadRef,

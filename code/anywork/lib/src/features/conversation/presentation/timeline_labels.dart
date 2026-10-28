@@ -15,8 +15,13 @@ String timelineToolLabel(BuildContext context, ThreadItemView item) {
         return l10n.timelineViewImageFailed;
       case 'cancelled' || 'interrupted':
         return l10n.timelineViewImageStopped;
-      case 'queued' || 'started' || 'streaming' || 'approved' ||
-          'running' || 'awaitingApproval' || 'cancelling':
+      case 'queued' ||
+          'started' ||
+          'streaming' ||
+          'approved' ||
+          'running' ||
+          'awaitingApproval' ||
+          'cancelling':
         return l10n.timelineViewImageReading;
     }
   }
@@ -81,8 +86,8 @@ String timelineGroupLabel(BuildContext context, TimelinePresentationItem item) {
         l10n.timelineViewImageFailed
       else if (item.activeCount > 0)
         l10n.timelineViewImageReading
-      else if (item.length > 0 && const {'cancelled', 'interrupted'}
-          .contains(item.latest.item.status))
+      else if (item.length > 0 &&
+          const {'cancelled', 'interrupted'}.contains(item.latest.item.status))
         l10n.timelineViewImageStopped,
     ].join(' · ');
   }
@@ -124,8 +129,8 @@ String timelineTurnCancellationLabel(
   BuildContext context,
   TurnCancellationCause cause,
 ) => switch (cause) {
-  InterruptedTurnCancellation() || UserRequestedTurnCancellation() =>
-    context.l10n.timelineTurnStopped,
+  InterruptedTurnCancellation() ||
+  UserRequestedTurnCancellation() => context.l10n.timelineTurnStopped,
   UnspecifiedTurnCancellation() => context.l10n.timelineTurnCancelled,
   RuntimeShutdownTurnCancellation() => context.l10n.timelineTurnRuntimeShutdown,
   AgentClosedTurnCancellation() => context.l10n.timelineTurnAgentClosed,
@@ -133,22 +138,31 @@ String timelineTurnCancellationLabel(
   CoalescedTurnCancellation() => context.l10n.timelineTurnCoalesced,
 };
 
-IconData timelineImageStatusIcon(ThreadToolLifecycleView lifecycle) => switch (lifecycle) {
-  FailedThreadToolView() || DeniedThreadToolView() => Icons.broken_image_outlined,
-  CancelledThreadToolView() || InterruptedThreadToolView() => Icons.stop_circle_outlined,
-  QueuedThreadToolView() || StartedThreadToolView() || StreamingThreadToolView() ||
-  AwaitingApprovalThreadToolView() || ApprovedThreadToolView() ||
-  RunningThreadToolView() || CancellingThreadToolView() ||
-  SucceededThreadToolView() => Icons.image_outlined,
-};
+IconData timelineImageStatusIcon(ThreadToolLifecycleView lifecycle) =>
+    switch (lifecycle) {
+      FailedThreadToolView() ||
+      DeniedThreadToolView() => Icons.broken_image_outlined,
+      CancelledThreadToolView() ||
+      InterruptedThreadToolView() => Icons.stop_circle_outlined,
+      QueuedThreadToolView() ||
+      StartedThreadToolView() ||
+      StreamingThreadToolView() ||
+      AwaitingApprovalThreadToolView() ||
+      ApprovedThreadToolView() ||
+      RunningThreadToolView() ||
+      CancellingThreadToolView() ||
+      SucceededThreadToolView() => Icons.image_outlined,
+    };
 
 /// Preserve the original diagnostic without turning normal control into error.
-Color timelineToolDiagnosticColor(BuildContext context, ThreadToolLifecycleView lifecycle) =>
-    switch (lifecycle) {
-      CancelledThreadToolView() || InterruptedThreadToolView() =>
-        Theme.of(context).colorScheme.onSurfaceVariant,
-      _ => Theme.of(context).colorScheme.error,
-    };
+Color timelineToolDiagnosticColor(
+  BuildContext context,
+  ThreadToolLifecycleView lifecycle,
+) => switch (lifecycle) {
+  CancelledThreadToolView() ||
+  InterruptedThreadToolView() => Theme.of(context).colorScheme.onSurfaceVariant,
+  _ => Theme.of(context).colorScheme.error,
+};
 
 IconData timelineGroupIcon(TimelinePresentationItem item) =>
     switch (item.kind) {

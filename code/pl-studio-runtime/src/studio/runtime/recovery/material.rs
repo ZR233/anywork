@@ -185,8 +185,12 @@ impl RecoveryMaterial {
                     inspection: match tree.inspection {
                         crate::StudioWorktreeInspection::Available => WorktreeInspection::Available,
                         crate::StudioWorktreeInspection::Missing => WorktreeInspection::Missing,
-                        crate::StudioWorktreeInspection::IdentityMismatch => WorktreeInspection::IdentityMismatch,
-                        crate::StudioWorktreeInspection::Unavailable => WorktreeInspection::Unavailable,
+                        crate::StudioWorktreeInspection::IdentityMismatch => {
+                            WorktreeInspection::IdentityMismatch
+                        }
+                        crate::StudioWorktreeInspection::Unavailable => {
+                            WorktreeInspection::Unavailable
+                        }
                     },
                     owner_kind: match tree.owner_kind {
                         crate::StudioRecoveryWorktreeOwner::Session => WorktreeOwner::Session,
@@ -205,12 +209,16 @@ impl RecoveryMaterial {
                         .map(|_| self.read(Text::Head(index), inline))
                         .transpose()?,
                     dirty: tree.dirty,
-                    changed_files: tree.changed_files.as_ref().map(|files| {
-                        Ok::<_, StudioError>(TypedListRef {
-                        list_id: self.lists.register(List::Changed(index))?,
-                            total: count(files.len())?,
+                    changed_files: tree
+                        .changed_files
+                        .as_ref()
+                        .map(|files| {
+                            Ok::<_, StudioError>(TypedListRef {
+                                list_id: self.lists.register(List::Changed(index))?,
+                                total: count(files.len())?,
+                            })
                         })
-                    }).transpose()?,
+                        .transpose()?,
                 })
             })
             .transpose()?;
@@ -230,8 +238,12 @@ impl RecoveryMaterial {
             available_actions: match value.action {
                 crate::StudioRecoveryIssueAction::None => Vec::new(),
                 crate::StudioRecoveryIssueAction::Retry => vec![RecoveryAction::Retry],
-                crate::StudioRecoveryIssueAction::CleanupThread => vec![RecoveryAction::CleanupThread],
-                crate::StudioRecoveryIssueAction::RemoveProject => vec![RecoveryAction::RemoveProject],
+                crate::StudioRecoveryIssueAction::CleanupThread => {
+                    vec![RecoveryAction::CleanupThread]
+                }
+                crate::StudioRecoveryIssueAction::RemoveProject => {
+                    vec![RecoveryAction::RemoveProject]
+                }
                 crate::StudioRecoveryIssueAction::CleanupWorktree => {
                     vec![RecoveryAction::Retry, RecoveryAction::CleanupWorktree]
                 }
@@ -324,8 +336,8 @@ fn next(end: usize, total: usize) -> Result<Option<u64>, StudioError> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::source::RecoverySource;
+    use super::*;
     use crate::{
         StudioRecoveryIssue, StudioRecoveryIssueAction, StudioRecoveryIssueCategory,
         StudioRecoveryIssueScope, StudioRecoveryWorktreeOwner, StudioWorktreeInspection,
@@ -338,7 +350,10 @@ mod tests {
     fn worktree_read_preserves_only_producer_granted_actions() -> Result<(), StudioError> {
         for (action, expected) in [
             (StudioRecoveryIssueAction::None, Vec::new()),
-            (StudioRecoveryIssueAction::Retry, vec![RecoveryAction::Retry]),
+            (
+                StudioRecoveryIssueAction::Retry,
+                vec![RecoveryAction::Retry],
+            ),
             (
                 StudioRecoveryIssueAction::CleanupWorktree,
                 vec![RecoveryAction::Retry, RecoveryAction::CleanupWorktree],
@@ -348,29 +363,33 @@ mod tests {
                 owner_epoch: "recovery-test".into(),
                 incarnation: 1,
             });
-            source.publish(ObservedResource::ready(1, 1, vec![StudioRecoveryIssue {
-                id: "worktree-issue".into(),
-                scope: StudioRecoveryIssueScope::Thread,
-                category: StudioRecoveryIssueCategory::Repository,
-                action,
-                project_id: Some("project".into()),
-                thread_id: Some("owner".into()),
-                message: "Retained worktree".into(),
-                worktree: Some(StudioWorktreeRecoveryPreview {
-                    inspection: StudioWorktreeInspection::Available,
-                    owner_kind: StudioRecoveryWorktreeOwner::Session,
-                    owner_thread_id: "owner".into(),
-                    lease_revision: 1,
-                    state: "retained".into(),
-                    repository_root: "/repository".into(),
-                    path: "/worktree".into(),
-                    branch: "retained-branch".into(),
-                    base_commit: "base".into(),
-                    head_commit: Some("head".into()),
-                    dirty: Some(false),
-                    changed_files: Some(Vec::new()),
-                }),
-            }]));
+            source.publish(ObservedResource::ready(
+                1,
+                1,
+                vec![StudioRecoveryIssue {
+                    id: "worktree-issue".into(),
+                    scope: StudioRecoveryIssueScope::Thread,
+                    category: StudioRecoveryIssueCategory::Repository,
+                    action,
+                    project_id: Some("project".into()),
+                    thread_id: Some("owner".into()),
+                    message: "Retained worktree".into(),
+                    worktree: Some(StudioWorktreeRecoveryPreview {
+                        inspection: StudioWorktreeInspection::Available,
+                        owner_kind: StudioRecoveryWorktreeOwner::Session,
+                        owner_thread_id: "owner".into(),
+                        lease_revision: 1,
+                        state: "retained".into(),
+                        repository_root: "/repository".into(),
+                        path: "/worktree".into(),
+                        branch: "retained-branch".into(),
+                        base_commit: "base".into(),
+                        head_commit: Some("head".into()),
+                        dirty: Some(false),
+                        changed_files: Some(Vec::new()),
+                    }),
+                }],
+            ));
             let material = RecoveryMaterial::new(source.current()?);
             let header = material.header()?;
             let page = material.issues(header.issues.list_id, 0, 1)?;

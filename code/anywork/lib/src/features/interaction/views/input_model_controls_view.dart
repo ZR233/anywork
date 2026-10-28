@@ -98,7 +98,8 @@ class InputModelControlsView extends StatelessWidget {
                 modeBlockedReason == null,
             lockedHint: blockedReason ?? modeBlockedReason,
             onBlockedTap:
-                (blockedReason ?? modeBlockedReason) != null && onExplain != null
+                (blockedReason ?? modeBlockedReason) != null &&
+                    onExplain != null
                 ? () => onExplain!((blockedReason ?? modeBlockedReason)!)
                 : null,
             onSelected: (next) => onMode?.call(next),

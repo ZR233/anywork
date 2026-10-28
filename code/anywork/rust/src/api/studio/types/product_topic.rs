@@ -9,9 +9,9 @@ use super::{
     BridgeAgentDirectoryState, BridgeAgentProfilesStateSnapshot, BridgeBotsStateSnapshot,
     BridgeLspStateSnapshot, BridgeMcpStateSnapshot, BridgeModelCatalogStateSnapshot,
     BridgePersistenceQueueStateSnapshot, BridgePersistenceStateSnapshot,
-    BridgeProjectDirectoryState, BridgeRecoveryStateSnapshot, BridgeSessionCostsState,
-    BridgeSettingsConfigStateSnapshot, BridgeSkillsStateSnapshot, BridgeThreadDirectoryPage,
-    BridgeThreadModeCatalogSnapshot, BridgeUpdaterStateSnapshot,
+    BridgeProjectDirectoryState, BridgeSessionCostsState, BridgeSettingsConfigStateSnapshot,
+    BridgeSkillsStateSnapshot, BridgeThreadDirectoryPage, BridgeThreadModeCatalogSnapshot,
+    BridgeUpdaterStateSnapshot,
 };
 
 /// 产品订阅 topic；带 payload 的变体表达作用域，不存在无作用域组合形式。
@@ -23,7 +23,6 @@ pub enum BridgeProductTopic {
     AgentDirectory,
     SettingsConfig,
     ModelCatalog,
-    Recovery,
     Mcp,
     Lsp,
     Skills { project_id: String },
@@ -62,7 +61,6 @@ impl BridgeProductTopic {
             Self::AgentDirectory => StudioProductTopic::AgentDirectory,
             Self::SettingsConfig => StudioProductTopic::SettingsConfig,
             Self::ModelCatalog => StudioProductTopic::ModelCatalog,
-            Self::Recovery => StudioProductTopic::Recovery,
             Self::Mcp => StudioProductTopic::Mcp,
             Self::Lsp => StudioProductTopic::Lsp,
             Self::Skills { project_id } => StudioProductTopic::Skills { project_id },
@@ -91,7 +89,6 @@ pub enum BridgeProductBaseline {
     AgentDirectory(BridgeAgentDirectoryState),
     SettingsConfig(Box<BridgeSettingsConfigStateSnapshot>),
     ModelCatalog(Box<BridgeModelCatalogStateSnapshot>),
-    Recovery(BridgeRecoveryStateSnapshot),
     Mcp(BridgeMcpStateSnapshot),
     Lsp(BridgeLspStateSnapshot),
     Skills(BridgeSkillsStateSnapshot),

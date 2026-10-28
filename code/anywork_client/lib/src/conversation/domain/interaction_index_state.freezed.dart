@@ -15,7 +15,7 @@ T _$identity<T>(T value) => value;
 /// @nodoc
 mixin _$InteractionListItem {
 
- InteractionReadRef get reference; String get interactionId; int get revision; InteractionKind get kind; InteractionStatus get status; int get createdAt; int get updatedAt;
+ InteractionReadRef get reference; String get interactionId; String get targetThreadId; int get revision; InteractionKind get kind; InteractionStatus get status; int get createdAt; int get updatedAt;
 /// Create a copy of InteractionListItem
 /// with the given fields replaced by the non-null parameter values.
 @JsonKey(includeFromJson: false, includeToJson: false)
@@ -27,14 +27,14 @@ $InteractionListItemCopyWith<InteractionListItem> get copyWith => _$InteractionL
 @override
 bool operator ==(Object other) {
   final _this = this as InteractionListItem;
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is InteractionListItem&&(identical(other.reference, _this.reference) || other.reference == _this.reference)&&(identical(other.interactionId, _this.interactionId) || other.interactionId == _this.interactionId)&&(identical(other.revision, _this.revision) || other.revision == _this.revision)&&(identical(other.kind, _this.kind) || other.kind == _this.kind)&&(identical(other.status, _this.status) || other.status == _this.status)&&(identical(other.createdAt, _this.createdAt) || other.createdAt == _this.createdAt)&&(identical(other.updatedAt, _this.updatedAt) || other.updatedAt == _this.updatedAt));
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is InteractionListItem&&(identical(other.reference, _this.reference) || other.reference == _this.reference)&&(identical(other.interactionId, _this.interactionId) || other.interactionId == _this.interactionId)&&(identical(other.targetThreadId, _this.targetThreadId) || other.targetThreadId == _this.targetThreadId)&&(identical(other.revision, _this.revision) || other.revision == _this.revision)&&(identical(other.kind, _this.kind) || other.kind == _this.kind)&&(identical(other.status, _this.status) || other.status == _this.status)&&(identical(other.createdAt, _this.createdAt) || other.createdAt == _this.createdAt)&&(identical(other.updatedAt, _this.updatedAt) || other.updatedAt == _this.updatedAt));
 }
 
 
 @override
 int get hashCode {
   final _this = this as InteractionListItem;
-  return Object.hash(runtimeType,_this.reference,_this.interactionId,_this.revision,_this.kind,_this.status,_this.createdAt,_this.updatedAt);
+  return Object.hash(runtimeType,_this.reference,_this.interactionId,_this.targetThreadId,_this.revision,_this.kind,_this.status,_this.createdAt,_this.updatedAt);
 }
 
 
@@ -46,7 +46,7 @@ abstract mixin class $InteractionListItemCopyWith<$Res>  {
   factory $InteractionListItemCopyWith(InteractionListItem value, $Res Function(InteractionListItem) _then) = _$InteractionListItemCopyWithImpl;
 @useResult
 $Res call({
- InteractionReadRef reference, String interactionId, int revision, InteractionKind kind, InteractionStatus status, int createdAt, int updatedAt
+ InteractionReadRef reference, String interactionId, String targetThreadId, int revision, InteractionKind kind, InteractionStatus status, int createdAt, int updatedAt
 });
 
 
@@ -63,10 +63,11 @@ class _$InteractionListItemCopyWithImpl<$Res>
 
 /// Create a copy of InteractionListItem
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') @override $Res call({Object? reference = null,Object? interactionId = null,Object? revision = null,Object? kind = null,Object? status = null,Object? createdAt = null,Object? updatedAt = null,}) {
+@pragma('vm:prefer-inline') @override $Res call({Object? reference = null,Object? interactionId = null,Object? targetThreadId = null,Object? revision = null,Object? kind = null,Object? status = null,Object? createdAt = null,Object? updatedAt = null,}) {
   return _then(InteractionListItem(
 reference: null == reference ? _self.reference : reference // ignore: cast_nullable_to_non_nullable
 as InteractionReadRef,interactionId: null == interactionId ? _self.interactionId : interactionId // ignore: cast_nullable_to_non_nullable
+as String,targetThreadId: null == targetThreadId ? _self.targetThreadId : targetThreadId // ignore: cast_nullable_to_non_nullable
 as String,revision: null == revision ? _self.revision : revision // ignore: cast_nullable_to_non_nullable
 as int,kind: null == kind ? _self.kind : kind // ignore: cast_nullable_to_non_nullable
 as InteractionKind,status: null == status ? _self.status : status // ignore: cast_nullable_to_non_nullable
@@ -166,10 +167,10 @@ return $default(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( InteractionReadRef reference,  String interactionId,  int revision,  InteractionKind kind,  InteractionStatus status,  int createdAt,  int updatedAt)?  $default,{required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( InteractionReadRef reference,  String interactionId,  String targetThreadId,  int revision,  InteractionKind kind,  InteractionStatus status,  int createdAt,  int updatedAt)?  $default,{required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case _InteractionListItem() when $default != null:
-return $default(_that.reference,_that.interactionId,_that.revision,_that.kind,_that.status,_that.createdAt,_that.updatedAt);case _:
+return $default(_that.reference,_that.interactionId,_that.targetThreadId,_that.revision,_that.kind,_that.status,_that.createdAt,_that.updatedAt);case _:
   return orElse();
 
 }
@@ -187,10 +188,10 @@ return $default(_that.reference,_that.interactionId,_that.revision,_that.kind,_t
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( InteractionReadRef reference,  String interactionId,  int revision,  InteractionKind kind,  InteractionStatus status,  int createdAt,  int updatedAt)  $default,) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( InteractionReadRef reference,  String interactionId,  String targetThreadId,  int revision,  InteractionKind kind,  InteractionStatus status,  int createdAt,  int updatedAt)  $default,) {final _that = this;
 switch (_that) {
 case _InteractionListItem():
-return $default(_that.reference,_that.interactionId,_that.revision,_that.kind,_that.status,_that.createdAt,_that.updatedAt);case _:
+return $default(_that.reference,_that.interactionId,_that.targetThreadId,_that.revision,_that.kind,_that.status,_that.createdAt,_that.updatedAt);case _:
   throw StateError('Unexpected subclass');
 
 }
@@ -207,10 +208,10 @@ return $default(_that.reference,_that.interactionId,_that.revision,_that.kind,_t
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( InteractionReadRef reference,  String interactionId,  int revision,  InteractionKind kind,  InteractionStatus status,  int createdAt,  int updatedAt)?  $default,) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( InteractionReadRef reference,  String interactionId,  String targetThreadId,  int revision,  InteractionKind kind,  InteractionStatus status,  int createdAt,  int updatedAt)?  $default,) {final _that = this;
 switch (_that) {
 case _InteractionListItem() when $default != null:
-return $default(_that.reference,_that.interactionId,_that.revision,_that.kind,_that.status,_that.createdAt,_that.updatedAt);case _:
+return $default(_that.reference,_that.interactionId,_that.targetThreadId,_that.revision,_that.kind,_that.status,_that.createdAt,_that.updatedAt);case _:
   return null;
 
 }
@@ -222,11 +223,12 @@ return $default(_that.reference,_that.interactionId,_that.revision,_that.kind,_t
 
 
 class _InteractionListItem implements InteractionListItem {
-  const _InteractionListItem({required this.reference, required this.interactionId, required this.revision, required this.kind, required this.status, required this.createdAt, required this.updatedAt});
+  const _InteractionListItem({required this.reference, required this.interactionId, required this.targetThreadId, required this.revision, required this.kind, required this.status, required this.createdAt, required this.updatedAt});
 
 
 @override final  InteractionReadRef reference;
 @override final  String interactionId;
+@override final  String targetThreadId;
 @override final  int revision;
 @override final  InteractionKind kind;
 @override final  InteractionStatus status;
@@ -243,13 +245,13 @@ _$InteractionListItemCopyWith<_InteractionListItem> get copyWith => __$Interacti
 
 @override
 bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is _InteractionListItem&&(identical(other.reference, reference) || other.reference == reference)&&(identical(other.interactionId, interactionId) || other.interactionId == interactionId)&&(identical(other.revision, revision) || other.revision == revision)&&(identical(other.kind, kind) || other.kind == kind)&&(identical(other.status, status) || other.status == status)&&(identical(other.createdAt, createdAt) || other.createdAt == createdAt)&&(identical(other.updatedAt, updatedAt) || other.updatedAt == updatedAt));
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is _InteractionListItem&&(identical(other.reference, reference) || other.reference == reference)&&(identical(other.interactionId, interactionId) || other.interactionId == interactionId)&&(identical(other.targetThreadId, targetThreadId) || other.targetThreadId == targetThreadId)&&(identical(other.revision, revision) || other.revision == revision)&&(identical(other.kind, kind) || other.kind == kind)&&(identical(other.status, status) || other.status == status)&&(identical(other.createdAt, createdAt) || other.createdAt == createdAt)&&(identical(other.updatedAt, updatedAt) || other.updatedAt == updatedAt));
 }
 
 
 @override
 int get hashCode {
-    return Object.hash(runtimeType,reference,interactionId,revision,kind,status,createdAt,updatedAt);
+    return Object.hash(runtimeType,reference,interactionId,targetThreadId,revision,kind,status,createdAt,updatedAt);
 }
 
 
@@ -261,7 +263,7 @@ abstract mixin class _$InteractionListItemCopyWith<$Res> implements $Interaction
   factory _$InteractionListItemCopyWith(_InteractionListItem value, $Res Function(_InteractionListItem) _then) = __$InteractionListItemCopyWithImpl;
 @override @useResult
 $Res call({
- InteractionReadRef reference, String interactionId, int revision, InteractionKind kind, InteractionStatus status, int createdAt, int updatedAt
+ InteractionReadRef reference, String interactionId, String targetThreadId, int revision, InteractionKind kind, InteractionStatus status, int createdAt, int updatedAt
 });
 
 
@@ -278,10 +280,11 @@ class __$InteractionListItemCopyWithImpl<$Res>
 
 /// Create a copy of InteractionListItem
 /// with the given fields replaced by the non-null parameter values.
-@override @pragma('vm:prefer-inline') $Res call({Object? reference = null,Object? interactionId = null,Object? revision = null,Object? kind = null,Object? status = null,Object? createdAt = null,Object? updatedAt = null,}) {
+@override @pragma('vm:prefer-inline') $Res call({Object? reference = null,Object? interactionId = null,Object? targetThreadId = null,Object? revision = null,Object? kind = null,Object? status = null,Object? createdAt = null,Object? updatedAt = null,}) {
   return _then(_InteractionListItem(
 reference: null == reference ? _self.reference : reference // ignore: cast_nullable_to_non_nullable
 as InteractionReadRef,interactionId: null == interactionId ? _self.interactionId : interactionId // ignore: cast_nullable_to_non_nullable
+as String,targetThreadId: null == targetThreadId ? _self.targetThreadId : targetThreadId // ignore: cast_nullable_to_non_nullable
 as String,revision: null == revision ? _self.revision : revision // ignore: cast_nullable_to_non_nullable
 as int,kind: null == kind ? _self.kind : kind // ignore: cast_nullable_to_non_nullable
 as InteractionKind,status: null == status ? _self.status : status // ignore: cast_nullable_to_non_nullable

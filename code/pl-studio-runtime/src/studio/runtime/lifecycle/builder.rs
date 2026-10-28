@@ -23,7 +23,6 @@ impl StudioRuntime {
         system_skills_dir: std::path::PathBuf,
         helper_source: crate::worker_assets::RemoteHelperSource,
     ) -> Result<Self> {
-        let owner_epoch = crate::studio::ids::new_id("runtime");
         let (settings_updates, _) = tokio::sync::watch::channel(config_runtime.read()?);
         // Resolve the supervised local worker *before* creating any store-derived owner, so a
         // helper resolution failure can never leave partially-constructed owners (writer, updater,

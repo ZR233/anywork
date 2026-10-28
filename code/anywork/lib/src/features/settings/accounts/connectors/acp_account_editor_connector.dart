@@ -177,7 +177,7 @@ class _AcpAccountEditorConnectorState
         ),
     if (save?.saveError case final error?)
       l10n.acpAccountSaveFailed(acpStudioFailureCodeText(l10n, error.code)),
-    for (final action in [state.prepareAction, state.cancelAction]) ...[
+    for (final action in [state.prepareAction, state.currentCancelAction]) ...[
       if (action?.error case final error?) _commandFailure(l10n, error),
       if (action?.observationError case final error?)
         _commandFailure(l10n, error),

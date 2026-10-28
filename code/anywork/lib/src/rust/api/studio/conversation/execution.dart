@@ -5,6 +5,7 @@
 
 import '../../../frb_generated.dart';
 import '../types/error.dart';
+import '../types/runtime.dart';
 import '../types/thread_activity.dart';
 import '../types/thread_stream.dart';
 import '../types/turn_failure.dart';
@@ -14,7 +15,7 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'package:freezed_annotation/freezed_annotation.dart' hide protected;
 part 'execution.freezed.dart';
 
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
 
 class BridgeActivityBrief {
   final BridgeActivityReadRef reference;
@@ -70,8 +71,22 @@ sealed class BridgeActivityReplacement with _$BridgeActivityReplacement {
   }) = BridgeActivityReplacement_Replace;
 }
 
+@freezed
+sealed class BridgeContinuationReplacement
+    with _$BridgeContinuationReplacement {
+  const BridgeContinuationReplacement._();
+
+  const factory BridgeContinuationReplacement.unchanged() =
+      BridgeContinuationReplacement_Unchanged;
+  const factory BridgeContinuationReplacement.replace({
+    BridgeContinuationView? value,
+  }) = BridgeContinuationReplacement_Replace;
+}
+
 class BridgeExecutionBaseline {
   final BridgeThreadStatus status;
+  final BridgeAgentExecution? execution;
+  final BridgeContinuationView? continuation;
   final BridgeTurnBrief? activeTurn;
   final BridgeTurnBrief? recentTerminalTurn;
   final BridgeInteractionIndexHeader interactions;
@@ -80,6 +95,8 @@ class BridgeExecutionBaseline {
 
   const BridgeExecutionBaseline({
     required this.status,
+    this.execution,
+    this.continuation,
     this.activeTurn,
     this.recentTerminalTurn,
     required this.interactions,
@@ -90,6 +107,8 @@ class BridgeExecutionBaseline {
   @override
   int get hashCode =>
       status.hashCode ^
+      execution.hashCode ^
+      continuation.hashCode ^
       activeTurn.hashCode ^
       recentTerminalTurn.hashCode ^
       interactions.hashCode ^
@@ -102,6 +121,8 @@ class BridgeExecutionBaseline {
       other is BridgeExecutionBaseline &&
           runtimeType == other.runtimeType &&
           status == other.status &&
+          execution == other.execution &&
+          continuation == other.continuation &&
           activeTurn == other.activeTurn &&
           recentTerminalTurn == other.recentTerminalTurn &&
           interactions == other.interactions &&
@@ -111,6 +132,8 @@ class BridgeExecutionBaseline {
 
 class BridgeExecutionChange {
   final BridgeThreadStatus? status;
+  final BridgeExecutionReplacement execution;
+  final BridgeContinuationReplacement continuation;
   final BridgeTurnsReplacement? turns;
   final BridgeInteractionDelta? interactions;
   final BridgeActivityReplacement activity;
@@ -118,6 +141,8 @@ class BridgeExecutionChange {
 
   const BridgeExecutionChange({
     this.status,
+    required this.execution,
+    required this.continuation,
     this.turns,
     this.interactions,
     required this.activity,
@@ -127,6 +152,8 @@ class BridgeExecutionChange {
   @override
   int get hashCode =>
       status.hashCode ^
+      execution.hashCode ^
+      continuation.hashCode ^
       turns.hashCode ^
       interactions.hashCode ^
       activity.hashCode ^
@@ -138,6 +165,8 @@ class BridgeExecutionChange {
       other is BridgeExecutionChange &&
           runtimeType == other.runtimeType &&
           status == other.status &&
+          execution == other.execution &&
+          continuation == other.continuation &&
           turns == other.turns &&
           interactions == other.interactions &&
           activity == other.activity &&
@@ -180,6 +209,17 @@ sealed class BridgeExecutionFrame with _$BridgeExecutionFrame {
     required BridgeThreadFeedIdentity identity,
     required BridgeFeedClosedReason reason,
   }) = BridgeExecutionFrame_Closed;
+}
+
+@freezed
+sealed class BridgeExecutionReplacement with _$BridgeExecutionReplacement {
+  const BridgeExecutionReplacement._();
+
+  const factory BridgeExecutionReplacement.unchanged() =
+      BridgeExecutionReplacement_Unchanged;
+  const factory BridgeExecutionReplacement.replace({
+    BridgeAgentExecution? value,
+  }) = BridgeExecutionReplacement_Replace;
 }
 
 class BridgeInteractionBrief {

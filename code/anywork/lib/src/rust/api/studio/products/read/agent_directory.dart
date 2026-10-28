@@ -8,6 +8,7 @@ import '../../observation.dart';
 import '../../types/chat.dart';
 import '../../types/delegation.dart';
 import '../../types/error.dart';
+import '../../types/runtime.dart';
 import '../../types/shutdown.dart';
 import '../../types/thread_stream.dart';
 import '../identity.dart';
@@ -159,6 +160,9 @@ class BridgeAgentDirectoryEntryRead {
   final BridgeFrozenModelSelectionRead? frozenModel;
   final int depth;
   final BridgeAgentStateRead state;
+  final BridgeAgentExecution? execution;
+  final bool canStop;
+  final bool awaitingScheduling;
   final PlatformInt64 updatedAt;
 
   const BridgeAgentDirectoryEntryRead({
@@ -175,6 +179,9 @@ class BridgeAgentDirectoryEntryRead {
     this.frozenModel,
     required this.depth,
     required this.state,
+    this.execution,
+    required this.canStop,
+    required this.awaitingScheduling,
     required this.updatedAt,
   });
 
@@ -193,6 +200,9 @@ class BridgeAgentDirectoryEntryRead {
       frozenModel.hashCode ^
       depth.hashCode ^
       state.hashCode ^
+      execution.hashCode ^
+      canStop.hashCode ^
+      awaitingScheduling.hashCode ^
       updatedAt.hashCode;
 
   @override
@@ -213,6 +223,9 @@ class BridgeAgentDirectoryEntryRead {
           frozenModel == other.frozenModel &&
           depth == other.depth &&
           state == other.state &&
+          execution == other.execution &&
+          canStop == other.canStop &&
+          awaitingScheduling == other.awaitingScheduling &&
           updatedAt == other.updatedAt;
 }
 

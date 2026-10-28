@@ -24,9 +24,13 @@ pub(super) async fn collect(
             Some(thread) => thread.snapshot(),
             None => {
                 let thread = pl_protocol::Thread::from(record.clone());
-                let Some(checkpoint) = crate::studio::thread_factory::recovery::load_checkpoint_read_only(
-                    &services.store, &thread,
-                ).await? else {
+                let Some(checkpoint) =
+                    crate::studio::thread_factory::recovery::load_checkpoint_read_only(
+                        &services.store,
+                        &thread,
+                    )
+                    .await?
+                else {
                     continue;
                 };
                 checkpoint.state
@@ -42,8 +46,9 @@ pub(super) async fn collect(
             }) {
                 continue;
             }
-            let interaction = crate::thread_assembler::project_thread_interaction(child, local, state)?
-                .context("child interaction source disappeared")?;
+            let interaction =
+                crate::thread_assembler::project_thread_interaction(child, local, state)?
+                    .context("child interaction source disappeared")?;
             if interaction.status() == InteractionStatus::Pending {
                 pending.push(Arc::new(interaction));
             }
@@ -51,7 +56,10 @@ pub(super) async fn collect(
     }
     let mut terminal = Vec::new();
     for old in previous {
-        if pending.iter().any(|value| value.interaction_id == old.interaction_id) {
+        if pending
+            .iter()
+            .any(|value| value.interaction_id == old.interaction_id)
+        {
             continue;
         }
         let (child, local) = crate::thread_assembler::decode_interaction_key(&old.interaction_id)?;
@@ -68,17 +76,26 @@ pub(super) async fn collect(
                     pl_protocol::InteractionKind::ToolApproval => "permission",
                 };
                 let key = crate::studio::thread_projection::order::receipt_id(kind, local);
-                let receipt = services.store.history(child).await?.latest_fact_receipt(&key).await?;
-                receipt.map(|receipt| {
-                    ensure!(receipt.kind == kind, "child decision receipt kind mismatch");
-                    super::super::StudioRuntime::project_interaction_receipt(child, local, receipt)
-                }).transpose()?
+                let receipt = services
+                    .store
+                    .history(child)
+                    .await?
+                    .latest_fact_receipt(&key)
+                    .await?;
+                receipt
+                    .map(|receipt| {
+                        ensure!(receipt.kind == kind, "child decision receipt kind mismatch");
+                        super::super::StudioRuntime::project_interaction_receipt(
+                            child, local, receipt,
+                        )
+                    })
+                    .transpose()?
             }
         };
         match current {
             Some(value) if value.status() != InteractionStatus::Pending => {
-            terminal.push(LiveEvent::Interaction(Box::new(value)));
-        }
+                terminal.push(LiveEvent::Interaction(Box::new(value)));
+            }
             _ => {
                 // A pruned live record whose terminal receipt has not arrived is not evidence of
                 // removal or decision. Preserve the last exposed fact until real saved progress

@@ -1,6 +1,9 @@
 part of 'drafts_repository.dart';
 
-ReadyStartRouteRead _readyStartRoute(_DraftsRepository repo, StartDraftState frozen) {
+ReadyStartRouteRead _readyStartRoute(
+  _DraftsRepository repo,
+  StartDraftState frozen,
+) {
   final prepared = frozen.routePreparation;
   if (prepared is! ReadyStartRoutePreparation ||
       prepared.result.sources != _routeSources(repo) ||

@@ -25,7 +25,13 @@ pub enum BridgeErrorCode {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(tag = "kind", content = "data", rename_all = "camelCase", rename_all_fields = "camelCase", deny_unknown_fields)]
+#[serde(
+    tag = "kind",
+    content = "data",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
 pub enum BridgeControlFailureFacts {
     Unspecified,
     ChildThreadAction {
@@ -229,7 +235,10 @@ impl From<pl_protocol::studio::StudioErrorDetails> for BridgeErrorDetails {
                 Self::SshAuthentication { password_offered }
             }
             StudioErrorDetails::Reason { reason } => Self::Reason { reason },
-            StudioErrorDetails::Control { reason, facts } => Self::Control { reason, facts: facts.into() },
+            StudioErrorDetails::Control { reason, facts } => Self::Control {
+                reason,
+                facts: facts.into(),
+            },
             StudioErrorDetails::Identity { identity } => Self::Identity { identity },
             StudioErrorDetails::TimelineRevision {
                 item_id,
@@ -273,26 +282,160 @@ impl From<pl_protocol::studio::ControlFailureFacts> for BridgeControlFailureFact
         use pl_protocol::studio::ControlFailureFacts as Facts;
         match value {
             Facts::Unspecified => Self::Unspecified,
-            Facts::ChildThreadAction { thread_id, action, parent_thread_id } => Self::ChildThreadAction { thread_id, action, parent_thread_id },
+            Facts::ChildThreadAction {
+                thread_id,
+                action,
+                parent_thread_id,
+            } => Self::ChildThreadAction {
+                thread_id,
+                action,
+                parent_thread_id,
+            },
             Facts::ThreadAction { thread_id, action } => Self::ThreadAction { thread_id, action },
-            Facts::ExpectedExecution { thread_id, expected_execution_id } => Self::ExpectedExecution { thread_id, expected_execution_id },
-            Facts::Executing { thread_id, execution_id, phase } => Self::Executing { thread_id, execution_id, phase },
-            Facts::ExpectedContinuation { thread_id, expected_continuation_id } => Self::ExpectedContinuation { thread_id, expected_continuation_id },
-            Facts::ContinuationAccepted { thread_id, operation_id, accepted } => Self::ContinuationAccepted { thread_id, operation_id, accepted },
-            Facts::ContinuationOperation { thread_id, operation_id } => Self::ContinuationOperation { thread_id, operation_id },
-            Facts::ContinuationPointConflict { thread_id, operation_id, expected_continuation_id, accepted_continuation_id } => Self::ContinuationPointConflict { thread_id, operation_id, expected_continuation_id, accepted_continuation_id },
-            Facts::ContinuationRouteConflict { thread_id, operation_id, expected_model_route_revision, accepted_model_route_revision } => Self::ContinuationRouteConflict { thread_id, operation_id, expected_model_route_revision, accepted_model_route_revision },
-            Facts::StaleContinuation { thread_id, expected_continuation_id, current_continuation_id } => Self::StaleContinuation { thread_id, expected_continuation_id, current_continuation_id },
-            Facts::ClaimedContinuation { thread_id, continuation_id } => Self::ClaimedContinuation { thread_id, continuation_id },
-            Facts::ChildInteraction { interaction_id, interaction_thread_id } => Self::ChildInteraction { interaction_id, interaction_thread_id },
-            Facts::InteractionRevision { interaction_id, expected_revision, current_revision } => Self::InteractionRevision { interaction_id, expected_revision, current_revision },
-            Facts::InteractionTerminal { interaction_id, current_revision } => Self::InteractionTerminal { interaction_id, current_revision },
-            Facts::InteractionOperation { operation_id, interaction_id } => Self::InteractionOperation { operation_id, interaction_id },
-            Facts::ChildHost { host_thread_id, host_is_child } => Self::ChildHost { host_thread_id, host_is_child },
-            Facts::InteractionHost { host_thread_id, interaction_thread_id } => Self::InteractionHost { host_thread_id, interaction_thread_id },
-            Facts::DecisionDurability { interaction_id, decision_saved } => Self::DecisionDurability { interaction_id, decision_saved },
-            Facts::UnreadableDecision { thread_id, interaction_id } => Self::UnreadableDecision { thread_id, interaction_id },
-            Facts::DecisionIdentity { interaction_id, current_revision, operation_identity_recorded } => Self::DecisionIdentity { interaction_id, current_revision, operation_identity_recorded },
+            Facts::ExpectedExecution {
+                thread_id,
+                expected_execution_id,
+            } => Self::ExpectedExecution {
+                thread_id,
+                expected_execution_id,
+            },
+            Facts::Executing {
+                thread_id,
+                execution_id,
+                phase,
+            } => Self::Executing {
+                thread_id,
+                execution_id,
+                phase,
+            },
+            Facts::ExpectedContinuation {
+                thread_id,
+                expected_continuation_id,
+            } => Self::ExpectedContinuation {
+                thread_id,
+                expected_continuation_id,
+            },
+            Facts::ContinuationAccepted {
+                thread_id,
+                operation_id,
+                accepted,
+            } => Self::ContinuationAccepted {
+                thread_id,
+                operation_id,
+                accepted,
+            },
+            Facts::ContinuationOperation {
+                thread_id,
+                operation_id,
+            } => Self::ContinuationOperation {
+                thread_id,
+                operation_id,
+            },
+            Facts::ContinuationPointConflict {
+                thread_id,
+                operation_id,
+                expected_continuation_id,
+                accepted_continuation_id,
+            } => Self::ContinuationPointConflict {
+                thread_id,
+                operation_id,
+                expected_continuation_id,
+                accepted_continuation_id,
+            },
+            Facts::ContinuationRouteConflict {
+                thread_id,
+                operation_id,
+                expected_model_route_revision,
+                accepted_model_route_revision,
+            } => Self::ContinuationRouteConflict {
+                thread_id,
+                operation_id,
+                expected_model_route_revision,
+                accepted_model_route_revision,
+            },
+            Facts::StaleContinuation {
+                thread_id,
+                expected_continuation_id,
+                current_continuation_id,
+            } => Self::StaleContinuation {
+                thread_id,
+                expected_continuation_id,
+                current_continuation_id,
+            },
+            Facts::ClaimedContinuation {
+                thread_id,
+                continuation_id,
+            } => Self::ClaimedContinuation {
+                thread_id,
+                continuation_id,
+            },
+            Facts::ChildInteraction {
+                interaction_id,
+                interaction_thread_id,
+            } => Self::ChildInteraction {
+                interaction_id,
+                interaction_thread_id,
+            },
+            Facts::InteractionRevision {
+                interaction_id,
+                expected_revision,
+                current_revision,
+            } => Self::InteractionRevision {
+                interaction_id,
+                expected_revision,
+                current_revision,
+            },
+            Facts::InteractionTerminal {
+                interaction_id,
+                current_revision,
+            } => Self::InteractionTerminal {
+                interaction_id,
+                current_revision,
+            },
+            Facts::InteractionOperation {
+                operation_id,
+                interaction_id,
+            } => Self::InteractionOperation {
+                operation_id,
+                interaction_id,
+            },
+            Facts::ChildHost {
+                host_thread_id,
+                host_is_child,
+            } => Self::ChildHost {
+                host_thread_id,
+                host_is_child,
+            },
+            Facts::InteractionHost {
+                host_thread_id,
+                interaction_thread_id,
+            } => Self::InteractionHost {
+                host_thread_id,
+                interaction_thread_id,
+            },
+            Facts::DecisionDurability {
+                interaction_id,
+                decision_saved,
+            } => Self::DecisionDurability {
+                interaction_id,
+                decision_saved,
+            },
+            Facts::UnreadableDecision {
+                thread_id,
+                interaction_id,
+            } => Self::UnreadableDecision {
+                thread_id,
+                interaction_id,
+            },
+            Facts::DecisionIdentity {
+                interaction_id,
+                current_revision,
+                operation_identity_recorded,
+            } => Self::DecisionIdentity {
+                interaction_id,
+                current_revision,
+                operation_identity_recorded,
+            },
         }
     }
 }

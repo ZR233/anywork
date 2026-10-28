@@ -15,7 +15,9 @@ final class TimelineTailFixture {
   TimelineTailFixture(this.transport) {
     final budget = ResourceBudget();
     final assembly = createConversationRepository(
-      agentDirectory: () => throw UnsupportedError('This Timeline fixture has no directory Stop scenario'),
+      agentDirectory: () => throw UnsupportedError(
+        'This Timeline fixture has no directory Stop scenario',
+      ),
       port: FixtureConversationPort(),
       context: FixtureConversationContext(),
       commands: const UnscriptedConversationCommands(),

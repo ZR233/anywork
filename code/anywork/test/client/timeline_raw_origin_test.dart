@@ -19,10 +19,13 @@ import 'support/timeline_environment.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
-  final timestamp = DateTime.utc(2026, 1, 2, 3, 4, 5).millisecondsSinceEpoch ~/ 1000;
+  final timestamp =
+      DateTime.utc(2026, 1, 2, 3, 4, 5).millisecondsSinceEpoch ~/ 1000;
   late TimelineTestEnvironment environment;
   setUp(() {
-    environment = TimelineTestEnvironment(timeline: const UnscriptedTimelineTransport());
+    environment = TimelineTestEnvironment(
+      timeline: const UnscriptedTimelineTransport(),
+    );
   });
   tearDown(() => environment.close());
 
@@ -68,7 +71,7 @@ void main() {
     threadId: 'thread',
     generation: 1,
     displayMode: TimelineDisplayMode.live,
-    connection: TimelineConnectionPhase.ready,
+    connectionPhase: TimelineConnectionPhase.ready,
     olderCursor: null,
     hasOlder: false,
     olderLoading: false,
@@ -83,27 +86,29 @@ void main() {
     await tester.binding.setSurfaceSize(const Size(900, 700));
     addTearDown(() => tester.binding.setSurfaceSize(null));
     await tester.pumpWidget(
-      ProviderScope(child: MaterialApp(
-        theme: pureStudioTheme(),
-        localizationsDelegates: AppLocalizations.localizationsDelegates,
-        supportedLocales: AppLocalizations.supportedLocales,
-        home: Scaffold(
-          body: TimelineView(
-            threadId: 'thread',
-            state: viewState(),
-            binding: lease.canvas,
-            messageBuilder: (context, message) => TimelineRowConnector(
-              message: message,
-              display: lease.binding,
+      ProviderScope(
+        child: MaterialApp(
+          theme: pureStudioTheme(),
+          localizationsDelegates: AppLocalizations.localizationsDelegates,
+          supportedLocales: AppLocalizations.supportedLocales,
+          home: Scaffold(
+            body: TimelineView(
+              threadId: 'thread',
+              state: viewState(),
+              binding: lease.canvas,
+              messageBuilder: (context, message) => TimelineRowConnector(
+                message: message,
+                display: lease.binding,
+              ),
+              onLoadOlder: () async {},
+              onRetryOlder: () async {},
+              onReturnLive: () async {},
+              onEnterHistory: () {},
+              onRetryConnection: () async {},
             ),
-            onLoadOlder: () async {},
-            onRetryOlder: () async {},
-            onReturnLive: () async {},
-            onEnterHistory: () {},
-            onRetryConnection: () async {},
           ),
         ),
-      )),
+      ),
     );
     await tester.pumpAndSettle();
   }

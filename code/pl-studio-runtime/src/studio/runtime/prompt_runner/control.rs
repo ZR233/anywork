@@ -61,7 +61,11 @@ pub(in crate::studio::runtime) fn ensure_user_root_target(
             )
             .with_reason(
                 StudioErrorReason::ChildThreadRequiresParentScheduling,
-                pl_protocol::studio::ControlFailureFacts::ChildThreadAction { thread_id: record.id .to_owned(), action: action.label() .to_owned(), parent_thread_id: record.parent_thread_id.clone() },
+                pl_protocol::studio::ControlFailureFacts::ChildThreadAction {
+                    thread_id: record.id.to_owned(),
+                    action: action.label().to_owned(),
+                    parent_thread_id: record.parent_thread_id.clone(),
+                },
             ),
         ));
     }
@@ -88,7 +92,10 @@ pub(in crate::studio::runtime) fn ensure_thread_not_archived(
         )
         .with_reason(
             StudioErrorReason::ThreadArchived,
-            pl_protocol::studio::ControlFailureFacts::ThreadAction { thread_id: record.id .to_owned(), action: action.label() .to_owned() },
+            pl_protocol::studio::ControlFailureFacts::ThreadAction {
+                thread_id: record.id.to_owned(),
+                action: action.label().to_owned(),
+            },
         ),
     ))
 }
@@ -140,7 +147,10 @@ impl StudioRuntime {
             return Err(stale_identity(
                 StudioErrorReason::NoExecution,
                 "This Thread has no current execution to stop",
-                pl_protocol::studio::ControlFailureFacts::ExpectedExecution { thread_id: thread_id .to_owned(), expected_execution_id: request.expected_execution_id .to_owned() },
+                pl_protocol::studio::ControlFailureFacts::ExpectedExecution {
+                    thread_id: thread_id.to_owned(),
+                    expected_execution_id: request.expected_execution_id.to_owned(),
+                },
             ));
         };
         let stopped = thread
@@ -158,7 +168,10 @@ impl StudioRuntime {
                 pl_core::thread::ThreadError::InvalidIdentity => stale_identity(
                     StudioErrorReason::StaleExecution,
                     "The observed execution is no longer current; reload before stopping",
-                    pl_protocol::studio::ControlFailureFacts::ExpectedExecution { thread_id: thread_id .to_owned(), expected_execution_id: request.expected_execution_id .to_owned() },
+                    pl_protocol::studio::ControlFailureFacts::ExpectedExecution {
+                        thread_id: thread_id.to_owned(),
+                        expected_execution_id: request.expected_execution_id.to_owned(),
+                    },
                 ),
                 error => anyhow::Error::new(error),
             })?;
@@ -271,7 +284,10 @@ impl StudioRuntime {
                 pl_core::thread::ThreadError::NoContinuation => stale_identity(
                     StudioErrorReason::ContinuationUnavailable,
                     "This Thread has no continuation to claim",
-                    pl_protocol::studio::ControlFailureFacts::ExpectedContinuation { thread_id: thread_id .to_owned(), expected_continuation_id: request.expected_continuation_id .to_owned() },
+                    pl_protocol::studio::ControlFailureFacts::ExpectedContinuation {
+                        thread_id: thread_id.to_owned(),
+                        expected_continuation_id: request.expected_continuation_id.to_owned(),
+                    },
                 ),
                 pl_core::thread::ThreadError::InvalidControlInput => anyhow::Error::new(
                     StudioError::invalid_argument("continuation control input carries content"),
@@ -316,9 +332,13 @@ impl StudioRuntime {
     ) -> Result<ContinuationOperationView> {
         let deadline = tokio::time::Instant::now() + ACCEPTED_IDENTITY_WAIT;
         wait_for_accepted_continuation(thread_id, identity, deadline, || {
-            self.read_continuation_operation_view(thread_id, identity, ContinuationLookup::Admission)
+            self.read_continuation_operation_view(
+                thread_id,
+                identity,
+                ContinuationLookup::Admission,
+            )
         })
-            .await
+        .await
     }
 
     /// The retryable answer for "accepted, but its receipt is not durable yet".
@@ -398,8 +418,12 @@ impl StudioRuntime {
                     "No accepted continuation operation carries this identity",
                     false,
                 )
-                .with_reason(StudioErrorReason::ContinuationUnavailable,
-                    pl_protocol::studio::ControlFailureFacts::ContinuationOperation { thread_id: thread_id .to_owned(), operation_id: operation_id .to_owned() },
+                .with_reason(
+                    StudioErrorReason::ContinuationUnavailable,
+                    pl_protocol::studio::ControlFailureFacts::ContinuationOperation {
+                        thread_id: thread_id.to_owned(),
+                        operation_id: operation_id.to_owned(),
+                    },
                 ),
             )
         })
@@ -426,13 +450,9 @@ impl StudioRuntime {
             .await
         {
             Ok(found) => Ok(found),
-            Err(error) if error.downcast_ref::<AcceptedIdentityPending>().is_some() => {
-                Err(Self::accepted_identity_pending_error(
-                    thread_id,
-                    identity,
-                    Some(error),
-                ))
-            }
+            Err(error) if error.downcast_ref::<AcceptedIdentityPending>().is_some() => Err(
+                Self::accepted_identity_pending_error(thread_id, identity, Some(error)),
+            ),
             Err(error) => Err(error),
         }
     }
@@ -530,7 +550,10 @@ impl StudioRuntime {
                 return Err(stale_identity(
                     StudioErrorReason::StaleContinuation,
                     "The accepted request identity does not match this operation",
-                    pl_protocol::studio::ControlFailureFacts::ContinuationOperation { thread_id: thread_id .to_owned(), operation_id: request.operation_id .to_owned() },
+                    pl_protocol::studio::ControlFailureFacts::ContinuationOperation {
+                        thread_id: thread_id.to_owned(),
+                        operation_id: request.operation_id.to_owned(),
+                    },
                 ));
             }
         }
@@ -721,7 +744,12 @@ fn ensure_accepted_continuation(
         return Err(stale_identity(
             StudioErrorReason::StaleContinuation,
             "The continuation this operation carries is not the one observed",
-            pl_protocol::studio::ControlFailureFacts::ContinuationPointConflict { thread_id: thread_id .to_owned(), operation_id: request.operation_id .to_owned(), expected_continuation_id: expected .to_owned(), accepted_continuation_id: accepted_point_id .to_owned() },
+            pl_protocol::studio::ControlFailureFacts::ContinuationPointConflict {
+                thread_id: thread_id.to_owned(),
+                operation_id: request.operation_id.to_owned(),
+                expected_continuation_id: expected.to_owned(),
+                accepted_continuation_id: accepted_point_id.to_owned(),
+            },
         ));
     }
     if let (Some(expected), Some(accepted)) = (
@@ -732,7 +760,12 @@ fn ensure_accepted_continuation(
         return Err(stale_identity(
             StudioErrorReason::StaleContinuation,
             "This operation was accepted with a different model route revision",
-            pl_protocol::studio::ControlFailureFacts::ContinuationRouteConflict { thread_id: thread_id .to_owned(), operation_id: request.operation_id .to_owned(), expected_model_route_revision: expected, accepted_model_route_revision: accepted },
+            pl_protocol::studio::ControlFailureFacts::ContinuationRouteConflict {
+                thread_id: thread_id.to_owned(),
+                operation_id: request.operation_id.to_owned(),
+                expected_model_route_revision: expected,
+                accepted_model_route_revision: accepted,
+            },
         ));
     }
     Ok(())
@@ -762,21 +795,31 @@ fn check_continuation(
         return Err(stale_identity(
             StudioErrorReason::ContinuationUnavailable,
             "This Thread has no continuation to claim",
-            pl_protocol::studio::ControlFailureFacts::ExpectedContinuation { thread_id: thread_id .to_owned(), expected_continuation_id: request.expected_continuation_id .to_owned() },
+            pl_protocol::studio::ControlFailureFacts::ExpectedContinuation {
+                thread_id: thread_id.to_owned(),
+                expected_continuation_id: request.expected_continuation_id.to_owned(),
+            },
         ));
     };
     if point.id != request.expected_continuation_id {
         return Err(stale_identity(
             StudioErrorReason::StaleContinuation,
             "The observed continuation is no longer current",
-            pl_protocol::studio::ControlFailureFacts::StaleContinuation { thread_id: thread_id .to_owned(), expected_continuation_id: request.expected_continuation_id .to_owned(), current_continuation_id: point.id .to_owned() },
+            pl_protocol::studio::ControlFailureFacts::StaleContinuation {
+                thread_id: thread_id.to_owned(),
+                expected_continuation_id: request.expected_continuation_id.to_owned(),
+                current_continuation_id: point.id.to_owned(),
+            },
         ));
     }
     if point.claim.is_some() {
         return Err(stale_identity(
             StudioErrorReason::ContinuationClaimed,
             "This continuation was already accepted by another operation",
-            pl_protocol::studio::ControlFailureFacts::ClaimedContinuation { thread_id: thread_id .to_owned(), continuation_id: point.id .to_owned() },
+            pl_protocol::studio::ControlFailureFacts::ClaimedContinuation {
+                thread_id: thread_id.to_owned(),
+                continuation_id: point.id.to_owned(),
+            },
         ));
     }
     Ok(())
@@ -885,18 +928,14 @@ mod tests {
                 presentation: pl_protocol::MessagePresentation::Visible,
             })
             .collect::<Vec<_>>();
-        let point = ContinuationPoint::new(
-            66,
-            "stopped-work",
-            None,
-            Some(ContinuationReason::UserStop),
-        );
+        let point =
+            ContinuationPoint::new(66, "stopped-work", None, Some(ContinuationReason::UserStop));
         let checkpoint = ThreadCheckpoint::capture(
             thread.id.clone(),
             66,
             ThreadSnapshot {
                 commit_sequence: 66,
-                inputs: records.into(),
+                inputs: records.clone().into(),
                 continuation: Some(point.clone()),
                 ..Default::default()
             },
@@ -919,6 +958,47 @@ mod tests {
             1,
         );
         original.ordinal = 1;
+        original.revision = 1;
+        // The fresh store starts at zero: each accepted identity is saved through the real
+        // contiguous checkpoint/effect API before the continuation's separate sequence 66.
+        assert_eq!(history.watermark().await?, 0);
+        for (index, (record, identity)) in records.iter().zip(&identities).enumerate() {
+            let sequence = record.accepted_sequence;
+            let prefix = ThreadCheckpoint::capture(
+                thread.id.clone(),
+                sequence,
+                ThreadSnapshot {
+                    commit_sequence: sequence,
+                    inputs: records[..=index].to_vec().into(),
+                    ..Default::default()
+                },
+            );
+            history
+                .commit_checkpoint_effect(
+                    &prefix,
+                    &ThreadEffectBatch {
+                        thread_id: thread.id.clone(),
+                        sequence,
+                        ..Default::default()
+                    },
+                    EffectCommit {
+                        items: if index == 0 {
+                            std::slice::from_ref(&original)
+                        } else {
+                            &[]
+                        },
+                        rolled_back_turns: &Default::default(),
+                        identities: std::slice::from_ref(identity),
+                        messages: &[],
+                        receipts: &[],
+                        tasks: &[],
+                        deliveries: &[],
+                        delivery_repairs: &[],
+                        attempt: None,
+                    },
+                )
+                .await?;
+        }
         history
             .commit_checkpoint_effect(
                 &checkpoint,
@@ -928,9 +1008,9 @@ mod tests {
                     ..Default::default()
                 },
                 EffectCommit {
-                    items: std::slice::from_ref(&original),
+                    items: &[],
                     rolled_back_turns: &Default::default(),
-                    identities: &identities,
+                    identities: &[],
                     messages: &[],
                     receipts: &[],
                     tasks: &[],
@@ -974,11 +1054,11 @@ mod tests {
         assert_eq!(
             refused.details.as_deref(),
             Some(&StudioErrorDetails::Control {
-            reason: "staleContinuation".into(),
-            facts: ControlFailureFacts::ContinuationOperation {
-                thread_id: thread.id.clone(),
-                operation_id: "message-1".into(),
-            },
+                reason: "staleContinuation".into(),
+                facts: ControlFailureFacts::ContinuationOperation {
+                    thread_id: thread.id.clone(),
+                    operation_id: "message-1".into(),
+                },
             })
         );
         // No owner was activated, hence no new claim or cancellation could run. The original
@@ -1036,12 +1116,12 @@ mod tests {
         assert_eq!(
             public.details.as_deref(),
             Some(&StudioErrorDetails::Control {
-            reason: "continuationAccepted".into(),
-            facts: ControlFailureFacts::ContinuationAccepted {
-                thread_id: "accepted-thread".into(),
-                operation_id: operation_id.into(),
-                accepted: true,
-            },
+                reason: "continuationAccepted".into(),
+                facts: ControlFailureFacts::ContinuationAccepted {
+                    thread_id: "accepted-thread".into(),
+                    operation_id: operation_id.into(),
+                    accepted: true,
+                },
             })
         );
         public
@@ -1072,7 +1152,10 @@ mod tests {
                 reads += 1;
                 let (entered, busy) = match first_read.take() {
                     Some((entered, busy)) => (entered, Some(busy)),
-                    None => (second_read.take().expect("only two reads are expected"), None),
+                    None => (
+                        second_read.take().expect("only two reads are expected"),
+                        None,
+                    ),
                 };
                 async move {
                     entered.send(()).expect("read-stage observer is retained");
@@ -1093,7 +1176,9 @@ mod tests {
             },
         ));
         assert!(futures::poll!(waiting.as_mut()).is_pending());
-        first_polled.try_recv().expect("first read really entered before waiting");
+        first_polled
+            .try_recv()
+            .expect("first read really entered before waiting");
         // Await the owning production future and let paused-time auto-advance drive timers in
         // order. Do not assume an expired Sleep is Ready on the first poll after time::advance.
         let result = waiting.as_mut().await;
@@ -1101,21 +1186,32 @@ mod tests {
         drop(waiting);
         // Owner cleanup may itself advance paused time; it is outside the measured wait interval.
         thread.close().await?;
-        second_polled.try_recv().expect("second read really entered Pending");
-        assert_eq!(elapsed, ACCEPTED_IDENTITY_WAIT, "Busy must not renew the original deadline");
+        second_polled
+            .try_recv()
+            .expect("second read really entered Pending");
+        assert_eq!(
+            elapsed, ACCEPTED_IDENTITY_WAIT,
+            "Busy must not renew the original deadline"
+        );
         let error = result.expect_err("the accepted receipt remains pending at the deadline");
         let public = assert_accepted(&error, identity.operation_id);
         assert_eq!(
             (public.code, public.retryable),
             (StudioErrorCode::Busy, true)
         );
-        assert_eq!(reads, 2, "retryable Busy must not escape before the next read");
+        assert_eq!(
+            reads, 2,
+            "retryable Busy must not escape before the next read"
+        );
         assert!(
             error.downcast_ref::<std::io::Error>().is_some(),
             "the pending result retains the original Busy cause"
         );
         assert!(
-            error.chain().skip(1).any(|cause| cause.to_string() == original_busy_diagnostic),
+            error
+                .chain()
+                .skip(1)
+                .any(|cause| cause.to_string() == original_busy_diagnostic),
             "the original Busy and its correlation ID remain in the cause chain"
         );
         Ok(())
@@ -1131,10 +1227,13 @@ mod tests {
         };
         for (failure, code, retryable) in [
             (HistoryReadFailure::Storage, StudioErrorCode::Storage, true),
-            (HistoryReadFailure::Protocol, StudioErrorCode::Protocol, false),
+            (
+                HistoryReadFailure::Protocol,
+                StudioErrorCode::Protocol,
+                false,
+            ),
         ] {
-            let source =
-                anyhow::Error::new(std::io::Error::other("injected hard history failure"))
+            let source = anyhow::Error::new(std::io::Error::other("injected hard history failure"))
                 .context(failure);
             // Keep a concrete inner StudioError as well: the adapter must see the *new outer*
             // accepted facts, without discarding this original typed error or its source chain.

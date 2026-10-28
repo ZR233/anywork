@@ -184,7 +184,12 @@ class ConversationViewModel extends _$ConversationViewModel {
     _metadata = ref.read(workspaceRepositoryProvider).thread(threadId);
     final metadata = _metadata.state.watchLatest((value) {
       if (ref.mounted && state.hasValue) {
-        state = AsyncData(_mergeIndex(state.requireValue.copyWith(metadata: value), _index.value));
+        state = AsyncData(
+          _mergeIndex(
+            state.requireValue.copyWith(metadata: value),
+            _index.value,
+          ),
+        );
       }
     });
     _metadataObservation = metadata.observation;
@@ -222,12 +227,16 @@ class ConversationViewModel extends _$ConversationViewModel {
         }
       },
     );
-    final recovery = ref.read(recoveryRepositoryProvider).state.watchLatest((value) {
+    final recovery = ref.read(recoveryRepositoryProvider).state.watchLatest((
+      value,
+    ) {
       _recovery = value;
       if (ref.mounted && state.hasValue) {
-        state = AsyncData(state.requireValue.copyWith(
-          workspaceBlocker: _workspaceBlocker(state.requireValue.thread),
-        ));
+        state = AsyncData(
+          state.requireValue.copyWith(
+            workspaceBlocker: _workspaceBlocker(state.requireValue.thread),
+          ),
+        );
       }
     });
     _recoveryObservation = recovery.observation;
@@ -313,27 +322,35 @@ class ConversationViewModel extends _$ConversationViewModel {
       for (final item in snapshot.items) {
         if (item.status != InteractionStatus.pending) continue;
         final hosted = item.targetThreadId != before.threadId;
-        final existing = before.visibleEditors.where((key) =>
-          key.threadId == before.threadId && key.target == item.targetThreadId &&
-          key.runtimeEpoch == snapshot.origin.runtimeEpoch &&
-          key.incarnation == snapshot.origin.incarnation &&
-          key.sourceGeneration == _index.generation &&
-          key.interactionId == item.interactionId && key.revision == item.revision &&
-          (!hosted || key.hostedReference == item.reference &&
-              key.hostedOrigin?.runtimeEpoch == snapshot.origin.runtimeEpoch)
-        ).firstOrNull;
+        final existing = before.visibleEditors
+            .where(
+              (key) =>
+                  key.threadId == before.threadId &&
+                  key.target == item.targetThreadId &&
+                  key.runtimeEpoch == snapshot.origin.runtimeEpoch &&
+                  key.incarnation == snapshot.origin.incarnation &&
+                  key.sourceGeneration == _index.generation &&
+                  key.interactionId == item.interactionId &&
+                  key.revision == item.revision &&
+                  (!hosted ||
+                      key.hostedReference == item.reference &&
+                          key.hostedOrigin?.runtimeEpoch ==
+                              snapshot.origin.runtimeEpoch),
+            )
+            .firstOrNull;
         current.add(
-          existing ?? InteractionEditorKey(
-            threadId: before.threadId,
-            runtimeEpoch: snapshot.origin.runtimeEpoch,
-            incarnation: snapshot.origin.incarnation,
-            sourceGeneration: _index.generation,
-            interactionId: item.interactionId,
-            revision: item.revision,
-            targetThreadId: hosted ? item.targetThreadId : null,
-            hostedReference: hosted ? item.reference : null,
-            hostedOrigin: hosted ? snapshot.origin : null,
-          ),
+          existing ??
+              InteractionEditorKey(
+                threadId: before.threadId,
+                runtimeEpoch: snapshot.origin.runtimeEpoch,
+                incarnation: snapshot.origin.incarnation,
+                sourceGeneration: _index.generation,
+                interactionId: item.interactionId,
+                revision: item.revision,
+                targetThreadId: hosted ? item.targetThreadId : null,
+                hostedReference: hosted ? item.reference : null,
+                hostedOrigin: hosted ? snapshot.origin : null,
+              ),
         );
       }
     }
@@ -453,7 +470,8 @@ class ConversationViewModel extends _$ConversationViewModel {
           (issue.scope == RecoveryScope.application ||
               issue.threadId == thread?.id && issue.threadId != null ||
               issue.scope == RecoveryScope.project &&
-                  issue.projectId != null && issue.projectId == thread?.projectId)) {
+                  issue.projectId != null &&
+                  issue.projectId == thread?.projectId)) {
         return const ComposerWorkspaceBlocker();
       }
     }
@@ -468,55 +486,79 @@ class ConversationViewModel extends _$ConversationViewModel {
   }) {
     final view = state.asData?.value;
     if (view == null) {
-      return const ComposerPrimaryAction(kind: ComposerPrimaryActionKind.send, enabled: false);
+      return const ComposerPrimaryAction(
+        kind: ComposerPrimaryActionKind.send,
+        enabled: false,
+      );
     }
     final baseline = view.execution?.value;
     final binding = _execution.capture();
-    final ready = binding != null &&
+    final ready =
+        binding != null &&
         _execution.matches(binding, requireActive: true) &&
         binding.source.value.sync.phase == FacetSyncPhase.ready &&
         binding.session.acceptsUserInput;
     final stop = _stop;
-    final stopCurrent = stop != null && !stop.sourceRetired &&
+    final stopCurrent =
+        stop != null &&
+        !stop.sourceRetired &&
         _execution.matches(stop.binding) &&
         _sameStopOrigin(view.execution?.stamp ?? stop.origin, stop.origin);
     final continuation = _continuation;
-    final continueCurrent = continuation != null && _continuationCurrent(continuation);
-    final stopValue = stopCurrent ? stop?.value : null;
-    final continuationValue = continueCurrent ? continuation?.value : null;
+    final continueCurrent =
+        continuation != null && _continuationCurrent(continuation);
+    final stopValue = stopCurrent ? stop.value : null;
+    final continuationValue = continueCurrent ? continuation.value : null;
     final storage = baseline?.storage;
     final route = view.configuration?.value?.modelRoute;
-    final configurationReady = _configuration.session == _execution.session &&
+    final configurationReady =
+        _configuration.session == _execution.session &&
         view.configuration?.sync.phase == FacetSyncPhase.ready &&
-        view.configuration?.stamp?.runtimeEpoch == view.execution?.stamp?.runtimeEpoch &&
-        view.configuration?.stamp?.incarnation == view.execution?.stamp?.incarnation &&
+        view.configuration?.stamp?.runtimeEpoch ==
+            view.execution?.stamp?.runtimeEpoch &&
+        view.configuration?.stamp?.incarnation ==
+            view.execution?.stamp?.incarnation &&
         route != null;
     final ComposerBlocker? blocker =
-        storage != null && (storage.fault != null || storage.resumeRequired || storage.pressurePaused)
+        storage != null &&
+            (storage.fault != null ||
+                storage.resumeRequired ||
+                storage.pressurePaused)
         ? const ComposerStorageBlocker()
         : view.workspaceBlocker ??
-          (route?.available == false ? const ComposerModelBlocker() : null);
+              (route?.available == false ? const ComposerModelBlocker() : null);
     final action = ComposerPrimaryAction.resolve(
       isChild: view.runtimeDriven,
       execution: baseline?.execution,
       continuation: baseline?.continuation,
       hasContent: hasContent,
       submissionPending: submissionPending,
-      stopAccepted: stopValue?.accepted == true &&
-          (baseline?.execution == null ? stopValue?.operation?.observed != true
+      stopAccepted:
+          stopValue?.accepted == true &&
+          (baseline?.execution == null
+              ? stopValue?.operation?.observed != true
               : baseline?.execution?.id == stopValue?.executionId),
-      stopPending: stopCurrent && baseline?.execution?.id == stopValue?.executionId &&
+      stopPending:
+          stopCurrent &&
+          baseline?.execution?.id == stopValue?.executionId &&
           (stopValue?.pending == true || stopValue?.unknown == true),
       continuationAccepted: continuationValue?.inProgress == true,
-      continuationPending: continueCurrent &&
+      continuationPending:
+          continueCurrent &&
           (baseline?.continuation == null ||
-              baseline?.continuation?.id == continuationValue?.continuationId) &&
-          (continuationValue?.pending == true || continuationValue?.unknown == true),
+              baseline?.continuation?.id ==
+                  continuationValue?.continuationId) &&
+          (continuationValue?.pending == true ||
+              continuationValue?.unknown == true),
       blocker: blocker,
     );
-    return action.copyWith(enabled: action.enabled && ready &&
-        (action.kind == ComposerPrimaryActionKind.stop ||
-            view.canCompose && configurationReady));
+    return action.copyWith(
+      enabled:
+          action.enabled &&
+          ready &&
+          (action.kind == ComposerPrimaryActionKind.stop ||
+              view.canCompose && configurationReady),
+    );
   }
 
   Future<void> Function()? captureContinuation() {
@@ -524,28 +566,44 @@ class ConversationViewModel extends _$ConversationViewModel {
     final page = _stopPage;
     final binding = _execution.capture();
     final configuration = _configuration.capture();
-    if (page?.isCurrent != true || binding == null || configuration == null ||
+    if (page?.isCurrent != true ||
+        binding == null ||
+        configuration == null ||
         !_execution.matches(binding, requireActive: true) ||
-        !identical(binding.session, configuration.session)) return null;
+        !identical(binding.session, configuration.session)) {
+      return null;
+    }
     final current = binding.source.value;
     final origin = current.stamp;
     final point = current.value?.continuation;
-    final routeRevision = configuration.source.value.value?.modelRoute?.revision;
-    if (origin == null || point == null || point.claimed || routeRevision == null) return null;
+    final routeRevision =
+        configuration.source.value.value?.modelRoute?.revision;
+    if (origin == null ||
+        point == null ||
+        point.claimed ||
+        routeRevision == null) {
+      return null;
+    }
     final lifetime = _stopLifetime;
     return () {
       final previous = _continuation;
-      if (previous != null && _continuationCurrent(previous) &&
+      if (previous != null &&
+          _continuationCurrent(previous) &&
           previous.value.continuationId == point.id &&
-          (previous.value.pending || previous.value.unknown || previous.value.inProgress)) {
+          (previous.value.pending ||
+              previous.value.unknown ||
+              previous.value.inProgress)) {
         return previous.work ?? Future<void>.value();
       }
-      if (!ref.mounted || !identical(_stopLifetime, lifetime) ||
-          page?.isCurrent != true || _stopBoundary ||
+      if (!ref.mounted ||
+          !identical(_stopLifetime, lifetime) ||
+          page?.isCurrent != true ||
+          _stopBoundary ||
           !_execution.matches(binding, requireActive: true) ||
           !_configuration.matches(configuration) ||
           binding.source.value.value?.continuation?.id != point.id ||
-          configuration.source.value.value?.modelRoute?.revision != routeRevision ||
+          configuration.source.value.value?.modelRoute?.revision !=
+              routeRevision ||
           !primaryAction(hasContent: false, submissionPending: false).enabled) {
         return Future<void>.value();
       }
@@ -555,15 +613,18 @@ class ConversationViewModel extends _$ConversationViewModel {
         previous?.keepAlive.close();
         // Cancellation can synchronously reenter navigation/source publication.
         final admitted = binding.source.value;
-        if (!ref.mounted || !identical(_stopLifetime, lifetime) ||
+        if (!ref.mounted ||
+            !identical(_stopLifetime, lifetime) ||
             page?.isCurrent != true ||
             !_execution.matches(binding, requireActive: true) ||
             !_configuration.matches(configuration) ||
-            admitted.stamp == null || !_sameStopOrigin(admitted.stamp!, origin) ||
+            admitted.stamp == null ||
+            !_sameStopOrigin(admitted.stamp!, origin) ||
             admitted.value?.execution != null ||
             admitted.value?.continuation?.id != point.id ||
             admitted.value?.continuation?.claimed != false ||
-            configuration.source.value.value?.modelRoute?.revision != routeRevision) {
+            configuration.source.value.value?.modelRoute?.revision !=
+                routeRevision) {
           return Future<void>.value();
         }
         final context = _ContinuationContext(
@@ -579,13 +640,18 @@ class ConversationViewModel extends _$ConversationViewModel {
         _continuation = context;
         _publishContinuation(context);
         try {
-          if (!_continuationCurrent(context) || page?.isCurrent != true ||
+          if (!_continuationCurrent(context) ||
+              page?.isCurrent != true ||
               !_execution.matches(binding, requireActive: true) ||
               !_configuration.matches(configuration) ||
-              configuration.source.value.value?.modelRoute?.revision != routeRevision) {
-            throw const StudioFailure(code: StudioFailureCode.superseded,
+              configuration.source.value.value?.modelRoute?.revision !=
+                  routeRevision) {
+            throw const StudioFailure(
+              code: StudioFailureCode.superseded,
               message: 'The continuation source changed before dispatch',
-              retryable: false, correlationId: 'conversation-continue-source');
+              retryable: false,
+              correlationId: 'conversation-continue-source',
+            );
           }
           final ticket = binding.session.continueThread(
             origin: context.value.origin,
@@ -600,18 +666,28 @@ class ConversationViewModel extends _$ConversationViewModel {
             _publishContinuation(context);
           });
           context.observation = watch.observation;
-          if (!delivered) context.value = context.value.copyWith(operation: watch.value);
+          if (!delivered) {
+            context.value = context.value.copyWith(operation: watch.value);
+          }
           if (!_continuationCurrent(context)) {
             watch.observation.cancel();
             context.observation = null;
           }
           _publishContinuation(context);
-          return context.work = _settleContinuation(context, _stopDisposed.future);
+          return context.work = _settleContinuation(
+            context,
+            _stopDisposed.future,
+          );
         } catch (error) {
-          context.value = context.value.copyWith(error: _stopFailure(error, 'conversation-continue-call'));
+          context.value = context.value.copyWith(
+            error: _stopFailure(error, 'conversation-continue-call'),
+          );
           _publishContinuation(context);
           if (context.ticket != null) {
-            return context.work = _settleContinuation(context, _stopDisposed.future);
+            return context.work = _settleContinuation(
+              context,
+              _stopDisposed.future,
+            );
           }
           context.keepAlive.close();
           return Future<void>.value();
@@ -623,31 +699,48 @@ class ConversationViewModel extends _$ConversationViewModel {
   }
 
   bool _continuationCurrent(_ContinuationContext context) =>
-      ref.mounted && !context.sourceRetired && identical(_continuation, context) &&
+      ref.mounted &&
+      !context.sourceRetired &&
+      identical(_continuation, context) &&
       _execution.matches(context.binding) &&
       context.binding.source.value.stamp != null &&
-      _sameStopOrigin(context.binding.source.value.stamp!, context.value.origin);
+      _sameStopOrigin(
+        context.binding.source.value.stamp!,
+        context.value.origin,
+      );
 
   void _publishContinuation(_ContinuationContext context) {
-    if (context.ticket?.state.value.isPending == false) context.keepAlive.close();
+    if (context.ticket?.state.value.isPending == false) {
+      context.keepAlive.close();
+    }
     if (!_continuationCurrent(context) || !state.hasValue) return;
     state = AsyncData(state.requireValue.copyWith(continuation: context.value));
   }
 
-  Future<void> _settleContinuation(_ContinuationContext context, Future<void> retired) async {
+  Future<void> _settleContinuation(
+    _ContinuationContext context,
+    Future<void> retired,
+  ) async {
     try {
-      final result = await _observeControlResult(context.ticket!.result, retired);
+      final result = await _observeControlResult(
+        context.ticket!.result,
+        retired,
+      );
       if (result == null) return;
       final error = switch (result) {
         RejectedCommandResult<ContinueThreadReply>(:final error) ||
         UnknownOutcomeCommandResult<ContinueThreadReply>(:final error) ||
         SyncFailedCommandResult<ContinueThreadReply>(:final error) ||
-        AcknowledgedSyncFailedCommandResult<ContinueThreadReply>(:final error) => error,
+        AcknowledgedSyncFailedCommandResult<ContinueThreadReply>(
+          :final error,
+        ) => error,
         _ => null,
       };
       context.value = context.value.copyWith(result: result, error: error);
     } catch (error) {
-      context.value = context.value.copyWith(error: _stopFailure(error, 'conversation-continue-result'));
+      context.value = context.value.copyWith(
+        error: _stopFailure(error, 'conversation-continue-result'),
+      );
     }
     _publishContinuation(context);
   }
@@ -655,24 +748,30 @@ class ConversationViewModel extends _$ConversationViewModel {
   /// Explicit read of the original operation, never a second continue dispatch.
   Future<void> Function()? captureContinuationRead() {
     final context = _continuation;
-    if (context == null || !_continuationCurrent(context) || context.ticket == null) {
+    if (context == null ||
+        !_continuationCurrent(context) ||
+        context.ticket == null) {
       return null;
     }
     return () => _continuationCurrent(context)
-        ? _joinContinuationRead(context) : Future<void>.value();
+        ? _joinContinuationRead(context)
+        : Future<void>.value();
   }
 
   Future<void> _joinContinuationRead(_ContinuationContext context) {
     if (context.reading case final existing?) return existing;
     final done = Completer<void>();
     context.reading = done.future;
-    _readContinuationOperation(context).then<void>((_) {
-      context.reading = null;
-      done.complete();
-    }, onError: (Object error, StackTrace stack) {
-      context.reading = null;
-      done.completeError(error, stack);
-    });
+    _readContinuationOperation(context).then<void>(
+      (_) {
+        context.reading = null;
+        done.complete();
+      },
+      onError: (Object error, StackTrace stack) {
+        context.reading = null;
+        done.completeError(error, stack);
+      },
+    );
     return done.future;
   }
 
@@ -680,11 +779,17 @@ class ConversationViewModel extends _$ConversationViewModel {
     context.value = context.value.copyWith(reading: true);
     _publishContinuation(context);
     try {
-      final recovered = await context.binding.session.readContinuationOperation(context.ticket!.id);
-      context.value = context.value.copyWith(recovered: recovered,
-        error: recovered == null ? context.value.error : null);
+      final recovered = await context.binding.session.readContinuationOperation(
+        context.ticket!.id,
+      );
+      context.value = context.value.copyWith(
+        recovered: recovered,
+        error: recovered == null ? context.value.error : null,
+      );
     } catch (error) {
-      context.value = context.value.copyWith(error: _stopFailure(error, 'conversation-continue-read'));
+      context.value = context.value.copyWith(
+        error: _stopFailure(error, 'conversation-continue-read'),
+      );
     } finally {
       context.value = context.value.copyWith(reading: false);
       _publishContinuation(context);
@@ -718,8 +823,16 @@ class ConversationViewModel extends _$ConversationViewModel {
       });
     }
     if (continuation != null) {
-      attempt('continuation-observation', continuation, () => continuation.observation?.cancel());
-      attempt('continuation-presentation', continuation, continuation.keepAlive.close);
+      attempt(
+        'continuation-observation',
+        continuation,
+        () => continuation.observation?.cancel(),
+      );
+      attempt(
+        'continuation-presentation',
+        continuation,
+        continuation.keepAlive.close,
+      );
     }
     if (metadataWatch != null) {
       attempt('metadata-observation', metadataWatch, () {
@@ -732,7 +845,9 @@ class ConversationViewModel extends _$ConversationViewModel {
     attempt('interaction-observations', index, index.cancel);
     attempt('execution-observations', execution, execution.cancel);
     attempt('configuration-observations', configuration, configuration.cancel);
-    if (recovery != null) attempt('recovery-observation', recovery, recovery.cancel);
+    if (recovery != null) {
+      attempt('recovery-observation', recovery, recovery.cancel);
+    }
     attempt('metadata-request-close', metadata, metadata.requestClose);
     Future<CloseReport>? closing;
     attempt('metadata-close', metadata, () {
@@ -777,8 +892,7 @@ class ConversationViewModel extends _$ConversationViewModel {
     final lifetime = _stopLifetime;
     // The control binds an execution. Its click freezes the current revision
     // from this source only; it cannot borrow another Session with the same ID.
-    return () =>
-        _admitStop(page, lifetime, binding, origin, execution.id);
+    return () => _admitStop(page, lifetime, binding, origin, execution.id);
   }
 
   /// Guards the pure projection too: deferred publication must not flash an old
@@ -827,7 +941,8 @@ class ConversationViewModel extends _$ConversationViewModel {
 
   void _checkStopSource() {
     final continuation = _continuation;
-    if (continuation != null && !continuation.sourceRetired &&
+    if (continuation != null &&
+        !continuation.sourceRetired &&
         !_continuationCurrent(continuation)) {
       // A replacement source cannot recover or render the old intent. Retire
       // only its UI demand; the original Session retains and joins all work.
@@ -841,7 +956,8 @@ class ConversationViewModel extends _$ConversationViewModel {
         continuation.cause = error;
         continuation.causeStack = stack;
         continuation.value = continuation.value.copyWith(
-          error: _stopFailure(error, 'conversation-continue-observation-close'));
+          error: _stopFailure(error, 'conversation-continue-observation-close'),
+        );
       } finally {
         continuation.keepAlive.close();
       }
@@ -1082,8 +1198,10 @@ class ConversationViewModel extends _$ConversationViewModel {
     final next = before.copyWith(
       stopSourceCurrent: current,
       stop: _stop?.sourceRetired == false ? _stop!.value : null,
-      continuation: _continuation != null && _continuationCurrent(_continuation!)
-          ? _continuation!.value : null,
+      continuation:
+          _continuation != null && _continuationCurrent(_continuation!)
+          ? _continuation!.value
+          : null,
     );
     if (next != before) state = AsyncData(next);
   }

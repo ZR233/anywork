@@ -10,7 +10,105 @@ import 'package:freezed_annotation/freezed_annotation.dart' hide protected;
 part 'error.freezed.dart';
 
 // These functions are ignored because they are not marked as `pub`: `invalid_argument`, `not_initialized`, `runtime_stopped`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`, `from`, `from`, `from`, `from`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`
+
+@freezed
+sealed class BridgeControlFailureFacts with _$BridgeControlFailureFacts {
+  const BridgeControlFailureFacts._();
+
+  const factory BridgeControlFailureFacts.unspecified() =
+      BridgeControlFailureFacts_Unspecified;
+  const factory BridgeControlFailureFacts.childThreadAction({
+    required String threadId,
+    required String action,
+    String? parentThreadId,
+  }) = BridgeControlFailureFacts_ChildThreadAction;
+  const factory BridgeControlFailureFacts.threadAction({
+    required String threadId,
+    required String action,
+  }) = BridgeControlFailureFacts_ThreadAction;
+  const factory BridgeControlFailureFacts.expectedExecution({
+    required String threadId,
+    required String expectedExecutionId,
+  }) = BridgeControlFailureFacts_ExpectedExecution;
+  const factory BridgeControlFailureFacts.executing({
+    required String threadId,
+    required String executionId,
+    required String phase,
+  }) = BridgeControlFailureFacts_Executing;
+  const factory BridgeControlFailureFacts.expectedContinuation({
+    required String threadId,
+    required String expectedContinuationId,
+  }) = BridgeControlFailureFacts_ExpectedContinuation;
+  const factory BridgeControlFailureFacts.continuationAccepted({
+    required String threadId,
+    required String operationId,
+    required bool accepted,
+  }) = BridgeControlFailureFacts_ContinuationAccepted;
+  const factory BridgeControlFailureFacts.continuationOperation({
+    required String threadId,
+    required String operationId,
+  }) = BridgeControlFailureFacts_ContinuationOperation;
+  const factory BridgeControlFailureFacts.continuationPointConflict({
+    required String threadId,
+    required String operationId,
+    required String expectedContinuationId,
+    required String acceptedContinuationId,
+  }) = BridgeControlFailureFacts_ContinuationPointConflict;
+  const factory BridgeControlFailureFacts.continuationRouteConflict({
+    required String threadId,
+    required String operationId,
+    required BigInt expectedModelRouteRevision,
+    required BigInt acceptedModelRouteRevision,
+  }) = BridgeControlFailureFacts_ContinuationRouteConflict;
+  const factory BridgeControlFailureFacts.staleContinuation({
+    required String threadId,
+    required String expectedContinuationId,
+    required String currentContinuationId,
+  }) = BridgeControlFailureFacts_StaleContinuation;
+  const factory BridgeControlFailureFacts.claimedContinuation({
+    required String threadId,
+    required String continuationId,
+  }) = BridgeControlFailureFacts_ClaimedContinuation;
+  const factory BridgeControlFailureFacts.childInteraction({
+    required String interactionId,
+    required String interactionThreadId,
+  }) = BridgeControlFailureFacts_ChildInteraction;
+  const factory BridgeControlFailureFacts.interactionRevision({
+    required String interactionId,
+    required BigInt expectedRevision,
+    required BigInt currentRevision,
+  }) = BridgeControlFailureFacts_InteractionRevision;
+  const factory BridgeControlFailureFacts.interactionTerminal({
+    required String interactionId,
+    required BigInt currentRevision,
+  }) = BridgeControlFailureFacts_InteractionTerminal;
+  const factory BridgeControlFailureFacts.interactionOperation({
+    required String operationId,
+    required String interactionId,
+  }) = BridgeControlFailureFacts_InteractionOperation;
+  const factory BridgeControlFailureFacts.childHost({
+    required String hostThreadId,
+    required bool hostIsChild,
+  }) = BridgeControlFailureFacts_ChildHost;
+  const factory BridgeControlFailureFacts.interactionHost({
+    required String hostThreadId,
+    required String interactionThreadId,
+  }) = BridgeControlFailureFacts_InteractionHost;
+  const factory BridgeControlFailureFacts.decisionDurability({
+    required String interactionId,
+    required bool decisionSaved,
+  }) = BridgeControlFailureFacts_DecisionDurability;
+  const factory BridgeControlFailureFacts.unreadableDecision({
+    required String threadId,
+    required String interactionId,
+  }) = BridgeControlFailureFacts_UnreadableDecision;
+  const factory BridgeControlFailureFacts.decisionIdentity({
+    required String interactionId,
+    required BigInt currentRevision,
+    required bool operationIdentityRecorded,
+  }) = BridgeControlFailureFacts_DecisionIdentity;
+}
 
 /// FRB-only wire representation of [`pl_protocol::studio::StudioError`].
 class BridgeError implements FrbException {
@@ -86,6 +184,10 @@ sealed class BridgeErrorDetails with _$BridgeErrorDetails {
       BridgeErrorDetails_SshAuthentication;
   const factory BridgeErrorDetails.reason({required String reason}) =
       BridgeErrorDetails_Reason;
+  const factory BridgeErrorDetails.control({
+    required String reason,
+    required BridgeControlFailureFacts facts,
+  }) = BridgeErrorDetails_Control;
   const factory BridgeErrorDetails.identity({required String identity}) =
       BridgeErrorDetails_Identity;
   const factory BridgeErrorDetails.timelineRevision({

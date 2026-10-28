@@ -1,7 +1,6 @@
 import 'package:anywork_client/statistics_ports.dart';
 
 import '../../../../rust/api/studio/products/read/statistics.dart' as native;
-import '../../../../rust/api/studio/types/response.dart' as response;
 import '../../shared/exact_numbers.dart';
 import '../../shared/read_converters.dart';
 import '../statistics_references.dart';
@@ -104,11 +103,10 @@ PerformanceSampleIdentityRead sampleIdentityReadFromBridge(
   sentModel: nullableReadText(value.sentModel),
   reportedModel: nullableReadText(value.reportedModel),
   modelMatchState: switch (value.modelMatchState) {
-    response.BridgeModelMatchState.matched => ModelMatchState.matched,
-    response.BridgeModelMatchState.mismatched => ModelMatchState.mismatched,
-    response.BridgeModelMatchState.unreported => ModelMatchState.unreported,
-    response.BridgeModelMatchState.legacyUnknown =>
-      ModelMatchState.legacyUnknown,
+    native.BridgeModelMatchState.matched => ModelMatchState.matched,
+    native.BridgeModelMatchState.mismatched => ModelMatchState.mismatched,
+    native.BridgeModelMatchState.unreported => ModelMatchState.unreported,
+    native.BridgeModelMatchState.legacyUnknown => ModelMatchState.legacyUnknown,
   },
   effort: nullableReadText(value.effort),
 );

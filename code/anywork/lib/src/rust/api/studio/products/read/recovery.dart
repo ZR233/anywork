@@ -178,7 +178,7 @@ class BridgeRecoveryIssueRead {
   final BridgeReadText id;
   final BridgeRecoveryScope scope;
   final BridgeRecoveryCategory category;
-  final BridgeRecoveryAction action;
+  final List<BridgeRecoveryAction> availableActions;
   final BridgeReadText? projectId;
   final BridgeReadText? threadId;
   final BridgeReadText message;
@@ -188,7 +188,7 @@ class BridgeRecoveryIssueRead {
     required this.id,
     required this.scope,
     required this.category,
-    required this.action,
+    required this.availableActions,
     this.projectId,
     this.threadId,
     required this.message,
@@ -200,7 +200,7 @@ class BridgeRecoveryIssueRead {
       id.hashCode ^
       scope.hashCode ^
       category.hashCode ^
-      action.hashCode ^
+      availableActions.hashCode ^
       projectId.hashCode ^
       threadId.hashCode ^
       message.hashCode ^
@@ -214,7 +214,7 @@ class BridgeRecoveryIssueRead {
           id == other.id &&
           scope == other.scope &&
           category == other.category &&
-          action == other.action &&
+          availableActions == other.availableActions &&
           projectId == other.projectId &&
           threadId == other.threadId &&
           message == other.message &&
@@ -275,6 +275,7 @@ class BridgeRecoveryReadHeader {
 enum BridgeRecoveryScope { application, project, thread }
 
 class BridgeWorktreeRecoveryPreviewRead {
+  final BridgeWorktreeInspection inspection;
   final BridgeWorktreeOwner ownerKind;
   final BridgeReadText ownerThreadId;
   final BigInt leaseRevision;
@@ -284,10 +285,11 @@ class BridgeWorktreeRecoveryPreviewRead {
   final BridgeReadText branch;
   final BridgeReadText baseCommit;
   final BridgeReadText? headCommit;
-  final bool dirty;
-  final BridgeTypedListRef changedFiles;
+  final bool? dirty;
+  final BridgeTypedListRef? changedFiles;
 
   const BridgeWorktreeRecoveryPreviewRead({
+    required this.inspection,
     required this.ownerKind,
     required this.ownerThreadId,
     required this.leaseRevision,
@@ -297,12 +299,13 @@ class BridgeWorktreeRecoveryPreviewRead {
     required this.branch,
     required this.baseCommit,
     this.headCommit,
-    required this.dirty,
-    required this.changedFiles,
+    this.dirty,
+    this.changedFiles,
   });
 
   @override
   int get hashCode =>
+      inspection.hashCode ^
       ownerKind.hashCode ^
       ownerThreadId.hashCode ^
       leaseRevision.hashCode ^
@@ -320,6 +323,7 @@ class BridgeWorktreeRecoveryPreviewRead {
       identical(this, other) ||
       other is BridgeWorktreeRecoveryPreviewRead &&
           runtimeType == other.runtimeType &&
+          inspection == other.inspection &&
           ownerKind == other.ownerKind &&
           ownerThreadId == other.ownerThreadId &&
           leaseRevision == other.leaseRevision &&

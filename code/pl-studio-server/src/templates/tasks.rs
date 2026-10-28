@@ -9,21 +9,21 @@ use tokio::task::{JoinError, JoinHandle};
 
 // The actual JoinHandle remains owned by this retained completion even if a waiter times out.
 // This is not a scheduler, second runtime task pool or another canonical store.
-pub(super) type Completion = Shared<BoxFuture<'static, Result<(), Arc<JoinError>>>>;
+pub(crate) type Completion = Shared<BoxFuture<'static, Result<(), Arc<JoinError>>>>;
 
-pub(super) fn retain(task: JoinHandle<()>) -> Completion {
+pub(crate) fn retain(task: JoinHandle<()>) -> Completion {
     async move { task.await.map_err(Arc::new) }.boxed().shared()
 }
 
-pub(super) fn succeeded(task: &Completion) -> bool {
+pub(crate) fn succeeded(task: &Completion) -> bool {
     matches!(task.clone().now_or_never(), Some(Ok(())))
 }
 
-pub(super) fn finished(task: &Completion) -> bool {
+pub(crate) fn finished(task: &Completion) -> bool {
     task.clone().now_or_never().is_some()
 }
 
-pub(super) fn failed(task: &Completion) -> bool {
+pub(crate) fn failed(task: &Completion) -> bool {
     matches!(task.clone().now_or_never(), Some(Err(_)))
 }
 

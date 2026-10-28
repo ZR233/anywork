@@ -49,7 +49,11 @@ void main() {
     ]) {
       final state = AgentListStopState.resolve(
         agent: _agent(
-          execution: AgentExecution(id: 'exec-child-1', phase: phase, turnId: null),
+          execution: AgentExecution(
+            id: 'exec-child-1',
+            phase: phase,
+            turnId: null,
+          ),
           canStop: true,
         ),
       );
@@ -69,7 +73,10 @@ void main() {
 
   test('accepted停止在空Idle目录行上仍等待独立观察屏障，不用Idle伪造完成', () {
     final state = AgentListStopState.resolve(
-      agent: _agent(state: const IdleAgentState(budgetPause: null), awaitingScheduling: true),
+      agent: _agent(
+        state: const IdleAgentState(budgetPause: null),
+        awaitingScheduling: true,
+      ),
       acceptedExecutionId: 'exec-child-1',
     );
     expect(state.action, AgentListStopAction.stopping);
@@ -114,7 +121,10 @@ void main() {
 
   test('有未认领继续点的成员说明等待主智能体调度，且没有继续或消息操作', () {
     final state = AgentListStopState.resolve(
-      agent: _agent(state: const IdleAgentState(budgetPause: null), awaitingScheduling: true),
+      agent: _agent(
+        state: const IdleAgentState(budgetPause: null),
+        awaitingScheduling: true,
+      ),
     );
     expect(state.action, AgentListStopAction.stoppedWaitingScheduling);
     expect(state.canStop, isFalse);
@@ -124,7 +134,11 @@ void main() {
   test('正常完成、关闭与退役成员不声称等待调度', () {
     for (final state in const <AgentState>[
       IdleAgentState(budgetPause: null),
-      ClosingAgentState(workspaceDisposition: AgentWorkspaceDisposition.preserve, error: null, turnId: null),
+      ClosingAgentState(
+        workspaceDisposition: AgentWorkspaceDisposition.preserve,
+        error: null,
+        turnId: null,
+      ),
       ClosedAgentState(),
       FaultedAgentState(
         error: SourceStateError(
@@ -137,8 +151,16 @@ void main() {
       ),
     ]) {
       final resolved = AgentListStopState.resolve(agent: _agent(state: state));
-      expect(resolved.action, AgentListStopAction.none, reason: state.runtimeType.toString());
-      expect(resolved.showsControl, isFalse, reason: state.runtimeType.toString());
+      expect(
+        resolved.action,
+        AgentListStopAction.none,
+        reason: state.runtimeType.toString(),
+      );
+      expect(
+        resolved.showsControl,
+        isFalse,
+        reason: state.runtimeType.toString(),
+      );
     }
   });
 
@@ -169,20 +191,36 @@ void main() {
         turnId: null,
         classification: AgentFaultClassification.recoverableRuntime,
       ),
-      ClosingAgentState(workspaceDisposition: AgentWorkspaceDisposition.preserve, error: null, turnId: null),
+      ClosingAgentState(
+        workspaceDisposition: AgentWorkspaceDisposition.preserve,
+        error: null,
+        turnId: null,
+      ),
       ClosedAgentState(),
     ]) {
       final resolved = AgentListStopState.resolve(
         agent: _agent(state: state, canStop: true),
       );
-      expect(resolved.action, AgentListStopAction.none, reason: state.runtimeType.toString());
-      expect(resolved.showsControl, isFalse, reason: state.runtimeType.toString());
+      expect(
+        resolved.action,
+        AgentListStopAction.none,
+        reason: state.runtimeType.toString(),
+      );
+      expect(
+        resolved.showsControl,
+        isFalse,
+        reason: state.runtimeType.toString(),
+      );
     }
   });
 
   test('正在关闭与故障成员即使遗留执行与停止资格也不产生控制', () {
     for (final state in const <AgentState>[
-      ClosingAgentState(workspaceDisposition: AgentWorkspaceDisposition.preserve, error: null, turnId: 'turn-1'),
+      ClosingAgentState(
+        workspaceDisposition: AgentWorkspaceDisposition.preserve,
+        error: null,
+        turnId: 'turn-1',
+      ),
       FaultedAgentState(
         error: SourceStateError(
           code: 'failed',
@@ -201,7 +239,11 @@ void main() {
         final resolved = AgentListStopState.resolve(
           agent: _agent(
             state: state,
-            execution: AgentExecution(id: 'exec-child-1', phase: phase, turnId: null),
+            execution: AgentExecution(
+              id: 'exec-child-1',
+              phase: phase,
+              turnId: null,
+            ),
             canStop: true,
           ),
           acceptedExecutionId: 'exec-child-1',
@@ -211,7 +253,11 @@ void main() {
           AgentListStopAction.none,
           reason: '${state.runtimeType} / $phase',
         );
-        expect(resolved.canStop, isFalse, reason: '${state.runtimeType} / $phase');
+        expect(
+          resolved.canStop,
+          isFalse,
+          reason: '${state.runtimeType} / $phase',
+        );
         expect(
           resolved.showsControl,
           isFalse,
@@ -230,7 +276,11 @@ void main() {
       final resolved = AgentListStopState.resolve(
         agent: _agent(
           state: const IdleAgentState(budgetPause: null),
-          execution: AgentExecution(id: 'exec-child-1', phase: phase, turnId: null),
+          execution: AgentExecution(
+            id: 'exec-child-1',
+            phase: phase,
+            turnId: null,
+          ),
           canStop: true,
         ),
       );
@@ -364,7 +414,10 @@ void main() {
 
   test('没有可执行中状态时等待调度才显示说明', () {
     final resolved = AgentListStopState.resolve(
-      agent: _agent(state: const IdleAgentState(budgetPause: null), awaitingScheduling: true),
+      agent: _agent(
+        state: const IdleAgentState(budgetPause: null),
+        awaitingScheduling: true,
+      ),
     );
     expect(resolved.action, AgentListStopAction.stoppedWaitingScheduling);
     expect(resolved.canStop, isFalse);
@@ -376,12 +429,19 @@ void main() {
       QueuedAgentState(turnId: 'turn-1'),
       RunningAgentState(turnId: 'turn-1'),
       WaitingToolAgentState(turnId: 'turn-1'),
-      WaitingInteractionAgentState(turnId: 'turn-1', interactionId: 'interaction-1'),
+      WaitingInteractionAgentState(
+        turnId: 'turn-1',
+        interactionId: 'interaction-1',
+      ),
     ]) {
       final resolved = AgentListStopState.resolve(
         agent: _agent(state: state, execution: _execution),
       );
-      expect(resolved.action, AgentListStopAction.none, reason: state.runtimeType.toString());
+      expect(
+        resolved.action,
+        AgentListStopAction.none,
+        reason: state.runtimeType.toString(),
+      );
     }
   });
 }

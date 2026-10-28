@@ -14,6 +14,9 @@ pub(super) const USER_SCHEMA_OBJECTS: &str = "name NOT LIKE 'sqlite_%'
 
 pub(super) async fn preflight(db: &DatabaseConnection) -> Result<()> {
     let version = version(db).await?;
+    if (19..=21).contains(&version) {
+        return Err(super::StudioDatabaseError::StorageMigrationRequired.into());
+    }
     if version == 0 {
         ensure!(
             db.query_one_raw(Statement::from_string(
@@ -88,8 +91,10 @@ pub(super) async fn create_reference_schema(db: &DatabaseConnection, version: i6
         25 => &[],
         _ => anyhow::bail!("unsupported Studio schema reference version {version}"),
     };
-    db.execute_unprepared(include_str!("product_schema.sql")).await?;
-    db.execute_unprepared(include_str!("agent_evaluations.sql")).await?;
+    db.execute_unprepared(include_str!("product_schema.sql"))
+        .await?;
+    db.execute_unprepared(include_str!("agent_evaluations.sql"))
+        .await?;
     for sql in historical {
         db.execute_unprepared(sql).await?;
     }

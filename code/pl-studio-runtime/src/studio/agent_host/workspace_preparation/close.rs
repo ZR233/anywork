@@ -421,7 +421,10 @@ impl WorkspaceClose {
 
 fn physical_retryable(error: &WorktreeError) -> bool {
     match error {
-        WorktreeError::InvalidResource(_) | WorktreeError::UnsafeBranch(_) => false,
+        WorktreeError::Missing
+        | WorktreeError::IdentityMismatch(_)
+        | WorktreeError::InvalidResource(_)
+        | WorktreeError::UnsafeBranch(_) => false,
         WorktreeError::CleanupFailed { failures, .. } => {
             !failures.is_empty() && failures.iter().all(physical_retryable)
         }
@@ -433,6 +436,9 @@ fn physical_retryable(error: &WorktreeError) -> bool {
         | WorktreeError::GitTimedOut { .. }
         | WorktreeError::GitExited { .. }
         | WorktreeError::GitStatusUnknown { .. }
-        | WorktreeError::Io(_) => true,
+        | WorktreeError::LocalIo { .. }
+        | WorktreeError::Remote { .. }
+        | WorktreeError::RemoteExecution { .. }
+        | WorktreeError::RemoteFile { .. } => true,
     }
 }

@@ -77,9 +77,6 @@ sealed class BridgeProductEventPayload with _$BridgeProductEventPayload {
   const factory BridgeProductEventPayload.modelCatalogStateChanged(
     BridgeModelCatalogStateSnapshot field0,
   ) = BridgeProductEventPayload_ModelCatalogStateChanged;
-  const factory BridgeProductEventPayload.recoveryStateChanged(
-    BridgeRecoveryStateSnapshot field0,
-  ) = BridgeProductEventPayload_RecoveryStateChanged;
   const factory BridgeProductEventPayload.mcpStateChanged(
     BridgeMcpStateSnapshot field0,
   ) = BridgeProductEventPayload_McpStateChanged;

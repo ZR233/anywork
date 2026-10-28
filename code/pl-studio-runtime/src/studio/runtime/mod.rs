@@ -127,6 +127,9 @@ pub struct StudioStartNewThreadRequest {
     pub preparation_observer: Option<ThreadPreparationObserver>,
 }
 
+#[cfg(test)]
+pub(crate) mod test_support;
+
 /// Studio UI 提交 prompt 的附加选项。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct StudioSubmitPromptOptions {

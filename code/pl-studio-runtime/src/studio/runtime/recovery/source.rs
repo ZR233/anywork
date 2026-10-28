@@ -358,3 +358,131 @@ fn cancelled() -> StudioError {
         false,
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::studio::{
+        StudioRecoveryIssueAction, StudioRecoveryIssueCategory, StudioRecoveryIssueScope,
+        StudioRecoveryRegistry,
+    };
+
+    #[test]
+    fn registry_mutations_publish_typed_source_without_legacy_product_events()
+    -> Result<(), StudioError> {
+        let source = RecoverySource::new(ProductReadOrigin {
+            owner_epoch: "registry-publication-fixture".into(),
+            incarnation: 1,
+        });
+        let registry = StudioRecoveryRegistry::new();
+        registry.attach_source(source.clone());
+        let (initial, mut updates) = source.observe()?;
+        assert!(
+            initial
+                .value
+                .as_ref()
+                .expect("initial ready value")
+                .is_empty()
+        );
+
+        registry.begin();
+        assert!(
+            updates
+                .has_changed()
+                .expect("source notification remains live")
+        );
+        updates.borrow_and_update();
+        assert!(matches!(
+            &source.current()?.metadata,
+            ObservedResource::Refreshing(_)
+        ));
+        let issue = StudioRecoveryIssue {
+            id: "thread-issue".into(),
+            scope: StudioRecoveryIssueScope::Thread,
+            category: StudioRecoveryIssueCategory::Repository,
+            action: StudioRecoveryIssueAction::Retry,
+            project_id: Some("project".into()),
+            thread_id: Some("child".into()),
+            message: "original diagnostic".into(),
+            worktree: None,
+        };
+        registry.replace(vec![issue.clone()]);
+        let published = source.current()?;
+        assert_eq!(published.value.as_deref(), Some(&vec![issue.clone()]));
+        assert_eq!(published.collection.expect("published collection").total, 1);
+
+        let mut changed = issue.clone();
+        changed.message = "updated diagnostic".into();
+        registry.update_if_current(&issue.id, Some(changed.clone()), || false);
+        assert!(
+            Arc::ptr_eq(&source.current()?, &published),
+            "stale producers cannot publish"
+        );
+        registry.update_if_current(&issue.id, Some(changed.clone()), || true);
+        assert_eq!(source.current()?.value.as_deref(), Some(&vec![changed]));
+
+        registry.fail(
+            std::io::Error::new(std::io::ErrorKind::PermissionDenied, "private cause").into(),
+        );
+        let failed = source.current()?;
+        let ObservedResource::Degraded(metadata) = &failed.metadata else {
+            panic!("failure is published with the retained issue value");
+        };
+        assert!(metadata.error().message.contains("PermissionDenied"));
+        assert!(!metadata.error().message.contains("private cause"));
+
+        registry.retire_thread("child");
+        assert!(
+            source
+                .current()?
+                .value
+                .as_ref()
+                .expect("retired value")
+                .is_empty()
+        );
+        registry.replace(vec![issue.clone()]);
+        assert!(
+            source
+                .current()?
+                .value
+                .as_ref()
+                .expect("retired owner remains retired")
+                .is_empty()
+        );
+
+        registry.begin();
+        let mut worktree = issue;
+        worktree.id = "worktree-lease-child".into();
+        registry.replace(vec![worktree.clone()]);
+        registry.retire_thread("child");
+        assert_eq!(
+            source.current()?.value.as_deref(),
+            Some(&vec![worktree.clone()]),
+            "retiring execution cannot retire its workspace diagnosis"
+        );
+        registry.remove(&worktree.id);
+        assert!(
+            source
+                .current()?
+                .value
+                .as_ref()
+                .expect("removed value")
+                .is_empty()
+        );
+        registry.replace(vec![worktree]);
+        assert!(
+            source
+                .current()?
+                .value
+                .as_ref()
+                .expect("removed identity remains removed")
+                .is_empty()
+        );
+        registry.stop();
+        assert!(matches!(
+            &source.current()?.metadata,
+            ObservedResource::Stopped(_)
+        ));
+        Ok(())
+    }
+}

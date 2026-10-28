@@ -46,7 +46,9 @@ final class WorkspaceAccess {
         throw _unknown;
       final issue = row.current.value;
       if (issue.blocksAccess &&
-          !(archiving && issue.category == RecoveryCategory.repository && issue.worktree != null) &&
+          !(archiving &&
+              issue.category == RecoveryCategory.repository &&
+              issue.worktree != null) &&
           issue.scope == scope &&
           (scope == RecoveryScope.project
               ? issue.projectId == id

@@ -16,6 +16,8 @@ mod product_event_bus;
 mod records;
 mod recovery_registry;
 mod runtime;
+#[cfg(test)]
+pub(crate) use runtime::test_support;
 mod runtime_lock;
 mod runtime_state;
 #[allow(hidden_glob_reexports)] // 本地 startup 模块有意遮蔽 `runtime::*` 的同名导出。

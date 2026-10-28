@@ -72,7 +72,12 @@ final class _ConversationRepository
     ResourcePermit permit,
     ReadonlyLatestValue<AgentDirectoryState> Function() agentDirectory,
   ) : _permit = permit,
-      _directoryStops = DirectoryExecutionStops(agentDirectory, commands, operations, budget),
+      _directoryStops = DirectoryExecutionStops(
+        agentDirectory,
+        commands,
+        operations,
+        budget,
+      ),
       _active = ConversationMirror(
         null,
         budget: budget,
@@ -117,7 +122,11 @@ final class _ConversationRepository
     required ProductProjectionStamp origin,
     required ProductEntityRef member,
     required String executionId,
-  }) => _directoryStops.stop(origin: origin, member: member, executionId: executionId);
+  }) => _directoryStops.stop(
+    origin: origin,
+    member: member,
+    executionId: executionId,
+  );
   @override
   ConversationSession session(String threadId) {
     if (_sealed) throw conversationCancelled;

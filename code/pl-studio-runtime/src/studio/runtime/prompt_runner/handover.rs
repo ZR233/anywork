@@ -91,16 +91,7 @@ impl StudioRuntime {
         if current == next {
             return;
         }
-        self.recovery.update_if_current(
-            &issue_id,
-            next,
-            || true,
-            |issues| {
-                self.agent_facility
-                    .product_events
-                    .emit_recovery_state(issues);
-            },
-        );
+        self.recovery.update_if_current(&issue_id, next, || true);
     }
 
     /// The Thread ids of every active direct child of `host_thread_id`, never activating one.

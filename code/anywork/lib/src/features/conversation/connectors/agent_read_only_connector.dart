@@ -19,37 +19,52 @@ class AgentReadOnlyConnector extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final conversation = ref.watch(conversationViewModelProvider(threadId)).value;
+    final conversation = ref
+        .watch(conversationViewModelProvider(threadId))
+        .value;
     final provider = threadStatusViewModelProvider(threadId);
     final status = ref.watch(provider).value;
     final vm = ref.read(provider.notifier);
     final thread = currentRouteThread(conversation?.metadata, threadId);
     final executionSource = conversation?.execution;
-    final executionCurrent = conversation?.executionCurrent == true &&
+    final executionCurrent =
+        conversation?.executionCurrent == true &&
         executionSource?.stamp?.facet == ThreadFacet.execution;
     final baseline = executionCurrent ? executionSource?.value : null;
     final execution = baseline?.execution;
     final continuation = baseline?.continuation;
     final configuration = conversation?.configuration;
-    final route = status != null &&
-        configuration?.sync.phase == FacetSyncPhase.ready &&
-        status.configuration?.stamp == configuration?.stamp &&
-        configuration?.stamp?.runtimeEpoch == executionSource?.stamp?.runtimeEpoch &&
-        configuration?.stamp?.incarnation == executionSource?.stamp?.incarnation
-        ? currentModelRoute(status) : null;
+    final route =
+        status != null &&
+            configuration?.sync.phase == FacetSyncPhase.ready &&
+            status.configuration?.stamp == configuration?.stamp &&
+            configuration?.stamp?.runtimeEpoch ==
+                executionSource?.stamp?.runtimeEpoch &&
+            configuration?.stamp?.incarnation ==
+                executionSource?.stamp?.incarnation
+        ? currentModelRoute(status)
+        : null;
     final path = thread?.workspacePath;
     return ReadDemandMount(
       identity: ('agent-readonly-route', threadId, vm),
       begin: vm.beginModelRouteDemand,
       child: AgentReadOnlyPanel(
-        waitingForScheduling: baseline != null && execution == null &&
-            continuation != null && !continuation.claimed,
+        waitingForScheduling:
+            baseline != null &&
+            execution == null &&
+            continuation != null &&
+            !continuation.claimed,
         pendingInteraction: (baseline?.interactions.pending ?? 0) > 0,
-        statusLabel: thread == null ? '—' : context.threadStatusLabel(thread.status),
-        executionLabel: execution == null ? null : context.threadStatusLabel(
-          execution.phase == AgentExecutionPhase.stopping
-              ? ThreadStatus.cancelling : ThreadStatus.running,
-        ),
+        statusLabel: thread == null
+            ? '—'
+            : context.threadStatusLabel(thread.status),
+        executionLabel: execution == null
+            ? null
+            : context.threadStatusLabel(
+                execution.phase == AgentExecutionPhase.stopping
+                    ? ThreadStatus.cancelling
+                    : ThreadStatus.running,
+              ),
         modelLabel: route?.modelId,
         workspacePath: path != null && path.trim().isNotEmpty ? path : null,
         retiredPlanner: conversation?.retiredPlanner == true,

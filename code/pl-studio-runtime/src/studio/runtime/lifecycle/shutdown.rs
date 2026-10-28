@@ -1468,13 +1468,6 @@ impl StudioRuntime {
             |runtime| async move { runtime.stop_statistics_follower().await },
         ));
 
-        independent.push(self.stage_branch(
-            budget,
-            StageId::Bots,
-            Some(SERVICE_STAGE_LIMIT),
-            retries.clone(),
-            |runtime| async move { runtime.bots.shutdown().await.map_err(anyhow::Error::new) },
-        ));
         // 写入生产者依赖的共享完成信号：写入链只有在生产者真实停止 ACK 后继续持久化；SSH 依赖同一份
         // 生产者事实——远端工具由 Turn / Agent 等生产者驱动，它们未收束时不得先切断 SSH 通信——
         // 但 SSH 只等这条依赖边，不等与它无关的持久化 / 数据库提交。信号载荷刻意区分两件事实：

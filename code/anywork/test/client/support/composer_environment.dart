@@ -19,14 +19,23 @@ import 'selector_environment.dart';
 
 const composerThreadId = 'thread-main';
 const composerExecution = AgentExecution(
-  id: 'exec-1', phase: AgentExecutionPhase.running, turnId: 'turn-1',
+  id: 'exec-1',
+  phase: AgentExecutionPhase.running,
+  turnId: 'turn-1',
 );
 const composerContinuation = ContinuationView(
-  id: 'continuation-1', sourceTurnId: 'turn-1',
-  reason: ContinuationReason.userStop, createdAt: 1767225600, claimed: false,
+  id: 'continuation-1',
+  sourceTurnId: 'turn-1',
+  reason: ContinuationReason.userStop,
+  createdAt: 1767225600,
+  claimed: false,
 );
 
-CommitReceipt composerReceipt(OperationId operationId, {bool effective = false, bool durable = false}) => CommitReceipt(
+CommitReceipt composerReceipt(
+  OperationId operationId, {
+  bool effective = false,
+  bool durable = false,
+}) => CommitReceipt(
   operationId: operationId,
   disposition: CommitDisposition.applied,
   targets: const [],
@@ -56,13 +65,22 @@ ContinuationOperationView composerContinuationView(
 final class ComposerEnvironment {
   ComposerEnvironment(this.env);
   final SelectorEnvironment env;
-  ConversationSession get session => env.conversations.existingSession(composerThreadId)!;
-  ConversationViewModel get vm => env.container.read(conversationViewModelProvider(composerThreadId).notifier);
-  ConversationViewState get state => env.container.read(conversationViewModelProvider(composerThreadId)).requireValue;
+  ConversationSession get session =>
+      env.conversations.existingSession(composerThreadId)!;
+  ConversationViewModel get vm => env.container.read(
+    conversationViewModelProvider(composerThreadId).notifier,
+  );
+  ConversationViewState get state => env.container
+      .read(conversationViewModelProvider(composerThreadId))
+      .requireValue;
   final page = ConversationStopPage(isCurrent: () => true);
-  late final ProviderSubscription<AsyncValue<ConversationViewState>> subscription;
+  late final ProviderSubscription<AsyncValue<ConversationViewState>>
+  subscription;
 
-  static Future<ComposerEnvironment> open(WidgetTester tester, {ThreadExecutionBaseline? initial}) async {
+  static Future<ComposerEnvironment> open(
+    WidgetTester tester, {
+    ThreadExecutionBaseline? initial,
+  }) async {
     final env = SelectorEnvironment();
     env.conversationPort.initialExecution = initial;
     final fixture = ComposerEnvironment(env);
@@ -73,39 +91,86 @@ final class ComposerEnvironment {
       await pumpClientFuture(tester, env.close(), 'composer owner cleanup');
     });
     await pumpClientFuture(tester, env.establish(), 'composer product sources');
-    await pumpClientFuture(tester, env.selectThread(composerThreadId), 'composer Session');
-    fixture.subscription = env.container.listen(conversationViewModelProvider(composerThreadId), (_, _) {});
-    await pumpClientFuture(tester, env.container.read(conversationViewModelProvider(composerThreadId).future), 'composer VM');
+    await pumpClientFuture(
+      tester,
+      env.selectThread(composerThreadId),
+      'composer Session',
+    );
+    fixture.subscription = env.container.listen(
+      conversationViewModelProvider(composerThreadId),
+      (_, _) {},
+    );
+    await pumpClientFuture(
+      tester,
+      env.container.read(
+        conversationViewModelProvider(composerThreadId).future,
+      ),
+      'composer VM',
+    );
     fixture.vm.deferStopPage(fixture.page);
-    await pumpClientFuture(tester, fixture.waitFor((state) => state.executionCurrent && state.metadataCurrent && state.configuration?.value?.modelRoute != null), 'composer canonical execution and route');
+    await pumpClientFuture(
+      tester,
+      fixture.waitFor(
+        (state) =>
+            state.executionCurrent &&
+            state.metadataCurrent &&
+            state.configuration?.value?.modelRoute != null,
+      ),
+      'composer canonical execution and route',
+    );
     return fixture;
   }
 
-  Future<ConversationViewState> waitFor(bool Function(ConversationViewState) matches) {
+  Future<ConversationViewState> waitFor(
+    bool Function(ConversationViewState) matches,
+  ) {
     final done = Completer<ConversationViewState>();
-    final watcher = env.container.listen(conversationViewModelProvider(composerThreadId), (_, next) {
-      final value = next.asData?.value;
-      if (!done.isCompleted && value != null && matches(value)) done.complete(value);
-    }, fireImmediately: true);
+    final watcher = env.container.listen(
+      conversationViewModelProvider(composerThreadId),
+      (_, next) {
+        final value = next.asData?.value;
+        if (!done.isCompleted && value != null && matches(value)) {
+          done.complete(value);
+        }
+      },
+      fireImmediately: true,
+    );
     return done.future.whenComplete(watcher.close);
   }
 
-  Future<void> publish(WidgetTester tester, ThreadExecutionBaseline value) async {
-    await pumpClientFuture(tester, env.conversationPort.publishExecution(value), 'explicit native execution ACK');
+  Future<void> publish(
+    WidgetTester tester,
+    ThreadExecutionBaseline value,
+  ) async {
+    await pumpClientFuture(
+      tester,
+      env.conversationPort.publishExecution(value),
+      'explicit native execution ACK',
+    );
     await tester.pump();
   }
 
-  Future<void> pump(WidgetTester tester, {String threadId = composerThreadId}) async {
-    await tester.pumpWidget(UncontrolledProviderScope(
-      container: env.container,
-      child: MaterialApp(
-        theme: pureStudioTheme(), locale: const Locale('en'),
-        localizationsDelegates: _localizations,
-        supportedLocales: _locales,
-        home: Scaffold(body: Align(alignment: Alignment.bottomCenter,
-          child: _ComposerMount(threadId: threadId, page: page))),
+  Future<void> pump(
+    WidgetTester tester, {
+    String threadId = composerThreadId,
+  }) async {
+    await tester.pumpWidget(
+      UncontrolledProviderScope(
+        container: env.container,
+        child: MaterialApp(
+          theme: pureStudioTheme(),
+          locale: const Locale('en'),
+          localizationsDelegates: _localizations,
+          supportedLocales: _locales,
+          home: Scaffold(
+            body: Align(
+              alignment: Alignment.bottomCenter,
+              child: _ComposerMount(threadId: threadId, page: page),
+            ),
+          ),
+        ),
       ),
-    ));
+    );
     await tester.pump();
   }
 }

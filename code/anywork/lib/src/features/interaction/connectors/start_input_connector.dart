@@ -72,9 +72,12 @@ class _StartInputConnectorState extends ConsumerState<StartInputConnector> {
       final descriptor = catalog == null
           ? null
           : selectedDescriptor(catalog.models, accountId, modelId);
-      final eligible = models?.any(
-        (option) => option.accountId == accountId && option.modelId == modelId,
-      ) == true;
+      final eligible =
+          models?.any(
+            (option) =>
+                option.accountId == accountId && option.modelId == modelId,
+          ) ==
+          true;
       // Preselection is the original per-mode intent, never a locally resolved
       // route. Only a real project draft asks native to prepare and validate it.
       return Column(

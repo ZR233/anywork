@@ -3,17 +3,19 @@
 //! A history handle shares one connection state between the Thread's writer, its readers and the
 //! coordinator's weak registry, so its last strong reference drops in whichever task released it —
 //! and sometimes with no Tokio runtime left at all. Dropping a pool is explicitly *not* a join point:
-//! the remaining connections go away inside whatever task dropped the last handle.
+//! its remaining connections go away inside whatever task dropped the last handle.
 //!
 //! This owner therefore tracks two facts about the same resource, in one place:
 //!
 //! * the **lifetime of each real `HistoryStoreState`**, registered synchronously when the state is
 //!   built. Every clone of the handle — including the one a `Session` keeps — pins the same token, so
-//!   "a legitimate holder still exists" is something the final close can wait on rather than hope;
+//!   "a legitimate holder still exists" is something the final close waits on instead of a hope;
 //! * the **close duty of each handed-over connection**. The state's last `Drop` ends its lifetime and
-//!   takes over its already-opened connections under one lock, so no window exists between the two.
+//!   takes over published connections under one lock. Unpublished guards hand their original pools
+//!   to this same owner on failure/cancellation while the state is still pinned, so neither path has
+//!   a window in which both the lifetime and its open-pool responsibility disappear.
 //!
-//! Every close attempt carries its own identity: only the current attempt of a duty may write its
+//! Each close attempt carries its own identity: only the current attempt of a duty may write its
 //! outcome, so a late observer can neither drop a newer task nor overwrite it with an older failure.
 
 use std::{
@@ -47,9 +49,6 @@ type CloseOutcome = Result<(), Arc<HistoryCloseFailure>>;
 type CloseCompletion = Shared<BoxFuture<'static, CloseOutcome>>;
 
 /// Why one original connection (or one still-lived state) is not closed.
-///
-/// The variants keep the real source instead of a rendered string, so another attempt is decided by
-/// the failure itself.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum HistoryCloseFailure {
     #[error("history {role} connection {id} of Thread {thread_id} could not be closed")]
@@ -86,10 +85,15 @@ pub(crate) enum HistoryCloseFailure {
 
 impl HistoryCloseFailure {
     /// Whether another close entry may attempt this same responsibility again.
+    ///
+    /// A close task that panicked or was cancelled leaves the original connection in this owner, so a
+    /// later explicit close retries that same connection. That is not an automatic writer rerun: the
+    /// writer's own terminal failure stays a separate fact.
     pub(crate) fn is_retryable(&self) -> bool {
         matches!(
             self,
             Self::Database { .. }
+                | Self::Task { .. }
                 | Self::Unstarted { .. }
                 | Self::Unfinished { .. }
                 | Self::StateHeld { .. }
@@ -129,9 +133,7 @@ impl std::error::Error for HistoryCloseGroup {
 }
 
 /// One close attempt of one duty.
-struct Attempt {
-    id: u64,
-}
+struct Attempt;
 
 /// One original connection awaiting its real close.
 struct Duty {
@@ -144,10 +146,20 @@ struct Duty {
     failure: Option<Arc<HistoryCloseFailure>>,
 }
 
+/// A newly installed attempt, captured before the lifecycle lock is released.
+struct StartedClose {
+    id: u64,
+    attempt: Arc<Attempt>,
+    completion: CloseCompletion,
+    #[cfg(test)]
+    observer_gate: Option<tokio::sync::oneshot::Receiver<()>>,
+    #[cfg(test)]
+    observer_ack: Option<tokio::sync::oneshot::Sender<()>>,
+}
+
 struct State {
     duties: BTreeMap<u64, Duty>,
     next_duty: u64,
-    next_attempt: u64,
     completed: u64,
     /// One entry per real `HistoryStoreState` that still has a legitimate holder.
     live_states: BTreeMap<u64, String>,
@@ -159,7 +171,37 @@ struct State {
     #[cfg(test)]
     close_failure_armed: bool,
     #[cfg(test)]
+    close_panic_armed: bool,
+    #[cfg(test)]
     observer_delay: Option<tokio::sync::oneshot::Receiver<()>>,
+    #[cfg(test)]
+    observer_ack: Option<(HistoryConnectionRole, tokio::sync::oneshot::Sender<()>)>,
+}
+
+impl State {
+    /// Both last-state release and unpublished cleanup register the same kind of original duty.
+    fn accept_connection(
+        &mut self,
+        thread_id: &str,
+        role: HistoryConnectionRole,
+        connection: DatabaseConnection,
+    ) -> u64 {
+        self.next_duty += 1;
+        let id = self.next_duty;
+        self.duties.insert(
+            id,
+            Duty {
+                id,
+                thread_id: thread_id.to_owned(),
+                role,
+                connection: Some(connection),
+                attempt: None,
+                task: None,
+                failure: None,
+            },
+        );
+        id
+    }
 }
 
 /// The narrow owner of "these history states still live and their connections still have to close".
@@ -178,9 +220,6 @@ impl std::fmt::Debug for HistoryCloseOwner {
 }
 
 /// The lifetime token of one real `HistoryStoreState`.
-///
-/// The state holds it, so every clone of the handle pins the same token. Its last `Drop` ends the
-/// state's lifetime and hands the still-open connections over inside that same boundary.
 pub(crate) struct HistoryStateLease {
     owner: HistoryCloseOwner,
     id: u64,
@@ -189,11 +228,54 @@ pub(crate) struct HistoryStateLease {
 }
 
 impl HistoryStateLease {
+    /// Synchronously transfers one unpublished connection to this same owner and returns a wait
+    /// for its original attempt. Dropping that wait never drops or reselects the owner's task.
+    pub(crate) fn hand_over_connection(
+        &self,
+        role: HistoryConnectionRole,
+        connection: DatabaseConnection,
+    ) -> BoxFuture<'static, CloseOutcome> {
+        let handle = tokio::runtime::Handle::try_current().ok();
+        let (id, started) = {
+            let mut state = self.owner.lock();
+            let id = state.accept_connection(&self.thread_id, role, connection);
+            // Registration and capture of this exact attempt share the lock: another settle cannot
+            // finish/remove it before the local cleanup obtained its real completion.
+            let started = handle
+                .as_ref()
+                .and_then(|handle| self.owner.start_locked(&mut state, id, handle));
+            (id, started)
+        };
+        let original = started
+            .as_ref()
+            .map(|started| (started.attempt.clone(), started.completion.clone()));
+        if let Some(started) = started {
+            self.owner.observe(started);
+        }
+        self.owner.notify();
+        let owner = self.owner.clone();
+        let thread_id = self.thread_id.clone();
+        async move {
+            match original {
+                Some((attempt, completion)) => {
+                    let outcome = completion.await;
+                    owner.record(id, &attempt, outcome.clone());
+                    outcome
+                }
+                None => Err(Arc::new(HistoryCloseFailure::Unstarted {
+                    id,
+                    thread_id,
+                    role: role.label(),
+                })),
+            }
+        }
+        .boxed()
+    }
+
     /// Ends this state's lifetime and takes over its still-open connections.
     ///
     /// Both facts are published under one lock, so no observer can see "no live state" while a
-    /// connection of that state is still unregistered. Calling it twice is a no-op: the token is
-    /// ended exactly once.
+    /// connection of that state is still unregistered. Calling it twice is a no-op.
     pub(crate) fn finish(
         &mut self,
         connections: impl IntoIterator<Item = (HistoryConnectionRole, DatabaseConnection)>,
@@ -207,21 +289,7 @@ impl HistoryStateLease {
             let mut state = self.owner.lock();
             state.live_states.remove(&self.id);
             for (role, connection) in connections {
-                state.next_duty += 1;
-                let id = state.next_duty;
-                state.duties.insert(
-                    id,
-                    Duty {
-                        id,
-                        thread_id: self.thread_id.clone(),
-                        role,
-                        connection: Some(connection),
-                        attempt: None,
-                        task: None,
-                        failure: None,
-                    },
-                );
-                started.push(id);
+                started.push(state.accept_connection(&self.thread_id, role, connection));
             }
         }
         for id in started {
@@ -248,7 +316,6 @@ impl HistoryCloseOwner {
         Self(Arc::new(Mutex::new(State {
             duties: BTreeMap::new(),
             next_duty: 0,
-            next_attempt: 0,
             completed: 0,
             live_states: BTreeMap::new(),
             next_state: 0,
@@ -258,7 +325,11 @@ impl HistoryCloseOwner {
             #[cfg(test)]
             close_failure_armed: false,
             #[cfg(test)]
+            close_panic_armed: false,
+            #[cfg(test)]
             observer_delay: None,
+            #[cfg(test)]
+            observer_ack: None,
         })))
     }
 
@@ -275,9 +346,8 @@ impl HistoryCloseOwner {
 
     /// Registers one real history state and returns the token that keeps it alive.
     ///
-    /// Called from the state's construction, so a state can never exist unobserved. Registration is
-    /// refused at the same boundary as the seal: an external caller cannot "promise" it is early
-    /// enough, and a refused registration never yields a state.
+    /// Registration is refused at the same boundary as the seal, so an external caller cannot
+    /// "promise" it is early enough and a refused registration never yields a state.
     pub(crate) fn register_state(
         &self,
         thread_id: &str,
@@ -308,90 +378,166 @@ impl HistoryCloseOwner {
     }
 
     #[cfg(test)]
-    /// Delays every close observer until the test releases the gate.
+    /// Makes the next close *task* panic, so the failure is a real `JoinError`, not a database one.
+    pub(crate) fn arm_close_panic(&self) {
+        self.lock().close_panic_armed = true;
+    }
+
+    #[cfg(test)]
+    /// Delays the next close observer until the test releases the gate.
     pub(crate) fn arm_observer_delay(&self, gate: tokio::sync::oneshot::Receiver<()>) {
         self.lock().observer_delay = Some(gate);
     }
 
+    #[cfg(test)]
+    /// Signals once the next observer of `role` has recorded its outcome.
+    ///
+    /// Bound to the role so a test can wait for the reader's own record instead of whichever
+    /// observer happens to run first.
+    pub(crate) fn arm_observer_ack(
+        &self,
+        role: HistoryConnectionRole,
+        ack: tokio::sync::oneshot::Sender<()>,
+    ) {
+        self.lock().observer_ack = Some((role, ack));
+    }
+
     /// Starts the real close for one duty when a runtime can await it.
+    ///
+    /// Checking the duty, allocating this attempt, spawning its task, building its completion and
+    /// installing both slots all happen under **one** lock with no await in between: a concurrent
+    /// caller can therefore neither spawn a second attempt nor lose an already-spawned handle. The
+    /// spawned task only ever re-enters this lock through `record`, and `tokio::spawn` does not poll
+    /// the future it is given, so nothing re-enters while the lock is held.
     fn start(&self, id: u64) {
         let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            // No runtime can await this close yet: the duty stays explicitly unstarted and a later
+            // async entry starts the very same responsibility.
             return;
         };
-        let (attempt, task, observer_gate) = {
+        let started = {
             let mut state = self.lock();
-            let Some(duty) = state.duties.get_mut(&id) else {
-                return;
-            };
-            if duty.attempt.is_some() || duty.failure.is_some() {
-                return;
-            }
-            let Some(connection) = duty.connection.clone() else {
-                return;
-            };
-            state.next_attempt += 1;
-            let attempt = Arc::new(Attempt {
-                id: state.next_attempt,
-            });
-            let thread_id = duty.thread_id.clone();
-            let role = duty.role.label();
-            #[cfg(test)]
-            let fail = std::mem::take(&mut state.close_failure_armed);
-            #[cfg(not(test))]
-            let fail = false;
-            #[cfg(test)]
-            let observer_gate = state.observer_delay.take();
-            // The task receives its own shared handle; the duty keeps the original one until the
-            // close really succeeded, so a panicking or cancelled task cannot lose the resource.
-            let join = if fail {
-                None
-            } else {
-                Some(handle.spawn(async move { connection.close_by_ref().await }))
-            };
-            let completion: CloseCompletion = async move {
-                match join {
-                    None => Err(Arc::new(HistoryCloseFailure::Database {
-                        id,
-                        thread_id,
-                        role,
-                        source: sea_orm::DbErr::Custom(
-                            "controlled history close failure".to_owned(),
-                        ),
-                    })),
-                    Some(join) => match join.await {
-                        Ok(Ok(())) => Ok(()),
-                        Ok(Err(source)) => Err(Arc::new(HistoryCloseFailure::Database {
-                            id,
-                            thread_id,
-                            role,
-                            source,
-                        })),
-                        Err(source) => Err(Arc::new(HistoryCloseFailure::Task {
-                            id,
-                            thread_id,
-                            role,
-                            source: Arc::new(source),
-                        })),
-                    },
-                }
-            }
-            .boxed()
-            .shared();
-            duty.attempt = Some(attempt.clone());
-            duty.task = Some(completion.clone());
-            (attempt, completion, observer_gate)
+            self.start_locked(&mut state, id, &handle)
         };
+        if let Some(started) = started {
+            self.observe(started);
+        }
+    }
+
+    /// Installs an attempt while the caller still owns this duty's registration boundary.
+    fn start_locked(
+        &self,
+        state: &mut State,
+        id: u64,
+        handle: &tokio::runtime::Handle,
+    ) -> Option<StartedClose> {
+        let (thread_id, role, connection) = {
+            let duty = state.duties.get(&id)?;
+            if duty.attempt.is_some() || duty.failure.is_some() {
+                return None;
+            }
+            let connection = duty.connection.clone()?;
+            (duty.thread_id.clone(), duty.role, connection)
+        };
+        let attempt = Arc::new(Attempt);
+        #[cfg(test)]
+        let (fail, panic_task, observer_gate, observer_ack) = self.take_close_seams(state, role);
+        // The task receives its own shared handle; the duty keeps the original connection until
+        // the close really succeeded, so a panicking or cancelled task cannot lose the resource.
+        #[cfg(test)]
+        let join = handle.spawn(async move {
+            if panic_task {
+                panic!("controlled history close task panic");
+            }
+            if fail {
+                return Err(sea_orm::DbErr::Custom(
+                    "controlled history close failure".to_owned(),
+                ));
+            }
+            connection.close_by_ref().await
+        });
+        #[cfg(not(test))]
+        let join = handle.spawn(async move { connection.close_by_ref().await });
+        let completion: CloseCompletion = async move {
+            match join.await {
+                Ok(Ok(())) => Ok(()),
+                Ok(Err(source)) => Err(Arc::new(HistoryCloseFailure::Database {
+                    id,
+                    thread_id,
+                    role: role.label(),
+                    source,
+                })),
+                Err(source) => Err(Arc::new(HistoryCloseFailure::Task {
+                    id,
+                    thread_id,
+                    role: role.label(),
+                    source: Arc::new(source),
+                })),
+            }
+        }
+        .boxed()
+        .shared();
+        let duty = state
+            .duties
+            .get_mut(&id)
+            .expect("the duty stays registered under the close lock");
+        // The slot is installed before the lock is released, so the spawned task is never lost.
+        duty.attempt = Some(attempt.clone());
+        duty.task = Some(completion.clone());
+        Some(StartedClose {
+            id,
+            attempt,
+            completion,
+            #[cfg(test)]
+            observer_gate,
+            #[cfg(test)]
+            observer_ack,
+        })
+    }
+
+    fn observe(&self, started: StartedClose) {
         // The owner settles its own duties: a successful close releases the record and the original
         // connection right away instead of waiting for some later global close to look at it.
         let observer = self.clone();
         tokio::spawn(async move {
             #[cfg(test)]
-            if let Some(gate) = observer_gate {
+            if let Some(gate) = started.observer_gate {
                 let _ = gate.await;
             }
-            let outcome = task.await;
-            observer.record(id, &attempt, outcome);
+            let outcome = started.completion.await;
+            observer.record(started.id, &started.attempt, outcome);
+            // Acknowledged only after this observer's own record is applied.
+            #[cfg(test)]
+            if let Some(ack) = started.observer_ack {
+                let _ = ack.send(());
+            }
         });
+    }
+
+    #[cfg(test)]
+    fn take_close_seams(
+        &self,
+        state: &mut State,
+        role: HistoryConnectionRole,
+    ) -> (
+        bool,
+        bool,
+        Option<tokio::sync::oneshot::Receiver<()>>,
+        Option<tokio::sync::oneshot::Sender<()>>,
+    ) {
+        let ack = match state.observer_ack.take() {
+            Some((armed, ack)) if armed == role => Some(ack),
+            other => {
+                state.observer_ack = other;
+                None
+            }
+        };
+        (
+            std::mem::take(&mut state.close_failure_armed),
+            std::mem::take(&mut state.close_panic_armed),
+            state.observer_delay.take(),
+            ack,
+        )
     }
 
     /// Records one joined outcome, but only for the attempt that is current now.
@@ -476,10 +622,6 @@ impl HistoryCloseOwner {
     }
 
     /// Waits until no registered state is left, then closes like [`Self::settle`].
-    ///
-    /// A state that still has a legitimate holder keeps this pending: the caller's own deadline
-    /// decides when the close fails. This never reports a finished close while one is held, and the
-    /// wait is driven by this owner's notifications — no timer, no polling.
     pub(crate) async fn settle_when_no_state_is_left(&self) -> Result<(), HistoryCloseGroup> {
         // Subscribe before the first check so a state that ends in between always leaves a wake.
         let mut changed = {
@@ -526,6 +668,13 @@ impl HistoryCloseOwner {
         for duty in state.duties.values() {
             match &duty.failure {
                 Some(failure) => failures.push(failure.clone()),
+                None if duty.attempt.is_none() => {
+                    failures.push(Arc::new(HistoryCloseFailure::Unstarted {
+                        id: duty.id,
+                        thread_id: duty.thread_id.clone(),
+                        role: duty.role.label(),
+                    }));
+                }
                 None => failures.push(Arc::new(HistoryCloseFailure::Unfinished {
                     id: duty.id,
                     thread_id: duty.thread_id.clone(),

@@ -404,7 +404,8 @@ void main() {
             expect(
               operation.state.value.observed,
               isFalse,
-              reason: 'Unrelated owner facts do not confirm the captured execution',
+              reason:
+                  'Unrelated owner facts do not confirm the captured execution',
             );
             source.send(active: null, status: ThreadStatus.idle);
           }

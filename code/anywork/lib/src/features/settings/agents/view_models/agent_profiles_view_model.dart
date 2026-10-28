@@ -671,8 +671,10 @@ class AgentProfilesViewModel extends _$AgentProfilesViewModel {
       worktree.ownerThreadId,
       worktree.leaseRevision,
     );
-    if ((state.requireValue.cleanupActions[key]?.preventsResubmission ?? false) ||
-        (state.requireValue.retryRecoveryAction?.preventsResubmission ?? false)) {
+    if ((state.requireValue.cleanupActions[key]?.preventsResubmission ??
+            false) ||
+        (state.requireValue.retryRecoveryAction?.preventsResubmission ??
+            false)) {
       return;
     }
     final lifetime = _lifetime;
@@ -716,11 +718,14 @@ class AgentProfilesViewModel extends _$AgentProfilesViewModel {
     }
     final worktree = issue.worktree;
     if (worktree == null ||
-        state.requireValue.cleanupActions[(
-              worktree.ownerKind,
-              worktree.ownerThreadId,
-              worktree.leaseRevision,
-            )]?.preventsResubmission ==
+        state
+                .requireValue
+                .cleanupActions[(
+                  worktree.ownerKind,
+                  worktree.ownerThreadId,
+                  worktree.leaseRevision,
+                )]
+                ?.preventsResubmission ==
             true) {
       return Future<void>.value();
     }

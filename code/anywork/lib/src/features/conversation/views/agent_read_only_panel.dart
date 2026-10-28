@@ -45,7 +45,11 @@ class AgentReadOnlyPanel extends StatelessWidget {
         children: [
           Row(
             children: [
-              Icon(Icons.lock_outline, size: 18, color: colors.onSurfaceVariant),
+              Icon(
+                Icons.lock_outline,
+                size: 18,
+                color: colors.onSurfaceVariant,
+              ),
               const SizedBox(width: 9),
               Expanded(
                 child: Text(
@@ -112,8 +116,10 @@ class AgentReadOnlyPanel extends StatelessWidget {
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Text(context.l10n.agentRoleRetired,
-          key: const ValueKey('retired-planner-input-notice')),
+        Text(
+          context.l10n.agentRoleRetired,
+          key: const ValueKey('retired-planner-input-notice'),
+        ),
         panel,
       ],
     );

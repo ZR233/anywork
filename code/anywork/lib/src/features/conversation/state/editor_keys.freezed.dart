@@ -311,7 +311,8 @@ as String,
 /// @nodoc
 mixin _$InteractionEditorKey {
 
- String get threadId; int get incarnation; String get interactionId; int get revision;
+/// The Session owning the bounded interaction index, not the target child.
+ String get threadId; String get runtimeEpoch; int get incarnation; int get sourceGeneration; String get interactionId; int get revision; String? get targetThreadId; InteractionReadRef? get hostedReference; ThreadFacetStamp? get hostedOrigin;
 /// Create a copy of InteractionEditorKey
 /// with the given fields replaced by the non-null parameter values.
 @JsonKey(includeFromJson: false, includeToJson: false)
@@ -323,20 +324,20 @@ $InteractionEditorKeyCopyWith<InteractionEditorKey> get copyWith => _$Interactio
 @override
 bool operator ==(Object other) {
   final _this = this as InteractionEditorKey;
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is InteractionEditorKey&&(identical(other.threadId, _this.threadId) || other.threadId == _this.threadId)&&(identical(other.incarnation, _this.incarnation) || other.incarnation == _this.incarnation)&&(identical(other.interactionId, _this.interactionId) || other.interactionId == _this.interactionId)&&(identical(other.revision, _this.revision) || other.revision == _this.revision));
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is InteractionEditorKey&&(identical(other.threadId, _this.threadId) || other.threadId == _this.threadId)&&(identical(other.runtimeEpoch, _this.runtimeEpoch) || other.runtimeEpoch == _this.runtimeEpoch)&&(identical(other.incarnation, _this.incarnation) || other.incarnation == _this.incarnation)&&(identical(other.sourceGeneration, _this.sourceGeneration) || other.sourceGeneration == _this.sourceGeneration)&&(identical(other.interactionId, _this.interactionId) || other.interactionId == _this.interactionId)&&(identical(other.revision, _this.revision) || other.revision == _this.revision)&&(identical(other.targetThreadId, _this.targetThreadId) || other.targetThreadId == _this.targetThreadId)&&(identical(other.hostedReference, _this.hostedReference) || other.hostedReference == _this.hostedReference)&&(identical(other.hostedOrigin, _this.hostedOrigin) || other.hostedOrigin == _this.hostedOrigin));
 }
 
 
 @override
 int get hashCode {
   final _this = this as InteractionEditorKey;
-  return Object.hash(runtimeType,_this.threadId,_this.incarnation,_this.interactionId,_this.revision);
+  return Object.hash(runtimeType,_this.threadId,_this.runtimeEpoch,_this.incarnation,_this.sourceGeneration,_this.interactionId,_this.revision,_this.targetThreadId,_this.hostedReference,_this.hostedOrigin);
 }
 
 @override
 String toString() {
   final _this = this as InteractionEditorKey;
-  return 'InteractionEditorKey(threadId: ${_this.threadId}, incarnation: ${_this.incarnation}, interactionId: ${_this.interactionId}, revision: ${_this.revision})';
+  return 'InteractionEditorKey(threadId: ${_this.threadId}, runtimeEpoch: ${_this.runtimeEpoch}, incarnation: ${_this.incarnation}, sourceGeneration: ${_this.sourceGeneration}, interactionId: ${_this.interactionId}, revision: ${_this.revision}, targetThreadId: ${_this.targetThreadId}, hostedReference: ${_this.hostedReference}, hostedOrigin: ${_this.hostedOrigin})';
 }
 
 
@@ -347,11 +348,11 @@ abstract mixin class $InteractionEditorKeyCopyWith<$Res>  {
   factory $InteractionEditorKeyCopyWith(InteractionEditorKey value, $Res Function(InteractionEditorKey) _then) = _$InteractionEditorKeyCopyWithImpl;
 @useResult
 $Res call({
- String threadId, int incarnation, String interactionId, int revision
+ String threadId, String runtimeEpoch, int incarnation, int sourceGeneration, String interactionId, int revision, String? targetThreadId, InteractionReadRef? hostedReference, ThreadFacetStamp? hostedOrigin
 });
 
 
-
+$InteractionReadRefCopyWith<$Res>? get hostedReference;$ThreadFacetStampCopyWith<$Res>? get hostedOrigin;
 
 }
 /// @nodoc
@@ -364,16 +365,45 @@ class _$InteractionEditorKeyCopyWithImpl<$Res>
 
 /// Create a copy of InteractionEditorKey
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') @override $Res call({Object? threadId = null,Object? incarnation = null,Object? interactionId = null,Object? revision = null,}) {
+@pragma('vm:prefer-inline') @override $Res call({Object? threadId = null,Object? runtimeEpoch = null,Object? incarnation = null,Object? sourceGeneration = null,Object? interactionId = null,Object? revision = null,Object? targetThreadId = freezed,Object? hostedReference = freezed,Object? hostedOrigin = freezed,}) {
   return _then(InteractionEditorKey(
 threadId: null == threadId ? _self.threadId : threadId // ignore: cast_nullable_to_non_nullable
+as String,runtimeEpoch: null == runtimeEpoch ? _self.runtimeEpoch : runtimeEpoch // ignore: cast_nullable_to_non_nullable
 as String,incarnation: null == incarnation ? _self.incarnation : incarnation // ignore: cast_nullable_to_non_nullable
+as int,sourceGeneration: null == sourceGeneration ? _self.sourceGeneration : sourceGeneration // ignore: cast_nullable_to_non_nullable
 as int,interactionId: null == interactionId ? _self.interactionId : interactionId // ignore: cast_nullable_to_non_nullable
 as String,revision: null == revision ? _self.revision : revision // ignore: cast_nullable_to_non_nullable
-as int,
+as int,targetThreadId: freezed == targetThreadId ? _self.targetThreadId : targetThreadId // ignore: cast_nullable_to_non_nullable
+as String?,hostedReference: freezed == hostedReference ? _self.hostedReference : hostedReference // ignore: cast_nullable_to_non_nullable
+as InteractionReadRef?,hostedOrigin: freezed == hostedOrigin ? _self.hostedOrigin : hostedOrigin // ignore: cast_nullable_to_non_nullable
+as ThreadFacetStamp?,
   ));
 }
+/// Create a copy of InteractionEditorKey
+/// with the given fields replaced by the non-null parameter values.
+@override
+@pragma('vm:prefer-inline')
+$InteractionReadRefCopyWith<$Res>? get hostedReference {
+    if (_self.hostedReference == null) {
+    return null;
+  }
 
+  return $InteractionReadRefCopyWith<$Res>(_self.hostedReference!, (value) {
+    return _then(_self.copyWith(hostedReference: value));
+  });
+}/// Create a copy of InteractionEditorKey
+/// with the given fields replaced by the non-null parameter values.
+@override
+@pragma('vm:prefer-inline')
+$ThreadFacetStampCopyWith<$Res>? get hostedOrigin {
+    if (_self.hostedOrigin == null) {
+    return null;
+  }
+
+  return $ThreadFacetStampCopyWith<$Res>(_self.hostedOrigin!, (value) {
+    return _then(_self.copyWith(hostedOrigin: value));
+  });
+}
 }
 
 
@@ -455,10 +485,10 @@ return $default(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( String threadId,  int incarnation,  String interactionId,  int revision)?  $default,{required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( String threadId,  String runtimeEpoch,  int incarnation,  int sourceGeneration,  String interactionId,  int revision,  String? targetThreadId,  InteractionReadRef? hostedReference,  ThreadFacetStamp? hostedOrigin)?  $default,{required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case _InteractionEditorKey() when $default != null:
-return $default(_that.threadId,_that.incarnation,_that.interactionId,_that.revision);case _:
+return $default(_that.threadId,_that.runtimeEpoch,_that.incarnation,_that.sourceGeneration,_that.interactionId,_that.revision,_that.targetThreadId,_that.hostedReference,_that.hostedOrigin);case _:
   return orElse();
 
 }
@@ -476,10 +506,10 @@ return $default(_that.threadId,_that.incarnation,_that.interactionId,_that.revis
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( String threadId,  int incarnation,  String interactionId,  int revision)  $default,) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( String threadId,  String runtimeEpoch,  int incarnation,  int sourceGeneration,  String interactionId,  int revision,  String? targetThreadId,  InteractionReadRef? hostedReference,  ThreadFacetStamp? hostedOrigin)  $default,) {final _that = this;
 switch (_that) {
 case _InteractionEditorKey():
-return $default(_that.threadId,_that.incarnation,_that.interactionId,_that.revision);case _:
+return $default(_that.threadId,_that.runtimeEpoch,_that.incarnation,_that.sourceGeneration,_that.interactionId,_that.revision,_that.targetThreadId,_that.hostedReference,_that.hostedOrigin);case _:
   throw StateError('Unexpected subclass');
 
 }
@@ -496,10 +526,10 @@ return $default(_that.threadId,_that.incarnation,_that.interactionId,_that.revis
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( String threadId,  int incarnation,  String interactionId,  int revision)?  $default,) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( String threadId,  String runtimeEpoch,  int incarnation,  int sourceGeneration,  String interactionId,  int revision,  String? targetThreadId,  InteractionReadRef? hostedReference,  ThreadFacetStamp? hostedOrigin)?  $default,) {final _that = this;
 switch (_that) {
 case _InteractionEditorKey() when $default != null:
-return $default(_that.threadId,_that.incarnation,_that.interactionId,_that.revision);case _:
+return $default(_that.threadId,_that.runtimeEpoch,_that.incarnation,_that.sourceGeneration,_that.interactionId,_that.revision,_that.targetThreadId,_that.hostedReference,_that.hostedOrigin);case _:
   return null;
 
 }
@@ -510,14 +540,20 @@ return $default(_that.threadId,_that.incarnation,_that.interactionId,_that.revis
 /// @nodoc
 
 
-class _InteractionEditorKey implements InteractionEditorKey {
-  const _InteractionEditorKey({required this.threadId, required this.incarnation, required this.interactionId, required this.revision});
+class _InteractionEditorKey extends InteractionEditorKey {
+  const _InteractionEditorKey({required this.threadId, required this.runtimeEpoch, required this.incarnation, required this.sourceGeneration, required this.interactionId, required this.revision, this.targetThreadId, this.hostedReference, this.hostedOrigin}): super._();
 
 
+/// The Session owning the bounded interaction index, not the target child.
 @override final  String threadId;
+@override final  String runtimeEpoch;
 @override final  int incarnation;
+@override final  int sourceGeneration;
 @override final  String interactionId;
 @override final  int revision;
+@override final  String? targetThreadId;
+@override final  InteractionReadRef? hostedReference;
+@override final  ThreadFacetStamp? hostedOrigin;
 
 /// Create a copy of InteractionEditorKey
 /// with the given fields replaced by the non-null parameter values.
@@ -529,18 +565,18 @@ _$InteractionEditorKeyCopyWith<_InteractionEditorKey> get copyWith => __$Interac
 
 @override
 bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is _InteractionEditorKey&&(identical(other.threadId, threadId) || other.threadId == threadId)&&(identical(other.incarnation, incarnation) || other.incarnation == incarnation)&&(identical(other.interactionId, interactionId) || other.interactionId == interactionId)&&(identical(other.revision, revision) || other.revision == revision));
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is _InteractionEditorKey&&(identical(other.threadId, threadId) || other.threadId == threadId)&&(identical(other.runtimeEpoch, runtimeEpoch) || other.runtimeEpoch == runtimeEpoch)&&(identical(other.incarnation, incarnation) || other.incarnation == incarnation)&&(identical(other.sourceGeneration, sourceGeneration) || other.sourceGeneration == sourceGeneration)&&(identical(other.interactionId, interactionId) || other.interactionId == interactionId)&&(identical(other.revision, revision) || other.revision == revision)&&(identical(other.targetThreadId, targetThreadId) || other.targetThreadId == targetThreadId)&&(identical(other.hostedReference, hostedReference) || other.hostedReference == hostedReference)&&(identical(other.hostedOrigin, hostedOrigin) || other.hostedOrigin == hostedOrigin));
 }
 
 
 @override
 int get hashCode {
-    return Object.hash(runtimeType,threadId,incarnation,interactionId,revision);
+    return Object.hash(runtimeType,threadId,runtimeEpoch,incarnation,sourceGeneration,interactionId,revision,targetThreadId,hostedReference,hostedOrigin);
 }
 
 @override
 String toString() {
-    return 'InteractionEditorKey(threadId: $threadId, incarnation: $incarnation, interactionId: $interactionId, revision: $revision)';
+    return 'InteractionEditorKey(threadId: $threadId, runtimeEpoch: $runtimeEpoch, incarnation: $incarnation, sourceGeneration: $sourceGeneration, interactionId: $interactionId, revision: $revision, targetThreadId: $targetThreadId, hostedReference: $hostedReference, hostedOrigin: $hostedOrigin)';
 }
 
 
@@ -551,11 +587,11 @@ abstract mixin class _$InteractionEditorKeyCopyWith<$Res> implements $Interactio
   factory _$InteractionEditorKeyCopyWith(_InteractionEditorKey value, $Res Function(_InteractionEditorKey) _then) = __$InteractionEditorKeyCopyWithImpl;
 @override @useResult
 $Res call({
- String threadId, int incarnation, String interactionId, int revision
+ String threadId, String runtimeEpoch, int incarnation, int sourceGeneration, String interactionId, int revision, String? targetThreadId, InteractionReadRef? hostedReference, ThreadFacetStamp? hostedOrigin
 });
 
 
-
+@override $InteractionReadRefCopyWith<$Res>? get hostedReference;@override $ThreadFacetStampCopyWith<$Res>? get hostedOrigin;
 
 }
 /// @nodoc
@@ -568,17 +604,46 @@ class __$InteractionEditorKeyCopyWithImpl<$Res>
 
 /// Create a copy of InteractionEditorKey
 /// with the given fields replaced by the non-null parameter values.
-@override @pragma('vm:prefer-inline') $Res call({Object? threadId = null,Object? incarnation = null,Object? interactionId = null,Object? revision = null,}) {
+@override @pragma('vm:prefer-inline') $Res call({Object? threadId = null,Object? runtimeEpoch = null,Object? incarnation = null,Object? sourceGeneration = null,Object? interactionId = null,Object? revision = null,Object? targetThreadId = freezed,Object? hostedReference = freezed,Object? hostedOrigin = freezed,}) {
   return _then(_InteractionEditorKey(
 threadId: null == threadId ? _self.threadId : threadId // ignore: cast_nullable_to_non_nullable
+as String,runtimeEpoch: null == runtimeEpoch ? _self.runtimeEpoch : runtimeEpoch // ignore: cast_nullable_to_non_nullable
 as String,incarnation: null == incarnation ? _self.incarnation : incarnation // ignore: cast_nullable_to_non_nullable
+as int,sourceGeneration: null == sourceGeneration ? _self.sourceGeneration : sourceGeneration // ignore: cast_nullable_to_non_nullable
 as int,interactionId: null == interactionId ? _self.interactionId : interactionId // ignore: cast_nullable_to_non_nullable
 as String,revision: null == revision ? _self.revision : revision // ignore: cast_nullable_to_non_nullable
-as int,
+as int,targetThreadId: freezed == targetThreadId ? _self.targetThreadId : targetThreadId // ignore: cast_nullable_to_non_nullable
+as String?,hostedReference: freezed == hostedReference ? _self.hostedReference : hostedReference // ignore: cast_nullable_to_non_nullable
+as InteractionReadRef?,hostedOrigin: freezed == hostedOrigin ? _self.hostedOrigin : hostedOrigin // ignore: cast_nullable_to_non_nullable
+as ThreadFacetStamp?,
   ));
 }
 
+/// Create a copy of InteractionEditorKey
+/// with the given fields replaced by the non-null parameter values.
+@override
+@pragma('vm:prefer-inline')
+$InteractionReadRefCopyWith<$Res>? get hostedReference {
+    if (_self.hostedReference == null) {
+    return null;
+  }
 
+  return $InteractionReadRefCopyWith<$Res>(_self.hostedReference!, (value) {
+    return _then(_self.copyWith(hostedReference: value));
+  });
+}/// Create a copy of InteractionEditorKey
+/// with the given fields replaced by the non-null parameter values.
+@override
+@pragma('vm:prefer-inline')
+$ThreadFacetStampCopyWith<$Res>? get hostedOrigin {
+    if (_self.hostedOrigin == null) {
+    return null;
+  }
+
+  return $ThreadFacetStampCopyWith<$Res>(_self.hostedOrigin!, (value) {
+    return _then(_self.copyWith(hostedOrigin: value));
+  });
+}
 }
 
 // dart format on

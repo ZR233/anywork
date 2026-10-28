@@ -532,8 +532,16 @@ void main() {
     expect(current().execution, execution);
     expect(current().canStop, isTrue);
     expect(current().awaitingScheduling, isTrue);
-    expect(current().state, row.state, reason: 'The member state is not derived from execution');
-    expect(current(), isNot(row), reason: 'All three canonical row facts participate in equality');
+    expect(
+      current().state,
+      row.state,
+      reason: 'The member state is not derived from execution',
+    );
+    expect(
+      current(),
+      isNot(row),
+      reason: 'All three canonical row facts participate in equality',
+    );
 
     final oldReadEntered = Completer<void>();
     final releaseOldRead = Completer<void>();
@@ -554,16 +562,23 @@ void main() {
     await env.directory.publishAgents(rows(scheduled));
     await env.workspace.loadAgents();
     expect(current().execution, execution);
-    expect(current().canStop, isTrue, reason: 'Scheduling never derives stop qualification');
+    expect(
+      current().canStop,
+      isTrue,
+      reason: 'Scheduling never derives stop qualification',
+    );
     expect(current().awaitingScheduling, isFalse);
     releaseOldRead.complete();
     await oldReadReturned.future;
     await oldLoading;
-    expect(current(), scheduled, reason: 'The retired original read must not roll back revision 4');
+    expect(
+      current(),
+      scheduled,
+      reason: 'The retired original read must not roll back revision 4',
+    );
     expect(fixture.sessions, isEmpty, reason: 'Listing does not open members');
     expect(env.workspace.state.value.selection.threadId, fixture.root.id);
   });
-
 }
 
 Future<void> _expectLatestQueuedColdSelection({

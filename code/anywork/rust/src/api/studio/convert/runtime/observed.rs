@@ -11,9 +11,8 @@ use crate::api::studio::types::*;
 
 use super::{
     bridge_agent_directory_entry, bridge_degraded_resource, bridge_failed_resource,
-    bridge_loading_resource, bridge_mcp_health, bridge_ready_resource, bridge_recovery_issue,
-    bridge_refreshing_resource, bridge_stale_resource, bridge_stopped_resource,
-    bridge_uninitialized_resource,
+    bridge_loading_resource, bridge_mcp_health, bridge_ready_resource, bridge_refreshing_resource,
+    bridge_stale_resource, bridge_stopped_resource, bridge_uninitialized_resource,
 };
 
 enum BridgeObservedValue<T> {
@@ -169,18 +168,6 @@ pub(crate) fn bridge_model_catalog_state(
                 .collect(),
         },
         BridgeModelCatalogStateSnapshot
-    )
-}
-
-pub(crate) fn bridge_recovery_state(
-    state: ObservedResource<Vec<StudioRecoveryIssue>>,
-) -> BridgeRecoveryStateSnapshot {
-    concrete_observed!(
-        state,
-        |issues| BridgeRecoveryStateData {
-            issues: issues.into_iter().map(bridge_recovery_issue).collect(),
-        },
-        BridgeRecoveryStateSnapshot
     )
 }
 

@@ -400,17 +400,33 @@ abstract class ConversationScopeAccess implements ConversationSession {
   }) {
     requireOrigin(origin);
     final index = interactions.value.current;
-    requireReference(origin.facet == ThreadFacet.execution && index != null &&
-        index.origin.runtimeEpoch == origin.runtimeEpoch &&
-        index.origin.incarnation == origin.incarnation &&
-        index.items.any((item) => item.reference == reference && item.targetThreadId == targetThreadId));
+    requireReference(
+      origin.facet == ThreadFacet.execution &&
+          index != null &&
+          index.origin.runtimeEpoch == origin.runtimeEpoch &&
+          index.origin.incarnation == origin.incarnation &&
+          index.items.any(
+            (item) =>
+                item.reference == reference &&
+                item.targetThreadId == targetThreadId,
+          ),
+    );
     return readOwners.open<InteractionReadConnection, InteractionScopeOwner>(
       origin: origin,
       demand: requireUiDemand(),
-      open: () => observationPort.openInteractionRead(threadId, reference, origin: origin),
-      build: (owner) => InteractionScopeOwner(owner, origin,
-        expectedRevision: reference.revision, expectedThreadId: threadId,
-        expectedTargetThreadId: targetThreadId, allowHostedTarget: true),
+      open: () => observationPort.openInteractionRead(
+        threadId,
+        reference,
+        origin: origin,
+      ),
+      build: (owner) => InteractionScopeOwner(
+        owner,
+        origin,
+        expectedRevision: reference.revision,
+        expectedThreadId: threadId,
+        expectedTargetThreadId: targetThreadId,
+        allowHostedTarget: true,
+      ),
     );
-}
+  }
 }

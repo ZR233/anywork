@@ -33,7 +33,8 @@ pub(super) async fn convert_checkpoints(
                 continue;
             }
             let envelope: String = row.try_get("", "envelope")?;
-            let checkpoint = super::thread_checkpoint::decode_migration_checkpoint(row, &thread_id)?;
+            let checkpoint =
+                super::thread_checkpoint::decode_migration_checkpoint(row, &thread_id)?;
             let encoded = if indexed == 4 {
                 // Schema 5 only adds fields with explicit defaults. Preserve every saved field,
                 // including producer extensions, instead of reserializing through a moving model.

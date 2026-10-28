@@ -159,7 +159,8 @@ class WorkspaceHeaderConnector extends ConsumerWidget {
     final stopActions = <String, WorkspaceActionPresentation>{};
     for (final agent in threadAgents) {
       final action = workspace.actions['directory-stop:${agent.threadId}'];
-      if (action?.directoryStopTarget?.belongsTo(renderedDirectory, agent) == true) {
+      if (action?.directoryStopTarget?.belongsTo(renderedDirectory, agent) ==
+          true) {
         stopActions[agent.threadId] = action!;
       }
     }
@@ -174,8 +175,8 @@ class WorkspaceHeaderConnector extends ConsumerWidget {
         if (page.directory case final directory?)
           for (final thread in presentRows(directory.threads))
             thread.id: thread,
-      if (root != null) root.id: root,
-      if (selected != null) selected.id: selected,
+      ?root?.id: ?root,
+      ?selected?.id: ?selected,
     };
     return WorkspaceHeaderView(
       project: project,

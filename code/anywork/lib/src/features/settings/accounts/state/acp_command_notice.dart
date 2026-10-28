@@ -2,6 +2,8 @@ import 'package:anywork_client/acp.dart';
 import 'package:anywork_client/resources.dart';
 
 import '../../../../l10n/app_localizations.dart';
+import '../../state/settings_action.dart';
+import 'acp_account_target.dart';
 import 'acp_failure_labels.dart';
 
 /// 命令失败通知的意图类别。
@@ -116,19 +118,26 @@ AcpCommandNotice? visibleAcpCommandNotice({
 
 /// 认证命令的 typed `busy` 是否只是**重复输入**。
 ///
-/// 三类事实必须同时成立才吞掉这次失败：后端给的是 `busy`、响应时该接入仍是发起请求时的
-/// 连接身份、且该接入 canonical 已有在途操作——进度由 canonical 状态承接，不需要红色
-/// 失败。当前连接身份已前进（旧请求的失败不能算重复输入）、非 `busy` 或没有在途操作都
-/// 必须照常呈现。
+/// 只过滤已有明确拒绝证据的本次命令错误：原账号与连接身份仍匹配、canonical 认证仍在途，
+/// 且结算结果是 `Rejected` 的 `busy`。普通 `busy` 异常产生的 Unknown 不能证明重复输入。
+/// 通知和通用错误列表共用此判定；观察错误、证据错误及其他操作失败不由它过滤。
+/// [auth] 必须来自按 [currentTarget] 的账号与连接身份筛选后的 canonical 观察。
 bool isAcpAuthDuplicateWhileInFlight({
-  required Object error,
-  required int requestConnectionRevision,
-  required int currentConnectionRevision,
+  required SettingsAction? action,
+  required StudioFailure error,
+  required AcpAccountTarget requestTarget,
+  required AcpAccountTarget currentTarget,
   required AcpAuthState auth,
 }) {
-  if (error is! StudioFailure || error.code != StudioFailureCode.busy) {
+  if (action == null ||
+      action.outcome != SettingsActionOutcome.rejected ||
+      action.error != error ||
+      error.code != StudioFailureCode.busy) {
     return false;
   }
-  if (currentConnectionRevision != requestConnectionRevision) return false;
+  if (requestTarget.accountId != currentTarget.accountId ||
+      requestTarget.connectionRevision != currentTarget.connectionRevision) {
+    return false;
+  }
   return auth.isBusy;
 }

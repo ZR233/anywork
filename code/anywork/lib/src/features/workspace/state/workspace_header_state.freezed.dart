@@ -15,7 +15,7 @@ T _$identity<T>(T value) => value;
 /// @nodoc
 mixin _$WorkspaceHeaderState {
 
- ThreadMetadataState get root; AgentDirectoryState get agents; SessionCostsState get costs; Set<String> get reading; Map<String, StudioFailure> get readErrors;
+ ThreadMetadataState get root; AgentDirectoryState get agents; AgentDirectoryState? get lastReadyAgents; SessionCostsState get costs; Set<String> get reading; Map<String, StudioFailure> get readErrors;
 /// Create a copy of WorkspaceHeaderState
 /// with the given fields replaced by the non-null parameter values.
 @JsonKey(includeFromJson: false, includeToJson: false)
@@ -27,14 +27,14 @@ $WorkspaceHeaderStateCopyWith<WorkspaceHeaderState> get copyWith => _$WorkspaceH
 @override
 bool operator ==(Object other) {
   final _this = this as WorkspaceHeaderState;
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is WorkspaceHeaderState&&(identical(other.root, _this.root) || other.root == _this.root)&&(identical(other.agents, _this.agents) || other.agents == _this.agents)&&(identical(other.costs, _this.costs) || other.costs == _this.costs)&&const DeepCollectionEquality().equals(other.reading, _this.reading)&&const DeepCollectionEquality().equals(other.readErrors, _this.readErrors));
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is WorkspaceHeaderState&&(identical(other.root, _this.root) || other.root == _this.root)&&(identical(other.agents, _this.agents) || other.agents == _this.agents)&&(identical(other.lastReadyAgents, _this.lastReadyAgents) || other.lastReadyAgents == _this.lastReadyAgents)&&(identical(other.costs, _this.costs) || other.costs == _this.costs)&&const DeepCollectionEquality().equals(other.reading, _this.reading)&&const DeepCollectionEquality().equals(other.readErrors, _this.readErrors));
 }
 
 
 @override
 int get hashCode {
   final _this = this as WorkspaceHeaderState;
-  return Object.hash(runtimeType,_this.root,_this.agents,_this.costs,const DeepCollectionEquality().hash(_this.reading),const DeepCollectionEquality().hash(_this.readErrors));
+  return Object.hash(runtimeType,_this.root,_this.agents,_this.lastReadyAgents,_this.costs,const DeepCollectionEquality().hash(_this.reading),const DeepCollectionEquality().hash(_this.readErrors));
 }
 
 
@@ -46,11 +46,11 @@ abstract mixin class $WorkspaceHeaderStateCopyWith<$Res>  {
   factory $WorkspaceHeaderStateCopyWith(WorkspaceHeaderState value, $Res Function(WorkspaceHeaderState) _then) = _$WorkspaceHeaderStateCopyWithImpl;
 @useResult
 $Res call({
- ThreadMetadataState root, AgentDirectoryState agents, SessionCostsState costs, Set<String> reading, Map<String, StudioFailure> readErrors
+ ThreadMetadataState root, AgentDirectoryState agents, AgentDirectoryState? lastReadyAgents, SessionCostsState costs, Set<String> reading, Map<String, StudioFailure> readErrors
 });
 
 
-$ThreadMetadataStateCopyWith<$Res> get root;$AgentDirectoryStateCopyWith<$Res> get agents;$SessionCostsStateCopyWith<$Res> get costs;
+$ThreadMetadataStateCopyWith<$Res> get root;$AgentDirectoryStateCopyWith<$Res> get agents;$AgentDirectoryStateCopyWith<$Res>? get lastReadyAgents;$SessionCostsStateCopyWith<$Res> get costs;
 
 }
 /// @nodoc
@@ -63,11 +63,12 @@ class _$WorkspaceHeaderStateCopyWithImpl<$Res>
 
 /// Create a copy of WorkspaceHeaderState
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') @override $Res call({Object? root = null,Object? agents = null,Object? costs = null,Object? reading = null,Object? readErrors = null,}) {
+@pragma('vm:prefer-inline') @override $Res call({Object? root = null,Object? agents = null,Object? lastReadyAgents = freezed,Object? costs = null,Object? reading = null,Object? readErrors = null,}) {
   return _then(WorkspaceHeaderState(
 root: null == root ? _self.root : root // ignore: cast_nullable_to_non_nullable
 as ThreadMetadataState,agents: null == agents ? _self.agents : agents // ignore: cast_nullable_to_non_nullable
-as AgentDirectoryState,costs: null == costs ? _self.costs : costs // ignore: cast_nullable_to_non_nullable
+as AgentDirectoryState,lastReadyAgents: freezed == lastReadyAgents ? _self.lastReadyAgents : lastReadyAgents // ignore: cast_nullable_to_non_nullable
+as AgentDirectoryState?,costs: null == costs ? _self.costs : costs // ignore: cast_nullable_to_non_nullable
 as SessionCostsState,reading: null == reading ? _self.reading : reading // ignore: cast_nullable_to_non_nullable
 as Set<String>,readErrors: null == readErrors ? _self.readErrors : readErrors // ignore: cast_nullable_to_non_nullable
 as Map<String, StudioFailure>,
@@ -90,6 +91,18 @@ $AgentDirectoryStateCopyWith<$Res> get agents {
 
   return $AgentDirectoryStateCopyWith<$Res>(_self.agents, (value) {
     return _then(_self.copyWith(agents: value));
+  });
+}/// Create a copy of WorkspaceHeaderState
+/// with the given fields replaced by the non-null parameter values.
+@override
+@pragma('vm:prefer-inline')
+$AgentDirectoryStateCopyWith<$Res>? get lastReadyAgents {
+    if (_self.lastReadyAgents == null) {
+    return null;
+  }
+
+  return $AgentDirectoryStateCopyWith<$Res>(_self.lastReadyAgents!, (value) {
+    return _then(_self.copyWith(lastReadyAgents: value));
   });
 }/// Create a copy of WorkspaceHeaderState
 /// with the given fields replaced by the non-null parameter values.
@@ -182,10 +195,10 @@ return $default(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( ThreadMetadataState root,  AgentDirectoryState agents,  SessionCostsState costs,  Set<String> reading,  Map<String, StudioFailure> readErrors)?  $default,{required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( ThreadMetadataState root,  AgentDirectoryState agents,  AgentDirectoryState? lastReadyAgents,  SessionCostsState costs,  Set<String> reading,  Map<String, StudioFailure> readErrors)?  $default,{required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case _WorkspaceHeaderState() when $default != null:
-return $default(_that.root,_that.agents,_that.costs,_that.reading,_that.readErrors);case _:
+return $default(_that.root,_that.agents,_that.lastReadyAgents,_that.costs,_that.reading,_that.readErrors);case _:
   return orElse();
 
 }
@@ -203,10 +216,10 @@ return $default(_that.root,_that.agents,_that.costs,_that.reading,_that.readErro
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( ThreadMetadataState root,  AgentDirectoryState agents,  SessionCostsState costs,  Set<String> reading,  Map<String, StudioFailure> readErrors)  $default,) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( ThreadMetadataState root,  AgentDirectoryState agents,  AgentDirectoryState? lastReadyAgents,  SessionCostsState costs,  Set<String> reading,  Map<String, StudioFailure> readErrors)  $default,) {final _that = this;
 switch (_that) {
 case _WorkspaceHeaderState():
-return $default(_that.root,_that.agents,_that.costs,_that.reading,_that.readErrors);case _:
+return $default(_that.root,_that.agents,_that.lastReadyAgents,_that.costs,_that.reading,_that.readErrors);case _:
   throw StateError('Unexpected subclass');
 
 }
@@ -223,10 +236,10 @@ return $default(_that.root,_that.agents,_that.costs,_that.reading,_that.readErro
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( ThreadMetadataState root,  AgentDirectoryState agents,  SessionCostsState costs,  Set<String> reading,  Map<String, StudioFailure> readErrors)?  $default,) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( ThreadMetadataState root,  AgentDirectoryState agents,  AgentDirectoryState? lastReadyAgents,  SessionCostsState costs,  Set<String> reading,  Map<String, StudioFailure> readErrors)?  $default,) {final _that = this;
 switch (_that) {
 case _WorkspaceHeaderState() when $default != null:
-return $default(_that.root,_that.agents,_that.costs,_that.reading,_that.readErrors);case _:
+return $default(_that.root,_that.agents,_that.lastReadyAgents,_that.costs,_that.reading,_that.readErrors);case _:
   return null;
 
 }
@@ -238,11 +251,12 @@ return $default(_that.root,_that.agents,_that.costs,_that.reading,_that.readErro
 
 
 class _WorkspaceHeaderState implements WorkspaceHeaderState {
-  const _WorkspaceHeaderState({required this.root, required this.agents, required this.costs, required  Set<String> reading, required  Map<String, StudioFailure> readErrors}): _reading = reading,_readErrors = readErrors;
+  const _WorkspaceHeaderState({required this.root, required this.agents, this.lastReadyAgents, required this.costs, required  Set<String> reading, required  Map<String, StudioFailure> readErrors}): _reading = reading,_readErrors = readErrors;
 
 
 @override final  ThreadMetadataState root;
 @override final  AgentDirectoryState agents;
+@override final  AgentDirectoryState? lastReadyAgents;
 @override final  SessionCostsState costs;
  final  Set<String> _reading;
 @override Set<String> get reading {
@@ -269,13 +283,13 @@ _$WorkspaceHeaderStateCopyWith<_WorkspaceHeaderState> get copyWith => __$Workspa
 
 @override
 bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is _WorkspaceHeaderState&&(identical(other.root, root) || other.root == root)&&(identical(other.agents, agents) || other.agents == agents)&&(identical(other.costs, costs) || other.costs == costs)&&const DeepCollectionEquality().equals(other.reading, _reading)&&const DeepCollectionEquality().equals(other.readErrors, _readErrors));
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is _WorkspaceHeaderState&&(identical(other.root, root) || other.root == root)&&(identical(other.agents, agents) || other.agents == agents)&&(identical(other.lastReadyAgents, lastReadyAgents) || other.lastReadyAgents == lastReadyAgents)&&(identical(other.costs, costs) || other.costs == costs)&&const DeepCollectionEquality().equals(other.reading, _reading)&&const DeepCollectionEquality().equals(other.readErrors, _readErrors));
 }
 
 
 @override
 int get hashCode {
-    return Object.hash(runtimeType,root,agents,costs,const DeepCollectionEquality().hash(_reading),const DeepCollectionEquality().hash(_readErrors));
+    return Object.hash(runtimeType,root,agents,lastReadyAgents,costs,const DeepCollectionEquality().hash(_reading),const DeepCollectionEquality().hash(_readErrors));
 }
 
 
@@ -287,11 +301,11 @@ abstract mixin class _$WorkspaceHeaderStateCopyWith<$Res> implements $WorkspaceH
   factory _$WorkspaceHeaderStateCopyWith(_WorkspaceHeaderState value, $Res Function(_WorkspaceHeaderState) _then) = __$WorkspaceHeaderStateCopyWithImpl;
 @override @useResult
 $Res call({
- ThreadMetadataState root, AgentDirectoryState agents, SessionCostsState costs, Set<String> reading, Map<String, StudioFailure> readErrors
+ ThreadMetadataState root, AgentDirectoryState agents, AgentDirectoryState? lastReadyAgents, SessionCostsState costs, Set<String> reading, Map<String, StudioFailure> readErrors
 });
 
 
-@override $ThreadMetadataStateCopyWith<$Res> get root;@override $AgentDirectoryStateCopyWith<$Res> get agents;@override $SessionCostsStateCopyWith<$Res> get costs;
+@override $ThreadMetadataStateCopyWith<$Res> get root;@override $AgentDirectoryStateCopyWith<$Res> get agents;@override $AgentDirectoryStateCopyWith<$Res>? get lastReadyAgents;@override $SessionCostsStateCopyWith<$Res> get costs;
 
 }
 /// @nodoc
@@ -304,11 +318,12 @@ class __$WorkspaceHeaderStateCopyWithImpl<$Res>
 
 /// Create a copy of WorkspaceHeaderState
 /// with the given fields replaced by the non-null parameter values.
-@override @pragma('vm:prefer-inline') $Res call({Object? root = null,Object? agents = null,Object? costs = null,Object? reading = null,Object? readErrors = null,}) {
+@override @pragma('vm:prefer-inline') $Res call({Object? root = null,Object? agents = null,Object? lastReadyAgents = freezed,Object? costs = null,Object? reading = null,Object? readErrors = null,}) {
   return _then(_WorkspaceHeaderState(
 root: null == root ? _self.root : root // ignore: cast_nullable_to_non_nullable
 as ThreadMetadataState,agents: null == agents ? _self.agents : agents // ignore: cast_nullable_to_non_nullable
-as AgentDirectoryState,costs: null == costs ? _self.costs : costs // ignore: cast_nullable_to_non_nullable
+as AgentDirectoryState,lastReadyAgents: freezed == lastReadyAgents ? _self.lastReadyAgents : lastReadyAgents // ignore: cast_nullable_to_non_nullable
+as AgentDirectoryState?,costs: null == costs ? _self.costs : costs // ignore: cast_nullable_to_non_nullable
 as SessionCostsState,reading: null == reading ? _self._reading : reading // ignore: cast_nullable_to_non_nullable
 as Set<String>,readErrors: null == readErrors ? _self._readErrors : readErrors // ignore: cast_nullable_to_non_nullable
 as Map<String, StudioFailure>,
@@ -332,6 +347,18 @@ $AgentDirectoryStateCopyWith<$Res> get agents {
 
   return $AgentDirectoryStateCopyWith<$Res>(_self.agents, (value) {
     return _then(_self.copyWith(agents: value));
+  });
+}/// Create a copy of WorkspaceHeaderState
+/// with the given fields replaced by the non-null parameter values.
+@override
+@pragma('vm:prefer-inline')
+$AgentDirectoryStateCopyWith<$Res>? get lastReadyAgents {
+    if (_self.lastReadyAgents == null) {
+    return null;
+  }
+
+  return $AgentDirectoryStateCopyWith<$Res>(_self.lastReadyAgents!, (value) {
+    return _then(_self.copyWith(lastReadyAgents: value));
   });
 }/// Create a copy of WorkspaceHeaderState
 /// with the given fields replaced by the non-null parameter values.

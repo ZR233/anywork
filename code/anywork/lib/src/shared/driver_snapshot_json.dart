@@ -363,7 +363,9 @@ Map<String, Object?> _interactionDiagnostic(InteractionViewState editor) {
   final header = editor.header!;
   final content = header.content;
   final questions = editor.questions.values.toList()
-    ..sort((left, right) => left.question.index.compareTo(right.question.index));
+    ..sort(
+      (left, right) => left.question.index.compareTo(right.question.index),
+    );
   return {
     'id': editor.textOf(header.interactionId),
     'threadId': editor.textOf(header.threadId),
@@ -375,13 +377,16 @@ Map<String, Object?> _interactionDiagnostic(InteractionViewState editor) {
       ToolApprovalContentRead() => 'toolApproval',
     },
     'title': switch (content) {
-      UserInputContentRead() =>
-        editor.textOf(editor.questions[0]?.question.header),
+      UserInputContentRead() => editor.textOf(
+        editor.questions[0]?.question.header,
+      ),
       ToolApprovalContentRead(:final name) => editor.textOf(name),
     },
     'body': switch (content) {
-      UserInputContentRead(:final questionCount) =>
-        _interactionQuestionBody(editor, questionCount),
+      UserInputContentRead(:final questionCount) => _interactionQuestionBody(
+        editor,
+        questionCount,
+      ),
       ToolApprovalContentRead(:final arguments) => editor.textOf(arguments),
     },
     'purpose': switch (header.purpose) {
@@ -391,13 +396,14 @@ Map<String, Object?> _interactionDiagnostic(InteractionViewState editor) {
         :final operationId,
         :final argumentHash,
         :final planHash,
-      ) => {
-        'kind': 'planConfirmation',
-        'expectedRevision': expectedRevision,
-        'operationId': editor.textOf(operationId),
-        'argumentHash': editor.textOf(argumentHash),
-        'planHash': editor.textOf(planHash),
-      },
+      ) =>
+        {
+          'kind': 'planConfirmation',
+          'expectedRevision': expectedRevision,
+          'operationId': editor.textOf(operationId),
+          'argumentHash': editor.textOf(argumentHash),
+          'planHash': editor.textOf(planHash),
+        },
     },
     'state': switch (header.state) {
       PendingInteractionRead() => 'pending',
@@ -410,14 +416,7 @@ Map<String, Object?> _interactionDiagnostic(InteractionViewState editor) {
         'questionCount': questionCount,
         'questions': [
           for (final progress in questions)
-            {
-              'index': progress.question.index,
-              'id': editor.textOf(progress.question.id),
-              'header': editor.textOf(progress.question.header),
-              'question': editor.textOf(progress.question.question),
-              'isOther': progress.question.isOther,
-              'isSecret': progress.question.isSecret,
-            },
+            _interactionQuestionDiagnostic(editor, progress),
         ],
       },
       ToolApprovalContentRead(
@@ -425,13 +424,58 @@ Map<String, Object?> _interactionDiagnostic(InteractionViewState editor) {
         :final arguments,
         :final workingDirectory,
         :final parentAgentId,
-      ) => {
-        'name': editor.textOf(name),
-        'arguments': editor.textOf(arguments),
-        'workingDirectory': editor.textOf(workingDirectory),
-        'parentAgentId': editor.textOf(parentAgentId),
-      },
+      ) =>
+        {
+          'name': editor.textOf(name),
+          'arguments': editor.textOf(arguments),
+          'workingDirectory': editor.textOf(workingDirectory),
+          'parentAgentId': editor.textOf(parentAgentId),
+        },
     },
+  };
+}
+
+Map<String, Object?> _interactionQuestionDiagnostic(
+  InteractionViewState editor,
+  QuestionReadProgress progress,
+) {
+  final count = progress.question.optionsCount;
+  final options = progress.options.toList()
+    ..sort((left, right) => left.index.compareTo(right.index));
+  var complete =
+      !progress.optionsLoading &&
+      progress.optionsError == null &&
+      progress.nextOptionOffset == null &&
+      options.length == count;
+  if (complete) {
+    for (final (index, option) in options.indexed) {
+      if (option.index != index ||
+          editor.textOf(option.label) == null ||
+          editor.textOf(option.description) == null) {
+        complete = false;
+        break;
+      }
+    }
+  }
+  return {
+    'index': progress.question.index,
+    'id': editor.textOf(progress.question.id),
+    'header': editor.textOf(progress.question.header),
+    'question': editor.textOf(progress.question.question),
+    'isOther': progress.question.isOther,
+    'isSecret': progress.question.isSecret,
+    'optionsCount': count,
+    'options': count == null
+        ? null
+        : [
+            for (final option in options)
+              {
+                'index': option.index,
+                'label': editor.textOf(option.label),
+                'description': editor.textOf(option.description),
+              },
+          ],
+    'optionsComplete': count == null ? null : complete,
   };
 }
 

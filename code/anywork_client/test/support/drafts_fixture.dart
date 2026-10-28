@@ -356,22 +356,25 @@ final class DraftsFixture {
     );
   }
 
-  /// A single declared native resolve result; no selection/default policy.
+  /// A single declared native result; no selection/default policy. Explicit
+  /// selections supply both their exact query and native normalized intent.
   Future<void> prepare(
     StartDraft handle, {
     ModelSelection route = draftNativeRoute,
     DelegationSettings defaults = draftDefaults,
+    StartRouteQuery? expectedQuery,
+    StartRouteIntent? resultIntent,
   }) async {
     final reading = handle.prepareRoute();
     final opening = await configuration.opened(0);
     final pin = opening.native ?? opening.accept();
     final call = await pin.called(_routeCalls++);
-    expect(call.query, isA<ResolveStartRouteQuery>());
+    expect(call.query, expectedQuery ?? isA<ResolveStartRouteQuery>());
     call.reply.complete(
       StartRouteRead.ready(
         sources: opening.sources,
         query: call.query,
-        intent: call.query.intent,
+        intent: resultIntent ?? call.query.intent,
         route: route,
         defaults: defaults,
       ),

@@ -137,7 +137,8 @@ class AgentProfilesConnector extends ConsumerWidget {
                 if (issue.worktree != null) issue,
             ],
             actionableWorktreeIssueIds: {
-              if (state.recoverySource.projection.sync.phase == ResourceSyncPhase.ready &&
+              if (state.recoverySource.projection.sync.phase ==
+                      ResourceSyncPhase.ready &&
                   recoveryBrief is ReadyObservedBrief)
                 for (final issue in displayCollectionRows(
                   state.recoverySource.issues,
@@ -146,7 +147,8 @@ class AgentProfilesConnector extends ConsumerWidget {
                         state.recoverySource.issues,
                         state.recoverySource.projection.stamp?.origin,
                         (current) => current == issue,
-                      ) != null)
+                      ) !=
+                      null)
                     issue.id,
             },
             worktreeErrors: {

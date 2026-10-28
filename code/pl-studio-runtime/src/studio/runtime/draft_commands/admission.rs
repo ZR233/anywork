@@ -169,16 +169,21 @@ impl AdmissionOwner {
         let (outcome, diagnostic) = {
             let mut retained = self
                 .outcome
-            .lock()
+                .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            match retained.get_or_insert_with(|| {
-                RetainedAdmissionOutcome::Unknown(StudioError::internal())
-            }) {
+            match retained
+                .get_or_insert_with(|| RetainedAdmissionOutcome::Unknown(StudioError::internal()))
+            {
                 RetainedAdmissionOutcome::Returned(value) => (
-                    AttachmentAdmissionOutcome::Returned { value: value.clone() },
+                    AttachmentAdmissionOutcome::Returned {
+                        value: value.clone(),
+                    },
                     None,
                 ),
-                RetainedAdmissionOutcome::Rejected { rejection, reported } => {
+                RetainedAdmissionOutcome::Rejected {
+                    rejection,
+                    reported,
+                } => {
                     let diagnostic = if *reported {
                         None
                     } else {
@@ -186,12 +191,16 @@ impl AdmissionOwner {
                         Some(rejection.clone())
                     };
                     (
-                        AttachmentAdmissionOutcome::Rejected { error: rejection.error.clone() },
+                        AttachmentAdmissionOutcome::Rejected {
+                            error: rejection.error.clone(),
+                        },
                         diagnostic,
                     )
                 }
                 RetainedAdmissionOutcome::Unknown(error) => (
-                    AttachmentAdmissionOutcome::UnknownOutcome { error: error.clone() },
+                    AttachmentAdmissionOutcome::UnknownOutcome {
+                        error: error.clone(),
+                    },
                     None,
                 ),
             }
@@ -265,7 +274,8 @@ mod tests {
     };
 
     #[tokio::test]
-    async fn rejection_retains_correlated_cause_without_leaking_wire_or_close_budget() -> anyhow::Result<()> {
+    async fn rejection_retains_correlated_cause_without_leaking_wire_or_close_budget()
+    -> anyhow::Result<()> {
         let temp = tempfile::tempdir()?;
         let home = temp.path().join("home");
         let account_name = "attachment-fixture";
@@ -273,7 +283,7 @@ mod tests {
         let route = ModelRouteConfig {
             account_id: account_id.clone(),
             model_id: "attachment-model".into(),
-                        effort: None,
+            effort: None,
         };
         let mut model = ModelInfo::compatible(&route.model_id);
         model.capabilities.input.push(ModelInputCapability::media(
@@ -288,13 +298,24 @@ mod tests {
         });
         let mut config = StudioConfig::default_config()?;
         config.models.accounts.clear();
-        config.models.accounts.insert(account_id, AccountConfig::from_explicit_models(
-            // Route resolution uses explicit local metadata only. No model session, server,
-            // credentials, remote source or network request is needed for this admission.
-            ProtocolEndpoint::compatible("Attachment fixture", "https://attachment-fixture.invalid"),
-            vec![model],
-        ));
-        for selected in config.models.routes.values_mut().chain(config.mode_model_routes.values_mut()) {
+        config.models.accounts.insert(
+            account_id,
+            AccountConfig::from_explicit_models(
+                // Route resolution uses explicit local metadata only. No model session, server,
+                // credentials, remote source or network request is needed for this admission.
+                ProtocolEndpoint::compatible(
+                    "Attachment fixture",
+                    "https://attachment-fixture.invalid",
+                ),
+                vec![model],
+            ),
+        );
+        for selected in config
+            .models
+            .routes
+            .values_mut()
+            .chain(config.mode_model_routes.values_mut())
+        {
             *selected = route.clone();
         }
         ConfigStore::new(ConfigPaths::from_config_dir(&home)).save(&config)?;
@@ -302,7 +323,8 @@ mod tests {
             studio_home: Some(home),
             host: crate::StudioHostKind::Test,
             ..crate::StudioRuntimeOptions::desktop()
-        }).await?;
+        })
+        .await?;
         let missing = temp.path().join("private-credential-missing.png");
         assert!(!missing.exists());
         let valid = temp.path().join("valid.png");
@@ -322,7 +344,7 @@ mod tests {
                     path: valid.to_string_lossy().into_owned(),
                 },
                 StudioAttachmentDraftSource::LocalFile {
-                path: missing.to_string_lossy().into_owned(),
+                    path: missing.to_string_lossy().into_owned(),
                 },
             ],
         };
@@ -331,7 +353,9 @@ mod tests {
         runtime.preflight_attachment_drafts(&request).await?;
         let operation_id = "attachment-operation";
         let admission = runtime.begin_attachment_admission(operation_id.into(), request)?;
-        let held = runtime.find_attachment_admission(operation_id.into())?.expect("original job registered");
+        let held = runtime
+            .find_attachment_admission(operation_id.into())?
+            .expect("original job registered");
         let result = admission.result().await;
         let AttachmentAdmissionOutcome::Rejected { error } = &result else {
             panic!("a completed file-open failure must be a known rejection");
@@ -339,39 +363,77 @@ mod tests {
         assert_eq!(error.code, StudioErrorCode::InvalidArgument);
         let source = {
             let outcome = admission.0.outcome.lock().expect("outcome lock");
-            let Some(RetainedAdmissionOutcome::Rejected { rejection, .. }) = outcome.as_ref() else {
+            let Some(RetainedAdmissionOutcome::Rejected { rejection, .. }) = outcome.as_ref()
+            else {
                 panic!("the original run must retain its rejection and source");
             };
             assert_eq!(rejection.error, *error);
-            let io = rejection.source.downcast_ref::<std::io::Error>().expect("file-open IO cause retained by run");
+            let io = rejection
+                .source
+                .downcast_ref::<std::io::Error>()
+                .expect("file-open IO cause retained by run");
             assert_eq!(io.kind(), std::io::ErrorKind::NotFound);
-            let original = rejection.source.downcast_ref::<StudioError>().expect("source-layer safe error retained");
+            let original = rejection
+                .source
+                .downcast_ref::<StudioError>()
+                .expect("source-layer safe error retained");
             assert_eq!(original.correlation_id, error.correlation_id);
             Arc::downgrade(&rejection.source)
         };
         let wire = serde_json::to_string(&result).expect("safe outcome serialization");
-        for sensitive in [missing.to_str().expect("temporary UTF-8 path"), "private-credential", "attachment-fixture.invalid"] {
-            assert!(!wire.contains(sensitive), "original causes must not cross wire");
+        for sensitive in [
+            missing.to_str().expect("temporary UTF-8 path"),
+            "private-credential",
+            "attachment-fixture.invalid",
+        ] {
+            assert!(
+                !wire.contains(sensitive),
+                "original causes must not cross wire"
+            );
         }
-        assert!(admission.close_issues().is_empty(), "a known rejection is not a cleanup failure");
+        assert!(
+            admission.close_issues().is_empty(),
+            "a known rejection is not a cleanup failure"
+        );
         assert!(admission.0.files.0.lock().expect("files lock").is_empty());
         let mut staged = tokio::fs::read_dir(runtime.store.paths().attachment_drafts_dir()).await?;
-        assert!(staged.next_entry().await?.is_none(), "run must remove unpublished files before returning rejection");
+        assert!(
+            staged.next_entry().await?.is_none(),
+            "run must remove unpublished files before returning rejection"
+        );
         drop(staged);
 
         let report = admission.close().await;
         assert_eq!(report.outcome, FeedCloseOutcome::Clean);
         assert!(admission.is_closed());
-        assert!(runtime.find_attachment_admission(operation_id.into())?.is_none());
-        assert!(runtime.draft_commands.0.lock().expect("registry lock").jobs.is_empty());
+        assert!(
+            runtime
+                .find_attachment_admission(operation_id.into())?
+                .is_none()
+        );
+        assert!(
+            runtime
+                .draft_commands
+                .0
+                .lock()
+                .expect("registry lock")
+                .jobs
+                .is_empty()
+        );
         // Closing releases the original job budget; a still-held result handle may re-read the
         // same safe error/correlation without keeping a second registry entry or a new task alive.
         assert_eq!(held.result().await, result);
         assert!(source.upgrade().is_some());
         drop(admission);
-        assert!(source.upgrade().is_some(), "the original held handle still owns its cause");
+        assert!(
+            source.upgrade().is_some(),
+            "the original held handle still owns its cause"
+        );
         drop(held);
-        assert!(source.upgrade().is_none(), "last original owner releases the cause");
+        assert!(
+            source.upgrade().is_none(),
+            "last original owner releases the cause"
+        );
         runtime.shutdown_runtime().await?;
         Ok(())
     }

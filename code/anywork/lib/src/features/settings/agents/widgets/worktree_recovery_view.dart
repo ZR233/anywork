@@ -94,9 +94,8 @@ class WorktreeRecoveryView extends StatelessWidget {
                 : context.l10n.settingsWorktreeHead(worktree.headCommit!),
             worktree.path,
           ].join('\n'),
-          style: DefaultTextStyle.of(context).style.copyWith(
-            fontFamily: studioCodeFontFamily,
-          ),
+          style: DefaultTextStyle.of(context).style
+              .copyWith(fontFamily: studioCodeFontFamily),
         ),
         const SizedBox(height: 8),
         SelectableText(message),

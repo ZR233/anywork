@@ -79,6 +79,7 @@ pub struct SessionCostsReadRef {
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[derive(utoipa::ToSchema)]
 pub struct RecoveryReadRef {
     pub entry: u64,
     pub revision: u64,
@@ -197,6 +198,7 @@ pub struct SessionCostsReadTarget {
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[derive(utoipa::ToSchema)]
 pub struct RecoveryReadTarget {
     pub origin: ProductReadOrigin,
     pub reference: RecoveryReadRef,

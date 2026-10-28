@@ -52,7 +52,7 @@ final class ConversationViewModelProvider
 }
 
 String _$conversationViewModelHash() =>
-    r'383570aecbc33918cc2a2bf49f2731f18f21f5b9';
+    r'257e0e0f857b9256b8419ca5040180c285d4c756';
 
 final class ConversationViewModelFamily extends $Family
     with

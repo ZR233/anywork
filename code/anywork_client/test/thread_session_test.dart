@@ -2,7 +2,8 @@ import 'dart:async';
 
 import 'package:anywork_client/conversation_ports.dart';
 import 'package:anywork_client/resources_ports.dart';
-import 'package:anywork_client/workspace.dart' show ThreadStatus, WorkspaceThreadRecord, isRetiredAgentRole;
+import 'package:anywork_client/workspace.dart'
+    show ThreadStatus, WorkspaceThreadRecord, isRetiredAgentRole;
 import 'package:test/test.dart';
 
 import 'support/controlled_timers.dart';
@@ -923,7 +924,8 @@ void main() {
     expect(isRetiredAgentRole('executor'), isFalse);
     expect(isRetiredAgentRole(''), isFalse);
     WorkspaceThreadRecord agent({
-      String role = 'planner', String? parentThreadId = 'root',
+      String role = 'planner',
+      String? parentThreadId = 'root',
     }) => fixtureThread('member', parentThreadId: parentThreadId, role: role);
     // The role judgement is shared; the caller still owns the membership context.
     expect(agent().isRetiredAgent, isTrue);

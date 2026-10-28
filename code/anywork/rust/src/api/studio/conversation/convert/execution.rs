@@ -231,16 +231,24 @@ impl From<protocol::ExecutionChange> for bridge::BridgeExecutionChange {
         Self {
             status: value.status.map(Into::into),
             execution: match value.execution {
-                protocol::ExecutionReplacement::Unchanged => bridge::BridgeExecutionReplacement::Unchanged,
-                protocol::ExecutionReplacement::Replace { value } => bridge::BridgeExecutionReplacement::Replace {
-                    value: value.map(Into::into),
-                },
+                protocol::ExecutionReplacement::Unchanged => {
+                    bridge::BridgeExecutionReplacement::Unchanged
+                }
+                protocol::ExecutionReplacement::Replace { value } => {
+                    bridge::BridgeExecutionReplacement::Replace {
+                        value: value.map(Into::into),
+                    }
+                }
             },
             continuation: match value.continuation {
-                protocol::ContinuationReplacement::Unchanged => bridge::BridgeContinuationReplacement::Unchanged,
-                protocol::ContinuationReplacement::Replace { value } => bridge::BridgeContinuationReplacement::Replace {
-                    value: value.map(Into::into),
-                },
+                protocol::ContinuationReplacement::Unchanged => {
+                    bridge::BridgeContinuationReplacement::Unchanged
+                }
+                protocol::ContinuationReplacement::Replace { value } => {
+                    bridge::BridgeContinuationReplacement::Replace {
+                        value: value.map(Into::into),
+                    }
+                }
             },
             turns: value.turns.map(Into::into),
             interactions: value.interactions.map(Into::into),

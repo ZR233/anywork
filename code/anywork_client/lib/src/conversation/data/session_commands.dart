@@ -125,9 +125,17 @@ final class _ConversationCommands {
     prepare: () async {
       if (!session.acceptsUserInput) throw _childRequiresParent;
       _revision(expectedRevision);
-      if (hostedReference != null && hostedReference.revision != expectedRevision) throw _continuationConflict;
-      await _readInteraction(origin, interactionId, expectedRevision,
-        hostedReference: hostedReference, targetThreadId: targetThreadId, rejectChildPlan: true);
+      if (hostedReference != null &&
+          hostedReference.revision != expectedRevision)
+        throw _continuationConflict;
+      await _readInteraction(
+        origin,
+        interactionId,
+        expectedRevision,
+        hostedReference: hostedReference,
+        targetThreadId: targetThreadId,
+        rejectChildPlan: true,
+      );
     },
     dispatch: (id) => session._commands.respondInteraction(
       session.threadId,
@@ -156,7 +164,9 @@ final class _ConversationCommands {
       // Native locators cannot be upgraded at an old, unexposed source revision.
       // Only this registered command waits for its original entry's reliable
       // fact; public hosted membership is never relaxed for a reply DTO.
-      final readOrigin = hostedReference == null || value.interaction.revision == hostedReference.revision
+      final readOrigin =
+          hostedReference == null ||
+              value.interaction.revision == hostedReference.revision
           ? origin
           : await owner.waitForInteractionReceipt(value.interaction.revision);
       await _readInteraction(
@@ -164,7 +174,9 @@ final class _ConversationCommands {
         interactionId,
         value.interaction.revision,
         expected: value,
-        hostedReference: hostedReference == null ? null : hostedReference.copyWith(revision: value.interaction.revision),
+        hostedReference: hostedReference == null
+            ? null
+            : hostedReference.copyWith(revision: value.interaction.revision),
         targetThreadId: targetThreadId,
       );
       // Only this real original-version read supplies canonical evidence, not
@@ -176,7 +188,8 @@ final class _ConversationCommands {
   void observeExecution(ThreadFacetStamp stamp, InteractionDelta? delta) {
     if (delta == null) return;
     for (final work in List.of(_work.values)) {
-      if (work is _ConversationCommand && !_sameProjection(work.origin, stamp)) continue;
+      if (work is _ConversationCommand && !_sameProjection(work.origin, stamp))
+        continue;
       if (work is _ConversationCommand) {
         for (final fact in [...delta.upserted, ...delta.terminalFacts]) {
           work.observeInteraction(stamp, fact);
@@ -351,38 +364,60 @@ final class _ConversationCommands {
     bool rejectChildPlan = false,
   }) async {
     session.requireOrigin(origin);
-    final scope = hostedReference == null ? await session.openInteraction(
-      interactionId: id,
-      expectedRevision: revision,
-      expectedIncarnation: origin.incarnation,
-    ) : rejectChildPlan
-        ? await session.openHostedInteraction(origin: origin, reference: hostedReference,
-            targetThreadId: targetThreadId ?? session.threadId)
+    final scope = hostedReference == null
+        ? await session.openInteraction(
+            interactionId: id,
+            expectedRevision: revision,
+            expectedIncarnation: origin.incarnation,
+          )
+        : rejectChildPlan
+        ? await session.openHostedInteraction(
+            origin: origin,
+            reference: hostedReference,
+            targetThreadId: targetThreadId ?? session.threadId,
+          )
         : expected != null
-            ? await session.openInteractionReference(origin, hostedReference)
-            : throw readProtocol('Only a validated hosted receipt may use the internal observation read.');
+        ? await session.openInteractionReference(origin, hostedReference)
+        : throw readProtocol(
+            'Only a validated hosted receipt may use the internal observation read.',
+          );
     Object? primaryFailure;
     try {
       session.requireOrigin(origin);
       final header = await scope.header();
-      final readText = (int fieldId, int offset) => scope.text(fieldId, offset: offset, maxBytes: 65536);
-      final actualTarget = await materializeReadText(header.threadId, read: readText);
+      final readText = (int fieldId, int offset) =>
+          scope.text(fieldId, offset: offset, maxBytes: 65536);
+      final actualTarget = await materializeReadText(
+        header.threadId,
+        read: readText,
+      );
       if (actualTarget != (targetThreadId ?? session.threadId) ||
-          await materializeReadText(header.interactionId, read: readText) != id) {
-        throw readProtocol('The hosted interaction reference does not identify its original target.');
+          await materializeReadText(header.interactionId, read: readText) !=
+              id) {
+        throw readProtocol(
+          'The hosted interaction reference does not identify its original target.',
+        );
       }
-      if (rejectChildPlan && actualTarget != session.threadId && header.purpose is PlanConfirmationPurposeRead) throw _childRequiresParent;
-      if (rejectChildPlan && header.content is UserInputContentRead &&
+      if (rejectChildPlan &&
+          actualTarget != session.threadId &&
+          header.purpose is PlanConfirmationPurposeRead)
+        throw _childRequiresParent;
+      if (rejectChildPlan &&
+          header.content is UserInputContentRead &&
           header.purpose is GeneralInteractionPurposeRead) {
         var offset = 0;
         final count = (header.content as UserInputContentRead).questionCount;
         while (offset < count) {
           final page = await scope.questions(offset: offset, limit: 32);
           for (final question in page.items) {
-            if (await materializeReadText(question.id, read: readText) == 'plan_confirmation') {
-              throw const StudioFailure(code: StudioFailureCode.invalidArgument,
+            if (await materializeReadText(question.id, read: readText) ==
+                'plan_confirmation') {
+              throw const StudioFailure(
+                code: StudioFailureCode.invalidArgument,
                 message: 'The plan_confirmation question identity is reserved for the Plan command.',
-                retryable: false, correlationId: 'reserved-plan-question');
+                retryable: false,
+                correlationId: 'reserved-plan-question',
+              );
             }
           }
           if (page.nextOffset == null) break;
@@ -519,7 +554,8 @@ final class _ConversationCommand<T> extends _ConversationCommandOwner {
         !_sameProjection(origin, source) ||
         fact.status == InteractionStatus.pending ||
         fact.reference.revision != fact.revision ||
-        fact.revision < _interactionRevision) return;
+        fact.revision < _interactionRevision)
+      return;
     _interactionOrigin = source;
     _interactionRevision = fact.revision;
     final changed = _interactionChanged;
@@ -538,6 +574,7 @@ final class _ConversationCommand<T> extends _ConversationCommandOwner {
           : state.sync.error;
       if (error != null) failed.completeError(error);
     }
+
     final watching = actions.session.execution.watchLatest(check);
     check(watching.value);
     try {
@@ -555,6 +592,7 @@ final class _ConversationCommand<T> extends _ConversationCommandOwner {
       watching.observation.cancel();
     }
   }
+
   bool retryConsumed = false;
   bool get canRetry =>
       retryIntent != null &&

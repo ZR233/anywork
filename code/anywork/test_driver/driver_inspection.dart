@@ -92,7 +92,8 @@ final class DriverInspection {
         ? null
         : threadStatusViewModelProvider(thread);
     final plan = thread == null ? null : planViewModelProvider(thread);
-    final conversationValue = conversation != null && container.exists(conversation)
+    final conversationValue =
+        conversation != null && container.exists(conversation)
         ? container.read(conversation).asData?.value
         : null;
     List<InteractionViewState>? interactionEditors;

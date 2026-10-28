@@ -215,7 +215,7 @@ pub enum ThreadAssemblyError {
     },
 }
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PublishedWorkspaceRetirement {
     Retain,
     ApplyExplicitClose,
@@ -229,6 +229,8 @@ struct Entry {
     // Studio publishes Some only after the explicit-close marker is durable. Normal retirement
     // keeps None and never opens the physical workspace backend.
     workspace_disposition: Option<pl_tool::collaboration::thread::AgentWorkspaceDisposition>,
+    directory_projection: Option<Arc<published_resources::DirectoryProjection>>,
+    directory_projected: bool,
     cleanup: Arc<child_resources::CleanupGate>,
     execution: pl_core::thread::input::InputDriverOptions,
     incarnation: Arc<()>,
@@ -416,6 +418,8 @@ impl StudioThreadAssembler {
                 close_storage: None,
                 published_resources_closed: false,
                 workspace_disposition: None,
+                directory_projection: None,
+                directory_projected: false,
                 cleanup: Arc::new(child_resources::CleanupGate::default()),
                 execution: spec.execution,
                 incarnation: Arc::new(()),

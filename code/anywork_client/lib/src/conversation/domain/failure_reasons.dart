@@ -24,10 +24,13 @@ enum StudioFailureReason {
   }
 }
 
-StudioFailureReason? studioFailureReason(Object? error) => error is! StudioFailure
+StudioFailureReason? studioFailureReason(Object? error) =>
+    error is! StudioFailure
     ? null
     : switch (error.details) {
         ReasonFailureDetails(:final reason) ||
-        ControlFailureDetails(:final reason) => StudioFailureReason.fromLabel(reason),
+        ControlFailureDetails(
+          :final reason,
+        ) => StudioFailureReason.fromLabel(reason),
         _ => null,
       };

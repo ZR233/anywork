@@ -5,6 +5,7 @@ use crate::studio::ReadText;
 use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[derive(utoipa::ToSchema)]
 pub enum RecoveryScope {
     Application,
     Project,
@@ -12,6 +13,7 @@ pub enum RecoveryScope {
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[derive(utoipa::ToSchema)]
 pub enum RecoveryCategory {
     ProcessLease,
     ToolCatalog,
@@ -20,6 +22,7 @@ pub enum RecoveryCategory {
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[derive(utoipa::ToSchema)]
 pub enum RecoveryAction {
     None,
     Retry,
@@ -29,12 +32,14 @@ pub enum RecoveryAction {
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[derive(utoipa::ToSchema)]
 pub enum WorktreeOwner {
     Session,
     Child,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[derive(utoipa::ToSchema)]
 pub enum WorktreeInspection {
     Available,
     Missing,
@@ -43,11 +48,13 @@ pub enum WorktreeInspection {
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[derive(utoipa::ToSchema)]
 pub struct RecoveryReadHeader {
     pub issues: TypedListRef,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[derive(utoipa::ToSchema)]
 pub struct WorktreeRecoveryPreviewRead {
     pub inspection: WorktreeInspection,
     pub owner_kind: WorktreeOwner,
@@ -64,6 +71,7 @@ pub struct WorktreeRecoveryPreviewRead {
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[derive(utoipa::ToSchema)]
 pub struct RecoveryIssueRead {
     pub id: ReadText,
     pub scope: RecoveryScope,
@@ -76,12 +84,14 @@ pub struct RecoveryIssueRead {
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[derive(utoipa::ToSchema)]
 pub struct RecoveryEntityRead {
     pub reference: ProductEntityRef,
     pub value: RecoveryIssueRead,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[derive(utoipa::ToSchema)]
 pub struct RecoveryEntryPage {
     pub collection: ProductCollectionRef,
     pub offset: u64,
@@ -90,6 +100,7 @@ pub struct RecoveryEntryPage {
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[derive(utoipa::ToSchema)]
 pub struct RecoveryIssueReadPage {
     pub list_id: u64,
     pub offset: u64,

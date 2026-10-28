@@ -104,7 +104,14 @@ class _AcpAccountDetailsConnectorState
                 ]) ...[
                   if (action?.observationError case final error?)
                     settingsFailureText(error),
-                  if (action?.operation?.error case final error?)
+                  if (action?.operation?.error case final error?
+                      when !isAcpAuthDuplicateWhileInFlight(
+                        action: action,
+                        error: error,
+                        requestTarget: state.target,
+                        currentTarget: _target,
+                        auth: state.auth,
+                      ))
                     settingsFailureText(error),
                   if (action?.operation?.evidenceError case final error?)
                     settingsFailureText(error),

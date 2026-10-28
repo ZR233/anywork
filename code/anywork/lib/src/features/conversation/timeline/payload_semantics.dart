@@ -11,24 +11,21 @@ typedef TimelineItemListener = void Function(
 
 enum TimelinePresentationKind { single, activity, images, imageCard, recovery }
 
-bool payloadHasIssue(TimelineMessagePayload payload) => const {
-  'failed',
-  'denied',
-  'budgetLimited',
-}.contains(payload.item.status);
+bool payloadHasIssue(TimelineMessagePayload payload) =>
+    const {'failed', 'denied', 'budgetLimited'}.contains(payload.item.status);
 
-bool timelinePayloadIsVisible(TimelineMessagePayload payload) =>
-    switch (payload.item.state) {
-      ThreadInferenceItemStateView() || ThreadFileItemStateView() => false,
-      ThreadTurnItemStateView(:final state) => switch (state) {
-        // Cancellation is a visible control outcome even without raw error text.
-        CancelledTurn() => true,
-        FailedTurn() || BudgetLimitedTurn() =>
-          state.reason?.isNotEmpty == true,
-        QueuedTurn() || RunningTurn() || CompletedTurn() => false,
-      },
-      _ => true,
-    };
+bool timelinePayloadIsVisible(
+  TimelineMessagePayload payload,
+) => switch (payload.item.state) {
+  ThreadInferenceItemStateView() || ThreadFileItemStateView() => false,
+  ThreadTurnItemStateView(:final state) => switch (state) {
+    // Cancellation is a visible control outcome even without raw error text.
+    CancelledTurn() => true,
+    FailedTurn() || BudgetLimitedTurn() => state.reason?.isNotEmpty == true,
+    QueuedTurn() || RunningTurn() || CompletedTurn() => false,
+  },
+  _ => true,
+};
 
 TimelinePresentationKind presentationKindOf(TimelineMessagePayload payload) {
   if (payload.source is StudioTimelineRecoverySource) {

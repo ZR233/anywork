@@ -25,7 +25,8 @@ WorktreeInspection worktreeInspectionFromBridge(
   runtime.BridgeWorktreeInspection.missing => WorktreeInspection.missing,
   runtime.BridgeWorktreeInspection.identityMismatch =>
     WorktreeInspection.identityMismatch,
-  runtime.BridgeWorktreeInspection.unavailable => WorktreeInspection.unavailable,
+  runtime.BridgeWorktreeInspection.unavailable =>
+    WorktreeInspection.unavailable,
 };
 
 RecoveryScope recoveryScopeFromBridge(native.BridgeRecoveryScope value) =>

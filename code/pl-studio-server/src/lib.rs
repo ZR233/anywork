@@ -7,6 +7,7 @@ mod draft_commands;
 mod error;
 mod exit;
 mod models;
+mod recovery;
 mod routes;
 mod security;
 mod skills_schema;
@@ -60,6 +61,7 @@ pub(crate) struct AppState {
     templates: Arc<templates::TemplatesTransports>,
     models: Arc<models::ModelsTransports>,
     configuration: Arc<configuration::ConfigurationTransports>,
+    recovery: Arc<recovery::RecoveryTransports>,
     attachment_reads: Arc<attachment_reads::AttachmentReads>,
     thread_transports: Arc<thread_transport::ThreadTransports>,
     draft_commands: Arc<draft_commands::DraftCommands>,
@@ -77,6 +79,7 @@ impl AppState {
             templates: Arc::default(),
             models: Arc::default(),
             configuration: Arc::default(),
+            recovery: Arc::default(),
             attachment_reads: Arc::default(),
             thread_transports: Arc::default(),
             draft_commands: Arc::default(),
@@ -194,6 +197,7 @@ async fn limit_normal_requests(
             | "/api/v1/authoring-reads/{scope_id}/retry-close" => templates::RequestClass::Control,
             path => models::request_class(path)
                 .or_else(|| configuration::request_class(path))
+                .or_else(|| recovery::request_class(path))
                 .unwrap_or_else(|| templates::request_class(path)),
         })
         .unwrap_or(templates::RequestClass::Normal);

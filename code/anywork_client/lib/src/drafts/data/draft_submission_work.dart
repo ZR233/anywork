@@ -49,8 +49,11 @@ OperationTicket<SubmitPromptReceipt> _submitComposer(
       throw const StudioFailure(
         code: StudioFailureCode.permissionDenied,
         message: 'A child agent is continued and instructed by the main session, not by the user',
-        retryable: false, correlationId: 'child-requires-parent-scheduling',
-        details: StudioFailureDetails.reason(reason: 'childThreadRequiresParentScheduling'),
+        retryable: false,
+        correlationId: 'child-requires-parent-scheduling',
+        details: StudioFailureDetails.reason(
+          reason: 'childThreadRequiresParentScheduling',
+        ),
       );
     final origin = execution?.stamp;
     final route = config?.value?.modelRoute;
@@ -184,11 +187,9 @@ OperationTicket<StartNewThreadResult> _submitStart(
       mode: frozen.mode,
       route: prepared.route,
       workspaceMode: frozen.workspaceMode,
-      delegationMode:
-          frozen.delegationModeOverride ?? prepared.defaults.mode,
+      delegationMode: frozen.delegationModeOverride ?? prepared.defaults.mode,
       delegationPreference:
-          frozen.delegationPreferenceOverride ??
-          prepared.defaults.preference,
+          frozen.delegationPreferenceOverride ?? prepared.defaults.preference,
     );
     work = _CreateWork(
       repo,

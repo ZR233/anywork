@@ -6,19 +6,12 @@ use super::super::{
 use anyhow::Result;
 
 impl StudioRuntime {
-    pub fn read_recovery_state(&self) -> crate::StudioRecoveryStateSnapshot {
-        crate::StudioRecoveryStateSnapshot {
-            state: self.recovery.state(),
-        }
-    }
-
     pub(in crate::studio::runtime) async fn start_recovery_scan(&self) {
         let mut slot = self.recovery_task.lock().await;
         if slot.as_ref().is_some_and(|task| !task.is_finished()) {
             return;
         }
         self.recovery.begin();
-        self.publish_recovery();
         let runtime = self.clone();
         *slot = Some(BackgroundTask::new(tokio::spawn(async move {
             let mut issues = Vec::new();
@@ -43,30 +36,19 @@ impl StudioRuntime {
                 }
                 Err(error) => {
                     tracing::warn!(
-                        error_bytes = error.to_string().len(),
+                        diagnostic = %crate::studio::recovery_registry::diagnostic::failure(error.as_ref()),
                         "background recovery failed"
                     );
-                    runtime.recovery.fail(pl_protocol::StateError {
-                        code: "recoveryCheckFailed".into(),
-                        message: format!("{error:#}"),
-                        retryable: true,
-                    });
+                    runtime.recovery.fail(error);
                 }
             }
-            runtime.publish_recovery();
         })));
-    }
-    fn publish_recovery(&self) {
-        self.agent_facility
-            .product_events
-            .emit_recovery_state(self.recovery.state());
     }
     pub(super) async fn stop_recovery_scan(&self) -> Result<()> {
         background_task::stop(&self.recovery_task)
             .await
             .map_err(|error| anyhow::anyhow!("recovery task failed: {error}"))?;
         self.recovery.stop();
-        self.publish_recovery();
         Ok(())
     }
 }

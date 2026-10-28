@@ -145,10 +145,11 @@ class _WorkspaceAgentMenuState extends State<WorkspaceAgentMenu> {
           : null,
     );
     final frozen = agent.frozenModel ?? thread?.frozenModel;
-    final model = frozen?.modelId ?? context.l10n.delegationModelNotRecorded;
+    final model =
+        frozen?.model.modelId ?? context.l10n.delegationModelNotRecorded;
     final modelTooltip = frozen == null
         ? model
-        : '$model\n${frozen.accountId} / ${frozen.modelId}\n${context.l10n.statusReasoningEffort}: ${frozen.effort ?? context.l10n.statisticsReasoningEffortUnspecified}';
+        : '$model\n${frozen.model.accountId} / ${frozen.model.modelId}\n${context.l10n.statusReasoningEffort}: ${frozen.effort ?? context.l10n.statisticsReasoningEffortUnspecified}';
     final role = retired
         ? context.l10n.agentRoleRetired
         : context.roleLabel(agent.role);
@@ -168,7 +169,8 @@ class _WorkspaceAgentMenuState extends State<WorkspaceAgentMenu> {
       ?action?.observationError,
     };
     final failureText = failures.map(_failureText).join('\n');
-    final rejected = action?.admissionError != null ||
+    final rejected =
+        action?.admissionError != null ||
         operation?.failurePhase == OperationFailurePhase.rejected;
     return MenuItemButton(
       key: StudioDriverKeys.agentRow(agent.threadId),
@@ -265,7 +267,9 @@ class _WorkspaceAgentMenuState extends State<WorkspaceAgentMenu> {
             if (_progress(context, action) case final progress?)
               Text(
                 progress,
-                key: operation?.failurePhase == OperationFailurePhase.unknownOutcome
+                key:
+                    operation?.failurePhase ==
+                        OperationFailurePhase.unknownOutcome
                     ? ValueKey('agent-stop-unconfirmed-${agent.threadId}')
                     : ValueKey('agent-stop-progress-${agent.threadId}'),
                 maxLines: 2,
@@ -323,10 +327,7 @@ class _WorkspaceAgentMenuState extends State<WorkspaceAgentMenu> {
     );
   }
 
-  String? _progress(
-    BuildContext context,
-    WorkspaceActionPresentation? action,
-  ) {
+  String? _progress(BuildContext context, WorkspaceActionPresentation? action) {
     final operation = action?.operation;
     if (operation?.failurePhase == OperationFailurePhase.unknownOutcome) {
       return context.l10n.conversationStopUnknown;

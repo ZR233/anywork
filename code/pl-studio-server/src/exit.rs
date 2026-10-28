@@ -26,6 +26,7 @@ pub(crate) async fn run(listener: TcpListener, app: Router, state: AppState) -> 
     state.templates.seal();
     state.models.seal();
     state.configuration.seal();
+    state.recovery.seal();
     state.attachment_reads.seal();
     state.thread_transports.seal();
     state.draft_commands.seal();
@@ -37,13 +38,14 @@ pub(crate) async fn run(listener: TcpListener, app: Router, state: AppState) -> 
             // not duplicate them as external issues; only HTTP-owned evidence is seeded here.
             let _ = state.runtime.fence_exit_admission().await;
             let mut issues = Vec::new();
-            let (templates, attachments, threads, drafts, configuration, models) = futures::join!(
+            let (templates, attachments, threads, drafts, configuration, models, recovery) = futures::join!(
                 state.templates.close_for_exit(deadline),
                 state.attachment_reads.close_for_exit(deadline),
                 state.thread_transports.close_for_exit(deadline),
                 state.draft_commands.close_for_exit(deadline),
                 state.configuration.close_for_exit(deadline),
-                state.models.close_for_exit(deadline)
+                state.models.close_for_exit(deadline),
+                state.recovery.close_for_exit(deadline)
             );
             issues.extend(templates);
             issues.extend(models);
@@ -51,6 +53,7 @@ pub(crate) async fn run(listener: TcpListener, app: Router, state: AppState) -> 
             issues.extend(threads);
             issues.extend(drafts);
             issues.extend(configuration);
+            issues.extend(recovery);
             if server_result.is_none() {
                 match tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), &mut server)
                     .await

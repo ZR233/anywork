@@ -125,189 +125,203 @@ StudioFailureDetails _details(
     ),
 };
 
-ControlFailureFacts _controlFacts(
-  native.BridgeControlFailureFacts facts,
-) => switch (facts) {
-  native.BridgeControlFailureFacts_Unspecified() =>
-    const ControlFailureFacts.unspecified(),
-  native.BridgeControlFailureFacts_ChildThreadAction(
-    :final threadId,
-    :final action,
-    :final parentThreadId,
-  ) =>
-    ControlFailureFacts.childThreadAction(
-      threadId: threadId,
-      action: action,
-      parentThreadId: parentThreadId,
-    ),
-  native.BridgeControlFailureFacts_ThreadAction(:final threadId, :final action) =>
-    ControlFailureFacts.threadAction(threadId: threadId, action: action),
-  native.BridgeControlFailureFacts_ExpectedExecution(
-    :final threadId,
-    :final expectedExecutionId,
-  ) =>
-    ControlFailureFacts.expectedExecution(
-      threadId: threadId,
-      expectedExecutionId: expectedExecutionId,
-    ),
-  native.BridgeControlFailureFacts_Executing(
-    :final threadId,
-    :final executionId,
-    :final phase,
-  ) =>
-    ControlFailureFacts.executing(
-      threadId: threadId,
-      executionId: executionId,
-      phase: phase,
-    ),
-  native.BridgeControlFailureFacts_ExpectedContinuation(
-    :final threadId,
-    :final expectedContinuationId,
-  ) =>
-    ControlFailureFacts.expectedContinuation(
-      threadId: threadId,
-      expectedContinuationId: expectedContinuationId,
-    ),
-  native.BridgeControlFailureFacts_ContinuationAccepted(
-    :final threadId,
-    :final operationId,
-    :final accepted,
-  ) =>
-    ControlFailureFacts.continuationAccepted(
-      threadId: threadId,
-      operationId: operationId,
-      accepted: accepted,
-    ),
-  native.BridgeControlFailureFacts_ContinuationOperation(
-    :final threadId,
-    :final operationId,
-  ) =>
-    ControlFailureFacts.continuationOperation(
-      threadId: threadId,
-      operationId: operationId,
-    ),
-  native.BridgeControlFailureFacts_ContinuationPointConflict(
-    :final threadId,
-    :final operationId,
-    :final expectedContinuationId,
-    :final acceptedContinuationId,
-  ) =>
-    ControlFailureFacts.continuationPointConflict(
-      threadId: threadId,
-      operationId: operationId,
-      expectedContinuationId: expectedContinuationId,
-      acceptedContinuationId: acceptedContinuationId,
-    ),
-  native.BridgeControlFailureFacts_ContinuationRouteConflict(
-    :final threadId,
-    :final operationId,
-    :final expectedModelRouteRevision,
-    :final acceptedModelRouteRevision,
-  ) =>
-    ControlFailureFacts.continuationRouteConflict(
-      threadId: threadId,
-      operationId: operationId,
-      expectedModelRouteRevision: exactU64(
-        expectedModelRouteRevision,
-        'expected continuation model route revision',
-      ),
-      acceptedModelRouteRevision: exactU64(
-        acceptedModelRouteRevision,
-        'accepted continuation model route revision',
-      ),
-    ),
-  native.BridgeControlFailureFacts_StaleContinuation(
-    :final threadId,
-    :final expectedContinuationId,
-    :final currentContinuationId,
-  ) =>
-    ControlFailureFacts.staleContinuation(
-      threadId: threadId,
-      expectedContinuationId: expectedContinuationId,
-      currentContinuationId: currentContinuationId,
-    ),
-  native.BridgeControlFailureFacts_ClaimedContinuation(
-    :final threadId,
-    :final continuationId,
-  ) =>
-    ControlFailureFacts.claimedContinuation(
-      threadId: threadId,
-      continuationId: continuationId,
-    ),
-  native.BridgeControlFailureFacts_ChildInteraction(
-    :final interactionId,
-    :final interactionThreadId,
-  ) =>
-    ControlFailureFacts.childInteraction(
-      interactionId: interactionId,
-      interactionThreadId: interactionThreadId,
-    ),
-  native.BridgeControlFailureFacts_InteractionRevision(
-    :final interactionId,
-    :final expectedRevision,
-    :final currentRevision,
-  ) =>
-    ControlFailureFacts.interactionRevision(
-      interactionId: interactionId,
-      expectedRevision: exactU64(expectedRevision, 'expected interaction revision'),
-      currentRevision: exactU64(currentRevision, 'current interaction revision'),
-    ),
-  native.BridgeControlFailureFacts_InteractionTerminal(
-    :final interactionId,
-    :final currentRevision,
-  ) =>
-    ControlFailureFacts.interactionTerminal(
-      interactionId: interactionId,
-      currentRevision: exactU64(currentRevision, 'terminal interaction revision'),
-    ),
-  native.BridgeControlFailureFacts_InteractionOperation(
-    :final operationId,
-    :final interactionId,
-  ) =>
-    ControlFailureFacts.interactionOperation(
-      operationId: operationId,
-      interactionId: interactionId,
-    ),
-  native.BridgeControlFailureFacts_ChildHost(
-    :final hostThreadId,
-    :final hostIsChild,
-  ) =>
-    ControlFailureFacts.childHost(
-      hostThreadId: hostThreadId,
-      hostIsChild: hostIsChild,
-    ),
-  native.BridgeControlFailureFacts_InteractionHost(
-    :final hostThreadId,
-    :final interactionThreadId,
-  ) =>
-    ControlFailureFacts.interactionHost(
-      hostThreadId: hostThreadId,
-      interactionThreadId: interactionThreadId,
-    ),
-  native.BridgeControlFailureFacts_DecisionDurability(
-    :final interactionId,
-    :final decisionSaved,
-  ) =>
-    ControlFailureFacts.decisionDurability(
-      interactionId: interactionId,
-      decisionSaved: decisionSaved,
-    ),
-  native.BridgeControlFailureFacts_UnreadableDecision(
-    :final threadId,
-    :final interactionId,
-  ) =>
-    ControlFailureFacts.unreadableDecision(
-      threadId: threadId,
-      interactionId: interactionId,
-    ),
-  native.BridgeControlFailureFacts_DecisionIdentity(
-    :final interactionId,
-    :final currentRevision,
-    :final operationIdentityRecorded,
-  ) =>
-    ControlFailureFacts.decisionIdentity(
-      interactionId: interactionId,
-      currentRevision: exactU64(currentRevision, 'decision interaction revision'),
-      operationIdentityRecorded: operationIdentityRecorded,
-    ),
-};
+ControlFailureFacts _controlFacts(native.BridgeControlFailureFacts facts) =>
+    switch (facts) {
+      native.BridgeControlFailureFacts_Unspecified() =>
+        const ControlFailureFacts.unspecified(),
+      native.BridgeControlFailureFacts_ChildThreadAction(
+        :final threadId,
+        :final action,
+        :final parentThreadId,
+      ) =>
+        ControlFailureFacts.childThreadAction(
+          threadId: threadId,
+          action: action,
+          parentThreadId: parentThreadId,
+        ),
+      native.BridgeControlFailureFacts_ThreadAction(
+        :final threadId,
+        :final action,
+      ) =>
+        ControlFailureFacts.threadAction(threadId: threadId, action: action),
+      native.BridgeControlFailureFacts_ExpectedExecution(
+        :final threadId,
+        :final expectedExecutionId,
+      ) =>
+        ControlFailureFacts.expectedExecution(
+          threadId: threadId,
+          expectedExecutionId: expectedExecutionId,
+        ),
+      native.BridgeControlFailureFacts_Executing(
+        :final threadId,
+        :final executionId,
+        :final phase,
+      ) =>
+        ControlFailureFacts.executing(
+          threadId: threadId,
+          executionId: executionId,
+          phase: phase,
+        ),
+      native.BridgeControlFailureFacts_ExpectedContinuation(
+        :final threadId,
+        :final expectedContinuationId,
+      ) =>
+        ControlFailureFacts.expectedContinuation(
+          threadId: threadId,
+          expectedContinuationId: expectedContinuationId,
+        ),
+      native.BridgeControlFailureFacts_ContinuationAccepted(
+        :final threadId,
+        :final operationId,
+        :final accepted,
+      ) =>
+        ControlFailureFacts.continuationAccepted(
+          threadId: threadId,
+          operationId: operationId,
+          accepted: accepted,
+        ),
+      native.BridgeControlFailureFacts_ContinuationOperation(
+        :final threadId,
+        :final operationId,
+      ) =>
+        ControlFailureFacts.continuationOperation(
+          threadId: threadId,
+          operationId: operationId,
+        ),
+      native.BridgeControlFailureFacts_ContinuationPointConflict(
+        :final threadId,
+        :final operationId,
+        :final expectedContinuationId,
+        :final acceptedContinuationId,
+      ) =>
+        ControlFailureFacts.continuationPointConflict(
+          threadId: threadId,
+          operationId: operationId,
+          expectedContinuationId: expectedContinuationId,
+          acceptedContinuationId: acceptedContinuationId,
+        ),
+      native.BridgeControlFailureFacts_ContinuationRouteConflict(
+        :final threadId,
+        :final operationId,
+        :final expectedModelRouteRevision,
+        :final acceptedModelRouteRevision,
+      ) =>
+        ControlFailureFacts.continuationRouteConflict(
+          threadId: threadId,
+          operationId: operationId,
+          expectedModelRouteRevision: exactU64(
+            expectedModelRouteRevision,
+            'expected continuation model route revision',
+          ),
+          acceptedModelRouteRevision: exactU64(
+            acceptedModelRouteRevision,
+            'accepted continuation model route revision',
+          ),
+        ),
+      native.BridgeControlFailureFacts_StaleContinuation(
+        :final threadId,
+        :final expectedContinuationId,
+        :final currentContinuationId,
+      ) =>
+        ControlFailureFacts.staleContinuation(
+          threadId: threadId,
+          expectedContinuationId: expectedContinuationId,
+          currentContinuationId: currentContinuationId,
+        ),
+      native.BridgeControlFailureFacts_ClaimedContinuation(
+        :final threadId,
+        :final continuationId,
+      ) =>
+        ControlFailureFacts.claimedContinuation(
+          threadId: threadId,
+          continuationId: continuationId,
+        ),
+      native.BridgeControlFailureFacts_ChildInteraction(
+        :final interactionId,
+        :final interactionThreadId,
+      ) =>
+        ControlFailureFacts.childInteraction(
+          interactionId: interactionId,
+          interactionThreadId: interactionThreadId,
+        ),
+      native.BridgeControlFailureFacts_InteractionRevision(
+        :final interactionId,
+        :final expectedRevision,
+        :final currentRevision,
+      ) =>
+        ControlFailureFacts.interactionRevision(
+          interactionId: interactionId,
+          expectedRevision: exactU64(
+            expectedRevision,
+            'expected interaction revision',
+          ),
+          currentRevision: exactU64(
+            currentRevision,
+            'current interaction revision',
+          ),
+        ),
+      native.BridgeControlFailureFacts_InteractionTerminal(
+        :final interactionId,
+        :final currentRevision,
+      ) =>
+        ControlFailureFacts.interactionTerminal(
+          interactionId: interactionId,
+          currentRevision: exactU64(
+            currentRevision,
+            'terminal interaction revision',
+          ),
+        ),
+      native.BridgeControlFailureFacts_InteractionOperation(
+        :final operationId,
+        :final interactionId,
+      ) =>
+        ControlFailureFacts.interactionOperation(
+          operationId: operationId,
+          interactionId: interactionId,
+        ),
+      native.BridgeControlFailureFacts_ChildHost(
+        :final hostThreadId,
+        :final hostIsChild,
+      ) =>
+        ControlFailureFacts.childHost(
+          hostThreadId: hostThreadId,
+          hostIsChild: hostIsChild,
+        ),
+      native.BridgeControlFailureFacts_InteractionHost(
+        :final hostThreadId,
+        :final interactionThreadId,
+      ) =>
+        ControlFailureFacts.interactionHost(
+          hostThreadId: hostThreadId,
+          interactionThreadId: interactionThreadId,
+        ),
+      native.BridgeControlFailureFacts_DecisionDurability(
+        :final interactionId,
+        :final decisionSaved,
+      ) =>
+        ControlFailureFacts.decisionDurability(
+          interactionId: interactionId,
+          decisionSaved: decisionSaved,
+        ),
+      native.BridgeControlFailureFacts_UnreadableDecision(
+        :final threadId,
+        :final interactionId,
+      ) =>
+        ControlFailureFacts.unreadableDecision(
+          threadId: threadId,
+          interactionId: interactionId,
+        ),
+      native.BridgeControlFailureFacts_DecisionIdentity(
+        :final interactionId,
+        :final currentRevision,
+        :final operationIdentityRecorded,
+      ) =>
+        ControlFailureFacts.decisionIdentity(
+          interactionId: interactionId,
+          currentRevision: exactU64(
+            currentRevision,
+            'decision interaction revision',
+          ),
+          operationIdentityRecorded: operationIdentityRecorded,
+        ),
+    };

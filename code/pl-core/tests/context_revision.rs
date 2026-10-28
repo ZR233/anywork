@@ -191,17 +191,19 @@ async fn model_batches_leave_revision_space_for_results_and_cancellation() {
             name.into(),
             0,
             ThreadSnapshot {
-            context,
-            ..Default::default()
+                context,
+                ..Default::default()
             },
         );
-        let store = RecordingStore::new(matches!(expected, Expected::Rejected | Expected::Cancelled));
+        let store =
+            RecordingStore::new(matches!(expected, Expected::Rejected | Expected::Cancelled));
         let executions = Arc::new(AtomicUsize::new(0));
         let (mut model, requests) = support::ScriptedModel::new(calls);
         model.usage.input_tokens = Some(11);
         model.usage.output_tokens = Some(7);
-        let thread = ThreadHandle::resume(name.into(), DynModelSession::new(model), Some(checkpoint))
-            .unwrap();
+        let thread =
+            ThreadHandle::resume(name.into(), DynModelSession::new(model), Some(checkpoint))
+                .unwrap();
         thread
             .attach_storage(ColdStoreHandle::new(store.clone()))
             .await
@@ -209,10 +211,10 @@ async fn model_batches_leave_revision_space_for_results_and_cancellation() {
         thread.register_tools(tools(&executions)).await.unwrap();
         thread
             .submit_input(ThreadInput {
-            id: "input".into(),
-            purpose: InputPurpose::Message,
-            payload: OpaquePayload::text("original input"),
-            context: vec![support::text("original input")],
+                id: "input".into(),
+                purpose: InputPurpose::Message,
+                payload: OpaquePayload::text("original input"),
+                context: vec![support::text("original input")],
             })
             .await
             .unwrap();
@@ -221,7 +223,7 @@ async fn model_batches_leave_revision_space_for_results_and_cancellation() {
             async move {
                 let mut turn = support::turn("boundary-turn");
                 if matches!(expected, Expected::StepLimit) {
-                turn.max_model_steps = ModelStepLimit::Limited(1.try_into().unwrap());
+                    turn.max_model_steps = ModelStepLimit::Limited(1.try_into().unwrap());
                 }
                 thread
                     .run_next_input(QueuedTurn {
@@ -253,7 +255,9 @@ async fn model_batches_leave_revision_space_for_results_and_cancellation() {
                         assert!(!snapshot.context.pending_calls().unwrap().is_empty());
                         assert!(
                             thread
-                                .interrupt_execution(snapshot.execution.as_ref().unwrap().id.clone())
+                                .interrupt_execution(
+                                    snapshot.execution.as_ref().unwrap().id.clone()
+                                )
                                 .await
                                 .unwrap()
                         );
@@ -371,13 +375,20 @@ async fn model_batches_leave_revision_space_for_results_and_cancellation() {
             DynModelSession::new(model),
             Some(serde_json::from_slice(&serialized).unwrap()),
         )
-            .expect("the saved terminal checkpoint must remain recoverable");
+        .expect("the saved terminal checkpoint must remain recoverable");
         resumed.register_tools(tools(&executions)).await.unwrap();
         assert!(matches!(
             resumed.snapshot().input_execution,
             InputExecution::Paused
         ));
-        assert!(resumed.snapshot().context.pending_calls().unwrap().is_empty());
+        assert!(
+            resumed
+                .snapshot()
+                .context
+                .pending_calls()
+                .unwrap()
+                .is_empty()
+        );
         assert!(resumed_requests.lock().unwrap().is_empty());
         let expected_executions = if matches!(expected, Expected::StepLimit) {
             calls.len()

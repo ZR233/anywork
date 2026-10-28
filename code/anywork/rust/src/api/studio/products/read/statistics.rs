@@ -3,7 +3,6 @@ use super::super::identity::*;
 use super::super::references::*;
 use super::owner::{ModelsRead, ModelsReadHandle, open_read};
 use crate::api::studio::observation::{BridgeReadText, BridgeTextChunk, BridgeTypedListRef};
-use crate::api::studio::types::BridgeModelMatchState;
 use crate::api::studio::types::{BridgeError, BridgeFeedCloseReport};
 use pl_protocol::products::read::statistics as protocol;
 use pl_studio_runtime::statistics::{
@@ -11,6 +10,16 @@ use pl_studio_runtime::statistics::{
     StudioPerformanceSampleIdentityRead, StudioPerformanceSummariesRead,
     StudioPerformanceSummaryIdentityRead, StudioSessionCostsRead,
 };
+
+/// Model matching facts carried by one statistics sample's named identity read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BridgeModelMatchState {
+    Matched,
+    Mismatched,
+    Unreported,
+    LegacyUnknown,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct BridgePerformanceCounters {
     pub sample_count: u64,
@@ -260,18 +269,10 @@ impl From<protocol::PerformanceSampleIdentityRead> for BridgePerformanceSampleId
             sent_model: value.sent_model.map(Into::into),
             reported_model: value.reported_model.map(Into::into),
             model_match_state: match value.model_match_state {
-                pl_protocol::ModelMatchState::Matched => {
-                    crate::api::studio::types::BridgeModelMatchState::Matched
-                }
-                pl_protocol::ModelMatchState::Mismatched => {
-                    crate::api::studio::types::BridgeModelMatchState::Mismatched
-                }
-                pl_protocol::ModelMatchState::Unreported => {
-                    crate::api::studio::types::BridgeModelMatchState::Unreported
-                }
-                pl_protocol::ModelMatchState::LegacyUnknown => {
-                    crate::api::studio::types::BridgeModelMatchState::LegacyUnknown
-                }
+                pl_protocol::ModelMatchState::Matched => BridgeModelMatchState::Matched,
+                pl_protocol::ModelMatchState::Mismatched => BridgeModelMatchState::Mismatched,
+                pl_protocol::ModelMatchState::Unreported => BridgeModelMatchState::Unreported,
+                pl_protocol::ModelMatchState::LegacyUnknown => BridgeModelMatchState::LegacyUnknown,
             },
             effort: value.effort.map(Into::into),
         }

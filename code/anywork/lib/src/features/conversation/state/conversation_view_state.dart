@@ -39,8 +39,7 @@ abstract class ConversationViewState with _$ConversationViewState {
       thread != null;
   bool get executionCurrent =>
       execution?.sync.phase == FacetSyncPhase.ready && execution?.value != null;
-  bool get running =>
-      execution?.value?.execution != null;
+  bool get running => execution?.value?.execution != null;
   bool get retiredPlanner =>
       thread?.parentThreadId != null && thread?.role == 'planner';
   bool get runtimeDriven => thread?.parentThreadId != null;
@@ -106,7 +105,8 @@ abstract class ConversationStopState with _$ConversationStopState {
 
 /// Continuation presentation evidence; the original Session/ticket stays in VM.
 @Freezed(toStringOverride: false)
-abstract class ConversationContinuationState with _$ConversationContinuationState {
+abstract class ConversationContinuationState
+    with _$ConversationContinuationState {
   const ConversationContinuationState._();
   const factory ConversationContinuationState({
     required int intent,
@@ -150,17 +150,24 @@ abstract class ConversationContinuationState with _$ConversationContinuationStat
       operation?.receipt?.effective == true ||
       switch (result) {
         CommittedCommandResult<ContinueThreadReply>(:final receipt) ||
-        SyncFailedCommandResult<ContinueThreadReply>(:final receipt) =>
-          receipt.effective,
+        SyncFailedCommandResult<ContinueThreadReply>(
+          :final receipt,
+        ) => receipt.effective,
         AcknowledgedCommandResult<ContinueThreadReply>(:final value) =>
           value.receipt.effective,
-        AcknowledgedSyncFailedCommandResult<ContinueThreadReply>(:final value) =>
+        AcknowledgedSyncFailedCommandResult<ContinueThreadReply>(
+          :final value,
+        ) =>
           value?.receipt.effective == true,
         RejectedCommandResult<ContinueThreadReply>() ||
-        UnknownOutcomeCommandResult<ContinueThreadReply>() || null => false,
+        UnknownOutcomeCommandResult<ContinueThreadReply>() ||
+        null => false,
       };
 
   bool get pending =>
-      !accepted && !unknown && error == null && result == null &&
+      !accepted &&
+      !unknown &&
+      error == null &&
+      result == null &&
       operation?.failurePhase != OperationFailurePhase.rejected;
 }

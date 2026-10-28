@@ -192,17 +192,34 @@ pub(in crate::studio::runtime) struct ExecutionProjection {
 
 impl ExecutionProjection {
     pub(in crate::studio::runtime) fn interaction_revision(&self) -> Option<u64> {
-        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
-            .current.as_ref().map(|current| current.value.interactions.reference.revision)
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .current
+            .as_ref()
+            .map(|current| current.value.interactions.reference.revision)
     }
 
-    pub(in crate::studio::runtime) fn hosted_pending(&self, host: &str) -> Vec<Arc<InteractionRequest>> {
-        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
-            .current.as_ref().map_or_else(Vec::new, |current| {
-                current.facts.iter().filter_map(|fact| match &*fact.material {
-                    Material::Interaction(value) if value.scope.thread_id != host => Some(value.clone()),
-                    _ => None,
-                }).collect()
+    pub(in crate::studio::runtime) fn hosted_pending(
+        &self,
+        host: &str,
+    ) -> Vec<Arc<InteractionRequest>> {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .current
+            .as_ref()
+            .map_or_else(Vec::new, |current| {
+                current
+                    .facts
+                    .iter()
+                    .filter_map(|fact| match &*fact.material {
+                        Material::Interaction(value) if value.scope.thread_id != host => {
+                            Some(value.clone())
+                        }
+                        _ => None,
+                    })
+                    .collect()
             })
     }
 

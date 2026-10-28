@@ -44,9 +44,6 @@ sealed class BridgeProductBaseline with _$BridgeProductBaseline {
   const factory BridgeProductBaseline.modelCatalog(
     BridgeModelCatalogStateSnapshot field0,
   ) = BridgeProductBaseline_ModelCatalog;
-  const factory BridgeProductBaseline.recovery(
-    BridgeRecoveryStateSnapshot field0,
-  ) = BridgeProductBaseline_Recovery;
   const factory BridgeProductBaseline.mcp(BridgeMcpStateSnapshot field0) =
       BridgeProductBaseline_Mcp;
   const factory BridgeProductBaseline.lsp(BridgeLspStateSnapshot field0) =
@@ -97,7 +94,6 @@ sealed class BridgeProductTopic with _$BridgeProductTopic {
       BridgeProductTopic_SettingsConfig;
   const factory BridgeProductTopic.modelCatalog() =
       BridgeProductTopic_ModelCatalog;
-  const factory BridgeProductTopic.recovery() = BridgeProductTopic_Recovery;
   const factory BridgeProductTopic.mcp() = BridgeProductTopic_Mcp;
   const factory BridgeProductTopic.lsp() = BridgeProductTopic_Lsp;
   const factory BridgeProductTopic.skills({required String projectId}) =

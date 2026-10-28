@@ -26,10 +26,10 @@ final class InteractionReader {
               targetThreadId: key.target,
             )
           : session.openInteraction(
-        interactionId: key.interactionId,
-        expectedRevision: key.revision,
-        expectedIncarnation: key.incarnation,
-      ),
+              interactionId: key.interactionId,
+              expectedRevision: key.revision,
+              expectedIncarnation: key.incarnation,
+            ),
       requestClose: (scope) => scope.requestClose(),
       close: (scope) => scope.close(),
       retryCleanup: (scope) => scope.retryCleanup(),

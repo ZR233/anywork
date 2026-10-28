@@ -47,7 +47,9 @@ pub(super) async fn validate(
         for row in rows {
             let thread_id: String = row.try_get("", "thread_id")?;
             if thread_id.is_empty() {
-                return Err(SessionStoreError::Invalid("empty source Thread identity".into()));
+                return Err(SessionStoreError::Invalid(
+                    "empty source Thread identity".into(),
+                ));
             }
             validate_thread(db, &thread_id, format, has_checkpoints).await?;
             after = Some(thread_id);

@@ -45,15 +45,58 @@ void main() {
   });
 
   test('Control and legacy Reason preserve the typed noExecution and continuationAccepted labels', () {
-    const absent = StudioFailure(code: StudioFailureCode.conflict, message: 'No execution', retryable: false,
-      correlationId: 'no-execution', details: StudioFailureDetails.control(reason: 'noExecution',
-        facts: ControlFailureFacts.expectedExecution(threadId: 'thread', expectedExecutionId: 'ended')));
-    const accepted = StudioFailure(code: StudioFailureCode.busy, message: 'Accepted while saving', retryable: true,
-      correlationId: 'accepted', details: StudioFailureDetails.control(reason: 'continuationAccepted',
-        facts: ControlFailureFacts.continuationAccepted(threadId: 'thread', operationId: 'original-op', accepted: true)));
+    const absent = StudioFailure(
+      code: StudioFailureCode.conflict,
+      message: 'No execution',
+      retryable: false,
+      correlationId: 'no-execution',
+      details: StudioFailureDetails.control(
+        reason: 'noExecution',
+        facts: ControlFailureFacts.expectedExecution(
+          threadId: 'thread',
+          expectedExecutionId: 'ended',
+        ),
+      ),
+    );
+    const accepted = StudioFailure(
+      code: StudioFailureCode.busy,
+      message: 'Accepted while saving',
+      retryable: true,
+      correlationId: 'accepted',
+      details: StudioFailureDetails.control(
+        reason: 'continuationAccepted',
+        facts: ControlFailureFacts.continuationAccepted(
+          threadId: 'thread',
+          operationId: 'original-op',
+          accepted: true,
+        ),
+      ),
+    );
     expect(studioFailureReason(absent), StudioFailureReason.noExecution);
-    expect(studioFailureReason(accepted), StudioFailureReason.continuationAccepted);
-    expect(studioFailureReason(accepted.copyWith(details: const StudioFailureDetails.reason(reason: 'continuationAccepted'))), StudioFailureReason.continuationAccepted);
-    expect(studioFailureReason(accepted.copyWith(details: const StudioFailureDetails.control(reason: 'futureReason', facts: ControlFailureFacts.unspecified()))), isNull);
+    expect(
+      studioFailureReason(accepted),
+      StudioFailureReason.continuationAccepted,
+    );
+    expect(
+      studioFailureReason(
+        accepted.copyWith(
+          details: const StudioFailureDetails.reason(
+            reason: 'continuationAccepted',
+          ),
+        ),
+      ),
+      StudioFailureReason.continuationAccepted,
+    );
+    expect(
+      studioFailureReason(
+        accepted.copyWith(
+          details: const StudioFailureDetails.control(
+            reason: 'futureReason',
+            facts: ControlFailureFacts.unspecified(),
+          ),
+        ),
+      ),
+      isNull,
+    );
   });
 }

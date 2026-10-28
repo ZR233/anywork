@@ -3,6 +3,66 @@ use super::{Registry, State, StudioThreadAssembler, ThreadAssemblyError};
 use pl_tool::collaboration::thread::AgentWorkspaceDisposition;
 use std::sync::{Arc, Weak};
 
+/// One immutable Studio directory confirmation, bound to the Entry that accepted its close.
+#[derive(Debug)]
+pub(super) struct DirectoryProjection {
+    factory: crate::studio::StudioThreadFactory,
+    record: pl_protocol::Thread,
+}
+
+impl DirectoryProjection {
+    pub(super) fn new(
+        factory: crate::studio::StudioThreadFactory,
+        record: pl_protocol::Thread,
+    ) -> Self {
+        Self { factory, record }
+    }
+
+    fn same_record(&self, other: &Self) -> bool {
+        let left = &self.record;
+        let right = &other.record;
+        left.id == right.id
+            && left.project_id == right.project_id
+            && left.root_thread_id == right.root_thread_id
+            && left.parent_thread_id == right.parent_thread_id
+            && left.agent_path == right.agent_path
+            && left.created_at == right.created_at
+            && left.workspace_mode == right.workspace_mode
+            && left.workspace_path == right.workspace_path
+    }
+
+    pub(super) async fn project(
+        self: &Arc<Self>,
+        thread: &pl_core::thread::ThreadHandle,
+    ) -> Result<(), ThreadAssemblyError> {
+        let result = async {
+            let snapshot = thread.snapshot();
+            if snapshot.lifecycle != pl_core::thread::ThreadLifecycle::Closed {
+                return Err(ThreadAssemblyError::Identity(self.record.id.clone()));
+            }
+            self.factory
+                .project_child_close(&self.record, &snapshot)
+                .await
+        }
+        .await;
+        result.map_err(|cause| ThreadAssemblyError::Resource {
+            operation: "confirm original child directory closure",
+            source: Box::new(DirectoryProjectionFailure {
+                projection: self.clone(),
+                cause: Arc::new(cause),
+            }),
+        })
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("the original child directory confirmation remains unresolved")]
+pub(super) struct DirectoryProjectionFailure {
+    pub(super) projection: Arc<DirectoryProjection>,
+    #[source]
+    cause: Arc<ThreadAssemblyError>,
+}
+
 /// Admission is sealed only while an operation owns this guard. Durable explicit-close intent
 /// belongs to the Studio checkpoint, not a process-long set of every closed identity.
 #[must_use = "retain this guard until the sealed operation concludes"]
@@ -67,6 +127,16 @@ impl StudioThreadAssembler {
         for id in &ids {
             permits.push(self.agent_operation(id).await);
         }
+        let cleanups = {
+            let state = self.0.state();
+            ids.iter()
+                .filter_map(|id| state.entries.get(*id).map(|entry| entry.cleanup.clone()))
+                .collect::<Vec<_>>()
+        };
+        let mut cleanup_permits = Vec::with_capacity(cleanups.len());
+        for cleanup in cleanups {
+            cleanup_permits.push(cleanup.acquire().await);
+        }
         let mut state = self.0.state();
         for (_, id) in targets {
             if let Some(entry) = state.entries.get(id)
@@ -101,16 +171,42 @@ impl StudioThreadAssembler {
 
     /// Caller holds this identity's operation permit and has just successfully flushed its close
     /// intent. An in-memory marker after a failed flush never authorizes publishing a new policy.
-    pub(super) fn freeze_agent_close_disposition(
+    pub(super) async fn freeze_agent_close_disposition(
         &self,
         id: &str,
+        thread: &pl_core::thread::ThreadHandle,
         disposition: AgentWorkspaceDisposition,
+        projection: DirectoryProjection,
     ) -> Result<(), ThreadAssemblyError> {
+        let (incarnation, cleanup) = self
+            .0
+            .state()
+            .entries
+            .get(id)
+            .filter(|entry| entry.thread.same_instance(thread))
+            .map(|entry| (entry.incarnation.clone(), entry.cleanup.clone()))
+            .ok_or_else(|| ThreadAssemblyError::Identity(id.to_owned()))?;
+        let _cleanup = cleanup.acquire().await;
         let mut state = self.0.state();
         let entry = state
             .entries
             .get_mut(id)
+            .filter(|entry| {
+                Arc::ptr_eq(&entry.incarnation, &incarnation)
+                    && entry.thread.same_instance(thread)
+                    && Arc::ptr_eq(&entry.cleanup, &cleanup)
+            })
             .ok_or_else(|| ThreadAssemblyError::Identity(id.to_owned()))?;
+        if projection.record.id != id || projection.record.parent_thread_id != entry.parent_id {
+            return Err(ThreadAssemblyError::Identity(id.to_owned()));
+        }
+        if entry
+            .directory_projection
+            .as_ref()
+            .is_some_and(|current| !current.same_record(&projection))
+        {
+            return Err(ThreadAssemblyError::Identity(id.to_owned()));
+        }
         if let Some(current) = entry.workspace_disposition {
             if current != disposition {
                 return Err(ThreadAssemblyError::CloseDisposition(id.to_owned()));
@@ -121,6 +217,10 @@ impl StudioThreadAssembler {
             entry.published_resources_closed = false;
             entry.workspace_disposition = Some(disposition);
         }
+        if entry.directory_projection.is_none() {
+            entry.directory_projection = Some(Arc::new(projection));
+            entry.directory_projected = false;
+        }
         Ok(())
     }
 
@@ -128,8 +228,9 @@ impl StudioThreadAssembler {
         registry: Weak<Registry>,
         id: String,
         owner: super::close_failure::EntryCloseOwner,
+        disposition: Option<AgentWorkspaceDisposition>,
     ) -> Result<(), ThreadAssemblyError> {
-        if !owner.published || owner.disposition.is_none() {
+        if !owner.published || disposition.is_none() {
             return Ok(());
         }
         let cleanup = owner
@@ -147,10 +248,7 @@ impl StudioThreadAssembler {
                 .entries
                 .get(&id)
                 .filter(|entry| {
-                    Arc::ptr_eq(&entry.incarnation, &owner.incarnation)
-                        && entry.thread.same_instance(&owner.thread)
-                        && Arc::ptr_eq(&entry.cleanup, &cleanup)
-                        && entry.workspace_disposition == owner.disposition
+                    owner.matches_entry(entry) && entry.workspace_disposition == disposition
                 })
                 .ok_or_else(|| ThreadAssemblyError::Identity(id.to_owned()))?;
             if state.unpublished_children.contains_key(&id) {
@@ -162,30 +260,9 @@ impl StudioThreadAssembler {
         if completed {
             return Ok(());
         }
-        if let (Some(factory), Some(disposition)) = (owner.factory, owner.disposition) {
-            factory
-                .close_published(&id, disposition)
-                .await?;
+        if let (Some(factory), Some(disposition)) = (owner.factory, disposition) {
+            factory.close_published(&id, disposition).await?;
         }
-        let registry = registry
-            .upgrade()
-            .ok_or_else(|| ThreadAssemblyError::Identity(id.clone()))?;
-        let cleanup = owner
-            .cleanup
-            .upgrade()
-            .ok_or_else(|| ThreadAssemblyError::Identity(id.clone()))?;
-        let mut state = registry.state();
-        let entry = state
-            .entries
-            .get_mut(&id)
-            .filter(|entry| {
-                Arc::ptr_eq(&entry.incarnation, &owner.incarnation)
-                    && entry.thread.same_instance(&owner.thread)
-                    && Arc::ptr_eq(&entry.cleanup, &cleanup)
-                    && entry.workspace_disposition == owner.disposition
-            })
-            .ok_or_else(|| ThreadAssemblyError::Identity(id.to_owned()))?;
-        entry.published_resources_closed = true;
         Ok(())
     }
 }

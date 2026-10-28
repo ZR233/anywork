@@ -22,27 +22,38 @@ class ConversationStopControl extends StatelessWidget {
   @override
   Widget build(BuildContext context) => Row(
     children: [
-      Expanded(child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          ConversationStopStatus(state: state),
-          if (state?.failure case final failure?)
-            Text(context.composerFailureReasonLabel(studioFailureReason(failure)),
-              key: const ValueKey('composer-stop-failure')),
-        ],
-      )),
+      Expanded(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            ConversationStopStatus(state: state),
+            if (state?.failure case final failure?)
+              Text(
+                context.composerFailureReasonLabel(
+                  studioFailureReason(failure),
+                ),
+                key: const ValueKey('composer-stop-failure'),
+              ),
+          ],
+        ),
+      ),
       if (primaryAction.kind == ComposerPrimaryActionKind.stopping) ...[
-        Text(context.l10n.composerStopping, key: StudioDriverKeys.composerStopping),
+        Text(
+          context.l10n.composerStopping,
+          key: StudioDriverKeys.composerStopping,
+        ),
         const SizedBox(width: 8),
       ],
       if (primaryAction.kind == ComposerPrimaryActionKind.stop ||
           primaryAction.kind == ComposerPrimaryActionKind.stopping)
         IconButton.filledTonal(
           key: primaryAction.kind == ComposerPrimaryActionKind.stopping
-              ? const ValueKey('composer-stopping-disabled') : StudioDriverKeys.composerStop,
+              ? const ValueKey('composer-stopping-disabled')
+              : StudioDriverKeys.composerStop,
           tooltip: primaryAction.kind == ComposerPrimaryActionKind.stopping
-              ? context.l10n.composerStopping : context.l10n.composerStop,
+              ? context.l10n.composerStopping
+              : context.l10n.composerStop,
           onPressed: primaryAction.enabled ? onStop : null,
           icon: primaryAction.kind == ComposerPrimaryActionKind.stopping
               ? const SizedBox.square(

@@ -27,8 +27,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::statistics::{
-    StudioModelPerformanceEffortSummary,
-    StudioModelPerformanceSample, StudioModelPerformanceSnapshot, StudioModelPerformanceSummary,
+    StudioModelPerformanceEffortSummary, StudioModelPerformanceSample,
+    StudioModelPerformanceSnapshot, StudioModelPerformanceSummary,
 };
 use crate::studio::storage::calls::{
     CallRetention, CallStatus, PerformanceSampleRow, PerformanceSummaryRow, PurposeCostRollup,

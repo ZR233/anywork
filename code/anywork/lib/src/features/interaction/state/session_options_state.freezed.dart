@@ -15,7 +15,7 @@ T _$identity<T>(T value) => value;
 /// @nodoc
 mixin _$SessionOptionsState {
 
- int get intent; bool get waiting; OperationState? get operation; StudioFailure? get error; String? get explanation;
+ int get intent; bool get waiting; OperationState? get operation; StudioFailure? get error; String? get explanation; StartRoutePreferences? get preferences;
 /// Create a copy of SessionOptionsState
 /// with the given fields replaced by the non-null parameter values.
 @JsonKey(includeFromJson: false, includeToJson: false)
@@ -27,14 +27,14 @@ $SessionOptionsStateCopyWith<SessionOptionsState> get copyWith => _$SessionOptio
 @override
 bool operator ==(Object other) {
   final _this = this as SessionOptionsState;
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is SessionOptionsState&&(identical(other.intent, _this.intent) || other.intent == _this.intent)&&(identical(other.waiting, _this.waiting) || other.waiting == _this.waiting)&&(identical(other.operation, _this.operation) || other.operation == _this.operation)&&(identical(other.error, _this.error) || other.error == _this.error)&&(identical(other.explanation, _this.explanation) || other.explanation == _this.explanation));
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is SessionOptionsState&&(identical(other.intent, _this.intent) || other.intent == _this.intent)&&(identical(other.waiting, _this.waiting) || other.waiting == _this.waiting)&&(identical(other.operation, _this.operation) || other.operation == _this.operation)&&(identical(other.error, _this.error) || other.error == _this.error)&&(identical(other.explanation, _this.explanation) || other.explanation == _this.explanation)&&(identical(other.preferences, _this.preferences) || other.preferences == _this.preferences));
 }
 
 
 @override
 int get hashCode {
   final _this = this as SessionOptionsState;
-  return Object.hash(runtimeType,_this.intent,_this.waiting,_this.operation,_this.error,_this.explanation);
+  return Object.hash(runtimeType,_this.intent,_this.waiting,_this.operation,_this.error,_this.explanation,_this.preferences);
 }
 
 
@@ -46,11 +46,11 @@ abstract mixin class $SessionOptionsStateCopyWith<$Res>  {
   factory $SessionOptionsStateCopyWith(SessionOptionsState value, $Res Function(SessionOptionsState) _then) = _$SessionOptionsStateCopyWithImpl;
 @useResult
 $Res call({
- int intent, bool waiting, OperationState? operation, StudioFailure? error, String? explanation
+ int intent, bool waiting, OperationState? operation, StudioFailure? error, String? explanation, StartRoutePreferences? preferences
 });
 
 
-$OperationStateCopyWith<$Res>? get operation;$StudioFailureCopyWith<$Res>? get error;
+$OperationStateCopyWith<$Res>? get operation;$StudioFailureCopyWith<$Res>? get error;$StartRoutePreferencesCopyWith<$Res>? get preferences;
 
 }
 /// @nodoc
@@ -63,14 +63,15 @@ class _$SessionOptionsStateCopyWithImpl<$Res>
 
 /// Create a copy of SessionOptionsState
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') @override $Res call({Object? intent = null,Object? waiting = null,Object? operation = freezed,Object? error = freezed,Object? explanation = freezed,}) {
+@pragma('vm:prefer-inline') @override $Res call({Object? intent = null,Object? waiting = null,Object? operation = freezed,Object? error = freezed,Object? explanation = freezed,Object? preferences = freezed,}) {
   return _then(SessionOptionsState(
 intent: null == intent ? _self.intent : intent // ignore: cast_nullable_to_non_nullable
 as int,waiting: null == waiting ? _self.waiting : waiting // ignore: cast_nullable_to_non_nullable
 as bool,operation: freezed == operation ? _self.operation : operation // ignore: cast_nullable_to_non_nullable
 as OperationState?,error: freezed == error ? _self.error : error // ignore: cast_nullable_to_non_nullable
 as StudioFailure?,explanation: freezed == explanation ? _self.explanation : explanation // ignore: cast_nullable_to_non_nullable
-as String?,
+as String?,preferences: freezed == preferences ? _self.preferences : preferences // ignore: cast_nullable_to_non_nullable
+as StartRoutePreferences?,
   ));
 }
 /// Create a copy of SessionOptionsState
@@ -96,6 +97,18 @@ $StudioFailureCopyWith<$Res>? get error {
 
   return $StudioFailureCopyWith<$Res>(_self.error!, (value) {
     return _then(_self.copyWith(error: value));
+  });
+}/// Create a copy of SessionOptionsState
+/// with the given fields replaced by the non-null parameter values.
+@override
+@pragma('vm:prefer-inline')
+$StartRoutePreferencesCopyWith<$Res>? get preferences {
+    if (_self.preferences == null) {
+    return null;
+  }
+
+  return $StartRoutePreferencesCopyWith<$Res>(_self.preferences!, (value) {
+    return _then(_self.copyWith(preferences: value));
   });
 }
 }
@@ -179,10 +192,10 @@ return $default(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( int intent,  bool waiting,  OperationState? operation,  StudioFailure? error,  String? explanation)?  $default,{required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( int intent,  bool waiting,  OperationState? operation,  StudioFailure? error,  String? explanation,  StartRoutePreferences? preferences)?  $default,{required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case _SessionOptionsState() when $default != null:
-return $default(_that.intent,_that.waiting,_that.operation,_that.error,_that.explanation);case _:
+return $default(_that.intent,_that.waiting,_that.operation,_that.error,_that.explanation,_that.preferences);case _:
   return orElse();
 
 }
@@ -200,10 +213,10 @@ return $default(_that.intent,_that.waiting,_that.operation,_that.error,_that.exp
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( int intent,  bool waiting,  OperationState? operation,  StudioFailure? error,  String? explanation)  $default,) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( int intent,  bool waiting,  OperationState? operation,  StudioFailure? error,  String? explanation,  StartRoutePreferences? preferences)  $default,) {final _that = this;
 switch (_that) {
 case _SessionOptionsState():
-return $default(_that.intent,_that.waiting,_that.operation,_that.error,_that.explanation);case _:
+return $default(_that.intent,_that.waiting,_that.operation,_that.error,_that.explanation,_that.preferences);case _:
   throw StateError('Unexpected subclass');
 
 }
@@ -220,10 +233,10 @@ return $default(_that.intent,_that.waiting,_that.operation,_that.error,_that.exp
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( int intent,  bool waiting,  OperationState? operation,  StudioFailure? error,  String? explanation)?  $default,) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( int intent,  bool waiting,  OperationState? operation,  StudioFailure? error,  String? explanation,  StartRoutePreferences? preferences)?  $default,) {final _that = this;
 switch (_that) {
 case _SessionOptionsState() when $default != null:
-return $default(_that.intent,_that.waiting,_that.operation,_that.error,_that.explanation);case _:
+return $default(_that.intent,_that.waiting,_that.operation,_that.error,_that.explanation,_that.preferences);case _:
   return null;
 
 }
@@ -235,7 +248,7 @@ return $default(_that.intent,_that.waiting,_that.operation,_that.error,_that.exp
 
 
 class _SessionOptionsState extends SessionOptionsState {
-  const _SessionOptionsState({this.intent = 0, this.waiting = false, this.operation, this.error, this.explanation}): super._();
+  const _SessionOptionsState({this.intent = 0, this.waiting = false, this.operation, this.error, this.explanation, this.preferences}): super._();
 
 
 @override@JsonKey() final  int intent;
@@ -243,6 +256,7 @@ class _SessionOptionsState extends SessionOptionsState {
 @override final  OperationState? operation;
 @override final  StudioFailure? error;
 @override final  String? explanation;
+@override final  StartRoutePreferences? preferences;
 
 /// Create a copy of SessionOptionsState
 /// with the given fields replaced by the non-null parameter values.
@@ -254,13 +268,13 @@ _$SessionOptionsStateCopyWith<_SessionOptionsState> get copyWith => __$SessionOp
 
 @override
 bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is _SessionOptionsState&&(identical(other.intent, intent) || other.intent == intent)&&(identical(other.waiting, waiting) || other.waiting == waiting)&&(identical(other.operation, operation) || other.operation == operation)&&(identical(other.error, error) || other.error == error)&&(identical(other.explanation, explanation) || other.explanation == explanation));
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is _SessionOptionsState&&(identical(other.intent, intent) || other.intent == intent)&&(identical(other.waiting, waiting) || other.waiting == waiting)&&(identical(other.operation, operation) || other.operation == operation)&&(identical(other.error, error) || other.error == error)&&(identical(other.explanation, explanation) || other.explanation == explanation)&&(identical(other.preferences, preferences) || other.preferences == preferences));
 }
 
 
 @override
 int get hashCode {
-    return Object.hash(runtimeType,intent,waiting,operation,error,explanation);
+    return Object.hash(runtimeType,intent,waiting,operation,error,explanation,preferences);
 }
 
 
@@ -272,11 +286,11 @@ abstract mixin class _$SessionOptionsStateCopyWith<$Res> implements $SessionOpti
   factory _$SessionOptionsStateCopyWith(_SessionOptionsState value, $Res Function(_SessionOptionsState) _then) = __$SessionOptionsStateCopyWithImpl;
 @override @useResult
 $Res call({
- int intent, bool waiting, OperationState? operation, StudioFailure? error, String? explanation
+ int intent, bool waiting, OperationState? operation, StudioFailure? error, String? explanation, StartRoutePreferences? preferences
 });
 
 
-@override $OperationStateCopyWith<$Res>? get operation;@override $StudioFailureCopyWith<$Res>? get error;
+@override $OperationStateCopyWith<$Res>? get operation;@override $StudioFailureCopyWith<$Res>? get error;@override $StartRoutePreferencesCopyWith<$Res>? get preferences;
 
 }
 /// @nodoc
@@ -289,14 +303,15 @@ class __$SessionOptionsStateCopyWithImpl<$Res>
 
 /// Create a copy of SessionOptionsState
 /// with the given fields replaced by the non-null parameter values.
-@override @pragma('vm:prefer-inline') $Res call({Object? intent = null,Object? waiting = null,Object? operation = freezed,Object? error = freezed,Object? explanation = freezed,}) {
+@override @pragma('vm:prefer-inline') $Res call({Object? intent = null,Object? waiting = null,Object? operation = freezed,Object? error = freezed,Object? explanation = freezed,Object? preferences = freezed,}) {
   return _then(_SessionOptionsState(
 intent: null == intent ? _self.intent : intent // ignore: cast_nullable_to_non_nullable
 as int,waiting: null == waiting ? _self.waiting : waiting // ignore: cast_nullable_to_non_nullable
 as bool,operation: freezed == operation ? _self.operation : operation // ignore: cast_nullable_to_non_nullable
 as OperationState?,error: freezed == error ? _self.error : error // ignore: cast_nullable_to_non_nullable
 as StudioFailure?,explanation: freezed == explanation ? _self.explanation : explanation // ignore: cast_nullable_to_non_nullable
-as String?,
+as String?,preferences: freezed == preferences ? _self.preferences : preferences // ignore: cast_nullable_to_non_nullable
+as StartRoutePreferences?,
   ));
 }
 
@@ -323,6 +338,18 @@ $StudioFailureCopyWith<$Res>? get error {
 
   return $StudioFailureCopyWith<$Res>(_self.error!, (value) {
     return _then(_self.copyWith(error: value));
+  });
+}/// Create a copy of SessionOptionsState
+/// with the given fields replaced by the non-null parameter values.
+@override
+@pragma('vm:prefer-inline')
+$StartRoutePreferencesCopyWith<$Res>? get preferences {
+    if (_self.preferences == null) {
+    return null;
+  }
+
+  return $StartRoutePreferencesCopyWith<$Res>(_self.preferences!, (value) {
+    return _then(_self.copyWith(preferences: value));
   });
 }
 }

@@ -6,7 +6,7 @@ pub(crate) mod history_close;
 use std::{
     collections::BTreeMap,
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, Weak,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
 };
@@ -17,9 +17,9 @@ use pl_core::chat::{Session, WeakSession};
 use pl_core::thread::UsageSummary;
 use tokio::sync::{Notify, watch};
 
+use self::history_close::{HistoryCloseGroup, HistoryCloseOwner};
 use crate::studio::storage::history::{HistoryStore, HistoryStoreShare};
 use crate::studio::storage::thread_writer::HistoryChannel;
-use self::history_close::{HistoryCloseOwner, HistoryCloseGroup};
 
 /// Why one writer incarnation's task did not end normally.
 ///
@@ -148,6 +148,8 @@ pub(crate) struct CallsQueueMetrics {
 #[derive(Debug, Clone, Default)]
 struct IncarnationStatus {
     writer: WriterState,
+    /// Queue identity, not merely a Thread ID: only a holder of this same channel may adopt its debt.
+    channel: Weak<HistoryChannel>,
     /// Admitted effects this incarnation still owes an ordered history/calls write.
     pending: BTreeMap<u64, ()>,
     /// Whether this incarnation still owes the publication of a retained checkpoint.
@@ -189,12 +191,28 @@ impl IncarnationStatus {
     /// Last failure worth surfacing for this incarnation; its own write error outranks the terminal
     /// fact that it stopped while still owing commits.
     fn failure(&self) -> Option<String> {
-        self.error.clone().or_else(|| self.released_dirty.clone())
+        self.error
+            .clone()
+            .or_else(|| self.released_dirty.clone())
+            .or_else(|| self.task_failure.as_ref().map(ToString::to_string))
     }
 
     /// Whether this incarnation has nothing left to make durable and no failure to report.
     fn settled(&self) -> bool {
-        self.owed() == 0 && self.failure().is_none()
+        self.owed() == 0 && self.failure().is_none() && self.task_failure.is_none()
+    }
+
+    /// Ends this row's saving responsibility after the same queue was adopted, not its task failure.
+    fn transfer_saving_debt(&mut self) {
+        self.pending.clear();
+        self.pending_checkpoint = false;
+        self.released_dirty = None;
+        self.metrics.pending_operations = 0;
+        self.metrics.pending_bytes = 0;
+        self.metrics.in_flight_bytes = 0;
+        self.metrics.oldest_pending_age_millis = None;
+        self.metrics.state_saving_revision = 0;
+        self.metrics.pressure_paused = false;
     }
 
     /// Whether preparation or its accepted worker still owns this incarnation.
@@ -256,6 +274,14 @@ struct Inner {
     /// Test-only gate: the next installed supervisor waits on it before failing itself.
     #[cfg(test)]
     supervisor_failure_gate: Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
+    /// Test-only acknowledgements: each real writer helper fires one when it first waits.
+    #[cfg(test)]
+    helper_ready: Mutex<
+        Option<(
+            tokio::sync::oneshot::Sender<()>,
+            tokio::sync::oneshot::Sender<()>,
+        )>,
+    >,
     queued_bytes: Arc<AtomicU64>,
     state: watch::Sender<ThreadPersistenceSnapshot>,
     retry: Notify,
@@ -279,6 +305,8 @@ impl Default for ThreadPersistenceCoordinator {
             history_closed: AtomicBool::new(false),
             #[cfg(test)]
             supervisor_failure_gate: Mutex::new(None),
+            #[cfg(test)]
+            helper_ready: Mutex::new(None),
             queued_bytes: Arc::new(AtomicU64::new(0)),
             state,
             retry: Notify::new(),
@@ -287,6 +315,35 @@ impl Default for ThreadPersistenceCoordinator {
 }
 
 impl ThreadPersistenceCoordinator {
+    #[cfg(test)]
+    /// Arms the two writer helpers to acknowledge reaching their waiting branch (test-only).
+    pub(crate) fn arm_helper_ready(
+        &self,
+        observer: tokio::sync::oneshot::Sender<()>,
+        watchdog: tokio::sync::oneshot::Sender<()>,
+    ) {
+        *self
+            .0
+            .helper_ready
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((observer, watchdog));
+    }
+
+    #[cfg(test)]
+    /// Takes the armed helper acknowledgements for this install.
+    pub(crate) fn take_helper_ready(
+        &self,
+    ) -> Option<(
+        tokio::sync::oneshot::Sender<()>,
+        tokio::sync::oneshot::Sender<()>,
+    )> {
+        self.0
+            .helper_ready
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+    }
+
     #[cfg(test)]
     /// Arms the next installed writer supervisor to fail after this gate opens (test-only).
     pub(crate) fn arm_supervisor_failure(&self, gate: tokio::sync::oneshot::Receiver<()>) {
@@ -315,7 +372,12 @@ impl ThreadPersistenceCoordinator {
     }
 
     /// Registers the real tasks of one incarnation next to its watermarks.
-    pub(crate) fn register_writer_tasks(&self, thread_id: &str, owner: usize, tasks: Arc<WriterTasks>) {
+    pub(crate) fn register_writer_tasks(
+        &self,
+        thread_id: &str,
+        owner: usize,
+        tasks: Arc<WriterTasks>,
+    ) {
         {
             let mut threads = self
                 .0
@@ -374,8 +436,6 @@ impl ThreadPersistenceCoordinator {
                 incarnation.error.get_or_insert(detail);
                 incarnation.task_failure = Some(failure.clone());
             }
-            drop(threads);
-            self.refresh();
         }
         self.detach(thread_id, owner);
     }
@@ -384,10 +444,7 @@ impl ThreadPersistenceCoordinator {
     ///
     /// A close must not report success because the incarnation that failed happened to stop before
     /// the wait began; this reads the canonical rows instead of what one wait happened to observe.
-    pub(crate) fn task_end_failures(
-        &self,
-        thread_id: Option<&str>,
-    ) -> Vec<Arc<WriterTaskFailure>> {
+    pub(crate) fn task_end_failures(&self, thread_id: Option<&str>) -> Vec<Arc<WriterTaskFailure>> {
         let threads = self
             .0
             .threads
@@ -561,6 +618,11 @@ impl ThreadPersistenceCoordinator {
             else {
                 return;
             };
+            if incarnation.writer == WriterState::Stopped {
+                // A retained sink may outlive its real tasks. It cannot republish the saving debt
+                // already handed to a successor or clear this incarnation's terminal failure.
+                return;
+            }
             incarnation.pending = pending.into_iter().map(|sequence| (sequence, ())).collect();
             incarnation.pending_checkpoint = pending_checkpoint;
             incarnation.error = error;
@@ -571,11 +633,10 @@ impl ThreadPersistenceCoordinator {
 
     /// Binds one live per-Thread writer incarnation to a Thread's watermarks.
     ///
-    /// Called when a sink is created. The predecessor's rows are left untouched: only that writer's
-    /// own [`Self::detach`] — which runs when its task has actually ended — may decide that a queue
-    /// was released unsaved, so an overlapping incarnation can never be talked out of an obligation
-    /// it accepted and still owns.
-    pub(crate) fn claim(&self, thread_id: &str, owner: usize) {
+    /// Called while the sink holds this channel's single-writer lease. Stopped predecessors may
+    /// transfer only that same queue's debt; their typed task failures remain. A live predecessor
+    /// keeps its row until its own real task end and [`Self::detach`] complete the handoff.
+    pub(crate) fn claim(&self, thread_id: &str, owner: usize, channel: &Arc<HistoryChannel>) {
         {
             let mut threads = self
                 .0
@@ -583,21 +644,41 @@ impl ThreadPersistenceCoordinator {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             let status = threads.entry(thread_id.to_owned()).or_default();
+            if status.incarnations.contains_key(&owner) {
+                // Registration is once per incarnation, including a stopped-but-failed one.
+                return;
+            }
             // A prior task has ended, but its channel and unacknowledged batches survived here.
             // The replacement adopts that same queue, so the predecessor's diagnostic is no
             // longer a separate outstanding obligation.
-            status
-                .incarnations
-                .retain(|_, previous| previous.released_dirty.is_none());
+            // A row that carries a typed task failure is a different fact: its task really ended
+            // abnormally, and a successor adopting the queue must not wash that away. Its saving
+            // debt *is* adopted, so keeping it too would count one queue twice.
+            let mut claimed = IncarnationStatus {
+                channel: Arc::downgrade(channel),
+                ..Default::default()
+            };
+            for previous in status.incarnations.values_mut() {
+                if previous.writer == WriterState::Stopped
+                    && previous.channel.ptr_eq(&claimed.channel)
+                {
+                    claimed.pending.append(&mut previous.pending);
+                    claimed.pending_checkpoint |= previous.pending_checkpoint;
+                    previous.transfer_saving_debt();
+                }
+            }
+            status.incarnations.retain(|_, previous| {
+                previous.is_live()
+                    || !previous.channel.ptr_eq(&claimed.channel)
+                    || previous.task_failure.is_some()
+            });
             let superseded: Vec<usize> = status
                 .incarnations
                 .iter()
                 .filter(|(previous, incarnation)| **previous != owner && incarnation.is_live())
                 .map(|(previous, _)| *previous)
                 .collect();
-            status
-                .incarnations
-                .insert(owner, IncarnationStatus::default());
+            status.incarnations.insert(owner, claimed);
             if !superseded.is_empty() {
                 // Overlap is expected during re-activation; the predecessor keeps its own row until
                 // its task ends, so its outstanding obligations are neither adopted nor discarded.
@@ -645,7 +726,7 @@ impl ThreadPersistenceCoordinator {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut empty = false;
-        let mut unavailable = false;
+        let mut unavailable_channel = None;
         if let Some(status) = threads.get_mut(thread_id) {
             if let Some(incarnation) = status.incarnations.get_mut(&owner) {
                 incarnation.writer = WriterState::Stopped;
@@ -655,6 +736,14 @@ impl ThreadPersistenceCoordinator {
             let mut release = false;
             let mut drop_row = false;
             let mut stale_error = None;
+            // A live successor holding this same channel adopted the queue when it claimed, so recording
+            // this incarnation's remaining commits again would make one queue owe twice. The typed
+            // task failure is a different fact and its row is kept either way.
+            let adopted = status.incarnations.get(&owner).is_some_and(|incarnation| {
+                status.incarnations.iter().any(|(id, other)| {
+                    *id != owner && other.is_live() && other.channel.ptr_eq(&incarnation.channel)
+                })
+            });
             if let Some(incarnation) = status.incarnations.get(&owner) {
                 release = incarnation.owed() > 0;
                 if !release {
@@ -665,16 +754,29 @@ impl ThreadPersistenceCoordinator {
                 }
             }
             if release && let Some(incarnation) = status.incarnations.get_mut(&owner) {
-                // A queue it never drained is a still-owned obligation, not a stale counter: the
-                // pending entries are kept so the drain keeps seeing them and fails explicitly.
-                record_released_commits(incarnation, thread_id);
+                if adopted {
+                    incarnation.transfer_saving_debt();
+                } else {
+                    // No holder of the same queue can save it: keep the original debt and fail.
+                    record_released_commits(incarnation, thread_id);
+                }
             }
-            unavailable = release
-                && !status
+            let unavailable = release && !adopted;
+            if unavailable {
+                unavailable_channel = status
                     .incarnations
-                    .iter()
-                    .any(|(id, incarnation)| *id != owner && incarnation.is_live());
-            if release && !unavailable {
+                    .get(&owner)
+                    .and_then(|incarnation| incarnation.channel.upgrade());
+            }
+            // A row that carries a typed task failure is never removed here: handing its queue to a
+            // successor must not wash that failure away, and the close still has to see it.
+            if release
+                && !unavailable
+                && status
+                    .incarnations
+                    .get(&owner)
+                    .is_none_or(|incarnation| incarnation.task_failure.is_none())
+            {
                 status.incarnations.remove(&owner);
             }
             if let Some(error) = stale_error {
@@ -694,8 +796,9 @@ impl ThreadPersistenceCoordinator {
             threads.remove(thread_id);
         }
         drop(threads);
-        if unavailable {
-            self.history_channel(thread_id).mark_unavailable();
+        if let Some(channel) = unavailable_channel {
+            // Retire the original queue, never create or fault a replacement by Thread ID alone.
+            channel.mark_unavailable();
         } else if empty {
             let mut channels = self
                 .0

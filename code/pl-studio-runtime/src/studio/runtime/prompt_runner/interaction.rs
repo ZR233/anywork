@@ -79,7 +79,10 @@ impl StudioRuntime {
                 )
                 .with_reason(
                     pl_protocol::studio::StudioErrorReason::InteractionNotHosted,
-                    pl_protocol::studio::ControlFailureFacts::ChildInteraction { interaction_id: interaction.interaction_id .to_owned(), interaction_thread_id: thread_id .to_owned() },
+                    pl_protocol::studio::ControlFailureFacts::ChildInteraction {
+                        interaction_id: interaction.interaction_id.to_owned(),
+                        interaction_thread_id: thread_id.to_owned(),
+                    },
                 ),
             ));
         }
@@ -97,7 +100,11 @@ impl StudioRuntime {
                 )
                 .with_reason(
                     pl_protocol::studio::StudioErrorReason::StaleInteraction,
-                    pl_protocol::studio::ControlFailureFacts::InteractionRevision { interaction_id: interaction.interaction_id .to_owned(), expected_revision: expected_revision, current_revision: interaction.revision },
+                    pl_protocol::studio::ControlFailureFacts::InteractionRevision {
+                        interaction_id: interaction.interaction_id.to_owned(),
+                        expected_revision,
+                        current_revision: interaction.revision,
+                    },
                 ),
             ));
         }
@@ -117,7 +124,10 @@ impl StudioRuntime {
                     )
                     .with_reason(
                         pl_protocol::studio::StudioErrorReason::StaleInteraction,
-                        pl_protocol::studio::ControlFailureFacts::InteractionTerminal { interaction_id: interaction.interaction_id .to_owned(), current_revision: interaction.revision },
+                        pl_protocol::studio::ControlFailureFacts::InteractionTerminal {
+                            interaction_id: interaction.interaction_id.to_owned(),
+                            current_revision: interaction.revision,
+                        },
                     ),
                 ));
             }
@@ -164,7 +174,12 @@ impl StudioRuntime {
         let user_answered = matches!(resolution, InteractionResolution::UserInput(_));
         let interaction = self
             .threads
-            .resolve_product_interaction(&interaction_id, expected_revision, &operation_id, resolution)
+            .resolve_product_interaction(
+                &interaction_id,
+                expected_revision,
+                &operation_id,
+                resolution,
+            )
             .await
             .map_err(interaction_error)?;
         if user_answered {
@@ -437,7 +452,10 @@ impl StudioRuntime {
             )
             .with_reason(
                 pl_protocol::studio::StudioErrorReason::StaleInteraction,
-                pl_protocol::studio::ControlFailureFacts::InteractionOperation { operation_id: operation_id .to_owned(), interaction_id: format!("{thread_id}:{other}") },
+                pl_protocol::studio::ControlFailureFacts::InteractionOperation {
+                    operation_id: operation_id.to_owned(),
+                    interaction_id: format!("{thread_id}:{other}"),
+                },
             ),
         ))
     }
@@ -554,7 +572,10 @@ impl StudioRuntime {
                 )
                 .with_reason(
                     StudioErrorReason::InteractionNotHosted,
-                    pl_protocol::studio::ControlFailureFacts::ChildHost { host_thread_id: host.id .to_owned(), host_is_child: true },
+                    pl_protocol::studio::ControlFailureFacts::ChildHost {
+                        host_thread_id: host.id.to_owned(),
+                        host_is_child: true,
+                    },
                 ),
             ));
         }
@@ -581,7 +602,10 @@ impl StudioRuntime {
                 )
                 .with_reason(
                     StudioErrorReason::InteractionNotHosted,
-                    pl_protocol::studio::ControlFailureFacts::InteractionHost { host_thread_id: host.id .to_owned(), interaction_thread_id: owner.id .to_owned() },
+                    pl_protocol::studio::ControlFailureFacts::InteractionHost {
+                        host_thread_id: host.id.to_owned(),
+                        interaction_thread_id: owner.id.to_owned(),
+                    },
                 ),
             ));
         }
@@ -906,7 +930,10 @@ pub(super) fn child_decision_not_saved(interaction: &InteractionRequest) -> anyh
         )
         .with_reason(
             pl_protocol::studio::StudioErrorReason::InteractionNotHosted,
-            pl_protocol::studio::ControlFailureFacts::DecisionDurability { interaction_id: interaction.interaction_id .to_owned(), decision_saved: false },
+            pl_protocol::studio::ControlFailureFacts::DecisionDurability {
+                interaction_id: interaction.interaction_id.to_owned(),
+                decision_saved: false,
+            },
         ),
     )
 }
@@ -926,7 +953,10 @@ fn unreadable_decision(thread_id: &str, local_id: &str) -> anyhow::Error {
         )
         .with_reason(
             pl_protocol::studio::StudioErrorReason::StaleInteraction,
-            pl_protocol::studio::ControlFailureFacts::UnreadableDecision { thread_id: thread_id .to_owned(), interaction_id: local_id .to_owned() },
+            pl_protocol::studio::ControlFailureFacts::UnreadableDecision {
+                thread_id: thread_id.to_owned(),
+                interaction_id: local_id.to_owned(),
+            },
         ),
     )
 }
@@ -1039,7 +1069,10 @@ fn interaction_error(error: crate::thread_assembler::StudioInteractionError) -> 
                 "The interaction identity, revision or kind does not match its record",
                 false,
             )
-            .with_reason(StudioErrorReason::StaleInteraction, pl_protocol::studio::ControlFailureFacts::Unspecified),
+            .with_reason(
+                StudioErrorReason::StaleInteraction,
+                pl_protocol::studio::ControlFailureFacts::Unspecified,
+            ),
         ),
         Source::Plan(crate::thread_assembler::PlanInteractionError::NotRoot) => anyhow::Error::new(
             StudioError::new(

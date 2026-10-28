@@ -205,9 +205,12 @@ final class InteractionScopeOwner
       throw readProtocol(
         'The Interaction header replaced its requested revision.',
       );
-    if ((!allowHostedTarget && await readPinnedIdentity(owner, c, h.threadId) != expectedThreadId) ||
+    if ((!allowHostedTarget &&
+            await readPinnedIdentity(owner, c, h.threadId) !=
+                expectedThreadId) ||
         (expectedTargetThreadId != null &&
-            await readPinnedIdentity(owner, c, h.threadId) != expectedTargetThreadId) ||
+            await readPinnedIdentity(owner, c, h.threadId) !=
+                expectedTargetThreadId) ||
         (expectedInteractionId != null &&
             await readPinnedIdentity(owner, c, h.interactionId) !=
                 expectedInteractionId)) {

@@ -6,10 +6,10 @@
 - 共同祖先：`466bc5f45b581a1015606cb496c9b1f26f96eb75`。
 - 首轮调查主线：`900a23c5eae44d3c34fde7319b0f57688b3d3937`。
 - 首轮冻结主线：`7aa6ee04bb60551ccaf0e7de345803f9d30b9230`，新增 #177，已收入 `e3e33b77`。
-- 第二轮重新核对远端：主线新增 `a9e4e807ee6dd891378fc89d60ebd25f846d9b87`（#174）。上一检查点 `e3e33b774bba4766e2ebc168f5eca84f49d7a9ba` 已合入 #177，但尚未包含此提交，因此 GitHub 仍报告冲突；本轮须完整迁入 #174 后重新推送并回读可合并状态。
+- 第二轮主线新增 `a9e4e807ee6dd891378fc89d60ebd25f846d9b87`（#174）。已通过合流提交 `3ae0c936e503cac656fe57bdfd373036ce19cd41` 快进推送原 PR 分支；GitHub 回读该 head 为 `MERGEABLE`，本轮远端冲突已消除。
 - 批准计划 revision 2 持续有效。用户要求先解决冲突再推送；原 history-close 已恢复互斥范围内的集中返修，不把其未通过的候选顺带收入冲突合流提交，也不用 main 覆盖掩盖问题。
 - 本文件是实施与证据清单，不是设计权威源。设计见 `design/12`、`14`—`19`、`22`—`26`。
-- 当前第二轮设计先行提交为 `557cc1915866da30dd3dcbda0be2bc9cc266d1f9`，`MERGE_HEAD` 为 `a9e4e807`。原六处索引冲突及正文标记已清零；Core 整组与无项目预选已通过静态审查，Conversation 与测试的集中保真修正待复审收拢。下表历史“待迁移/待验证”不表示当前已通过；无冲突标记或 Git 已暂存不等于语义保全或验收完成。
+- 第二轮设计先行提交为 `557cc1915866da30dd3dcbda0be2bc9cc266d1f9`，与主线 `a9e4e807` 构成 `3ae0c936` 的两个父提交，当前未处于未提交合并。Core、无项目预选、Conversation 与相应测试的集中静态审查已闭合，41 文件的合流检查点不包含仍在返修的 Runtime、ACP 或 Server 源码。下表历史“待迁移/待验证”不表示当前已通过；无冲突和静态批准均不等于生成、工具链或集成验收通过。
 
 ## 逐提交保全矩阵
 
@@ -26,7 +26,7 @@
 | `409de852` #171 | 五类 SQLite 唯一迁移调度、升级后会话可载入、错误保现场 | SeaORM migration 2.0.4；schema/导入/model-access/身份分阶段；兼容当前 history lease/显式 close | 待迁移 |
 | `900a23c5` #173 | helper 双架构并行，发布消费已提交生成物，不重复源码质量门禁 | RC/release matrix、target 隔离缓存/artifact、GUI 等待两份 helper；保签名/verify/冒烟/attestation与 PR 门禁 | 待合流核对 |
 | `7aa6ee04` #177 | 归档与安全清理解耦、退役重建授权、远端结构化诊断 | 归档保历史/目录/分支/未提交内容，取消归档不重建；Recovery inspection/nullable facts/原来源命令；订阅失败无互等 | 设计已同步，源码调查与迁移待办 |
-| `a9e4e807` #174 | 用户中断和插入消息的中性提示；后继执行启动与停止代次的原子保护 | 新 Conversation Timeline 纯视图与唯一呈现投影；原 core 取消／输入 driver；保留真实失败及既有取消收束与修订空间修复 | 设计先行，集中合流待完成 |
+| `a9e4e807` #174 | 用户中断和插入消息的中性提示；后继执行启动与停止代次的原子保护 | 新 Conversation Timeline 纯视图与唯一呈现投影；原 core 取消／输入 driver；保留真实失败及既有取消收束与修订空间修复 | 已静态审查并合流推送，生成与运行验收待办 |
 
 ## 第二轮集中合流合同
 
@@ -94,6 +94,16 @@
 - 两语言 ARB 均可按严格 JSON 解码，无重复键，业务键均为 1617 且集合一致；新增无执行与继续已受理原因齐全。此检查不代替 l10n 生成或应用测试。
 - Native 原预算回归需要可控 Tokio 时钟，runtime 仅在 dev-dependencies 启用现有 `test-util`，生产 feature 与锁文件未改变。所有生成与运行验证仍由 root 汇合后统一承担。
 
-当前 children 仅源码、只读 Git、diffcheck/hash；所有 Cargo、格式、分析、测试、生成及 GUI 由 root 串行承担。迁移与静态审查就绪后统一 `cargo xtask generate-gui`，再依批准计划执行全量门禁、真实迁移与 Linux Driver 验收。旧 435/455 Client、226 runtime 或之前 workspace 绿色均不覆盖本轮合流。
+初始手写阶段的执行者只做源码及身份检查；统一验证开始后，动态失败由原执行者按明确授权做定向红绿，主代理继续负责统一生成、全量门禁与真实集成验收。旧 435/455 Client、226 runtime 或之前 workspace 绿色均不覆盖本轮合流。
 
-history-close 原返修已恢复：嵌套任务结果与借用编译错误、dirty predecessor 的 task failure 不可洗白、真正取消 owning future、确定性 ACK、supervisor/helper join、Bots stage 唯一性仍按当前候选复审，不能以作者自述代替通过。Recovery 的 HTTP 有界读取与旧公开出口清理另按固定合同推进；ACP 继承的独特生命周期回归及按操作身份取消缺口继续保留。最后补立即归零的 FD 验收、修正 binding 顺序后的原生 GUI 重跑、截图附件和新 head CI。
+最新未提交候选中，Recovery HTTP 有界读取与旧整表公开出口清理、Native 显式关闭权限与
+扫描失败传播、SDK 原所有者停止准入、ACP 按目标操作取消及继承的独特回归、Driver 选项
+只读投影和标签完整性回归均已获对应版本的独立静态批准。
+history-close 的保存责任接管、原任务失败保留、真实 supervisor/helper join、Bots stage
+唯一性，以及初始化／校验／预检中未发布连接的原池关闭责任已获集中独立静态批准。
+第三轮统一生成、严格全工作区全目标 Clippy、模型完整测试 217 项、SQLite 内核完整
+测试 229 项已通过。Runtime 首轮三项失败经定向红绿、独立复审后，完整复验 265 项
+全部通过，未弱化断言或忽略测试。
+Client 的边界、格式与静态分析已通过，纯 SDK 测试为 474 项通过、5 项失败，关闭结算
+及草稿夹具仍在集中返修；应用适配测试尚未开始。随后仍须补 Bridge／Flutter 门禁、
+立即归零的历史库 FD 验收、修正 binding 顺序后的原生 GUI、截图附件和最终 head CI。

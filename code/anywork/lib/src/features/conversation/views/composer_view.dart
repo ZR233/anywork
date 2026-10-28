@@ -81,35 +81,48 @@ class ComposerView extends StatelessWidget {
     final attachments = value?.attachments ?? const <AttachmentMetadata>[];
     final kind = primaryAction.kind;
     final stop = kind == ComposerPrimaryActionKind.stop;
-    final pending = kind == ComposerPrimaryActionKind.stopping ||
+    final pending =
+        kind == ComposerPrimaryActionKind.stopping ||
         kind == ComposerPrimaryActionKind.continuing ||
         (kind == ComposerPrimaryActionKind.send ||
-            kind == ComposerPrimaryActionKind.sendAndContinue) && value?.pending == true ||
+                kind == ComposerPrimaryActionKind.sendAndContinue) &&
+            value?.pending == true ||
         // The original request is really in flight; the spinner is not a claim
         // that Stop has been accepted or that execution is already stopping.
-        (stopState?.pending == true && stopState?.unknown != true &&
+        (stopState?.pending == true &&
+            stopState?.unknown != true &&
             stopState?.accepted != true);
     final onPrimary = switch (kind) {
       ComposerPrimaryActionKind.stop => onStop,
       ComposerPrimaryActionKind.continueConversation => onContinue,
-      ComposerPrimaryActionKind.send || ComposerPrimaryActionKind.sendAndContinue => onSend,
+      ComposerPrimaryActionKind.send ||
+      ComposerPrimaryActionKind.sendAndContinue => onSend,
       _ => null,
     };
     final primaryTooltip = switch (kind) {
       ComposerPrimaryActionKind.stop => context.l10n.composerStop,
       ComposerPrimaryActionKind.stopping => context.l10n.composerStopping,
-      ComposerPrimaryActionKind.continueConversation => context.l10n.composerContinueTooltip,
+      ComposerPrimaryActionKind.continueConversation =>
+        context.l10n.composerContinueTooltip,
       ComposerPrimaryActionKind.continuing => context.l10n.composerContinuing,
-      ComposerPrimaryActionKind.sendAndContinue => context.l10n.composerSendAndContinue,
+      ComposerPrimaryActionKind.sendAndContinue =>
+        context.l10n.composerSendAndContinue,
       _ => context.l10n.composerSend,
     };
     final primaryKey = switch (kind) {
       ComposerPrimaryActionKind.stop => StudioDriverKeys.composerStop,
-      ComposerPrimaryActionKind.stopping => const ValueKey('composer-stopping-disabled'),
-      ComposerPrimaryActionKind.continueConversation => StudioDriverKeys.composerContinue,
-      ComposerPrimaryActionKind.continuing => const ValueKey('composer-continuing-disabled'),
-      _ => primaryAction.enabled ? StudioDriverKeys.composerSubmit
-          : const ValueKey('composer-submit-disabled'),
+      ComposerPrimaryActionKind.stopping => const ValueKey(
+        'composer-stopping-disabled',
+      ),
+      ComposerPrimaryActionKind.continueConversation =>
+        StudioDriverKeys.composerContinue,
+      ComposerPrimaryActionKind.continuing => const ValueKey(
+        'composer-continuing-disabled',
+      ),
+      _ =>
+        primaryAction.enabled
+            ? StudioDriverKeys.composerSubmit
+            : const ValueKey('composer-submit-disabled'),
     };
     final errorText = value == null
         ? null
@@ -196,7 +209,9 @@ class ComposerView extends StatelessWidget {
                 ?_reasonRegion(context),
                 if (continuationState?.unknown == true)
                   TextButton(
-                    onPressed: continuationState?.reading == true ? null : onReadContinuation,
+                    onPressed: continuationState?.reading == true
+                        ? null
+                        : onReadContinuation,
                     child: Text(context.l10n.modelDetailRetry),
                   ),
                 Row(
@@ -223,9 +238,11 @@ class ComposerView extends StatelessWidget {
                         kind == ComposerPrimaryActionKind.continuing) ...[
                       Text(
                         kind == ComposerPrimaryActionKind.stopping
-                            ? context.l10n.composerStopping : context.l10n.composerContinuing,
+                            ? context.l10n.composerStopping
+                            : context.l10n.composerContinuing,
                         key: kind == ComposerPrimaryActionKind.stopping
-                            ? StudioDriverKeys.composerStopping : StudioDriverKeys.composerContinuing,
+                            ? StudioDriverKeys.composerStopping
+                            : StudioDriverKeys.composerContinuing,
                         style: Theme.of(context).textTheme.labelMedium
                             ?.copyWith(color: colors.onSurfaceVariant),
                       ),
@@ -241,36 +258,40 @@ class ComposerView extends StatelessWidget {
                           onPressed: primaryAction.enabled ? onContinue : null,
                         ),
                       )
-                    else IconButton.filled(
-                      key: primaryKey,
-                      tooltip: primaryTooltip,
-                      onPressed: primaryAction.enabled ? onPrimary : null,
-                      style: IconButton.styleFrom(
-                        fixedSize: const Size.square(40),
-                        shape: const CircleBorder(),
-                        backgroundColor: stop
-                            ? colors.surfaceContainerHighest
-                            : colors.primary,
-                        foregroundColor: stop
-                            ? colors.onSurface
-                            : colors.onPrimary,
-                        disabledBackgroundColor: colors.surfaceContainerHighest,
-                        disabledForegroundColor: colors.onSurface.withValues(
-                          alpha: 0.32,
+                    else
+                      IconButton.filled(
+                        key: primaryKey,
+                        tooltip: primaryTooltip,
+                        onPressed: primaryAction.enabled ? onPrimary : null,
+                        style: IconButton.styleFrom(
+                          fixedSize: const Size.square(40),
+                          shape: const CircleBorder(),
+                          backgroundColor: stop
+                              ? colors.surfaceContainerHighest
+                              : colors.primary,
+                          foregroundColor: stop
+                              ? colors.onSurface
+                              : colors.onPrimary,
+                          disabledBackgroundColor:
+                              colors.surfaceContainerHighest,
+                          disabledForegroundColor: colors.onSurface.withValues(
+                            alpha: 0.32,
+                          ),
                         ),
+                        icon: pending
+                            ? const SizedBox.square(
+                                key: StudioDriverKeys.composerPending,
+                                dimension: 18,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                ),
+                              )
+                            : Icon(
+                                stop
+                                    ? Icons.stop_rounded
+                                    : Icons.arrow_upward_rounded,
+                              ),
                       ),
-                      icon: pending
-                          ? const SizedBox.square(
-                              key: StudioDriverKeys.composerPending,
-                              dimension: 18,
-                              child: CircularProgressIndicator(strokeWidth: 2),
-                            )
-                          : Icon(
-                              stop
-                                  ? Icons.stop_rounded
-                                  : Icons.arrow_upward_rounded,
-                            ),
-                    ),
                   ],
                 ),
               ],
@@ -286,27 +307,52 @@ class ComposerView extends StatelessWidget {
   Widget? _reasonRegion(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
     Widget line(String text, Key key, {bool emphasized = true}) => Text(
-      text, key: key, maxLines: 3, overflow: TextOverflow.ellipsis,
+      text,
+      key: key,
+      maxLines: 3,
+      overflow: TextOverflow.ellipsis,
       style: Theme.of(context).textTheme.bodySmall?.copyWith(
-        color: emphasized ? colors.error : colors.onSurfaceVariant),
+        color: emphasized ? colors.error : colors.onSurfaceVariant,
+      ),
     );
     final blocker = primaryAction.blocker;
-    final previousFailure = failure ?? (blocker is ComposerFailureBlocker ? blocker : null);
+    final previousFailure =
+        failure ?? (blocker is ComposerFailureBlocker ? blocker : null);
     final stopFailure = stopState?.failure;
     final lines = <Widget>[
       if (blocker != null && blocker is! ComposerFailureBlocker)
-        line(context.composerBlockerLabel(blocker), StudioDriverKeys.composerBlocker),
+        line(
+          context.composerBlockerLabel(blocker),
+          StudioDriverKeys.composerBlocker,
+        ),
       if (previousFailure != null)
-        line(context.composerBlockerLabel(previousFailure), const ValueKey('composer-failure')),
+        line(
+          context.composerBlockerLabel(previousFailure),
+          const ValueKey('composer-failure'),
+        ),
       if (stopFailure != null)
-        line(context.composerFailureReasonLabel(studioFailureReason(stopFailure)),
-          const ValueKey('composer-stop-failure')),
+        line(
+          context.composerFailureReasonLabel(studioFailureReason(stopFailure)),
+          const ValueKey('composer-stop-failure'),
+        ),
       if (stopState?.unknown == true)
-        line(context.l10n.conversationStopUnknown, const ValueKey('composer-stop-unconfirmed'), emphasized: false),
+        line(
+          context.l10n.conversationStopUnknown,
+          const ValueKey('composer-stop-unconfirmed'),
+          emphasized: false,
+        ),
       if (continuationNote != null)
-        line(continuationNote!, const ValueKey('composer-continuation-reason'), emphasized: false),
+        line(
+          continuationNote!,
+          const ValueKey('composer-continuation-reason'),
+          emphasized: false,
+        ),
       if (continuationState?.unknown == true)
-        line(context.l10n.composerBlockerUnknown, const ValueKey('composer-continuation-unknown'), emphasized: false),
+        line(
+          context.l10n.composerBlockerUnknown,
+          const ValueKey('composer-continuation-unknown'),
+          emphasized: false,
+        ),
     ];
     if (lines.isEmpty) return null;
     return Align(
@@ -317,13 +363,16 @@ class ComposerView extends StatelessWidget {
           key: const ValueKey('composer-reasons'),
           constraints: const BoxConstraints(maxHeight: 84),
           child: SingleChildScrollView(
-            child: Column(mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start, children: lines),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: lines,
+            ),
           ),
         ),
       ),
     );
-}
+  }
 }
 
 /// The pre-refactor attachment entry: one anchor, two explicit sources.

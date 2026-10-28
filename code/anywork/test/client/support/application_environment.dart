@@ -29,10 +29,12 @@ import 'selector_environment.dart';
 /// immutable material/gates only; no Client facade, reducer or VM is replaced.
 /// Unused native capabilities throw rather than fabricating successful facts.
 final class ApplicationTestEnvironment {
-  ApplicationTestEnvironment({BotsPort? botsPort, StatisticsPort? statisticsPort})
-    : hostChannel = MethodChannel(
-        'test.anywork/application-environment-${_nextHost++}',
-      ) {
+  ApplicationTestEnvironment({
+    BotsPort? botsPort,
+    StatisticsPort? statisticsPort,
+  }) : hostChannel = MethodChannel(
+         'test.anywork/application-environment-${_nextHost++}',
+       ) {
     final budget = domains.budget;
     final operations = domains.operations;
     startup = createStartupRepository(

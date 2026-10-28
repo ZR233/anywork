@@ -78,7 +78,13 @@ final class ReceiptCompactCall {
 }
 
 final class ReceiptInteractionCall {
-  ReceiptInteractionCall(this.id, this.interactionId, this.resolution, {this.hostThreadId = 'thread', this.revision = 1});
+  ReceiptInteractionCall(
+    this.id,
+    this.interactionId,
+    this.resolution, {
+    this.hostThreadId = 'thread',
+    this.revision = 1,
+  });
   final OperationId id;
   final String interactionId;
   final InteractionResolutionCommand resolution;
@@ -95,6 +101,7 @@ final class ContinueCall {
   final int routeRevision;
   final reply = Completer<ContinueThreadReply>();
 }
+
 final class ContinuationReadCall {
   ContinuationReadCall(this.threadId, this.id);
   final String threadId;
@@ -108,20 +115,32 @@ final class ReceiptCommands extends UnscriptedConversationCommands {
   final continuations = DraftCalls<ContinueCall>();
   final continuationReads = DraftCalls<ContinuationReadCall>();
   @override
-  Future<ContinueThreadReply> continueThread(String threadId, {
-    required OperationId operationId, required String expectedContinuationId,
+  Future<ContinueThreadReply> continueThread(
+    String threadId, {
+    required OperationId operationId,
+    required String expectedContinuationId,
     required int expectedModelRouteRevision,
   }) {
-    final call = ContinueCall(threadId, operationId, expectedContinuationId, expectedModelRouteRevision);
+    final call = ContinueCall(
+      threadId,
+      operationId,
+      expectedContinuationId,
+      expectedModelRouteRevision,
+    );
     continuations.add(call);
     return call.reply.future;
   }
+
   @override
-  Future<ContinuationOperationView?> readContinuationOperation(String threadId, OperationId operationId) {
+  Future<ContinuationOperationView?> readContinuationOperation(
+    String threadId,
+    OperationId operationId,
+  ) {
     final call = ContinuationReadCall(threadId, operationId);
     continuationReads.add(call);
     return call.reply.future;
   }
+
   final modes = DraftCalls<ReceiptModeCall>();
   final routes = DraftCalls<ReceiptRouteCall>();
   final compactions = DraftCalls<ReceiptCompactCall>();
@@ -135,8 +154,13 @@ final class ReceiptCommands extends UnscriptedConversationCommands {
     required InteractionResolutionCommand resolution,
   }) {
     expect((threadId, expectedInteractionRevision), ('thread', 1));
-    final call = ReceiptInteractionCall(operationId, interactionId, resolution,
-      hostThreadId: threadId, revision: expectedInteractionRevision);
+    final call = ReceiptInteractionCall(
+      operationId,
+      interactionId,
+      resolution,
+      hostThreadId: threadId,
+      revision: expectedInteractionRevision,
+    );
     interactions.add(call);
     return call.reply.future;
   }
@@ -354,7 +378,10 @@ final class ReceiptFixture {
   Future<void> close() async {
     final closing = owner.repository.close();
     for (final call in commands.continuations.values) {
-      if (!call.reply.isCompleted) call.reply.completeError(const CommandDispatchFailure.rejected(failure: receiptConflict));
+      if (!call.reply.isCompleted)
+        call.reply.completeError(
+          const CommandDispatchFailure.rejected(failure: receiptConflict),
+        );
     }
     for (final call in commands.continuationReads.values) {
       if (!call.reply.isCompleted) call.reply.completeError(receiptConflict);
@@ -417,7 +444,13 @@ final class ReceiptConfigurationPin
 }
 
 final class ReceiptInteractionPin implements InteractionReadConnection {
-  ReceiptInteractionPin(this.id, this.revision, this.origin, {this.targetThreadId = 'thread', this.purpose = const InteractionPurposeRead.general()});
+  ReceiptInteractionPin(
+    this.id,
+    this.revision,
+    this.origin, {
+    this.targetThreadId = 'thread',
+    this.purpose = const InteractionPurposeRead.general(),
+  });
   final String id;
   final int revision;
   final ThreadFacetStamp origin;
@@ -468,33 +501,35 @@ final class ReceiptInteractionPin implements InteractionReadConnection {
   );
 }
 
-InteractionCommandReply receiptInteractionReply(ReceiptInteractionCall call, {String targetThreadId = 'thread'}) =>
-    InteractionCommandReply(
-      interaction: InteractionSnapshot(
-        interactionId: call.interactionId,
-        scope: InteractionScope(
-          threadId: targetThreadId,
-          turnId: 'turn',
-          itemId: null,
-          toolId: null,
-          agentPath: null,
-        ),
-        revision: 2,
-        content: InteractionSnapshotContent.userInput(
-          questions: const [],
-          state: UserInputInteractionState.resolved(
-            operationId: 'native-input',
-            resolvedAt: 2,
-            answers: (call.resolution as UserInputResolutionCommand).answers,
-          ),
-        ),
-        createdAt: 1,
-        updatedAt: 2,
+InteractionCommandReply receiptInteractionReply(
+  ReceiptInteractionCall call, {
+  String targetThreadId = 'thread',
+}) => InteractionCommandReply(
+  interaction: InteractionSnapshot(
+    interactionId: call.interactionId,
+    scope: InteractionScope(
+      threadId: targetThreadId,
+      turnId: 'turn',
+      itemId: null,
+      toolId: null,
+      agentPath: null,
+    ),
+    revision: 2,
+    content: InteractionSnapshotContent.userInput(
+      questions: const [],
+      state: UserInputInteractionState.resolved(
+        operationId: 'native-input',
+        resolvedAt: 2,
+        answers: (call.resolution as UserInputResolutionCommand).answers,
       ),
-      receipt: commandReceipt(call.id, [
-        receiptStamp('interaction:${call.interactionId}', 2),
-      ], identity: true),
-    );
+    ),
+    createdAt: 1,
+    updatedAt: 2,
+  ),
+  receipt: commandReceipt(call.id, [
+    receiptStamp('interaction:${call.interactionId}', 2),
+  ], identity: true),
+);
 
 ThreadModelRouteCommandReply receiptRouteReply(
   ReceiptRouteCall call,

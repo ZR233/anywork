@@ -110,7 +110,7 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get sidebarArchiveSessionConfirmBody =>
-      '归档会先结束该会话正在运行的工作，并删除该会话树的工作树及其未提交、未整合的内容，然后将其从列表中移除。是否继续？';
+      '归档会停止该会话及其子会话的活动工作，并将它们移入已归档列表。会话历史、工作区、分支和未提交内容都会保留。是否继续？';
 
   @override
   String get sidebarArchiveSessionConfirmAction => '归档';
@@ -1004,10 +1004,10 @@ class AppLocalizationsZh extends AppLocalizations {
   String get conversationStopRequesting => '正在请求停止…';
 
   @override
-  String get conversationStopAwaitingObservation => '停止请求已受理，正在等待原轮次停止。';
+  String get conversationStopAwaitingObservation => '停止请求已受理，正在等待原执行结束。';
 
   @override
-  String get conversationStopObserved => '已观察到原轮次停止。';
+  String get conversationStopObserved => '已观察到原执行结束。';
 
   @override
   String get conversationStopEffective => '停止已生效。';
@@ -2817,7 +2817,7 @@ class AppLocalizationsZh extends AppLocalizations {
   }
 
   @override
-  String get settingsWorktreeCleanup => '显式清理工作树与分支';
+  String get settingsWorktreeCleanup => '清理工作树（保留分支）';
 
   @override
   String get settingsWorktreeOwnerSession => '会话工作树';
@@ -3142,7 +3142,7 @@ class AppLocalizationsZh extends AppLocalizations {
   String get sidebarArchived => '已归档';
 
   @override
-  String get sidebarRestore => '恢复会话';
+  String get sidebarRestore => '取消归档';
 
   @override
   String get sidebarPin => '置顶';
@@ -5049,4 +5049,177 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get interactionDiscardAnswersBody => '丢弃答案并关闭此编辑器？这不会回答或取消该交互。';
+
+  @override
+  String get statusSelectorsNotReady => '会话设置尚未就绪或正在提交，暂时不能选择，请稍后重试。';
+
+  @override
+  String get statusModeNeedsProject => '请先选择项目，再设置会话模式。';
+
+  @override
+  String get timelineRuntimeNotice => '运行时说明';
+
+  @override
+  String get timelineRuntimeNoticeDetail => '本次会话在被停止后继续执行。这条是运行时说明，不含用户输入。';
+
+  @override
+  String get settingsWorktreeClean => '无未提交改动';
+
+  @override
+  String get settingsWorktreeDirtyUnknown => '改动状态未知';
+
+  @override
+  String get settingsWorktreeChangedFilesUnknown => '尚未确认变更文件，请重试检查。';
+
+  @override
+  String get settingsWorktreeInspectionAvailable => '工作树已核实';
+
+  @override
+  String get settingsWorktreeInspectionMissing => '工作树缺失';
+
+  @override
+  String get settingsWorktreeInspectionIdentityMismatch => '工作树身份不匹配';
+
+  @override
+  String get settingsWorktreeInspectionUnavailable => '暂时无法检查';
+
+  @override
+  String get settingsWorktreeRetry => '重试检查';
+
+  @override
+  String get composerContinue => '继续';
+
+  @override
+  String get composerContinueTooltip => '不添加新内容，继续被中断的工作';
+
+  @override
+  String get composerStopping => '正在停止';
+
+  @override
+  String get composerContinuing => '正在继续';
+
+  @override
+  String get composerContinueReasonUserStop => '已被用户停止';
+
+  @override
+  String get composerContinueReasonHostShutdown => '应用退出时该会话仍在运行';
+
+  @override
+  String get composerContinueReasonProcessInterrupted => '进程中断';
+
+  @override
+  String get composerContinueReasonStepLimit => '步骤预算已用完';
+
+  @override
+  String get composerContinueReasonExecutionFailed => '执行失败';
+
+  @override
+  String get composerContinueReasonUnknown => '执行已中断';
+
+  @override
+  String get composerBlockedStorage => '保存尚未完成，暂时不能继续。';
+
+  @override
+  String get composerBlockedModel => '当前模型不可用，暂时不能继续。';
+
+  @override
+  String get composerBlockedWorkspace => '会话工作区不可用，暂时不能继续。';
+
+  @override
+  String get composerBlockedArchived => '该会话已归档，不能继续。';
+
+  @override
+  String get composerBlockerUnknown => '上一次操作未能确认，请先核对会话状态再重试。';
+
+  @override
+  String get composerFailureChildRequiresParentScheduling => '子智能体只能由主智能体调度。';
+
+  @override
+  String get composerFailureContinuationUnavailable => '当前没有可继续的中断工作。';
+
+  @override
+  String get composerFailureContinuationClaimed => '继续已被受理，正在准备。';
+
+  @override
+  String get composerFailureStaleContinuation => '观察到的继续点已经过期。';
+
+  @override
+  String get composerFailureStaleExecution => '观察到的执行已结束或被新的执行替代。';
+
+  @override
+  String get composerNoExecution => '当前没有正在执行的工作。';
+
+  @override
+  String get composerContinuationAccepted => '继续请求已受理，但尚无法确认原操作结果。';
+
+  @override
+  String get composerFailureExecutionInProgress => '会话仍在执行或清理中。';
+
+  @override
+  String get composerFailureInteractionNotHosted => '该交互在主会话处理。';
+
+  @override
+  String get composerFailureStaleInteraction => '该交互已被更新，请重新打开。';
+
+  @override
+  String agentStopSemantics(String name) {
+    return '停止成员 $name';
+  }
+
+  @override
+  String get agentStopping => '正在停止';
+
+  @override
+  String get agentStopWaitingScheduling => '已停止，等待主智能体调度';
+
+  @override
+  String agentStopFailed(String message) {
+    return '停止未被接受：$message';
+  }
+
+  @override
+  String get composerAgentReadOnlyTitle => '子智能体会话（只读）';
+
+  @override
+  String get composerAgentReadOnlyWaiting => '等待主智能体调度该成员。';
+
+  @override
+  String get composerAgentReadOnlyScope =>
+      '历史、进展、模型与工作区仅供查看；需要它继续工作时，请在主会话向主智能体表达要求。';
+
+  @override
+  String get composerAgentReadOnlyPending => '待决问题或权限请求在主会话处理。';
+
+  @override
+  String childInteractionFrom(String agent) {
+    return '来自 $agent';
+  }
+
+  @override
+  String childInteractionRevision(int revision) {
+    return '版本 $revision';
+  }
+
+  @override
+  String get childInteractionAnswerSaved => '答案已保存，是否继续该成员由主智能体决定。';
+
+  @override
+  String get childInteractionApprovalResolved =>
+      '原权限等待已决议；批准时原调用可能继续，拒绝时不执行该调用。';
+
+  @override
+  String childInteractionDecideFailed(String message) {
+    return '决定未被接受：$message';
+  }
+
+  @override
+  String childInteractionLoadFailed(String message) {
+    return '无法读取子任务待决交互：$message';
+  }
+
+  @override
+  String get childInteractionRetry => '重新读取';
+
+  @override
+  String get childInteractionDecisionAccepted => '决定已受理，等待会话确认。';
 }

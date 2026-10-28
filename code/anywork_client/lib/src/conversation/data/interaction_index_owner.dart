@@ -123,7 +123,11 @@ final class ConversationInteractionIndex {
           _overrides[brief.reference.entry] = brief;
           final known = _items[brief.reference.entry];
           if (known != null)
-            _items[brief.reference.entry] = _item(brief, known.interactionId, known.targetThreadId);
+            _items[brief.reference.entry] = _item(
+              brief,
+              known.interactionId,
+              known.targetThreadId,
+            );
         }
       }
     }
@@ -313,17 +317,20 @@ final class ConversationInteractionIndex {
     }
   }
 
-  InteractionListItem _item(InteractionBrief brief, String id, String targetThreadId) =>
-      InteractionListItem(
-        reference: brief.reference,
-        interactionId: id,
-        targetThreadId: targetThreadId,
-        revision: brief.revision,
-        kind: brief.kind,
-        status: brief.status,
-        createdAt: brief.createdAt,
-        updatedAt: brief.updatedAt,
-      );
+  InteractionListItem _item(
+    InteractionBrief brief,
+    String id,
+    String targetThreadId,
+  ) => InteractionListItem(
+    reference: brief.reference,
+    interactionId: id,
+    targetThreadId: targetThreadId,
+    revision: brief.revision,
+    kind: brief.kind,
+    status: brief.status,
+    createdAt: brief.createdAt,
+    updatedAt: brief.updatedAt,
+  );
 
   void _publish() {
     final origin = _origin;

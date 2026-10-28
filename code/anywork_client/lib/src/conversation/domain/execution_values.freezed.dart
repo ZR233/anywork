@@ -1412,7 +1412,7 @@ $StorageReadRefCopyWith<$Res> get reference {
 /// @nodoc
 mixin _$ThreadExecutionBaseline {
 
- ThreadStatus get status; TurnBrief? get activeTurn; TurnBrief? get recentTerminalTurn; InteractionIndexHeader get interactions; ActivityBrief? get activity; StorageBrief? get storage;
+ ThreadStatus get status; AgentExecution? get execution; ContinuationView? get continuation; TurnBrief? get activeTurn; TurnBrief? get recentTerminalTurn; InteractionIndexHeader get interactions; ActivityBrief? get activity; StorageBrief? get storage;
 /// Create a copy of ThreadExecutionBaseline
 /// with the given fields replaced by the non-null parameter values.
 @JsonKey(includeFromJson: false, includeToJson: false)
@@ -1424,20 +1424,20 @@ $ThreadExecutionBaselineCopyWith<ThreadExecutionBaseline> get copyWith => _$Thre
 @override
 bool operator ==(Object other) {
   final _this = this as ThreadExecutionBaseline;
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is ThreadExecutionBaseline&&(identical(other.status, _this.status) || other.status == _this.status)&&(identical(other.activeTurn, _this.activeTurn) || other.activeTurn == _this.activeTurn)&&(identical(other.recentTerminalTurn, _this.recentTerminalTurn) || other.recentTerminalTurn == _this.recentTerminalTurn)&&(identical(other.interactions, _this.interactions) || other.interactions == _this.interactions)&&(identical(other.activity, _this.activity) || other.activity == _this.activity)&&(identical(other.storage, _this.storage) || other.storage == _this.storage));
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is ThreadExecutionBaseline&&(identical(other.status, _this.status) || other.status == _this.status)&&(identical(other.execution, _this.execution) || other.execution == _this.execution)&&(identical(other.continuation, _this.continuation) || other.continuation == _this.continuation)&&(identical(other.activeTurn, _this.activeTurn) || other.activeTurn == _this.activeTurn)&&(identical(other.recentTerminalTurn, _this.recentTerminalTurn) || other.recentTerminalTurn == _this.recentTerminalTurn)&&(identical(other.interactions, _this.interactions) || other.interactions == _this.interactions)&&(identical(other.activity, _this.activity) || other.activity == _this.activity)&&(identical(other.storage, _this.storage) || other.storage == _this.storage));
 }
 
 
 @override
 int get hashCode {
   final _this = this as ThreadExecutionBaseline;
-  return Object.hash(runtimeType,_this.status,_this.activeTurn,_this.recentTerminalTurn,_this.interactions,_this.activity,_this.storage);
+  return Object.hash(runtimeType,_this.status,_this.execution,_this.continuation,_this.activeTurn,_this.recentTerminalTurn,_this.interactions,_this.activity,_this.storage);
 }
 
 @override
 String toString() {
   final _this = this as ThreadExecutionBaseline;
-  return 'ThreadExecutionBaseline(status: ${_this.status}, activeTurn: ${_this.activeTurn}, recentTerminalTurn: ${_this.recentTerminalTurn}, interactions: ${_this.interactions}, activity: ${_this.activity}, storage: ${_this.storage})';
+  return 'ThreadExecutionBaseline(status: ${_this.status}, execution: ${_this.execution}, continuation: ${_this.continuation}, activeTurn: ${_this.activeTurn}, recentTerminalTurn: ${_this.recentTerminalTurn}, interactions: ${_this.interactions}, activity: ${_this.activity}, storage: ${_this.storage})';
 }
 
 
@@ -1448,11 +1448,11 @@ abstract mixin class $ThreadExecutionBaselineCopyWith<$Res>  {
   factory $ThreadExecutionBaselineCopyWith(ThreadExecutionBaseline value, $Res Function(ThreadExecutionBaseline) _then) = _$ThreadExecutionBaselineCopyWithImpl;
 @useResult
 $Res call({
- ThreadStatus status, TurnBrief? activeTurn, TurnBrief? recentTerminalTurn, InteractionIndexHeader interactions, ActivityBrief? activity, StorageBrief? storage
+ ThreadStatus status, AgentExecution? execution, ContinuationView? continuation, TurnBrief? activeTurn, TurnBrief? recentTerminalTurn, InteractionIndexHeader interactions, ActivityBrief? activity, StorageBrief? storage
 });
 
 
-$TurnBriefCopyWith<$Res>? get activeTurn;$TurnBriefCopyWith<$Res>? get recentTerminalTurn;$InteractionIndexHeaderCopyWith<$Res> get interactions;$ActivityBriefCopyWith<$Res>? get activity;$StorageBriefCopyWith<$Res>? get storage;
+$AgentExecutionCopyWith<$Res>? get execution;$ContinuationViewCopyWith<$Res>? get continuation;$TurnBriefCopyWith<$Res>? get activeTurn;$TurnBriefCopyWith<$Res>? get recentTerminalTurn;$InteractionIndexHeaderCopyWith<$Res> get interactions;$ActivityBriefCopyWith<$Res>? get activity;$StorageBriefCopyWith<$Res>? get storage;
 
 }
 /// @nodoc
@@ -1465,10 +1465,12 @@ class _$ThreadExecutionBaselineCopyWithImpl<$Res>
 
 /// Create a copy of ThreadExecutionBaseline
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') @override $Res call({Object? status = null,Object? activeTurn = freezed,Object? recentTerminalTurn = freezed,Object? interactions = null,Object? activity = freezed,Object? storage = freezed,}) {
+@pragma('vm:prefer-inline') @override $Res call({Object? status = null,Object? execution = freezed,Object? continuation = freezed,Object? activeTurn = freezed,Object? recentTerminalTurn = freezed,Object? interactions = null,Object? activity = freezed,Object? storage = freezed,}) {
   return _then(ThreadExecutionBaseline(
 status: null == status ? _self.status : status // ignore: cast_nullable_to_non_nullable
-as ThreadStatus,activeTurn: freezed == activeTurn ? _self.activeTurn : activeTurn // ignore: cast_nullable_to_non_nullable
+as ThreadStatus,execution: freezed == execution ? _self.execution : execution // ignore: cast_nullable_to_non_nullable
+as AgentExecution?,continuation: freezed == continuation ? _self.continuation : continuation // ignore: cast_nullable_to_non_nullable
+as ContinuationView?,activeTurn: freezed == activeTurn ? _self.activeTurn : activeTurn // ignore: cast_nullable_to_non_nullable
 as TurnBrief?,recentTerminalTurn: freezed == recentTerminalTurn ? _self.recentTerminalTurn : recentTerminalTurn // ignore: cast_nullable_to_non_nullable
 as TurnBrief?,interactions: null == interactions ? _self.interactions : interactions // ignore: cast_nullable_to_non_nullable
 as InteractionIndexHeader,activity: freezed == activity ? _self.activity : activity // ignore: cast_nullable_to_non_nullable
@@ -1477,6 +1479,30 @@ as StorageBrief?,
   ));
 }
 /// Create a copy of ThreadExecutionBaseline
+/// with the given fields replaced by the non-null parameter values.
+@override
+@pragma('vm:prefer-inline')
+$AgentExecutionCopyWith<$Res>? get execution {
+    if (_self.execution == null) {
+    return null;
+  }
+
+  return $AgentExecutionCopyWith<$Res>(_self.execution!, (value) {
+    return _then(_self.copyWith(execution: value));
+  });
+}/// Create a copy of ThreadExecutionBaseline
+/// with the given fields replaced by the non-null parameter values.
+@override
+@pragma('vm:prefer-inline')
+$ContinuationViewCopyWith<$Res>? get continuation {
+    if (_self.continuation == null) {
+    return null;
+  }
+
+  return $ContinuationViewCopyWith<$Res>(_self.continuation!, (value) {
+    return _then(_self.copyWith(continuation: value));
+  });
+}/// Create a copy of ThreadExecutionBaseline
 /// with the given fields replaced by the non-null parameter values.
 @override
 @pragma('vm:prefer-inline')
@@ -1615,10 +1641,10 @@ return $default(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( ThreadStatus status,  TurnBrief? activeTurn,  TurnBrief? recentTerminalTurn,  InteractionIndexHeader interactions,  ActivityBrief? activity,  StorageBrief? storage)?  $default,{required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( ThreadStatus status,  AgentExecution? execution,  ContinuationView? continuation,  TurnBrief? activeTurn,  TurnBrief? recentTerminalTurn,  InteractionIndexHeader interactions,  ActivityBrief? activity,  StorageBrief? storage)?  $default,{required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case _ThreadExecutionBaseline() when $default != null:
-return $default(_that.status,_that.activeTurn,_that.recentTerminalTurn,_that.interactions,_that.activity,_that.storage);case _:
+return $default(_that.status,_that.execution,_that.continuation,_that.activeTurn,_that.recentTerminalTurn,_that.interactions,_that.activity,_that.storage);case _:
   return orElse();
 
 }
@@ -1636,10 +1662,10 @@ return $default(_that.status,_that.activeTurn,_that.recentTerminalTurn,_that.int
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( ThreadStatus status,  TurnBrief? activeTurn,  TurnBrief? recentTerminalTurn,  InteractionIndexHeader interactions,  ActivityBrief? activity,  StorageBrief? storage)  $default,) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( ThreadStatus status,  AgentExecution? execution,  ContinuationView? continuation,  TurnBrief? activeTurn,  TurnBrief? recentTerminalTurn,  InteractionIndexHeader interactions,  ActivityBrief? activity,  StorageBrief? storage)  $default,) {final _that = this;
 switch (_that) {
 case _ThreadExecutionBaseline():
-return $default(_that.status,_that.activeTurn,_that.recentTerminalTurn,_that.interactions,_that.activity,_that.storage);case _:
+return $default(_that.status,_that.execution,_that.continuation,_that.activeTurn,_that.recentTerminalTurn,_that.interactions,_that.activity,_that.storage);case _:
   throw StateError('Unexpected subclass');
 
 }
@@ -1656,10 +1682,10 @@ return $default(_that.status,_that.activeTurn,_that.recentTerminalTurn,_that.int
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( ThreadStatus status,  TurnBrief? activeTurn,  TurnBrief? recentTerminalTurn,  InteractionIndexHeader interactions,  ActivityBrief? activity,  StorageBrief? storage)?  $default,) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( ThreadStatus status,  AgentExecution? execution,  ContinuationView? continuation,  TurnBrief? activeTurn,  TurnBrief? recentTerminalTurn,  InteractionIndexHeader interactions,  ActivityBrief? activity,  StorageBrief? storage)?  $default,) {final _that = this;
 switch (_that) {
 case _ThreadExecutionBaseline() when $default != null:
-return $default(_that.status,_that.activeTurn,_that.recentTerminalTurn,_that.interactions,_that.activity,_that.storage);case _:
+return $default(_that.status,_that.execution,_that.continuation,_that.activeTurn,_that.recentTerminalTurn,_that.interactions,_that.activity,_that.storage);case _:
   return null;
 
 }
@@ -1671,10 +1697,12 @@ return $default(_that.status,_that.activeTurn,_that.recentTerminalTurn,_that.int
 
 
 class _ThreadExecutionBaseline implements ThreadExecutionBaseline {
-  const _ThreadExecutionBaseline({required this.status, required this.activeTurn, required this.recentTerminalTurn, required this.interactions, required this.activity, required this.storage});
+  const _ThreadExecutionBaseline({required this.status, this.execution, this.continuation, required this.activeTurn, required this.recentTerminalTurn, required this.interactions, required this.activity, required this.storage});
 
 
 @override final  ThreadStatus status;
+@override final  AgentExecution? execution;
+@override final  ContinuationView? continuation;
 @override final  TurnBrief? activeTurn;
 @override final  TurnBrief? recentTerminalTurn;
 @override final  InteractionIndexHeader interactions;
@@ -1691,18 +1719,18 @@ _$ThreadExecutionBaselineCopyWith<_ThreadExecutionBaseline> get copyWith => __$T
 
 @override
 bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is _ThreadExecutionBaseline&&(identical(other.status, status) || other.status == status)&&(identical(other.activeTurn, activeTurn) || other.activeTurn == activeTurn)&&(identical(other.recentTerminalTurn, recentTerminalTurn) || other.recentTerminalTurn == recentTerminalTurn)&&(identical(other.interactions, interactions) || other.interactions == interactions)&&(identical(other.activity, activity) || other.activity == activity)&&(identical(other.storage, storage) || other.storage == storage));
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is _ThreadExecutionBaseline&&(identical(other.status, status) || other.status == status)&&(identical(other.execution, execution) || other.execution == execution)&&(identical(other.continuation, continuation) || other.continuation == continuation)&&(identical(other.activeTurn, activeTurn) || other.activeTurn == activeTurn)&&(identical(other.recentTerminalTurn, recentTerminalTurn) || other.recentTerminalTurn == recentTerminalTurn)&&(identical(other.interactions, interactions) || other.interactions == interactions)&&(identical(other.activity, activity) || other.activity == activity)&&(identical(other.storage, storage) || other.storage == storage));
 }
 
 
 @override
 int get hashCode {
-    return Object.hash(runtimeType,status,activeTurn,recentTerminalTurn,interactions,activity,storage);
+    return Object.hash(runtimeType,status,execution,continuation,activeTurn,recentTerminalTurn,interactions,activity,storage);
 }
 
 @override
 String toString() {
-    return 'ThreadExecutionBaseline(status: $status, activeTurn: $activeTurn, recentTerminalTurn: $recentTerminalTurn, interactions: $interactions, activity: $activity, storage: $storage)';
+    return 'ThreadExecutionBaseline(status: $status, execution: $execution, continuation: $continuation, activeTurn: $activeTurn, recentTerminalTurn: $recentTerminalTurn, interactions: $interactions, activity: $activity, storage: $storage)';
 }
 
 
@@ -1713,11 +1741,11 @@ abstract mixin class _$ThreadExecutionBaselineCopyWith<$Res> implements $ThreadE
   factory _$ThreadExecutionBaselineCopyWith(_ThreadExecutionBaseline value, $Res Function(_ThreadExecutionBaseline) _then) = __$ThreadExecutionBaselineCopyWithImpl;
 @override @useResult
 $Res call({
- ThreadStatus status, TurnBrief? activeTurn, TurnBrief? recentTerminalTurn, InteractionIndexHeader interactions, ActivityBrief? activity, StorageBrief? storage
+ ThreadStatus status, AgentExecution? execution, ContinuationView? continuation, TurnBrief? activeTurn, TurnBrief? recentTerminalTurn, InteractionIndexHeader interactions, ActivityBrief? activity, StorageBrief? storage
 });
 
 
-@override $TurnBriefCopyWith<$Res>? get activeTurn;@override $TurnBriefCopyWith<$Res>? get recentTerminalTurn;@override $InteractionIndexHeaderCopyWith<$Res> get interactions;@override $ActivityBriefCopyWith<$Res>? get activity;@override $StorageBriefCopyWith<$Res>? get storage;
+@override $AgentExecutionCopyWith<$Res>? get execution;@override $ContinuationViewCopyWith<$Res>? get continuation;@override $TurnBriefCopyWith<$Res>? get activeTurn;@override $TurnBriefCopyWith<$Res>? get recentTerminalTurn;@override $InteractionIndexHeaderCopyWith<$Res> get interactions;@override $ActivityBriefCopyWith<$Res>? get activity;@override $StorageBriefCopyWith<$Res>? get storage;
 
 }
 /// @nodoc
@@ -1730,10 +1758,12 @@ class __$ThreadExecutionBaselineCopyWithImpl<$Res>
 
 /// Create a copy of ThreadExecutionBaseline
 /// with the given fields replaced by the non-null parameter values.
-@override @pragma('vm:prefer-inline') $Res call({Object? status = null,Object? activeTurn = freezed,Object? recentTerminalTurn = freezed,Object? interactions = null,Object? activity = freezed,Object? storage = freezed,}) {
+@override @pragma('vm:prefer-inline') $Res call({Object? status = null,Object? execution = freezed,Object? continuation = freezed,Object? activeTurn = freezed,Object? recentTerminalTurn = freezed,Object? interactions = null,Object? activity = freezed,Object? storage = freezed,}) {
   return _then(_ThreadExecutionBaseline(
 status: null == status ? _self.status : status // ignore: cast_nullable_to_non_nullable
-as ThreadStatus,activeTurn: freezed == activeTurn ? _self.activeTurn : activeTurn // ignore: cast_nullable_to_non_nullable
+as ThreadStatus,execution: freezed == execution ? _self.execution : execution // ignore: cast_nullable_to_non_nullable
+as AgentExecution?,continuation: freezed == continuation ? _self.continuation : continuation // ignore: cast_nullable_to_non_nullable
+as ContinuationView?,activeTurn: freezed == activeTurn ? _self.activeTurn : activeTurn // ignore: cast_nullable_to_non_nullable
 as TurnBrief?,recentTerminalTurn: freezed == recentTerminalTurn ? _self.recentTerminalTurn : recentTerminalTurn // ignore: cast_nullable_to_non_nullable
 as TurnBrief?,interactions: null == interactions ? _self.interactions : interactions // ignore: cast_nullable_to_non_nullable
 as InteractionIndexHeader,activity: freezed == activity ? _self.activity : activity // ignore: cast_nullable_to_non_nullable
@@ -1743,6 +1773,30 @@ as StorageBrief?,
 }
 
 /// Create a copy of ThreadExecutionBaseline
+/// with the given fields replaced by the non-null parameter values.
+@override
+@pragma('vm:prefer-inline')
+$AgentExecutionCopyWith<$Res>? get execution {
+    if (_self.execution == null) {
+    return null;
+  }
+
+  return $AgentExecutionCopyWith<$Res>(_self.execution!, (value) {
+    return _then(_self.copyWith(execution: value));
+  });
+}/// Create a copy of ThreadExecutionBaseline
+/// with the given fields replaced by the non-null parameter values.
+@override
+@pragma('vm:prefer-inline')
+$ContinuationViewCopyWith<$Res>? get continuation {
+    if (_self.continuation == null) {
+    return null;
+  }
+
+  return $ContinuationViewCopyWith<$Res>(_self.continuation!, (value) {
+    return _then(_self.copyWith(continuation: value));
+  });
+}/// Create a copy of ThreadExecutionBaseline
 /// with the given fields replaced by the non-null parameter values.
 @override
 @pragma('vm:prefer-inline')
@@ -2113,6 +2167,550 @@ $TurnBriefCopyWith<$Res>? get recentTerminalTurn {
 
   return $TurnBriefCopyWith<$Res>(_self.recentTerminalTurn!, (value) {
     return _then(_self.copyWith(recentTerminalTurn: value));
+  });
+}
+}
+
+/// @nodoc
+mixin _$ExecutionReplacement {
+
+
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is ExecutionReplacement);
+}
+
+
+@override
+int get hashCode => runtimeType.hashCode;
+
+@override
+String toString() {
+    return 'ExecutionReplacement()';
+}
+
+
+}
+
+/// @nodoc
+class $ExecutionReplacementCopyWith<$Res>  {
+$ExecutionReplacementCopyWith(ExecutionReplacement _, $Res Function(ExecutionReplacement) __);
+}
+
+
+/// Adds pattern-matching-related methods to [ExecutionReplacement].
+extension ExecutionReplacementPatterns on ExecutionReplacement {
+/// A variant of `map` that fallback to returning `orElse`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( UnchangedExecution value)?  unchanged,TResult Function( ReplacedExecution value)?  replace,required TResult orElse(),}){
+final _that = this;
+switch (_that) {
+case UnchangedExecution() when unchanged != null:
+return unchanged(_that);case ReplacedExecution() when replace != null:
+return replace(_that);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// Callbacks receives the raw object, upcasted.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case final Subclass2 value:
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( UnchangedExecution value)  unchanged,required TResult Function( ReplacedExecution value)  replace,}){
+final _that = this;
+switch (_that) {
+case UnchangedExecution():
+return unchanged(_that);case ReplacedExecution():
+return replace(_that);}
+}
+/// A variant of `map` that fallback to returning `null`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( UnchangedExecution value)?  unchanged,TResult? Function( ReplacedExecution value)?  replace,}){
+final _that = this;
+switch (_that) {
+case UnchangedExecution() when unchanged != null:
+return unchanged(_that);case ReplacedExecution() when replace != null:
+return replace(_that);case _:
+  return null;
+
+}
+}
+/// A variant of `when` that fallback to an `orElse` callback.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function()?  unchanged,TResult Function( AgentExecution? value)?  replace,required TResult orElse(),}) {final _that = this;
+switch (_that) {
+case UnchangedExecution() when unchanged != null:
+return unchanged();case ReplacedExecution() when replace != null:
+return replace(_that.value);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// As opposed to `map`, this offers destructuring.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case Subclass2(:final field2):
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function()  unchanged,required TResult Function( AgentExecution? value)  replace,}) {final _that = this;
+switch (_that) {
+case UnchangedExecution():
+return unchanged();case ReplacedExecution():
+return replace(_that.value);}
+}
+/// A variant of `when` that fallback to returning `null`
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function()?  unchanged,TResult? Function( AgentExecution? value)?  replace,}) {final _that = this;
+switch (_that) {
+case UnchangedExecution() when unchanged != null:
+return unchanged();case ReplacedExecution() when replace != null:
+return replace(_that.value);case _:
+  return null;
+
+}
+}
+
+}
+
+/// @nodoc
+
+
+class UnchangedExecution implements ExecutionReplacement {
+  const UnchangedExecution();
+
+
+
+
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is UnchangedExecution);
+}
+
+
+@override
+int get hashCode => runtimeType.hashCode;
+
+@override
+String toString() {
+    return 'ExecutionReplacement.unchanged()';
+}
+
+
+}
+
+
+
+
+/// @nodoc
+
+
+class ReplacedExecution implements ExecutionReplacement {
+  const ReplacedExecution({required this.value});
+
+
+ final  AgentExecution? value;
+
+/// Create a copy of ExecutionReplacement
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$ReplacedExecutionCopyWith<ReplacedExecution> get copyWith => _$ReplacedExecutionCopyWithImpl<ReplacedExecution>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is ReplacedExecution&&(identical(other.value, value) || other.value == value));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,value);
+}
+
+@override
+String toString() {
+    return 'ExecutionReplacement.replace(value: $value)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $ReplacedExecutionCopyWith<$Res> implements $ExecutionReplacementCopyWith<$Res> {
+  factory $ReplacedExecutionCopyWith(ReplacedExecution value, $Res Function(ReplacedExecution) _then) = _$ReplacedExecutionCopyWithImpl;
+@useResult
+$Res call({
+ AgentExecution? value
+});
+
+
+$AgentExecutionCopyWith<$Res>? get value;
+
+}
+/// @nodoc
+class _$ReplacedExecutionCopyWithImpl<$Res>
+    implements $ReplacedExecutionCopyWith<$Res> {
+  _$ReplacedExecutionCopyWithImpl(this._self, this._then);
+
+  final ReplacedExecution _self;
+  final $Res Function(ReplacedExecution) _then;
+
+/// Create a copy of ExecutionReplacement
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? value = freezed,}) {
+  return _then(ReplacedExecution(
+value: freezed == value ? _self.value : value // ignore: cast_nullable_to_non_nullable
+as AgentExecution?,
+  ));
+}
+
+/// Create a copy of ExecutionReplacement
+/// with the given fields replaced by the non-null parameter values.
+@override
+@pragma('vm:prefer-inline')
+$AgentExecutionCopyWith<$Res>? get value {
+    if (_self.value == null) {
+    return null;
+  }
+
+  return $AgentExecutionCopyWith<$Res>(_self.value!, (value) {
+    return _then(_self.copyWith(value: value));
+  });
+}
+}
+
+/// @nodoc
+mixin _$ContinuationReplacement {
+
+
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is ContinuationReplacement);
+}
+
+
+@override
+int get hashCode => runtimeType.hashCode;
+
+@override
+String toString() {
+    return 'ContinuationReplacement()';
+}
+
+
+}
+
+/// @nodoc
+class $ContinuationReplacementCopyWith<$Res>  {
+$ContinuationReplacementCopyWith(ContinuationReplacement _, $Res Function(ContinuationReplacement) __);
+}
+
+
+/// Adds pattern-matching-related methods to [ContinuationReplacement].
+extension ContinuationReplacementPatterns on ContinuationReplacement {
+/// A variant of `map` that fallback to returning `orElse`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( UnchangedContinuation value)?  unchanged,TResult Function( ReplacedContinuation value)?  replace,required TResult orElse(),}){
+final _that = this;
+switch (_that) {
+case UnchangedContinuation() when unchanged != null:
+return unchanged(_that);case ReplacedContinuation() when replace != null:
+return replace(_that);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// Callbacks receives the raw object, upcasted.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case final Subclass2 value:
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( UnchangedContinuation value)  unchanged,required TResult Function( ReplacedContinuation value)  replace,}){
+final _that = this;
+switch (_that) {
+case UnchangedContinuation():
+return unchanged(_that);case ReplacedContinuation():
+return replace(_that);}
+}
+/// A variant of `map` that fallback to returning `null`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( UnchangedContinuation value)?  unchanged,TResult? Function( ReplacedContinuation value)?  replace,}){
+final _that = this;
+switch (_that) {
+case UnchangedContinuation() when unchanged != null:
+return unchanged(_that);case ReplacedContinuation() when replace != null:
+return replace(_that);case _:
+  return null;
+
+}
+}
+/// A variant of `when` that fallback to an `orElse` callback.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function()?  unchanged,TResult Function( ContinuationView? value)?  replace,required TResult orElse(),}) {final _that = this;
+switch (_that) {
+case UnchangedContinuation() when unchanged != null:
+return unchanged();case ReplacedContinuation() when replace != null:
+return replace(_that.value);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// As opposed to `map`, this offers destructuring.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case Subclass2(:final field2):
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function()  unchanged,required TResult Function( ContinuationView? value)  replace,}) {final _that = this;
+switch (_that) {
+case UnchangedContinuation():
+return unchanged();case ReplacedContinuation():
+return replace(_that.value);}
+}
+/// A variant of `when` that fallback to returning `null`
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function()?  unchanged,TResult? Function( ContinuationView? value)?  replace,}) {final _that = this;
+switch (_that) {
+case UnchangedContinuation() when unchanged != null:
+return unchanged();case ReplacedContinuation() when replace != null:
+return replace(_that.value);case _:
+  return null;
+
+}
+}
+
+}
+
+/// @nodoc
+
+
+class UnchangedContinuation implements ContinuationReplacement {
+  const UnchangedContinuation();
+
+
+
+
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is UnchangedContinuation);
+}
+
+
+@override
+int get hashCode => runtimeType.hashCode;
+
+@override
+String toString() {
+    return 'ContinuationReplacement.unchanged()';
+}
+
+
+}
+
+
+
+
+/// @nodoc
+
+
+class ReplacedContinuation implements ContinuationReplacement {
+  const ReplacedContinuation({required this.value});
+
+
+ final  ContinuationView? value;
+
+/// Create a copy of ContinuationReplacement
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$ReplacedContinuationCopyWith<ReplacedContinuation> get copyWith => _$ReplacedContinuationCopyWithImpl<ReplacedContinuation>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is ReplacedContinuation&&(identical(other.value, value) || other.value == value));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,value);
+}
+
+@override
+String toString() {
+    return 'ContinuationReplacement.replace(value: $value)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $ReplacedContinuationCopyWith<$Res> implements $ContinuationReplacementCopyWith<$Res> {
+  factory $ReplacedContinuationCopyWith(ReplacedContinuation value, $Res Function(ReplacedContinuation) _then) = _$ReplacedContinuationCopyWithImpl;
+@useResult
+$Res call({
+ ContinuationView? value
+});
+
+
+$ContinuationViewCopyWith<$Res>? get value;
+
+}
+/// @nodoc
+class _$ReplacedContinuationCopyWithImpl<$Res>
+    implements $ReplacedContinuationCopyWith<$Res> {
+  _$ReplacedContinuationCopyWithImpl(this._self, this._then);
+
+  final ReplacedContinuation _self;
+  final $Res Function(ReplacedContinuation) _then;
+
+/// Create a copy of ContinuationReplacement
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? value = freezed,}) {
+  return _then(ReplacedContinuation(
+value: freezed == value ? _self.value : value // ignore: cast_nullable_to_non_nullable
+as ContinuationView?,
+  ));
+}
+
+/// Create a copy of ContinuationReplacement
+/// with the given fields replaced by the non-null parameter values.
+@override
+@pragma('vm:prefer-inline')
+$ContinuationViewCopyWith<$Res>? get value {
+    if (_self.value == null) {
+    return null;
+  }
+
+  return $ContinuationViewCopyWith<$Res>(_self.value!, (value) {
+    return _then(_self.copyWith(value: value));
   });
 }
 }
@@ -2664,7 +3262,7 @@ $StorageBriefCopyWith<$Res>? get value {
 /// @nodoc
 mixin _$ThreadExecutionChange {
 
- ThreadStatus? get status; TurnsReplacement? get turns; InteractionDelta? get interactions; ActivityReplacement get activity; StorageReplacement get storage;
+ ThreadStatus? get status; ExecutionReplacement get execution; ContinuationReplacement get continuation; TurnsReplacement? get turns; InteractionDelta? get interactions; ActivityReplacement get activity; StorageReplacement get storage;
 /// Create a copy of ThreadExecutionChange
 /// with the given fields replaced by the non-null parameter values.
 @JsonKey(includeFromJson: false, includeToJson: false)
@@ -2676,20 +3274,20 @@ $ThreadExecutionChangeCopyWith<ThreadExecutionChange> get copyWith => _$ThreadEx
 @override
 bool operator ==(Object other) {
   final _this = this as ThreadExecutionChange;
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is ThreadExecutionChange&&(identical(other.status, _this.status) || other.status == _this.status)&&(identical(other.turns, _this.turns) || other.turns == _this.turns)&&(identical(other.interactions, _this.interactions) || other.interactions == _this.interactions)&&(identical(other.activity, _this.activity) || other.activity == _this.activity)&&(identical(other.storage, _this.storage) || other.storage == _this.storage));
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is ThreadExecutionChange&&(identical(other.status, _this.status) || other.status == _this.status)&&(identical(other.execution, _this.execution) || other.execution == _this.execution)&&(identical(other.continuation, _this.continuation) || other.continuation == _this.continuation)&&(identical(other.turns, _this.turns) || other.turns == _this.turns)&&(identical(other.interactions, _this.interactions) || other.interactions == _this.interactions)&&(identical(other.activity, _this.activity) || other.activity == _this.activity)&&(identical(other.storage, _this.storage) || other.storage == _this.storage));
 }
 
 
 @override
 int get hashCode {
   final _this = this as ThreadExecutionChange;
-  return Object.hash(runtimeType,_this.status,_this.turns,_this.interactions,_this.activity,_this.storage);
+  return Object.hash(runtimeType,_this.status,_this.execution,_this.continuation,_this.turns,_this.interactions,_this.activity,_this.storage);
 }
 
 @override
 String toString() {
   final _this = this as ThreadExecutionChange;
-  return 'ThreadExecutionChange(status: ${_this.status}, turns: ${_this.turns}, interactions: ${_this.interactions}, activity: ${_this.activity}, storage: ${_this.storage})';
+  return 'ThreadExecutionChange(status: ${_this.status}, execution: ${_this.execution}, continuation: ${_this.continuation}, turns: ${_this.turns}, interactions: ${_this.interactions}, activity: ${_this.activity}, storage: ${_this.storage})';
 }
 
 
@@ -2700,11 +3298,11 @@ abstract mixin class $ThreadExecutionChangeCopyWith<$Res>  {
   factory $ThreadExecutionChangeCopyWith(ThreadExecutionChange value, $Res Function(ThreadExecutionChange) _then) = _$ThreadExecutionChangeCopyWithImpl;
 @useResult
 $Res call({
- ThreadStatus? status, TurnsReplacement? turns, InteractionDelta? interactions, ActivityReplacement activity, StorageReplacement storage
+ ThreadStatus? status, ExecutionReplacement execution, ContinuationReplacement continuation, TurnsReplacement? turns, InteractionDelta? interactions, ActivityReplacement activity, StorageReplacement storage
 });
 
 
-$TurnsReplacementCopyWith<$Res>? get turns;$InteractionDeltaCopyWith<$Res>? get interactions;$ActivityReplacementCopyWith<$Res> get activity;$StorageReplacementCopyWith<$Res> get storage;
+$ExecutionReplacementCopyWith<$Res> get execution;$ContinuationReplacementCopyWith<$Res> get continuation;$TurnsReplacementCopyWith<$Res>? get turns;$InteractionDeltaCopyWith<$Res>? get interactions;$ActivityReplacementCopyWith<$Res> get activity;$StorageReplacementCopyWith<$Res> get storage;
 
 }
 /// @nodoc
@@ -2717,10 +3315,12 @@ class _$ThreadExecutionChangeCopyWithImpl<$Res>
 
 /// Create a copy of ThreadExecutionChange
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') @override $Res call({Object? status = freezed,Object? turns = freezed,Object? interactions = freezed,Object? activity = null,Object? storage = null,}) {
+@pragma('vm:prefer-inline') @override $Res call({Object? status = freezed,Object? execution = null,Object? continuation = null,Object? turns = freezed,Object? interactions = freezed,Object? activity = null,Object? storage = null,}) {
   return _then(ThreadExecutionChange(
 status: freezed == status ? _self.status : status // ignore: cast_nullable_to_non_nullable
-as ThreadStatus?,turns: freezed == turns ? _self.turns : turns // ignore: cast_nullable_to_non_nullable
+as ThreadStatus?,execution: null == execution ? _self.execution : execution // ignore: cast_nullable_to_non_nullable
+as ExecutionReplacement,continuation: null == continuation ? _self.continuation : continuation // ignore: cast_nullable_to_non_nullable
+as ContinuationReplacement,turns: freezed == turns ? _self.turns : turns // ignore: cast_nullable_to_non_nullable
 as TurnsReplacement?,interactions: freezed == interactions ? _self.interactions : interactions // ignore: cast_nullable_to_non_nullable
 as InteractionDelta?,activity: null == activity ? _self.activity : activity // ignore: cast_nullable_to_non_nullable
 as ActivityReplacement,storage: null == storage ? _self.storage : storage // ignore: cast_nullable_to_non_nullable
@@ -2728,6 +3328,24 @@ as StorageReplacement,
   ));
 }
 /// Create a copy of ThreadExecutionChange
+/// with the given fields replaced by the non-null parameter values.
+@override
+@pragma('vm:prefer-inline')
+$ExecutionReplacementCopyWith<$Res> get execution {
+
+  return $ExecutionReplacementCopyWith<$Res>(_self.execution, (value) {
+    return _then(_self.copyWith(execution: value));
+  });
+}/// Create a copy of ThreadExecutionChange
+/// with the given fields replaced by the non-null parameter values.
+@override
+@pragma('vm:prefer-inline')
+$ContinuationReplacementCopyWith<$Res> get continuation {
+
+  return $ContinuationReplacementCopyWith<$Res>(_self.continuation, (value) {
+    return _then(_self.copyWith(continuation: value));
+  });
+}/// Create a copy of ThreadExecutionChange
 /// with the given fields replaced by the non-null parameter values.
 @override
 @pragma('vm:prefer-inline')
@@ -2851,10 +3469,10 @@ return $default(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( ThreadStatus? status,  TurnsReplacement? turns,  InteractionDelta? interactions,  ActivityReplacement activity,  StorageReplacement storage)?  $default,{required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( ThreadStatus? status,  ExecutionReplacement execution,  ContinuationReplacement continuation,  TurnsReplacement? turns,  InteractionDelta? interactions,  ActivityReplacement activity,  StorageReplacement storage)?  $default,{required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case _ThreadExecutionChange() when $default != null:
-return $default(_that.status,_that.turns,_that.interactions,_that.activity,_that.storage);case _:
+return $default(_that.status,_that.execution,_that.continuation,_that.turns,_that.interactions,_that.activity,_that.storage);case _:
   return orElse();
 
 }
@@ -2872,10 +3490,10 @@ return $default(_that.status,_that.turns,_that.interactions,_that.activity,_that
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( ThreadStatus? status,  TurnsReplacement? turns,  InteractionDelta? interactions,  ActivityReplacement activity,  StorageReplacement storage)  $default,) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( ThreadStatus? status,  ExecutionReplacement execution,  ContinuationReplacement continuation,  TurnsReplacement? turns,  InteractionDelta? interactions,  ActivityReplacement activity,  StorageReplacement storage)  $default,) {final _that = this;
 switch (_that) {
 case _ThreadExecutionChange():
-return $default(_that.status,_that.turns,_that.interactions,_that.activity,_that.storage);case _:
+return $default(_that.status,_that.execution,_that.continuation,_that.turns,_that.interactions,_that.activity,_that.storage);case _:
   throw StateError('Unexpected subclass');
 
 }
@@ -2892,10 +3510,10 @@ return $default(_that.status,_that.turns,_that.interactions,_that.activity,_that
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( ThreadStatus? status,  TurnsReplacement? turns,  InteractionDelta? interactions,  ActivityReplacement activity,  StorageReplacement storage)?  $default,) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( ThreadStatus? status,  ExecutionReplacement execution,  ContinuationReplacement continuation,  TurnsReplacement? turns,  InteractionDelta? interactions,  ActivityReplacement activity,  StorageReplacement storage)?  $default,) {final _that = this;
 switch (_that) {
 case _ThreadExecutionChange() when $default != null:
-return $default(_that.status,_that.turns,_that.interactions,_that.activity,_that.storage);case _:
+return $default(_that.status,_that.execution,_that.continuation,_that.turns,_that.interactions,_that.activity,_that.storage);case _:
   return null;
 
 }
@@ -2907,10 +3525,12 @@ return $default(_that.status,_that.turns,_that.interactions,_that.activity,_that
 
 
 class _ThreadExecutionChange implements ThreadExecutionChange {
-  const _ThreadExecutionChange({required this.status, required this.turns, required this.interactions, required this.activity, required this.storage});
+  const _ThreadExecutionChange({required this.status, this.execution = const ExecutionReplacement.unchanged(), this.continuation = const ContinuationReplacement.unchanged(), required this.turns, required this.interactions, required this.activity, required this.storage});
 
 
 @override final  ThreadStatus? status;
+@override@JsonKey() final  ExecutionReplacement execution;
+@override@JsonKey() final  ContinuationReplacement continuation;
 @override final  TurnsReplacement? turns;
 @override final  InteractionDelta? interactions;
 @override final  ActivityReplacement activity;
@@ -2926,18 +3546,18 @@ _$ThreadExecutionChangeCopyWith<_ThreadExecutionChange> get copyWith => __$Threa
 
 @override
 bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is _ThreadExecutionChange&&(identical(other.status, status) || other.status == status)&&(identical(other.turns, turns) || other.turns == turns)&&(identical(other.interactions, interactions) || other.interactions == interactions)&&(identical(other.activity, activity) || other.activity == activity)&&(identical(other.storage, storage) || other.storage == storage));
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is _ThreadExecutionChange&&(identical(other.status, status) || other.status == status)&&(identical(other.execution, execution) || other.execution == execution)&&(identical(other.continuation, continuation) || other.continuation == continuation)&&(identical(other.turns, turns) || other.turns == turns)&&(identical(other.interactions, interactions) || other.interactions == interactions)&&(identical(other.activity, activity) || other.activity == activity)&&(identical(other.storage, storage) || other.storage == storage));
 }
 
 
 @override
 int get hashCode {
-    return Object.hash(runtimeType,status,turns,interactions,activity,storage);
+    return Object.hash(runtimeType,status,execution,continuation,turns,interactions,activity,storage);
 }
 
 @override
 String toString() {
-    return 'ThreadExecutionChange(status: $status, turns: $turns, interactions: $interactions, activity: $activity, storage: $storage)';
+    return 'ThreadExecutionChange(status: $status, execution: $execution, continuation: $continuation, turns: $turns, interactions: $interactions, activity: $activity, storage: $storage)';
 }
 
 
@@ -2948,11 +3568,11 @@ abstract mixin class _$ThreadExecutionChangeCopyWith<$Res> implements $ThreadExe
   factory _$ThreadExecutionChangeCopyWith(_ThreadExecutionChange value, $Res Function(_ThreadExecutionChange) _then) = __$ThreadExecutionChangeCopyWithImpl;
 @override @useResult
 $Res call({
- ThreadStatus? status, TurnsReplacement? turns, InteractionDelta? interactions, ActivityReplacement activity, StorageReplacement storage
+ ThreadStatus? status, ExecutionReplacement execution, ContinuationReplacement continuation, TurnsReplacement? turns, InteractionDelta? interactions, ActivityReplacement activity, StorageReplacement storage
 });
 
 
-@override $TurnsReplacementCopyWith<$Res>? get turns;@override $InteractionDeltaCopyWith<$Res>? get interactions;@override $ActivityReplacementCopyWith<$Res> get activity;@override $StorageReplacementCopyWith<$Res> get storage;
+@override $ExecutionReplacementCopyWith<$Res> get execution;@override $ContinuationReplacementCopyWith<$Res> get continuation;@override $TurnsReplacementCopyWith<$Res>? get turns;@override $InteractionDeltaCopyWith<$Res>? get interactions;@override $ActivityReplacementCopyWith<$Res> get activity;@override $StorageReplacementCopyWith<$Res> get storage;
 
 }
 /// @nodoc
@@ -2965,10 +3585,12 @@ class __$ThreadExecutionChangeCopyWithImpl<$Res>
 
 /// Create a copy of ThreadExecutionChange
 /// with the given fields replaced by the non-null parameter values.
-@override @pragma('vm:prefer-inline') $Res call({Object? status = freezed,Object? turns = freezed,Object? interactions = freezed,Object? activity = null,Object? storage = null,}) {
+@override @pragma('vm:prefer-inline') $Res call({Object? status = freezed,Object? execution = null,Object? continuation = null,Object? turns = freezed,Object? interactions = freezed,Object? activity = null,Object? storage = null,}) {
   return _then(_ThreadExecutionChange(
 status: freezed == status ? _self.status : status // ignore: cast_nullable_to_non_nullable
-as ThreadStatus?,turns: freezed == turns ? _self.turns : turns // ignore: cast_nullable_to_non_nullable
+as ThreadStatus?,execution: null == execution ? _self.execution : execution // ignore: cast_nullable_to_non_nullable
+as ExecutionReplacement,continuation: null == continuation ? _self.continuation : continuation // ignore: cast_nullable_to_non_nullable
+as ContinuationReplacement,turns: freezed == turns ? _self.turns : turns // ignore: cast_nullable_to_non_nullable
 as TurnsReplacement?,interactions: freezed == interactions ? _self.interactions : interactions // ignore: cast_nullable_to_non_nullable
 as InteractionDelta?,activity: null == activity ? _self.activity : activity // ignore: cast_nullable_to_non_nullable
 as ActivityReplacement,storage: null == storage ? _self.storage : storage // ignore: cast_nullable_to_non_nullable
@@ -2977,6 +3599,24 @@ as StorageReplacement,
 }
 
 /// Create a copy of ThreadExecutionChange
+/// with the given fields replaced by the non-null parameter values.
+@override
+@pragma('vm:prefer-inline')
+$ExecutionReplacementCopyWith<$Res> get execution {
+
+  return $ExecutionReplacementCopyWith<$Res>(_self.execution, (value) {
+    return _then(_self.copyWith(execution: value));
+  });
+}/// Create a copy of ThreadExecutionChange
+/// with the given fields replaced by the non-null parameter values.
+@override
+@pragma('vm:prefer-inline')
+$ContinuationReplacementCopyWith<$Res> get continuation {
+
+  return $ContinuationReplacementCopyWith<$Res>(_self.continuation, (value) {
+    return _then(_self.copyWith(continuation: value));
+  });
+}/// Create a copy of ThreadExecutionChange
 /// with the given fields replaced by the non-null parameter values.
 @override
 @pragma('vm:prefer-inline')

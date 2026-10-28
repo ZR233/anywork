@@ -148,7 +148,9 @@ void main() {
       // 停止入口只以 canonical 执行身份为目标：轮次运行同时发布该执行身份。
       await pumpClientUntil(
         tester,
-        () => session.execution.value.value?.execution?.id == 'settings-route-execution',
+        () =>
+            session.execution.value.value?.execution?.id ==
+            'settings-route-execution',
         'running execution identity',
       );
       await tester.pump();

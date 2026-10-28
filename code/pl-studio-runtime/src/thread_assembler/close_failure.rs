@@ -8,7 +8,8 @@ use pl_tool::collaboration::thread::AgentWorkspaceDisposition;
 
 use super::child_resources::{CleanupGate, UnpublishedChild};
 use super::children::ChildFactory;
-use super::{Registry, StudioThreadAssembler, ThreadAssemblyError};
+use super::published_resources::{DirectoryProjection, DirectoryProjectionFailure};
+use super::{PublishedWorkspaceRetirement, Registry, StudioThreadAssembler, ThreadAssemblyError};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ThreadClosePhase {
@@ -17,6 +18,7 @@ pub(crate) enum ThreadClosePhase {
     CoreClose,
     Observation,
     PublishedResources,
+    DirectoryProjection,
     RemoveEntry,
     UnpublishedThread,
     UnpublishedFactory,
@@ -35,8 +37,17 @@ pub(super) struct EntryCloseOwner {
     pub(super) cleanup: Weak<CleanupGate>,
     pub(super) storage: Option<pl_core::thread::cold::ColdStoreHandle>,
     pub(super) factory: Option<ChildFactory>,
-    pub(super) disposition: Option<AgentWorkspaceDisposition>,
     pub(super) published: bool,
+}
+impl EntryCloseOwner {
+    pub(super) fn matches_entry(&self, entry: &super::Entry) -> bool {
+        Arc::ptr_eq(&entry.incarnation, &self.incarnation)
+            && entry.thread.same_instance(&self.thread)
+            && self
+                .cleanup
+                .upgrade()
+                .is_some_and(|gate| Arc::ptr_eq(&entry.cleanup, &gate))
+    }
 }
 #[derive(Clone)]
 enum CloseOwner {
@@ -50,6 +61,14 @@ enum CloseOwner {
 struct Progress {
     phase: ThreadClosePhase,
     wait: Option<PhaseWait>,
+    disposition: Option<AgentWorkspaceDisposition>,
+    projection: Option<Arc<DirectoryProjection>>,
+}
+
+struct ExplicitCloseResponsibilities {
+    frozen: bool,
+    disposition: Option<AgentWorkspaceDisposition>,
+    projection: Option<Arc<DirectoryProjection>>,
 }
 
 pub(super) struct ThreadCloseRun {
@@ -76,6 +95,7 @@ pub(crate) struct ThreadCloseFailure {
     pub(crate) cause: Arc<ThreadAssemblyError>,
     pub(crate) identity_lost: bool,
     run: Arc<ThreadCloseRun>,
+    workspace: PublishedWorkspaceRetirement,
 }
 impl std::fmt::Debug for ThreadCloseFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -108,7 +128,10 @@ impl ThreadCloseFailure {
     }
 
     pub(crate) fn can_resume_original(&self) -> bool {
-        if self.identity_lost || !self.run.valid_identity() {
+        if self.identity_lost
+            || !self.run.valid_identity()
+            || !self.run.can_drive_retained_phase(self.workspace)
+        {
             return false;
         }
         let progress = self
@@ -130,14 +153,14 @@ impl ThreadCloseFailure {
         if self.original_is_complete() {
             return Ok(());
         }
-        let grant = self.run.grant();
+        let grant = self.run.grant(self.workspace);
         let _operation = self.run.operation.clone().lock_owned().await;
         if !self.run.valid_identity() {
             let mut failure = self.clone();
             failure.identity_lost = true;
             return Err(failure);
         }
-        self.run.drive(grant).await
+        self.run.drive(grant, self.workspace).await
     }
 
     pub(super) fn into_resource(self) -> ThreadAssemblyError {
@@ -255,7 +278,6 @@ impl StudioThreadAssembler {
         incarnation: &Arc<()>,
         thread: &ThreadHandle,
         cleanup: &Arc<CleanupGate>,
-        workspace: super::PublishedWorkspaceRetirement,
     ) -> Result<Arc<ThreadCloseRun>, ThreadAssemblyError> {
         let operation = self.close_operation_gate(id);
         let owner = {
@@ -275,9 +297,7 @@ impl StudioThreadAssembler {
                 cleanup: Arc::downgrade(cleanup),
                 storage: entry.close_storage.clone(),
                 factory: state.child_factory.clone(),
-                disposition: entry.workspace_disposition,
-                published: matches!(workspace, super::PublishedWorkspaceRetirement::ApplyExplicitClose)
-                    && entry.parent_id.is_some()
+                published: entry.parent_id.is_some()
                     && !state.unpublished_children.contains_key(id),
             }
         };
@@ -286,6 +306,14 @@ impl StudioThreadAssembler {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(run) = &*slot {
+            if run.phase() == ThreadClosePhase::Done
+                || !matches!(&run.owner, CloseOwner::Entry(original)
+                    if Arc::ptr_eq(&original.incarnation, &owner.incarnation)
+                        && original.thread.same_instance(&owner.thread)
+                        && Weak::ptr_eq(&original.cleanup, &owner.cleanup))
+            {
+                return Err(ThreadAssemblyError::Identity(id.to_owned()));
+            }
             return Ok(run.clone());
         }
         let run = Arc::new(ThreadCloseRun {
@@ -296,6 +324,8 @@ impl StudioThreadAssembler {
             progress: Mutex::new(Progress {
                 phase: ThreadClosePhase::AttachStorage,
                 wait: None,
+                disposition: None,
+                projection: None,
             }),
         });
         *slot = Some(run.clone());
@@ -311,8 +341,8 @@ impl StudioThreadAssembler {
         cleanup: Arc<CleanupGate>,
         workspace: super::PublishedWorkspaceRetirement,
     ) -> Result<(), ThreadAssemblyError> {
-        let run = self.capture_entry_close(id, &incarnation, &thread, &cleanup, workspace)?;
-        run.drive(run.grant())
+        let run = self.capture_entry_close(id, &incarnation, &thread, &cleanup)?;
+        run.drive(run.grant(workspace), workspace)
             .await
             .map_err(ThreadCloseFailure::into_resource)
     }
@@ -332,7 +362,10 @@ impl StudioThreadAssembler {
             .clone();
         if let Some(run) = existing {
             return run
-                .drive(run.grant())
+                .drive(
+                    run.grant(PublishedWorkspaceRetirement::Retain),
+                    PublishedWorkspaceRetirement::Retain,
+                )
                 .await
                 .map_err(ThreadCloseFailure::into_resource);
         }
@@ -352,10 +385,7 @@ impl StudioThreadAssembler {
         let entry = self.prepare_entry_close(id).await?;
         let entry = entry
             .map(|(incarnation, thread, cleanup)| {
-                self.capture_entry_close(
-                    id, &incarnation, &thread, &cleanup,
-                    super::PublishedWorkspaceRetirement::Retain,
-                )
+                self.capture_entry_close(id, &incarnation, &thread, &cleanup)
             })
             .transpose()?;
         let run = {
@@ -379,20 +409,246 @@ impl StudioThreadAssembler {
                     progress: Mutex::new(Progress {
                         phase: ThreadClosePhase::UnpublishedThread,
                         wait: None,
+                        disposition: None,
+                        projection: None,
                     }),
                 });
                 *slot = Some(run.clone());
                 run
             }
         };
-        run.drive(run.grant())
-            .await
-            .map_err(ThreadCloseFailure::into_resource)
+        run.drive(
+            run.grant(PublishedWorkspaceRetirement::Retain),
+            PublishedWorkspaceRetirement::Retain,
+        )
+        .await
+        .map_err(ThreadCloseFailure::into_resource)
     }
 }
 
 impl ThreadCloseRun {
-    fn grant(&self) -> CloseGrant {
+    /// Only unfinished responsibilities from this physical Entry may be claimed. The cleanup
+    /// permit serializes this snapshot with policy publication; neither state lock crosses await.
+    fn explicit_responsibilities(&self) -> Option<ExplicitCloseResponsibilities> {
+        let CloseOwner::Entry(owner) = &self.owner else {
+            return None;
+        };
+        let registry = self.registry.upgrade()?;
+        let state = registry.state();
+        let entry = state
+            .entries
+            .get(&self.id)
+            .filter(|entry| owner.matches_entry(entry))?;
+        Some(ExplicitCloseResponsibilities {
+            frozen: entry.workspace_disposition.is_some() || entry.directory_projection.is_some(),
+            disposition: entry
+                .workspace_disposition
+                .filter(|_| owner.published && !entry.published_resources_closed),
+            projection: entry
+                .directory_projection
+                .as_ref()
+                .filter(|_| !entry.directory_projected)
+                .cloned(),
+        })
+    }
+
+    fn can_drive_retained_phase(&self, workspace: PublishedWorkspaceRetirement) -> bool {
+        if workspace == PublishedWorkspaceRetirement::ApplyExplicitClose {
+            return true;
+        }
+        let responsibilities = self.explicit_responsibilities();
+        let (phase, admitted_wait) = {
+            let progress = self
+                .progress
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            // A durable explicit policy freezes the whole original run, not only its resource
+            // tail. Retain may join an unknown/in-flight or successful wait, but any actual
+            // failure still needs the explicit operation, including Tool::close in CoreClose.
+            let frozen = responsibilities.as_ref().is_some_and(|value| value.frozen)
+                || progress.disposition.is_some()
+                || progress.projection.is_some();
+            if frozen
+                && progress
+                    .wait
+                    .as_ref()
+                    .is_some_and(|wait| matches!(wait.peek(), Some(Err(_))))
+            {
+                return false;
+            }
+            let admitted = match progress.phase {
+                ThreadClosePhase::PublishedResources => progress.disposition.is_some(),
+                ThreadClosePhase::DirectoryProjection => progress.projection.is_some(),
+                _ => false,
+            } && progress
+                .wait
+                .as_ref()
+                .is_some_and(|wait| !matches!(wait.peek(), Some(Err(_))));
+            (progress.phase, admitted)
+        };
+        if admitted_wait {
+            return true;
+        }
+        let Some(ExplicitCloseResponsibilities {
+            disposition,
+            projection,
+            ..
+        }) = responsibilities
+        else {
+            return true;
+        };
+        !(disposition.is_some()
+            && matches!(
+                phase,
+                ThreadClosePhase::PublishedResources
+                    | ThreadClosePhase::DirectoryProjection
+                    | ThreadClosePhase::RemoveEntry
+            )
+            || projection.is_some()
+                && matches!(
+                    phase,
+                    ThreadClosePhase::DirectoryProjection | ThreadClosePhase::RemoveEntry
+                ))
+    }
+
+    fn prepare_phase(
+        &self,
+        workspace: PublishedWorkspaceRetirement,
+    ) -> Result<ThreadClosePhase, Arc<ThreadAssemblyError>> {
+        let Some(ExplicitCloseResponsibilities {
+            disposition,
+            projection,
+            ..
+        }) = self.explicit_responsibilities()
+        else {
+            return Ok(self.phase());
+        };
+        let mut progress = self
+            .progress
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // Only an absent wait or a proven, side-effect-free skip can be revisited. An unknown or
+        // failed future always remains the original phase/cause, including after a policy freeze.
+        let skipped = match progress.phase {
+            ThreadClosePhase::PublishedResources if progress.disposition.is_none() => progress
+                .wait
+                .as_ref()
+                .is_none_or(|wait| matches!(wait.peek(), Some(Ok(())))),
+            ThreadClosePhase::DirectoryProjection if progress.projection.is_none() => progress
+                .wait
+                .as_ref()
+                .is_none_or(|wait| matches!(wait.peek(), Some(Ok(())))),
+            ThreadClosePhase::RemoveEntry => progress.wait.is_none(),
+            _ => false,
+        };
+        let mut retired = None;
+        if disposition.is_some() && progress.disposition.is_none() && skipped {
+            if workspace != PublishedWorkspaceRetirement::ApplyExplicitClose {
+                return Err(Arc::new(explicit_close_required()));
+            }
+            progress.phase = ThreadClosePhase::PublishedResources;
+            retired = progress.wait.take();
+            progress.disposition = disposition;
+        } else if projection.is_some()
+            && progress.projection.is_none()
+            && skipped
+            && matches!(
+                progress.phase,
+                ThreadClosePhase::DirectoryProjection | ThreadClosePhase::RemoveEntry
+            )
+        {
+            if workspace != PublishedWorkspaceRetirement::ApplyExplicitClose {
+                return Err(Arc::new(explicit_close_required()));
+            }
+            progress.phase = ThreadClosePhase::DirectoryProjection;
+            retired = progress.wait.take();
+            progress.projection = projection;
+        }
+        let phase = progress.phase;
+        drop(progress);
+        drop(retired);
+        if !self.can_drive_retained_phase(workspace) {
+            // Keep an already failed explicit future's exact error rather than replacing it with
+            // an authorization error. Retain may join in-flight work, but never retry it.
+            let previous = self
+                .progress
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .wait
+                .as_ref()
+                .and_then(Shared::peek)
+                .and_then(|result| result.as_ref().err())
+                .cloned();
+            return Err(previous.unwrap_or_else(|| Arc::new(explicit_close_required())));
+        }
+        Ok(phase)
+    }
+
+    fn record_success(&self, phase: ThreadClosePhase) -> Result<(), ThreadAssemblyError> {
+        if !matches!(
+            phase,
+            ThreadClosePhase::AttachStorage
+                | ThreadClosePhase::PublishedResources
+                | ThreadClosePhase::DirectoryProjection
+        ) {
+            return Ok(());
+        }
+        let CloseOwner::Entry(owner) = &self.owner else {
+            return Ok(());
+        };
+        let (disposition, projection) = {
+            let progress = self
+                .progress
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            (progress.disposition, progress.projection.clone())
+        };
+        let registry = self
+            .registry
+            .upgrade()
+            .ok_or_else(|| ThreadAssemblyError::Identity(self.id.clone()))?;
+        let retired = {
+            let mut state = registry.state();
+            let entry = state
+                .entries
+                .get_mut(&self.id)
+                .filter(|entry| owner.matches_entry(entry))
+                .ok_or_else(|| ThreadAssemblyError::Identity(self.id.clone()))?;
+            match phase {
+                ThreadClosePhase::AttachStorage => entry.close_storage.take(),
+                ThreadClosePhase::PublishedResources => {
+                    if owner.published && disposition.is_some() {
+                        if entry.workspace_disposition != disposition {
+                            return Err(ThreadAssemblyError::Identity(self.id.clone()));
+                        }
+                        entry.published_resources_closed = true;
+                    }
+                    None
+                }
+                ThreadClosePhase::DirectoryProjection => {
+                    if let Some(projection) = projection {
+                        if !entry
+                            .directory_projection
+                            .as_ref()
+                            .is_some_and(|current| Arc::ptr_eq(current, &projection))
+                        {
+                            return Err(ThreadAssemblyError::Identity(self.id.clone()));
+                        }
+                        entry.directory_projected = true;
+                    }
+                    None
+                }
+                _ => None,
+            }
+        };
+        drop(retired);
+        Ok(())
+    }
+
+    fn grant(&self, workspace: PublishedWorkspaceRetirement) -> CloseGrant {
+        if !self.can_drive_retained_phase(workspace) {
+            return None;
+        }
         let progress = self
             .progress
             .lock()
@@ -422,15 +678,10 @@ impl ThreadCloseRun {
         };
         let state = registry.state();
         match &self.owner {
-            CloseOwner::Entry(owner) => state.entries.get(&self.id).is_some_and(|entry| {
-                Arc::ptr_eq(&entry.incarnation, &owner.incarnation)
-                    && entry.thread.same_instance(&owner.thread)
-                    && owner
-                        .cleanup
-                        .upgrade()
-                        .is_some_and(|gate| Arc::ptr_eq(&entry.cleanup, &gate))
-                    && entry.workspace_disposition == owner.disposition
-            }),
+            CloseOwner::Entry(owner) => state
+                .entries
+                .get(&self.id)
+                .is_some_and(|entry| owner.matches_entry(entry)),
             CloseOwner::Unpublished { cleanup, .. } => state
                 .unpublished_children
                 .get(&self.id)
@@ -446,6 +697,7 @@ impl ThreadCloseRun {
         self: &Arc<Self>,
         phase: ThreadClosePhase,
         cause: Arc<ThreadAssemblyError>,
+        workspace: PublishedWorkspaceRetirement,
     ) -> ThreadCloseFailure {
         ThreadCloseFailure {
             thread_id: self.id.clone(),
@@ -453,6 +705,7 @@ impl ThreadCloseRun {
             cause,
             identity_lost: !self.valid_identity(),
             run: self.clone(),
+            workspace,
         }
     }
 
@@ -466,6 +719,15 @@ impl ThreadCloseRun {
                 .is_some_and(crate::studio::ObservationCloseFailure::can_resume_original),
             PublishedResources | UnpublishedFactory => source::<crate::studio::thread_factory::FactoryCloseFailure>(error)
                 .is_some_and(|failure| failure.can_resume_original() || failure.original_is_complete()),
+            DirectoryProjection => source::<DirectoryProjectionFailure>(error).is_some_and(|failure| {
+                let Some(registry) = self.registry.upgrade() else { return false; };
+                let state = registry.state();
+                matches!(&self.owner, CloseOwner::Entry(owner)
+                    if state.entries.get(&self.id).is_some_and(|entry|
+                        owner.matches_entry(entry)
+                            && entry.directory_projection.as_ref().is_some_and(|projection|
+                                Arc::ptr_eq(projection, &failure.projection))))
+            }),
             UnpublishedThread => source::<ThreadCloseFailure>(error)
                 .is_some_and(|failure| failure.can_resume_original() || failure.original_is_complete()),
             // Only this actual Core close point has Tool::close's retry-safe contract. Storage
@@ -488,15 +750,10 @@ impl ThreadCloseRun {
                 .ok_or_else(|| ThreadAssemblyError::Identity(id.clone()))?;
             let state = registry.state();
             match &owner {
-                CloseOwner::Entry(owner) => state.entries.get(&id).is_some_and(|entry| {
-                    Arc::ptr_eq(&entry.incarnation, &owner.incarnation)
-                        && entry.thread.same_instance(&owner.thread)
-                        && owner
-                            .cleanup
-                            .upgrade()
-                            .is_some_and(|cleanup| Arc::ptr_eq(&entry.cleanup, &cleanup))
-                        && entry.workspace_disposition == owner.disposition
-                }),
+                CloseOwner::Entry(owner) => state
+                    .entries
+                    .get(&id)
+                    .is_some_and(|entry| owner.matches_entry(entry)),
                 CloseOwner::Unpublished { cleanup, .. } => {
                     state.unpublished_children.get(&id).is_some_and(|pending| {
                         cleanup
@@ -551,9 +808,22 @@ impl ThreadCloseRun {
             // The enclosing unpublished request already owns this same operation permit.
             return failure
                 .run
-                .drive(failure.run.grant())
+                .drive(
+                    failure.run.grant(PublishedWorkspaceRetirement::Retain),
+                    PublishedWorkspaceRetirement::Retain,
+                )
                 .await
                 .map_err(|failure| Arc::new(failure.into_resource()));
+        }
+        if phase == ThreadClosePhase::DirectoryProjection
+            && let CloseOwner::Entry(owner) = &owner
+            && let Some(failure) = source::<DirectoryProjectionFailure>(error.as_ref())
+        {
+            return failure
+                .projection
+                .project(&owner.thread)
+                .await
+                .map_err(Arc::new);
         }
         if phase == ThreadClosePhase::CoreClose
             && let CloseOwner::Entry(owner) = &owner
@@ -574,7 +844,8 @@ impl ThreadCloseRun {
             PrepareCandidates => CoreClose,
             CoreClose => Observation,
             Observation => PublishedResources,
-            PublishedResources => RemoveEntry,
+            PublishedResources => DirectoryProjection,
+            DirectoryProjection => RemoveEntry,
             RemoveEntry | RemoveUnpublished | Done => Done,
             UnpublishedThread => UnpublishedFactory,
             UnpublishedFactory => RemoveUnpublished,
@@ -588,6 +859,13 @@ impl ThreadCloseRun {
         let registry = self.registry.clone();
         let id = self.id.clone();
         let owner = self.owner.clone();
+        let (disposition, projection) = {
+            let progress = self
+                .progress
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            (progress.disposition, progress.projection.clone())
+        };
         async move {
             match (phase, owner) {
                 (ThreadClosePhase::AttachStorage, CloseOwner::Entry(owner)) => {
@@ -622,12 +900,27 @@ impl ThreadCloseRun {
                     future.await
                 }
                 (ThreadClosePhase::PublishedResources, CloseOwner::Entry(owner)) => {
-                    StudioThreadAssembler::close_published_resources(registry, id, owner).await
+                    StudioThreadAssembler::close_published_resources(
+                        registry,
+                        id,
+                        owner,
+                        disposition,
+                    )
+                    .await
+                }
+                (ThreadClosePhase::DirectoryProjection, CloseOwner::Entry(owner)) => {
+                    if let Some(projection) = projection {
+                        projection.project(&owner.thread).await?;
+                    }
+                    Ok(())
                 }
                 (ThreadClosePhase::UnpublishedThread, CloseOwner::Unpublished { entry, .. }) => {
                     if let Some(entry) = entry {
                         entry
-                            .drive(entry.grant())
+                            .drive(
+                                entry.grant(PublishedWorkspaceRetirement::Retain),
+                                PublishedWorkspaceRetirement::Retain,
+                            )
                             .await
                             .map_err(ThreadCloseFailure::into_resource)?;
                     }
@@ -662,8 +955,12 @@ impl ThreadCloseRun {
                             .ok_or_else(|| ThreadAssemblyError::Identity(id.clone()))?;
                         let mut state = registry.state();
                         if !state.entries.get(&id).is_some_and(|entry| {
-                            Arc::ptr_eq(&entry.incarnation, &owner.incarnation)
-                                && entry.thread.same_instance(&owner.thread)
+                            owner.matches_entry(entry)
+                                && (!owner.published
+                                    || entry.workspace_disposition.is_none()
+                                    || entry.published_resources_closed)
+                                && (entry.directory_projection.is_none()
+                                    || entry.directory_projected)
                         }) {
                             return Err(ThreadAssemblyError::Identity(id));
                         }
@@ -697,7 +994,11 @@ impl ThreadCloseRun {
     }
 
     /// One original phase future remains in the original cleanup slot across cancellation.
-    fn drive(self: &Arc<Self>, grant: CloseGrant) -> BoxFuture<'_, Result<(), ThreadCloseFailure>> {
+    fn drive(
+        self: &Arc<Self>,
+        grant: CloseGrant,
+        workspace: PublishedWorkspaceRetirement,
+    ) -> BoxFuture<'_, Result<(), ThreadCloseFailure>> {
         async move {
             loop {
                 let phase = self.phase();
@@ -714,6 +1015,7 @@ impl ThreadCloseRun {
                     return Err(self.failure(
                         phase,
                         Arc::new(ThreadAssemblyError::Identity(self.id.clone())),
+                        workspace,
                     ));
                 };
                 let _cleanup = cleanup.acquire().await;
@@ -721,8 +1023,12 @@ impl ThreadCloseRun {
                     return Err(self.failure(
                         phase,
                         Arc::new(ThreadAssemblyError::Identity(self.id.clone())),
+                        workspace,
                     ));
                 }
+                let phase = self
+                    .prepare_phase(workspace)
+                    .map_err(|cause| self.failure(self.phase(), cause, workspace))?;
                 let previous = {
                     self.progress
                         .lock()
@@ -738,7 +1044,7 @@ impl ThreadCloseRun {
                         *original_phase == phase && Arc::ptr_eq(original, error)
                     });
                     if !granted || !self.can_resume_source(phase, error) {
-                        return Err(self.failure(phase, error.clone()));
+                        return Err(self.failure(phase, error.clone(), workspace));
                     }
                 }
                 let candidate = if let Some(error) = previous {
@@ -788,25 +1094,10 @@ impl ThreadCloseRun {
                 };
                 drop(retired);
                 match wait.await {
-                    Err(error) => return Err(self.failure(phase, error)),
+                    Err(error) => return Err(self.failure(phase, error, workspace)),
                     Ok(()) => {
-                        if phase == ThreadClosePhase::AttachStorage
-                            && let CloseOwner::Entry(owner) = &self.owner
-                            && let Some(registry) = self.registry.upgrade()
-                        {
-                            let retired = {
-                                let mut state = registry.state();
-                                state
-                                    .entries
-                                    .get_mut(&self.id)
-                                    .filter(|entry| {
-                                        Arc::ptr_eq(&entry.incarnation, &owner.incarnation)
-                                            && entry.thread.same_instance(&owner.thread)
-                                    })
-                                    .and_then(|entry| entry.close_storage.take())
-                            };
-                            drop(retired);
-                        }
+                        self.record_success(phase)
+                            .map_err(|cause| self.failure(phase, Arc::new(cause), workspace))?;
                         let retired = {
                             let mut progress = self
                                 .progress
@@ -825,6 +1116,17 @@ impl ThreadCloseRun {
             }
         }
         .boxed()
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("unfinished explicit close requires its explicit operation")]
+struct ExplicitCloseRequired;
+
+fn explicit_close_required() -> ThreadAssemblyError {
+    ThreadAssemblyError::Resource {
+        operation: "retain original explicit close responsibility",
+        source: Box::new(ExplicitCloseRequired),
     }
 }
 

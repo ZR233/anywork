@@ -40,7 +40,11 @@ CommitReceipt stopReceipt(
   durable: false,
 );
 
-AgentExecution stopExecutionValue(int entry, {AgentExecutionPhase phase = AgentExecutionPhase.running, String? turnId}) => AgentExecution(id: 'execution-$entry', phase: phase, turnId: turnId);
+AgentExecution stopExecutionValue(
+  int entry, {
+  AgentExecutionPhase phase = AgentExecutionPhase.running,
+  String? turnId,
+}) => AgentExecution(id: 'execution-$entry', phase: phase, turnId: turnId);
 
 final class StopInterrupt {
   StopInterrupt(this.threadId, this.executionId, this.operationId);
@@ -102,7 +106,11 @@ final class StopSource {
     mode: opening.mode,
   );
 
-  int send({required TurnBrief? active, required ThreadStatus status, AgentExecution? execution}) {
+  int send({
+    required TurnBrief? active,
+    required ThreadStatus status,
+    AgentExecution? execution,
+  }) {
     final previous = revision++;
     if (previous == 0) {
       opening.feed.emit(

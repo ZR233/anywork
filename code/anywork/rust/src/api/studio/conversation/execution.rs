@@ -161,13 +161,17 @@ pub struct BridgeTurnsReplacement {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BridgeExecutionReplacement {
     Unchanged,
-    Replace { value: Option<crate::api::studio::types::BridgeAgentExecution> },
+    Replace {
+        value: Option<crate::api::studio::types::BridgeAgentExecution>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BridgeContinuationReplacement {
     Unchanged,
-    Replace { value: Option<crate::api::studio::types::BridgeContinuationView> },
+    Replace {
+        value: Option<crate::api::studio::types::BridgeContinuationView>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

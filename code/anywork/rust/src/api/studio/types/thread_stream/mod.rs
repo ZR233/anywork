@@ -7,10 +7,9 @@ use serde::{Deserialize, Serialize};
 // 活动/存储 DTO 定义在兄弟模块 `thread_activity`，由 `types` 重导出；这里显式引入，不复制定义，
 // 也不做 `pub use` 以免与 `thread_activity::*` 产生同名 glob 歧义。
 use super::{
-    BridgeAgentExecution,
-    BridgeDelegationMode, BridgeDelegationPreference, BridgeNewThreadModelRoute,
-    BridgeProviderFailureKind, BridgeRetryDisposition, BridgeThreadActivity,
-    BridgeThreadStorageState, BridgeTurnFailureCategory,
+    BridgeAgentExecution, BridgeDelegationMode, BridgeDelegationPreference,
+    BridgeNewThreadModelRoute, BridgeProviderFailureKind, BridgeRetryDisposition,
+    BridgeThreadActivity, BridgeThreadStorageState, BridgeTurnFailureCategory,
 };
 
 pub mod item;

@@ -95,7 +95,9 @@ class InteractionView extends StatelessWidget {
     // is never a decision card in the root and has no approval/answer surface.
     if (state.key.isHosted && isPlan) return const SizedBox.shrink();
     final isApproval = content is ToolApprovalContentRead;
-    final hostedSaved = state.key.isHosted && decisionConfirmed &&
+    final hostedSaved =
+        state.key.isHosted &&
+        decisionConfirmed &&
         state.submission?.observed == true;
     final questionCount = content is UserInputContentRead
         ? content.questionCount
@@ -238,12 +240,14 @@ class InteractionView extends StatelessWidget {
         : null;
     return InteractionDockShell(
       key: state.key.isHosted
-          ? StudioDriverKeys.childInteractionCard(state.key.interactionId) : null,
+          ? StudioDriverKeys.childInteractionCard(state.key.interactionId)
+          : null,
       kind: kind,
       title: title,
       subtitle: state.key.isHosted
           ? context.l10n.childInteractionFrom(
-              state.textOf(header?.agentPath) ?? state.key.target)
+              state.textOf(header?.agentPath) ?? state.key.target,
+            )
           : subtitle,
       footerHint: footerHint,
       trailing: trailing,
@@ -255,8 +259,11 @@ class InteractionView extends StatelessWidget {
           if (state.key.isHosted)
             Text(context.l10n.childInteractionRevision(state.key.revision)),
           if (hostedSaved)
-            Text(isApproval ? context.l10n.childInteractionApprovalResolved
-                : context.l10n.childInteractionAnswerSaved)
+            Text(
+              isApproval
+                  ? context.l10n.childInteractionApprovalResolved
+                  : context.l10n.childInteractionAnswerSaved,
+            )
           else if (header == null)
             const LinearProgressIndicator()
           else if (header.purpose is PlanConfirmationPurposeRead &&
@@ -389,7 +396,9 @@ class InteractionView extends StatelessWidget {
                 Expanded(
                   child: Text(
                     switch (studioFailureReason(state.submissionError)) {
-                      final reason? => context.composerFailureReasonLabel(reason),
+                      final reason? => context.composerFailureReasonLabel(
+                        reason,
+                      ),
                       null => state.submissionError!.message,
                     },
                     key: header?.purpose is PlanConfirmationPurposeRead

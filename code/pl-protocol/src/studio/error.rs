@@ -112,7 +112,13 @@ impl StudioErrorReason {
 /// Exact, non-sensitive facts carried by stop/continue/hosted-interaction rejections.
 /// The discriminator preserves the difference between rejection and accepted-but-not-durable.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
-#[serde(tag = "kind", content = "data", rename_all = "camelCase", rename_all_fields = "camelCase", deny_unknown_fields)]
+#[serde(
+    tag = "kind",
+    content = "data",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
 pub enum ControlFailureFacts {
     Unspecified,
     ChildThreadAction {
@@ -316,7 +322,9 @@ impl StudioError {
 
     pub fn reason(&self) -> Option<&str> {
         match self.details.as_deref() {
-            Some(StudioErrorDetails::Reason { reason } | StudioErrorDetails::Control { reason, .. }) => Some(reason),
+            Some(
+                StudioErrorDetails::Reason { reason } | StudioErrorDetails::Control { reason, .. },
+            ) => Some(reason),
             _ => None,
         }
     }

@@ -34,7 +34,7 @@ final class WorkspaceViewModelProvider
 }
 
 String _$workspaceViewModelHash() =>
-    r'6afeeefaaae90128392fb30b22162474974b25b3';
+    r'3198b53824fe5d87f596629217be1beb97b8bdec';
 
 abstract class _$WorkspaceViewModel extends $AsyncNotifier<WorkspaceViewState> {
   FutureOr<WorkspaceViewState> build();

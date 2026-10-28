@@ -393,7 +393,8 @@ class WorkspaceViewModel extends _$WorkspaceViewModel {
     // or invoking any external callback. Never select/open the member here.
     final target = AgentListStopTarget.capture(directory, agent);
     if (target == null) return Future.value();
-    final previous = state.requireValue.actions['directory-stop:${target.threadId}'];
+    final previous =
+        state.requireValue.actions['directory-stop:${target.threadId}'];
     final pendingTarget = previous?.directoryStopTarget;
     if (previous?.waiting == true &&
         pendingTarget?.origin.origin == target.origin.origin &&
@@ -412,7 +413,7 @@ class WorkspaceViewModel extends _$WorkspaceViewModel {
         origin: target.origin,
         member: target.member,
         executionId: target.executionId,
-    );
+      );
     } on StudioFailure catch (error) {
       // Invalid sources and different executions remain real rejections; only
       // the explicit sealed NoExecution branch is the benign zero-request race.
@@ -429,7 +430,7 @@ class WorkspaceViewModel extends _$WorkspaceViewModel {
             directoryStopTarget: target,
           ),
         );
-  }
+      }
       return Future.value();
     }
     return switch (admission) {

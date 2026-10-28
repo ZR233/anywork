@@ -138,6 +138,10 @@ impl StudioRuntime {
         // D4：会话工作区在发布 Thread 之前就已确定。`worktree` 先做前置校验与物理创建，
         // 再记录 `active` lease；任一阶段失败都让命令失败且不留下已发布 Thread。
         let thread_id = crate::studio::ids::new_id("thread");
+        // The real creation operation owns this mark through publication and any compensation.
+        // Unwind/cancellation releases only admission protection, never the durable lease/site.
+        let _creation = (request.workspace_mode == pl_protocol::ThreadWorkspaceMode::Worktree)
+            .then(|| self.agent_facility.worktrees.creation_guard(&thread_id));
         let mut session_lease = None;
         report(
             ThreadPreparationStage::PreparingWorkspace,
@@ -146,9 +150,6 @@ impl StudioRuntime {
             None,
         );
         if request.workspace_mode == pl_protocol::ThreadWorkspaceMode::Worktree {
-            // 创建窗口内的 lease 由进程内「创建中」标记保护：在记录 `prepared` 之前设置，
-            // 直到 owner Thread 目录事实提交（或失败 settle 并发布）之后才清除。
-            self.agent_facility.worktrees.mark_creating(&thread_id);
             let created =
                 crate::studio::agent_host::workspace_preparation::create_root_session_worktree(
                     &self.agent_facility.worktrees,
@@ -175,7 +176,6 @@ impl StudioRuntime {
             };
             lease.transition(crate::studio::agent_host::worktree_lease::WorktreeLeaseState::Active);
             if let Err(error) = self.agent_facility.worktrees.record(lease.clone()) {
-                self.agent_facility.worktrees.clear_creating(&thread_id);
                 evidence
                     .preserve(
                         self,
@@ -228,7 +228,6 @@ impl StudioRuntime {
             .await
         {
             self.thread_factory.clear_initial_route(&thread.id);
-            self.clear_creating_session_worktree(&session_lease);
             evidence
                 .preserve(
                     self,
@@ -246,8 +245,7 @@ impl StudioRuntime {
             }
             return Err(error);
         }
-        // 目录事实已提交：owner Thread 行已存在，创建窗口收束。
-        self.clear_creating_session_worktree(&session_lease);
+        // Keep the creation guard until activation/first-input publication or compensation settles.
         let thread = ThreadRecord::from_directory_thread(thread);
         evidence.thread(thread.clone());
         if let Err(error) = self.register_new_thread(thread.clone()).await {
@@ -571,24 +569,6 @@ impl StudioRuntime {
         Ok(())
     }
 
-    /// 会话自身 worktree 从不随 Thread 生命周期删除：失败路径只把它收束为 `preserved`，
-    /// 由 Recovery 显式清理（design/12 §12.5）。
-    ///
-    /// 收束成功后**立即**基于当前 durable lease 发布/刷新 Recovery 条目（含 preview），
-    /// 不依赖下一次启动审计；发布失败只记日志，不改变已经失败的创建命令结果。
-    async fn preserve_session_worktree(
-        &self,
-        lease: Option<crate::studio::agent_host::worktree_lease::WorktreeLease>,
-        reason: Option<&str>,
-    ) {
-        let Some(lease) = lease else {
-            return;
-        };
-        if let Err(error) = self.preserve_creation_worktree(lease, reason).await {
-            tracing::error!(%error, "failed to preserve the session worktree lease after a failed creation");
-        }
-    }
-
     pub(in crate::studio::runtime) async fn preserve_creation_worktree(
         &self,
         original: crate::studio::agent_host::worktree_lease::WorktreeLease,
@@ -629,14 +609,10 @@ impl StudioRuntime {
         Ok(())
     }
 
-    /// 创建阶段失败的统一收束出口：清除创建中标记，并在现场被保留为 `preserved` 时立即
-    /// 发布带 preview 的 Recovery（同一 issue id upsert）。
-    ///
-    /// 顺序固定为「调用方已完成 settle → 清除标记 → 发布」：清除标记使并发的周期审计也能
-    /// 把该资源算作需要人工处置，避免审计的 `replace` 与本次显式发布互相覆盖导致条目丢失。
+    /// Publish a settled failure without releasing the creation operation's guard. That guard
+    /// remains responsible through all compensation exits, including cancellation and unwind.
     async fn settle_session_worktree_failure(&self, thread_id: &str, reason: Option<&str>) {
         use crate::studio::agent_host::worktree_lease::WorktreeLeaseState;
-        self.agent_facility.worktrees.clear_creating(thread_id);
         let Some(lease) = self.agent_facility.worktrees.get(thread_id) else {
             return;
         };
@@ -646,26 +622,11 @@ impl StudioRuntime {
         self.publish_worktree_recovery(reason, &lease).await;
     }
 
-    /// 会话 worktree 的创建窗口结束：owner Thread 目录事实已提交（或失败路径已自行清除）。
-    fn clear_creating_session_worktree(
-        &self,
-        lease: &Option<crate::studio::agent_host::worktree_lease::WorktreeLease>,
-    ) {
-        if let Some(lease) = lease {
-            self.agent_facility
-                .worktrees
-                .clear_creating(&lease.owner_thread_id);
-        }
-    }
-
     pub(super) async fn retire_archived_thread_tree(&self, thread_ids: &[String]) -> Result<()> {
         self.close_project_agent_trees(thread_ids).await?;
         for thread_id in thread_ids {
             self.residency.remove(thread_id).await;
-            let issues = self.recovery.retire_thread(thread_id);
-            self.agent_facility
-                .product_events
-                .emit_recovery_state(issues);
+            self.recovery.retire_thread(thread_id);
         }
         Ok(())
     }
@@ -836,5 +797,101 @@ impl StudioRuntime {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::studio::agent_host::worktree_lease::WorktreeLeaseState;
+    use crate::studio::runtime::test_support::RuntimeFixture;
+    use futures::FutureExt;
+
+    #[tokio::test]
+    async fn root_creation_unwind_releases_only_creating_protection_and_exposes_pending_lease()
+    -> Result<()> {
+        let fixture = RuntimeFixture::new().await?;
+        let evidence = super::super::super::draft_commands::CreationEvidence::default();
+        let request = StudioStartNewThreadRequest {
+            project_id: fixture.project.id.clone(),
+            title: Some("unwind fixture".into()),
+            input: pl_protocol::studio::StudioPromptInput {
+                input_id: "creation-unwind".into(),
+                text: "no model request should run".into(),
+                attachment_draft_ids: Vec::new(),
+            },
+            mode: pl_protocol::ThreadModeId::simple(),
+            route: fixture.route.clone(),
+            delegation_mode: None,
+            delegation_preference: None,
+            workspace_mode: pl_protocol::ThreadWorkspaceMode::Worktree,
+            options: Default::default(),
+            preparation_observer: Some(std::sync::Arc::new(|progress| {
+                if progress.stage == pl_protocol::studio::ThreadPreparationStage::CreatingWorktree {
+                    panic!("external preparation observer unwound after prepared lease admission");
+                }
+            })),
+        };
+        let result = std::panic::AssertUnwindSafe(
+            fixture.runtime.run_new_thread_creation(request, &evidence),
+        )
+        .catch_unwind()
+        .await;
+        assert!(
+            result.is_err(),
+            "the real root creation operation must reach the prepared boundary"
+        );
+        let leases = fixture.runtime.agent_facility.worktrees.snapshot();
+        assert_eq!(leases.len(), 1);
+        let original = &leases[0];
+        assert_eq!(
+            original.state,
+            WorktreeLeaseState::Prepared,
+            "Drop is not physical cleanup or lease rollback"
+        );
+        assert!(
+            !fixture
+                .runtime
+                .agent_facility
+                .worktrees
+                .is_creating(&original.owner_thread_id)
+        );
+        let mut issues = Vec::new();
+        fixture
+            .runtime
+            .append_worktree_recovery_issues(&mut issues)
+            .await?;
+        let issue = issues
+            .iter()
+            .find(|issue| issue.thread_id.as_deref() == Some(original.owner_thread_id.as_str()))
+            .expect("pending root lease remains recoverable");
+        assert_eq!(issue.action, crate::StudioRecoveryIssueAction::Retry);
+        let preview = issue.worktree.as_ref().expect("original lease preview");
+        assert_eq!(preview.inspection, crate::StudioWorktreeInspection::Missing);
+        assert_eq!(preview.dirty, None);
+        assert_eq!(preview.head_commit, None);
+        assert_eq!(preview.changed_files, None);
+        assert!(
+            fixture
+                .runtime
+                .cleanup_preserved_worktree(
+                    crate::StudioRecoveryWorktreeOwner::Session,
+                    &original.owner_thread_id,
+                    original.revision,
+                )
+                .await
+                .is_err(),
+            "unproved physical state still refuses cleanup after the mark is released"
+        );
+        assert_eq!(
+            fixture
+                .runtime
+                .agent_facility
+                .worktrees
+                .get(&original.owner_thread_id)
+                .as_ref(),
+            Some(original)
+        );
+        fixture.finish().await
     }
 }

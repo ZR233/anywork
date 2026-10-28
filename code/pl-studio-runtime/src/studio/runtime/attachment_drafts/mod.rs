@@ -9,7 +9,9 @@ pub(super) use runtime::AttachmentDraftRuntime;
 
 use anyhow::{Context, Result};
 use pl_model::model::ModelInfo;
-use pl_protocol::studio::{AdmitAttachmentDraftsRequest, StudioAttachmentAdmissionContext, StudioError};
+use pl_protocol::studio::{
+    AdmitAttachmentDraftsRequest, StudioAttachmentAdmissionContext, StudioError,
+};
 
 use super::StudioRuntime;
 use validate::preflight_sources;

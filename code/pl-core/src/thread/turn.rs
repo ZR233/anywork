@@ -12,11 +12,11 @@ impl Owner {
         // A Turn that ended before it ever created its record (a stop during preparation) still has to
         // settle the batch it froze: a body-less control it never consumed was replaced meanwhile and
         // must not linger as phantom owed work. The normal path settles inside its own terminal commit.
-        if !self.state.turns.iter().any(|turn| turn.turn_id == turn_id) {
-            if let Err(error) = self.settle_replaced_controls() {
-                self.input_driver.fail(Arc::new(error));
-                self.pause_inputs();
-            }
+        if !self.state.turns.iter().any(|turn| turn.turn_id == turn_id)
+            && let Err(error) = self.settle_replaced_controls()
+        {
+            self.input_driver.fail(Arc::new(error));
+            self.pause_inputs();
         }
         // execute_turn has returned after asynchronous cancellation cleanup. Release the execution
         // with the terminal facts in one persisted commit, never in a later snapshot-only update.

@@ -143,8 +143,12 @@ final class TimelineDraftsEnvironment {
                 baseRevision: revision - 1,
                 value: ThreadExecutionChange(
                   status: value.status,
-                  execution: ExecutionReplacement.replace(value: value.execution),
-                  continuation: ContinuationReplacement.replace(value: value.continuation),
+                  execution: ExecutionReplacement.replace(
+                    value: value.execution,
+                  ),
+                  continuation: ContinuationReplacement.replace(
+                    value: value.continuation,
+                  ),
                   turns: TurnsReplacement(
                     activeTurn: value.activeTurn,
                     recentTerminalTurn: value.recentTerminalTurn,

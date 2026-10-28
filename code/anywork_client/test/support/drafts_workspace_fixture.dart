@@ -60,28 +60,45 @@ final class DraftThreadMaterial {
 /// Repository is implemented here. Tests explicitly supply each thread scope.
 final class DraftWorkspacePort implements WorkspacePort {
   Future<FeedConnection<AgentDirectoryFrame>> Function()? onOpenAgents;
-  Future<AgentDirectoryReadConnection> Function(AgentDirectoryReadRef, ProductReadOrigin)? onReadAgents;
+  Future<AgentDirectoryReadConnection> Function(
+    AgentDirectoryReadRef,
+    ProductReadOrigin,
+  )?
+  onReadAgents;
   @override
   Future<FeedConnection<AgentDirectoryFrame>> openAgentDirectory() {
     final action = onOpenAgents;
-    if (action == null) throw UnsupportedError('Unscripted AgentDirectory feed');
+    if (action == null)
+      throw UnsupportedError('Unscripted AgentDirectory feed');
     return action();
   }
+
   @override
-  Future<AgentDirectoryReadConnection> openAgentDirectoryRead(AgentDirectoryReadRef reference, {required ProductReadOrigin origin}) {
+  Future<AgentDirectoryReadConnection> openAgentDirectoryRead(
+    AgentDirectoryReadRef reference, {
+    required ProductReadOrigin origin,
+  }) {
     final action = onReadAgents;
-    if (action == null) throw UnsupportedError('Unscripted AgentDirectory read');
+    if (action == null)
+      throw UnsupportedError('Unscripted AgentDirectory read');
     return action(reference, origin);
   }
+
   @override
-  Future<WorkspaceThreadRecord> restoreThread(String threadId) => native.restoreThread(threadId);
-  Future<ArchiveThreadCommandReply> Function(String, OperationId)? onArchiveThread;
+  Future<WorkspaceThreadRecord> restoreThread(String threadId) =>
+      native.restoreThread(threadId);
+  Future<ArchiveThreadCommandReply> Function(String, OperationId)?
+  onArchiveThread;
   @override
-  Future<ArchiveThreadCommandReply> archiveThread(String threadId, {required OperationId operationId}) {
+  Future<ArchiveThreadCommandReply> archiveThread(
+    String threadId, {
+    required OperationId operationId,
+  }) {
     final action = onArchiveThread;
     if (action == null) throw UnsupportedError('Unscripted archive command');
     return action(threadId, operationId);
   }
+
   final native = ScriptedWorkspacePort();
   final projectOpens = DraftCalls<WorkspaceProjectOpen>();
   final threadOpens = DraftCalls<WorkspaceThreadOpen>();

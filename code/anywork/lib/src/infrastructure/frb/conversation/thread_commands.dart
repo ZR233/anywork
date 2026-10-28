@@ -73,7 +73,10 @@ mixin _ThreadCommands implements ConversationCommandPort {
         failure: _threadCommandFailure(error),
       );
     }
-    return _threadCommand<command.BridgeContinueThreadReply, ContinueThreadReply>(
+    return _threadCommand<
+      command.BridgeContinueThreadReply,
+      ContinueThreadReply
+    >(
       operationId: operationId,
       invoke: () => queries.continueThread(
         operationId: operationId.value,
@@ -96,7 +99,8 @@ mixin _ThreadCommands implements ConversationCommandPort {
           receipt: receipt,
         );
       },
-      retain: (reply, error, stack) => _UnusableContinueReply(reply, error, stack),
+      retain: (reply, error, stack) =>
+          _UnusableContinueReply(reply, error, stack),
       confirmsAcceptance: (failure) => switch (failure.details) {
         ControlFailureDetails(
           facts: ContinuationAcceptedControlFailureFacts(
@@ -311,7 +315,9 @@ mixin _ThreadCommands implements ConversationCommandPort {
         // Control acceptance has no receipt on this error path. Only the SDK's
         // original operation query may recover one; never manufacture it here.
         Error.throwWithStackTrace(
-          CommandDispatchFailure.confirmedWithoutUsableReceipt(failure: failure),
+          CommandDispatchFailure.confirmedWithoutUsableReceipt(
+            failure: failure,
+          ),
           stack,
         );
       }

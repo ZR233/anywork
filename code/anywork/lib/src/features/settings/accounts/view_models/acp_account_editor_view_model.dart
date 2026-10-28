@@ -162,6 +162,9 @@ class AcpAccountEditorViewModel extends _$AcpAccountEditorViewModel {
     final lifetime = _lifetime;
     final intent = ++_intentSequence;
     final provider = current.provider;
+    final preparationIntent = current.intent;
+    _prepareObservation?.cancel();
+    _prepareObservation = null;
     state = AsyncData(
       current.copyWith(
         latestIntent: intent,
@@ -169,12 +172,16 @@ class AcpAccountEditorViewModel extends _$AcpAccountEditorViewModel {
         observationError: null,
       ),
     );
+    // start 与 cancel 各自按原动作结算：后发取消不能废弃合法的 start 受理回执。
     bool owns() =>
         _alive &&
         _ready &&
         lifetime == _lifetime &&
         state.asData != null &&
-        state.requireValue.latestIntent == intent;
+        state.requireValue.provider == provider &&
+        state.requireValue.intent.provider == preparationIntent.provider &&
+        state.requireValue.intent.generation == preparationIntent.generation &&
+        state.requireValue.prepareAction?.intent == intent;
     OperationTicket<AcpInstallSnapshot> ticket;
     try {
       ticket = _install.prepare(provider);
@@ -186,6 +193,7 @@ class AcpAccountEditorViewModel extends _$AcpAccountEditorViewModel {
           error: error,
         ),
         owns: owns,
+        preparationIntent: preparationIntent,
       );
       return;
     }
@@ -203,7 +211,6 @@ class AcpAccountEditorViewModel extends _$AcpAccountEditorViewModel {
           );
         });
         if (owns()) {
-          _prepareObservation?.cancel();
           _prepareObservation = watch.observation;
         } else {
           watch.observation.cancel();
@@ -221,6 +228,7 @@ class AcpAccountEditorViewModel extends _$AcpAccountEditorViewModel {
         operation: ticket.state.value,
       ).copyWith(observationError: observationError),
       owns: owns,
+      preparationIntent: preparationIntent,
       // 只有受理成功的回执才认领 operation：失败不创建账号、不绑定意图。
       reply: _replySnapshot(result),
     );
@@ -230,6 +238,7 @@ class AcpAccountEditorViewModel extends _$AcpAccountEditorViewModel {
   void _settlePrepare(
     SettingsAction action, {
     required bool Function() owns,
+    required AcpPreparationIntent preparationIntent,
     AcpInstallSnapshot? reply,
   }) {
     if (!owns()) return;
@@ -241,7 +250,7 @@ class AcpAccountEditorViewModel extends _$AcpAccountEditorViewModel {
     );
     final claimed = reply == null
         ? null
-        : _claimFromReply(reply, current.intent);
+        : _claimFromReply(reply, preparationIntent);
     if (claimed != null) {
       current = current.copyWith(intent: claimed);
     }
@@ -283,14 +292,19 @@ class AcpAccountEditorViewModel extends _$AcpAccountEditorViewModel {
   Future<void> cancelPrepare() async {
     if (!_alive || !_ready || state.asData == null) return;
     final current = state.requireValue;
-    if (current.cancelPending || current.install.operationId == null) return;
+    final target = current.install.operationId;
+    if (current.cancelPending || target == null) return;
     final lifetime = _lifetime;
     final intent = ++_intentSequence;
     final provider = current.provider;
+    // 新目标只替换本表单的观察；旧票据仍由 Repository 拥有并继续结算。
+    _cancelObservation?.cancel();
+    _cancelObservation = null;
     state = AsyncData(
       current.copyWith(
         latestIntent: intent,
         cancelAction: SettingsAction(intent: intent, pending: true),
+        cancelTargetOperationId: target,
       ),
     );
     bool owns() =>
@@ -298,8 +312,9 @@ class AcpAccountEditorViewModel extends _$AcpAccountEditorViewModel {
         _ready &&
         lifetime == _lifetime &&
         state.asData != null &&
-        state.requireValue.latestIntent == intent;
-    final target = current.install.operationId!;
+        state.requireValue.provider == provider &&
+        state.requireValue.cancelTargetOperationId == target &&
+        state.requireValue.cancelAction?.intent == intent;
     OperationTicket<AcpInstallSnapshot> ticket;
     try {
       ticket = _install.cancel(provider, targetOperationId: target);
@@ -331,7 +346,6 @@ class AcpAccountEditorViewModel extends _$AcpAccountEditorViewModel {
           );
         });
         if (owns()) {
-          _cancelObservation?.cancel();
           _cancelObservation = watch.observation;
         } else {
           watch.observation.cancel();

@@ -50,7 +50,7 @@ final class ComposerViewModelProvider
   }
 }
 
-String _$composerViewModelHash() => r'865c5d337ee1ab6bf36ba7f7b2d17dc293a9ed9e';
+String _$composerViewModelHash() => r'27cb4f5e303acb0031d2a22c91073a13ce0673bf';
 
 final class ComposerViewModelFamily extends $Family
     with

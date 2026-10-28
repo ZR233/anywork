@@ -11,9 +11,8 @@ use crate::{
     AccountUsageStateSnapshot, PersistenceStateSnapshot, StudioAgentDirectoryState,
     StudioAgentProfilesStateSnapshot, StudioLspStateSnapshot, StudioMcpStateSnapshot,
     StudioModelCatalogStateSnapshot, StudioPersistenceQueueStateSnapshot, StudioProductEventKind,
-    StudioProjectDirectoryState, StudioRecoveryStateSnapshot, StudioSessionCostsState,
-    StudioSettingsConfigStateSnapshot, StudioSkillsStateSnapshot, StudioThreadDirectoryPage,
-    StudioUpdateStateSnapshot,
+    StudioProjectDirectoryState, StudioSessionCostsState, StudioSettingsConfigStateSnapshot,
+    StudioSkillsStateSnapshot, StudioThreadDirectoryPage, StudioUpdateStateSnapshot,
 };
 
 /// 一个产品订阅 topic；带 payload 的变体表达作用域，不存在无作用域组合形式。
@@ -30,7 +29,6 @@ pub enum StudioProductTopic {
     AgentDirectory,
     SettingsConfig,
     ModelCatalog,
-    Recovery,
     Mcp,
     Lsp,
     Skills { project_id: String },
@@ -77,7 +75,6 @@ impl StudioProductTopic {
             StudioProductEventKind::AgentDirectoryChanged(_) => Self::AgentDirectory,
             StudioProductEventKind::SettingsConfigStateChanged(_) => Self::SettingsConfig,
             StudioProductEventKind::ModelCatalogStateChanged(_) => Self::ModelCatalog,
-            StudioProductEventKind::RecoveryStateChanged(_) => Self::Recovery,
             StudioProductEventKind::McpStateChanged(_) => Self::Mcp,
             StudioProductEventKind::LspStateChanged(_) => Self::Lsp,
             StudioProductEventKind::SkillsStateChanged(state) => Self::Skills {
@@ -125,7 +122,6 @@ pub enum StudioProductBaselineState {
     AgentDirectory(Box<StudioAgentDirectoryState>),
     SettingsConfig(Box<StudioSettingsConfigStateSnapshot>),
     ModelCatalog(Box<StudioModelCatalogStateSnapshot>),
-    Recovery(Box<StudioRecoveryStateSnapshot>),
     Mcp(Box<StudioMcpStateSnapshot>),
     Lsp(Box<StudioLspStateSnapshot>),
     Skills(Box<StudioSkillsStateSnapshot>),
@@ -151,7 +147,6 @@ impl StudioProductBaselineState {
             Self::AgentDirectory(state) => revision_of(&state.state),
             Self::SettingsConfig(state) => revision_of(&state.state),
             Self::ModelCatalog(state) => revision_of(&state.state),
-            Self::Recovery(state) => revision_of(&state.state),
             Self::Mcp(state) => revision_of(&state.state),
             Self::Lsp(state) => revision_of(&state.state),
             Self::Skills(state) => revision_of(&state.state),

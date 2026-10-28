@@ -108,18 +108,12 @@ pub(super) async fn initialize(db: &DatabaseConnection, thread_id: &str) -> Resu
         .try_get("", "database_id")?)
 }
 
-pub(super) async fn inspect_existing(path: &Path, thread_id: &str) -> Result<()> {
-    if !tokio::fs::try_exists(path).await? {
-        return Ok(());
-    }
-    let db = connect_read_only(path).await?;
-    let result = preflight(&db, thread_id)
+/// Validates an existing connection borrowed from the history resource owner.
+/// Opening and explicit close remain with that owner, including cancellation.
+pub(super) async fn inspect_existing(db: &DatabaseConnection, thread_id: &str) -> Result<()> {
+    preflight(db, thread_id)
         .await
-        .map_err(|error| crate::studio::startup::migration_error("history", "preflight", error));
-    let close = db.close().await;
-    result?;
-    close?;
-    Ok(())
+        .map_err(|error| crate::studio::startup::migration_error("history", "preflight", error))
 }
 
 async fn preflight(db: &DatabaseConnection, thread_id: &str) -> Result<()> {

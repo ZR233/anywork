@@ -10,6 +10,8 @@ mod types;
 
 pub(crate) use feed::TemplatesTransports;
 pub(crate) use routes::router;
+pub(crate) use tasks::{Completion, failed, finished, retain, succeeded};
+pub(crate) use types::EmptyRequest;
 
 pub(crate) enum RequestClass {
     Normal,

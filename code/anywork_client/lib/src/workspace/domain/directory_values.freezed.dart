@@ -2261,7 +2261,7 @@ $SourceStateErrorCopyWith<$Res> get error {
 /// @nodoc
 mixin _$AgentDirectoryEntry {
 
- String get id; String get threadId; String get rootThreadId; String get path; String? get parentPath; String get role; DelegationMode get delegationMode; DelegationPreference get delegationPreference; ModelSelection? get frozenModel; String get task; String? get summary; int get depth; AgentState get state; int get updatedAt;
+ String get id; String get threadId; String get rootThreadId; String get path; String? get parentPath; String get role; DelegationMode get delegationMode; DelegationPreference get delegationPreference; ModelSelection? get frozenModel; String get task; String? get summary; int get depth; AgentState get state; AgentExecution? get execution; bool get canStop; bool get awaitingScheduling; int get updatedAt;
 /// Create a copy of AgentDirectoryEntry
 /// with the given fields replaced by the non-null parameter values.
 @JsonKey(includeFromJson: false, includeToJson: false)
@@ -2273,14 +2273,14 @@ $AgentDirectoryEntryCopyWith<AgentDirectoryEntry> get copyWith => _$AgentDirecto
 @override
 bool operator ==(Object other) {
   final _this = this as AgentDirectoryEntry;
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is AgentDirectoryEntry&&(identical(other.id, _this.id) || other.id == _this.id)&&(identical(other.threadId, _this.threadId) || other.threadId == _this.threadId)&&(identical(other.rootThreadId, _this.rootThreadId) || other.rootThreadId == _this.rootThreadId)&&(identical(other.path, _this.path) || other.path == _this.path)&&(identical(other.parentPath, _this.parentPath) || other.parentPath == _this.parentPath)&&(identical(other.role, _this.role) || other.role == _this.role)&&(identical(other.delegationMode, _this.delegationMode) || other.delegationMode == _this.delegationMode)&&(identical(other.delegationPreference, _this.delegationPreference) || other.delegationPreference == _this.delegationPreference)&&(identical(other.frozenModel, _this.frozenModel) || other.frozenModel == _this.frozenModel)&&(identical(other.task, _this.task) || other.task == _this.task)&&(identical(other.summary, _this.summary) || other.summary == _this.summary)&&(identical(other.depth, _this.depth) || other.depth == _this.depth)&&(identical(other.state, _this.state) || other.state == _this.state)&&(identical(other.updatedAt, _this.updatedAt) || other.updatedAt == _this.updatedAt));
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is AgentDirectoryEntry&&(identical(other.id, _this.id) || other.id == _this.id)&&(identical(other.threadId, _this.threadId) || other.threadId == _this.threadId)&&(identical(other.rootThreadId, _this.rootThreadId) || other.rootThreadId == _this.rootThreadId)&&(identical(other.path, _this.path) || other.path == _this.path)&&(identical(other.parentPath, _this.parentPath) || other.parentPath == _this.parentPath)&&(identical(other.role, _this.role) || other.role == _this.role)&&(identical(other.delegationMode, _this.delegationMode) || other.delegationMode == _this.delegationMode)&&(identical(other.delegationPreference, _this.delegationPreference) || other.delegationPreference == _this.delegationPreference)&&(identical(other.frozenModel, _this.frozenModel) || other.frozenModel == _this.frozenModel)&&(identical(other.task, _this.task) || other.task == _this.task)&&(identical(other.summary, _this.summary) || other.summary == _this.summary)&&(identical(other.depth, _this.depth) || other.depth == _this.depth)&&(identical(other.state, _this.state) || other.state == _this.state)&&(identical(other.execution, _this.execution) || other.execution == _this.execution)&&(identical(other.canStop, _this.canStop) || other.canStop == _this.canStop)&&(identical(other.awaitingScheduling, _this.awaitingScheduling) || other.awaitingScheduling == _this.awaitingScheduling)&&(identical(other.updatedAt, _this.updatedAt) || other.updatedAt == _this.updatedAt));
 }
 
 
 @override
 int get hashCode {
   final _this = this as AgentDirectoryEntry;
-  return Object.hash(runtimeType,_this.id,_this.threadId,_this.rootThreadId,_this.path,_this.parentPath,_this.role,_this.delegationMode,_this.delegationPreference,_this.frozenModel,_this.task,_this.summary,_this.depth,_this.state,_this.updatedAt);
+  return Object.hash(runtimeType,_this.id,_this.threadId,_this.rootThreadId,_this.path,_this.parentPath,_this.role,_this.delegationMode,_this.delegationPreference,_this.frozenModel,_this.task,_this.summary,_this.depth,_this.state,_this.execution,_this.canStop,_this.awaitingScheduling,_this.updatedAt);
 }
 
 
@@ -2292,11 +2292,11 @@ abstract mixin class $AgentDirectoryEntryCopyWith<$Res>  {
   factory $AgentDirectoryEntryCopyWith(AgentDirectoryEntry value, $Res Function(AgentDirectoryEntry) _then) = _$AgentDirectoryEntryCopyWithImpl;
 @useResult
 $Res call({
- String id, String threadId, String rootThreadId, String path, String? parentPath, String role, DelegationMode delegationMode, DelegationPreference delegationPreference, ModelSelection? frozenModel, String task, String? summary, int depth, AgentState state, int updatedAt
+ String id, String threadId, String rootThreadId, String path, String? parentPath, String role, DelegationMode delegationMode, DelegationPreference delegationPreference, ModelSelection? frozenModel, String task, String? summary, int depth, AgentState state, AgentExecution? execution, bool canStop, bool awaitingScheduling, int updatedAt
 });
 
 
-$ModelSelectionCopyWith<$Res>? get frozenModel;$AgentStateCopyWith<$Res> get state;
+$ModelSelectionCopyWith<$Res>? get frozenModel;$AgentStateCopyWith<$Res> get state;$AgentExecutionCopyWith<$Res>? get execution;
 
 }
 /// @nodoc
@@ -2309,7 +2309,7 @@ class _$AgentDirectoryEntryCopyWithImpl<$Res>
 
 /// Create a copy of AgentDirectoryEntry
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') @override $Res call({Object? id = null,Object? threadId = null,Object? rootThreadId = null,Object? path = null,Object? parentPath = freezed,Object? role = null,Object? delegationMode = null,Object? delegationPreference = null,Object? frozenModel = freezed,Object? task = null,Object? summary = freezed,Object? depth = null,Object? state = null,Object? updatedAt = null,}) {
+@pragma('vm:prefer-inline') @override $Res call({Object? id = null,Object? threadId = null,Object? rootThreadId = null,Object? path = null,Object? parentPath = freezed,Object? role = null,Object? delegationMode = null,Object? delegationPreference = null,Object? frozenModel = freezed,Object? task = null,Object? summary = freezed,Object? depth = null,Object? state = null,Object? execution = freezed,Object? canStop = null,Object? awaitingScheduling = null,Object? updatedAt = null,}) {
   return _then(AgentDirectoryEntry(
 id: null == id ? _self.id : id // ignore: cast_nullable_to_non_nullable
 as String,threadId: null == threadId ? _self.threadId : threadId // ignore: cast_nullable_to_non_nullable
@@ -2324,7 +2324,10 @@ as ModelSelection?,task: null == task ? _self.task : task // ignore: cast_nullab
 as String,summary: freezed == summary ? _self.summary : summary // ignore: cast_nullable_to_non_nullable
 as String?,depth: null == depth ? _self.depth : depth // ignore: cast_nullable_to_non_nullable
 as int,state: null == state ? _self.state : state // ignore: cast_nullable_to_non_nullable
-as AgentState,updatedAt: null == updatedAt ? _self.updatedAt : updatedAt // ignore: cast_nullable_to_non_nullable
+as AgentState,execution: freezed == execution ? _self.execution : execution // ignore: cast_nullable_to_non_nullable
+as AgentExecution?,canStop: null == canStop ? _self.canStop : canStop // ignore: cast_nullable_to_non_nullable
+as bool,awaitingScheduling: null == awaitingScheduling ? _self.awaitingScheduling : awaitingScheduling // ignore: cast_nullable_to_non_nullable
+as bool,updatedAt: null == updatedAt ? _self.updatedAt : updatedAt // ignore: cast_nullable_to_non_nullable
 as int,
   ));
 }
@@ -2348,6 +2351,18 @@ $AgentStateCopyWith<$Res> get state {
 
   return $AgentStateCopyWith<$Res>(_self.state, (value) {
     return _then(_self.copyWith(state: value));
+  });
+}/// Create a copy of AgentDirectoryEntry
+/// with the given fields replaced by the non-null parameter values.
+@override
+@pragma('vm:prefer-inline')
+$AgentExecutionCopyWith<$Res>? get execution {
+    if (_self.execution == null) {
+    return null;
+  }
+
+  return $AgentExecutionCopyWith<$Res>(_self.execution!, (value) {
+    return _then(_self.copyWith(execution: value));
   });
 }
 }
@@ -2431,10 +2446,10 @@ return $default(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( String id,  String threadId,  String rootThreadId,  String path,  String? parentPath,  String role,  DelegationMode delegationMode,  DelegationPreference delegationPreference,  ModelSelection? frozenModel,  String task,  String? summary,  int depth,  AgentState state,  int updatedAt)?  $default,{required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( String id,  String threadId,  String rootThreadId,  String path,  String? parentPath,  String role,  DelegationMode delegationMode,  DelegationPreference delegationPreference,  ModelSelection? frozenModel,  String task,  String? summary,  int depth,  AgentState state,  AgentExecution? execution,  bool canStop,  bool awaitingScheduling,  int updatedAt)?  $default,{required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case _AgentDirectoryEntry() when $default != null:
-return $default(_that.id,_that.threadId,_that.rootThreadId,_that.path,_that.parentPath,_that.role,_that.delegationMode,_that.delegationPreference,_that.frozenModel,_that.task,_that.summary,_that.depth,_that.state,_that.updatedAt);case _:
+return $default(_that.id,_that.threadId,_that.rootThreadId,_that.path,_that.parentPath,_that.role,_that.delegationMode,_that.delegationPreference,_that.frozenModel,_that.task,_that.summary,_that.depth,_that.state,_that.execution,_that.canStop,_that.awaitingScheduling,_that.updatedAt);case _:
   return orElse();
 
 }
@@ -2452,10 +2467,10 @@ return $default(_that.id,_that.threadId,_that.rootThreadId,_that.path,_that.pare
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( String id,  String threadId,  String rootThreadId,  String path,  String? parentPath,  String role,  DelegationMode delegationMode,  DelegationPreference delegationPreference,  ModelSelection? frozenModel,  String task,  String? summary,  int depth,  AgentState state,  int updatedAt)  $default,) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( String id,  String threadId,  String rootThreadId,  String path,  String? parentPath,  String role,  DelegationMode delegationMode,  DelegationPreference delegationPreference,  ModelSelection? frozenModel,  String task,  String? summary,  int depth,  AgentState state,  AgentExecution? execution,  bool canStop,  bool awaitingScheduling,  int updatedAt)  $default,) {final _that = this;
 switch (_that) {
 case _AgentDirectoryEntry():
-return $default(_that.id,_that.threadId,_that.rootThreadId,_that.path,_that.parentPath,_that.role,_that.delegationMode,_that.delegationPreference,_that.frozenModel,_that.task,_that.summary,_that.depth,_that.state,_that.updatedAt);case _:
+return $default(_that.id,_that.threadId,_that.rootThreadId,_that.path,_that.parentPath,_that.role,_that.delegationMode,_that.delegationPreference,_that.frozenModel,_that.task,_that.summary,_that.depth,_that.state,_that.execution,_that.canStop,_that.awaitingScheduling,_that.updatedAt);case _:
   throw StateError('Unexpected subclass');
 
 }
@@ -2472,10 +2487,10 @@ return $default(_that.id,_that.threadId,_that.rootThreadId,_that.path,_that.pare
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( String id,  String threadId,  String rootThreadId,  String path,  String? parentPath,  String role,  DelegationMode delegationMode,  DelegationPreference delegationPreference,  ModelSelection? frozenModel,  String task,  String? summary,  int depth,  AgentState state,  int updatedAt)?  $default,) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( String id,  String threadId,  String rootThreadId,  String path,  String? parentPath,  String role,  DelegationMode delegationMode,  DelegationPreference delegationPreference,  ModelSelection? frozenModel,  String task,  String? summary,  int depth,  AgentState state,  AgentExecution? execution,  bool canStop,  bool awaitingScheduling,  int updatedAt)?  $default,) {final _that = this;
 switch (_that) {
 case _AgentDirectoryEntry() when $default != null:
-return $default(_that.id,_that.threadId,_that.rootThreadId,_that.path,_that.parentPath,_that.role,_that.delegationMode,_that.delegationPreference,_that.frozenModel,_that.task,_that.summary,_that.depth,_that.state,_that.updatedAt);case _:
+return $default(_that.id,_that.threadId,_that.rootThreadId,_that.path,_that.parentPath,_that.role,_that.delegationMode,_that.delegationPreference,_that.frozenModel,_that.task,_that.summary,_that.depth,_that.state,_that.execution,_that.canStop,_that.awaitingScheduling,_that.updatedAt);case _:
   return null;
 
 }
@@ -2487,7 +2502,7 @@ return $default(_that.id,_that.threadId,_that.rootThreadId,_that.path,_that.pare
 
 
 class _AgentDirectoryEntry implements AgentDirectoryEntry {
-  const _AgentDirectoryEntry({required this.id, required this.threadId, required this.rootThreadId, required this.path, required this.parentPath, required this.role, required this.delegationMode, required this.delegationPreference, required this.frozenModel, required this.task, required this.summary, required this.depth, required this.state, required this.updatedAt});
+  const _AgentDirectoryEntry({required this.id, required this.threadId, required this.rootThreadId, required this.path, required this.parentPath, required this.role, required this.delegationMode, required this.delegationPreference, required this.frozenModel, required this.task, required this.summary, required this.depth, required this.state, this.execution, this.canStop = false, this.awaitingScheduling = false, required this.updatedAt});
 
 
 @override final  String id;
@@ -2503,6 +2518,9 @@ class _AgentDirectoryEntry implements AgentDirectoryEntry {
 @override final  String? summary;
 @override final  int depth;
 @override final  AgentState state;
+@override final  AgentExecution? execution;
+@override@JsonKey() final  bool canStop;
+@override@JsonKey() final  bool awaitingScheduling;
 @override final  int updatedAt;
 
 /// Create a copy of AgentDirectoryEntry
@@ -2515,13 +2533,13 @@ _$AgentDirectoryEntryCopyWith<_AgentDirectoryEntry> get copyWith => __$AgentDire
 
 @override
 bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is _AgentDirectoryEntry&&(identical(other.id, id) || other.id == id)&&(identical(other.threadId, threadId) || other.threadId == threadId)&&(identical(other.rootThreadId, rootThreadId) || other.rootThreadId == rootThreadId)&&(identical(other.path, path) || other.path == path)&&(identical(other.parentPath, parentPath) || other.parentPath == parentPath)&&(identical(other.role, role) || other.role == role)&&(identical(other.delegationMode, delegationMode) || other.delegationMode == delegationMode)&&(identical(other.delegationPreference, delegationPreference) || other.delegationPreference == delegationPreference)&&(identical(other.frozenModel, frozenModel) || other.frozenModel == frozenModel)&&(identical(other.task, task) || other.task == task)&&(identical(other.summary, summary) || other.summary == summary)&&(identical(other.depth, depth) || other.depth == depth)&&(identical(other.state, state) || other.state == state)&&(identical(other.updatedAt, updatedAt) || other.updatedAt == updatedAt));
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is _AgentDirectoryEntry&&(identical(other.id, id) || other.id == id)&&(identical(other.threadId, threadId) || other.threadId == threadId)&&(identical(other.rootThreadId, rootThreadId) || other.rootThreadId == rootThreadId)&&(identical(other.path, path) || other.path == path)&&(identical(other.parentPath, parentPath) || other.parentPath == parentPath)&&(identical(other.role, role) || other.role == role)&&(identical(other.delegationMode, delegationMode) || other.delegationMode == delegationMode)&&(identical(other.delegationPreference, delegationPreference) || other.delegationPreference == delegationPreference)&&(identical(other.frozenModel, frozenModel) || other.frozenModel == frozenModel)&&(identical(other.task, task) || other.task == task)&&(identical(other.summary, summary) || other.summary == summary)&&(identical(other.depth, depth) || other.depth == depth)&&(identical(other.state, state) || other.state == state)&&(identical(other.execution, execution) || other.execution == execution)&&(identical(other.canStop, canStop) || other.canStop == canStop)&&(identical(other.awaitingScheduling, awaitingScheduling) || other.awaitingScheduling == awaitingScheduling)&&(identical(other.updatedAt, updatedAt) || other.updatedAt == updatedAt));
 }
 
 
 @override
 int get hashCode {
-    return Object.hash(runtimeType,id,threadId,rootThreadId,path,parentPath,role,delegationMode,delegationPreference,frozenModel,task,summary,depth,state,updatedAt);
+    return Object.hash(runtimeType,id,threadId,rootThreadId,path,parentPath,role,delegationMode,delegationPreference,frozenModel,task,summary,depth,state,execution,canStop,awaitingScheduling,updatedAt);
 }
 
 
@@ -2533,11 +2551,11 @@ abstract mixin class _$AgentDirectoryEntryCopyWith<$Res> implements $AgentDirect
   factory _$AgentDirectoryEntryCopyWith(_AgentDirectoryEntry value, $Res Function(_AgentDirectoryEntry) _then) = __$AgentDirectoryEntryCopyWithImpl;
 @override @useResult
 $Res call({
- String id, String threadId, String rootThreadId, String path, String? parentPath, String role, DelegationMode delegationMode, DelegationPreference delegationPreference, ModelSelection? frozenModel, String task, String? summary, int depth, AgentState state, int updatedAt
+ String id, String threadId, String rootThreadId, String path, String? parentPath, String role, DelegationMode delegationMode, DelegationPreference delegationPreference, ModelSelection? frozenModel, String task, String? summary, int depth, AgentState state, AgentExecution? execution, bool canStop, bool awaitingScheduling, int updatedAt
 });
 
 
-@override $ModelSelectionCopyWith<$Res>? get frozenModel;@override $AgentStateCopyWith<$Res> get state;
+@override $ModelSelectionCopyWith<$Res>? get frozenModel;@override $AgentStateCopyWith<$Res> get state;@override $AgentExecutionCopyWith<$Res>? get execution;
 
 }
 /// @nodoc
@@ -2550,7 +2568,7 @@ class __$AgentDirectoryEntryCopyWithImpl<$Res>
 
 /// Create a copy of AgentDirectoryEntry
 /// with the given fields replaced by the non-null parameter values.
-@override @pragma('vm:prefer-inline') $Res call({Object? id = null,Object? threadId = null,Object? rootThreadId = null,Object? path = null,Object? parentPath = freezed,Object? role = null,Object? delegationMode = null,Object? delegationPreference = null,Object? frozenModel = freezed,Object? task = null,Object? summary = freezed,Object? depth = null,Object? state = null,Object? updatedAt = null,}) {
+@override @pragma('vm:prefer-inline') $Res call({Object? id = null,Object? threadId = null,Object? rootThreadId = null,Object? path = null,Object? parentPath = freezed,Object? role = null,Object? delegationMode = null,Object? delegationPreference = null,Object? frozenModel = freezed,Object? task = null,Object? summary = freezed,Object? depth = null,Object? state = null,Object? execution = freezed,Object? canStop = null,Object? awaitingScheduling = null,Object? updatedAt = null,}) {
   return _then(_AgentDirectoryEntry(
 id: null == id ? _self.id : id // ignore: cast_nullable_to_non_nullable
 as String,threadId: null == threadId ? _self.threadId : threadId // ignore: cast_nullable_to_non_nullable
@@ -2565,7 +2583,10 @@ as ModelSelection?,task: null == task ? _self.task : task // ignore: cast_nullab
 as String,summary: freezed == summary ? _self.summary : summary // ignore: cast_nullable_to_non_nullable
 as String?,depth: null == depth ? _self.depth : depth // ignore: cast_nullable_to_non_nullable
 as int,state: null == state ? _self.state : state // ignore: cast_nullable_to_non_nullable
-as AgentState,updatedAt: null == updatedAt ? _self.updatedAt : updatedAt // ignore: cast_nullable_to_non_nullable
+as AgentState,execution: freezed == execution ? _self.execution : execution // ignore: cast_nullable_to_non_nullable
+as AgentExecution?,canStop: null == canStop ? _self.canStop : canStop // ignore: cast_nullable_to_non_nullable
+as bool,awaitingScheduling: null == awaitingScheduling ? _self.awaitingScheduling : awaitingScheduling // ignore: cast_nullable_to_non_nullable
+as bool,updatedAt: null == updatedAt ? _self.updatedAt : updatedAt // ignore: cast_nullable_to_non_nullable
 as int,
   ));
 }
@@ -2590,6 +2611,18 @@ $AgentStateCopyWith<$Res> get state {
 
   return $AgentStateCopyWith<$Res>(_self.state, (value) {
     return _then(_self.copyWith(state: value));
+  });
+}/// Create a copy of AgentDirectoryEntry
+/// with the given fields replaced by the non-null parameter values.
+@override
+@pragma('vm:prefer-inline')
+$AgentExecutionCopyWith<$Res>? get execution {
+    if (_self.execution == null) {
+    return null;
+  }
+
+  return $AgentExecutionCopyWith<$Res>(_self.execution!, (value) {
+    return _then(_self.copyWith(execution: value));
   });
 }
 }

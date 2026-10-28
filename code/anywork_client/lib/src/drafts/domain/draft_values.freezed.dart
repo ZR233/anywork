@@ -389,11 +389,11 @@ return newThread(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( String threadId)?  existingThread,TResult Function( ThreadModeId mode)?  newThread,required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( String threadId)?  existingThread,TResult Function( ModelSelection route)?  newThread,required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case ExistingThreadAttachmentAdmissionContext() when existingThread != null:
 return existingThread(_that.threadId);case NewThreadAttachmentAdmissionContext() when newThread != null:
-return newThread(_that.mode);case _:
+return newThread(_that.route);case _:
   return orElse();
 
 }
@@ -411,11 +411,11 @@ return newThread(_that.mode);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( String threadId)  existingThread,required TResult Function( ThreadModeId mode)  newThread,}) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( String threadId)  existingThread,required TResult Function( ModelSelection route)  newThread,}) {final _that = this;
 switch (_that) {
 case ExistingThreadAttachmentAdmissionContext():
 return existingThread(_that.threadId);case NewThreadAttachmentAdmissionContext():
-return newThread(_that.mode);}
+return newThread(_that.route);}
 }
 /// A variant of `when` that fallback to returning `null`
 ///
@@ -429,11 +429,11 @@ return newThread(_that.mode);}
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( String threadId)?  existingThread,TResult? Function( ThreadModeId mode)?  newThread,}) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( String threadId)?  existingThread,TResult? Function( ModelSelection route)?  newThread,}) {final _that = this;
 switch (_that) {
 case ExistingThreadAttachmentAdmissionContext() when existingThread != null:
 return existingThread(_that.threadId);case NewThreadAttachmentAdmissionContext() when newThread != null:
-return newThread(_that.mode);case _:
+return newThread(_that.route);case _:
   return null;
 
 }
@@ -509,10 +509,10 @@ as String,
 
 
 class NewThreadAttachmentAdmissionContext implements AttachmentAdmissionContext {
-  const NewThreadAttachmentAdmissionContext(this.mode);
+  const NewThreadAttachmentAdmissionContext({required this.route});
 
 
- final  ThreadModeId mode;
+ final  ModelSelection route;
 
 /// Create a copy of AttachmentAdmissionContext
 /// with the given fields replaced by the non-null parameter values.
@@ -524,13 +524,13 @@ $NewThreadAttachmentAdmissionContextCopyWith<NewThreadAttachmentAdmissionContext
 
 @override
 bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is NewThreadAttachmentAdmissionContext&&(identical(other.mode, mode) || other.mode == mode));
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is NewThreadAttachmentAdmissionContext&&(identical(other.route, route) || other.route == route));
 }
 
 
 @override
 int get hashCode {
-    return Object.hash(runtimeType,mode);
+    return Object.hash(runtimeType,route);
 }
 
 
@@ -542,11 +542,11 @@ abstract mixin class $NewThreadAttachmentAdmissionContextCopyWith<$Res> implemen
   factory $NewThreadAttachmentAdmissionContextCopyWith(NewThreadAttachmentAdmissionContext value, $Res Function(NewThreadAttachmentAdmissionContext) _then) = _$NewThreadAttachmentAdmissionContextCopyWithImpl;
 @useResult
 $Res call({
- ThreadModeId mode
+ ModelSelection route
 });
 
 
-
+$ModelSelectionCopyWith<$Res> get route;
 
 }
 /// @nodoc
@@ -559,14 +559,23 @@ class _$NewThreadAttachmentAdmissionContextCopyWithImpl<$Res>
 
 /// Create a copy of AttachmentAdmissionContext
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') $Res call({Object? mode = null,}) {
+@pragma('vm:prefer-inline') $Res call({Object? route = null,}) {
   return _then(NewThreadAttachmentAdmissionContext(
-null == mode ? _self.mode : mode // ignore: cast_nullable_to_non_nullable
-as ThreadModeId,
+route: null == route ? _self.route : route // ignore: cast_nullable_to_non_nullable
+as ModelSelection,
   ));
 }
 
+/// Create a copy of AttachmentAdmissionContext
+/// with the given fields replaced by the non-null parameter values.
+@override
+@pragma('vm:prefer-inline')
+$ModelSelectionCopyWith<$Res> get route {
 
+  return $ModelSelectionCopyWith<$Res>(_self.route, (value) {
+    return _then(_self.copyWith(route: value));
+  });
+}
 }
 
 /// @nodoc

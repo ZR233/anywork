@@ -20,8 +20,12 @@ impl StudioRuntime {
             owner.snapshot()
         } else {
             crate::studio::thread_factory::recovery::load_checkpoint_for_recovery(
-                &self.store, thread,
-            ).await?.context("Thread has no saved checkpoint")?.state
+                &self.store,
+                thread,
+            )
+            .await?
+            .context("Thread has no saved checkpoint")?
+            .state
         };
         if thread.role == crate::config::ROOT_AGENT_ROUTE_KEY
             || (crate::studio::agent_close::is_explicitly_closed(&state)?
@@ -85,7 +89,9 @@ impl StudioRuntime {
             if record.parent_thread_id.is_none() {
                 // A root observation publishes its hosted index as soon as the owner exists.
                 // Prepare saved child formats first, without creating any child execution owner.
-                self.thread_observations.prepare_child_storage(&activated_id).await?;
+                self.thread_observations
+                    .prepare_child_storage(&activated_id)
+                    .await?;
             }
             if let Err(error) = self
                 .threads
@@ -189,16 +195,7 @@ impl StudioRuntime {
             .map(|issue| issue.id)
             .collect::<Vec<_>>();
         for issue_id in stale {
-            self.recovery.update_if_current(
-                &issue_id,
-                None,
-                || true,
-                |issues| {
-                    self.agent_facility
-                        .product_events
-                        .emit_recovery_state(issues);
-                },
-            );
+            self.recovery.update_if_current(&issue_id, None, || true);
         }
         Ok(())
     }

@@ -81,7 +81,6 @@ impl CatalogSources {
             StudioProductEventKind::ThreadDirectoryChanged(_)
             | StudioProductEventKind::AgentDirectoryChanged(_)
             | StudioProductEventKind::SettingsConfigStateChanged(_)
-            | StudioProductEventKind::RecoveryStateChanged(_)
             | StudioProductEventKind::McpStateChanged(_)
             | StudioProductEventKind::AccountUsageStateChanged(_)
             | StudioProductEventKind::ModelPerformanceStateChanged(_)
@@ -405,23 +404,17 @@ impl StudioRuntime {
             project_id: None,
             thread_id: Some(id.to_string()),
             worktree: None,
-            message: format!("Tool catalog refresh failed: {error:#}"),
+            message: crate::studio::recovery_registry::diagnostic::bounded(&format!(
+                "Tool catalog refresh failed: {}",
+                crate::studio::recovery_registry::diagnostic::failure(error.as_ref())
+            )),
         });
-        self.recovery.update_if_current(
-            &issue_id,
-            issue,
-            || {
-                self.threads.thread(id).is_some_and(|current| {
-                    current.same_instance(thread)
-                        && current.snapshot().lifecycle == ThreadLifecycle::Open
-                })
-            },
-            |issues| {
-                self.agent_facility
-                    .product_events
-                    .emit_recovery_state(issues);
-            },
-        );
+        self.recovery.update_if_current(&issue_id, issue, || {
+            self.threads.thread(id).is_some_and(|current| {
+                current.same_instance(thread)
+                    && current.snapshot().lifecycle == ThreadLifecycle::Open
+            })
+        });
     }
 
     async fn install_refreshed_tools(

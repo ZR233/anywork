@@ -668,26 +668,24 @@ impl From<pl_protocol::AgentExecution> for BridgeAgentExecution {
 impl From<pl_protocol::ContinuationView> for BridgeContinuationView {
     fn from(continuation: pl_protocol::ContinuationView) -> Self {
         BridgeContinuationView {
-                id: continuation.id().to_owned(),
-                source_turn_id: continuation.source_turn_id().map(str::to_owned),
-                reason: continuation.reason().map(|reason| match reason {
-                    pl_protocol::ContinuationReason::UserStop => BridgeContinuationReason::UserStop,
-                    pl_protocol::ContinuationReason::HostShutdown => {
-                        BridgeContinuationReason::HostShutdown
-                    }
-                    pl_protocol::ContinuationReason::ProcessInterrupted => {
-                        BridgeContinuationReason::ProcessInterrupted
-                    }
-                    pl_protocol::ContinuationReason::StepLimit => {
-                        BridgeContinuationReason::StepLimit
-                    }
-                    pl_protocol::ContinuationReason::ExecutionFailed => {
-                        BridgeContinuationReason::ExecutionFailed
-                    }
-                }),
-                created_at: continuation.created_at(),
-                claimed: continuation.claimed(),
-            }
+            id: continuation.id().to_owned(),
+            source_turn_id: continuation.source_turn_id().map(str::to_owned),
+            reason: continuation.reason().map(|reason| match reason {
+                pl_protocol::ContinuationReason::UserStop => BridgeContinuationReason::UserStop,
+                pl_protocol::ContinuationReason::HostShutdown => {
+                    BridgeContinuationReason::HostShutdown
+                }
+                pl_protocol::ContinuationReason::ProcessInterrupted => {
+                    BridgeContinuationReason::ProcessInterrupted
+                }
+                pl_protocol::ContinuationReason::StepLimit => BridgeContinuationReason::StepLimit,
+                pl_protocol::ContinuationReason::ExecutionFailed => {
+                    BridgeContinuationReason::ExecutionFailed
+                }
+            }),
+            created_at: continuation.created_at(),
+            claimed: continuation.claimed(),
+        }
     }
 }
 

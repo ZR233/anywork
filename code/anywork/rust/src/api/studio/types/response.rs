@@ -2,37 +2,12 @@ use super::runtime::{
     BridgeAgentDirectoryEntryDto, BridgeDegradedResource, BridgeFailedResource,
     BridgeLoadingResource, BridgeLspHealthDto, BridgeMcpHealthDto, BridgeReadyResource,
     BridgeRefreshingResource, BridgeStaleResource, BridgeStoppedResource,
-    BridgeStudioRecoveryIssueDto, BridgeUninitializedResource, RuntimeSnapshot,
+    BridgeUninitializedResource,
 };
 use super::settings::{BridgeModelCatalogAccountDto, BridgeStudioSettingsDto};
 use super::thread_stream::{BridgeRuntimeCostAmount, BridgeThread};
-use super::updater::BridgeUpdaterStateSnapshot;
 use serde::{Deserialize, Serialize};
 // ── Response types ──
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct BridgeStudioStateSnapshot {
-    pub owner_epoch: String,
-    pub runtime: RuntimeSnapshot,
-    pub project_directory: BridgeProjectDirectoryState,
-    /// 目录分页窗口的首页；后续页通过 `listThreadsPage` keyset cursor 加载。
-    pub thread_directory: BridgeThreadDirectoryPage,
-    pub agent_directory: BridgeAgentDirectoryState,
-    pub settings_config: BridgeSettingsConfigStateSnapshot,
-    pub model_catalog: BridgeModelCatalogStateSnapshot,
-    pub recovery: BridgeRecoveryStateSnapshot,
-    pub mcp: BridgeMcpStateSnapshot,
-    pub lsp: BridgeLspStateSnapshot,
-    pub skills_by_project: Vec<BridgeSkillsStateSnapshot>,
-    pub thread_mode_catalog: BridgeThreadModeCatalogSnapshot,
-    pub account_usage: BridgeAccountUsageStateSnapshot,
-    pub session_costs: Vec<BridgeSessionCostsState>,
-    pub updater: BridgeUpdaterStateSnapshot,
-    pub persistence: BridgePersistenceStateSnapshot,
-    pub persistence_queue: BridgePersistenceQueueStateSnapshot,
-    pub agent_profiles: BridgeAgentProfilesStateSnapshot,
-}
 
 /// 一个根会话的作用域费用事实；`cost == null` 是显式清除，不是零费用。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -399,37 +374,6 @@ pub struct BridgeModelCatalogSnapshotDto {
     pub revision: u64,
     pub updated_at: i64,
     pub accounts: Vec<BridgeModelCatalogAccountDto>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(tag = "kind", content = "data", rename_all = "camelCase")]
-pub enum BridgeRecoveryStateSnapshot {
-    Uninitialized(BridgeUninitializedResource),
-    Loading(BridgeLoadingResource),
-    Ready {
-        resource: BridgeReadyResource,
-        value: BridgeRecoveryStateData,
-    },
-    Refreshing {
-        resource: BridgeRefreshingResource,
-        value: BridgeRecoveryStateData,
-    },
-    Stale {
-        resource: BridgeStaleResource,
-        value: BridgeRecoveryStateData,
-    },
-    Degraded {
-        resource: BridgeDegradedResource,
-        value: BridgeRecoveryStateData,
-    },
-    Failed(BridgeFailedResource),
-    Stopped(BridgeStoppedResource),
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct BridgeRecoveryStateData {
-    pub issues: Vec<BridgeStudioRecoveryIssueDto>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

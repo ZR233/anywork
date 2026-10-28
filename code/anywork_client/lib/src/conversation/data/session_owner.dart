@@ -451,8 +451,15 @@ final class ConversationSessionOwner extends ConversationScopeAccess {
     required String interactionId,
     required int expectedInteractionRevision,
     required InteractionResolutionCommand resolution,
-  }) => _commandActions.respond(origin, interactionId, expectedInteractionRevision, resolution,
-    operationId: operationId, hostedReference: reference, targetThreadId: targetThreadId);
+  }) => _commandActions.respond(
+    origin,
+    interactionId,
+    expectedInteractionRevision,
+    resolution,
+    operationId: operationId,
+    hostedReference: reference,
+    targetThreadId: targetThreadId,
+  );
 
   @override
   StopExecutionResult stopExecution({
@@ -466,13 +473,18 @@ final class ConversationSessionOwner extends ConversationScopeAccess {
     if (!acceptsUserInput) throw _childRequiresParent;
     requireOrigin(origin);
     final stamp = _readyExecutionStamp;
-    if (stamp == null || origin.facet != ThreadFacet.execution ||
-        _feeds.executionAttemptId == null) throw _stopStaleTarget;
+    if (stamp == null ||
+        origin.facet != ThreadFacet.execution ||
+        _feeds.executionAttemptId == null)
+      throw _stopStaleTarget;
     final current = execution.value.value!.execution;
-    if (executionId.isEmpty || current != null && current.id != executionId) throw _stopStaleTarget;
+    if (executionId.isEmpty || current != null && current.id != executionId)
+      throw _stopStaleTarget;
     for (final work in _evidence.whereType<_StopExecutionWork>()) {
-      if (_sameProjection(work.origin, origin) && work.executionId == executionId &&
-          !work._released) return StopExecutionOperation(ticket: work.writer.ticket);
+      if (_sameProjection(work.origin, origin) &&
+          work.executionId == executionId &&
+          !work._released)
+        return StopExecutionOperation(ticket: work.writer.ticket);
     }
     if (current == null) return StopNoExecution(threadId);
     final binding = _executionBinding;
@@ -507,38 +519,53 @@ final class ConversationSessionOwner extends ConversationScopeAccess {
     if (!acceptsUserInput) throw _childRequiresParent;
     for (final work in _continuations.values) {
       if (operationId == work.writer.ticket.id ||
-          operationId == null && !work.released &&
+          operationId == null &&
+              !work.released &&
               work.continuationId == continuationId &&
               work.routeRevision == expectedModelRouteRevision) {
         if (work.continuationId != continuationId ||
             work.routeRevision != expectedModelRouteRevision ||
-            !_sameProjection(work.origin, origin)) throw _continuationConflict;
+            !_sameProjection(work.origin, origin))
+          throw _continuationConflict;
         return work.writer.ticket;
       }
     }
     if (operationId != null) throw _continuationConflict;
-    if (_continuations.values.any((work) => !work.released)) throw _continuationConflict;
+    if (_continuations.values.any((work) => !work.released))
+      throw _continuationConflict;
     final current = execution.value.value?.continuation;
     final config = configuration.value;
     final route = config.value?.modelRoute;
-    if (origin.facet != ThreadFacet.execution || continuationId.isEmpty ||
-        current?.id != continuationId || current!.claimed ||
-        config.sync.phase != FacetSyncPhase.ready || config.stamp == null ||
-        !_sameProjection(origin, config.stamp!) || route?.available != true ||
-        route!.revision != expectedModelRouteRevision || expectedModelRouteRevision < 0) throw _continuationConflict;
-    final work = _ContinueThreadWork(this, origin, continuationId, expectedModelRouteRevision);
+    if (origin.facet != ThreadFacet.execution ||
+        continuationId.isEmpty ||
+        current?.id != continuationId ||
+        current!.claimed ||
+        config.sync.phase != FacetSyncPhase.ready ||
+        config.stamp == null ||
+        !_sameProjection(origin, config.stamp!) ||
+        route?.available != true ||
+        route!.revision != expectedModelRouteRevision ||
+        expectedModelRouteRevision < 0)
+      throw _continuationConflict;
+    final work = _ContinueThreadWork(
+      this,
+      origin,
+      continuationId,
+      expectedModelRouteRevision,
+    );
     _commandActions.lifetime.register(work);
     _continuationAdmitting = true;
     try {
       work.retain();
-    final writer = _operations.begin<ContinueThreadReply>(
-      target: 'continue:$threadId', requireIdentityObservation: true,
-    );
-    work.writer = writer;
+      final writer = _operations.begin<ContinueThreadReply>(
+        target: 'continue:$threadId',
+        requireIdentityObservation: true,
+      );
+      work.writer = writer;
       work.writerAssigned = true;
-    _continuations[writer.ticket.id] = work;
-    work.start();
-    return writer.ticket;
+      _continuations[writer.ticket.id] = work;
+      work.start();
+      return writer.ticket;
     } catch (_) {
       work.notStarted();
       rethrow;
@@ -548,7 +575,9 @@ final class ConversationSessionOwner extends ConversationScopeAccess {
   }
 
   @override
-  Future<ContinuationOperationView?> readContinuationOperation(OperationId operationId) {
+  Future<ContinuationOperationView?> readContinuationOperation(
+    OperationId operationId,
+  ) {
     final work = _continuations[operationId];
     if (work == null) throw _continuationConflict;
     return work.query();

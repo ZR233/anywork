@@ -74,7 +74,7 @@ final class AcpAccountAuthViewModelProvider
 }
 
 String _$acpAccountAuthViewModelHash() =>
-    r'2fdbbd12b64c44f9384108fc17e376fa2c609b63';
+    r'2e9e71e6db37eb3afbc7c55682d32d70163d2022';
 
 /// 一个已保存接入的认证状态与命令。
 ///

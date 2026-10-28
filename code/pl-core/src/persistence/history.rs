@@ -160,9 +160,9 @@ pub(super) async fn visit(
                     "history sequence/index mismatch".into(),
                 ));
             }
-            seen = seen.checked_add(1).ok_or_else(|| {
-                SessionStoreError::Invalid("history sequence overflow".into())
-            })?;
+            seen = seen
+                .checked_add(1)
+                .ok_or_else(|| SessionStoreError::Invalid("history sequence overflow".into()))?;
             validate_commit(&commit, session_id, seen)?;
             last_digest = Some(digest);
             after = Some(sequence);

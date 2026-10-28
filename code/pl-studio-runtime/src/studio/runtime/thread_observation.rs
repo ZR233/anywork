@@ -1017,8 +1017,10 @@ impl ThreadObservations {
                 && services.threads.upgrade()?.thread(&child.id).is_none()
             {
                 crate::studio::thread_factory::recovery::load_checkpoint_for_recovery(
-                    &services.store, &pl_protocol::Thread::from(child),
-                ).await?;
+                    &services.store,
+                    &pl_protocol::Thread::from(child),
+                )
+                .await?;
             }
         }
         Ok(())
@@ -1748,29 +1750,20 @@ async fn run(
                 project_id: None,
                 thread_id: Some(worker.id.clone()),
                 worktree: None,
-                message: current
-                    .tool_cleanup
-                    .failures
-                    .iter()
-                    .map(|failure| format!("{}: {}", failure.tool_id, failure.error))
-                    .collect::<Vec<_>>()
-                    .join("; "),
+                message: format!("Original tool close remains unresolved; failed_count={}; unstructured tool details withheld",
+                    current.tool_cleanup.failures.len()),
             }
         });
-        worker.services.recovery.update_if_current(
-            &issue_id,
-            issue,
-            || {
+        worker
+            .services
+            .recovery
+            .update_if_current(&issue_id, issue, || {
                 worker.services.threads.upgrade().is_ok_and(|threads| {
                     threads.observed_threads().iter().any(|(id, thread)| {
                         id == &worker.id && thread.same_instance(&worker.thread)
                     })
                 })
-            },
-            |issues| {
-                worker.services.events.emit_recovery_state(issues);
-            },
-        );
+            });
         let products = projected != Some((current.commit_sequence, current.lifecycle));
         // Read the coordinator's newest typed facts before publishing: a storage change is a fact
         // this pass has to carry, exactly like a commit or a preview it also projects.
@@ -2200,7 +2193,8 @@ impl ProjectionWorker {
                     if *hosted_dirty && owner.thread.parent_thread_id.is_none() {
                         if let Ok(facets) = &owner.feed.facets {
                             let previous = facets.execution.hosted_pending(&owner.thread.id);
-                            let (pending, terminal) = hosted::collect(services, &owner.thread.id, &previous).await?;
+                            let (pending, terminal) =
+                                hosted::collect(services, &owner.thread.id, &previous).await?;
                             facets.execution.observe(
                                 &owner.thread.id,
                                 owner.thread.updated_at,
@@ -2262,7 +2256,11 @@ impl ProjectionWorker {
                         original.summary.clone(),
                     )
                     .await?;
-                    if original.product.as_ref().is_some_and(|thread| thread.parent_thread_id.is_some()) {
+                    if original
+                        .product
+                        .as_ref()
+                        .is_some_and(|thread| thread.parent_thread_id.is_some())
+                    {
                         // Admission may publish the pending fact before the child's directory row.
                         // Recheck after association publication as well, without copying the fact.
                         services.hosted_updates.send_replace(());

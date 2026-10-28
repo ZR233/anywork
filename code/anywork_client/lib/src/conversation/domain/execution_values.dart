@@ -126,8 +126,9 @@ sealed class ExecutionReplacement with _$ExecutionReplacement {
 @freezed
 sealed class ContinuationReplacement with _$ContinuationReplacement {
   const factory ContinuationReplacement.unchanged() = UnchangedContinuation;
-  const factory ContinuationReplacement.replace({required ContinuationView? value}) =
-      ReplacedContinuation;
+  const factory ContinuationReplacement.replace({
+    required ContinuationView? value,
+  }) = ReplacedContinuation;
 }
 
 @freezed
@@ -149,7 +150,8 @@ abstract class ThreadExecutionChange with _$ThreadExecutionChange {
   const factory ThreadExecutionChange({
     required ThreadStatus? status,
     @Default(ExecutionReplacement.unchanged()) ExecutionReplacement execution,
-    @Default(ContinuationReplacement.unchanged()) ContinuationReplacement continuation,
+    @Default(ContinuationReplacement.unchanged())
+    ContinuationReplacement continuation,
     required TurnsReplacement? turns,
     required InteractionDelta? interactions,
     required ActivityReplacement activity,

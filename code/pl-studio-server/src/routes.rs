@@ -9,13 +9,13 @@ use pl_protocol::ThreadActivityDetailQuery;
 use pl_protocol::studio::{
     AcpAccountCatalog, AcpAuthCommandReply, AcpAuthSnapshot, AcpInstallCommandReply,
     AcpInstallSnapshot, CancelAcpAuthRequest, CancelAcpInstallRequest, ContinuationOperationView,
-    ContinueThreadRequest, ContinueThreadResponse, ExpectedRevisionRequest,
-    HealthResponse, LspResetRequest, McpResetRequest, OpenProjectRequest,
-    RemoveAccountModelRequest, RemoveAccountRequest, RemoveAcpAccountRequest, RenameThreadRequest,
-    ResolveInteractionRequest, SearchSkillsRequest, SetAccountBillingKindRequest,
-    SetAccountModelEnabledRequest, SetDefaultAccountRequest, SetThreadModeRequest,
-    SetThreadModelRouteRequest, SettingsCommandReply, SettingsStateResponse, StartAcpAuthRequest,
-    StartAcpInstallRequest, StopThreadRequest, StopThreadResponse, StudioCommandRequest, StudioError, SubmitPromptRequest,
+    ContinueThreadRequest, ContinueThreadResponse, ExpectedRevisionRequest, HealthResponse,
+    LspResetRequest, McpResetRequest, OpenProjectRequest, RemoveAccountModelRequest,
+    RemoveAccountRequest, RemoveAcpAccountRequest, RenameThreadRequest, ResolveInteractionRequest,
+    SearchSkillsRequest, SetAccountBillingKindRequest, SetAccountModelEnabledRequest,
+    SetDefaultAccountRequest, SetThreadModeRequest, SetThreadModelRouteRequest,
+    SettingsCommandReply, SettingsStateResponse, StartAcpAuthRequest, StartAcpInstallRequest,
+    StopThreadRequest, StopThreadResponse, StudioCommandRequest, StudioError, SubmitPromptRequest,
     ThreadModelRouteCommandReply, ThreadPageQuery, UpdateAccountRequest, UpdateAcpAccountRequest,
     UpdatePermissionSettingsRequest, UpdateSettingsFieldRequest,
 };
@@ -88,6 +88,28 @@ pub(crate) enum StudioApiErrors {
 }
 
 pub(crate) struct ApiJson<T>(pub(crate) T);
+
+/// Product POST streams never reinterpret a reconnect cursor as a new native subscription.
+pub(crate) struct NoReplay;
+
+impl FromRequestParts<AppState> for NoReplay {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(parts: &mut Parts, _: &AppState) -> Result<Self, Self::Rejection> {
+        if parts.headers.contains_key("last-event-id") {
+            return Err(StudioError::new(
+                pl_protocol::studio::StudioErrorCode::Conflict,
+                "Product streams do not support replay; create a new POST stream",
+                false,
+            )
+            .with_details(pl_protocol::studio::StudioErrorDetails::Reason {
+                reason: "replayUnsupported".into(),
+            })
+            .into());
+        }
+        Ok(Self)
+    }
+}
 
 impl<S, T> FromRequest<S> for ApiJson<T>
 where
@@ -176,7 +198,6 @@ pub(crate) fn parse_product_topic(
         "agentDirectory" => StudioProductTopic::AgentDirectory,
         "settingsConfig" => StudioProductTopic::SettingsConfig,
         "modelCatalog" => StudioProductTopic::ModelCatalog,
-        "recovery" => StudioProductTopic::Recovery,
         "mcp" => StudioProductTopic::Mcp,
         "lsp" => StudioProductTopic::Lsp,
         "skills" => StudioProductTopic::Skills {
@@ -284,7 +305,6 @@ pub(crate) fn api_router() -> OpenApiRouter<AppState> {
         .routes(routes!(read_acp_install))
         .routes(routes!(start_acp_install))
         .routes(routes!(cancel_acp_install))
-        .routes(routes!(read_recovery))
         .routes(routes!(retry_recovery))
         .routes(routes!(retry_persistence))
         .routes(routes!(retry_thread_history))
@@ -308,6 +328,7 @@ pub(crate) fn api_router() -> OpenApiRouter<AppState> {
         .merge(crate::templates::router())
         .merge(crate::models::router())
         .merge(crate::configuration::router())
+        .merge(crate::recovery::router())
         .merge(crate::attachment_reads::router())
         .merge(crate::thread_transport::router())
         .merge(crate::thread_transport::authoring_router())
@@ -1264,12 +1285,7 @@ fn parse_mode(mode: &str) -> Result<ThreadModeId, ApiError> {
     })
 }
 
-#[utoipa::path(get, path = "/api/v1/runtime/recovery", operation_id = "recovery.read", responses(StudioApiErrors, (status = 200)))]
-async fn read_recovery(State(state): State<AppState>) -> Result<impl IntoResponse, ApiError> {
-    Ok(Json(state.runtime.read_recovery_state()))
-}
-
-#[utoipa::path(post, path = "/api/v1/runtime/recovery/retry", operation_id = "recovery.retry", responses(StudioApiErrors, (status = 200)))]
+#[utoipa::path(post, path = "/api/v1/runtime/recovery/retry", operation_id = "recovery.retry", responses(StudioApiErrors, (status = 200, body = pl_protocol::products::references::RecoveryReadTarget)))]
 async fn retry_recovery(State(state): State<AppState>) -> Result<impl IntoResponse, ApiError> {
     Ok(Json(
         state

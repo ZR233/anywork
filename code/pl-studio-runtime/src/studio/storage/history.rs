@@ -77,6 +77,22 @@ impl std::fmt::Debug for HistoryStoreShare {
     }
 }
 
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UnpublishedStage {
+    WriterInitialization,
+    ReaderValidation,
+    Preflight,
+    PreflightClose,
+}
+
+#[cfg(test)]
+struct UnpublishedGate {
+    stage: UnpublishedStage,
+    entered: tokio::sync::oneshot::Sender<DatabaseConnection>,
+    release: tokio::sync::oneshot::Receiver<()>,
+}
+
 struct HistoryStoreState {
     path: PathBuf,
     thread_id: String,
@@ -115,6 +131,8 @@ struct HistoryStoreState {
     /// Test-only probe fired immediately before a cold reader waits on `init`.
     #[cfg(test)]
     reader_before_init: tokio::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+    #[cfg(test)]
+    unpublished_gate: tokio::sync::Mutex<Option<UnpublishedGate>>,
 }
 
 impl Drop for HistoryStoreState {
@@ -122,6 +140,8 @@ impl Drop for HistoryStoreState {
         // Only connections that were really opened are owed a close: opening one here would create
         // the very resource this drop exists to release. Both slots are taken so the state leaves
         // nothing behind, while the lease keeps each connection until its close truly succeeded.
+        // Unpublished pools were already handed over by their guard; these slots hold only the
+        // connections whose successful initialization was published into this state.
         let mut connections = Vec::new();
         if let Some(writer) = self.writer.take() {
             connections.push((HistoryConnectionRole::Writer, writer.db));
@@ -138,6 +158,65 @@ struct HistoryConnection {
     db: DatabaseConnection,
     database_id: String,
     schema_version: i64,
+}
+
+/// Owns a successfully opened pool until publication or explicit cleanup. Borrowing the state's
+/// lease pins its real lifetime for every await; cancellation hands this same pool to that owner.
+struct UnpublishedConnection<'state> {
+    lease: &'state HistoryStateLease,
+    role: HistoryConnectionRole,
+    db: Option<DatabaseConnection>,
+}
+
+impl<'state> UnpublishedConnection<'state> {
+    fn new(
+        lease: &'state HistoryStateLease,
+        role: HistoryConnectionRole,
+        db: DatabaseConnection,
+    ) -> Self {
+        Self {
+            lease,
+            role,
+            db: Some(db),
+        }
+    }
+
+    fn database(&self) -> &DatabaseConnection {
+        self.db
+            .as_ref()
+            .expect("an unpublished connection is owned")
+    }
+
+    /// The initializer returns Ready immediately after this transfer. Tokio OnceCell publishes
+    /// that Ready value under its initialization permit without another await/cancellation point.
+    fn publish(mut self) -> DatabaseConnection {
+        self.db.take().expect("a connection is published only once")
+    }
+
+    /// Waits only this pool's original close, preserving both operation and typed cleanup errors.
+    /// The duty is installed before the wait; cancelling it cannot drop the real close task.
+    async fn close_with_result<T>(mut self, result: Result<T>) -> Result<T> {
+        let db = self.db.take().expect("a connection is closed only once");
+        let closed = self.lease.hand_over_connection(self.role, db).await;
+        match (result, closed) {
+            (Ok(value), Ok(())) => Ok(value),
+            (Err(error), Ok(())) => Err(error),
+            (Ok(_), Err(cleanup)) => Err(crate::studio::startup::cleanup_error(cleanup)),
+            (Err(error), Err(cleanup)) => {
+                Err(crate::studio::startup::cleanup_error(cleanup).context(error))
+            }
+        }
+    }
+}
+
+impl Drop for UnpublishedConnection<'_> {
+    fn drop(&mut self) {
+        if let Some(db) = self.db.take() {
+            // Only the local observation is dropped. The original duty and its registered task
+            // remain in the same HistoryCloseOwner even without a runtime on this thread.
+            drop(self.lease.hand_over_connection(self.role, db));
+        }
+    }
 }
 
 /// 一条终态输入的最小身份记录，外加可重建的 host 提交摘要。
@@ -267,6 +346,8 @@ impl HistoryStore {
                 init_gate: tokio::sync::Mutex::new(None),
                 #[cfg(test)]
                 reader_before_init: tokio::sync::Mutex::new(None),
+                #[cfg(test)]
+                unpublished_gate: tokio::sync::Mutex::new(None),
             }),
         })
     }
@@ -302,6 +383,33 @@ impl HistoryStore {
         let (tx, rx) = tokio::sync::oneshot::channel();
         *self.state.reader_before_init.lock().await = Some(tx);
         rx
+    }
+
+    /// Test-only: expose the original pool only after the parked future really returned Pending.
+    #[cfg(test)]
+    async fn park_unpublished(&self, stage: UnpublishedStage, db: &DatabaseConnection) {
+        let gate = {
+            let mut gate = self.state.unpublished_gate.lock().await;
+            if gate.as_ref().is_some_and(|gate| gate.stage == stage) {
+                gate.take()
+            } else {
+                None
+            }
+        };
+        if let Some(gate) = gate {
+            let mut entered = Some(gate.entered);
+            let mut release = std::pin::pin!(gate.release);
+            let _ = std::future::poll_fn(|cx| {
+                let outcome = std::future::Future::poll(release.as_mut(), cx);
+                if outcome.is_pending()
+                    && let Some(entered) = entered.take()
+                {
+                    let _ = entered.send(db.clone());
+                }
+                outcome
+            })
+            .await;
+        }
     }
 
     /// The handle behind one share, or `None` once its last real holder released it.
@@ -353,10 +461,21 @@ impl HistoryStore {
                 let db = connect_read_only(&self.state.path)
                     .await
                     .context(HistoryReadFailure::Storage)?;
-                let (database_id, schema_version) =
-                    validate_existing(&db, &self.state.thread_id).await?;
-                Ok::<HistoryConnection, anyhow::Error>(HistoryConnection {
+                let opening = UnpublishedConnection::new(
+                    &self.state.lease,
+                    HistoryConnectionRole::Reader,
                     db,
+                );
+                #[cfg(test)]
+                self.park_unpublished(UnpublishedStage::ReaderValidation, opening.database())
+                    .await;
+                let validated = validate_existing(opening.database(), &self.state.thread_id).await;
+                let (database_id, schema_version) = match validated {
+                    Ok(identity) => identity,
+                    Err(error) => return opening.close_with_result(Err(error)).await,
+                };
+                Ok::<HistoryConnection, anyhow::Error>(HistoryConnection {
+                    db: opening.publish(),
                     database_id,
                     schema_version,
                 })
@@ -369,6 +488,25 @@ impl HistoryStore {
             );
         }
         Ok(Some(reader))
+    }
+
+    /// Preflight remains read-only and never creates a missing file. Even successful temporary
+    /// checks join their original pool's close before writer initialization is allowed to continue.
+    async fn inspect_existing(&self) -> Result<()> {
+        if !tokio::fs::try_exists(&self.state.path).await? {
+            return Ok(());
+        }
+        let db = connect_read_only(&self.state.path).await?;
+        let opening =
+            UnpublishedConnection::new(&self.state.lease, HistoryConnectionRole::Reader, db);
+        #[cfg(test)]
+        self.park_unpublished(UnpublishedStage::Preflight, opening.database())
+            .await;
+        let checked = schema::inspect_existing(opening.database(), &self.state.thread_id).await;
+        #[cfg(test)]
+        self.park_unpublished(UnpublishedStage::PreflightClose, opening.database())
+            .await;
+        opening.close_with_result(checked).await
     }
 
     /// The single writer connection, created and upgraded on first use.
@@ -385,7 +523,7 @@ impl HistoryStore {
         self.state
             .writer
             .get_or_try_init(|| async {
-                schema::inspect_existing(&self.state.path, &self.state.thread_id).await?;
+                self.inspect_existing().await?;
                 let parent = self
                     .state
                     .path
@@ -393,24 +531,27 @@ impl HistoryStore {
                     .context("history database path has no parent directory")?;
                 tokio::fs::create_dir_all(parent).await?;
                 let db = connect(&self.state.path).await?;
+                let opening = UnpublishedConnection::new(
+                    &self.state.lease,
+                    HistoryConnectionRole::Writer,
+                    db,
+                );
+                #[cfg(test)]
+                self.park_unpublished(UnpublishedStage::WriterInitialization, opening.database())
+                    .await;
                 #[cfg(test)]
                 if let Some((entered, release)) = self.state.init_gate.lock().await.take() {
                     let _ = entered.send(());
                     let _ = release.await;
                 }
-                let database_id = match schema::initialize(&db, &self.state.thread_id).await {
+                let initialized =
+                    schema::initialize(opening.database(), &self.state.thread_id).await;
+                let database_id = match initialized {
                     Ok(id) => id,
-                    Err(error) => {
-                        if let Err(cleanup) = db.close().await {
-                            return Err(
-                                crate::studio::startup::cleanup_error(cleanup).context(error)
-                            );
-                        }
-                        return Err(error);
-                    }
+                    Err(error) => return opening.close_with_result(Err(error)).await,
                 };
                 Ok::<HistoryConnection, anyhow::Error>(HistoryConnection {
-                    db,
+                    db: opening.publish(),
                     database_id,
                     schema_version: HISTORY_SCHEMA_VERSION,
                 })
@@ -5351,6 +5492,335 @@ mod storage_fault_tests {
         Ok(())
     }
 
+    async fn committed_close_fixture(path: &Path, thread_id: &str) -> Result<()> {
+        let owner = HistoryCloseOwner::new();
+        let history = HistoryStore::open_with(path, thread_id, owner.clone()).await?;
+        history.commit(1, &[], &[]).await?;
+        drop(history);
+        owner.seal();
+        owner.settle_when_no_state_is_left().await?;
+        Ok(())
+    }
+
+    async fn arm_unpublished_pool(
+        history: &HistoryStore,
+        stage: UnpublishedStage,
+    ) -> (
+        tokio::sync::oneshot::Receiver<DatabaseConnection>,
+        tokio::sync::oneshot::Sender<()>,
+    ) {
+        let (entered, opened) = tokio::sync::oneshot::channel();
+        let (release, wait) = tokio::sync::oneshot::channel();
+        *history.state.unpublished_gate.lock().await = Some(UnpublishedGate {
+            stage,
+            entered,
+            release: wait,
+        });
+        (opened, release)
+    }
+
+    async fn open_at_stage(history: &HistoryStore, stage: UnpublishedStage) -> Result<()> {
+        match stage {
+            UnpublishedStage::ReaderValidation => history.reader().await.map(|_| ()),
+            UnpublishedStage::PreflightClose => history.inspect_existing().await,
+            UnpublishedStage::WriterInitialization | UnpublishedStage::Preflight => {
+                history.writer().await.map(|_| ())
+            }
+        }
+    }
+
+    /// Drives the owning initialization future until its real pool is parked, without moving the
+    /// future out of the test's Box. The caller can subsequently cancel that actual owning future.
+    async fn observe_unpublished_pool<F: std::future::Future<Output = Result<()>>>(
+        opening: std::pin::Pin<&mut F>,
+        opened: tokio::sync::oneshot::Receiver<DatabaseConnection>,
+    ) -> Result<DatabaseConnection> {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::select! {
+                db = opened => Ok(db?),
+                result = opening => {
+                    result?;
+                    anyhow::bail!("initialization ended before the unpublished pool gate")
+                },
+            }
+        })
+        .await?
+    }
+
+    /// The original pool's only permit blocks its actual close. A replacement pool or a fake Drop
+    /// acknowledgement cannot satisfy the final query against this very same pool handle.
+    async fn join_borrowed_original_pool(
+        owner: &HistoryCloseOwner,
+        original: &DatabaseConnection,
+        borrowed: sea_orm::DatabaseTransaction,
+    ) -> Result<()> {
+        assert_eq!(owner.live_states(), 0);
+        assert_eq!(owner.outstanding(), 1);
+        assert_eq!(owner.completed(), 0);
+        owner.seal();
+        let mut closing = Box::pin(owner.settle_when_no_state_is_left());
+        std::future::poll_fn(|cx| {
+            assert!(std::future::Future::poll(closing.as_mut(), cx).is_pending());
+            std::task::Poll::Ready(())
+        })
+        .await;
+        assert_eq!(owner.outstanding(), 1);
+        assert_eq!(owner.completed(), 0);
+        borrowed.commit().await?;
+        tokio::time::timeout(Duration::from_secs(5), closing).await??;
+        assert_eq!(owner.outstanding(), 0);
+        assert_eq!(owner.completed(), 1);
+        assert!(
+            original
+                .query_one_raw(statement("SELECT 1", vec![]))
+                .await
+                .is_err()
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn cancelling_an_unpublished_writer_keeps_its_original_pool_close() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("history.sqlite");
+        let owner = HistoryCloseOwner::new();
+        let history = HistoryStore::open_with(&path, "cancel-init", owner.clone()).await?;
+        let stage = UnpublishedStage::WriterInitialization;
+        let (opened, release) = arm_unpublished_pool(&history, stage).await;
+        let mut opening = Box::pin(open_at_stage(&history, stage));
+        let original = observe_unpublished_pool(opening.as_mut(), opened).await?;
+        let borrowed = original.begin().await?;
+        assert!(history.state.writer.get().is_none());
+        assert!(history.state.reader.get().is_none());
+        assert_eq!(owner.live_states(), 1);
+        // The initialization gate has actually returned Pending. Dropping the Box cancels the real
+        // initializer, not a pin reference, while its original pool still has a borrowed permit.
+        drop(opening);
+        assert!(
+            release.send(()).is_err(),
+            "the cancelled future dropped its gate"
+        );
+        assert!(history.state.writer.get().is_none());
+        assert_eq!(owner.outstanding(), 1);
+        drop(history);
+        join_borrowed_original_pool(&owner, &original, borrowed).await
+    }
+
+    #[tokio::test]
+    async fn cancelling_validation_or_temporary_close_keeps_the_unpublished_pool() -> Result<()> {
+        for stage in [
+            UnpublishedStage::ReaderValidation,
+            UnpublishedStage::Preflight,
+            UnpublishedStage::PreflightClose,
+        ] {
+            let directory = tempfile::tempdir()?;
+            let path = directory.path().join("history.sqlite");
+            committed_close_fixture(&path, "original").await?;
+            let owner = HistoryCloseOwner::new();
+            let history = HistoryStore::open_with(&path, "original", owner.clone()).await?;
+            let (opened, release) = arm_unpublished_pool(&history, stage).await;
+            let mut opening = Box::pin(open_at_stage(&history, stage));
+            let original = observe_unpublished_pool(opening.as_mut(), opened).await?;
+            let borrowed = original.begin().await?;
+            release.send(()).expect("the real pool gate is waiting");
+            // Reader/preflight validation now waits on the borrowed permit. PreflightClose has
+            // already validated and instead enters its original registered close wait here.
+            std::future::poll_fn(|cx| {
+                assert!(std::future::Future::poll(opening.as_mut(), cx).is_pending());
+                std::task::Poll::Ready(())
+            })
+            .await;
+            assert!(history.state.reader.get().is_none());
+            assert!(history.state.writer.get().is_none());
+            if stage == UnpublishedStage::PreflightClose {
+                assert_eq!(
+                    owner.outstanding(),
+                    1,
+                    "cleanup was registered before waiting"
+                );
+            }
+            drop(opening);
+            assert_eq!(owner.outstanding(), 1);
+            drop(history);
+            join_borrowed_original_pool(&owner, &original, borrowed).await?;
+            // Cancellation/cleanup must not reset or change the committed database.
+            let reopened_owner = HistoryCloseOwner::new();
+            let reopened =
+                HistoryStore::open_with(&path, "original", reopened_owner.clone()).await?;
+            assert_eq!(reopened.watermark().await?, 1);
+            drop(reopened);
+            reopened_owner.seal();
+            reopened_owner.settle_when_no_state_is_left().await?;
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn failed_validation_retains_typed_cleanup_failure_and_the_original_pool() -> Result<()> {
+        use crate::studio::startup::{StudioStartupError, StudioStartupErrorKind};
+        use crate::studio::storage::coordinator::history_close::HistoryCloseFailure;
+
+        for stage in [
+            UnpublishedStage::ReaderValidation,
+            UnpublishedStage::Preflight,
+            UnpublishedStage::WriterInitialization,
+        ] {
+            let directory = tempfile::tempdir()?;
+            let path = directory.path().join("history.sqlite");
+            if stage != UnpublishedStage::WriterInitialization {
+                committed_close_fixture(&path, "original").await?;
+            }
+            let owner = HistoryCloseOwner::new();
+            let history = HistoryStore::open_with(&path, "foreign", owner.clone()).await?;
+            let (opened, release) = arm_unpublished_pool(&history, stage).await;
+            let mut opening = Box::pin(open_at_stage(&history, stage));
+            let original = observe_unpublished_pool(opening.as_mut(), opened).await?;
+            if stage == UnpublishedStage::WriterInitialization {
+                // The file did not exist at preflight. Make real initialization reject its now
+                // nonempty, foreign layout without modifying the production migration algorithm.
+                original.execute_unprepared(
+                    "CREATE TABLE retained(value TEXT NOT NULL); INSERT INTO retained VALUES('kept')",
+                ).await?;
+            }
+            owner.arm_close_failure();
+            release.send(()).expect("the validation gate is waiting");
+            let error = tokio::time::timeout(Duration::from_secs(5), opening.as_mut())
+                .await?
+                .expect_err("a foreign identity and failed cleanup cannot initialize storage");
+            drop(opening);
+            let cleanup = error
+                .downcast_ref::<std::sync::Arc<HistoryCloseFailure>>()
+                .context("the original cleanup failure stays typed")?;
+            let expected_role = if stage == UnpublishedStage::WriterInitialization {
+                "writer"
+            } else {
+                "reader"
+            };
+            assert!(matches!(
+                cleanup.as_ref(),
+                HistoryCloseFailure::Database {
+                    thread_id,
+                    role,
+                    source: sea_orm::DbErr::Custom(_),
+                    ..
+                } if thread_id == "foreign" && *role == expected_role
+            ));
+            let operation = error
+                .downcast_ref::<anyhow::Error>()
+                .context("the original validation/preflight error is also retained")?;
+            if stage == UnpublishedStage::ReaderValidation {
+                assert!(matches!(
+                    operation.downcast_ref::<HistoryReadFailure>(),
+                    Some(HistoryReadFailure::Protocol)
+                ));
+            }
+            let startup = StudioStartupError::input("history", error);
+            assert_eq!(startup.kind, StudioStartupErrorKind::Environment);
+            assert!(history.state.reader.get().is_none());
+            assert!(history.state.writer.get().is_none());
+            assert_eq!(owner.outstanding(), 1);
+            // No close ACK was invented: the original pool is still really open after cleanup
+            // failed, and a later explicit retry must wait for this same borrowed connection.
+            assert!(
+                original
+                    .query_one_raw(statement("SELECT 1", vec![]))
+                    .await
+                    .is_ok()
+            );
+            let borrowed = original.begin().await?;
+            drop(history);
+            join_borrowed_original_pool(&owner, &original, borrowed).await?;
+            if stage == UnpublishedStage::WriterInitialization {
+                let retained = connect_read_only(&path).await?;
+                let row = retained
+                    .query_one_raw(statement("SELECT value FROM retained", vec![]))
+                    .await;
+                let closed = retained.close().await;
+                assert_eq!(
+                    row?.context("the original foreign data remains")?
+                        .try_get::<String>("", "value")?,
+                    "kept"
+                );
+                closed?;
+                continue;
+            }
+            let reopened_owner = HistoryCloseOwner::new();
+            let reopened =
+                HistoryStore::open_with(&path, "original", reopened_owner.clone()).await?;
+            assert_eq!(reopened.watermark().await?, 1);
+            drop(reopened);
+            reopened_owner.seal();
+            reopened_owner.settle_when_no_state_is_left().await?;
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn successful_preflight_joins_only_its_original_temporary_pool() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("history.sqlite");
+        committed_close_fixture(&path, "original").await?;
+        let owner = HistoryCloseOwner::new();
+        let history = HistoryStore::open_with(&path, "original", owner.clone()).await?;
+
+        // An unrelated original duty cannot hold up this local temporary close, and must not be
+        // retried or counted as settled just because preflight finished another pool.
+        let other = HistoryStore::open_with(
+            &directory.path().join("other.sqlite"),
+            "other",
+            owner.clone(),
+        )
+        .await?;
+        other.commit(1, &[], &[]).await?;
+        let other_pool = other.writer().await?.db.clone();
+        let other_borrowed = other_pool.begin().await?;
+        drop(other);
+        assert_eq!(owner.outstanding(), 1);
+
+        let stage = UnpublishedStage::PreflightClose;
+        let (opened, release) = arm_unpublished_pool(&history, stage).await;
+        let mut checking = Box::pin(open_at_stage(&history, stage));
+        let original = observe_unpublished_pool(checking.as_mut(), opened).await?;
+        let borrowed = original.begin().await?;
+        release
+            .send(())
+            .expect("the successful preflight is waiting");
+        std::future::poll_fn(|cx| {
+            assert!(std::future::Future::poll(checking.as_mut(), cx).is_pending());
+            std::task::Poll::Ready(())
+        })
+        .await;
+        assert_eq!(owner.outstanding(), 2);
+        borrowed.commit().await?;
+        // This succeeds while the original state is still live and the unrelated duty is blocked.
+        // Calling either global settle entry instead of joining the captured attempt would fail.
+        tokio::time::timeout(Duration::from_secs(5), checking.as_mut()).await??;
+        drop(checking);
+        assert_eq!(owner.outstanding(), 1);
+        assert_eq!(owner.completed(), 1);
+        assert!(
+            original
+                .query_one_raw(statement("SELECT 1", vec![]))
+                .await
+                .is_err()
+        );
+        assert!(history.state.reader.get().is_none());
+        assert!(history.state.writer.get().is_none());
+        other_borrowed.commit().await?;
+        drop(history);
+        owner.seal();
+        owner.settle_when_no_state_is_left().await?;
+        assert_eq!(owner.outstanding(), 0);
+        assert_eq!(owner.completed(), 2);
+        assert!(
+            other_pool
+                .query_one_raw(statement("SELECT 1", vec![]))
+                .await
+                .is_err()
+        );
+        Ok(())
+    }
+
     /// A borrowed pool really blocks the close; both opened pools then close on their own duty.
     #[tokio::test]
     async fn history_pools_close_only_when_their_connection_is_free() -> Result<()> {
@@ -5368,17 +5838,28 @@ mod storage_fault_tests {
             let connection = writer_state.writer().await?;
             begin_write(&connection.db).await?
         };
+        // The free pool's close observer acknowledges its own record; the borrowed one cannot record
+        // until the permit returns, so this is a deterministic ordering, not a scheduling guess.
+        let (acked, first_recorded) = tokio::sync::oneshot::channel::<()>();
+        // Bound to the reader's own duty: the writer's connection is the borrowed one, so its
+        // observer cannot record and must not be the one acknowledged.
+        owner.arm_observer_ack(HistoryConnectionRole::Reader, acked);
         drop(writer_state);
         drop(reader_state);
         assert_eq!(owner.outstanding(), 2, "both opened pools are owed a close");
-        for _ in 0..64 {
-            if owner.completed() > 0 {
-                break;
-}
-            tokio::task::yield_now().await;
-        }
-        assert_eq!(owner.completed(), 1, "only the pool with a free connection closed");
-        assert_eq!(owner.outstanding(), 1, "the borrowed pool is still owed its close");
+        first_recorded
+            .await
+            .expect("the free pool's close acknowledged its record");
+        assert_eq!(
+            owner.completed(),
+            1,
+            "only the pool with a free connection closed"
+        );
+        assert_eq!(
+            owner.outstanding(),
+            1,
+            "the borrowed pool is still owed its close"
+        );
         // Releasing the permit lets the very same duty (no second pool) close.
         transaction.commit().await?;
         owner.settle().await?;
@@ -5401,15 +5882,24 @@ mod storage_fault_tests {
         let owner = HistoryCloseOwner::new();
         let history = HistoryStore::open_with(&path, "sealed", owner.clone()).await?;
         history.commit(1, &[], &[]).await?;
+        let original = history.writer().await?.db.clone();
+        let session = pl_core::chat::Session::new(history.clone());
+        assert_eq!(
+            owner.outstanding(),
+            0,
+            "successful publication did not close the pool"
+        );
+        assert_eq!(owner.completed(), 0);
         owner.seal();
         // Poll the real wait once: it must be pending while a holder is alive, and dropping it must
         // leave the state responsibility exactly where it was.
-        let mut waiting = std::pin::pin!(owner.settle_when_no_state_is_left());
+        // Own the future in a box: dropping it must drop the real pending wait, not a borrow of it.
+        let mut waiting = Box::pin(owner.settle_when_no_state_is_left());
         std::future::poll_fn(|cx| {
-        assert!(
+            assert!(
                 waiting.as_mut().poll(cx).is_pending(),
                 "a live holder must keep the close pending"
-        );
+            );
             std::task::Poll::Ready(())
         })
         .await;
@@ -5420,6 +5910,15 @@ mod storage_fault_tests {
             "cancelling the wait keeps the state responsibility"
         );
         drop(history);
+        // The Session remains a real state holder after the direct store handle disappears.
+        assert_eq!(owner.live_states(), 1);
+        assert!(
+            original
+                .query_one_raw(statement("SELECT 1", vec![]))
+                .await
+                .is_ok()
+        );
+        drop(session);
         // Releasing the holder lets a later wait join the same responsibility to its real end.
         assert_eq!(owner.live_states(), 0);
         owner.settle_when_no_state_is_left().await?;
@@ -5429,12 +5928,17 @@ mod storage_fault_tests {
             "the connection is still really closed, never silently dropped"
         );
         assert_eq!(owner.completed(), 1);
+        assert!(
+            original
+                .query_one_raw(statement("SELECT 1", vec![]))
+                .await
+                .is_err()
+        );
         // The database itself stays readable after its connection really closed.
         // The sealed owner refuses new states, so this check uses a fresh unsealed owner over the
         // same Thread identity and path, then closes it too.
         let reopened_owner = HistoryCloseOwner::new();
-        let reopened =
-            HistoryStore::open_with(&path, "sealed", reopened_owner.clone()).await?;
+        let reopened = HistoryStore::open_with(&path, "sealed", reopened_owner.clone()).await?;
         assert_eq!(reopened.watermark().await?, 1);
         drop(reopened);
         reopened_owner.seal();
@@ -5455,9 +5959,16 @@ mod storage_fault_tests {
         owner.arm_close_failure();
         let (gate, wait) = tokio::sync::oneshot::channel::<()>();
         owner.arm_observer_delay(wait);
+        // The failed attempt's observer acknowledges its own record, so the late-arrival check waits
+        // for the real effect instead of guessing how the scheduler runs.
+        let (acked, recorded) = tokio::sync::oneshot::channel::<()>();
+        owner.arm_observer_ack(HistoryConnectionRole::Writer, acked);
         drop(history);
         let first = owner.settle().await;
-        assert!(first.is_err(), "the controlled close failure must be reported");
+        assert!(
+            first.is_err(),
+            "the controlled close failure must be reported"
+        );
         assert_eq!(
             owner.outstanding(),
             1,
@@ -5470,14 +5981,87 @@ mod storage_fault_tests {
         // The late observer of attempt 1 arrives after attempt 2 already succeeded: it must change
         // nothing — no new task, no failure, no duplicate close.
         gate.send(()).expect("the observer gate is still open");
-        for _ in 0..64 {
-            tokio::task::yield_now().await;
-        }
+        recorded
+            .await
+            .expect("the superseded observer acknowledged its record");
         assert_eq!(owner.outstanding(), 0);
         assert_eq!(owner.completed(), 1);
         // Same Thread identity and path; this owner is not sealed, and it is closed before returning.
         let reopened_owner = HistoryCloseOwner::new();
-        let reopened = HistoryStore::open_with(&path, "retry-close", reopened_owner.clone()).await?;
+        let reopened =
+            HistoryStore::open_with(&path, "retry-close", reopened_owner.clone()).await?;
+        assert_eq!(reopened.watermark().await?, 1);
+        drop(reopened);
+        reopened_owner.seal();
+        reopened_owner.settle_when_no_state_is_left().await?;
+        Ok(())
+    }
+
+    /// A close task that panics keeps the original connection owed and is retried on it.
+    #[tokio::test]
+    async fn a_panicking_close_task_is_retried_on_the_same_connection() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("history.sqlite");
+        let owner = HistoryCloseOwner::new();
+        let history = HistoryStore::open_with(&path, "panic-close", owner.clone()).await?;
+        history.commit(1, &[], &[]).await?;
+        // The original pool's only permit stays borrowed across the panic and into the retry. A
+        // retry on a newly opened pool could not satisfy the pending-close check below.
+        let transaction = {
+            let connection = history.writer().await?;
+            begin_write(&connection.db).await?
+        };
+        // The first attempt's *task* panics, so the reported failure is a real `JoinError`; an
+        // injected `DbErr` would prove nothing about a task that never returned.
+        owner.arm_close_panic();
+        let (gate, wait) = tokio::sync::oneshot::channel::<()>();
+        owner.arm_observer_delay(wait);
+        let (acked, recorded) = tokio::sync::oneshot::channel::<()>();
+        owner.arm_observer_ack(HistoryConnectionRole::Writer, acked);
+        drop(history);
+        let first = owner.settle().await;
+        let group = first.expect_err("a panicking close task must be reported");
+        let failure = std::error::Error::source(&group)
+            .and_then(|failure| {
+                failure.downcast_ref::<
+                    crate::studio::storage::coordinator::history_close::HistoryCloseFailure,
+                >()
+            })
+            .expect("the group keeps the original typed close failure");
+        assert!(matches!(
+            failure,
+            crate::studio::storage::coordinator::history_close::HistoryCloseFailure::Task {
+                thread_id,
+                role: "writer",
+                source,
+                ..
+            } if thread_id == "panic-close" && source.is_panic()
+        ));
+        assert_eq!(
+            owner.outstanding(),
+            1,
+            "the panicking task must not lose the original connection"
+        );
+        // A new explicit entry starts a real close on the same borrowed pool. Keep that attempt in
+        // flight while the old observer arrives, so the test exercises attempt identity, not just
+        // the absence of a duty after success.
+        let mut retry = Box::pin(owner.settle());
+        std::future::poll_fn(|cx| {
+            assert!(std::future::Future::poll(retry.as_mut(), cx).is_pending());
+            std::task::Poll::Ready(())
+        })
+        .await;
+        gate.send(()).expect("the observer gate is still open");
+        tokio::time::timeout(Duration::from_secs(5), recorded).await??;
+        assert_eq!(owner.outstanding(), 1);
+        assert_eq!(owner.completed(), 0);
+        transaction.commit().await?;
+        retry.await?;
+        assert_eq!(owner.outstanding(), 0);
+        assert_eq!(owner.completed(), 1);
+        let reopened_owner = HistoryCloseOwner::new();
+        let reopened =
+            HistoryStore::open_with(&path, "panic-close", reopened_owner.clone()).await?;
         assert_eq!(reopened.watermark().await?, 1);
         drop(reopened);
         reopened_owner.seal();
@@ -5502,12 +6086,11 @@ mod storage_fault_tests {
         assert_eq!(owner.outstanding(), 0);
         assert_eq!(owner.completed(), 1);
         let reopened_owner = HistoryCloseOwner::new();
-        let reopened =
-            HistoryStore::open_with(&path, "no-runtime", reopened_owner.clone()).await?;
+        let reopened = HistoryStore::open_with(&path, "no-runtime", reopened_owner.clone()).await?;
         assert_eq!(reopened.watermark().await?, 1);
         drop(reopened);
         reopened_owner.seal();
         reopened_owner.settle_when_no_state_is_left().await?;
         Ok(())
-}
+    }
 }

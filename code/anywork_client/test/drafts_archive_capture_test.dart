@@ -65,10 +65,14 @@ void main() {
     await fixture.admit(own.addLocalFiles(['/declared/project']), [
       draftFile('project-file'),
     ]);
+    final originalOpen = await fixture.configuration.opened(0);
+    final pin = originalOpen.native!;
+    final nextQuery = pin.calls.length;
     final other = fixture.repository.start('other')..setText('keep other');
     final route = other.prepareRoute();
-    final pin = (await fixture.configuration.opened(0)).accept();
-    final query = await pin.called(0);
+    final query = await pin.called(nextQuery);
+    expect(fixture.configuration.opens, [originalOpen]);
+    expect(query.reply.isCompleted, isFalse);
     final capture = fixture.projectCapture('project');
     await capture.prepare(draftProject);
     final confirmation = capture.afterArchived(draftProject);
@@ -76,6 +80,11 @@ void main() {
     expect((await confirmation).complete, isTrue);
     expect(own.state.value.text, isEmpty);
     expect(other.state.value.text, 'keep other');
+    expect(
+      query.reply.isCompleted,
+      isFalse,
+      reason: 'Capturing one Project must not settle or cancel another Project route read.',
+    );
     query.reply.complete(
       StartRouteRead.ready(
         sources: pin.originalHeader,
@@ -86,6 +95,9 @@ void main() {
       ),
     );
     await route;
+    await fixture.close();
+    expect(pin.closeCalls, 1);
+    expect(pin.retryCloseCalls, 0);
   });
 
   test('an accepted Project capture opens original Workspace metadata after Drafts seal and close joins read, file and native close', () async {

@@ -55,7 +55,10 @@ async fn wait_until(thread: &ThreadHandle, condition: impl Fn() -> bool) {
     let mut snapshots = thread.subscribe();
     tokio::time::timeout(std::time::Duration::from_secs(10), async {
         while !condition() {
-            snapshots.next().await.expect("the owner remains observable");
+            snapshots
+                .next()
+                .await
+                .expect("the owner remains observable");
         }
     })
     .await
@@ -307,7 +310,10 @@ async fn stopping_a_preparing_execution_forms_a_point_and_a_stale_identity_stops
         .expect("the stop leaves a point");
     assert_eq!(point.reason, Some(ContinuationReason::UserStop));
     assert_eq!(point.source_turn_id, None);
-    wait_until(&thread, || thread.snapshot().execution.is_none() && paused(&thread)).await;
+    wait_until(&thread, || {
+        thread.snapshot().execution.is_none() && paused(&thread)
+    })
+    .await;
     assert!(requests.lock().unwrap().is_empty());
     // The stop never consumed the input it interrupted.
     assert_eq!(input_state(&thread, "asked"), Some(InputState::Pending));
@@ -942,7 +948,10 @@ async fn a_claimed_continuation_waits_for_its_own_durable_commit() {
     );
 
     store.commit_durable();
-    wait_until(&thread, || thread.snapshot().required_durable_sequence.is_none()).await;
+    wait_until(&thread, || {
+        thread.snapshot().required_durable_sequence.is_none()
+    })
+    .await;
     wait_until(&thread, || requests.lock().unwrap().len() == 2).await;
     assert!(thread.snapshot().continuation.is_none());
     assert!(point.id.starts_with("continuation:"));
@@ -992,7 +1001,10 @@ async fn stopping_the_durable_wait_consumes_no_input() {
     .await;
     let waiting = thread.snapshot().execution.clone().unwrap();
     assert!(thread.interrupt_execution(waiting.id).await.unwrap());
-    wait_until(&thread, || thread.snapshot().execution.is_none() && paused(&thread)).await;
+    wait_until(&thread, || {
+        thread.snapshot().execution.is_none() && paused(&thread)
+    })
+    .await;
     // The stop settled without consuming the control input or reaching the provider: the control the
     // stop voided is discarded by the settlement of its own batch instead of lingering as phantom
     // owed work.
@@ -1342,7 +1354,10 @@ async fn a_content_continuation_waits_for_its_own_durable_commit() {
     );
 
     store.commit_durable();
-    wait_until(&thread, || thread.snapshot().required_durable_sequence.is_none()).await;
+    wait_until(&thread, || {
+        thread.snapshot().required_durable_sequence.is_none()
+    })
+    .await;
     wait_until(&thread, || requests.lock().unwrap().len() == 2).await;
     wait_until(&thread, || thread.snapshot().continuation.is_none()).await;
     assert!(matches!(
@@ -1410,7 +1425,10 @@ async fn a_parent_message_continuation_waits_for_its_own_durable_commit() {
     assert_eq!(requests.lock().unwrap().len(), 1);
 
     store.commit_durable();
-    wait_until(&thread, || thread.snapshot().required_durable_sequence.is_none()).await;
+    wait_until(&thread, || {
+        thread.snapshot().required_durable_sequence.is_none()
+    })
+    .await;
     wait_until(&thread, || requests.lock().unwrap().len() == 2).await;
     wait_until(&thread, || thread.snapshot().consumed_messages >= sequence).await;
     wait_until(&thread, || thread.snapshot().continuation.is_none()).await;
@@ -1759,7 +1777,9 @@ async fn a_stopped_preparing_execution_never_hands_its_identity_to_a_later_turn(
             .is_some_and(|execution| execution.turn_id.as_deref() == Some("repeated"))
     })
     .await;
-    observed.await.expect("the successor reaches its held provider call");
+    observed
+        .await
+        .expect("the successor reaches its held provider call");
     let running = thread.snapshot().execution.clone().unwrap();
     assert_ne!(
         running.id, stopped.id,
@@ -2086,7 +2106,10 @@ async fn a_replaced_control_in_a_frozen_batch_is_settled_by_its_own_turn() {
     // Stopping exactly that execution settles the batch: the replaced control is voided there.
     let waiting = thread.snapshot().execution.clone().unwrap();
     assert!(thread.interrupt_execution(waiting.id).await.unwrap());
-    wait_until(&thread, || thread.snapshot().execution.is_none() && paused(&thread)).await;
+    wait_until(&thread, || {
+        thread.snapshot().execution.is_none() && paused(&thread)
+    })
+    .await;
     assert_eq!(input_state(&thread, "control"), Some(InputState::Discarded));
     assert_eq!(
         input_state(&thread, "real"),
@@ -2172,8 +2195,8 @@ async fn an_idle_close_does_not_make_the_thread_continuable() {
 async fn a_completed_turn_checkpoint_restarts_without_an_execution_or_continuation() {
     let store = RecordingStore::new();
     let (model, requests) = support::ScriptedModel::new(&[]);
-    let thread = ThreadHandle::start("completed-checkpoint".into(), DynModelSession::new(model))
-        .unwrap();
+    let thread =
+        ThreadHandle::start("completed-checkpoint".into(), DynModelSession::new(model)).unwrap();
     thread
         .attach_storage(ColdStoreHandle::new(store.clone()))
         .await
@@ -2192,7 +2215,10 @@ async fn a_completed_turn_checkpoint_restarts_without_an_execution_or_continuati
     ColdStore::flush(&store, "completed-checkpoint", checkpoint.history_fence)
         .await
         .unwrap();
-    assert_eq!(store.latest_checkpoint().unwrap().state_revision, checkpoint.state_revision);
+    assert_eq!(
+        store.latest_checkpoint().unwrap().state_revision,
+        checkpoint.state_revision
+    );
     let serialized = serde_json::to_vec(&checkpoint).unwrap();
     let (model, restored_requests) = support::ScriptedModel::new(&[]);
     let restored = ThreadHandle::resume(
@@ -2235,9 +2261,11 @@ async fn a_preparing_stop_checkpoint_keeps_the_point_but_not_the_finished_execut
         async move { thread.run_turn(turn("not-created")).await }
     });
     wait_until(&thread, || {
-        thread.snapshot().execution.as_ref().is_some_and(|execution| {
-            execution.phase == ExecutionPhase::AwaitingAdmission
-        })
+        thread
+            .snapshot()
+            .execution
+            .as_ref()
+            .is_some_and(|execution| execution.phase == ExecutionPhase::AwaitingAdmission)
     })
     .await;
     let execution = thread.snapshot().execution.clone().unwrap();
@@ -2477,7 +2505,10 @@ async fn a_resumed_queued_input_settles_the_point_it_serves() {
     .await;
     let preparing = thread.snapshot().execution.clone().unwrap();
     assert!(thread.interrupt_execution(preparing.id).await.unwrap());
-    wait_until(&thread, || thread.snapshot().execution.is_none() && paused(&thread)).await;
+    wait_until(&thread, || {
+        thread.snapshot().execution.is_none() && paused(&thread)
+    })
+    .await;
     // A stop during preparation leaves the point unclaimed and the input still queued.
     let point = thread.snapshot().continuation.clone().unwrap();
     assert_eq!(point.claim, None);

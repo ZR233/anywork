@@ -617,7 +617,11 @@ Future<_GeneralEnvironment> _environment(WidgetTester tester) async {
     env.operations.seal();
     expect(env.budget.usage, isEmpty);
   });
-  await pumpClientFuture(tester, env.establish(), 'General fixture sources ready');
+  await pumpClientFuture(
+    tester,
+    env.establish(),
+    'General fixture sources ready',
+  );
   return env;
 }
 

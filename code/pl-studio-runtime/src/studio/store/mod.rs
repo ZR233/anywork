@@ -80,7 +80,7 @@ impl StudioStore {
         // holder can never appear after the close decided none is left.
         let _admission = self.thread_persistence.history_admission().await?;
         self.history_handle(project_id, thread_id).await
-        }
+    }
 
     /// Opens or shares this Thread's history handle; the caller holds the admission boundary.
     ///

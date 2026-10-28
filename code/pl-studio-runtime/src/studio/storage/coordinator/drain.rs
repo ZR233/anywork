@@ -2,8 +2,9 @@
 
 use std::sync::Arc;
 
-use super::{ThreadPersistenceCoordinator, ThreadPersistenceMetrics, WriterState};
-use super::WriterTaskFailure;
+use super::{
+    ThreadPersistenceCoordinator, ThreadPersistenceMetrics, WriterState, WriterTaskFailure,
+};
 use crate::studio::storage::thread_writer::HistoryChannel;
 
 /// Every writer task that ended abnormally, as this layer's own typed reason.
@@ -112,13 +113,13 @@ impl ThreadPersistenceCoordinator {
                     for (owner, incarnation) in &status.incarnations {
                         if !incarnation.is_live() {
                             continue;
-                }
+                        }
                         live += 1;
                         if let Some(tasks) = &incarnation.tasks {
                             running.push((id.clone(), *owner, tasks.clone()));
-            }
-        }
-    }
+                        }
+                    }
+                }
                 (live, running)
             };
             if live == 0 {
@@ -136,7 +137,7 @@ impl ThreadPersistenceCoordinator {
                 for (id, owner, tasks) in running {
                     let outcome = tasks.join().await;
                     self.finish_incarnation(&id, owner, outcome);
-            }
+                }
                 continue;
             }
             progress
@@ -165,13 +166,13 @@ impl ThreadPersistenceCoordinator {
                     for (incarnation, row) in &status.incarnations {
                         preparing |= row.writer == WriterState::Preparing;
                         pending = pending.saturating_add(row.owed());
-                        if row.error.is_some() || row.released_dirty.is_some() {
+                        if let Some(error) = row.failure() {
                             issues.push(ThreadPersistenceDrainIssue {
                                 thread_id: thread_id.clone(),
                                 incarnation: *incarnation,
                                 pending_commits: row.owed(),
                                 metrics: row.metrics.clone(),
-                                error: row.error.clone(),
+                                error: Some(error),
                                 released_dirty: row.released_dirty.clone(),
                                 writer: row.writer,
                             });

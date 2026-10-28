@@ -47,7 +47,10 @@ class ComposerConnector extends ConsumerWidget {
       return ComposerView(
         state: null,
         enabled: false,
-        primaryAction: const ComposerPrimaryAction(kind: ComposerPrimaryActionKind.send, enabled: false),
+        primaryAction: const ComposerPrimaryAction(
+          kind: ComposerPrimaryActionKind.send,
+          enabled: false,
+        ),
         compact: compact,
       );
     }
@@ -82,28 +85,49 @@ class ComposerConnector extends ConsumerWidget {
             (target is StartComposerKey || conversation?.canCompose == true) &&
             !state.closing &&
             !state.platformPending;
-        final submissionPending = state.pending || state.platformPending ||
-            state.submission is UnknownDraftSubmission || state.submission is SubmittingDraft;
+        final submissionPending =
+            state.pending ||
+            state.platformPending ||
+            state.submission is UnknownDraftSubmission ||
+            state.submission is SubmittingDraft;
         final conversationVm = target is ThreadComposerKey
-            ? ref.read(conversationViewModelProvider(target.threadId).notifier) : null;
-        final primaryAction = conversationVm?.primaryAction(
-          hasContent: state.hasInput,
-          submissionPending: submissionPending,
-        ) ?? ComposerPrimaryAction.resolve(
-          isChild: false, execution: null, continuation: null,
-          hasContent: state.hasInput, submissionPending: submissionPending,
-          stopAccepted: false, continuationAccepted: false,
-        ).copyWith(enabled: editable && !submissionPending && state.hasInput);
+            ? ref.read(conversationViewModelProvider(target.threadId).notifier)
+            : null;
+        final primaryAction =
+            conversationVm?.primaryAction(
+              hasContent: state.hasInput,
+              submissionPending: submissionPending,
+            ) ??
+            ComposerPrimaryAction.resolve(
+              isChild: false,
+              execution: null,
+              continuation: null,
+              hasContent: state.hasInput,
+              submissionPending: submissionPending,
+              stopAccepted: false,
+              continuationAccepted: false,
+            ).copyWith(
+              enabled: editable && !submissionPending && state.hasInput,
+            );
         final continueAction = conversationVm?.captureContinuation();
         final readContinuation = conversationVm?.captureContinuationRead();
-        final failure = state.submissionFailure ?? state.error ?? conversation?.continuation?.error;
+        final failure =
+            state.submissionFailure ??
+            state.error ??
+            conversation?.continuation?.error;
         final point = conversation?.execution?.value?.continuation;
         void continueConversation() {
           final latest = ref.read(provider).value;
-          if (latest == null || latest.hasInput || latest.pending || latest.platformPending ||
-              !identical(ref.read(provider.notifier), vm)) return;
+          if (latest == null ||
+              latest.hasInput ||
+              latest.pending ||
+              latest.platformPending ||
+              !identical(ref.read(provider.notifier), vm)) {
+            return;
+          }
           continueAction?.call().ignore();
         }
+
         void removeAttachment(String id) => vm.removeAttachment(id).ignore();
         void openAttachment(String id) {
           final attachment = state.attachments
@@ -161,11 +185,17 @@ class ComposerConnector extends ConsumerWidget {
             onStop: onStop,
             stopState: stopState,
             continuationState: conversation?.continuation,
-            failure: failure == null ? null : ComposerFailureBlocker(studioFailureReason(failure)),
-            continuationNote: point != null && conversation?.execution?.value?.execution == null
-                ? context.composerContinuationReasonLabel(point.reason) : null,
+            failure: failure == null
+                ? null
+                : ComposerFailureBlocker(studioFailureReason(failure)),
+            continuationNote:
+                point != null &&
+                    conversation?.execution?.value?.execution == null
+                ? context.composerContinuationReasonLabel(point.reason)
+                : null,
             onContinue: continueAction == null ? null : continueConversation,
-            onReadContinuation: readContinuation == null ? null
+            onReadContinuation: readContinuation == null
+                ? null
                 : () => readContinuation().ignore(),
             onAddLocal: () {
               if (!allowsLocal()) return;

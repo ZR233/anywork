@@ -282,7 +282,7 @@ as WorkspaceNavigationDestination,
 /// @nodoc
 mixin _$WorkspaceActionPresentation {
 
- int get intent; bool get waiting; OperationState? get operation; StudioFailure? get admissionError; StudioFailure? get observationError;
+ int get intent; bool get waiting; OperationState? get operation; StudioFailure? get admissionError; StudioFailure? get observationError; AgentListStopTarget? get directoryStopTarget;
 /// Create a copy of WorkspaceActionPresentation
 /// with the given fields replaced by the non-null parameter values.
 @JsonKey(includeFromJson: false, includeToJson: false)
@@ -294,14 +294,14 @@ $WorkspaceActionPresentationCopyWith<WorkspaceActionPresentation> get copyWith =
 @override
 bool operator ==(Object other) {
   final _this = this as WorkspaceActionPresentation;
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is WorkspaceActionPresentation&&(identical(other.intent, _this.intent) || other.intent == _this.intent)&&(identical(other.waiting, _this.waiting) || other.waiting == _this.waiting)&&(identical(other.operation, _this.operation) || other.operation == _this.operation)&&(identical(other.admissionError, _this.admissionError) || other.admissionError == _this.admissionError)&&(identical(other.observationError, _this.observationError) || other.observationError == _this.observationError));
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is WorkspaceActionPresentation&&(identical(other.intent, _this.intent) || other.intent == _this.intent)&&(identical(other.waiting, _this.waiting) || other.waiting == _this.waiting)&&(identical(other.operation, _this.operation) || other.operation == _this.operation)&&(identical(other.admissionError, _this.admissionError) || other.admissionError == _this.admissionError)&&(identical(other.observationError, _this.observationError) || other.observationError == _this.observationError)&&(identical(other.directoryStopTarget, _this.directoryStopTarget) || other.directoryStopTarget == _this.directoryStopTarget));
 }
 
 
 @override
 int get hashCode {
   final _this = this as WorkspaceActionPresentation;
-  return Object.hash(runtimeType,_this.intent,_this.waiting,_this.operation,_this.admissionError,_this.observationError);
+  return Object.hash(runtimeType,_this.intent,_this.waiting,_this.operation,_this.admissionError,_this.observationError,_this.directoryStopTarget);
 }
 
 
@@ -313,7 +313,7 @@ abstract mixin class $WorkspaceActionPresentationCopyWith<$Res>  {
   factory $WorkspaceActionPresentationCopyWith(WorkspaceActionPresentation value, $Res Function(WorkspaceActionPresentation) _then) = _$WorkspaceActionPresentationCopyWithImpl;
 @useResult
 $Res call({
- int intent, bool waiting, OperationState? operation, StudioFailure? admissionError, StudioFailure? observationError
+ int intent, bool waiting, OperationState? operation, StudioFailure? admissionError, StudioFailure? observationError, AgentListStopTarget? directoryStopTarget
 });
 
 
@@ -330,14 +330,15 @@ class _$WorkspaceActionPresentationCopyWithImpl<$Res>
 
 /// Create a copy of WorkspaceActionPresentation
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') @override $Res call({Object? intent = null,Object? waiting = null,Object? operation = freezed,Object? admissionError = freezed,Object? observationError = freezed,}) {
+@pragma('vm:prefer-inline') @override $Res call({Object? intent = null,Object? waiting = null,Object? operation = freezed,Object? admissionError = freezed,Object? observationError = freezed,Object? directoryStopTarget = freezed,}) {
   return _then(WorkspaceActionPresentation(
 intent: null == intent ? _self.intent : intent // ignore: cast_nullable_to_non_nullable
 as int,waiting: null == waiting ? _self.waiting : waiting // ignore: cast_nullable_to_non_nullable
 as bool,operation: freezed == operation ? _self.operation : operation // ignore: cast_nullable_to_non_nullable
 as OperationState?,admissionError: freezed == admissionError ? _self.admissionError : admissionError // ignore: cast_nullable_to_non_nullable
 as StudioFailure?,observationError: freezed == observationError ? _self.observationError : observationError // ignore: cast_nullable_to_non_nullable
-as StudioFailure?,
+as StudioFailure?,directoryStopTarget: freezed == directoryStopTarget ? _self.directoryStopTarget : directoryStopTarget // ignore: cast_nullable_to_non_nullable
+as AgentListStopTarget?,
   ));
 }
 /// Create a copy of WorkspaceActionPresentation
@@ -458,10 +459,10 @@ return $default(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( int intent,  bool waiting,  OperationState? operation,  StudioFailure? admissionError,  StudioFailure? observationError)?  $default,{required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( int intent,  bool waiting,  OperationState? operation,  StudioFailure? admissionError,  StudioFailure? observationError,  AgentListStopTarget? directoryStopTarget)?  $default,{required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case _WorkspaceActionPresentation() when $default != null:
-return $default(_that.intent,_that.waiting,_that.operation,_that.admissionError,_that.observationError);case _:
+return $default(_that.intent,_that.waiting,_that.operation,_that.admissionError,_that.observationError,_that.directoryStopTarget);case _:
   return orElse();
 
 }
@@ -479,10 +480,10 @@ return $default(_that.intent,_that.waiting,_that.operation,_that.admissionError,
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( int intent,  bool waiting,  OperationState? operation,  StudioFailure? admissionError,  StudioFailure? observationError)  $default,) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( int intent,  bool waiting,  OperationState? operation,  StudioFailure? admissionError,  StudioFailure? observationError,  AgentListStopTarget? directoryStopTarget)  $default,) {final _that = this;
 switch (_that) {
 case _WorkspaceActionPresentation():
-return $default(_that.intent,_that.waiting,_that.operation,_that.admissionError,_that.observationError);case _:
+return $default(_that.intent,_that.waiting,_that.operation,_that.admissionError,_that.observationError,_that.directoryStopTarget);case _:
   throw StateError('Unexpected subclass');
 
 }
@@ -499,10 +500,10 @@ return $default(_that.intent,_that.waiting,_that.operation,_that.admissionError,
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( int intent,  bool waiting,  OperationState? operation,  StudioFailure? admissionError,  StudioFailure? observationError)?  $default,) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( int intent,  bool waiting,  OperationState? operation,  StudioFailure? admissionError,  StudioFailure? observationError,  AgentListStopTarget? directoryStopTarget)?  $default,) {final _that = this;
 switch (_that) {
 case _WorkspaceActionPresentation() when $default != null:
-return $default(_that.intent,_that.waiting,_that.operation,_that.admissionError,_that.observationError);case _:
+return $default(_that.intent,_that.waiting,_that.operation,_that.admissionError,_that.observationError,_that.directoryStopTarget);case _:
   return null;
 
 }
@@ -514,7 +515,7 @@ return $default(_that.intent,_that.waiting,_that.operation,_that.admissionError,
 
 
 class _WorkspaceActionPresentation implements WorkspaceActionPresentation {
-  const _WorkspaceActionPresentation({required this.intent, required this.waiting, required this.operation, required this.admissionError, this.observationError});
+  const _WorkspaceActionPresentation({required this.intent, required this.waiting, required this.operation, required this.admissionError, this.observationError, this.directoryStopTarget});
 
 
 @override final  int intent;
@@ -522,6 +523,7 @@ class _WorkspaceActionPresentation implements WorkspaceActionPresentation {
 @override final  OperationState? operation;
 @override final  StudioFailure? admissionError;
 @override final  StudioFailure? observationError;
+@override final  AgentListStopTarget? directoryStopTarget;
 
 /// Create a copy of WorkspaceActionPresentation
 /// with the given fields replaced by the non-null parameter values.
@@ -533,13 +535,13 @@ _$WorkspaceActionPresentationCopyWith<_WorkspaceActionPresentation> get copyWith
 
 @override
 bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is _WorkspaceActionPresentation&&(identical(other.intent, intent) || other.intent == intent)&&(identical(other.waiting, waiting) || other.waiting == waiting)&&(identical(other.operation, operation) || other.operation == operation)&&(identical(other.admissionError, admissionError) || other.admissionError == admissionError)&&(identical(other.observationError, observationError) || other.observationError == observationError));
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is _WorkspaceActionPresentation&&(identical(other.intent, intent) || other.intent == intent)&&(identical(other.waiting, waiting) || other.waiting == waiting)&&(identical(other.operation, operation) || other.operation == operation)&&(identical(other.admissionError, admissionError) || other.admissionError == admissionError)&&(identical(other.observationError, observationError) || other.observationError == observationError)&&(identical(other.directoryStopTarget, directoryStopTarget) || other.directoryStopTarget == directoryStopTarget));
 }
 
 
 @override
 int get hashCode {
-    return Object.hash(runtimeType,intent,waiting,operation,admissionError,observationError);
+    return Object.hash(runtimeType,intent,waiting,operation,admissionError,observationError,directoryStopTarget);
 }
 
 
@@ -551,7 +553,7 @@ abstract mixin class _$WorkspaceActionPresentationCopyWith<$Res> implements $Wor
   factory _$WorkspaceActionPresentationCopyWith(_WorkspaceActionPresentation value, $Res Function(_WorkspaceActionPresentation) _then) = __$WorkspaceActionPresentationCopyWithImpl;
 @override @useResult
 $Res call({
- int intent, bool waiting, OperationState? operation, StudioFailure? admissionError, StudioFailure? observationError
+ int intent, bool waiting, OperationState? operation, StudioFailure? admissionError, StudioFailure? observationError, AgentListStopTarget? directoryStopTarget
 });
 
 
@@ -568,14 +570,15 @@ class __$WorkspaceActionPresentationCopyWithImpl<$Res>
 
 /// Create a copy of WorkspaceActionPresentation
 /// with the given fields replaced by the non-null parameter values.
-@override @pragma('vm:prefer-inline') $Res call({Object? intent = null,Object? waiting = null,Object? operation = freezed,Object? admissionError = freezed,Object? observationError = freezed,}) {
+@override @pragma('vm:prefer-inline') $Res call({Object? intent = null,Object? waiting = null,Object? operation = freezed,Object? admissionError = freezed,Object? observationError = freezed,Object? directoryStopTarget = freezed,}) {
   return _then(_WorkspaceActionPresentation(
 intent: null == intent ? _self.intent : intent // ignore: cast_nullable_to_non_nullable
 as int,waiting: null == waiting ? _self.waiting : waiting // ignore: cast_nullable_to_non_nullable
 as bool,operation: freezed == operation ? _self.operation : operation // ignore: cast_nullable_to_non_nullable
 as OperationState?,admissionError: freezed == admissionError ? _self.admissionError : admissionError // ignore: cast_nullable_to_non_nullable
 as StudioFailure?,observationError: freezed == observationError ? _self.observationError : observationError // ignore: cast_nullable_to_non_nullable
-as StudioFailure?,
+as StudioFailure?,directoryStopTarget: freezed == directoryStopTarget ? _self.directoryStopTarget : directoryStopTarget // ignore: cast_nullable_to_non_nullable
+as AgentListStopTarget?,
   ));
 }
 

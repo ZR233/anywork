@@ -659,7 +659,8 @@ impl StudioRuntime {
         self.thread_observation_mode(
             &thread,
             pl_protocol::thread_facets::identity::ThreadObservationMode::Live,
-        ).await?;
+        )
+        .await?;
         let explicitly_closed = thread.parent_thread_id.is_some()
             && crate::studio::agent_close::is_explicitly_closed(
                 &self.read_thread_state(&request.thread_id).await?,

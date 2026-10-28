@@ -61,7 +61,8 @@ final class SelectorDirectoryPort implements WorkspacePort {
   final activations = <String>[];
   final restores = <String>[];
   Future<WorkspaceThreadRecord> Function(String)? onRestore;
-  Future<ArchiveThreadCommandReply> Function(String, OperationId)? onArchiveThread;
+  Future<ArchiveThreadCommandReply> Function(String, OperationId)?
+  onArchiveThread;
   final archivedThreads = <String>[];
   final renamedThreads = <String>[];
   final archives = <String>[];
@@ -426,8 +427,11 @@ final class SelectorDirectoryPort implements WorkspacePort {
   Future<AgentDirectoryReadConnection> openAgentDirectoryRead(
     AgentDirectoryReadRef reference, {
     required ProductReadOrigin origin,
-  }) async =>
-      _AgentPin(_agentMaterials[reference.revision]!, reference.revision, beforeAgentEntity);
+  }) async => _AgentPin(
+    _agentMaterials[reference.revision]!,
+    reference.revision,
+    beforeAgentEntity,
+  );
   @override
   Future<ProductSourceStatusReadConnection> openSourceStatus(
     ProductSourceStatusRef reference, {
@@ -464,15 +468,24 @@ final class SelectorDirectoryPort implements WorkspacePort {
   }
 
   @override
-  Future<ArchiveThreadCommandReply> archiveThread(String threadId, {required OperationId operationId}) {
+  Future<ArchiveThreadCommandReply> archiveThread(
+    String threadId, {
+    required OperationId operationId,
+  }) {
     archivedThreads.add(threadId);
     final action = onArchiveThread;
-    if (action == null) throw UnsupportedError('Unscripted native Thread archive');
+    if (action == null) {
+      throw UnsupportedError('Unscripted native Thread archive');
+    }
     return action(threadId, operationId);
   }
 
   @override
-  Future<RenameThreadCommandReply> renameThread(String threadId, String title, {required OperationId operationId}) {
+  Future<RenameThreadCommandReply> renameThread(
+    String threadId,
+    String title, {
+    required OperationId operationId,
+  }) {
     renamedThreads.add(threadId);
     throw UnsupportedError('Unscripted native Thread rename');
   }
@@ -585,7 +598,8 @@ final class _ThreadPin extends ProfileNativePin
 
 final class _AgentPin extends ProfileNativePin
     implements AgentDirectoryReadConnection {
-  _AgentPin(this.values, this.revision, this.beforeEntity) : super('selector-agent-pin');
+  _AgentPin(this.values, this.revision, this.beforeEntity)
+    : super('selector-agent-pin');
   final List<AgentDirectoryEntry> values;
   final int revision;
   final Future<void> Function(int revision)? beforeEntity;
@@ -607,95 +621,98 @@ final class _AgentPin extends ProfileNativePin
     nextOffset: null,
   );
   @override
-  Future<AgentDirectoryEntityRead> entity(ProductEntityRef reference) => reply(Future<AgentDirectoryEntityRead>.sync(() async {
-    await beforeEntity?.call(revision);
-    final value = values[reference.entry - 10];
-    ReadText text(String value) => ReadText.inline(text: value);
-    ReadText? optional(String? value) => value == null ? null : text(value);
-    SourceStateErrorRead error(SourceStateError value) => SourceStateErrorRead(
-      code: text(value.code),
-      message: text(value.message),
-      retryable: value.retryable,
-    );
-    final state = switch (value.state) {
-      IdleAgentState(:final budgetPause) => AgentStateRead.idle(
-        budgetPause: budgetPause == null
-            ? null
-            : AgentBudgetPauseRead(
-                turnId: text(budgetPause.turnId),
-                limit: budgetPause.limit,
-                pausedAt: budgetPause.pausedAt,
-              ),
-      ),
-      QueuedAgentState(:final turnId) => AgentStateRead.queued(
-        turnId: text(turnId),
-      ),
-      RunningAgentState(:final turnId) => AgentStateRead.running(
-        turnId: text(turnId),
-      ),
-      WaitingToolAgentState(:final turnId) => AgentStateRead.waitingTool(
-        turnId: text(turnId),
-      ),
-      WaitingInteractionAgentState(:final turnId, :final interactionId) =>
-        AgentStateRead.waitingInteraction(
+  Future<AgentDirectoryEntityRead> entity(ProductEntityRef reference) => reply(
+    Future<AgentDirectoryEntityRead>.sync(() async {
+      await beforeEntity?.call(revision);
+      final value = values[reference.entry - 10];
+      ReadText text(String value) => ReadText.inline(text: value);
+      ReadText? optional(String? value) => value == null ? null : text(value);
+      SourceStateErrorRead error(SourceStateError value) =>
+          SourceStateErrorRead(
+            code: text(value.code),
+            message: text(value.message),
+            retryable: value.retryable,
+          );
+      final state = switch (value.state) {
+        IdleAgentState(:final budgetPause) => AgentStateRead.idle(
+          budgetPause: budgetPause == null
+              ? null
+              : AgentBudgetPauseRead(
+                  turnId: text(budgetPause.turnId),
+                  limit: budgetPause.limit,
+                  pausedAt: budgetPause.pausedAt,
+                ),
+        ),
+        QueuedAgentState(:final turnId) => AgentStateRead.queued(
           turnId: text(turnId),
-          interactionId: text(interactionId),
         ),
-      CancellingAgentState(:final turnId) => AgentStateRead.cancelling(
-        turnId: text(turnId),
-      ),
-      ClosingAgentState(
-        :final workspaceDisposition,
-        :final turnId,
-        error: final failure,
-      ) =>
-        AgentStateRead.closing(
-          workspaceDisposition: workspaceDisposition,
-          turnId: optional(turnId),
-          error: failure == null ? null : error(failure),
+        RunningAgentState(:final turnId) => AgentStateRead.running(
+          turnId: text(turnId),
         ),
-      ClosedAgentState() => const AgentStateRead.closed(),
-      FaultedAgentState(
-        :final turnId,
-        :final classification,
-        error: final failure,
-      ) =>
-        AgentStateRead.faulted(
-          turnId: optional(turnId),
-          classification: classification,
-          error: error(failure),
+        WaitingToolAgentState(:final turnId) => AgentStateRead.waitingTool(
+          turnId: text(turnId),
         ),
-    };
-    final frozen = value.frozenModel;
-    return AgentDirectoryEntityRead(
-      reference: reference,
-      value: AgentDirectoryEntryRead(
-        id: ReadText.inline(text: value.id),
-        threadId: ReadText.inline(text: value.threadId),
-        path: ReadText.inline(text: value.path),
-        parentPath: value.parentPath == null
-            ? null
-            : ReadText.inline(text: value.parentPath!),
-        rootThreadId: ReadText.inline(text: value.rootThreadId),
-        depth: value.depth,
-        role: ReadText.inline(text: value.role),
-        task: ReadText.inline(text: value.task),
-        summary: optional(value.summary),
-        state: state,
-        execution: value.execution,
-        canStop: value.canStop,
-        awaitingScheduling: value.awaitingScheduling,
-        delegationMode: value.delegationMode,
-        delegationPreference: value.delegationPreference,
-        frozenModel: frozen == null
-            ? null
-            : FrozenModelSelectionRead(
-                accountId: text(frozen.model.accountId),
-                modelId: text(frozen.model.modelId),
-                effort: optional(frozen.effort),
-              ),
-        updatedAt: value.updatedAt,
-      ),
-    );
-  }));
+        WaitingInteractionAgentState(:final turnId, :final interactionId) =>
+          AgentStateRead.waitingInteraction(
+            turnId: text(turnId),
+            interactionId: text(interactionId),
+          ),
+        CancellingAgentState(:final turnId) => AgentStateRead.cancelling(
+          turnId: text(turnId),
+        ),
+        ClosingAgentState(
+          :final workspaceDisposition,
+          :final turnId,
+          error: final failure,
+        ) =>
+          AgentStateRead.closing(
+            workspaceDisposition: workspaceDisposition,
+            turnId: optional(turnId),
+            error: failure == null ? null : error(failure),
+          ),
+        ClosedAgentState() => const AgentStateRead.closed(),
+        FaultedAgentState(
+          :final turnId,
+          :final classification,
+          error: final failure,
+        ) =>
+          AgentStateRead.faulted(
+            turnId: optional(turnId),
+            classification: classification,
+            error: error(failure),
+          ),
+      };
+      final frozen = value.frozenModel;
+      return AgentDirectoryEntityRead(
+        reference: reference,
+        value: AgentDirectoryEntryRead(
+          id: ReadText.inline(text: value.id),
+          threadId: ReadText.inline(text: value.threadId),
+          path: ReadText.inline(text: value.path),
+          parentPath: value.parentPath == null
+              ? null
+              : ReadText.inline(text: value.parentPath!),
+          rootThreadId: ReadText.inline(text: value.rootThreadId),
+          depth: value.depth,
+          role: ReadText.inline(text: value.role),
+          task: ReadText.inline(text: value.task),
+          summary: optional(value.summary),
+          state: state,
+          execution: value.execution,
+          canStop: value.canStop,
+          awaitingScheduling: value.awaitingScheduling,
+          delegationMode: value.delegationMode,
+          delegationPreference: value.delegationPreference,
+          frozenModel: frozen == null
+              ? null
+              : FrozenModelSelectionRead(
+                  accountId: text(frozen.model.accountId),
+                  modelId: text(frozen.model.modelId),
+                  effort: optional(frozen.effort),
+                ),
+          updatedAt: value.updatedAt,
+        ),
+      );
+    }),
+  );
 }

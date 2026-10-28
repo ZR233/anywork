@@ -51,7 +51,7 @@ final class InteractionViewModelProvider
 }
 
 String _$interactionViewModelHash() =>
-    r'd65f9b4bbdd4e072a98a421f4f2cff59338a17e7';
+    r'd80b8ec67197e293bc9610817d00f33c23c9f22a';
 
 final class InteractionViewModelFamily extends $Family
     with

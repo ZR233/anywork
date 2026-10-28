@@ -59,7 +59,7 @@ final class WorkspaceHeaderViewModelProvider
 }
 
 String _$workspaceHeaderViewModelHash() =>
-    r'135bcb61d779000d1f2772baa16ba0381873716f';
+    r'2162c25e53d505bab19549ae0248f3a02c72a3ab';
 
 /// A visible root's read-only demands. Neither this family key nor the agent
 /// page creates a selection, opens execution, or owns a Conversation Session.

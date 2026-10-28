@@ -183,6 +183,13 @@ Session/incarnation、currentEditors 成员、target、revision、scope 与 sour
 execution 有无决定。活跃交互的类型、身份、目标和已物化问题／审批内容来自上述已挂载
 所有者；保原 Driver 旅程真实观察字段，但不输出草稿答案、审批理由或秘密输入。
 
+每个问题的 JSON 保原 `optionsCount`，补 `options` 和 `optionsComplete`：count 为 null
+时后二者为 null；否则只按原索引排序输出已读 `OptionReadItem` 的 index/label/description。
+文本只用现 `textOf`，不补读；完整性须核无 optionsLoading/optionsError、无后继页、数量及
+连续索引匹配且标签/说明均已物化。count=0 的已知空列表可以完整，count>0 的未读空数组
+必须不完整。C1 在真实 Driver capture 流中补非空选项、部分与延迟文本，并断言采集前后
+options/text 查询次数不变；不只写共享序列化器的复制品测试。
+
 统计请求只输出现公开快照的真实配对身份，移除三个无来源的旧单流占位键；不新增 SDK
 诊断仓储或为 Driver 扩大 Freezed 值。请求 release 归还需求，真正 feed/read join 仍由
 原 statistics owner 监督，最终应用关闭统一证明，不新增请求级强关共享仓储能力。

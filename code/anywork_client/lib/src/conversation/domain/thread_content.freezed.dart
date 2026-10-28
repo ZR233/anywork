@@ -140,10 +140,10 @@ return contextCompaction(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( List<RawHistoryPayload> payloads,  String notice,  int recordedAt)?  raw,TResult Function( ThreadTextChannel channel,  String text,  List<ThreadAttachmentView> attachments,  ThreadContentLifecycleView lifecycle)?  text,TResult Function( List<String> summary,  List<String> content,  ThreadContentLifecycleView lifecycle,  int summaryChunkBase,  int contentChunkBase)?  thinking,TResult Function( ThreadToolInvocationView invocation,  ThreadToolLifecycleView lifecycle,  ThreadToolUserInputView? userInput,  ThreadWaitPresentationView? wait)?  tool,TResult Function( ThreadAgentIdentityView identity,  ThreadAgentLifecycleView lifecycle)?  agent,TResult Function( TurnState state,  String? inputId)?  turn,TResult Function( String inferenceId,  String model,  ThreadInferenceLifecycleView lifecycle)?  inference,TResult Function( String name,  String source,  String providerId,  SkillResourceBaseView resourceBase,  SkillActivationCauseView cause,  int activatedAt)?  skill,TResult Function( String path,  String? mediaType,  int completedAt)?  file,TResult Function( int? beforeTokens,  int? afterTokens,  int compactedAt)?  contextCompaction,required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( List<RawHistoryPayload> payloads,  String notice,  int recordedAt,  ThreadRawItemOrigin origin)?  raw,TResult Function( ThreadTextChannel channel,  String text,  List<ThreadAttachmentView> attachments,  ThreadContentLifecycleView lifecycle)?  text,TResult Function( List<String> summary,  List<String> content,  ThreadContentLifecycleView lifecycle,  int summaryChunkBase,  int contentChunkBase)?  thinking,TResult Function( ThreadToolInvocationView invocation,  ThreadToolLifecycleView lifecycle,  ThreadToolUserInputView? userInput,  ThreadWaitPresentationView? wait)?  tool,TResult Function( ThreadAgentIdentityView identity,  ThreadAgentLifecycleView lifecycle)?  agent,TResult Function( TurnState state,  String? inputId)?  turn,TResult Function( String inferenceId,  String model,  ThreadInferenceLifecycleView lifecycle)?  inference,TResult Function( String name,  String source,  String providerId,  SkillResourceBaseView resourceBase,  SkillActivationCauseView cause,  int activatedAt)?  skill,TResult Function( String path,  String? mediaType,  int completedAt)?  file,TResult Function( int? beforeTokens,  int? afterTokens,  int compactedAt)?  contextCompaction,required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case ThreadRawItemStateView() when raw != null:
-return raw(_that.payloads,_that.notice,_that.recordedAt);case ThreadTextItemStateView() when text != null:
+return raw(_that.payloads,_that.notice,_that.recordedAt,_that.origin);case ThreadTextItemStateView() when text != null:
 return text(_that.channel,_that.text,_that.attachments,_that.lifecycle);case ThreadThinkingItemStateView() when thinking != null:
 return thinking(_that.summary,_that.content,_that.lifecycle,_that.summaryChunkBase,_that.contentChunkBase);case ThreadToolItemStateView() when tool != null:
 return tool(_that.invocation,_that.lifecycle,_that.userInput,_that.wait);case ThreadAgentItemStateView() when agent != null:
@@ -170,10 +170,10 @@ return contextCompaction(_that.beforeTokens,_that.afterTokens,_that.compactedAt)
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( List<RawHistoryPayload> payloads,  String notice,  int recordedAt)  raw,required TResult Function( ThreadTextChannel channel,  String text,  List<ThreadAttachmentView> attachments,  ThreadContentLifecycleView lifecycle)  text,required TResult Function( List<String> summary,  List<String> content,  ThreadContentLifecycleView lifecycle,  int summaryChunkBase,  int contentChunkBase)  thinking,required TResult Function( ThreadToolInvocationView invocation,  ThreadToolLifecycleView lifecycle,  ThreadToolUserInputView? userInput,  ThreadWaitPresentationView? wait)  tool,required TResult Function( ThreadAgentIdentityView identity,  ThreadAgentLifecycleView lifecycle)  agent,required TResult Function( TurnState state,  String? inputId)  turn,required TResult Function( String inferenceId,  String model,  ThreadInferenceLifecycleView lifecycle)  inference,required TResult Function( String name,  String source,  String providerId,  SkillResourceBaseView resourceBase,  SkillActivationCauseView cause,  int activatedAt)  skill,required TResult Function( String path,  String? mediaType,  int completedAt)  file,required TResult Function( int? beforeTokens,  int? afterTokens,  int compactedAt)  contextCompaction,}) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( List<RawHistoryPayload> payloads,  String notice,  int recordedAt,  ThreadRawItemOrigin origin)  raw,required TResult Function( ThreadTextChannel channel,  String text,  List<ThreadAttachmentView> attachments,  ThreadContentLifecycleView lifecycle)  text,required TResult Function( List<String> summary,  List<String> content,  ThreadContentLifecycleView lifecycle,  int summaryChunkBase,  int contentChunkBase)  thinking,required TResult Function( ThreadToolInvocationView invocation,  ThreadToolLifecycleView lifecycle,  ThreadToolUserInputView? userInput,  ThreadWaitPresentationView? wait)  tool,required TResult Function( ThreadAgentIdentityView identity,  ThreadAgentLifecycleView lifecycle)  agent,required TResult Function( TurnState state,  String? inputId)  turn,required TResult Function( String inferenceId,  String model,  ThreadInferenceLifecycleView lifecycle)  inference,required TResult Function( String name,  String source,  String providerId,  SkillResourceBaseView resourceBase,  SkillActivationCauseView cause,  int activatedAt)  skill,required TResult Function( String path,  String? mediaType,  int completedAt)  file,required TResult Function( int? beforeTokens,  int? afterTokens,  int compactedAt)  contextCompaction,}) {final _that = this;
 switch (_that) {
 case ThreadRawItemStateView():
-return raw(_that.payloads,_that.notice,_that.recordedAt);case ThreadTextItemStateView():
+return raw(_that.payloads,_that.notice,_that.recordedAt,_that.origin);case ThreadTextItemStateView():
 return text(_that.channel,_that.text,_that.attachments,_that.lifecycle);case ThreadThinkingItemStateView():
 return thinking(_that.summary,_that.content,_that.lifecycle,_that.summaryChunkBase,_that.contentChunkBase);case ThreadToolItemStateView():
 return tool(_that.invocation,_that.lifecycle,_that.userInput,_that.wait);case ThreadAgentItemStateView():
@@ -196,10 +196,10 @@ return contextCompaction(_that.beforeTokens,_that.afterTokens,_that.compactedAt)
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( List<RawHistoryPayload> payloads,  String notice,  int recordedAt)?  raw,TResult? Function( ThreadTextChannel channel,  String text,  List<ThreadAttachmentView> attachments,  ThreadContentLifecycleView lifecycle)?  text,TResult? Function( List<String> summary,  List<String> content,  ThreadContentLifecycleView lifecycle,  int summaryChunkBase,  int contentChunkBase)?  thinking,TResult? Function( ThreadToolInvocationView invocation,  ThreadToolLifecycleView lifecycle,  ThreadToolUserInputView? userInput,  ThreadWaitPresentationView? wait)?  tool,TResult? Function( ThreadAgentIdentityView identity,  ThreadAgentLifecycleView lifecycle)?  agent,TResult? Function( TurnState state,  String? inputId)?  turn,TResult? Function( String inferenceId,  String model,  ThreadInferenceLifecycleView lifecycle)?  inference,TResult? Function( String name,  String source,  String providerId,  SkillResourceBaseView resourceBase,  SkillActivationCauseView cause,  int activatedAt)?  skill,TResult? Function( String path,  String? mediaType,  int completedAt)?  file,TResult? Function( int? beforeTokens,  int? afterTokens,  int compactedAt)?  contextCompaction,}) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( List<RawHistoryPayload> payloads,  String notice,  int recordedAt,  ThreadRawItemOrigin origin)?  raw,TResult? Function( ThreadTextChannel channel,  String text,  List<ThreadAttachmentView> attachments,  ThreadContentLifecycleView lifecycle)?  text,TResult? Function( List<String> summary,  List<String> content,  ThreadContentLifecycleView lifecycle,  int summaryChunkBase,  int contentChunkBase)?  thinking,TResult? Function( ThreadToolInvocationView invocation,  ThreadToolLifecycleView lifecycle,  ThreadToolUserInputView? userInput,  ThreadWaitPresentationView? wait)?  tool,TResult? Function( ThreadAgentIdentityView identity,  ThreadAgentLifecycleView lifecycle)?  agent,TResult? Function( TurnState state,  String? inputId)?  turn,TResult? Function( String inferenceId,  String model,  ThreadInferenceLifecycleView lifecycle)?  inference,TResult? Function( String name,  String source,  String providerId,  SkillResourceBaseView resourceBase,  SkillActivationCauseView cause,  int activatedAt)?  skill,TResult? Function( String path,  String? mediaType,  int completedAt)?  file,TResult? Function( int? beforeTokens,  int? afterTokens,  int compactedAt)?  contextCompaction,}) {final _that = this;
 switch (_that) {
 case ThreadRawItemStateView() when raw != null:
-return raw(_that.payloads,_that.notice,_that.recordedAt);case ThreadTextItemStateView() when text != null:
+return raw(_that.payloads,_that.notice,_that.recordedAt,_that.origin);case ThreadTextItemStateView() when text != null:
 return text(_that.channel,_that.text,_that.attachments,_that.lifecycle);case ThreadThinkingItemStateView() when thinking != null:
 return thinking(_that.summary,_that.content,_that.lifecycle,_that.summaryChunkBase,_that.contentChunkBase);case ThreadToolItemStateView() when tool != null:
 return tool(_that.invocation,_that.lifecycle,_that.userInput,_that.wait);case ThreadAgentItemStateView() when agent != null:
@@ -810,14 +810,14 @@ $ThreadRawItemStateViewCopyWith<ThreadRawItemStateView> get copyWith => _$Thread
 @override
 bool operator ==(Object other) {
   final _this = this as ThreadRawItemStateView;
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is ThreadRawItemStateView&&const DeepCollectionEquality().equals(other.payloads, _this.payloads)&&(identical(other.notice, _this.notice) || other.notice == _this.notice)&&(identical(other.recordedAt, _this.recordedAt) || other.recordedAt == _this.recordedAt));
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is ThreadRawItemStateView&&const DeepCollectionEquality().equals(other.payloads, _this.payloads)&&(identical(other.notice, _this.notice) || other.notice == _this.notice)&&(identical(other.recordedAt, _this.recordedAt) || other.recordedAt == _this.recordedAt)&&(identical(other.origin, _this.origin) || other.origin == _this.origin));
 }
 
 
 @override
 int get hashCode {
   final _this = this as ThreadRawItemStateView;
-  return Object.hash(runtimeType,const DeepCollectionEquality().hash(_this.payloads),_this.notice,_this.recordedAt);
+  return Object.hash(runtimeType,const DeepCollectionEquality().hash(_this.payloads),_this.notice,_this.recordedAt,_this.origin);
 }
 
 
@@ -829,7 +829,7 @@ abstract mixin class $ThreadRawItemStateViewCopyWith<$Res> implements $ThreadIte
   factory $ThreadRawItemStateViewCopyWith(ThreadRawItemStateView value, $Res Function(ThreadRawItemStateView) _then) = _$ThreadRawItemStateViewCopyWithImpl;
 @useResult
 $Res call({
- List<RawHistoryPayload> payloads, String notice, int recordedAt
+ List<RawHistoryPayload> payloads, String notice, int recordedAt, ThreadRawItemOrigin origin
 });
 
 
@@ -846,12 +846,13 @@ class _$ThreadRawItemStateViewCopyWithImpl<$Res>
 
 /// Create a copy of ThreadRawItemStateView
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') @override $Res call({Object? payloads = null,Object? notice = null,Object? recordedAt = null,}) {
+@pragma('vm:prefer-inline') @override $Res call({Object? payloads = null,Object? notice = null,Object? recordedAt = null,Object? origin = null,}) {
   return _then(ThreadRawItemStateView(
 null == payloads ? _self.payloads : payloads // ignore: cast_nullable_to_non_nullable
 as List<RawHistoryPayload>,null == notice ? _self.notice : notice // ignore: cast_nullable_to_non_nullable
 as String,null == recordedAt ? _self.recordedAt : recordedAt // ignore: cast_nullable_to_non_nullable
-as int,
+as int,origin: null == origin ? _self.origin : origin // ignore: cast_nullable_to_non_nullable
+as ThreadRawItemOrigin,
   ));
 }
 

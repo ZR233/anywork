@@ -6,18 +6,21 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[derive(utoipa::ToSchema)]
 pub struct RecoveryHeader {
     pub source: ObservedHeader,
     pub reference: Option<RecoveryReadRef>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[derive(utoipa::ToSchema)]
 pub struct RecoveryBaseline {
     pub header: RecoveryHeader,
     pub collection: Option<ProductCollectionRef>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[derive(utoipa::ToSchema)]
 pub struct RecoveryChange {
     pub header: RecoveryHeader,
     pub base_collection_revision: Option<u64>,
@@ -33,6 +36,7 @@ pub struct RecoveryChange {
     rename_all_fields = "camelCase",
     deny_unknown_fields
 )]
+#[derive(utoipa::ToSchema)]
 pub enum RecoveryEvent {
     Baseline {
         identity: ProductFeedIdentity,
@@ -53,6 +57,7 @@ pub enum RecoveryEvent {
     rename_all_fields = "camelCase",
     deny_unknown_fields
 )]
+#[derive(utoipa::ToSchema)]
 pub enum RecoveryFrame {
     Data {
         delivery_sequence: u64,

@@ -56,7 +56,8 @@ abstract class ComposerPrimaryAction with _$ComposerPrimaryAction {
       );
     }
     final blocked = blocker?.blocksSubmission ?? false;
-    final requestPending = submissionPending || continuationPending || stopPending;
+    final requestPending =
+        submissionPending || continuationPending || stopPending;
     final submitEnabled = !requestPending && !blocked && hasContent;
     if (stopAccepted || execution?.phase == AgentExecutionPhase.stopping) {
       return ComposerPrimaryAction(

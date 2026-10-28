@@ -21,6 +21,7 @@ abstract interface class ConversationRepository {
   });
   ConversationSession? existingSession(String threadId);
   ConversationSession session(String threadId);
+
   /// Freezes the original complete AgentDirectory source and delivered member.
   /// Does not select, activate, create a Session or acquire a draft.
   StopExecutionResult stopDirectoryExecution({
@@ -39,6 +40,7 @@ abstract interface class ConversationRepository {
 /// A runtime owner, not a Freezed value. A borrower cannot close the Session.
 abstract interface class ConversationSession {
   String get threadId;
+
   /// False until canonical metadata proves this is a user-addressable root.
   bool get acceptsUserInput;
   ReadonlyLatestValue<ThreadExecutionState> get execution;
@@ -115,8 +117,11 @@ abstract interface class ConversationSession {
     required String continuationId,
     required int expectedModelRouteRevision,
   });
+
   /// Queries only a continuation admitted by this exact Session. Never resends.
-  Future<ContinuationOperationView?> readContinuationOperation(OperationId operationId);
+  Future<ContinuationOperationView?> readContinuationOperation(
+    OperationId operationId,
+  );
   Future<TurnReadScope> openTurn(
     TurnReadRef reference, {
     required ThreadFacetStamp origin,

@@ -6,7 +6,6 @@ import 'package:anywork_client/resources_ports.dart';
 import 'package:anywork_client/workspace.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import '../../../anywork_client/test/support/conversation_stop_native.dart';
 import 'support/conversation_stop_view_model_fixture.dart';
 
 void main() {
@@ -150,7 +149,9 @@ void main() {
     expect(fixture.stop.owner.repository.active.value, same(other.session));
     acceptStop(action.call);
     await fixture.initial.deliver(active: null, status: ThreadStatus.idle);
-    await action.operation.state.waitFor((state) => state.observed && state.effective);
+    await action.operation.state.waitFor(
+      (state) => state.observed && state.effective,
+    );
     await action.settled;
     expect(action.call.threadId, 'A');
     expect(other.session.execution.value, originalB);

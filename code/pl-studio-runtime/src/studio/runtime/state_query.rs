@@ -7,7 +7,7 @@ use super::StudioRuntime;
 const STATE_THREAD_PAGE_LIMIT: usize = 50;
 
 impl StudioRuntime {
-    /// Reads the complete canonical Studio state without causing lifecycle side effects.
+    /// Reads Studio diagnostics without lifecycle effects; Recovery is read through its domain.
     pub async fn read_state(&self) -> Result<StudioStateSnapshot> {
         let runtime = self.runtime_snapshot().await?;
         let project_directory = self
@@ -38,9 +38,6 @@ impl StudioRuntime {
                 ))
             })?;
         let (settings_config, model_catalog) = projected?;
-        let recovery = crate::StudioRecoveryStateSnapshot {
-            state: self.recovery.state(),
-        };
         let mcp = self.read_mcp_state().await?;
         let lsp = self.read_lsp_state().await;
         let mut skills_by_project = Vec::new();
@@ -73,7 +70,6 @@ impl StudioRuntime {
                     model_catalog,
                 ),
             },
-            recovery,
             mcp,
             lsp,
             skills_by_project,

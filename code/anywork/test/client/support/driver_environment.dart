@@ -5,7 +5,8 @@ import 'package:anywork/src/features/conversation/state/timeline_view_state.dart
 import 'package:anywork/src/features/conversation/view_models/conversation_view_model.dart';
 import 'package:anywork/src/features/workspace/view_models/sidebar_view_model.dart';
 import 'package:anywork/src/features/workspace/view_models/workspace_view_model.dart';
-import 'package:anywork/src/shared/driver_projection.dart' show currentDriverRows;
+import 'package:anywork/src/shared/driver_projection.dart'
+    show currentDriverRows;
 import 'package:anywork/src/shared/driver_snapshot.dart';
 import 'package:anywork/src/shared/driver_snapshot_json.dart';
 import 'package:anywork_client/conversation.dart';
@@ -25,7 +26,8 @@ import 'selector_environment.dart' show waitLatest;
 /// replacement Client facade or a test-maintained business mirror.
 final class DriverTestEnvironment {
   DriverTestEnvironment({StatisticsPort? statisticsPort})
-    : application = ApplicationTestEnvironment(statisticsPort: statisticsPort)..installHost();
+    : application = ApplicationTestEnvironment(statisticsPort: statisticsPort)
+        ..installHost();
   final ApplicationTestEnvironment application;
   final _subscriptions = <void Function()>[];
 

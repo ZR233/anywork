@@ -20,7 +20,7 @@ final class SessionOptionsViewModelProvider
   /// Presentation for an explicit draft/default edit, not a configuration store.
   SessionOptionsViewModelProvider._({
     required SessionOptionsViewModelFamily super.from,
-    required String super.argument,
+    required String? super.argument,
   }) : super(
          retry: null,
          name: r'sessionOptionsViewModelProvider',
@@ -56,7 +56,7 @@ final class SessionOptionsViewModelProvider
 }
 
 String _$sessionOptionsViewModelHash() =>
-    r'b5a0bce02d9be48d38e8261cbce10672d84d2ac5';
+    r'52edeff9937a3dc3d8301d51c947e108f682dc24';
 
 /// Presentation for an explicit draft/default edit, not a configuration store.
 
@@ -67,7 +67,7 @@ final class SessionOptionsViewModelFamily extends $Family
           AsyncValue<SessionOptionsState>,
           SessionOptionsState,
           FutureOr<SessionOptionsState>,
-          String
+          String?
         > {
   SessionOptionsViewModelFamily._()
     : super(
@@ -80,7 +80,7 @@ final class SessionOptionsViewModelFamily extends $Family
 
   /// Presentation for an explicit draft/default edit, not a configuration store.
 
-  SessionOptionsViewModelProvider call(String projectId) =>
+  SessionOptionsViewModelProvider call(String? projectId) =>
       SessionOptionsViewModelProvider._(argument: projectId, from: this);
 
   @override
@@ -91,10 +91,10 @@ final class SessionOptionsViewModelFamily extends $Family
 
 abstract class _$SessionOptionsViewModel
     extends $AsyncNotifier<SessionOptionsState> {
-  late final _$args = ref.$arg as String;
-  String get projectId => _$args;
+  late final _$args = ref.$arg as String?;
+  String? get projectId => _$args;
 
-  FutureOr<SessionOptionsState> build(String projectId);
+  FutureOr<SessionOptionsState> build(String? projectId);
   @$mustCallSuper
   @override
   WhenComplete runBuild() {

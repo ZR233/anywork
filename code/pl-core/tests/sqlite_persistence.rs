@@ -78,9 +78,16 @@ async fn sqlite_v10_context_migration_preserves_history_and_marks_unknown_usage_
         version, 10,
         "a corrupt source checkpoint must fail before migration bookkeeping"
     );
-    assert!(db.query_one_raw(Statement::from_string(DatabaseBackend::Sqlite,
-        "SELECT name FROM sqlite_schema WHERE type='table' AND name='seaql_migrations'"))
-        .await.unwrap().is_none(), "a corrupt source cannot create a migration ledger");
+    assert!(
+        db.query_one_raw(Statement::from_string(
+            DatabaseBackend::Sqlite,
+            "SELECT name FROM sqlite_schema WHERE type='table' AND name='seaql_migrations'"
+        ))
+        .await
+        .unwrap()
+        .is_none(),
+        "a corrupt source cannot create a migration ledger"
+    );
     let row = db
         .query_one_raw(Statement::from_string(
             DatabaseBackend::Sqlite,

@@ -226,7 +226,11 @@ class _TimelineMemberConnector extends StatelessWidget {
                 icon: Icons.psychology_alt_outlined,
                 child: body,
               );
-      case ThreadRawItemStateView(:final notice, :final payloads, :final origin):
+      case ThreadRawItemStateView(
+        :final notice,
+        :final payloads,
+        :final origin,
+      ):
         if (origin == ThreadRawItemOrigin.runtimeControl) {
           return Padding(
             padding: const EdgeInsets.only(bottom: 8),
@@ -260,7 +264,9 @@ class _TimelineMemberConnector extends StatelessWidget {
       case ThreadToolItemStateView(:final userInput, :final lifecycle):
         final history = userInput ?? item.tool?.userInput;
         if (history != null) {
-          final receipt = ownsPlanConfirmation(item.tool?.name) ? history.planReceipt : null;
+          final receipt = ownsPlanConfirmation(item.tool?.name)
+              ? history.planReceipt
+              : null;
           if (receipt != null) {
             if (!receipt.isResolved) return null;
             return Column(
@@ -351,8 +357,8 @@ class _TimelineMemberConnector extends StatelessWidget {
           isIssue: imageRead ? false : null,
           iconColor: imageRead
               ? payloadHasIssue(payload)
-                  ? Theme.of(context).colorScheme.error
-                  : Theme.of(context).colorScheme.onSurfaceVariant
+                    ? Theme.of(context).colorScheme.error
+                    : Theme.of(context).colorScheme.onSurfaceVariant
               : null,
           child: body,
         );
@@ -480,7 +486,10 @@ class _TimelineMemberConnector extends StatelessWidget {
       InterruptedThreadToolView(:final reason) => reason,
       _ => item.error,
     };
-    final diagnosticColor = timelineToolDiagnosticColor(context, state.lifecycle);
+    final diagnosticColor = timelineToolDiagnosticColor(
+      context,
+      state.lifecycle,
+    );
     final hidePayload =
         item.status == 'succeeded' &&
         const {'workflow_transition', 'workflow_restart'}.contains(tool.name);
@@ -494,8 +503,11 @@ class _TimelineMemberConnector extends StatelessWidget {
           Text(context.l10n.timelineToolExitCode(tool.exitCode!)),
         if (tool.timedOut) Text(context.l10n.timelineToolTimedOut),
         if (tool.denialReason != null)
-          Text(tool.denialReason!,
-            style: Theme.of(context).textTheme.bodySmall?.copyWith(color: diagnosticColor)),
+          Text(
+            tool.denialReason!,
+            style: Theme.of(context).textTheme.bodySmall
+                ?.copyWith(color: diagnosticColor),
+          ),
         if (tool.name == 'exec' &&
             item.completedAt != null &&
             item.completedAt! >= item.createdAt)
@@ -516,9 +528,14 @@ class _TimelineMemberConnector extends StatelessWidget {
             language: context.l10n.timelineToolOutput,
             maxHeight: 280,
           ),
-        if (diagnostic != null && diagnostic.isNotEmpty && diagnostic != tool.result)
-          Text(diagnostic,
-            style: Theme.of(context).textTheme.bodySmall?.copyWith(color: diagnosticColor)),
+        if (diagnostic != null &&
+            diagnostic.isNotEmpty &&
+            diagnostic != tool.result)
+          Text(
+            diagnostic,
+            style: Theme.of(context).textTheme.bodySmall
+                ?.copyWith(color: diagnosticColor),
+          ),
         if (includeAttachments) ..._attachments(item.id, tool.attachments),
         ?links,
         ?_details(context, payload),

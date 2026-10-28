@@ -59,26 +59,39 @@ class InteractionViewModel extends _$InteractionViewModel {
     _submission = null;
     final session = repository.existingSession(key.threadId);
     if (session == null) {
-      throw const StudioFailure(code: StudioFailureCode.unavailable,
+      throw const StudioFailure(
+        code: StudioFailureCode.unavailable,
         message: 'The original interaction Session is not available',
-        retryable: true, correlationId: 'interaction-session-unavailable');
+        retryable: true,
+        correlationId: 'interaction-session-unavailable',
+      );
     }
     _session = session;
     final stamp = session.execution.value.stamp;
-    if (stamp != null && (stamp.runtimeEpoch != key.runtimeEpoch ||
-        stamp.incarnation != key.incarnation)) {
-      throw const StudioFailure(code: StudioFailureCode.superseded,
+    if (stamp != null &&
+        (stamp.runtimeEpoch != key.runtimeEpoch ||
+            stamp.incarnation != key.incarnation)) {
+      throw const StudioFailure(
+        code: StudioFailureCode.superseded,
         message: 'The original interaction source has changed',
-        retryable: false, correlationId: 'interaction-source-replaced');
+        retryable: false,
+        correlationId: 'interaction-source-replaced',
+      );
     }
-    if (key.isHosted && (key.hostedReference == null || key.hostedOrigin == null ||
-        key.hostedOrigin?.runtimeEpoch != key.runtimeEpoch ||
-        key.hostedOrigin?.incarnation != key.incarnation ||
-        key.hostedOrigin?.facet != ThreadFacet.execution ||
-        key.hostedReference?.revision != key.revision)) {
-      throw const StudioFailure(code: StudioFailureCode.protocol,
-        message: 'The hosted interaction key has no matching original reference',
-        retryable: false, correlationId: 'interaction-hosted-key');
+    if (key.isHosted &&
+        (key.hostedReference == null ||
+            key.hostedOrigin == null ||
+            key.hostedOrigin?.runtimeEpoch != key.runtimeEpoch ||
+            key.hostedOrigin?.incarnation != key.incarnation ||
+            key.hostedOrigin?.facet != ThreadFacet.execution ||
+            key.hostedReference?.revision != key.revision)) {
+      throw const StudioFailure(
+        code: StudioFailureCode.protocol,
+        message:
+            'The hosted interaction key has no matching original reference',
+        retryable: false,
+        correlationId: 'interaction-hosted-key',
+      );
     }
     final initial = InteractionViewState(key: key, enabled: _enabled);
     _createReader(initial);
@@ -165,10 +178,13 @@ class InteractionViewModel extends _$InteractionViewModel {
       (item) =>
           item.interactionId == value.key.interactionId &&
           item.targetThreadId == value.key.target &&
-          (!value.key.isHosted || item.reference == value.key.hostedReference &&
-              value.key.hostedOrigin?.runtimeEpoch == current.origin.runtimeEpoch &&
-              value.key.hostedOrigin?.incarnation == current.origin.incarnation &&
-              header.purpose is! PlanConfirmationPurposeRead) &&
+          (!value.key.isHosted ||
+              item.reference == value.key.hostedReference &&
+                  value.key.hostedOrigin?.runtimeEpoch ==
+                      current.origin.runtimeEpoch &&
+                  value.key.hostedOrigin?.incarnation ==
+                      current.origin.incarnation &&
+                  header.purpose is! PlanConfirmationPurposeRead) &&
           item.revision == value.key.revision &&
           item.status == InteractionStatus.pending,
     );
@@ -363,7 +379,8 @@ class InteractionViewModel extends _$InteractionViewModel {
     // No read, retry, lookup by ID or await may replace these captured values.
     final session = _session;
     final origin = value.key.isHosted
-        ? value.key.hostedOrigin! : session.execution.value.stamp!;
+        ? value.key.hostedOrigin!
+        : session.execution.value.stamp!;
     final key = value.key;
     final intent = value.latestIntent + 1;
     try {
@@ -391,19 +408,17 @@ class InteractionViewModel extends _$InteractionViewModel {
                 resolution: resolution,
               )
             : session.respondInteraction(
-          origin: origin,
-          interactionId: key.interactionId,
-          expectedInteractionRevision: key.revision,
-          resolution: resolution,
-        );
+                origin: origin,
+                interactionId: key.interactionId,
+                expectedInteractionRevision: key.revision,
+                resolution: resolution,
+              );
         submission.ticket = ticket;
         var delivered = false;
-        final watch = ticket.state.watchLatest(
-          (operation) {
-            delivered = true;
-            _submissionChanged(submission, operation);
-          },
-        );
+        final watch = ticket.state.watchLatest((operation) {
+          delivered = true;
+          _submissionChanged(submission, operation);
+        });
         submission.observation = watch.observation;
         if (!delivered) _submissionChanged(submission, watch.value);
         if (!_isOriginalSubmission(submission)) {

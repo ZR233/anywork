@@ -63,16 +63,15 @@ class SessionOptionsViewModel extends _$SessionOptionsViewModel {
     if (projectId != null) return const SessionOptionsState();
     // This scope borrows the original Start preferences, not a project draft.
     // Register before consuming the initial snapshot; disposal only unobserves.
-    final routes = ref
-        .read(draftsRepositoryProvider)
-        .startRoutes
-        .watchLatest((preferences) {
-          if (ref.mounted && identical(_lifetime, lifetime) && state.hasValue) {
-            state = AsyncData(
-              state.requireValue.copyWith(preferences: preferences),
-            );
-          }
-        });
+    final routes = ref.read(draftsRepositoryProvider).startRoutes.watchLatest((
+      preferences,
+    ) {
+      if (ref.mounted && identical(_lifetime, lifetime) && state.hasValue) {
+        state = AsyncData(
+          state.requireValue.copyWith(preferences: preferences),
+        );
+      }
+    });
     _routeObservation = routes.observation;
     return SessionOptionsState(preferences: routes.value);
   }

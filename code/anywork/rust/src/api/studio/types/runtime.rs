@@ -92,82 +92,6 @@ pub struct BridgeStateError {
     pub retryable: bool,
 }
 
-// ── Runtime types ──
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct RuntimeSnapshot {
-    pub revision: u64,
-    pub startup_recovery: Option<BridgeStartupRecovery>,
-    pub state: BridgeRuntimeState,
-    pub active_turns: Vec<BridgeActiveTurn>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct BridgeStartupRecovery {
-    pub backup_path: String,
-    pub reason: String,
-    pub created_at: i64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(tag = "kind", content = "data", rename_all = "camelCase")]
-pub enum BridgeRuntimeState {
-    Uninitialized(BridgeRuntimeTimestamp),
-    Initializing(BridgeRuntimeTimestamp),
-    Ready(BridgeRuntimeTimestamp),
-    ShuttingDown(BridgeRuntimeTimestamp),
-    Stopped(BridgeRuntimeTimestamp),
-    Failed(BridgeFailedRuntimeState),
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct BridgeRuntimeTimestamp {
-    pub at: i64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct BridgeFailedRuntimeState {
-    pub failed_at: i64,
-    pub error: BridgeStateError,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct BridgeActiveTurn {
-    pub thread_id: String,
-    pub turn_id: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub enum BridgeRecoveryIssueScope {
-    Application,
-    Project,
-    Thread,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub enum BridgeRecoveryIssueCategory {
-    ProcessLease,
-    ToolCatalog,
-    Repository,
-    Storage,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub enum BridgeRecoveryIssueAction {
-    Retry,
-    CleanupThread,
-    RemoveProject,
-    CleanupWorktree,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum BridgeWorktreeInspection {
@@ -177,43 +101,12 @@ pub enum BridgeWorktreeInspection {
     Unavailable,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct BridgeWorktreeRecoveryPreviewDto {
-    pub inspection: BridgeWorktreeInspection,
-    /// Worktree 归属来源：`session` 为会话自身工作区，`child` 为子智能体工作区。
-    pub owner_kind: BridgeWorktreeOwner,
-    pub owner_thread_id: String,
-    pub lease_revision: u64,
-    pub state: String,
-    pub repository_root: String,
-    pub path: String,
-    pub branch: String,
-    pub base_commit: String,
-    pub head_commit: Option<String>,
-    pub dirty: Option<bool>,
-    pub changed_files: Option<Vec<String>>,
-}
-
 /// Worktree lease 的归属来源；显式清理必须与 durable lease 的归属一致。
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum BridgeWorktreeOwner {
     Session,
     Child,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct BridgeStudioRecoveryIssueDto {
-    pub id: String,
-    pub scope: BridgeRecoveryIssueScope,
-    pub category: BridgeRecoveryIssueCategory,
-    pub available_actions: Vec<BridgeRecoveryIssueAction>,
-    pub project_id: Option<String>,
-    pub thread_id: Option<String>,
-    pub detail: String,
-    pub worktree: Option<BridgeWorktreeRecoveryPreviewDto>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

@@ -233,7 +233,9 @@ List<InteractionViewState>? _currentInteractionEditors(
         editor.closing ||
         editor.readIssues.isNotEmpty ||
         editor.texts.values.any((text) => text.error != null) ||
-        editor.questions.values.any((question) => question.optionsError != null) ||
+        editor.questions.values.any(
+          (question) => question.optionsError != null,
+        ) ||
         header == null ||
         scope == null ||
         scope != header.scope ||

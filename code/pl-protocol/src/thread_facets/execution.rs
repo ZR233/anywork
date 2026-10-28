@@ -182,17 +182,31 @@ pub struct TurnsReplacement {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
-#[serde(tag = "kind", content = "data", rename_all = "camelCase", deny_unknown_fields)]
+#[serde(
+    tag = "kind",
+    content = "data",
+    rename_all = "camelCase",
+    deny_unknown_fields
+)]
 pub enum ExecutionReplacement {
     Unchanged,
-    Replace { value: Option<crate::AgentExecution> },
+    Replace {
+        value: Option<crate::AgentExecution>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
-#[serde(tag = "kind", content = "data", rename_all = "camelCase", deny_unknown_fields)]
+#[serde(
+    tag = "kind",
+    content = "data",
+    rename_all = "camelCase",
+    deny_unknown_fields
+)]
 pub enum ContinuationReplacement {
     Unchanged,
-    Replace { value: Option<crate::ContinuationView> },
+    Replace {
+        value: Option<crate::ContinuationView>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

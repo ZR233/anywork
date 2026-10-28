@@ -185,7 +185,6 @@ fn topic_token(topic: &pl_studio_runtime::StudioProductTopic) -> &'static str {
         StudioProductTopic::AgentDirectory => "agentDirectory",
         StudioProductTopic::SettingsConfig => "settingsConfig",
         StudioProductTopic::ModelCatalog => "modelCatalog",
-        StudioProductTopic::Recovery => "recovery",
         StudioProductTopic::Mcp => "mcp",
         StudioProductTopic::Lsp => "lsp",
         StudioProductTopic::Skills { .. } => "skills",

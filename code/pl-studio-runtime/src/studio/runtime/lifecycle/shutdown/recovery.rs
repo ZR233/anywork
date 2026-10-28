@@ -43,11 +43,10 @@ pub(super) fn can_retry(id: StageId, cause: &FailureCause) -> bool {
             .downcast_ref::<crate::bots::FeishuError>()
             .is_some_and(crate::bots::FeishuError::retryable),
         StageId::AgentFramework => framework_retry(error),
-        // wait_for_drain currently erases recoverable write failures and terminal released-dirty
-        // incarnations into the same anyhow error. Without that owner's typed distinction, do
-        // not grant retry merely because the error arose before writer shutdown. A history close
-        // that did not finish is retryable only when its own typed failures say so: a panicked close
-        // task or a hand-over after the seal is not something another attempt may silently repeat.
+        // A drain failure does not itself authorize restarting a writer. Only the original explicit
+        // recovery can repair its retained queue. History close is a separate responsibility: its
+        // owner retains the same connection after a task panic and permits a later explicit retry,
+        // without clearing an independent writer task failure.
         StageId::Persistence => match error.downcast_ref::<PersistenceShutdownFailure>() {
             Some(PersistenceShutdownFailure::Flush(_)) => true,
             Some(PersistenceShutdownFailure::History(group)) => group

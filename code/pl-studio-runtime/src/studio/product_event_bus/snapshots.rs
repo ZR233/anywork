@@ -1,4 +1,4 @@
-//! 低频产品状态快照：agent、settings、recovery、MCP、LSP、skills、thread mode
+//! 低频产品状态快照：agent、settings、MCP、LSP、skills、thread mode
 //! catalog、provider usage、model performance、updater 与 persistence 状态的
 //! 读取、维护与事件发射。
 
@@ -10,8 +10,8 @@ use crate::{
     StudioAgentDirectoryData, StudioAgentDirectoryEntry, StudioAgentDirectoryState,
     StudioAgentProfilesStateSnapshot, StudioLspStateSnapshot, StudioMcpStateSnapshot,
     StudioModelCatalogStateSnapshot, StudioPersistenceQueueStateSnapshot,
-    StudioProductEventEnvelope, StudioProductEventKind, StudioRecoveryStateSnapshot,
-    StudioSessionCostsState, StudioSettingsConfigStateSnapshot, StudioUpdateStateSnapshot,
+    StudioProductEventEnvelope, StudioProductEventKind, StudioSessionCostsState,
+    StudioSettingsConfigStateSnapshot, StudioUpdateStateSnapshot,
 };
 
 use super::ProductEventBus;
@@ -129,15 +129,6 @@ impl ProductEventBus {
         self.emit(StudioProductEventKind::ModelCatalogStateChanged(Box::new(
             state,
         )))
-    }
-
-    pub fn emit_recovery_state(
-        &self,
-        state: pl_protocol::ObservedResource<Vec<crate::StudioRecoveryIssue>>,
-    ) -> StudioProductEventEnvelope {
-        self.emit(StudioProductEventKind::RecoveryStateChanged(
-            StudioRecoveryStateSnapshot { state },
-        ))
     }
 
     pub fn emit_mcp_state(&self, state: StudioMcpStateSnapshot) -> StudioProductEventEnvelope {

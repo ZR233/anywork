@@ -1,4 +1,5 @@
 import 'package:anywork/src/features/conversation/state/plan_confirmation_ownership.dart';
+
 import 'dart:async';
 import 'dart:convert';
 
@@ -48,7 +49,11 @@ Future<DriverTestEnvironment> _environment({
 }) async {
   final env = DriverTestEnvironment();
   addTearDown(env.close);
-  await env.establish(threads: threads ?? [_factsThread()], agents: agents, recoveryIssues: recoveryIssues);
+  await env.establish(
+    threads: threads ?? [_factsThread()],
+    agents: agents,
+    recoveryIssues: recoveryIssues,
+  );
   return env;
 }
 
@@ -69,20 +74,35 @@ Future<void> _driverConversation(DriverTestEnvironment env) async {
 }
 
 Future<InteractionViewState> _driverEditorState(
-  DriverTestEnvironment env, InteractionEditorKey key,
+  DriverTestEnvironment env,
+  InteractionEditorKey key,
   bool Function(InteractionViewState) matches,
 ) {
   final done = Completer<InteractionViewState>();
-  final watch = env.application.container.listen(interactionViewModelProvider(key), (_, next) {
-    final value = next.asData?.value;
-    if (!done.isCompleted && value != null && matches(value)) done.complete(value);
-  }, fireImmediately: true);
+  final watch = env.application.container.listen(
+    interactionViewModelProvider(key),
+    (_, next) {
+      final value = next.asData?.value;
+      if (!done.isCompleted && value != null && matches(value)) {
+        done.complete(value);
+      }
+    },
+    fireImmediately: true,
+  );
   return done.future.whenComplete(watch.close);
 }
 
-Future<InteractionEditorKey> _driverEditor(DriverTestEnvironment env, String id, {bool complete = true}) async {
+Future<InteractionEditorKey> _driverEditor(
+  DriverTestEnvironment env,
+  String id, {
+  bool complete = true,
+}) async {
   final container = env.application.container;
-  final key = container.read(conversationViewModelProvider('thread-main')).requireValue.currentEditors.singleWhere((key) => key.interactionId == id);
+  final key = container
+      .read(conversationViewModelProvider('thread-main'))
+      .requireValue
+      .currentEditors
+      .singleWhere((key) => key.interactionId == id);
   final provider = interactionViewModelProvider(key);
   final hold = container.listen(provider, (_, _) {});
   addTearDown(hold.close);
@@ -95,20 +115,66 @@ Future<InteractionEditorKey> _driverEditor(DriverTestEnvironment env, String id,
   return key;
 }
 
-DriverSnapshot _passiveDriverCapture(DriverTestEnvironment env, DriverInteractionNative native) {
+DriverSnapshot _passiveDriverCapture(
+  DriverTestEnvironment env,
+  DriverInteractionNative native,
+) {
   final container = env.application.container;
+  final graph = env.application.graph;
+  final session = graph.conversation.existingSession('thread-main');
+  final commands = env.application.domains.commands;
+  List<int?> observerCounts() => [
+    graph.conversation.active.observerCount,
+    graph.conversation.activationFailure.observerCount,
+    session?.execution.observerCount,
+    session?.metrics.observerCount,
+    session?.context.observerCount,
+    session?.configuration.observerCount,
+    session?.authoring.observerCount,
+    session?.interactions.observerCount,
+    graph.workspace.state.observerCount,
+    graph.workspace.projects.observerCount,
+    graph.workspace.agents.observerCount,
+    graph.drafts.startRoutes.observerCount,
+    graph.operations.records.observerCount,
+  ];
+  List<int> commandCounts() => [
+    commands.routes.values.length,
+    commands.modes.values.length,
+    commands.prompts.values.length,
+    commands.acceptances.values.length,
+    commands.interrupts.values.length,
+    commands.continues.values.length,
+    commands.continuationReads.values.length,
+  ];
   final conversation = conversationViewModelProvider('thread-main');
   final conversationExisted = container.exists(conversation);
-  final keys = container.exists(conversation) ? container.read(conversation).asData?.value.currentEditors.toList() ?? <InteractionEditorKey>[] : <InteractionEditorKey>[];
-  final existed = [for (final key in keys) container.exists(interactionViewModelProvider(key))];
+  final keys = container.exists(conversation)
+      ? container.read(conversation).asData?.value.currentEditors.toList() ??
+            <InteractionEditorKey>[]
+      : <InteractionEditorKey>[];
+  final existed = [
+    for (final key in keys) container.exists(interactionViewModelProvider(key)),
+  ];
   final permits = List.of(env.application.graph.budget.usage);
   final requests = (env.nativeActivity, native.activity);
-  final snapshot = DriverInspection(graph: env.application.graph, container: container).capture();
+  final observers = observerCounts();
+  final commandCalls = commandCounts();
+  final operations = List.of(graph.operations.records.value);
+  final snapshot = DriverInspection(
+    graph: env.application.graph,
+    container: container,
+  ).capture();
   snapshot.toJson();
-  expect([for (final key in keys) container.exists(interactionViewModelProvider(key))], existed);
+  expect([
+    for (final key in keys) container.exists(interactionViewModelProvider(key)),
+  ], existed);
   expect(container.exists(conversation), conversationExisted);
   expect(env.application.graph.budget.usage, permits);
   expect((env.nativeActivity, native.activity), requests);
+  expect(observerCounts(), observers);
+  expect(commandCounts(), commandCalls);
+  expect(graph.operations.records.value, operations);
   return snapshot;
 }
 
@@ -117,24 +183,54 @@ void main() {
 
   test('Driver borrows mounted Plan/Approval/question owners: exact typed purpose/body, no drafts or new demand', () async {
     final env = await _environment(threads: [fixtureThread('thread-main')]);
-    final native = DriverInteractionNative(env.application.domains.conversationPort);
+    final native = DriverInteractionNative(
+      env.application.domains.conversationPort,
+    );
     final container = env.application.container;
     await env.mountDirectory();
-    await env.openContent(baseline(1, items: const []), threadId: 'thread-main');
-    expect(container.exists(conversationViewModelProvider('thread-main')), isFalse);
+    await env.openContent(
+      baseline(1, items: const []),
+      threadId: 'thread-main',
+    );
+    expect(
+      container.exists(conversationViewModelProvider('thread-main')),
+      isFalse,
+    );
     expect(_passiveDriverCapture(env, native).interactionEditors, isNull);
-    expect(container.exists(conversationViewModelProvider('thread-main')), isFalse);
+    expect(
+      container.exists(conversationViewModelProvider('thread-main')),
+      isFalse,
+    );
     await _driverConversation(env);
-    const planBody = '# Actual native plan\n\n1. Preserve the original scope.\n2. Keep the exact body.';
-    await native.publish(const [DriverInteractionMaterial(entry: 1, id: 'plan-live', targetThreadId: 'thread-main',
-      kind: DriverInteractionMaterialKind.plan, title: 'Actual plan', body: planBody,
-      questionId: agentSessionPlanConfirmationQuestionId)]);
+    const planBody =
+        '# Actual native plan\n\n1. Preserve the original scope.\n2. Keep the exact body.';
+    await native.publish(const [
+      DriverInteractionMaterial(
+        entry: 1,
+        id: 'plan-live',
+        targetThreadId: 'thread-main',
+        kind: DriverInteractionMaterialKind.plan,
+        title: 'Actual plan',
+        body: planBody,
+        questionId: agentSessionPlanConfirmationQuestionId,
+      ),
+    ]);
     await _driverConversation(env);
-    final planKey = container.read(conversationViewModelProvider('thread-main')).requireValue.currentEditors.single;
+    final planKey = container
+        .read(conversationViewModelProvider('thread-main'))
+        .requireValue
+        .currentEditors
+        .single;
     expect(container.exists(interactionViewModelProvider(planKey)), isFalse);
-    expect(_passiveDriverCapture(env, native).interactionEditors, isNull, reason: 'A current key is not mounted material');
+    expect(
+      _passiveDriverCapture(env, native).interactionEditors,
+      isNull,
+      reason: 'A current key is not mounted material',
+    );
     await _driverEditor(env, 'plan-live');
-    container.read(interactionViewModelProvider(planKey).notifier).setPlanFeedback('SYNTHETIC-PLAN-DRAFT-NOT-FOR-DRIVER');
+    container
+        .read(interactionViewModelProvider(planKey).notifier)
+        .setPlanFeedback('SYNTHETIC-PLAN-DRAFT-NOT-FOR-DRIVER');
     final snapshot = _passiveDriverCapture(env, native);
     final workspace = snapshot.toJson()['workspace'] as Map;
     final plan = workspace['activeInteraction'] as Map;
@@ -145,98 +241,337 @@ void main() {
     expect(plan['kind'], 'userInput');
     expect(plan['title'], 'Actual plan');
     expect(plan['body'], planBody);
-    expect(plan['purpose'], {'kind': 'planConfirmation', 'expectedRevision': 7, 'operationId': 'native-plan-op', 'argumentHash': 'args-hash', 'planHash': 'plan-hash'});
-    expect(jsonEncode(snapshot.toJson()), isNot(contains('SYNTHETIC-PLAN-DRAFT-NOT-FOR-DRIVER')));
+    expect(plan['purpose'], {
+      'kind': 'planConfirmation',
+      'expectedRevision': 7,
+      'operationId': 'native-plan-op',
+      'argumentHash': 'args-hash',
+      'planHash': 'plan-hash',
+    });
+    expect(
+      jsonEncode(snapshot.toJson()),
+      isNot(contains('SYNTHETIC-PLAN-DRAFT-NOT-FOR-DRIVER')),
+    );
     expect(() => snapshot.interactionEditors!.clear(), throwsUnsupportedError);
 
     const arguments = '{"command":"printf driver-proof","cwd":"/workspace"}';
-    await native.publish(const [DriverInteractionMaterial(entry: 2, id: 'approval-live', targetThreadId: 'thread-main',
-      kind: DriverInteractionMaterialKind.approval, title: 'shell', body: arguments)]);
+    await native.publish(const [
+      DriverInteractionMaterial(
+        entry: 2,
+        id: 'approval-live',
+        targetThreadId: 'thread-main',
+        kind: DriverInteractionMaterialKind.approval,
+        title: 'shell',
+        body: arguments,
+      ),
+    ]);
     await _driverConversation(env);
     final approvalKey = await _driverEditor(env, 'approval-live');
-    container.read(interactionViewModelProvider(approvalKey).notifier).setApprovalReason('SYNTHETIC-APPROVAL-DRAFT-NOT-FOR-DRIVER');
+    container
+        .read(interactionViewModelProvider(approvalKey).notifier)
+        .setApprovalReason('SYNTHETIC-APPROVAL-DRAFT-NOT-FOR-DRIVER');
     final approvalSnapshot = _passiveDriverCapture(env, native);
-    final approval = (approvalSnapshot.toJson()['workspace'] as Map)['activeInteraction'] as Map;
-    expect((approval['id'], approval['turnId'], approval['kind'], approval['title'], approval['body']),
-      ('approval-live', 'turn-approval-live', 'toolApproval', 'shell', arguments));
-    expect(approval['content'], {'name': 'shell', 'arguments': arguments, 'workingDirectory': '/workspace', 'parentAgentId': 'thread-main'});
+    final approval =
+        (approvalSnapshot.toJson()['workspace'] as Map)['activeInteraction']
+            as Map;
+    expect(
+      (
+        approval['id'],
+        approval['turnId'],
+        approval['kind'],
+        approval['title'],
+        approval['body'],
+      ),
+      (
+        'approval-live',
+        'turn-approval-live',
+        'toolApproval',
+        'shell',
+        arguments,
+      ),
+    );
+    expect(approval['content'], {
+      'name': 'shell',
+      'arguments': arguments,
+      'workingDirectory': '/workspace',
+      'parentAgentId': 'thread-main',
+    });
     expect(approval['purpose'], {'kind': 'general'});
-    expect(jsonEncode(approvalSnapshot.toJson()), isNot(contains('SYNTHETIC-APPROVAL-DRAFT-NOT-FOR-DRIVER')));
+    expect(
+      jsonEncode(approvalSnapshot.toJson()),
+      isNot(contains('SYNTHETIC-APPROVAL-DRAFT-NOT-FOR-DRIVER')),
+    );
 
-    await native.publish(const [DriverInteractionMaterial(entry: 3, id: 'ordinary-reserved-id', targetThreadId: 'thread-main',
-      kind: DriverInteractionMaterialKind.question, title: 'Plan review', body: '# This is a normal question',
-      questionId: agentSessionPlanConfirmationQuestionId)]);
+    await native.publish(const [
+      DriverInteractionMaterial(
+        entry: 3,
+        id: 'ordinary-reserved-id',
+        targetThreadId: 'thread-main',
+        kind: DriverInteractionMaterialKind.question,
+        title: 'Plan review',
+        body: '# This is a normal question',
+        questionId: agentSessionPlanConfirmationQuestionId,
+        optionsCount: 2,
+        options: [
+          OptionReadItem(
+            index: 0,
+            label: ReadText.inline(text: 'Native first choice'),
+            description: ReadText.inline(text: 'Keep the original owner'),
+          ),
+          OptionReadItem(
+            index: 1,
+            label: ReadText.inline(text: 'Native second choice'),
+            description: ReadText.inline(text: 'Use another native route'),
+          ),
+        ],
+      ),
+    ]);
     await _driverConversation(env);
     final ordinaryKey = await _driverEditor(env, 'ordinary-reserved-id');
-    container.read(interactionViewModelProvider(ordinaryKey).notifier).setQuestionText(0, 'SYNTHETIC-ANSWER-DRAFT-NOT-FOR-DRIVER');
+    await _driverEditorState(
+      env,
+      ordinaryKey,
+      (state) =>
+          state.sourceCurrent &&
+          state.questions[0]?.options.length == 2 &&
+          !state.questions[0]!.optionsLoading &&
+          state.questions[0]!.nextOptionOffset == null,
+    );
+    container
+        .read(interactionViewModelProvider(ordinaryKey).notifier)
+        .setQuestionText(0, 'SYNTHETIC-ANSWER-DRAFT-NOT-FOR-DRIVER');
+    container
+        .read(interactionViewModelProvider(ordinaryKey).notifier)
+        .setOptionSelected(0, 'Native first choice', true);
+    expect(
+      container
+          .read(interactionViewModelProvider(ordinaryKey))
+          .requireValue
+          .answers[0]!
+          .selectedLabels,
+      ['Native first choice'],
+    );
     final ordinarySnapshot = _passiveDriverCapture(env, native);
-    final ordinary = (ordinarySnapshot.toJson()['workspace'] as Map)['activeInteraction'] as Map;
-    expect(ordinary['purpose'], {'kind': 'general'}, reason: 'Purpose comes from the typed header, never a reserved question ID or title');
+    final ordinary =
+        (ordinarySnapshot.toJson()['workspace'] as Map)['activeInteraction']
+            as Map;
+    expect(
+      ordinary['purpose'],
+      {'kind': 'general'},
+      reason: 'Purpose comes from the typed header, never a reserved question ID or title',
+    );
     expect(ordinary['body'], '# This is a normal question');
-    expect(jsonEncode(ordinarySnapshot.toJson()), isNot(contains('SYNTHETIC-ANSWER-DRAFT-NOT-FOR-DRIVER')));
+    final ordinaryQuestion =
+        ((ordinary['content'] as Map)['questions'] as List).single as Map;
+    expect(ordinaryQuestion['optionsCount'], 2);
+    expect(ordinaryQuestion['options'], [
+      {
+        'index': 0,
+        'label': 'Native first choice',
+        'description': 'Keep the original owner',
+      },
+      {
+        'index': 1,
+        'label': 'Native second choice',
+        'description': 'Use another native route',
+      },
+    ]);
+    expect(ordinaryQuestion['optionsComplete'], isTrue);
+    expect(native.optionReads.single, (
+      host: 'thread-main',
+      reference: const InteractionReadRef(entry: 3, revision: 1),
+      questionIndex: 0,
+      offset: 0,
+      limit: 32,
+    ));
+    expect(
+      jsonEncode(ordinarySnapshot.toJson()),
+      isNot(contains('SYNTHETIC-ANSWER-DRAFT-NOT-FOR-DRIVER')),
+    );
     expect(ordinary.keys, isNot(contains('answers')));
     expect(ordinary.keys, isNot(contains('approvalReason')));
     expect(ordinary.keys, isNot(contains('planFeedback')));
+    for (final field in [
+      'answers',
+      'selectedLabels',
+      'approvalReason',
+      'planFeedback',
+    ]) {
+      expect(
+        jsonEncode(ordinarySnapshot.toJson()),
+        isNot(contains('"$field":')),
+      );
+    }
   });
 
   test('Driver keeps host scope and child target distinct, rejects retained old keys and foreign target/scope material', () async {
     final env = await _environment(threads: [fixtureThread('thread-main')]);
-    final native = DriverInteractionNative(env.application.domains.conversationPort);
+    final native = DriverInteractionNative(
+      env.application.domains.conversationPort,
+    );
     final container = env.application.container;
     await _driverConversation(env);
-    const original = DriverInteractionMaterial(entry: 1, id: 'hosted-live', targetThreadId: 'cold-child',
-      kind: DriverInteractionMaterialKind.question, title: 'Child question', body: 'Original child body');
+    const original = DriverInteractionMaterial(
+      entry: 1,
+      id: 'hosted-live',
+      targetThreadId: 'cold-child',
+      kind: DriverInteractionMaterialKind.question,
+      title: 'Child question',
+      body: 'Original child body',
+    );
     await native.publish(const [original]);
     await _driverConversation(env);
     final oldKey = await _driverEditor(env, 'hosted-live');
-    final oldValue = container.read(interactionViewModelProvider(oldKey)).requireValue;
+    final oldValue = container
+        .read(interactionViewModelProvider(oldKey))
+        .requireValue;
     expect(oldKey.isHosted, isTrue);
-    expect(oldValue.header!.threadId, const ReadText.inline(text: 'cold-child'));
+    expect(
+      oldValue.header!.threadId,
+      const ReadText.inline(text: 'cold-child'),
+    );
     final captured = _passiveDriverCapture(env, native);
-    final hosted = (captured.toJson()['workspace'] as Map)['activeInteraction'] as Map;
-    expect((hosted['hostThreadId'], hosted['threadId'], hosted['body']), ('thread-main', 'cold-child', 'Original child body'));
+    final hosted =
+        (captured.toJson()['workspace'] as Map)['activeInteraction'] as Map;
+    expect(
+      (hosted['hostThreadId'], hosted['threadId'], hosted['body']),
+      ('thread-main', 'cold-child', 'Original child body'),
+    );
     expect(native.reads.last.host, 'thread-main');
-    expect(env.application.graph.conversation.existingSession('cold-child'), isNull);
+    expect(
+      env.application.graph.conversation.existingSession('cold-child'),
+      isNull,
+    );
 
-    await native.publish(const [DriverInteractionMaterial(entry: 1, id: 'hosted-live', revision: 2, targetThreadId: 'cold-child',
-      kind: DriverInteractionMaterialKind.question, title: 'Child question', body: 'New authoritative child body')]);
+    await native.publish(const [
+      DriverInteractionMaterial(
+        entry: 1,
+        id: 'hosted-live',
+        revision: 2,
+        targetThreadId: 'cold-child',
+        kind: DriverInteractionMaterialKind.question,
+        title: 'Child question',
+        body: 'New authoritative child body',
+      ),
+    ]);
     await _driverConversation(env);
-    final currentConversation = container.read(conversationViewModelProvider('thread-main')).requireValue;
+    final currentConversation = container
+        .read(conversationViewModelProvider('thread-main'))
+        .requireValue;
     final newKey = currentConversation.currentEditors.single;
     expect(newKey, isNot(oldKey));
-    expect(_passiveDriverCapture(env, native).interactionEditors, isNull, reason: 'The old mounted owner cannot fill a current same-ID key');
-    DriverSnapshot captureMaterials(List<InteractionViewState> values) => captureDriverSnapshot(env.application.graph,
-      visible: DriverViewFacts(conversation: container.read(conversationViewModelProvider('thread-main')).requireValue, interactionEditors: values),
-      bots: const DriverBotsUnknown('not mounted'));
+    expect(
+      _passiveDriverCapture(env, native).interactionEditors,
+      isNull,
+      reason: 'The old mounted owner cannot fill a current same-ID key',
+    );
+    DriverSnapshot captureMaterials(List<InteractionViewState> values) =>
+        captureDriverSnapshot(
+          env.application.graph,
+          visible: DriverViewFacts(
+            conversation: container
+                .read(conversationViewModelProvider('thread-main'))
+                .requireValue,
+            interactionEditors: values,
+          ),
+          bots: const DriverBotsUnknown('not mounted'),
+        );
     expect(captureMaterials([oldValue]).interactionEditors, isNull);
     await _driverEditor(env, 'hosted-live');
-    final current = container.read(interactionViewModelProvider(newKey)).requireValue;
+    final current = container
+        .read(interactionViewModelProvider(newKey))
+        .requireValue;
     expect(current.scope!.sourceRevision, 2);
     final supplied = [current];
     final immutableCapture = captureMaterials(supplied);
     supplied.clear();
-    expect(immutableCapture.interactionEditors, [current], reason: 'Snapshot takes an immutable request-local copy');
-    expect((immutableCapture.toJson()['workspace'] as Map)['activeInteraction'], isA<Map>().having((value) => value['body'], 'body', 'New authoritative child body'));
-    expect(captureMaterials([current.copyWith(header: current.header!.copyWith(threadId: const ReadText.inline(text: 'foreign-target')))]).interactionEditors, isNull);
-    expect(captureMaterials([current.copyWith(scope: oldValue.scope)]).interactionEditors, isNull);
-    expect(captureMaterials([current.copyWith(key: newKey.copyWith(sourceGeneration: newKey.sourceGeneration + 1))]).interactionEditors, isNull);
+    expect(immutableCapture.interactionEditors, [
+      current,
+    ], reason: 'Snapshot takes an immutable request-local copy');
+    expect(
+      (immutableCapture.toJson()['workspace'] as Map)['activeInteraction'],
+      isA<Map>().having(
+        (value) => value['body'],
+        'body',
+        'New authoritative child body',
+      ),
+    );
+    expect(
+      captureMaterials([
+        current.copyWith(
+          header: current.header!.copyWith(
+            threadId: const ReadText.inline(text: 'foreign-target'),
+          ),
+        ),
+      ]).interactionEditors,
+      isNull,
+    );
+    expect(
+      captureMaterials([current.copyWith(scope: oldValue.scope)])
+          .interactionEditors,
+      isNull,
+    );
+    expect(
+      captureMaterials([
+        current.copyWith(
+          key: newKey.copyWith(sourceGeneration: newKey.sourceGeneration + 1),
+        ),
+      ]).interactionEditors,
+      isNull,
+    );
     native.failures.add((1, 2));
-    await container.read(interactionViewModelProvider(newKey).notifier).retryRead();
-    expect(container.read(interactionViewModelProvider(newKey)).requireValue.readIssues, isNotEmpty);
-    expect(_passiveDriverCapture(env, native).interactionEditors, isNull, reason: 'A failed real reread cannot expose retained last-good material');
-    expect(env.application.graph.conversation.existingSession('cold-child'), isNull);
+    await container
+        .read(interactionViewModelProvider(newKey).notifier)
+        .retryRead();
+    expect(
+      container
+          .read(interactionViewModelProvider(newKey))
+          .requireValue
+          .readIssues,
+      isNotEmpty,
+    );
+    expect(
+      _passiveDriverCapture(env, native).interactionEditors,
+      isNull,
+      reason: 'A failed real reread cannot expose retained last-good material',
+    );
+    expect(
+      env.application.graph.conversation.existingSession('cold-child'),
+      isNull,
+    );
   });
 
-  test('Driver distinguishes unopened and partial editors from a known empty index; deferred body stays null until the original reader completes', () async {
+  test('Driver distinguishes unopened and partial editors, undeclared/empty/unread options and deferred prefixes without reading during capture', () async {
     final env = await _environment(threads: [fixtureThread('thread-main')]);
-    final native = DriverInteractionNative(env.application.domains.conversationPort);
+    final native = DriverInteractionNative(
+      env.application.domains.conversationPort,
+    );
+    addTearDown(native.releaseHeldResponses);
     final container = env.application.container;
     await _driverConversation(env);
-    const first = DriverInteractionMaterial(entry: 1, id: 'first', targetThreadId: 'thread-main', kind: DriverInteractionMaterialKind.question, title: 'First', body: 'First exact body');
-    const second = DriverInteractionMaterial(entry: 2, id: 'second', targetThreadId: 'thread-main', kind: DriverInteractionMaterialKind.question, title: 'Second', body: 'Second exact body');
+    const first = DriverInteractionMaterial(
+      entry: 1,
+      id: 'first',
+      targetThreadId: 'thread-main',
+      kind: DriverInteractionMaterialKind.question,
+      title: 'First',
+      body: 'First exact body',
+      optionsCount: null,
+    );
+    const second = DriverInteractionMaterial(
+      entry: 2,
+      id: 'second',
+      targetThreadId: 'thread-main',
+      kind: DriverInteractionMaterialKind.question,
+      title: 'Second',
+      body: 'Second exact body',
+    );
     await native.publish(const [first, second]);
     await _driverConversation(env);
-    final keys = container.read(conversationViewModelProvider('thread-main')).requireValue.currentEditors;
+    final keys = container
+        .read(conversationViewModelProvider('thread-main'))
+        .requireValue
+        .currentEditors;
     expect(keys, hasLength(2));
     expect(_passiveDriverCapture(env, native).interactionEditors, isNull);
     await _driverEditor(env, 'first');
@@ -245,29 +580,279 @@ void main() {
     expect(partial.conversation!.currentEditors, hasLength(2));
     expect(partial.interactionEditors!.single.key.interactionId, 'first');
     final partialWorkspace = partial.toJson()['workspace'] as Map;
-    expect((partialWorkspace['activeInteractions'] as List).single, isA<Map>().having((value) => value['id'], 'mounted member', 'first'));
-    expect(partialWorkspace['activeInteraction'], isNull, reason: 'One mounted member out of two is not a unique active interaction');
+    expect(
+      (partialWorkspace['activeInteractions'] as List).single,
+      isA<Map>().having((value) => value['id'], 'mounted member', 'first'),
+    );
+    expect(
+      partialWorkspace['activeInteraction'],
+      isNull,
+      reason:
+          'One mounted member out of two is not a unique active interaction',
+    );
     final secondKey = keys.singleWhere((key) => key.interactionId == 'second');
     expect(container.exists(interactionViewModelProvider(secondKey)), isFalse);
+    final undeclared =
+        (((partialWorkspace['activeInteractions'] as List).single['content']
+                        as Map)['questions']
+                    as List)
+                .single
+            as Map;
+    expect(
+      undeclared.keys,
+      containsAll(['optionsCount', 'options', 'optionsComplete']),
+    );
+    expect(
+      (
+        undeclared['optionsCount'],
+        undeclared['options'],
+        undeclared['optionsComplete'],
+      ),
+      (null, null, null),
+    );
+    await _driverEditor(env, 'second');
+    final both =
+        (_passiveDriverCapture(env, native).toJson()['workspace']
+                as Map)['activeInteractions']
+            as List;
+    final knownEmpty =
+        ((both.cast<Map>().singleWhere(
+                          (value) => value['id'] == 'second',
+                        )['content']
+                        as Map)['questions']
+                    as List)
+                .single
+            as Map;
+    expect(knownEmpty['optionsCount'], 0);
+    expect(knownEmpty['options'], <Object?>[]);
+    expect(knownEmpty['optionsComplete'], isTrue);
+    expect(
+      native.optionReads,
+      isEmpty,
+      reason: 'Undeclared and known-empty options do not require native option reads',
+    );
 
-    const exactBody = '# Deferred native body\n\nThe entire original material must be consumed before this is visible.';
-    await native.publish(const [DriverInteractionMaterial(entry: 3, id: 'chunked', targetThreadId: 'thread-main',
-      kind: DriverInteractionMaterialKind.question, title: 'Deferred material', body: exactBody, deferredBody: true)]);
+    const exactBody =
+        '# Deferred native body\n\nThe entire original material must be consumed before this is visible.';
+    const exactLabel = 'Deferred exact label';
+    const exactDescription = 'Deferred exact description';
+    const chunked = DriverInteractionMaterial(
+      entry: 3,
+      id: 'chunked',
+      targetThreadId: 'thread-main',
+      kind: DriverInteractionMaterialKind.question,
+      title: 'Deferred material',
+      body: exactBody,
+      deferredBody: true,
+      optionsCount: 2,
+      optionPageSize: 1,
+      options: [
+        OptionReadItem(
+          index: 0,
+          label: ReadText.deferred(fieldId: 43, utf8Bytes: 20),
+          description: ReadText.inline(text: 'First native description'),
+        ),
+        OptionReadItem(
+          index: 1,
+          label: ReadText.inline(text: 'Second native label'),
+          description: ReadText.deferred(fieldId: 44, utf8Bytes: 26),
+        ),
+      ],
+      deferredTexts: {43: exactLabel, 44: exactDescription},
+    );
+    final firstOptions = native.holdOptions(chunked.reference);
+    final secondOptions = native.holdOptions(chunked.reference, offset: 1);
+    final bodyRemainder = native.holdText(chunked.reference, 42, offset: 8);
+    final labelRemainder = native.holdText(chunked.reference, 43, offset: 8);
+    final descriptionStart = native.holdText(chunked.reference, 44);
+    await native.publish(const [chunked]);
     await _driverConversation(env);
     final chunkKey = await _driverEditor(env, 'chunked', complete: false);
-    final reader = container.read(interactionViewModelProvider(chunkKey).notifier);
-    await reader.loadNextQuestions();
-    await reader.loadText(42);
-    expect(container.read(interactionViewModelProvider(chunkKey)).requireValue.texts[42]!.complete, isFalse);
-    final incomplete = (_passiveDriverCapture(env, native).toJson()['workspace'] as Map)['activeInteraction'] as Map;
+    final reader = container.read(
+      interactionViewModelProvider(chunkKey).notifier,
+    );
+    await firstOptions.entered.future;
+    final unreadState = await _driverEditorState(
+      env,
+      chunkKey,
+      (state) => state.questions[0]?.optionsLoading == true,
+    );
+    expect(unreadState.questions[0]!.options, isEmpty);
+    expect(unreadState.questions[0]!.nextOptionOffset, 0);
+    final unread =
+        (_passiveDriverCapture(env, native).toJson()['workspace']
+                as Map)['activeInteraction']
+            as Map;
+    final unreadQuestion =
+        ((unread['content'] as Map)['questions'] as List).single as Map;
+    expect(unreadQuestion['optionsCount'], 2);
+    expect(unreadQuestion['options'], <Object?>[]);
+    expect(unreadQuestion['optionsComplete'], isFalse);
+
+    firstOptions.release();
+    await secondOptions.entered.future;
+    final pageState = await _driverEditorState(
+      env,
+      chunkKey,
+      (state) =>
+          state.questions[0]?.options.length == 1 &&
+          state.questions[0]!.optionsLoading,
+    );
+    expect(pageState.questions[0]!.nextOptionOffset, 1);
+    final page =
+        (_passiveDriverCapture(env, native).toJson()['workspace']
+                as Map)['activeInteraction']
+            as Map;
+    final pageQuestion =
+        ((page['content'] as Map)['questions'] as List).single as Map;
+    expect(pageQuestion['optionsCount'], 2);
+    expect(pageQuestion['options'], [
+      {'index': 0, 'label': null, 'description': 'First native description'},
+    ]);
+    expect(pageQuestion['optionsComplete'], isFalse);
+    expect(
+      native.textReads,
+      isEmpty,
+      reason: 'The original mount reader is still waiting on its second options page',
+    );
+
+    secondOptions.release();
+    await bodyRemainder.entered.future;
+    final bodyState = await _driverEditorState(
+      env,
+      chunkKey,
+      (state) =>
+          state.texts[42]?.loadedUtf8Bytes == 8 && state.texts[42]!.loading,
+    );
+    expect(bodyState.texts[42]!.complete, isFalse);
+    expect(bodyState.questions[0]!.nextOptionOffset, isNull);
+    expect(bodyState.questions[0]!.optionsLoading, isFalse);
+    final incomplete =
+        (_passiveDriverCapture(env, native).toJson()['workspace']
+                as Map)['activeInteraction']
+            as Map;
     expect(incomplete['body'], isNull);
-    expect(((incomplete['content'] as Map)['questions'] as List).single['question'], isNull);
+    final incompleteQuestion =
+        ((incomplete['content'] as Map)['questions'] as List).single as Map;
+    expect(incompleteQuestion['question'], isNull);
+    expect(incompleteQuestion['options'], [
+      {'index': 0, 'label': null, 'description': 'First native description'},
+      {'index': 1, 'label': 'Second native label', 'description': null},
+    ]);
+    expect(
+      incompleteQuestion['optionsComplete'],
+      isFalse,
+      reason: 'A complete options page is not complete deferred text',
+    );
     final readsBefore = native.textReads.length;
     _passiveDriverCapture(env, native);
-    expect(native.textReads, hasLength(readsBefore), reason: 'Driver cannot finish a deferred field');
+    expect(
+      native.textReads,
+      hasLength(readsBefore),
+      reason: 'Driver cannot finish a deferred field',
+    );
+
+    bodyRemainder.release();
+    await labelRemainder.entered.future;
+    final labelState = await _driverEditorState(
+      env,
+      chunkKey,
+      (state) =>
+          state.texts[43]?.loadedUtf8Bytes == 8 && state.texts[43]!.loading,
+    );
+    expect(labelState.texts[43]!.text, 'Deferred');
+    expect(labelState.texts[43]!.complete, isFalse);
+    final labelPrefix =
+        (_passiveDriverCapture(env, native).toJson()['workspace']
+                as Map)['activeInteraction']
+            as Map;
+    expect(labelPrefix['body'], exactBody);
+    final prefixQuestion =
+        ((labelPrefix['content'] as Map)['questions'] as List).single as Map;
+    expect(prefixQuestion['options'], [
+      {'index': 0, 'label': null, 'description': 'First native description'},
+      {'index': 1, 'label': 'Second native label', 'description': null},
+    ]);
+    expect(prefixQuestion['optionsComplete'], isFalse);
+
+    labelRemainder.release();
+    await descriptionStart.entered.future;
+    await _driverEditorState(
+      env,
+      chunkKey,
+      (state) =>
+          state.texts[43]?.complete == true && state.texts[44]?.loading == true,
+    );
+    final descriptionPending =
+        (_passiveDriverCapture(env, native).toJson()['workspace']
+                as Map)['activeInteraction']
+            as Map;
+    final pendingQuestion =
+        ((descriptionPending['content'] as Map)['questions'] as List).single
+            as Map;
+    expect(pendingQuestion['options'], [
+      {
+        'index': 0,
+        'label': exactLabel,
+        'description': 'First native description',
+      },
+      {'index': 1, 'label': 'Second native label', 'description': null},
+    ]);
+    expect(
+      pendingQuestion['optionsComplete'],
+      isFalse,
+      reason: 'Both labels alone are not complete option material',
+    );
+
+    descriptionStart.release();
+    await _driverEditorState(
+      env,
+      chunkKey,
+      (state) =>
+          state.texts[42]?.complete == true &&
+          state.texts[43]?.complete == true &&
+          state.texts[44]?.complete == true &&
+          !state.texts[44]!.loading,
+    );
     await reader.completeRead();
-    final complete = (_passiveDriverCapture(env, native).toJson()['workspace'] as Map)['activeInteraction'] as Map;
+    final complete =
+        (_passiveDriverCapture(env, native).toJson()['workspace']
+                as Map)['activeInteraction']
+            as Map;
     expect(complete['body'], exactBody);
+    final completeQuestion =
+        ((complete['content'] as Map)['questions'] as List).single as Map;
+    expect(completeQuestion['question'], exactBody);
+    expect(completeQuestion['optionsCount'], 2);
+    expect(completeQuestion['options'], [
+      {
+        'index': 0,
+        'label': exactLabel,
+        'description': 'First native description',
+      },
+      {
+        'index': 1,
+        'label': 'Second native label',
+        'description': exactDescription,
+      },
+    ]);
+    expect(completeQuestion['optionsComplete'], isTrue);
+    expect(native.optionReads, [
+      (
+        host: 'thread-main',
+        reference: chunked.reference,
+        questionIndex: 0,
+        offset: 0,
+        limit: 32,
+      ),
+      (
+        host: 'thread-main',
+        reference: chunked.reference,
+        questionIndex: 0,
+        offset: 1,
+        limit: 32,
+      ),
+    ]);
     expect(native.textReads.length, greaterThan(readsBefore));
     await native.publish(const []);
     await _driverConversation(env);
@@ -277,82 +862,323 @@ void main() {
     expect(empty.interactionEditors, isEmpty);
     expect((empty.toJson()['workspace'] as Map)['activeInteractions'], isEmpty);
     expect((empty.toJson()['workspace'] as Map)['activeInteraction'], isNull);
+    await env.close();
+    expect(native.pins, isNotEmpty);
+    expect(
+      native.pins.every((pin) => pin.closed),
+      isTrue,
+      reason: 'Application close joins every original native read owner',
+    );
+  });
+
+  test('Driver options stay incomplete for a deferred label alone after pages and descriptions complete', () async {
+    final env = await _environment(threads: [fixtureThread('thread-main')]);
+    final native = DriverInteractionNative(
+      env.application.domains.conversationPort,
+    );
+    addTearDown(native.releaseHeldResponses);
+    await _driverConversation(env);
+    const exactBody = 'Inline body with complete option description.';
+    const exactLabel = 'Deferred exact label';
+    const exactDescription = 'The entire description is already available.';
+    const material = DriverInteractionMaterial(
+      entry: 1,
+      id: 'label-only',
+      targetThreadId: 'thread-main',
+      kind: DriverInteractionMaterialKind.question,
+      title: 'Label-only read',
+      body: exactBody,
+      optionsCount: 1,
+      options: [
+        OptionReadItem(
+          index: 0,
+          label: ReadText.deferred(fieldId: 43, utf8Bytes: 20),
+          description: ReadText.inline(text: exactDescription),
+        ),
+      ],
+      deferredTexts: {43: exactLabel},
+    );
+    final labelRemainder = native.holdText(material.reference, 43, offset: 8);
+    await native.publish(const [material]);
+    await _driverConversation(env);
+    final key = await _driverEditor(env, 'label-only', complete: false);
+    await labelRemainder.entered.future;
+    final pending = await _driverEditorState(
+      env,
+      key,
+      (state) =>
+          state.sourceCurrent &&
+          state.texts[43]?.loadedUtf8Bytes == 8 &&
+          state.texts[43]!.loading,
+    );
+    final question = pending.questions[0]!;
+    expect(pending.readIssues, isEmpty);
+    expect(pending.questionPageLoading, isFalse);
+    expect(pending.nextQuestionOffset, isNull);
+    expect(question.question.optionsCount, 1);
+    expect(question.options.map((option) => option.index), [0]);
+    expect(question.optionsLoading, isFalse);
+    expect(question.optionsError, isNull);
+    expect(question.nextOptionOffset, isNull);
+    expect(
+      pending.texts.keys.toList(),
+      [43],
+      reason: 'Only the label is deferred; body, description and identity texts are inline',
+    );
+    expect(pending.texts[43]!.text, 'Deferred');
+    expect(pending.texts[43]!.complete, isFalse);
+    expect(pending.texts[43]!.error, isNull);
+    expect(native.optionReads.single, (
+      host: 'thread-main',
+      reference: material.reference,
+      questionIndex: 0,
+      offset: 0,
+      limit: 32,
+    ));
+    expect(native.textReads.map((call) => (call.field, call.offset)), [
+      (43, 0),
+      (43, 8),
+    ]);
+    final incomplete =
+        (_passiveDriverCapture(env, native).toJson()['workspace']
+                as Map)['activeInteraction']
+            as Map;
+    expect(incomplete['body'], exactBody);
+    expect(((incomplete['content'] as Map)['questions'] as List).single, {
+      'index': 0,
+      'id': 'q',
+      'header': 'Label-only read',
+      'question': exactBody,
+      'isOther': true,
+      'isSecret': false,
+      'optionsCount': 1,
+      'options': [
+        {'index': 0, 'label': null, 'description': exactDescription},
+      ],
+      'optionsComplete': false,
+    });
+
+    final openedReads = native.reads.length;
+    labelRemainder.release();
+    final ready = await _driverEditorState(
+      env,
+      key,
+      (state) => state.texts[43]?.complete == true && !state.texts[43]!.loading,
+    );
+    expect(
+      ready.scope,
+      pending.scope,
+      reason: 'The same original reader completes the label',
+    );
+    expect(native.reads, hasLength(openedReads));
+    final complete =
+        (_passiveDriverCapture(env, native).toJson()['workspace']
+                as Map)['activeInteraction']
+            as Map;
+    expect(complete['body'], exactBody);
+    final completeQuestion =
+        ((complete['content'] as Map)['questions'] as List).single as Map;
+    expect(completeQuestion['options'], [
+      {'index': 0, 'label': exactLabel, 'description': exactDescription},
+    ]);
+    expect(completeQuestion['optionsComplete'], isTrue);
+    await env.close();
+    expect(native.pins, isNotEmpty);
+    expect(
+      native.pins.every((pin) => pin.closed),
+      isTrue,
+      reason: 'Application close joins the original label read owner',
+    );
   });
 
   test('Driver keeps Recovery actions/unknown inspection and cold preparing directory facts without opening the child', () async {
     final root = fixtureThread('thread-main');
-    final child = fixtureThread('cold-child', parentThreadId: root.id, role: 'reviewer');
-    const issue = RecoveryIssueRead(id: ReadText.inline(text: 'worktree-driver'), scope: RecoveryScope.thread,
-      category: RecoveryCategory.repository, availableActions: [RecoveryAction.retry, RecoveryAction.cleanupWorktree],
-      projectId: ReadText.inline(text: 'project'), threadId: ReadText.inline(text: 'unselected-thread'),
+    final child = fixtureThread(
+      'cold-child',
+      parentThreadId: root.id,
+      role: 'reviewer',
+    );
+    const issue = RecoveryIssueRead(
+      id: ReadText.inline(text: 'worktree-driver'),
+      scope: RecoveryScope.thread,
+      category: RecoveryCategory.repository,
+      availableActions: [RecoveryAction.retry, RecoveryAction.cleanupWorktree],
+      projectId: ReadText.inline(text: 'project'),
+      threadId: ReadText.inline(text: 'unselected-thread'),
       message: ReadText.inline(text: 'Original inspection unavailable'),
-      worktree: WorktreeRecoveryPreviewRead(inspection: WorktreeInspection.unavailable, ownerKind: WorktreeOwner.child,
-        ownerThreadId: ReadText.inline(text: 'cold-child'), leaseRevision: 23, state: ReadText.inline(text: 'preserved'),
-        repositoryRoot: ReadText.inline(text: '/repo'), path: ReadText.inline(text: '/repo/.anywork/cold-child/session'),
-        branch: ReadText.inline(text: 'preserved-branch'), baseCommit: ReadText.inline(text: 'base-commit'),
-        headCommit: null, dirty: null, changedFiles: null));
-    final env = await _environment(threads: [root], agents: [
-      SelectorDirectoryPort.agentEntry(root),
-      SelectorDirectoryPort.agentEntry(child).copyWith(
-        execution: const AgentExecution(id: 'cold-preparing', phase: AgentExecutionPhase.preparing, turnId: null),
-        canStop: true, awaitingScheduling: true),
-    ], recoveryIssues: const [issue]);
+      worktree: WorktreeRecoveryPreviewRead(
+        inspection: WorktreeInspection.unavailable,
+        ownerKind: WorktreeOwner.child,
+        ownerThreadId: ReadText.inline(text: 'cold-child'),
+        leaseRevision: 23,
+        state: ReadText.inline(text: 'preserved'),
+        repositoryRoot: ReadText.inline(text: '/repo'),
+        path: ReadText.inline(text: '/repo/.anywork/cold-child/session'),
+        branch: ReadText.inline(text: 'preserved-branch'),
+        baseCommit: ReadText.inline(text: 'base-commit'),
+        headCommit: null,
+        dirty: null,
+        changedFiles: null,
+      ),
+    );
+    final env = await _environment(
+      threads: [root],
+      agents: [
+        SelectorDirectoryPort.agentEntry(root),
+        SelectorDirectoryPort.agentEntry(child).copyWith(
+          execution: const AgentExecution(
+            id: 'cold-preparing',
+            phase: AgentExecutionPhase.preparing,
+            turnId: null,
+          ),
+          canStop: true,
+          awaitingScheduling: true,
+        ),
+      ],
+      recoveryIssues: const [issue],
+    );
     await env.mountDirectory();
-    await env.openContent(baseline(1, items: const []), threadId: 'thread-main');
-    await env.application.domains.conversationPort.publishExecution(selectorExecution(status: ThreadStatus.waitingInteraction));
+    await env.openContent(
+      baseline(1, items: const []),
+      threadId: 'thread-main',
+    );
+    await env.application.domains.conversationPort.publishExecution(
+      selectorExecution(status: ThreadStatus.waitingInteraction),
+    );
     final nativeBefore = env.nativeActivity;
     final permits = List.of(env.application.graph.budget.usage);
-    final captured = DriverInspection(graph: env.application.graph, container: env.application.container).capture();
+    final captured = DriverInspection(
+      graph: env.application.graph,
+      container: env.application.container,
+    ).capture();
     final json = captured.toJson();
     final recovery = (json['recoveryIssues'] as List).single as Map;
     expect(recovery['availableActions'], ['retry', 'cleanupWorktree']);
     expect(recovery.containsKey('actions'), isFalse);
     expect(recovery['worktree'], {
-      'inspection': 'unavailable', 'ownerKind': 'child', 'ownerThreadId': 'cold-child', 'leaseRevision': 23,
-      'state': 'preserved', 'repositoryRoot': '/repo', 'path': '/repo/.anywork/cold-child/session',
-      'branch': 'preserved-branch', 'baseCommit': 'base-commit', 'headCommit': null, 'dirty': null, 'changedFiles': null,
+      'inspection': 'unavailable',
+      'ownerKind': 'child',
+      'ownerThreadId': 'cold-child',
+      'leaseRevision': 23,
+      'state': 'preserved',
+      'repositoryRoot': '/repo',
+      'path': '/repo/.anywork/cold-child/session',
+      'branch': 'preserved-branch',
+      'baseCommit': 'base-commit',
+      'headCommit': null,
+      'dirty': null,
+      'changedFiles': null,
     });
     final workspace = json['workspace'] as Map;
-    expect(workspace['isBusy'], isFalse, reason: 'Ready waitingInteraction without execution is not busy');
-    final cold = (workspace['agents'] as List).cast<Map>().singleWhere((row) => row['threadId'] == 'cold-child');
-    expect(cold['execution'], {'id': 'cold-preparing', 'phase': 'preparing', 'turnId': null});
+    expect(
+      workspace['isBusy'],
+      isFalse,
+      reason: 'Ready waitingInteraction without execution is not busy',
+    );
+    final cold = (workspace['agents'] as List).cast<Map>().singleWhere(
+      (row) => row['threadId'] == 'cold-child',
+    );
+    expect(cold['execution'], {
+      'id': 'cold-preparing',
+      'phase': 'preparing',
+      'turnId': null,
+    });
     expect((cold['canStop'], cold['awaitingScheduling']), (true, true));
-    expect(env.application.graph.conversation.existingSession('cold-child'), isNull);
+    expect(
+      env.application.graph.conversation.existingSession('cold-child'),
+      isNull,
+    );
     expect(env.nativeActivity, nativeBefore);
     expect(env.application.graph.budget.usage, permits);
   });
 
   test('Driver statistics JSON exposes the true paired identity/references; releasing the request does not close another visible demand', () async {
-    const origin = ProductReadOrigin(ownerEpoch: 'driver-paired-statistics', incarnation: 5);
+    const origin = ProductReadOrigin(
+      ownerEpoch: 'driver-paired-statistics',
+      incarnation: 5,
+    );
     const summaries = PerformanceSummariesReadRef(entry: 71, revision: 61);
     const history = PerformanceHistoryReadRef(entry: 81, revision: 73);
-    const summaryCollection = ProductCollectionRef(entry: 91, revision: 61, total: 0);
-    const historyCollection = ProductCollectionRef(entry: 92, revision: 73, total: 0);
-    final native = ScriptedStatisticsPort(origin: origin, summariesFeedId: 'real-summary-feed', historyFeedId: 'real-history-feed',
-      summaryScripts: {summaries: SummariesMaterialScript(collection: summaryCollection, entries: const [], entities: const {})},
-      historyScripts: {history: HistoryMaterialScript(collection: historyCollection, entries: const [], entities: const {})});
+    const summaryCollection = ProductCollectionRef(
+      entry: 91,
+      revision: 61,
+      total: 0,
+    );
+    const historyCollection = ProductCollectionRef(
+      entry: 92,
+      revision: 73,
+      total: 0,
+    );
+    final native = ScriptedStatisticsPort(
+      origin: origin,
+      summariesFeedId: 'real-summary-feed',
+      historyFeedId: 'real-history-feed',
+      summaryScripts: {
+        summaries: SummariesMaterialScript(
+          collection: summaryCollection,
+          entries: const [],
+          entities: const {},
+        ),
+      },
+      historyScripts: {
+        history: HistoryMaterialScript(
+          collection: historyCollection,
+          entries: const [],
+          entities: const {},
+        ),
+      },
+    );
     final env = DriverTestEnvironment(statisticsPort: native);
     addTearDown(env.close);
     await env.establish(threads: [fixtureThread('thread-main')]);
     final repository = env.application.graph.statistics;
     final pageDemand = repository.acquireVisibleDemand();
     var pageReleased = false;
-    addTearDown(() { if (!pageReleased) pageDemand.release(); });
+    addTearDown(() {
+      if (!pageReleased) pageDemand.release();
+    });
     final output = DriverProductRequests(env.application.graph).statistics();
     final summaryFeed = await native.summariesAt(1);
     final historyFeed = await native.historyAt(1);
-    await Future.wait([summaryFeed.listened.future, historyFeed.listened.future]);
-    summaryFeed.emit(summariesBaseline(feedId: 'real-summary-feed', origin: origin, revision: 19,
-      reference: summaries, collection: summaryCollection));
-    historyFeed.emit(historyBaseline(feedId: 'real-history-feed', origin: origin, revision: 19,
-      reference: history, collection: historyCollection));
-    await Future.wait([summaryFeed.acknowledged(1), historyFeed.acknowledged(1)]);
+    await Future.wait([
+      summaryFeed.listened.future,
+      historyFeed.listened.future,
+    ]);
+    summaryFeed.emit(
+      summariesBaseline(
+        feedId: 'real-summary-feed',
+        origin: origin,
+        revision: 19,
+        reference: summaries,
+        collection: summaryCollection,
+      ),
+    );
+    historyFeed.emit(
+      historyBaseline(
+        feedId: 'real-history-feed',
+        origin: origin,
+        revision: 19,
+        reference: history,
+        collection: historyCollection,
+      ),
+    );
+    await Future.wait([
+      summaryFeed.acknowledged(1),
+      historyFeed.acknowledged(1),
+    ]);
     final json = jsonDecode(await output) as Map;
-    expect((json['ownerEpoch'], json['incarnation'], json['revision']), ('driver-paired-statistics', 5, 19));
+    expect(
+      (json['ownerEpoch'], json['incarnation'], json['revision']),
+      ('driver-paired-statistics', 5, 19),
+    );
     expect(json['summariesReference'], {'entry': 71, 'revision': 61});
     expect(json['historyReference'], {'entry': 81, 'revision': 73});
     for (final key in ['feedId', 'summariesRevision', 'historyRevision']) {
-      expect(json.containsKey(key), isFalse, reason: 'No invented legacy identity placeholder: $key');
+      expect(
+        json.containsKey(key),
+        isFalse,
+        reason: 'No invented legacy identity placeholder: $key',
+      );
     }
     expect(json['loaded'], isTrue);
     expect(json['summaries'], isEmpty);
@@ -2395,7 +3221,7 @@ StudioTimelineBaseline _factsBaseline() => StudioTimelineBaseline(
             text: '# Plan',
           ),
         ],
-        state: const ResolvedThreadToolUserInputView([
+        state: ResolvedThreadToolUserInputView([
           ThreadUserInputAnswerView(
             questionId: agentSessionPlanConfirmationQuestionId,
             answers: [agentSessionPlanApproveAnswer],

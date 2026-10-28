@@ -281,7 +281,10 @@ final class _DraftsRepository
       frozenContext = handle is _Composer
           ? AttachmentAdmissionContext.existingThread(handle.threadId)
           : AttachmentAdmissionContext.newThread(
-              route: _readyStartRoute(this, (handle as _Start).state.value).route,
+              route: _readyStartRoute(
+                this,
+                (handle as _Start).state.value,
+              ).route,
             );
     } catch (error, stack) {
       contextFailure = error;
@@ -296,7 +299,8 @@ final class _DraftsRepository
     }
     _AttachmentWork? work;
     try {
-      if (contextFailure != null) Error.throwWithStackTrace(contextFailure, contextStack!);
+      if (contextFailure != null)
+        Error.throwWithStackTrace(contextFailure, contextStack!);
       work = _AttachmentWork(
         this,
         handle,

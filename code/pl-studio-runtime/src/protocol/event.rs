@@ -4,8 +4,7 @@ use serde::{Deserialize, Serialize};
 use crate::statistics::StudioModelPerformanceSnapshot;
 use crate::{
     AccountUsageStateSnapshot, PersistenceStateSnapshot, ProjectRecord, SkillsStateSnapshot,
-    StudioAgentDirectoryEntry, StudioLspHealth, StudioMcpHealth, StudioRecoveryIssue,
-    StudioUpdateStateSnapshot,
+    StudioAgentDirectoryEntry, StudioLspHealth, StudioMcpHealth, StudioUpdateStateSnapshot,
 };
 
 /// Studio 产品级事件信封。
@@ -30,7 +29,6 @@ pub enum StudioProductEventKind {
     AgentDirectoryChanged(StudioAgentDirectoryState),
     SettingsConfigStateChanged(Box<StudioSettingsConfigStateSnapshot>),
     ModelCatalogStateChanged(Box<StudioModelCatalogStateSnapshot>),
-    RecoveryStateChanged(StudioRecoveryStateSnapshot),
     McpStateChanged(StudioMcpStateSnapshot),
     LspStateChanged(StudioLspStateSnapshot),
     SkillsStateChanged(StudioSkillsStateSnapshot),
@@ -195,12 +193,6 @@ pub struct StudioPurposeCostSnapshot {
     pub has_unpriced_usage: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct StudioRecoveryStateSnapshot {
-    pub state: ObservedResource<Vec<StudioRecoveryIssue>>,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct StudioMcpStateSnapshot {
@@ -250,7 +242,7 @@ impl From<SkillsStateSnapshot> for StudioSkillsStateSnapshot {
     }
 }
 
-/// Complete Studio query snapshot shared by FRB and HTTP adapters.
+/// Studio diagnostic query snapshot; Recovery uses its own typed read/feed boundary.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct StudioStateSnapshot {
@@ -261,7 +253,6 @@ pub struct StudioStateSnapshot {
     pub agent_directory: StudioAgentDirectoryState,
     pub settings_config: StudioSettingsConfigStateSnapshot,
     pub model_catalog: StudioModelCatalogStateSnapshot,
-    pub recovery: StudioRecoveryStateSnapshot,
     pub mcp: StudioMcpStateSnapshot,
     pub lsp: StudioLspStateSnapshot,
     pub skills_by_project: Vec<StudioSkillsStateSnapshot>,

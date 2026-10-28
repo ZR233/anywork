@@ -29,6 +29,9 @@ abstract class AcpAccountEditorViewState with _$AcpAccountEditorViewState {
     @Default(0) int latestIntent,
     SettingsAction? prepareAction,
     SettingsAction? cancelAction,
+
+    /// 取消目标的安装 operation 身份，不是取消命令票据自身的 id。
+    String? cancelTargetOperationId,
     StudioFailure? observationError,
   }) = _AcpAccountEditorViewState;
 
@@ -65,8 +68,15 @@ abstract class AcpAccountEditorViewState with _$AcpAccountEditorViewState {
   /// 回执已受理但 canonical 状态尚未给出 operation。
   bool get admissionPending => preparing && install.operationId == null;
 
-  /// 取消命令自身在途；取消**不受** [preparing] 影响。
-  bool get cancelPending => cancelAction?.pending == true;
+  /// 只有当前 canonical operation 的取消动作参与呈现；provider 由本表单的 target 固定。
+  SettingsAction? get currentCancelAction =>
+      cancelTargetOperationId != null &&
+          cancelTargetOperationId == install.operationId
+      ? cancelAction
+      : null;
+
+  /// 当前 operation 的取消命令自身在途；取消**不受** [preparing] 影响。
+  bool get cancelPending => currentCancelAction?.pending == true;
 
   /// 准备主操作的门控：阶段在途或本表单 start 未回执时不再发起第二个 start。
   bool get prepareBlocked =>

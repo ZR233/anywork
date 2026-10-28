@@ -138,11 +138,6 @@ impl StudioRuntime {
                     },
                 ))
             }
-            StudioProductTopic::Recovery => {
-                StudioProductBaselineState::Recovery(Box::new(crate::StudioRecoveryStateSnapshot {
-                    state: self.recovery.state(),
-                }))
-            }
             StudioProductTopic::Mcp => {
                 StudioProductBaselineState::Mcp(Box::new(self.read_mcp_state().await?))
             }

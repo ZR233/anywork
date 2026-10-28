@@ -173,7 +173,11 @@ impl StudioRuntime {
         // helpers own the same Thread separately, so their real end is waited for here: before the
         // persistence owner is released, and while the global recorder can still take their last
         // report.
-        let writers = self.store.thread_persistence().wait_for_writers_end(None).await;
+        let writers = self
+            .store
+            .thread_persistence()
+            .wait_for_writers_end(None)
+            .await;
         writers.map_err(PersistenceShutdownFailure::Writers)?;
         let repository = self.agent_facility.persistence.lock().await.clone();
         if let Some(repository) = repository {

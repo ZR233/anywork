@@ -119,8 +119,7 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
       error: (error, stack) => const Center(child: Icon(Icons.error_outline)),
       data: (state) {
         final page = _stopPage;
-        final stop = page == null || state.retiredPlanner
-            || state.runtimeDriven
+        final stop = page == null || state.retiredPlanner || state.runtimeDriven
             ? null
             : vm.captureStop(page);
         final VoidCallback? onStop = stop == null
@@ -167,11 +166,11 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
           composerBuilder: (compact) => state.runtimeDriven
               ? AgentReadOnlyConnector(threadId: threadId)
               : ConversationInputConnector(
-            threadId: threadId,
-            onStop: onStop,
-            stopState: stopState,
-            compact: compact,
-          ),
+                  threadId: threadId,
+                  onStop: onStop,
+                  stopState: stopState,
+                  compact: compact,
+                ),
           interactions: state.runtimeDriven || !hasInteractions
               ? null
               : ConstrainedBox(

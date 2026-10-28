@@ -493,7 +493,20 @@ async fn observe_target(
                             .progress
                             .error
                             .as_ref()
-                            .is_some_and(|error| Arc::ptr_eq(error, failure))
+                            .is_some_and(|error| {
+                                Arc::ptr_eq(error, failure)
+                                    // This original worker has one final WriteFence. Re-publishing
+                                    // its cached error may allocate a new wrapper, but an already
+                                    // durable fixed ticket permits observing completion, not a new
+                                    // grant to retry an unfinished or unrelated failure.
+                                    || matches!(
+                                        (error.as_ref(), failure.as_ref()),
+                                        (ProgressFailure::FinalWriteBehind(old),
+                                         ProgressFailure::FinalWriteBehind(current))
+                                            if old.through == current.through
+                                                && services.writer.saved_watermark() >= current.through
+                                    )
+                            })
                 })
                 && can_retry_progress(services, observation, failure)
         })

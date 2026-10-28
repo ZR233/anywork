@@ -2,39 +2,21 @@ use super::{command, control, read_routes, types::EmptyRequest};
 use crate::{
     AppState,
     error::ApiError,
-    routes::{ApiJson, StudioApiErrors},
+    routes::{ApiJson, NoReplay, StudioApiErrors},
 };
 use axum::{
-    extract::{FromRequestParts, State},
-    http::{HeaderValue, request::Parts},
+    extract::State,
+    http::HeaderValue,
     response::{
         IntoResponse, Response,
         sse::{KeepAlive, Sse},
     },
 };
 use pl_protocol::products::feed::configuration::ConfigurationFrame;
-use pl_protocol::studio::{StudioError, StudioErrorCode, StudioErrorDetails};
+use pl_protocol::studio::{StudioError, StudioErrorCode};
 use std::time::Duration;
 use utoipa_axum::{router::OpenApiRouter, routes};
 
-pub(super) struct NoReplay;
-impl FromRequestParts<AppState> for NoReplay {
-    type Rejection = ApiError;
-    async fn from_request_parts(parts: &mut Parts, _: &AppState) -> Result<Self, Self::Rejection> {
-        if parts.headers.contains_key("last-event-id") {
-            return Err(StudioError::new(
-                StudioErrorCode::Conflict,
-                "Product streams do not support replay; create a new POST stream",
-                false,
-            )
-            .with_details(StudioErrorDetails::Reason {
-                reason: "replayUnsupported".into(),
-            })
-            .into());
-        }
-        Ok(Self)
-    }
-}
 pub(crate) fn router() -> OpenApiRouter<AppState> {
     OpenApiRouter::new()
         .routes(routes!(events))

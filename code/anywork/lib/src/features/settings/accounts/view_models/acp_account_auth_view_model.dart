@@ -180,6 +180,7 @@ class AcpAccountAuthViewModel extends _$AcpAccountAuthViewModel {
     if ((cancel ? current.cancelBusy : current.busy)) return;
     final lifetime = _lifetime;
     final intent = ++_intent;
+    final target = current.target;
     // 新命令取代旧拒绝：认证类通知只在明确重试时清除。
     state = AsyncData(
       current.copyWith(
@@ -198,6 +199,7 @@ class AcpAccountAuthViewModel extends _$AcpAccountAuthViewModel {
         _ready &&
         lifetime == _lifetime &&
         state.asData != null &&
+        state.requireValue.target == target &&
         state.requireValue.latestIntent == intent;
     void update(SettingsAction action) {
       if (!owns()) return;
@@ -212,14 +214,13 @@ class AcpAccountAuthViewModel extends _$AcpAccountAuthViewModel {
     try {
       ticket = admit();
     } on StudioFailure catch (error) {
-      update(
-        SettingsAction(
-          intent: intent,
-          outcome: SettingsActionOutcome.rejected,
-          error: error,
-        ),
+      final action = SettingsAction(
+        intent: intent,
+        outcome: SettingsActionOutcome.rejected,
+        error: error,
       );
-      _notice(error, cancel: cancel, intent: intent, lifetime: lifetime);
+      update(action);
+      _notice(action, requestTarget: target, lifetime: lifetime);
       return;
     }
     StudioFailure? observationError;
@@ -256,38 +257,37 @@ class AcpAccountAuthViewModel extends _$AcpAccountAuthViewModel {
     }
     final result = await ticket.result;
     if (!owns()) return;
-    update(
-      settledSettingsAction(
-        intent,
-        result,
-        operation: ticket.state.value,
-      ).copyWith(observationError: observationError),
-    );
+    final action = settledSettingsAction(
+      intent,
+      result,
+      operation: ticket.state.value,
+    ).copyWith(observationError: observationError);
+    update(action);
     // 命令层失败事实只从 typed 结算结果读取，不解析错误文案。
-    final settledError = cancel
-        ? state.requireValue.cancelAction?.error
-        : state.requireValue.checkAction?.error;
-    if (settledError != null) {
-      _notice(settledError, cancel: cancel, intent: intent, lifetime: lifetime);
-    }
+    _notice(action, requestTarget: target, lifetime: lifetime);
   }
 
-  /// 命令失败通知：重复输入（typed busy + 该账号仍在途）不记成红色失败。
+  /// 命令失败通知：只按原目标及 typed 结算证据判断是否为当前重复输入。
   void _notice(
-    StudioFailure error, {
-    required bool cancel,
-    required int intent,
+    SettingsAction action, {
+    required AcpAccountTarget requestTarget,
     required int lifetime,
   }) {
     if (!_alive || !_ready || lifetime != _lifetime || state.asData == null) {
       return;
     }
     final current = state.requireValue;
-    if (current.latestIntent != intent) return;
+    if (current.latestIntent != action.intent ||
+        current.target != requestTarget) {
+      return;
+    }
+    final error = action.error;
+    if (error == null) return;
     if (isAcpAuthDuplicateWhileInFlight(
+      action: action,
       error: error,
-      requestConnectionRevision: current.target.connectionRevision,
-      currentConnectionRevision: current.target.connectionRevision,
+      requestTarget: requestTarget,
+      currentTarget: current.target,
       auth: current.auth,
     )) {
       return;
@@ -296,8 +296,8 @@ class AcpAccountAuthViewModel extends _$AcpAccountAuthViewModel {
       current.copyWith(
         notice: AcpCommandNotice(
           kind: AcpCommandNoticeKind.authentication,
-          accountId: current.target.accountId,
-          connectionRevision: current.target.connectionRevision,
+          accountId: requestTarget.accountId,
+          connectionRevision: requestTarget.connectionRevision,
           failure: error,
           operationId: current.auth.operationId,
         ),

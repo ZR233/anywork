@@ -5,7 +5,7 @@ use utoipa::ToSchema;
 
 #[derive(Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(super) struct EmptyRequest {}
+pub(crate) struct EmptyRequest {}
 
 #[derive(Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

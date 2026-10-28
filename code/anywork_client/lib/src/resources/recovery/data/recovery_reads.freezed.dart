@@ -297,7 +297,7 @@ $TypedListRefCopyWith<$Res> get issues {
 /// @nodoc
 mixin _$WorktreeRecoveryPreviewRead {
 
- WorktreeOwner get ownerKind; ReadText get ownerThreadId; int get leaseRevision; ReadText get state; ReadText get repositoryRoot; ReadText get path; ReadText get branch; ReadText get baseCommit; ReadText? get headCommit; bool get dirty; TypedListRef get changedFiles;
+ WorktreeInspection get inspection; WorktreeOwner get ownerKind; ReadText get ownerThreadId; int get leaseRevision; ReadText get state; ReadText get repositoryRoot; ReadText get path; ReadText get branch; ReadText get baseCommit; ReadText? get headCommit; bool? get dirty; TypedListRef? get changedFiles;
 /// Create a copy of WorktreeRecoveryPreviewRead
 /// with the given fields replaced by the non-null parameter values.
 @JsonKey(includeFromJson: false, includeToJson: false)
@@ -309,14 +309,14 @@ $WorktreeRecoveryPreviewReadCopyWith<WorktreeRecoveryPreviewRead> get copyWith =
 @override
 bool operator ==(Object other) {
   final _this = this as WorktreeRecoveryPreviewRead;
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is WorktreeRecoveryPreviewRead&&(identical(other.ownerKind, _this.ownerKind) || other.ownerKind == _this.ownerKind)&&(identical(other.ownerThreadId, _this.ownerThreadId) || other.ownerThreadId == _this.ownerThreadId)&&(identical(other.leaseRevision, _this.leaseRevision) || other.leaseRevision == _this.leaseRevision)&&(identical(other.state, _this.state) || other.state == _this.state)&&(identical(other.repositoryRoot, _this.repositoryRoot) || other.repositoryRoot == _this.repositoryRoot)&&(identical(other.path, _this.path) || other.path == _this.path)&&(identical(other.branch, _this.branch) || other.branch == _this.branch)&&(identical(other.baseCommit, _this.baseCommit) || other.baseCommit == _this.baseCommit)&&(identical(other.headCommit, _this.headCommit) || other.headCommit == _this.headCommit)&&(identical(other.dirty, _this.dirty) || other.dirty == _this.dirty)&&(identical(other.changedFiles, _this.changedFiles) || other.changedFiles == _this.changedFiles));
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is WorktreeRecoveryPreviewRead&&(identical(other.inspection, _this.inspection) || other.inspection == _this.inspection)&&(identical(other.ownerKind, _this.ownerKind) || other.ownerKind == _this.ownerKind)&&(identical(other.ownerThreadId, _this.ownerThreadId) || other.ownerThreadId == _this.ownerThreadId)&&(identical(other.leaseRevision, _this.leaseRevision) || other.leaseRevision == _this.leaseRevision)&&(identical(other.state, _this.state) || other.state == _this.state)&&(identical(other.repositoryRoot, _this.repositoryRoot) || other.repositoryRoot == _this.repositoryRoot)&&(identical(other.path, _this.path) || other.path == _this.path)&&(identical(other.branch, _this.branch) || other.branch == _this.branch)&&(identical(other.baseCommit, _this.baseCommit) || other.baseCommit == _this.baseCommit)&&(identical(other.headCommit, _this.headCommit) || other.headCommit == _this.headCommit)&&(identical(other.dirty, _this.dirty) || other.dirty == _this.dirty)&&(identical(other.changedFiles, _this.changedFiles) || other.changedFiles == _this.changedFiles));
 }
 
 
 @override
 int get hashCode {
   final _this = this as WorktreeRecoveryPreviewRead;
-  return Object.hash(runtimeType,_this.ownerKind,_this.ownerThreadId,_this.leaseRevision,_this.state,_this.repositoryRoot,_this.path,_this.branch,_this.baseCommit,_this.headCommit,_this.dirty,_this.changedFiles);
+  return Object.hash(runtimeType,_this.inspection,_this.ownerKind,_this.ownerThreadId,_this.leaseRevision,_this.state,_this.repositoryRoot,_this.path,_this.branch,_this.baseCommit,_this.headCommit,_this.dirty,_this.changedFiles);
 }
 
 
@@ -328,11 +328,11 @@ abstract mixin class $WorktreeRecoveryPreviewReadCopyWith<$Res>  {
   factory $WorktreeRecoveryPreviewReadCopyWith(WorktreeRecoveryPreviewRead value, $Res Function(WorktreeRecoveryPreviewRead) _then) = _$WorktreeRecoveryPreviewReadCopyWithImpl;
 @useResult
 $Res call({
- WorktreeOwner ownerKind, ReadText ownerThreadId, int leaseRevision, ReadText state, ReadText repositoryRoot, ReadText path, ReadText branch, ReadText baseCommit, ReadText? headCommit, bool dirty, TypedListRef changedFiles
+ WorktreeInspection inspection, WorktreeOwner ownerKind, ReadText ownerThreadId, int leaseRevision, ReadText state, ReadText repositoryRoot, ReadText path, ReadText branch, ReadText baseCommit, ReadText? headCommit, bool? dirty, TypedListRef? changedFiles
 });
 
 
-$ReadTextCopyWith<$Res> get ownerThreadId;$ReadTextCopyWith<$Res> get state;$ReadTextCopyWith<$Res> get repositoryRoot;$ReadTextCopyWith<$Res> get path;$ReadTextCopyWith<$Res> get branch;$ReadTextCopyWith<$Res> get baseCommit;$ReadTextCopyWith<$Res>? get headCommit;$TypedListRefCopyWith<$Res> get changedFiles;
+$ReadTextCopyWith<$Res> get ownerThreadId;$ReadTextCopyWith<$Res> get state;$ReadTextCopyWith<$Res> get repositoryRoot;$ReadTextCopyWith<$Res> get path;$ReadTextCopyWith<$Res> get branch;$ReadTextCopyWith<$Res> get baseCommit;$ReadTextCopyWith<$Res>? get headCommit;$TypedListRefCopyWith<$Res>? get changedFiles;
 
 }
 /// @nodoc
@@ -345,9 +345,10 @@ class _$WorktreeRecoveryPreviewReadCopyWithImpl<$Res>
 
 /// Create a copy of WorktreeRecoveryPreviewRead
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') @override $Res call({Object? ownerKind = null,Object? ownerThreadId = null,Object? leaseRevision = null,Object? state = null,Object? repositoryRoot = null,Object? path = null,Object? branch = null,Object? baseCommit = null,Object? headCommit = freezed,Object? dirty = null,Object? changedFiles = null,}) {
+@pragma('vm:prefer-inline') @override $Res call({Object? inspection = null,Object? ownerKind = null,Object? ownerThreadId = null,Object? leaseRevision = null,Object? state = null,Object? repositoryRoot = null,Object? path = null,Object? branch = null,Object? baseCommit = null,Object? headCommit = freezed,Object? dirty = freezed,Object? changedFiles = freezed,}) {
   return _then(WorktreeRecoveryPreviewRead(
-ownerKind: null == ownerKind ? _self.ownerKind : ownerKind // ignore: cast_nullable_to_non_nullable
+inspection: null == inspection ? _self.inspection : inspection // ignore: cast_nullable_to_non_nullable
+as WorktreeInspection,ownerKind: null == ownerKind ? _self.ownerKind : ownerKind // ignore: cast_nullable_to_non_nullable
 as WorktreeOwner,ownerThreadId: null == ownerThreadId ? _self.ownerThreadId : ownerThreadId // ignore: cast_nullable_to_non_nullable
 as ReadText,leaseRevision: null == leaseRevision ? _self.leaseRevision : leaseRevision // ignore: cast_nullable_to_non_nullable
 as int,state: null == state ? _self.state : state // ignore: cast_nullable_to_non_nullable
@@ -356,9 +357,9 @@ as ReadText,path: null == path ? _self.path : path // ignore: cast_nullable_to_n
 as ReadText,branch: null == branch ? _self.branch : branch // ignore: cast_nullable_to_non_nullable
 as ReadText,baseCommit: null == baseCommit ? _self.baseCommit : baseCommit // ignore: cast_nullable_to_non_nullable
 as ReadText,headCommit: freezed == headCommit ? _self.headCommit : headCommit // ignore: cast_nullable_to_non_nullable
-as ReadText?,dirty: null == dirty ? _self.dirty : dirty // ignore: cast_nullable_to_non_nullable
-as bool,changedFiles: null == changedFiles ? _self.changedFiles : changedFiles // ignore: cast_nullable_to_non_nullable
-as TypedListRef,
+as ReadText?,dirty: freezed == dirty ? _self.dirty : dirty // ignore: cast_nullable_to_non_nullable
+as bool?,changedFiles: freezed == changedFiles ? _self.changedFiles : changedFiles // ignore: cast_nullable_to_non_nullable
+as TypedListRef?,
   ));
 }
 /// Create a copy of WorktreeRecoveryPreviewRead
@@ -431,9 +432,12 @@ $ReadTextCopyWith<$Res>? get headCommit {
 /// with the given fields replaced by the non-null parameter values.
 @override
 @pragma('vm:prefer-inline')
-$TypedListRefCopyWith<$Res> get changedFiles {
+$TypedListRefCopyWith<$Res>? get changedFiles {
+    if (_self.changedFiles == null) {
+    return null;
+  }
 
-  return $TypedListRefCopyWith<$Res>(_self.changedFiles, (value) {
+  return $TypedListRefCopyWith<$Res>(_self.changedFiles!, (value) {
     return _then(_self.copyWith(changedFiles: value));
   });
 }
@@ -518,10 +522,10 @@ return $default(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( WorktreeOwner ownerKind,  ReadText ownerThreadId,  int leaseRevision,  ReadText state,  ReadText repositoryRoot,  ReadText path,  ReadText branch,  ReadText baseCommit,  ReadText? headCommit,  bool dirty,  TypedListRef changedFiles)?  $default,{required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( WorktreeInspection inspection,  WorktreeOwner ownerKind,  ReadText ownerThreadId,  int leaseRevision,  ReadText state,  ReadText repositoryRoot,  ReadText path,  ReadText branch,  ReadText baseCommit,  ReadText? headCommit,  bool? dirty,  TypedListRef? changedFiles)?  $default,{required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case _WorktreeRecoveryPreviewRead() when $default != null:
-return $default(_that.ownerKind,_that.ownerThreadId,_that.leaseRevision,_that.state,_that.repositoryRoot,_that.path,_that.branch,_that.baseCommit,_that.headCommit,_that.dirty,_that.changedFiles);case _:
+return $default(_that.inspection,_that.ownerKind,_that.ownerThreadId,_that.leaseRevision,_that.state,_that.repositoryRoot,_that.path,_that.branch,_that.baseCommit,_that.headCommit,_that.dirty,_that.changedFiles);case _:
   return orElse();
 
 }
@@ -539,10 +543,10 @@ return $default(_that.ownerKind,_that.ownerThreadId,_that.leaseRevision,_that.st
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( WorktreeOwner ownerKind,  ReadText ownerThreadId,  int leaseRevision,  ReadText state,  ReadText repositoryRoot,  ReadText path,  ReadText branch,  ReadText baseCommit,  ReadText? headCommit,  bool dirty,  TypedListRef changedFiles)  $default,) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( WorktreeInspection inspection,  WorktreeOwner ownerKind,  ReadText ownerThreadId,  int leaseRevision,  ReadText state,  ReadText repositoryRoot,  ReadText path,  ReadText branch,  ReadText baseCommit,  ReadText? headCommit,  bool? dirty,  TypedListRef? changedFiles)  $default,) {final _that = this;
 switch (_that) {
 case _WorktreeRecoveryPreviewRead():
-return $default(_that.ownerKind,_that.ownerThreadId,_that.leaseRevision,_that.state,_that.repositoryRoot,_that.path,_that.branch,_that.baseCommit,_that.headCommit,_that.dirty,_that.changedFiles);case _:
+return $default(_that.inspection,_that.ownerKind,_that.ownerThreadId,_that.leaseRevision,_that.state,_that.repositoryRoot,_that.path,_that.branch,_that.baseCommit,_that.headCommit,_that.dirty,_that.changedFiles);case _:
   throw StateError('Unexpected subclass');
 
 }
@@ -559,10 +563,10 @@ return $default(_that.ownerKind,_that.ownerThreadId,_that.leaseRevision,_that.st
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( WorktreeOwner ownerKind,  ReadText ownerThreadId,  int leaseRevision,  ReadText state,  ReadText repositoryRoot,  ReadText path,  ReadText branch,  ReadText baseCommit,  ReadText? headCommit,  bool dirty,  TypedListRef changedFiles)?  $default,) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( WorktreeInspection inspection,  WorktreeOwner ownerKind,  ReadText ownerThreadId,  int leaseRevision,  ReadText state,  ReadText repositoryRoot,  ReadText path,  ReadText branch,  ReadText baseCommit,  ReadText? headCommit,  bool? dirty,  TypedListRef? changedFiles)?  $default,) {final _that = this;
 switch (_that) {
 case _WorktreeRecoveryPreviewRead() when $default != null:
-return $default(_that.ownerKind,_that.ownerThreadId,_that.leaseRevision,_that.state,_that.repositoryRoot,_that.path,_that.branch,_that.baseCommit,_that.headCommit,_that.dirty,_that.changedFiles);case _:
+return $default(_that.inspection,_that.ownerKind,_that.ownerThreadId,_that.leaseRevision,_that.state,_that.repositoryRoot,_that.path,_that.branch,_that.baseCommit,_that.headCommit,_that.dirty,_that.changedFiles);case _:
   return null;
 
 }
@@ -574,9 +578,10 @@ return $default(_that.ownerKind,_that.ownerThreadId,_that.leaseRevision,_that.st
 
 
 class _WorktreeRecoveryPreviewRead implements WorktreeRecoveryPreviewRead {
-  const _WorktreeRecoveryPreviewRead({required this.ownerKind, required this.ownerThreadId, required this.leaseRevision, required this.state, required this.repositoryRoot, required this.path, required this.branch, required this.baseCommit, required this.headCommit, required this.dirty, required this.changedFiles});
+  const _WorktreeRecoveryPreviewRead({required this.inspection, required this.ownerKind, required this.ownerThreadId, required this.leaseRevision, required this.state, required this.repositoryRoot, required this.path, required this.branch, required this.baseCommit, required this.headCommit, required this.dirty, required this.changedFiles});
 
 
+@override final  WorktreeInspection inspection;
 @override final  WorktreeOwner ownerKind;
 @override final  ReadText ownerThreadId;
 @override final  int leaseRevision;
@@ -586,8 +591,8 @@ class _WorktreeRecoveryPreviewRead implements WorktreeRecoveryPreviewRead {
 @override final  ReadText branch;
 @override final  ReadText baseCommit;
 @override final  ReadText? headCommit;
-@override final  bool dirty;
-@override final  TypedListRef changedFiles;
+@override final  bool? dirty;
+@override final  TypedListRef? changedFiles;
 
 /// Create a copy of WorktreeRecoveryPreviewRead
 /// with the given fields replaced by the non-null parameter values.
@@ -599,13 +604,13 @@ _$WorktreeRecoveryPreviewReadCopyWith<_WorktreeRecoveryPreviewRead> get copyWith
 
 @override
 bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is _WorktreeRecoveryPreviewRead&&(identical(other.ownerKind, ownerKind) || other.ownerKind == ownerKind)&&(identical(other.ownerThreadId, ownerThreadId) || other.ownerThreadId == ownerThreadId)&&(identical(other.leaseRevision, leaseRevision) || other.leaseRevision == leaseRevision)&&(identical(other.state, state) || other.state == state)&&(identical(other.repositoryRoot, repositoryRoot) || other.repositoryRoot == repositoryRoot)&&(identical(other.path, path) || other.path == path)&&(identical(other.branch, branch) || other.branch == branch)&&(identical(other.baseCommit, baseCommit) || other.baseCommit == baseCommit)&&(identical(other.headCommit, headCommit) || other.headCommit == headCommit)&&(identical(other.dirty, dirty) || other.dirty == dirty)&&(identical(other.changedFiles, changedFiles) || other.changedFiles == changedFiles));
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is _WorktreeRecoveryPreviewRead&&(identical(other.inspection, inspection) || other.inspection == inspection)&&(identical(other.ownerKind, ownerKind) || other.ownerKind == ownerKind)&&(identical(other.ownerThreadId, ownerThreadId) || other.ownerThreadId == ownerThreadId)&&(identical(other.leaseRevision, leaseRevision) || other.leaseRevision == leaseRevision)&&(identical(other.state, state) || other.state == state)&&(identical(other.repositoryRoot, repositoryRoot) || other.repositoryRoot == repositoryRoot)&&(identical(other.path, path) || other.path == path)&&(identical(other.branch, branch) || other.branch == branch)&&(identical(other.baseCommit, baseCommit) || other.baseCommit == baseCommit)&&(identical(other.headCommit, headCommit) || other.headCommit == headCommit)&&(identical(other.dirty, dirty) || other.dirty == dirty)&&(identical(other.changedFiles, changedFiles) || other.changedFiles == changedFiles));
 }
 
 
 @override
 int get hashCode {
-    return Object.hash(runtimeType,ownerKind,ownerThreadId,leaseRevision,state,repositoryRoot,path,branch,baseCommit,headCommit,dirty,changedFiles);
+    return Object.hash(runtimeType,inspection,ownerKind,ownerThreadId,leaseRevision,state,repositoryRoot,path,branch,baseCommit,headCommit,dirty,changedFiles);
 }
 
 
@@ -617,11 +622,11 @@ abstract mixin class _$WorktreeRecoveryPreviewReadCopyWith<$Res> implements $Wor
   factory _$WorktreeRecoveryPreviewReadCopyWith(_WorktreeRecoveryPreviewRead value, $Res Function(_WorktreeRecoveryPreviewRead) _then) = __$WorktreeRecoveryPreviewReadCopyWithImpl;
 @override @useResult
 $Res call({
- WorktreeOwner ownerKind, ReadText ownerThreadId, int leaseRevision, ReadText state, ReadText repositoryRoot, ReadText path, ReadText branch, ReadText baseCommit, ReadText? headCommit, bool dirty, TypedListRef changedFiles
+ WorktreeInspection inspection, WorktreeOwner ownerKind, ReadText ownerThreadId, int leaseRevision, ReadText state, ReadText repositoryRoot, ReadText path, ReadText branch, ReadText baseCommit, ReadText? headCommit, bool? dirty, TypedListRef? changedFiles
 });
 
 
-@override $ReadTextCopyWith<$Res> get ownerThreadId;@override $ReadTextCopyWith<$Res> get state;@override $ReadTextCopyWith<$Res> get repositoryRoot;@override $ReadTextCopyWith<$Res> get path;@override $ReadTextCopyWith<$Res> get branch;@override $ReadTextCopyWith<$Res> get baseCommit;@override $ReadTextCopyWith<$Res>? get headCommit;@override $TypedListRefCopyWith<$Res> get changedFiles;
+@override $ReadTextCopyWith<$Res> get ownerThreadId;@override $ReadTextCopyWith<$Res> get state;@override $ReadTextCopyWith<$Res> get repositoryRoot;@override $ReadTextCopyWith<$Res> get path;@override $ReadTextCopyWith<$Res> get branch;@override $ReadTextCopyWith<$Res> get baseCommit;@override $ReadTextCopyWith<$Res>? get headCommit;@override $TypedListRefCopyWith<$Res>? get changedFiles;
 
 }
 /// @nodoc
@@ -634,9 +639,10 @@ class __$WorktreeRecoveryPreviewReadCopyWithImpl<$Res>
 
 /// Create a copy of WorktreeRecoveryPreviewRead
 /// with the given fields replaced by the non-null parameter values.
-@override @pragma('vm:prefer-inline') $Res call({Object? ownerKind = null,Object? ownerThreadId = null,Object? leaseRevision = null,Object? state = null,Object? repositoryRoot = null,Object? path = null,Object? branch = null,Object? baseCommit = null,Object? headCommit = freezed,Object? dirty = null,Object? changedFiles = null,}) {
+@override @pragma('vm:prefer-inline') $Res call({Object? inspection = null,Object? ownerKind = null,Object? ownerThreadId = null,Object? leaseRevision = null,Object? state = null,Object? repositoryRoot = null,Object? path = null,Object? branch = null,Object? baseCommit = null,Object? headCommit = freezed,Object? dirty = freezed,Object? changedFiles = freezed,}) {
   return _then(_WorktreeRecoveryPreviewRead(
-ownerKind: null == ownerKind ? _self.ownerKind : ownerKind // ignore: cast_nullable_to_non_nullable
+inspection: null == inspection ? _self.inspection : inspection // ignore: cast_nullable_to_non_nullable
+as WorktreeInspection,ownerKind: null == ownerKind ? _self.ownerKind : ownerKind // ignore: cast_nullable_to_non_nullable
 as WorktreeOwner,ownerThreadId: null == ownerThreadId ? _self.ownerThreadId : ownerThreadId // ignore: cast_nullable_to_non_nullable
 as ReadText,leaseRevision: null == leaseRevision ? _self.leaseRevision : leaseRevision // ignore: cast_nullable_to_non_nullable
 as int,state: null == state ? _self.state : state // ignore: cast_nullable_to_non_nullable
@@ -645,9 +651,9 @@ as ReadText,path: null == path ? _self.path : path // ignore: cast_nullable_to_n
 as ReadText,branch: null == branch ? _self.branch : branch // ignore: cast_nullable_to_non_nullable
 as ReadText,baseCommit: null == baseCommit ? _self.baseCommit : baseCommit // ignore: cast_nullable_to_non_nullable
 as ReadText,headCommit: freezed == headCommit ? _self.headCommit : headCommit // ignore: cast_nullable_to_non_nullable
-as ReadText?,dirty: null == dirty ? _self.dirty : dirty // ignore: cast_nullable_to_non_nullable
-as bool,changedFiles: null == changedFiles ? _self.changedFiles : changedFiles // ignore: cast_nullable_to_non_nullable
-as TypedListRef,
+as ReadText?,dirty: freezed == dirty ? _self.dirty : dirty // ignore: cast_nullable_to_non_nullable
+as bool?,changedFiles: freezed == changedFiles ? _self.changedFiles : changedFiles // ignore: cast_nullable_to_non_nullable
+as TypedListRef?,
   ));
 }
 
@@ -721,9 +727,12 @@ $ReadTextCopyWith<$Res>? get headCommit {
 /// with the given fields replaced by the non-null parameter values.
 @override
 @pragma('vm:prefer-inline')
-$TypedListRefCopyWith<$Res> get changedFiles {
+$TypedListRefCopyWith<$Res>? get changedFiles {
+    if (_self.changedFiles == null) {
+    return null;
+  }
 
-  return $TypedListRefCopyWith<$Res>(_self.changedFiles, (value) {
+  return $TypedListRefCopyWith<$Res>(_self.changedFiles!, (value) {
     return _then(_self.copyWith(changedFiles: value));
   });
 }
@@ -732,7 +741,7 @@ $TypedListRefCopyWith<$Res> get changedFiles {
 /// @nodoc
 mixin _$RecoveryIssueRead {
 
- ReadText get id; RecoveryScope get scope; RecoveryCategory get category; RecoveryAction get action; ReadText? get projectId; ReadText? get threadId; ReadText get message; WorktreeRecoveryPreviewRead? get worktree;
+ ReadText get id; RecoveryScope get scope; RecoveryCategory get category; List<RecoveryAction> get availableActions; ReadText? get projectId; ReadText? get threadId; ReadText get message; WorktreeRecoveryPreviewRead? get worktree;
 /// Create a copy of RecoveryIssueRead
 /// with the given fields replaced by the non-null parameter values.
 @JsonKey(includeFromJson: false, includeToJson: false)
@@ -744,14 +753,14 @@ $RecoveryIssueReadCopyWith<RecoveryIssueRead> get copyWith => _$RecoveryIssueRea
 @override
 bool operator ==(Object other) {
   final _this = this as RecoveryIssueRead;
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is RecoveryIssueRead&&(identical(other.id, _this.id) || other.id == _this.id)&&(identical(other.scope, _this.scope) || other.scope == _this.scope)&&(identical(other.category, _this.category) || other.category == _this.category)&&(identical(other.action, _this.action) || other.action == _this.action)&&(identical(other.projectId, _this.projectId) || other.projectId == _this.projectId)&&(identical(other.threadId, _this.threadId) || other.threadId == _this.threadId)&&(identical(other.message, _this.message) || other.message == _this.message)&&(identical(other.worktree, _this.worktree) || other.worktree == _this.worktree));
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is RecoveryIssueRead&&(identical(other.id, _this.id) || other.id == _this.id)&&(identical(other.scope, _this.scope) || other.scope == _this.scope)&&(identical(other.category, _this.category) || other.category == _this.category)&&const DeepCollectionEquality().equals(other.availableActions, _this.availableActions)&&(identical(other.projectId, _this.projectId) || other.projectId == _this.projectId)&&(identical(other.threadId, _this.threadId) || other.threadId == _this.threadId)&&(identical(other.message, _this.message) || other.message == _this.message)&&(identical(other.worktree, _this.worktree) || other.worktree == _this.worktree));
 }
 
 
 @override
 int get hashCode {
   final _this = this as RecoveryIssueRead;
-  return Object.hash(runtimeType,_this.id,_this.scope,_this.category,_this.action,_this.projectId,_this.threadId,_this.message,_this.worktree);
+  return Object.hash(runtimeType,_this.id,_this.scope,_this.category,const DeepCollectionEquality().hash(_this.availableActions),_this.projectId,_this.threadId,_this.message,_this.worktree);
 }
 
 
@@ -763,7 +772,7 @@ abstract mixin class $RecoveryIssueReadCopyWith<$Res>  {
   factory $RecoveryIssueReadCopyWith(RecoveryIssueRead value, $Res Function(RecoveryIssueRead) _then) = _$RecoveryIssueReadCopyWithImpl;
 @useResult
 $Res call({
- ReadText id, RecoveryScope scope, RecoveryCategory category, RecoveryAction action, ReadText? projectId, ReadText? threadId, ReadText message, WorktreeRecoveryPreviewRead? worktree
+ ReadText id, RecoveryScope scope, RecoveryCategory category, List<RecoveryAction> availableActions, ReadText? projectId, ReadText? threadId, ReadText message, WorktreeRecoveryPreviewRead? worktree
 });
 
 
@@ -780,13 +789,13 @@ class _$RecoveryIssueReadCopyWithImpl<$Res>
 
 /// Create a copy of RecoveryIssueRead
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') @override $Res call({Object? id = null,Object? scope = null,Object? category = null,Object? action = null,Object? projectId = freezed,Object? threadId = freezed,Object? message = null,Object? worktree = freezed,}) {
+@pragma('vm:prefer-inline') @override $Res call({Object? id = null,Object? scope = null,Object? category = null,Object? availableActions = null,Object? projectId = freezed,Object? threadId = freezed,Object? message = null,Object? worktree = freezed,}) {
   return _then(RecoveryIssueRead(
 id: null == id ? _self.id : id // ignore: cast_nullable_to_non_nullable
 as ReadText,scope: null == scope ? _self.scope : scope // ignore: cast_nullable_to_non_nullable
 as RecoveryScope,category: null == category ? _self.category : category // ignore: cast_nullable_to_non_nullable
-as RecoveryCategory,action: null == action ? _self.action : action // ignore: cast_nullable_to_non_nullable
-as RecoveryAction,projectId: freezed == projectId ? _self.projectId : projectId // ignore: cast_nullable_to_non_nullable
+as RecoveryCategory,availableActions: null == availableActions ? _self.availableActions : availableActions // ignore: cast_nullable_to_non_nullable
+as List<RecoveryAction>,projectId: freezed == projectId ? _self.projectId : projectId // ignore: cast_nullable_to_non_nullable
 as ReadText?,threadId: freezed == threadId ? _self.threadId : threadId // ignore: cast_nullable_to_non_nullable
 as ReadText?,message: null == message ? _self.message : message // ignore: cast_nullable_to_non_nullable
 as ReadText,worktree: freezed == worktree ? _self.worktree : worktree // ignore: cast_nullable_to_non_nullable
@@ -929,10 +938,10 @@ return $default(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( ReadText id,  RecoveryScope scope,  RecoveryCategory category,  RecoveryAction action,  ReadText? projectId,  ReadText? threadId,  ReadText message,  WorktreeRecoveryPreviewRead? worktree)?  $default,{required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( ReadText id,  RecoveryScope scope,  RecoveryCategory category,  List<RecoveryAction> availableActions,  ReadText? projectId,  ReadText? threadId,  ReadText message,  WorktreeRecoveryPreviewRead? worktree)?  $default,{required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case _RecoveryIssueRead() when $default != null:
-return $default(_that.id,_that.scope,_that.category,_that.action,_that.projectId,_that.threadId,_that.message,_that.worktree);case _:
+return $default(_that.id,_that.scope,_that.category,_that.availableActions,_that.projectId,_that.threadId,_that.message,_that.worktree);case _:
   return orElse();
 
 }
@@ -950,10 +959,10 @@ return $default(_that.id,_that.scope,_that.category,_that.action,_that.projectId
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( ReadText id,  RecoveryScope scope,  RecoveryCategory category,  RecoveryAction action,  ReadText? projectId,  ReadText? threadId,  ReadText message,  WorktreeRecoveryPreviewRead? worktree)  $default,) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( ReadText id,  RecoveryScope scope,  RecoveryCategory category,  List<RecoveryAction> availableActions,  ReadText? projectId,  ReadText? threadId,  ReadText message,  WorktreeRecoveryPreviewRead? worktree)  $default,) {final _that = this;
 switch (_that) {
 case _RecoveryIssueRead():
-return $default(_that.id,_that.scope,_that.category,_that.action,_that.projectId,_that.threadId,_that.message,_that.worktree);case _:
+return $default(_that.id,_that.scope,_that.category,_that.availableActions,_that.projectId,_that.threadId,_that.message,_that.worktree);case _:
   throw StateError('Unexpected subclass');
 
 }
@@ -970,10 +979,10 @@ return $default(_that.id,_that.scope,_that.category,_that.action,_that.projectId
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( ReadText id,  RecoveryScope scope,  RecoveryCategory category,  RecoveryAction action,  ReadText? projectId,  ReadText? threadId,  ReadText message,  WorktreeRecoveryPreviewRead? worktree)?  $default,) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( ReadText id,  RecoveryScope scope,  RecoveryCategory category,  List<RecoveryAction> availableActions,  ReadText? projectId,  ReadText? threadId,  ReadText message,  WorktreeRecoveryPreviewRead? worktree)?  $default,) {final _that = this;
 switch (_that) {
 case _RecoveryIssueRead() when $default != null:
-return $default(_that.id,_that.scope,_that.category,_that.action,_that.projectId,_that.threadId,_that.message,_that.worktree);case _:
+return $default(_that.id,_that.scope,_that.category,_that.availableActions,_that.projectId,_that.threadId,_that.message,_that.worktree);case _:
   return null;
 
 }
@@ -985,13 +994,19 @@ return $default(_that.id,_that.scope,_that.category,_that.action,_that.projectId
 
 
 class _RecoveryIssueRead implements RecoveryIssueRead {
-  const _RecoveryIssueRead({required this.id, required this.scope, required this.category, required this.action, required this.projectId, required this.threadId, required this.message, required this.worktree});
+  const _RecoveryIssueRead({required this.id, required this.scope, required this.category, required  List<RecoveryAction> availableActions, required this.projectId, required this.threadId, required this.message, required this.worktree}): _availableActions = availableActions;
 
 
 @override final  ReadText id;
 @override final  RecoveryScope scope;
 @override final  RecoveryCategory category;
-@override final  RecoveryAction action;
+ final  List<RecoveryAction> _availableActions;
+@override List<RecoveryAction> get availableActions {
+  if (_availableActions is EqualUnmodifiableListView) return _availableActions;
+  // ignore: implicit_dynamic_type
+  return EqualUnmodifiableListView(_availableActions);
+}
+
 @override final  ReadText? projectId;
 @override final  ReadText? threadId;
 @override final  ReadText message;
@@ -1007,13 +1022,13 @@ _$RecoveryIssueReadCopyWith<_RecoveryIssueRead> get copyWith => __$RecoveryIssue
 
 @override
 bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is _RecoveryIssueRead&&(identical(other.id, id) || other.id == id)&&(identical(other.scope, scope) || other.scope == scope)&&(identical(other.category, category) || other.category == category)&&(identical(other.action, action) || other.action == action)&&(identical(other.projectId, projectId) || other.projectId == projectId)&&(identical(other.threadId, threadId) || other.threadId == threadId)&&(identical(other.message, message) || other.message == message)&&(identical(other.worktree, worktree) || other.worktree == worktree));
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is _RecoveryIssueRead&&(identical(other.id, id) || other.id == id)&&(identical(other.scope, scope) || other.scope == scope)&&(identical(other.category, category) || other.category == category)&&const DeepCollectionEquality().equals(other.availableActions, _availableActions)&&(identical(other.projectId, projectId) || other.projectId == projectId)&&(identical(other.threadId, threadId) || other.threadId == threadId)&&(identical(other.message, message) || other.message == message)&&(identical(other.worktree, worktree) || other.worktree == worktree));
 }
 
 
 @override
 int get hashCode {
-    return Object.hash(runtimeType,id,scope,category,action,projectId,threadId,message,worktree);
+    return Object.hash(runtimeType,id,scope,category,const DeepCollectionEquality().hash(_availableActions),projectId,threadId,message,worktree);
 }
 
 
@@ -1025,7 +1040,7 @@ abstract mixin class _$RecoveryIssueReadCopyWith<$Res> implements $RecoveryIssue
   factory _$RecoveryIssueReadCopyWith(_RecoveryIssueRead value, $Res Function(_RecoveryIssueRead) _then) = __$RecoveryIssueReadCopyWithImpl;
 @override @useResult
 $Res call({
- ReadText id, RecoveryScope scope, RecoveryCategory category, RecoveryAction action, ReadText? projectId, ReadText? threadId, ReadText message, WorktreeRecoveryPreviewRead? worktree
+ ReadText id, RecoveryScope scope, RecoveryCategory category, List<RecoveryAction> availableActions, ReadText? projectId, ReadText? threadId, ReadText message, WorktreeRecoveryPreviewRead? worktree
 });
 
 
@@ -1042,13 +1057,13 @@ class __$RecoveryIssueReadCopyWithImpl<$Res>
 
 /// Create a copy of RecoveryIssueRead
 /// with the given fields replaced by the non-null parameter values.
-@override @pragma('vm:prefer-inline') $Res call({Object? id = null,Object? scope = null,Object? category = null,Object? action = null,Object? projectId = freezed,Object? threadId = freezed,Object? message = null,Object? worktree = freezed,}) {
+@override @pragma('vm:prefer-inline') $Res call({Object? id = null,Object? scope = null,Object? category = null,Object? availableActions = null,Object? projectId = freezed,Object? threadId = freezed,Object? message = null,Object? worktree = freezed,}) {
   return _then(_RecoveryIssueRead(
 id: null == id ? _self.id : id // ignore: cast_nullable_to_non_nullable
 as ReadText,scope: null == scope ? _self.scope : scope // ignore: cast_nullable_to_non_nullable
 as RecoveryScope,category: null == category ? _self.category : category // ignore: cast_nullable_to_non_nullable
-as RecoveryCategory,action: null == action ? _self.action : action // ignore: cast_nullable_to_non_nullable
-as RecoveryAction,projectId: freezed == projectId ? _self.projectId : projectId // ignore: cast_nullable_to_non_nullable
+as RecoveryCategory,availableActions: null == availableActions ? _self._availableActions : availableActions // ignore: cast_nullable_to_non_nullable
+as List<RecoveryAction>,projectId: freezed == projectId ? _self.projectId : projectId // ignore: cast_nullable_to_non_nullable
 as ReadText?,threadId: freezed == threadId ? _self.threadId : threadId // ignore: cast_nullable_to_non_nullable
 as ReadText?,message: null == message ? _self.message : message // ignore: cast_nullable_to_non_nullable
 as ReadText,worktree: freezed == worktree ? _self.worktree : worktree // ignore: cast_nullable_to_non_nullable

@@ -1,7 +1,7 @@
 import 'package:freezed_annotation/freezed_annotation.dart';
 
 import '../../../operations.dart';
-import '../../../resources.dart' show OperationId;
+import '../../../resources.dart';
 
 part 'continuation_values.freezed.dart';
 
@@ -19,7 +19,8 @@ abstract class ContinueThreadReply with _$ContinueThreadReply {
 @freezed
 sealed class ContinuationOperationState with _$ContinuationOperationState {
   const factory ContinuationOperationState.pending() = PendingContinuation;
-  const factory ContinuationOperationState.consumed({required String turnId}) = ConsumedContinuation;
+  const factory ContinuationOperationState.consumed({required String turnId}) =
+      ConsumedContinuation;
   const factory ContinuationOperationState.discarded() = DiscardedContinuation;
 }
 

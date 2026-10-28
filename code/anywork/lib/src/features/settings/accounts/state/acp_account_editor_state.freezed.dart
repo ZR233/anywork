@@ -15,7 +15,8 @@ T _$identity<T>(T value) => value;
 /// @nodoc
 mixin _$AcpAccountEditorViewState {
 
- AcpAccountEditorTarget get target; String get name; AcpPreparationIntent get intent; AcpInstallState get install; int get draftRevision; bool get visible; int get latestIntent; SettingsAction? get prepareAction; SettingsAction? get cancelAction; StudioFailure? get observationError;
+ AcpAccountEditorTarget get target; String get name; AcpPreparationIntent get intent; AcpInstallState get install; int get draftRevision; bool get visible; int get latestIntent; SettingsAction? get prepareAction; SettingsAction? get cancelAction;/// 取消目标的安装 operation 身份，不是取消命令票据自身的 id。
+ String? get cancelTargetOperationId; StudioFailure? get observationError;
 /// Create a copy of AcpAccountEditorViewState
 /// with the given fields replaced by the non-null parameter values.
 @JsonKey(includeFromJson: false, includeToJson: false)
@@ -27,14 +28,14 @@ $AcpAccountEditorViewStateCopyWith<AcpAccountEditorViewState> get copyWith => _$
 @override
 bool operator ==(Object other) {
   final _this = this as AcpAccountEditorViewState;
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is AcpAccountEditorViewState&&(identical(other.target, _this.target) || other.target == _this.target)&&(identical(other.name, _this.name) || other.name == _this.name)&&(identical(other.intent, _this.intent) || other.intent == _this.intent)&&(identical(other.install, _this.install) || other.install == _this.install)&&(identical(other.draftRevision, _this.draftRevision) || other.draftRevision == _this.draftRevision)&&(identical(other.visible, _this.visible) || other.visible == _this.visible)&&(identical(other.latestIntent, _this.latestIntent) || other.latestIntent == _this.latestIntent)&&(identical(other.prepareAction, _this.prepareAction) || other.prepareAction == _this.prepareAction)&&(identical(other.cancelAction, _this.cancelAction) || other.cancelAction == _this.cancelAction)&&(identical(other.observationError, _this.observationError) || other.observationError == _this.observationError));
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is AcpAccountEditorViewState&&(identical(other.target, _this.target) || other.target == _this.target)&&(identical(other.name, _this.name) || other.name == _this.name)&&(identical(other.intent, _this.intent) || other.intent == _this.intent)&&(identical(other.install, _this.install) || other.install == _this.install)&&(identical(other.draftRevision, _this.draftRevision) || other.draftRevision == _this.draftRevision)&&(identical(other.visible, _this.visible) || other.visible == _this.visible)&&(identical(other.latestIntent, _this.latestIntent) || other.latestIntent == _this.latestIntent)&&(identical(other.prepareAction, _this.prepareAction) || other.prepareAction == _this.prepareAction)&&(identical(other.cancelAction, _this.cancelAction) || other.cancelAction == _this.cancelAction)&&(identical(other.cancelTargetOperationId, _this.cancelTargetOperationId) || other.cancelTargetOperationId == _this.cancelTargetOperationId)&&(identical(other.observationError, _this.observationError) || other.observationError == _this.observationError));
 }
 
 
 @override
 int get hashCode {
   final _this = this as AcpAccountEditorViewState;
-  return Object.hash(runtimeType,_this.target,_this.name,_this.intent,_this.install,_this.draftRevision,_this.visible,_this.latestIntent,_this.prepareAction,_this.cancelAction,_this.observationError);
+  return Object.hash(runtimeType,_this.target,_this.name,_this.intent,_this.install,_this.draftRevision,_this.visible,_this.latestIntent,_this.prepareAction,_this.cancelAction,_this.cancelTargetOperationId,_this.observationError);
 }
 
 
@@ -46,7 +47,7 @@ abstract mixin class $AcpAccountEditorViewStateCopyWith<$Res>  {
   factory $AcpAccountEditorViewStateCopyWith(AcpAccountEditorViewState value, $Res Function(AcpAccountEditorViewState) _then) = _$AcpAccountEditorViewStateCopyWithImpl;
 @useResult
 $Res call({
- AcpAccountEditorTarget target, String name, AcpPreparationIntent intent, AcpInstallState install, int draftRevision, bool visible, int latestIntent, SettingsAction? prepareAction, SettingsAction? cancelAction, StudioFailure? observationError
+ AcpAccountEditorTarget target, String name, AcpPreparationIntent intent, AcpInstallState install, int draftRevision, bool visible, int latestIntent, SettingsAction? prepareAction, SettingsAction? cancelAction, String? cancelTargetOperationId, StudioFailure? observationError
 });
 
 
@@ -63,7 +64,7 @@ class _$AcpAccountEditorViewStateCopyWithImpl<$Res>
 
 /// Create a copy of AcpAccountEditorViewState
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') @override $Res call({Object? target = null,Object? name = null,Object? intent = null,Object? install = null,Object? draftRevision = null,Object? visible = null,Object? latestIntent = null,Object? prepareAction = freezed,Object? cancelAction = freezed,Object? observationError = freezed,}) {
+@pragma('vm:prefer-inline') @override $Res call({Object? target = null,Object? name = null,Object? intent = null,Object? install = null,Object? draftRevision = null,Object? visible = null,Object? latestIntent = null,Object? prepareAction = freezed,Object? cancelAction = freezed,Object? cancelTargetOperationId = freezed,Object? observationError = freezed,}) {
   return _then(AcpAccountEditorViewState(
 target: null == target ? _self.target : target // ignore: cast_nullable_to_non_nullable
 as AcpAccountEditorTarget,name: null == name ? _self.name : name // ignore: cast_nullable_to_non_nullable
@@ -74,7 +75,8 @@ as int,visible: null == visible ? _self.visible : visible // ignore: cast_nullab
 as bool,latestIntent: null == latestIntent ? _self.latestIntent : latestIntent // ignore: cast_nullable_to_non_nullable
 as int,prepareAction: freezed == prepareAction ? _self.prepareAction : prepareAction // ignore: cast_nullable_to_non_nullable
 as SettingsAction?,cancelAction: freezed == cancelAction ? _self.cancelAction : cancelAction // ignore: cast_nullable_to_non_nullable
-as SettingsAction?,observationError: freezed == observationError ? _self.observationError : observationError // ignore: cast_nullable_to_non_nullable
+as SettingsAction?,cancelTargetOperationId: freezed == cancelTargetOperationId ? _self.cancelTargetOperationId : cancelTargetOperationId // ignore: cast_nullable_to_non_nullable
+as String?,observationError: freezed == observationError ? _self.observationError : observationError // ignore: cast_nullable_to_non_nullable
 as StudioFailure?,
   ));
 }
@@ -214,10 +216,10 @@ return $default(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( AcpAccountEditorTarget target,  String name,  AcpPreparationIntent intent,  AcpInstallState install,  int draftRevision,  bool visible,  int latestIntent,  SettingsAction? prepareAction,  SettingsAction? cancelAction,  StudioFailure? observationError)?  $default,{required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( AcpAccountEditorTarget target,  String name,  AcpPreparationIntent intent,  AcpInstallState install,  int draftRevision,  bool visible,  int latestIntent,  SettingsAction? prepareAction,  SettingsAction? cancelAction,  String? cancelTargetOperationId,  StudioFailure? observationError)?  $default,{required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case _AcpAccountEditorViewState() when $default != null:
-return $default(_that.target,_that.name,_that.intent,_that.install,_that.draftRevision,_that.visible,_that.latestIntent,_that.prepareAction,_that.cancelAction,_that.observationError);case _:
+return $default(_that.target,_that.name,_that.intent,_that.install,_that.draftRevision,_that.visible,_that.latestIntent,_that.prepareAction,_that.cancelAction,_that.cancelTargetOperationId,_that.observationError);case _:
   return orElse();
 
 }
@@ -235,10 +237,10 @@ return $default(_that.target,_that.name,_that.intent,_that.install,_that.draftRe
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( AcpAccountEditorTarget target,  String name,  AcpPreparationIntent intent,  AcpInstallState install,  int draftRevision,  bool visible,  int latestIntent,  SettingsAction? prepareAction,  SettingsAction? cancelAction,  StudioFailure? observationError)  $default,) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( AcpAccountEditorTarget target,  String name,  AcpPreparationIntent intent,  AcpInstallState install,  int draftRevision,  bool visible,  int latestIntent,  SettingsAction? prepareAction,  SettingsAction? cancelAction,  String? cancelTargetOperationId,  StudioFailure? observationError)  $default,) {final _that = this;
 switch (_that) {
 case _AcpAccountEditorViewState():
-return $default(_that.target,_that.name,_that.intent,_that.install,_that.draftRevision,_that.visible,_that.latestIntent,_that.prepareAction,_that.cancelAction,_that.observationError);case _:
+return $default(_that.target,_that.name,_that.intent,_that.install,_that.draftRevision,_that.visible,_that.latestIntent,_that.prepareAction,_that.cancelAction,_that.cancelTargetOperationId,_that.observationError);case _:
   throw StateError('Unexpected subclass');
 
 }
@@ -255,10 +257,10 @@ return $default(_that.target,_that.name,_that.intent,_that.install,_that.draftRe
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( AcpAccountEditorTarget target,  String name,  AcpPreparationIntent intent,  AcpInstallState install,  int draftRevision,  bool visible,  int latestIntent,  SettingsAction? prepareAction,  SettingsAction? cancelAction,  StudioFailure? observationError)?  $default,) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( AcpAccountEditorTarget target,  String name,  AcpPreparationIntent intent,  AcpInstallState install,  int draftRevision,  bool visible,  int latestIntent,  SettingsAction? prepareAction,  SettingsAction? cancelAction,  String? cancelTargetOperationId,  StudioFailure? observationError)?  $default,) {final _that = this;
 switch (_that) {
 case _AcpAccountEditorViewState() when $default != null:
-return $default(_that.target,_that.name,_that.intent,_that.install,_that.draftRevision,_that.visible,_that.latestIntent,_that.prepareAction,_that.cancelAction,_that.observationError);case _:
+return $default(_that.target,_that.name,_that.intent,_that.install,_that.draftRevision,_that.visible,_that.latestIntent,_that.prepareAction,_that.cancelAction,_that.cancelTargetOperationId,_that.observationError);case _:
   return null;
 
 }
@@ -270,7 +272,7 @@ return $default(_that.target,_that.name,_that.intent,_that.install,_that.draftRe
 
 
 class _AcpAccountEditorViewState extends AcpAccountEditorViewState {
-  const _AcpAccountEditorViewState({required this.target, required this.name, required this.intent, required this.install, this.draftRevision = 0, this.visible = false, this.latestIntent = 0, this.prepareAction, this.cancelAction, this.observationError}): super._();
+  const _AcpAccountEditorViewState({required this.target, required this.name, required this.intent, required this.install, this.draftRevision = 0, this.visible = false, this.latestIntent = 0, this.prepareAction, this.cancelAction, this.cancelTargetOperationId, this.observationError}): super._();
 
 
 @override final  AcpAccountEditorTarget target;
@@ -282,6 +284,8 @@ class _AcpAccountEditorViewState extends AcpAccountEditorViewState {
 @override@JsonKey() final  int latestIntent;
 @override final  SettingsAction? prepareAction;
 @override final  SettingsAction? cancelAction;
+/// 取消目标的安装 operation 身份，不是取消命令票据自身的 id。
+@override final  String? cancelTargetOperationId;
 @override final  StudioFailure? observationError;
 
 /// Create a copy of AcpAccountEditorViewState
@@ -294,13 +298,13 @@ _$AcpAccountEditorViewStateCopyWith<_AcpAccountEditorViewState> get copyWith => 
 
 @override
 bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is _AcpAccountEditorViewState&&(identical(other.target, target) || other.target == target)&&(identical(other.name, name) || other.name == name)&&(identical(other.intent, intent) || other.intent == intent)&&(identical(other.install, install) || other.install == install)&&(identical(other.draftRevision, draftRevision) || other.draftRevision == draftRevision)&&(identical(other.visible, visible) || other.visible == visible)&&(identical(other.latestIntent, latestIntent) || other.latestIntent == latestIntent)&&(identical(other.prepareAction, prepareAction) || other.prepareAction == prepareAction)&&(identical(other.cancelAction, cancelAction) || other.cancelAction == cancelAction)&&(identical(other.observationError, observationError) || other.observationError == observationError));
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is _AcpAccountEditorViewState&&(identical(other.target, target) || other.target == target)&&(identical(other.name, name) || other.name == name)&&(identical(other.intent, intent) || other.intent == intent)&&(identical(other.install, install) || other.install == install)&&(identical(other.draftRevision, draftRevision) || other.draftRevision == draftRevision)&&(identical(other.visible, visible) || other.visible == visible)&&(identical(other.latestIntent, latestIntent) || other.latestIntent == latestIntent)&&(identical(other.prepareAction, prepareAction) || other.prepareAction == prepareAction)&&(identical(other.cancelAction, cancelAction) || other.cancelAction == cancelAction)&&(identical(other.cancelTargetOperationId, cancelTargetOperationId) || other.cancelTargetOperationId == cancelTargetOperationId)&&(identical(other.observationError, observationError) || other.observationError == observationError));
 }
 
 
 @override
 int get hashCode {
-    return Object.hash(runtimeType,target,name,intent,install,draftRevision,visible,latestIntent,prepareAction,cancelAction,observationError);
+    return Object.hash(runtimeType,target,name,intent,install,draftRevision,visible,latestIntent,prepareAction,cancelAction,cancelTargetOperationId,observationError);
 }
 
 
@@ -312,7 +316,7 @@ abstract mixin class _$AcpAccountEditorViewStateCopyWith<$Res> implements $AcpAc
   factory _$AcpAccountEditorViewStateCopyWith(_AcpAccountEditorViewState value, $Res Function(_AcpAccountEditorViewState) _then) = __$AcpAccountEditorViewStateCopyWithImpl;
 @override @useResult
 $Res call({
- AcpAccountEditorTarget target, String name, AcpPreparationIntent intent, AcpInstallState install, int draftRevision, bool visible, int latestIntent, SettingsAction? prepareAction, SettingsAction? cancelAction, StudioFailure? observationError
+ AcpAccountEditorTarget target, String name, AcpPreparationIntent intent, AcpInstallState install, int draftRevision, bool visible, int latestIntent, SettingsAction? prepareAction, SettingsAction? cancelAction, String? cancelTargetOperationId, StudioFailure? observationError
 });
 
 
@@ -329,7 +333,7 @@ class __$AcpAccountEditorViewStateCopyWithImpl<$Res>
 
 /// Create a copy of AcpAccountEditorViewState
 /// with the given fields replaced by the non-null parameter values.
-@override @pragma('vm:prefer-inline') $Res call({Object? target = null,Object? name = null,Object? intent = null,Object? install = null,Object? draftRevision = null,Object? visible = null,Object? latestIntent = null,Object? prepareAction = freezed,Object? cancelAction = freezed,Object? observationError = freezed,}) {
+@override @pragma('vm:prefer-inline') $Res call({Object? target = null,Object? name = null,Object? intent = null,Object? install = null,Object? draftRevision = null,Object? visible = null,Object? latestIntent = null,Object? prepareAction = freezed,Object? cancelAction = freezed,Object? cancelTargetOperationId = freezed,Object? observationError = freezed,}) {
   return _then(_AcpAccountEditorViewState(
 target: null == target ? _self.target : target // ignore: cast_nullable_to_non_nullable
 as AcpAccountEditorTarget,name: null == name ? _self.name : name // ignore: cast_nullable_to_non_nullable
@@ -340,7 +344,8 @@ as int,visible: null == visible ? _self.visible : visible // ignore: cast_nullab
 as bool,latestIntent: null == latestIntent ? _self.latestIntent : latestIntent // ignore: cast_nullable_to_non_nullable
 as int,prepareAction: freezed == prepareAction ? _self.prepareAction : prepareAction // ignore: cast_nullable_to_non_nullable
 as SettingsAction?,cancelAction: freezed == cancelAction ? _self.cancelAction : cancelAction // ignore: cast_nullable_to_non_nullable
-as SettingsAction?,observationError: freezed == observationError ? _self.observationError : observationError // ignore: cast_nullable_to_non_nullable
+as SettingsAction?,cancelTargetOperationId: freezed == cancelTargetOperationId ? _self.cancelTargetOperationId : cancelTargetOperationId // ignore: cast_nullable_to_non_nullable
+as String?,observationError: freezed == observationError ? _self.observationError : observationError // ignore: cast_nullable_to_non_nullable
 as StudioFailure?,
   ));
 }

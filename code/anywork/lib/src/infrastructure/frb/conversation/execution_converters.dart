@@ -219,21 +219,22 @@ StorageBrief storageBriefFromBridge(native.BridgeStorageBrief value) =>
       hasLastError: value.hasLastError,
     );
 
-AgentExecution agentExecutionFromBridge(runtime.BridgeAgentExecution value) =>
-    AgentExecution(
-      id: value.id,
-      phase: switch (value.phase) {
-        runtime.BridgeAgentExecutionPhase.preparing =>
-          AgentExecutionPhase.preparing,
-        runtime.BridgeAgentExecutionPhase.awaitingStorage =>
-          AgentExecutionPhase.awaitingStorage,
-        runtime.BridgeAgentExecutionPhase.awaitingAdmission =>
-          AgentExecutionPhase.awaitingAdmission,
-        runtime.BridgeAgentExecutionPhase.running => AgentExecutionPhase.running,
-        runtime.BridgeAgentExecutionPhase.stopping => AgentExecutionPhase.stopping,
-      },
-      turnId: value.turnId,
-    );
+AgentExecution agentExecutionFromBridge(
+  runtime.BridgeAgentExecution value,
+) => AgentExecution(
+  id: value.id,
+  phase: switch (value.phase) {
+    runtime.BridgeAgentExecutionPhase.preparing =>
+      AgentExecutionPhase.preparing,
+    runtime.BridgeAgentExecutionPhase.awaitingStorage =>
+      AgentExecutionPhase.awaitingStorage,
+    runtime.BridgeAgentExecutionPhase.awaitingAdmission =>
+      AgentExecutionPhase.awaitingAdmission,
+    runtime.BridgeAgentExecutionPhase.running => AgentExecutionPhase.running,
+    runtime.BridgeAgentExecutionPhase.stopping => AgentExecutionPhase.stopping,
+  },
+  turnId: value.turnId,
+);
 
 ContinuationView continuationFromBridge(stream.BridgeContinuationView value) =>
     ContinuationView(

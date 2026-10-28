@@ -10,7 +10,6 @@ import 'package:anywork_client/workspace.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
 import '../../../app/app_bindings.dart';
-import '../state/composer_primary_action.dart';
 import '../state/composer_view_state.dart';
 import '../state/editor_keys.dart';
 import 'conversation_view_model.dart';
@@ -178,7 +177,9 @@ class ComposerViewModel extends _$ComposerViewModel {
   /// No await before D1's non-async submit admission/freeze.
   Future<void> send() {
     final view = state.requireValue;
-    if (_commandBoundary || view.pending || view.platformPending ||
+    if (_commandBoundary ||
+        view.pending ||
+        view.platformPending ||
         view.submission is SubmittingDraft ||
         view.submission is UnknownDraftSubmission) {
       return Future<void>.value();
@@ -201,7 +202,8 @@ class ComposerViewModel extends _$ComposerViewModel {
       // the repository may have replaced a Session while retaining the same ID.
       final session = _session;
       final repository = ref.read(conversationRepositoryProvider);
-      if (session == null || !identical(repository.existingSession(draft.threadId), session)) {
+      if (session == null ||
+          !identical(repository.existingSession(draft.threadId), session)) {
         state = AsyncData(
           view.copyWith(
             error: const StudioFailure(
@@ -217,10 +219,15 @@ class ComposerViewModel extends _$ComposerViewModel {
       final prepare = ref.read(prepareConversationPresentationProvider);
       final execution = session.execution.value;
       final configuration = session.configuration.value;
-      final action = ref.read(conversationViewModelProvider(draft.threadId).notifier)
-          .primaryAction(hasContent: view.hasInput,
-              submissionPending: view.platformPending || view.submission is SubmittingDraft ||
-                  view.submission is UnknownDraftSubmission);
+      final action = ref
+          .read(conversationViewModelProvider(draft.threadId).notifier)
+          .primaryAction(
+            hasContent: view.hasInput,
+            submissionPending:
+                view.platformPending ||
+                view.submission is SubmittingDraft ||
+                view.submission is UnknownDraftSubmission,
+          );
       if (execution.sync.phase != FacetSyncPhase.ready ||
           !session.acceptsUserInput ||
           !action.enterSubmits ||
@@ -242,21 +249,22 @@ class ComposerViewModel extends _$ComposerViewModel {
         );
         return Future<void>.value();
       }
-      return _perform(
-        () {
-          // _perform may notify UI observers synchronously. The SDK freeze
-          // immediately below must still borrow this exact original source,
-          // execution/point and route, not a same-ID replacement Session.
-          if (!identical(repository.existingSession(draft.threadId), session) ||
-              session.execution.value != execution ||
-              session.configuration.value != configuration) {
-            throw const StudioFailure(code: StudioFailureCode.superseded,
-              message: 'The original composer source changed before dispatch',
-              retryable: false, correlationId: 'composer-source-replaced');
-          }
-          return draft.submit(preparePresentation: () => prepare(session));
-        },
-      );
+      return _perform(() {
+        // _perform may notify UI observers synchronously. The SDK freeze
+        // immediately below must still borrow this exact original source,
+        // execution/point and route, not a same-ID replacement Session.
+        if (!identical(repository.existingSession(draft.threadId), session) ||
+            session.execution.value != execution ||
+            session.configuration.value != configuration) {
+          throw const StudioFailure(
+            code: StudioFailureCode.superseded,
+            message: 'The original composer source changed before dispatch',
+            retryable: false,
+            correlationId: 'composer-source-replaced',
+          );
+        }
+        return draft.submit(preparePresentation: () => prepare(session));
+      });
     }
     final start = _start!;
     return _perform(start.submit);

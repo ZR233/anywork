@@ -1,61 +1,7 @@
-//! core lifecycle 快照桥接。
+//! Runtime 关闭报告及其原诊断桥接。
 
 use crate::api::studio::types::*;
 use pl_studio_runtime::*;
-
-pub(crate) fn runtime_snapshot(snapshot: StudioRuntimeSnapshot) -> RuntimeSnapshot {
-    RuntimeSnapshot {
-        revision: snapshot.revision,
-        startup_recovery: snapshot
-            .startup_recovery
-            .map(|report| BridgeStartupRecovery {
-                backup_path: report.backup_path,
-                reason: report.reason,
-                created_at: report.created_at,
-            }),
-        state: match snapshot.state {
-            StudioRuntimeLifecycleState::Uninitialized(state) => {
-                BridgeRuntimeState::Uninitialized(BridgeRuntimeTimestamp {
-                    at: state.created_at(),
-                })
-            }
-            StudioRuntimeLifecycleState::Initializing(state) => {
-                BridgeRuntimeState::Initializing(BridgeRuntimeTimestamp {
-                    at: state.started_at(),
-                })
-            }
-            StudioRuntimeLifecycleState::Ready(state) => {
-                BridgeRuntimeState::Ready(BridgeRuntimeTimestamp {
-                    at: state.ready_at(),
-                })
-            }
-            StudioRuntimeLifecycleState::ShuttingDown(state) => {
-                BridgeRuntimeState::ShuttingDown(BridgeRuntimeTimestamp {
-                    at: state.started_at(),
-                })
-            }
-            StudioRuntimeLifecycleState::Stopped(state) => {
-                BridgeRuntimeState::Stopped(BridgeRuntimeTimestamp {
-                    at: state.stopped_at(),
-                })
-            }
-            StudioRuntimeLifecycleState::Failed(state) => {
-                BridgeRuntimeState::Failed(BridgeFailedRuntimeState {
-                    failed_at: state.failed_at(),
-                    error: state.error().into(),
-                })
-            }
-        },
-        active_turns: snapshot
-            .active_turns
-            .into_iter()
-            .map(|turn| BridgeActiveTurn {
-                thread_id: turn.thread_id,
-                turn_id: turn.turn_id,
-            })
-            .collect(),
-    }
-}
 
 /// Converts the runtime shutdown report into its FRB mirror without reinterpreting success.
 pub(crate) fn bridge_shutdown_report(report: StudioShutdownReport) -> BridgeShutdownReport {

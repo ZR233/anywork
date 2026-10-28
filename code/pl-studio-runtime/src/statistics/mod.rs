@@ -16,9 +16,10 @@ pub use crate::studio::statistics::{
     ProductReadScopeIdentity, PurposeCostRead, PurposeCostReadPage, RuntimeCostRead,
     RuntimeCostReadPage, SessionCostRead, SessionCostsFrame, SessionCostsReadHeader,
     SessionCostsReadRef, StudioError, StudioPerformanceEffortIdentityRead,
-    StudioPerformanceHistoryFeed, StudioPerformanceHistoryRead, StudioPerformanceSampleIdentityRead,
-    StudioPerformanceSummariesFeed, StudioPerformanceSummariesRead,
-    StudioPerformanceSummaryIdentityRead, StudioSessionCostsFeed, StudioSessionCostsRead, TextChunk,
+    StudioPerformanceHistoryFeed, StudioPerformanceHistoryRead,
+    StudioPerformanceSampleIdentityRead, StudioPerformanceSummariesFeed,
+    StudioPerformanceSummariesRead, StudioPerformanceSummaryIdentityRead, StudioSessionCostsFeed,
+    StudioSessionCostsRead, TextChunk,
 };
 
 mod models;
