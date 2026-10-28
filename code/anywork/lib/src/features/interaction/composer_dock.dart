@@ -6,6 +6,7 @@ import 'package:anywork_client/studio_client.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 import 'package:desktop_drop/desktop_drop.dart';
 
 import '../../app/app_graph.dart';
@@ -21,7 +22,6 @@ import '../../shared/studio_chrome.dart';
 import '../../shared/studio_driver_keys.dart';
 import '../../shared/studio_menu_label.dart';
 import '../status/session_selectors.dart';
-import '../settings/settings_bots_tab.dart' show BotDetailsPage;
 import '../../domain/models/composer_primary_action.dart';
 import 'composer_view.dart';
 import 'child_interaction_dock.dart';
@@ -782,10 +782,9 @@ class _PromptComposerState extends ConsumerState<_PromptComposer> {
                         label: Text(
                           '${route?.modelId ?? ''} · ${context.l10n.botsManagedModel}',
                         ),
-                        onPressed: () => Navigator.of(context).push<void>(
-                          MaterialPageRoute(
-                            builder: (_) => BotDetailsPage(botId: botId),
-                          ),
+                        onPressed: () => context.pushNamed(
+                          'bot-details',
+                          pathParameters: {'botId': botId},
                         ),
                       )
                     else

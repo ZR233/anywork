@@ -7728,6 +7728,42 @@ abstract class AppLocalizations {
   /// **'Collapse'**
   String get modeEditorCollapse;
 
+  /// No description provided for @modeEditorDetailStage.
+  ///
+  /// In en, this message translates to:
+  /// **'Stage details'**
+  String get modeEditorDetailStage;
+
+  /// No description provided for @modeEditorDetailTransition.
+  ///
+  /// In en, this message translates to:
+  /// **'Transition details'**
+  String get modeEditorDetailTransition;
+
+  /// No description provided for @modeEditorFocusAll.
+  ///
+  /// In en, this message translates to:
+  /// **'All'**
+  String get modeEditorFocusAll;
+
+  /// No description provided for @modeEditorFocusSelected.
+  ///
+  /// In en, this message translates to:
+  /// **'Focused'**
+  String get modeEditorFocusSelected;
+
+  /// No description provided for @modeEditorDimmedEdges.
+  ///
+  /// In en, this message translates to:
+  /// **'{count, plural, other{Dimmed {count} unrelated transitions}}'**
+  String modeEditorDimmedEdges(int count);
+
+  /// No description provided for @modeEditorViewStage.
+  ///
+  /// In en, this message translates to:
+  /// **'View stage'**
+  String get modeEditorViewStage;
+
   /// No description provided for @modeEditorNoWorkflowPeriod.
   ///
   /// In en, this message translates to:
@@ -7793,6 +7829,12 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Stage instructions'**
   String get modeEditorStageInstructions;
+
+  /// No description provided for @modeEditorCompletionCriteriaTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Completion criteria'**
+  String get modeEditorCompletionCriteriaTitle;
 
   /// No description provided for @modeEditorCompletionCriteria.
   ///

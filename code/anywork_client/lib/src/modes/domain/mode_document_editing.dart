@@ -1,97 +1,21 @@
 import 'dart:convert';
+import 'dart:math' as math;
 
-import 'package:anywork_client/studio_client.dart'
-    show
-        ModeDefinition,
-        ModeDocument,
-        ModeEditorLayout,
-        WorkflowDefinition,
-        WorkflowNodePosition,
-        WorkflowState,
-        WorkflowStateKind,
-        WorkflowTransition;
-import 'package:flutter/material.dart';
+import '../../../models.dart';
 
-import '../../../l10n/app_localizations.dart';
+/// 编辑布局中一个节点的坐标；纯数值类型保证 SDK 不依赖 Flutter。
+typedef ModeNodePoint = ({double x, double y});
 
 const maxModeWorkflowStates = 32;
 
-final _modeIdPattern = RegExp(r'^mode\.[a-z0-9_-]+$');
-final _stateIdPattern = RegExp(r'^[a-z0-9_-]+$');
+final RegExp _modeIdPattern = RegExp(r'^mode\.[a-z0-9_-]+$');
+final RegExp _stateIdPattern = RegExp(r'^[a-z0-9_-]+$');
 
 bool isValidModeId(String value) =>
     value.length <= 64 && _modeIdPattern.hasMatch(value);
 
 bool isValidStateId(String value) =>
     value.isNotEmpty && value.length <= 64 && _stateIdPattern.hasMatch(value);
-
-abstract final class ModeEditorKeys {
-  static const page = ValueKey<String>('mode-editor-page');
-  static const tabGraph = ValueKey<String>('mode-editor-tab-graph');
-  static const tabJson = ValueKey<String>('mode-editor-tab-json');
-  static const tabSettings = ValueKey<String>('mode-editor-tab-settings');
-  static const tabPreview = ValueKey<String>('mode-editor-tab-preview');
-  static const search = ValueKey<String>('mode-editor-search');
-  static const create = ValueKey<String>('mode-editor-create');
-  static const importJson = ValueKey<String>('mode-editor-import');
-  static const save = ValueKey<String>('mode-editor-save');
-  static const copy = ValueKey<String>('mode-editor-copy');
-  static const deleteMode = ValueKey<String>('mode-editor-delete');
-  static const reload = ValueKey<String>('mode-editor-reload');
-  static const undo = ValueKey<String>('mode-editor-undo');
-  static const redo = ValueKey<String>('mode-editor-redo');
-  static const addState = ValueKey<String>('mode-editor-add-state');
-  static const addFinalState = ValueKey<String>('mode-editor-add-final');
-  static const addTransition = ValueKey<String>('mode-editor-add-transition');
-  static const inspectorAddTransition = ValueKey<String>(
-    'mode-editor-inspector-add-transition',
-  );
-  static const validate = ValueKey<String>('mode-editor-validate');
-  static const autoLayout = ValueKey<String>('mode-editor-auto-layout');
-  static const fitView = ValueKey<String>('mode-editor-fit-view');
-  static const zoomIn = ValueKey<String>('mode-editor-zoom-in');
-  static const zoomOut = ValueKey<String>('mode-editor-zoom-out');
-  static const toggleInspector = ValueKey<String>(
-    'mode-editor-toggle-inspector',
-  );
-  static const closeInspector = ValueKey<String>('mode-editor-close-inspector');
-  static const enableWorkflow = ValueKey<String>('mode-editor-enable-workflow');
-  static const removeWorkflow = ValueKey<String>('mode-editor-remove-workflow');
-  static const jsonEditor = ValueKey<String>('mode-editor-json-editor');
-  static const applyJson = ValueKey<String>('mode-editor-apply-json');
-  static const copyJson = ValueKey<String>('mode-editor-copy-json');
-  static const schema = ValueKey<String>('mode-editor-schema');
-  static const previewStart = ValueKey<String>('mode-editor-preview-start');
-  static const previewReset = ValueKey<String>('mode-editor-preview-reset');
-  static const previewReason = ValueKey<String>('mode-editor-preview-reason');
-  static const deleteState = ValueKey<String>('mode-editor-delete-state');
-  static const deleteTransition = ValueKey<String>(
-    'mode-editor-delete-transition',
-  );
-  static const renameState = ValueKey<String>('mode-editor-rename-state');
-  static const initialSwitch = ValueKey<String>('mode-editor-initial-state');
-  static const notice = ValueKey<String>('mode-editor-notice');
-
-  static ValueKey<String> catalogItem(String id) =>
-      ValueKey<String>('mode-editor-catalog-$id');
-
-  static ValueKey<String> node(String id) =>
-      ValueKey<String>('mode-editor-node-$id');
-
-  static ValueKey<String> edge(String id) =>
-      ValueKey<String>('mode-editor-edge-$id');
-
-  static ValueKey<String> previewTarget(String id) =>
-      ValueKey<String>('mode-editor-preview-target-$id');
-
-  static ValueKey<String> settingsField(String field) =>
-      ValueKey<String>('mode-editor-settings-$field');
-
-  static ValueKey<String> inspectorField(String field) =>
-      ValueKey<String>('mode-editor-inspector-$field');
-}
-
-enum ModeTemplateKind { minimal, none, copyCurrent }
 
 WorkflowStateKind wireStateKind(String value) =>
     value == 'final' ? WorkflowStateKind.finalState : WorkflowStateKind.atomic;
@@ -184,60 +108,6 @@ WorkflowTransition transitionWith(
   guard: guard ?? transition.guard,
 );
 
-WorkflowDefinition minimalWorkflow(AppLocalizations l10n) => WorkflowDefinition(
-  title: l10n.modeEditorWorkflow,
-  goal: l10n.modeEditorWorkflowGoalText,
-  initialStateId: 'start',
-  states: [
-    WorkflowState(
-      id: 'start',
-      title: l10n.modeEditorStart,
-      instructions: l10n.modeEditorStageInstructionsPlaceholder,
-      completionCriteria: [l10n.modeEditorStageCriterionPlaceholder],
-      kind: WorkflowStateKind.atomic,
-    ),
-    WorkflowState(
-      id: 'done',
-      title: l10n.modeEditorDone,
-      instructions: '',
-      completionCriteria: const [],
-      kind: WorkflowStateKind.finalState,
-    ),
-  ],
-  transitions: [
-    WorkflowTransition(
-      sourceStateId: 'start',
-      targetStateId: 'done',
-      guard: l10n.modeEditorTransitionGuardPlaceholder,
-    ),
-  ],
-);
-
-ModeDefinition newModeDefinition({
-  required String id,
-  required String displayName,
-  required int order,
-  required ModeTemplateKind template,
-  ModeDefinition? current,
-  required AppLocalizations l10n,
-}) {
-  final templateWorkflow = switch (template) {
-    ModeTemplateKind.minimal => minimalWorkflow(l10n),
-    ModeTemplateKind.none => null,
-    ModeTemplateKind.copyCurrent => current?.workflow,
-  };
-  return ModeDefinition(
-    id: id,
-    displayName: displayName,
-    description: current?.description ?? '',
-    order: order,
-    prompt:
-        current?.prompt ??
-        '# $displayName\n\n${l10n.modeEditorPromptDescription}\n',
-    workflow: templateWorkflow,
-  );
-}
-
 ModeDefinition duplicateDefinition(
   ModeDefinition source, {
   required String id,
@@ -300,7 +170,7 @@ ModeDocument replaceState(
 ModeDocument addState(
   ModeDocument document,
   WorkflowState state,
-  Offset position,
+  ModeNodePoint position,
 ) {
   final workflow = document.definition.workflow;
   if (workflow == null) return document;
@@ -311,7 +181,7 @@ ModeDocument addState(
   final positions = [
     for (final existing in document.editor.nodes)
       if (existing.stateId != state.id) existing,
-    WorkflowNodePosition(stateId: state.id, x: position.dx, y: position.dy),
+    WorkflowNodePosition(stateId: state.id, x: position.x, y: position.y),
   ];
   return ModeDocument(
     definition: definitionWith(document.definition, workflow: nextWorkflow),
@@ -413,7 +283,7 @@ ModeDocument removeTransition(
 ModeDocument setNodePosition(
   ModeDocument document,
   String stateId,
-  Offset position,
+  ModeNodePoint position,
 ) {
   final positions = <WorkflowNodePosition>[];
   var found = false;
@@ -421,7 +291,7 @@ ModeDocument setNodePosition(
     if (existing.stateId == stateId) {
       found = true;
       positions.add(
-        WorkflowNodePosition(stateId: stateId, x: position.dx, y: position.dy),
+        WorkflowNodePosition(stateId: stateId, x: position.x, y: position.y),
       );
     } else {
       positions.add(existing);
@@ -429,7 +299,7 @@ ModeDocument setNodePosition(
   }
   if (!found) {
     positions.add(
-      WorkflowNodePosition(stateId: stateId, x: position.dx, y: position.dy),
+      WorkflowNodePosition(stateId: stateId, x: position.x, y: position.y),
     );
   }
   return ModeDocument(
@@ -440,14 +310,15 @@ ModeDocument setNodePosition(
 
 ModeDocument applyAutoLayout(
   ModeDocument document,
-  Map<String, Offset> positions,
+  Map<String, ModeNodePoint> positions,
 ) {
   final nodes = <WorkflowNodePosition>[];
-  for (final state in document.definition.workflow?.states ?? const []) {
+  for (final state
+      in document.definition.workflow?.states ?? const <WorkflowState>[]) {
     final position = positions[state.id];
     if (position == null) continue;
     nodes.add(
-      WorkflowNodePosition(stateId: state.id, x: position.dx, y: position.dy),
+      WorkflowNodePosition(stateId: state.id, x: position.x, y: position.y),
     );
   }
   return ModeDocument(
@@ -456,7 +327,7 @@ ModeDocument applyAutoLayout(
   );
 }
 
-Map<String, Offset> autoLayoutOffsets(WorkflowDefinition workflow) {
+Map<String, ModeNodePoint> autoLayoutOffsets(WorkflowDefinition workflow) {
   final outgoing = <String, List<String>>{};
   for (final transition in workflow.transitions) {
     outgoing
@@ -485,7 +356,7 @@ Map<String, Offset> autoLayoutOffsets(WorkflowDefinition workflow) {
     if (value > maxDepth) maxDepth = value;
   }
   final rows = <int, int>{};
-  final result = <String, Offset>{};
+  final result = <String, ModeNodePoint>{};
   for (final state in workflow.states) {
     final column = depth[state.id] ?? (maxDepth + 1);
     if (!depth.containsKey(state.id)) {
@@ -493,38 +364,43 @@ Map<String, Offset> autoLayoutOffsets(WorkflowDefinition workflow) {
     }
     final row = rows[column] ?? 0;
     rows[column] = row + 1;
-    result[state.id] = Offset(48 + column * 288, 48 + row * 136);
+    result[state.id] = (x: 48 + column * 288, y: 48 + row * 136);
   }
   return result;
 }
 
-Map<String, Offset> resolvedNodePositions(ModeDocument document) {
+Map<String, ModeNodePoint> resolvedNodePositions(ModeDocument document) {
   final workflow = document.definition.workflow;
   if (workflow == null) return const {};
   final result = autoLayoutOffsets(workflow);
   for (final position in document.editor.nodes) {
     if (!result.containsKey(position.stateId)) continue;
     if (!position.x.isFinite || !position.y.isFinite) continue;
-    result[position.stateId] = Offset(position.x, position.y);
+    result[position.stateId] = (x: position.x, y: position.y);
   }
   return result;
 }
 
-Offset nextFreePosition(ModeDocument document) {
+ModeNodePoint nextFreePosition(ModeDocument document) {
   final positions = resolvedNodePositions(document).values;
-  if (positions.isEmpty) return const Offset(48, 48);
+  if (positions.isEmpty) return const (x: 48, y: 48);
   var maxX = 0.0;
   for (final position in positions) {
-    if (position.dx > maxX) maxX = position.dx;
+    if (position.x > maxX) maxX = position.x;
   }
   for (var row = 0; row < 40; row++) {
-    final candidate = Offset(maxX + 288, 48 + row * 136);
+    final candidate = (x: maxX + 288, y: 48.0 + row * 136);
     final occupied = positions.any(
-      (position) => (position - candidate).distance < 120,
+      (position) =>
+          math.sqrt(
+            (position.x - candidate.x) * (position.x - candidate.x) +
+                (position.y - candidate.y) * (position.y - candidate.y),
+          ) <
+          120,
     );
     if (!occupied) return candidate;
   }
-  return Offset(maxX + 288, 48 + positions.length * 136);
+  return (x: maxX + 288, y: 48.0 + positions.length * 136);
 }
 
 String nextStateId(WorkflowDefinition workflow, {required bool finalState}) {

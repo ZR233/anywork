@@ -4305,6 +4305,31 @@ class AppLocalizationsEn extends AppLocalizations {
   String get modeEditorCollapse => 'Collapse';
 
   @override
+  String get modeEditorDetailStage => 'Stage details';
+
+  @override
+  String get modeEditorDetailTransition => 'Transition details';
+
+  @override
+  String get modeEditorFocusAll => 'All';
+
+  @override
+  String get modeEditorFocusSelected => 'Focused';
+
+  @override
+  String modeEditorDimmedEdges(int count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: 'Dimmed $count unrelated transitions',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String get modeEditorViewStage => 'View stage';
+
+  @override
   String get modeEditorNoWorkflowPeriod => 'This mode has no workflow.';
 
   @override
@@ -4338,6 +4363,9 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get modeEditorStageInstructions => 'Stage instructions';
+
+  @override
+  String get modeEditorCompletionCriteriaTitle => 'Completion criteria';
 
   @override
   String get modeEditorCompletionCriteria =>

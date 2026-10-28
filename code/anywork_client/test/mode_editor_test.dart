@@ -203,7 +203,7 @@ void main() {
           'open' => client.modeEditor.open(document.definition.id),
           'applyJson' => client.modeEditor.applyJson(),
           'validate' => client.modeEditor.validate(),
-          'preview' => client.modeEditor.preview(),
+          'preview' => client.modeEditor.preview(reason: 'fixture reason'),
           'schema' => client.modeEditor.schema(),
           _ => client.modeEditor.reload(),
         };

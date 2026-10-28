@@ -210,3 +210,15 @@ provider 销毁仅解绑自身观察、计时器和 UI helper，不关闭业务�
 官方预览按项目发现全部注册入口，任一入口引入原生应用聚合库都会污染整个 Web 编译。仅将满足独立纯视图边界的组件（如账号模块视图与时间线思考／工具活动组独立组件 `TimelineActivityGroupBlock`）注册为官方预览；原生工作区与完整时间线列表的装配继续通过既有 demo/Driver 观察，不保留依赖原生壳却无法独立编译的预览注册及无消费者的合成壳。
 
 预览交互仅改变本地展示状态或记录动作，不访问真实凭据、文件、账号或网络。Web 预览的编译、热更新与截图用于证明呈现解耦和布局；原生插件、真实数据与关闭行为仍须独立验收（见 [24](./24-testing.md)）。官方组件可满足时不增设预览框架或平行应用；常规操作入口归工程文档维护。
+
+## 25.15 工作模式分域与全屏工作区
+
+### 领域分域
+
+工作模式（Mode）遵循 [§25.13](#2513-独立统计领域与呈现模块)/[§25.14](#2514-账号分域与可预览呈现) 的分域先例，Dart Client 侧归 `anywork_client/src/modes/` 领域：`domain/` 持有目录与编辑模型、`ModeEditorOwner`（草稿、64 步 undo/redo、CAS 保存与内置只读防护，契约见 [§25.12](#2512-工作模式编辑草稿与远端目录游标)）、目录 store 与文档不可变变换纯函数；`modes_ports.dart` 持有 `ModeEditorTransport` 类型化端口。文档变换以纯坐标 record 表达节点位置，SDK 不依赖 Flutter 类型。`AnyworkClient` 继续以 `modeEditor`/`modeCatalog` 字段作为唯一装配门面；旧 `models/mode_editor_models.dart`、`studio/mode_editor_owner.dart` 路径不保留转发。
+
+### 呈现分层与路由
+
+Flutter 侧归 `features/modes/`：`state/` 持有 Freezed 工作区视图状态（内容分区、选中、聚焦模式、校验请求与预演输入），`view_models/` 的生成式 Notifier 是其唯一 owner，`connectors/` 持有画布与详情共用的文档编辑动作，`views/` 为设置目录 tab、全屏工作区路由页与窄屏详情子路由页，`widgets/` 为画布、阶段/转换详情面板与 JSON/设置/预演面板（纯不可变 props + 类型化回调）。文档草稿仍唯一归 `ModeEditorOwner`，视图状态不复制任何业务事实。
+
+页面级导航统一经应用唯一声明式路由表（`app/routing/application_router.dart`）：`mode-workspace`（`/settings/modes/:modeId`，路由 `onExit` 复用未保存草稿三选一守卫）、`mode-detail`（窄屏详情子路由）、`bot-details` 与 `bot-chat`。任何页面不得绕过路由表使用 `Navigator.push(MaterialPageRoute)`；设置页内 tab、master-detail 槽位与模态对话框不属于页面导航，保持既有实现。窄屏详情页返回时经 `PopScope` 清除选中状态，下层工作区保持 mounted 以保留画布视口与缩放。
