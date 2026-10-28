@@ -71,12 +71,12 @@ pub enum CommandTerminationReason {
 
 /// One accepted capture chunk a failed capture has not stored yet, in acceptance order.
 ///
-/// It keeps the stream the bytes came from, so the repair restores the same framing, and the exact
+/// It keeps the stream the bytes came from, so the repair restores the correct raw file, and the exact
 /// accepted bytes, so a retry re-materializes them verbatim instead of re-running the command. The
 /// bytes are shared with the reader that accepted them, so retaining the plan never copies output.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CaptureRepairChunk {
-    /// Stream the pending bytes came from, so the repair restores the same framing.
+    /// Stream whose raw file receives the pending bytes.
     pub stream: CommandCaptureStream,
     /// The accepted chunk the failed capture could not store.
     pub pending: Arc<[u8]>,

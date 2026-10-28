@@ -871,7 +871,7 @@ void main() {
           // 运行中的技能读取没有任何激活事实：保留真实工具行。
           skillCall('skill-view-running', 1, succeeded: false),
           // 支持文件读取不是主技能加载：即使身份巧合也不配对。
-          skillCall('support-read', 2, name: 'read_file'),
+          skillCall('support-read', 2, name: 'list_files'),
           skillActivation('skill-support', 3, toolCallId: 'support-read'),
           // 用户手势来源不猜测与工具调用配对。
           skillCall('gesture-call', 4),
@@ -1991,7 +1991,7 @@ void main() {
               state: ThreadToolItemStateView(
                 invocation: const ThreadToolInvocationView(
                   toolCallId: 'tool-1',
-                  name: 'read_file',
+                  name: 'stat_path',
                   arguments: '{"path":"README.md"}',
                 ),
                 lifecycle: SucceededThreadToolView(

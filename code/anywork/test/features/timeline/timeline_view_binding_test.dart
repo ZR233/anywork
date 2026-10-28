@@ -1791,7 +1791,7 @@ void main() {
           state: ThreadToolItemStateView(
             invocation: const ThreadToolInvocationView(
               toolCallId: 'tool-1',
-              name: 'read_file',
+              name: 'stat_path',
               arguments: '{"path":"/workspace/README.md"}',
             ),
             lifecycle: SucceededThreadToolView(
@@ -1898,12 +1898,12 @@ void main() {
     },
   );
 
-  testWidgets('读取文件以状态和文件名单行展示，详情只在点击后构建', (tester) async {
+  testWidgets('只读工具 stat_path 以状态和文件名单行展示，详情只在点击后构建', (tester) async {
     final lease = leaseFor(
       items: [
         toolItem(
           'read-1',
-          name: 'read_file',
+          name: 'stat_path',
           arguments: '{"path":"/workspace/src/target.dart"}',
         ),
       ],

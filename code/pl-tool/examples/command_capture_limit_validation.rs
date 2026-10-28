@@ -1665,6 +1665,7 @@ impl pl_core::model::ModelSession for SingleExecModel {
                 call_id: "exec-input-call".into(),
                 tool_id: "exec".into(),
                 arguments: OpaquePayload::text(self.raw.clone()),
+                rejection: None,
             }]
         } else {
             vec![]

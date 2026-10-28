@@ -156,6 +156,7 @@ impl ModelSession for OneToolCall {
         } else {
             self.answered = true;
             vec![ModelToolCall {
+                rejection: None,
                 call_id: format!("{}-{}", request.turn_id, self.tool_id),
                 tool_id: self.tool_id.clone(),
                 arguments: OpaquePayload::text("arguments"),
@@ -2575,6 +2576,7 @@ impl ModelSession for ToolThenFailure {
         }
         self.answered = true;
         let call = ModelToolCall {
+            rejection: None,
             call_id: format!("{}-{}", request.turn_id, self.tool_id),
             tool_id: self.tool_id.clone(),
             arguments: OpaquePayload::text("arguments"),

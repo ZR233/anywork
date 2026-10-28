@@ -368,7 +368,7 @@ pub trait CommandBackend: std::fmt::Debug + Send + Sync + 'static {
     ///
     /// The append may have left the capture fragment short of the bytes already accepted and
     /// published live. This truncates the fragment back to its last committed offset and re-appends
-    /// `chunk` with the same framing a successful append would have produced, so the fragment holds
+    /// `chunk` to the selected raw stream file, so the fragment holds
     /// exactly the accepted bytes under its stable identity. Truncating first makes it idempotent: a
     /// repeated repair reproduces the same bytes instead of duplicating the chunk, and the command is
     /// never re-run. It returns the fragment's new confirmed length, so a caller replaying the whole
@@ -747,7 +747,7 @@ impl CommandBackend for LocalCommandBackend {
         chunk: &[u8],
     ) -> Result<u64> {
         // Truncate any partially written bytes back to the last committed offset, then re-append the
-        // exact accepted chunk with the same framing a normal append would have written. Truncating
+        // exact accepted chunk to its raw stream file. Truncating
         // first makes the repair idempotent: a repeated repair reproduces the same bytes instead of
         // appending the same chunk twice, and the command is never re-run.
         let file = tokio::fs::OpenOptions::new()

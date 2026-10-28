@@ -35,8 +35,8 @@ const _maxImageRecycleSteps = 12;
 /// 每个 canonical 工具调用都是独立条目：按 callId 精确判定 name/status，既不放过
 /// 漏项，也不接受陌生项；判定不依赖时间线顺序或任何活动分组。
 const _expectedToolCalls = <({String callId, String name, String status})>[
-  (callId: 'scroll-call-short', name: 'read_file', status: 'succeeded'),
-  (callId: 'scroll-call-read-second', name: 'read_file', status: 'succeeded'),
+  (callId: 'scroll-call-short', name: 'stat_path', status: 'succeeded'),
+  (callId: 'scroll-call-read-second', name: 'stat_path', status: 'succeeded'),
   (callId: 'scroll-call-medium', name: 'list_files', status: 'succeeded'),
   (callId: 'scroll-call-long', name: 'list_files', status: 'succeeded'),
   (callId: 'scroll-call-arguments', name: 'exec', status: 'succeeded'),

@@ -154,7 +154,6 @@ async fn main() -> anyhow::Result<()> {
             max_files: 20,
             include_dirs: true,
             cursor: None,
-            implicit_recovery: false,
         })
         .await?;
     assert_eq!(

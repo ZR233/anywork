@@ -363,8 +363,8 @@ impl WorkspaceFileBackend for RemoteWorkspaceFileBackend {
             .map_err(remote_file_error)?;
         self.copy_capture_bounded(&path, &mut bytes, self.client.content_budget() as u64)
             .await
-            .map_err(|e| tool_error("read_file", e))?;
-        String::from_utf8(bytes.into_bytes()).map_err(|e| tool_error("read_file", e))
+            .map_err(|e| tool_error("workspace_file", e))?;
+        String::from_utf8(bytes.into_bytes()).map_err(|e| tool_error("workspace_file", e))
     }
     async fn read_bytes(&self, request: WorkspaceFileReadBytesRequest) -> Result<Vec<u8>> {
         let path = resolve_remote_path(request.path, request.cwd).map_err(remote_file_error)?;
@@ -388,8 +388,7 @@ impl WorkspaceFileBackend for RemoteWorkspaceFileBackend {
     async fn list(&self, request: WorkspaceFileListRequest) -> Result<WorkspaceFileListResult> {
         let root = resolve_remote_path(request.path.clone(), request.cwd.clone())
             .map_err(remote_file_error)?;
-        let implicit = request.implicit_recovery;
-        self.listings.page(request, self.walk(root, implicit)).await
+        self.listings.page(request, self.walk(root)).await
     }
 
     async fn close_listing(&self, cursor: String) -> Result<()> {

@@ -77,6 +77,7 @@ impl ModelSession for ScriptedModel {
             self.tool_ids
                 .iter()
                 .map(|tool_id| ModelToolCall {
+                    rejection: None,
                     call_id: format!("{}-{tool_id}", request.turn_id),
                     tool_id: tool_id.clone(),
                     arguments: OpaquePayload::text(format!("  raw {tool_id}\n")),

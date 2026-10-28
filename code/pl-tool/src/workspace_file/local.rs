@@ -136,13 +136,13 @@ impl WorkspaceFileBackend for LocalWorkspaceFileBackend {
         let metadata = tokio::fs::metadata(&path).await?;
         if !metadata.is_file() {
             return Err(tool_error(
-                "read_file",
+                "workspace_file",
                 format!("'{}' is not a regular file", request.path),
             ));
         }
         tokio::fs::read_to_string(&path).await.map_err(|error| {
             tool_error(
-                "read_file",
+                "workspace_file",
                 format!(
                     "failed to read '{}': {error}",
                     self.paths.display_relative(&path)
@@ -257,7 +257,6 @@ impl WorkspaceFileBackend for LocalWorkspaceFileBackend {
     async fn list(&self, request: WorkspaceFileListRequest) -> Result<WorkspaceFileListResult> {
         let path = request.path.clone();
         let cwd = request.cwd.clone();
-        let implicit = request.implicit_recovery;
         self.listings
             .page(request, async {
                 use futures::StreamExt;
@@ -281,7 +280,6 @@ impl WorkspaceFileBackend for LocalWorkspaceFileBackend {
                         !entry.file_type().is_some_and(|kind| kind.is_symlink())
                             && !super::listing::skip_directory(
                                 &entry.path().to_string_lossy().replace('\\', "/"),
-                                implicit,
                             )
                     });
                 let walk = builder.build();

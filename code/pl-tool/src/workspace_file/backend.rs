@@ -191,7 +191,6 @@ pub struct WorkspaceFileListRequest {
     pub glob: String,
     pub max_files: usize,
     pub cursor: Option<String>,
-    pub implicit_recovery: bool,
     pub include_dirs: bool,
 }
 
