@@ -1,5 +1,6 @@
 //! Provider-native history compatibility belongs to the selected model adapter.
 use crate::completion::ModelContextItem;
+use crate::completion::tool_schema::ToolProjection;
 use crate::protocol::WireApi;
 use crate::{PureError, Result};
 
@@ -85,14 +86,7 @@ pub(super) fn project_request(
         .capabilities
         .clone()
         .with_native_custom_tools(endpoint.uses_native_custom_tools());
-    let native = endpoint.uses_native_custom_tools()
-        && capabilities.supports_custom_tools()
-        && capabilities.supports_freeform_tools();
-    let projection = if native {
-        crate::completion::tool_schema::CustomToolProjection::Native
-    } else {
-        crate::completion::tool_schema::CustomToolProjection::ToFunction
-    };
+    let projection = ToolProjection::for_endpoint(endpoint, &capabilities);
     let mut request = request.provider_compatible(projection);
     if !request
         .tools

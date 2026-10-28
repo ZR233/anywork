@@ -93,16 +93,19 @@ pub(crate) fn supports_preserved_json_context(path: &Path) -> bool {
 pub(crate) fn find_preserved_json_context_sequence(
     lines: &[String],
     old_lines: &[String],
-    new_lines: &[String],
+    context_line_indices: &[(usize, usize)],
     start: usize,
     eof: bool,
 ) -> Option<usize> {
     if old_lines.is_empty() || old_lines.len() > lines.len() {
         return None;
     }
-    let preserved = preserved_old_lines(old_lines, new_lines);
-    if !preserved.iter().any(|preserved| *preserved) {
+    if context_line_indices.is_empty() {
         return None;
+    }
+    let mut preserved = vec![false; old_lines.len()];
+    for &(old_index, _) in context_line_indices {
+        preserved[old_index] = true;
     }
     let last_start = lines.len().saturating_sub(old_lines.len());
     let matches_at = |index: usize| {
@@ -116,22 +119,6 @@ pub(crate) fn find_preserved_json_context_sequence(
         return Some(last_start);
     }
     (start..=last_start).find(|index| matches_at(*index))
-}
-
-fn preserved_old_lines(old_lines: &[String], new_lines: &[String]) -> Vec<bool> {
-    let mut preserved = vec![false; old_lines.len()];
-    let mut new_search_start = 0;
-    for (old_index, old_line) in old_lines.iter().enumerate() {
-        let Some(relative_index) = new_lines[new_search_start..]
-            .iter()
-            .position(|new_line| lines_equivalent(old_line, new_line))
-        else {
-            continue;
-        };
-        preserved[old_index] = true;
-        new_search_start += relative_index + 1;
-    }
-    preserved
 }
 
 fn same_json_property_key(left: &str, right: &str) -> bool {
