@@ -13,9 +13,9 @@ use std::time::Duration;
 use pl_tool::skill::SkillsConfig;
 use pl_tool::skill::{SkillLoadInvocation, SkillProviderRequest, SkillRegistry};
 use pl_tool::workspace_file::{
-    WorkspaceFileBackend, WorkspaceFileListRequest, WorkspaceFileListResult,
-    WorkspaceFileReadBytesRequest, WorkspaceFileReadRequest, WorkspaceFileRemoveRequest,
-    WorkspaceFileStat, WorkspaceFileStatRequest, WorkspaceFileWriteRequest,
+    WorkspaceFileBackend, WorkspaceFileReadBytesRequest, WorkspaceFileReadRequest,
+    WorkspaceFileRemoveRequest, WorkspaceFileStat, WorkspaceFileStatRequest,
+    WorkspaceFileWriteRequest,
 };
 
 use pl_tool::remote::{RemoteSkillProvider, SshConnectionState, SshManager, SshServerProfile};
@@ -138,24 +138,6 @@ async fn main() -> anyhow::Result<()> {
             None,
         )
         .await?;
-    let listing = files
-        .list(WorkspaceFileListRequest {
-            path: ".".to_string(),
-            cwd: None,
-            glob: "**/*.txt".to_string(),
-            max_files: 20,
-            include_dirs: true,
-            cursor: None,
-        })
-        .await?;
-    assert_eq!(
-        listing.files,
-        vec![
-            "nested/input.txt".to_string(),
-            "nested/moved.txt".to_string()
-        ]
-    );
-
     let processes = CommandProcessManager::new(Arc::new(host.commands.clone()));
     let first = processes
         .start(CommandStartRequest {
@@ -614,17 +596,6 @@ impl WorkspaceFileBackend for RacingRemoteIgnore {
 
     async fn remove_file(&self, request: WorkspaceFileRemoveRequest) -> pl_protocol::Result<()> {
         self.inner.remove_file(request).await
-    }
-
-    async fn list(
-        &self,
-        request: WorkspaceFileListRequest,
-    ) -> pl_protocol::Result<WorkspaceFileListResult> {
-        self.inner.list(request).await
-    }
-
-    async fn close_listing(&self, cursor: String) -> pl_protocol::Result<()> {
-        self.inner.close_listing(cursor).await
     }
 
     async fn create_directory(&self, path: String, cwd: Option<String>) -> pl_protocol::Result<()> {

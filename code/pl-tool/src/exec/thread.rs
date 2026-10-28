@@ -581,6 +581,7 @@ fn projection(
         state: &'a crate::command::process_manager::CommandProcessLifecycle,
         stdout: &'a str,
         stderr: &'a str,
+        output_file: &'a std::path::Path,
         archived: bool,
     }
     let payload = serde_json::to_string(&Record {
@@ -600,6 +601,7 @@ fn projection(
         state: &snapshot.state,
         stdout: &snapshot.stdout.content,
         stderr: &snapshot.stderr.content,
+        output_file: &snapshot.output_file,
         archived: resource.is_some(),
     })
     .map_err(ToolError::new)?;

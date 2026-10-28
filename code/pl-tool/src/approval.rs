@@ -118,10 +118,6 @@ fn requested_paths_for_tool(name: &str, arguments: &serde_json::Value) -> Vec<St
             argument_path(arguments, "path").into_iter().collect()
         }
         "lsp_query" => argument_path(arguments, "filePath").into_iter().collect(),
-        "list_files" => argument_path(arguments, "path")
-            .into_iter()
-            .filter(|path| !path.trim().is_empty())
-            .collect(),
         "copy_path" | "move_path" => ["from", "to"]
             .into_iter()
             .filter_map(|key| argument_path(arguments, key))

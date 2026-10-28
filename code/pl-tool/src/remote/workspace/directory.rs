@@ -1,8 +1,14 @@
 //! Incremental remote directory reader and depth-first traversal owned on the host.
 use super::*;
-use crate::workspace_file::WorkspaceFileListEntry;
-use crate::workspace_file::listing::Entries;
-use futures::StreamExt;
+use futures::{StreamExt, stream::BoxStream};
+use pl_protocol::Result;
+
+pub(in crate::remote) type RemoteWalkEntries = BoxStream<'static, Result<RemoteWalkEntry>>;
+
+pub(in crate::remote) struct RemoteWalkEntry {
+    pub(in crate::remote) path: String,
+    pub(in crate::remote) is_dir: bool,
+}
 
 pub struct RemoteDirectoryReader {
     client: RemoteClient,
@@ -69,7 +75,7 @@ impl RemoteWorkspaceFileBackend {
     pub async fn open_directory(&self, path: String) -> Result<RemoteDirectoryReader> {
         open(&self.client, self.lease.clone(), path).await
     }
-    pub(in crate::remote) async fn walk(&self, path: String) -> Result<Entries> {
+    pub(in crate::remote) async fn walk(&self, path: String) -> Result<RemoteWalkEntries> {
         let root = open(&self.client, self.lease.clone(), path).await?;
         let client = self.client.clone();
         let workspace = self.lease.clone();
@@ -87,15 +93,12 @@ impl RemoteWorkspaceFileBackend {
                         stack.pop();
                         continue;
                     };
-                    if entry.is_symlink
-                        || (entry.is_directory
-                            && crate::workspace_file::listing::skip_directory(&entry.path))
-                    {
+                    if entry.is_symlink || (entry.is_directory && skip_directory(&entry.path)) {
                         continue;
                     }
                     let pending = entry.is_directory.then(|| entry.path.clone());
                     return Ok(Some((
-                        WorkspaceFileListEntry {
+                        RemoteWalkEntry {
                             path: entry.path,
                             is_dir: entry.is_directory,
                         },
@@ -107,6 +110,16 @@ impl RemoteWorkspaceFileBackend {
         .boxed())
     }
 }
+
+fn skip_directory(path: &str) -> bool {
+    let name = path
+        .trim_end_matches('/')
+        .rsplit('/')
+        .next()
+        .unwrap_or(path);
+    matches!(name, ".git" | "target" | "node_modules")
+}
+
 async fn open(
     client: &RemoteClient,
     workspace: Arc<super::super::client::workspace::WorkspaceLease>,
