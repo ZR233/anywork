@@ -1,12 +1,12 @@
-part of 'timeline_view.dart';
+part of 'timeline_activity_group_views.dart';
 
 /// 一条工具 Message 的只读展示视图。
 ///
 /// 它只包装这一条 Message 的 typed 事实：名字、状态、参数/结果预览与附件都来自
 /// `ThreadItemView.tool`，不另读完整参数 JSON 来推断语义，也不解析私有交互回执
 /// （design/26 §26.5、§26.8）。
-final class _ToolItem {
-  const _ToolItem(this.entry);
+final class TimelineToolItem {
+  const TimelineToolItem(this.entry);
 
   final TimelineEntry entry;
 
@@ -42,21 +42,22 @@ String? _commandSummary(String arguments) {
   return value == null || value.isEmpty ? null : value;
 }
 
-bool _isWebSearch(_ToolItem item) {
+bool timelineIsWebSearch(TimelineToolItem item) {
   return item.tool?.name == 'web_search';
 }
 
 /// 网页搜索同样是统一轻量行：默认只显示状态文案，查询、链接与结果在展开区。
-class _WebSearchToolCard extends StatefulWidget {
-  const _WebSearchToolCard({required this.item});
+class TimelineWebSearchToolCard extends StatefulWidget {
+  const TimelineWebSearchToolCard({required this.item, super.key});
 
-  final _ToolItem item;
+  final TimelineToolItem item;
 
   @override
-  State<_WebSearchToolCard> createState() => _WebSearchToolCardState();
+  State<TimelineWebSearchToolCard> createState() =>
+      _TimelineWebSearchToolCardState();
 }
 
-class _WebSearchToolCardState extends State<_WebSearchToolCard> {
+class _TimelineWebSearchToolCardState extends State<TimelineWebSearchToolCard> {
   bool _expanded = false;
 
   @override
@@ -150,7 +151,7 @@ class _WebSearchToolCardState extends State<_WebSearchToolCard> {
         icon: Icons.travel_explore,
         label: _webSearchLabel(context, item, data),
         active: _toolActiveStatuses.contains(item.status),
-        isIssue: _issueStatuses.contains(item.status),
+        isIssue: timelineIssueStatuses.contains(item.status),
         expandable: children.isNotEmpty,
         expanded: _expanded,
         tooltip: data.details.firstOrNull,
@@ -163,7 +164,7 @@ class _WebSearchToolCardState extends State<_WebSearchToolCard> {
 /// 搜索类行的简短文案：成功、失败与进行中各自准确，其它状态保留真实状态。
 String _webSearchLabel(
   BuildContext context,
-  _ToolItem item,
+  TimelineToolItem item,
   _WebSearchCardData data,
 ) {
   final l10n = context.l10n;
@@ -315,20 +316,24 @@ void _collectWebLinks(Object? value, Set<String> links) {
 ///
 /// 参数、结果、错误、退出码、拒绝原因与附件诊断按需展开，完整字段仍由详情查看器
 /// 读取；成功 workflow mutation 的内部 snapshot 继续隐藏（design/19 §19.9）。
-class _ToolDetails extends StatefulWidget {
-  const _ToolDetails({required this.item, this.inline = false});
+class TimelineToolDetails extends StatefulWidget {
+  const TimelineToolDetails({
+    required this.item,
+    this.inline = false,
+    super.key,
+  });
 
-  final _ToolItem item;
+  final TimelineToolItem item;
 
   /// 外层已经提供折叠身份（例如接管该行可见性的技能行）时只渲染详情主体，
   /// 不再重复一行工具标题；参数、结果、诊断与错误仍来自同一实现。
   final bool inline;
 
   @override
-  State<_ToolDetails> createState() => _ToolDetailsState();
+  State<TimelineToolDetails> createState() => _TimelineToolDetailsState();
 }
 
-class _ToolDetailsState extends State<_ToolDetails> {
+class _TimelineToolDetailsState extends State<TimelineToolDetails> {
   bool _expanded = false;
 
   @override
@@ -434,7 +439,7 @@ class _ToolDetailsState extends State<_ToolDetails> {
         meta: elapsed == null ? null : _toolElapsedLabel(context, elapsed),
       ),
       active: _toolActiveStatuses.contains(item.status),
-      isIssue: _issueStatuses.contains(item.status),
+      isIssue: timelineIssueStatuses.contains(item.status),
       expandable: expandable,
       expanded: _expanded,
       tooltip: targets.tooltip,
@@ -445,7 +450,7 @@ class _ToolDetailsState extends State<_ToolDetails> {
 /// 行内目标与悬浮提示：文件名优先，完整路径／文件列表保留在提示与展开区。
 ({String? label, String? tooltip}) _toolRowTargets(
   BuildContext context,
-  _ToolItem item,
+  TimelineToolItem item,
   _ToolCategory category,
 ) {
   // 补丁成功只用工具权威结果预览里的 changedFiles，不在展示层重新解析补丁语法。
@@ -481,7 +486,7 @@ class _ToolDetailsState extends State<_ToolDetails> {
       );
     }
   }
-  final target = _toolTarget(item);
+  final target = timelineToolTarget(item);
   if (target == null) return (label: null, tooltip: null);
   return (
     label: _showsFileName(category) ? _lastPathSegment(target) : target,
@@ -512,7 +517,7 @@ String? _lastPathSegment(String? path) {
 /// 结果与错误各有自己的入口，不在这里重复整段正文。
 List<String> _toolDiagnostics(
   BuildContext context,
-  _ToolItem item,
+  TimelineToolItem item,
   TimelineToolPart? tool,
 ) {
   return [
@@ -537,11 +542,11 @@ String? _attachmentDetail(BuildContext context, TimelineToolPart? tool) {
   final attachments = tool?.attachments ?? const <ThreadAttachmentView>[];
   if (attachments.isEmpty) return null;
   return attachments
-      .map((attachment) => _attachmentDescription(context, attachment))
+      .map((attachment) => timelineAttachmentDescription(context, attachment))
       .join('\n');
 }
 
-Map<String, Object?> _toolArguments(_ToolItem item) =>
+Map<String, Object?> _toolArguments(TimelineToolItem item) =>
     decodeJsonObject(item.tool?.arguments ?? '');
 
 /// 目标字段的有界提取：copy/move 取 from→to 的对象，其余沿用既有字段顺序。
@@ -565,7 +570,7 @@ String? _targetFromArguments(Map<String, Object?> arguments, String name) {
   return null;
 }
 
-String? _toolTarget(_ToolItem item) =>
+String? timelineToolTarget(TimelineToolItem item) =>
     _targetFromArguments(_toolArguments(item), item.name);
 
 String? _firstLine(String? value) {
@@ -586,9 +591,9 @@ List<String> _patchChangedFiles(TimelineToolPart? tool) {
 }
 
 /// 本次调用耗时：只取该调用的创建与 canonical 终态时间，不用保存或更新时间。
-Duration? _toolElapsed(_ToolItem item) {
+Duration? _toolElapsed(TimelineToolItem item) {
   if (!isTerminalTimelineStatus(item.status)) return null;
-  return _reasoningElapsed(item.createdAt, item.completedAt);
+  return timelineReasoningElapsed(item.createdAt, item.completedAt);
 }
 
 String _toolElapsedLabel(BuildContext context, Duration elapsed) {
@@ -605,7 +610,7 @@ String _toolElapsedLabel(BuildContext context, Duration elapsed) {
 
 /// 取消与中断的原始诊断保留原文，但按正常控制结果用中性色呈现；
 /// 真实失败（含拒绝）继续保持错误色醒目。
-Color _toolDiagnosticColor(BuildContext context, _ToolItem item) =>
+Color _toolDiagnosticColor(BuildContext context, TimelineToolItem item) =>
     switch (item.status) {
       'cancelled' || 'interrupted' => context.colors.onSurfaceVariant,
       _ => context.colors.error,
@@ -654,7 +659,7 @@ const _toolActiveStatuses = {
 
 /// 真正失败、拒绝与预算限制的统一判定：工具行与思考行只替换图标，不改文案
 /// 颜色。取消与中断是正常控制结果，保持中性图标与次级色，不算问题。
-const _issueStatuses = {'failed', 'denied', 'budgetLimited'};
+const timelineIssueStatuses = {'failed', 'denied', 'budgetLimited'};
 
 /// 工具名到展示类目的有界映射；未知工具保留名称与真实状态，不猜测语义。
 ///
@@ -839,7 +844,7 @@ String? _toolVerb(BuildContext context, _ToolCategory category, String status) {
 /// 耗时放在目标之前，长命令被行内省略时仍能读到本次调用耗时。
 String _toolRowLabel(
   BuildContext context,
-  _ToolItem item,
+  TimelineToolItem item,
   _ToolCategory category,
   String? target, {
   String? meta,
@@ -870,7 +875,7 @@ String _toolRowLabel(
   return '$verb $target';
 }
 
-String _toolTitle(BuildContext context, _ToolItem item) {
+String timelineToolTitle(BuildContext context, TimelineToolItem item) {
   final label = _toolDisplayName(context, item);
   if (item.name == 'view_image') {
     return switch (item.status) {
@@ -923,7 +928,7 @@ String _unknownToolStatusLabel(
 }
 
 /// 工具的展示名；LSP 工具使用本地化标题并附带参数摘要，其余保持原始领域名。
-String _toolDisplayName(BuildContext context, _ToolItem item) {
+String _toolDisplayName(BuildContext context, TimelineToolItem item) {
   final name = item.name;
   if (name == 'lsp_query') {
     final detail = _lspQueryDetail(item.tool?.arguments ?? '');

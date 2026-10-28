@@ -1725,6 +1725,24 @@ class AppLocalizationsEn extends AppLocalizations {
   }
 
   @override
+  String get timelineGroupWorkedUnderSecond => 'Worked for less than 1s';
+
+  @override
+  String timelineGroupWorkedSeconds(int seconds) {
+    return 'Worked for ${seconds}s';
+  }
+
+  @override
+  String timelineGroupWorkedMinutes(int minutes) {
+    return 'Worked for ${minutes}m';
+  }
+
+  @override
+  String timelineGroupWorkedMinutesSeconds(int minutes, int seconds) {
+    return 'Worked for ${minutes}m ${seconds}s';
+  }
+
+  @override
   String get timelineReasoningSummary => 'Summary';
 
   @override

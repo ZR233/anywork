@@ -24,9 +24,9 @@ sealed class TimelinePresentationItem extends ChangeNotifier {
   TimelinePresentationItem({
     required this.id,
     required this.serial,
-    required TimelineMessagePayload anchor,
-  }) : _position = (anchor.order, anchor.id),
-       anchorId = anchor.id;
+    TimelineMessagePayload? anchor,
+  }) : _position = anchor == null ? (0, id) : (anchor.order, anchor.id),
+       anchorId = anchor?.id ?? '';
 
   final String id;
   final int serial;
@@ -296,6 +296,7 @@ sealed class TimelinePresentationItem extends ChangeNotifier {
 
   void _insert(_PresentationMember member) {
     final payload = member.value;
+    final wasEmpty = _ids.isEmpty;
     var low = 0;
     var high = _ids.length;
     while (low < high) {
@@ -310,6 +311,10 @@ sealed class TimelinePresentationItem extends ChangeNotifier {
     }
     _ids.insert(low, payload.id);
     _members[payload.id] = member;
+    if (wasEmpty) {
+      anchorId = payload.id;
+      _position = (payload.order, payload.id);
+    }
     _count(payload, 1);
     _registerPairingKeys(payload.id, payload);
     _insertVisibleRow(payload.id, payload);
@@ -324,7 +329,10 @@ sealed class TimelinePresentationItem extends ChangeNotifier {
     final payload = member.value;
     final index = _ids.indexOf(id);
     _ids.removeAt(index);
-    if (anchorId == id && _ids.isNotEmpty) {
+    if (_ids.isEmpty) {
+      anchorId = '';
+      _position = (0, this.id);
+    } else if (anchorId == id) {
       anchorId = _ids[index.clamp(0, _ids.length - 1)];
       final anchor = _members[anchorId]!.value;
       _position = (anchor.order, anchor.id);
@@ -404,8 +412,35 @@ final class TimelineActivityGroup extends TimelinePresentationItem {
     required super.serial,
     required super.anchor,
   });
+
   @override
   TimelinePresentationKind get kind => TimelinePresentationKind.activity;
+
+  /// 整个思考与工具活动组从最早成员开始到最晚成员结束的总耗时。
+  ///
+  /// 从组内最早 `createdAt` 到最晚 `completedAt ?? updatedAt` 计算工作时长；
+  /// 缺少合法起止时间时返回 null。
+  Duration? get elapsedDuration {
+    if (payloads.isEmpty) return null;
+    DateTime? earliestStart;
+    DateTime? latestEnd;
+    for (final payload in payloads) {
+      final start = payload.item.createdAt;
+      if (earliestStart == null || start.isBefore(earliestStart)) {
+        earliestStart = start;
+      }
+      final end = payload.item.completedAt ?? payload.item.updatedAt;
+      if (latestEnd == null || end.isAfter(latestEnd)) {
+        latestEnd = end;
+      }
+    }
+    if (earliestStart == null ||
+        latestEnd == null ||
+        latestEnd.isBefore(earliestStart)) {
+      return null;
+    }
+    return latestEnd.difference(earliestStart);
+  }
 }
 
 final class TimelineImageReadGroup extends TimelinePresentationItem {

@@ -182,7 +182,7 @@ class _ThreadAttachmentCardState extends ConsumerState<_ThreadAttachmentCard> {
                     overflow: TextOverflow.ellipsis,
                   ),
                   Text(
-                    '${context.attachmentModalityLabel(attachment.modality)} · ${_formatBytes(attachment.byteSize)}',
+                    '${context.attachmentModalityLabel(attachment.modality)} · ${timelineFormatBytes(attachment.byteSize)}',
                     style: Theme.of(context).textTheme.labelSmall,
                   ),
                 ],
@@ -213,7 +213,7 @@ class _ThreadAttachmentCardState extends ConsumerState<_ThreadAttachmentCard> {
       return;
     }
     if (!mounted || generation != _imageGeneration || image == null) return;
-    await _showStudioImageDialog(
+    await showStudioImageDialog(
       context,
       MemoryImage(image),
       dialogKey: StudioDriverKeys.timelineImageDialog(widget.attachment.id),
@@ -230,7 +230,7 @@ class _ThreadAttachmentCardState extends ConsumerState<_ThreadAttachmentCard> {
 /// 内出现相同资源时追加稳定序号；该序号只取决于同一调用自身的附件列表，不随其它
 /// 调用流式新增而变化。
 typedef _ToolImageEntryRef = ({
-  _ToolItem item,
+  TimelineToolItem item,
   ThreadAttachmentView attachment,
   String entryId,
 });
@@ -240,7 +240,7 @@ typedef _ToolImageEntryRef = ({
 /// 不按资源去重、不丢弃调用：同一调用重复引用同一资源时追加 `#<序号>`；跨调用同一
 /// 资源仍各自保留独立条目。字节读取仍由 Thread 附件缓存按
 /// `threadId + attachmentId` 去重。
-List<_ToolImageEntryRef> _toolImageEntries(List<_ToolItem> items) {
+List<_ToolImageEntryRef> _toolImageEntries(List<TimelineToolItem> items) {
   final entries = <_ToolImageEntryRef>[];
   final occurrences = <String, int>{};
   for (final item in items) {
@@ -303,7 +303,7 @@ class _ThreadToolImageThumbnailState
     // Subscribe in the same frame, including when a cached read already failed.
     _image ??= _loadImage();
     return Tooltip(
-      message: _attachmentDescription(context, widget.entry.attachment),
+      message: timelineAttachmentDescription(context, widget.entry.attachment),
       child: Container(
         width: 112,
         height: 84,
@@ -344,12 +344,12 @@ class _ThreadToolImageThumbnailState
       return;
     }
     if (!mounted || generation != _imageGeneration) return;
-    await _showStudioImageDialog(
+    await showStudioImageDialog(
       context,
       MemoryImage(image),
       dialogKey: StudioDriverKeys.viewImageDialog(widget.entry.entryId),
       label: widget.entry.attachment.filename,
-      sourcePath: _toolTarget(widget.entry.item),
+      sourcePath: timelineToolTarget(widget.entry.item),
       onShowDetails: widget.onShowDetails,
       detailsKey: ValueKey('timeline-image-details-${widget.entry.entryId}'),
     );
@@ -437,136 +437,4 @@ class _ThreadImageFuture extends StatelessWidget {
       ),
     );
   }
-}
-
-String _attachmentDescription(
-  BuildContext context,
-  ThreadAttachmentView attachment,
-) {
-  final dimensions = attachment.width != null && attachment.height != null
-      ? ' · ${attachment.width}×${attachment.height}'
-      : '';
-  final label = attachment.filename ?? context.l10n.attachmentFallback;
-  return '$label$dimensions · ${_formatBytes(attachment.byteSize)}';
-}
-
-Future<void> _showStudioImageDialog(
-  BuildContext context,
-  ImageProvider image, {
-  required Key dialogKey,
-  String? label,
-  String? sourcePath,
-  void Function(BuildContext)? onShowDetails,
-  Key? detailsKey,
-}) async {
-  await showDialog<void>(
-    context: context,
-    barrierDismissible: true,
-    builder: (context) => Dialog(
-      key: dialogKey,
-      clipBehavior: Clip.antiAlias,
-      child: SizedBox(
-        width: math.min(
-          1000,
-          math.max(240, MediaQuery.sizeOf(context).width - 80),
-        ),
-        height: math.min(
-          760,
-          math.max(200, MediaQuery.sizeOf(context).height - 80),
-        ),
-        child: Column(
-          children: [
-            Expanded(
-              child: Stack(
-                children: [
-                  Positioned.fill(
-                    child: InteractiveViewer(
-                      minScale: 0.5,
-                      maxScale: 5,
-                      child: Center(
-                        child: Image(
-                          image: image,
-                          errorBuilder: (context, error, stackTrace) => Center(
-                            child: Text(context.l10n.timelineImageLoadFailed),
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
-                  Positioned(
-                    top: 8,
-                    right: 8,
-                    child: IconButton.filledTonal(
-                      key: StudioDriverKeys.timelineImageClose,
-                      tooltip: context.l10n.timelineImageClose,
-                      onPressed: () => Navigator.of(context).pop(),
-                      icon: const Icon(Icons.close),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            if ((label?.isNotEmpty ?? false) ||
-                (sourcePath?.isNotEmpty ?? false) ||
-                onShowDetails != null)
-              Container(
-                width: double.infinity,
-                decoration: BoxDecoration(
-                  border: Border(
-                    top: BorderSide(color: context.colors.outlineVariant),
-                  ),
-                ),
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 20,
-                  vertical: 14,
-                ),
-                child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Expanded(
-                      child: SelectionArea(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            if (label?.isNotEmpty == true)
-                              Text(label!, style: context.text.titleSmall),
-                            if (sourcePath?.isNotEmpty == true &&
-                                sourcePath != label)
-                              Padding(
-                                padding: EdgeInsets.only(
-                                  top: label?.isNotEmpty == true ? 4 : 0,
-                                ),
-                                child: ConstrainedBox(
-                                  constraints: const BoxConstraints(
-                                    maxHeight: 96,
-                                  ),
-                                  child: SingleChildScrollView(
-                                    child: Text(
-                                      sourcePath!,
-                                      style: context.text.bodySmall?.copyWith(
-                                        color: context.colors.onSurfaceVariant,
-                                      ),
-                                    ),
-                                  ),
-                                ),
-                              ),
-                          ],
-                        ),
-                      ),
-                    ),
-                    if (onShowDetails != null)
-                      IconButton(
-                        key: detailsKey,
-                        tooltip: context.l10n.timelineToolOutput,
-                        onPressed: () => onShowDetails(context),
-                        icon: const Icon(Icons.info_outline),
-                      ),
-                  ],
-                ),
-              ),
-          ],
-        ),
-      ),
-    ),
-  );
 }

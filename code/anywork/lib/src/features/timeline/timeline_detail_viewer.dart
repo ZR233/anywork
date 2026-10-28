@@ -1,136 +1,5 @@
 part of 'timeline_view.dart';
 
-/// 被省略正文的显式入口。
-///
-/// 默认预览不因为后台补齐而自动扩大历史行：读者必须显式打开查看器，之后才在活动查询
-/// scope 内逐块读取（design/26 §26.2「详情读取」、§26.5）。
-///
-/// 每个被截断字段恰好一行 [TimelineActivityRow]：图标表达字段类别，单行文案是该字段的领域
-/// 名，紧邻的箭头表示可打开完整内容。入口不再渲染“截断预览”说明句、按钮组或多行副标题，
-/// 因此活动组折叠态只有“图标列 + 单行文案 + 箭头”这一种行形态（design/19 §19.9）。
-///
-/// 这里同时是正文选择边界（§26.8）：详情入口行文案是界面提示，不是 canonical
-/// 正文，用官方 [SelectionContainer.disabled] 把整棵子树移出外层选择域，因此跨块选择与
-/// 复制不会带上它们；入口行的点击、键盘焦点与辅助语义不受选择边界影响。
-class _TimelineDetailNotice extends StatelessWidget {
-  const _TimelineDetailNotice({
-    required this.itemId,
-    required this.lease,
-    required this.threadId,
-    required this.details,
-  });
-
-  final String itemId;
-  final TimelineDisplayLease lease;
-  final String threadId;
-  final List<StudioTimelineDetailRef> details;
-
-  @override
-  Widget build(BuildContext context) {
-    void open(ThreadContentFieldView field) => unawaited(
-      _openTimelineDetailViewer(
-        context,
-        lease: lease,
-        itemId: itemId,
-        field: field,
-      ),
-    );
-    return SelectionContainer.disabled(
-      child: Padding(
-        key: StudioDriverKeys.timelineItemBodyNotice(itemId),
-        padding: const EdgeInsets.only(top: 6),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            for (final detail in details)
-              Semantics(
-                container: true,
-                button: true,
-                label: _timelineFieldLabel(context, detail.field),
-                hint: context.l10n.timelineItemBodyLoad,
-                onTap: () => open(detail.field),
-                excludeSemantics: true,
-                child: Material(
-                  color: Colors.transparent,
-                  child: InkWell(
-                    key: StudioDriverKeys.timelineDetailOpen(
-                      itemId,
-                      StudioDriverKeyValues.timelineDetailField(detail.field),
-                    ),
-                    onTap: () => open(detail.field),
-                    // 键盘可达：InkWell 自带 Focus 与 ActivateIntent（Enter/Space）→ onTap，
-                    // 因此 Tab 聚焦后回车/空格即可读取完整内容。
-                    canRequestFocus: true,
-                    excludeFromSemantics: true,
-                    child: TimelineActivityRow(
-                      icon: _timelineFieldIcon(detail.field),
-                      label: _timelineFieldLabel(context, detail.field),
-                      expandable: true,
-                    ),
-                  ),
-                ),
-              ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-/// typed 字段的稳定诊断身份：判别分支 + 逻辑索引，不依赖对象实例。
-/// 只有省略声明、没有任何字段引用的条目：如实说明原文不可得，不提供伪造入口。
-///
-/// 说明行与 [_TimelineDetailNotice] 的入口行同形：一行 [TimelineActivityRow]，不可点击、
-/// 不显示箭头，不用整句换行文本（design/19 §19.9）。它同样不属于 canonical 正文，
-/// 因此处在同一个选择边界之外（§26.8）。
-class _TimelineTruncationNotice extends StatelessWidget {
-  const _TimelineTruncationNotice({required this.itemId});
-
-  final String itemId;
-
-  @override
-  Widget build(BuildContext context) {
-    return SelectionContainer.disabled(
-      child: Padding(
-        key: StudioDriverKeys.timelineItemBodyNotice(itemId),
-        padding: const EdgeInsets.only(top: 6),
-        child: TimelineActivityRow(
-          icon: Icons.info_outline,
-          label: context.l10n.timelineItemBodyUnavailable,
-          expandable: false,
-        ),
-      ),
-    );
-  }
-}
-
-String _timelineFieldLabel(
-  BuildContext context,
-  ThreadContentFieldView field,
-) => switch (field) {
-  ThreadToolArgumentsFieldView() => context.l10n.timelineToolArguments,
-  ThreadToolResultFieldView() => context.l10n.timelineToolOutput,
-  ThreadToolOutputArtifactsFieldView() => context.l10n.timelineToolOutput,
-  ThreadRawPayloadFieldView() => context.l10n.timelineRawRecord,
-  ThreadThinkingSummaryFieldView() => context.l10n.timelineReasoningSummary,
-  ThreadThinkingContentFieldView() => context.l10n.timelineReasoningContent,
-  ThreadToolUserInputFieldView() => context.l10n.timelineUserInputYourAnswer,
-  ThreadTextFieldView() => context.l10n.timelineItemBodyLoad,
-};
-
-/// 详情入口行的类目图标：只表达字段类别，与同组其它活动行同一图标列。
-IconData _timelineFieldIcon(ThreadContentFieldView field) => switch (field) {
-  ThreadToolArgumentsFieldView() => Icons.tune,
-  ThreadToolResultFieldView() ||
-  ThreadToolOutputArtifactsFieldView() => Icons.terminal,
-  ThreadRawPayloadFieldView() => Icons.history,
-  ThreadThinkingSummaryFieldView() => Icons.summarize_outlined,
-  ThreadThinkingContentFieldView() => Icons.subject,
-  ThreadToolUserInputFieldView() => Icons.chat_bubble_outline,
-  ThreadTextFieldView() => Icons.unfold_more,
-};
-
 Future<void> _openTimelineDetailViewer(
   BuildContext context, {
   required TimelineDisplayLease lease,
@@ -143,7 +12,7 @@ Future<void> _openTimelineDetailViewer(
       lease: lease,
       itemId: itemId,
       field: field,
-      title: _timelineFieldLabel(context, field),
+      title: timelineFieldLabel(context, field),
     ),
   );
 }
@@ -493,7 +362,7 @@ class _TimelineDetailDialogState extends State<_TimelineDetailDialog> {
               Padding(
                 padding: const EdgeInsets.only(top: 6),
                 child: Text(
-                  '${_formatBytes(_bytes)} / ${_formatBytes(widget.lease.detailRef(widget.itemId, widget.field)?.totalBytes ?? 0)}',
+                  '${timelineFormatBytes(_bytes)} / ${timelineFormatBytes(widget.lease.detailRef(widget.itemId, widget.field)?.totalBytes ?? 0)}',
                   style: Theme.of(context).textTheme.labelSmall
                       ?.copyWith(color: context.colors.onSurfaceVariant),
                 ),

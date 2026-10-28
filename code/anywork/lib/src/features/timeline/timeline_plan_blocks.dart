@@ -461,10 +461,10 @@ class _PlanDetailPanelState extends State<PlanDetailPanel> {
           constraints: const BoxConstraints(
             maxWidth: StudioLayout.conversationWidth,
           ),
-          child: _AgentMarkdown(
+          child: TimelineAgentMarkdown(
             id: 'plan:${widget.identity}',
             text: widget.markdown,
-            surface: _MarkdownSurface.panel,
+            surface: TimelineMarkdownSurface.panel,
           ),
         ),
       ),
