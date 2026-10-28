@@ -736,6 +736,7 @@ impl AccountConfig {
         }
         // 手工成员被删除后，移除对应的显式启用覆盖。
         self.model_enabled_overrides.remove(model_id);
+        self.resolved_catalog = None;
         Ok(())
     }
 

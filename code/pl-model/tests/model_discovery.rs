@@ -430,6 +430,7 @@ async fn account_catalog_resolves_own_fields_prices_and_wire_without_cross_accou
     )
     .await;
     let mut local = cached_model("shared", ProtocolKind::OpenAi);
+    local.display_name = "Manual A".into();
     local.pricing = ModelPricing::published(
         "USD",
         vec![pl_model::model::TokenPriceTier::flat(1.0, 4.0, None, None)],
@@ -488,7 +489,7 @@ async fn account_catalog_resolves_own_fields_prices_and_wire_without_cross_accou
     };
     // The observing account keeps its own manual wire/price and its own online metadata.
     let first_route = route("z-first", Some("medium"));
-    assert_eq!(first_route.model.display_name, "Final A");
+    assert_eq!(first_route.model.display_name, "Manual A");
     assert_eq!(first_route.model.context_window, Some(4096));
     assert_eq!(first_route.model.max_output_tokens, Some(128));
     assert_eq!(first_route.model.supported_efforts(), ["medium"]);
@@ -1438,8 +1439,7 @@ fn assert_direct_and_canonical_display_name(
 }
 
 #[tokio::test]
-async fn display_name_placeholders_fall_back_within_their_account_across_live_and_cached_catalogs()
-{
+async fn display_name_presence_falls_back_within_their_account_across_live_and_cached_catalogs() {
     let model_id = "gpt-6.1-terra";
     let local_name = "GPT-6.1 Terra";
     let live_cases = [
@@ -1450,7 +1450,7 @@ async fn display_name_placeholders_fall_back_within_their_account_across_live_an
         ),
         (
             json!({"data":[{"id":model_id,"display_name":model_id}]}),
-            local_name,
+            model_id,
         ),
         (
             json!({"data":[{"id":model_id,"display_name":"  Provider Terra alias  "}]}),
@@ -1479,6 +1479,24 @@ async fn display_name_placeholders_fall_back_within_their_account_across_live_an
         .unwrap();
     assert_direct_and_canonical_display_name(&unknown_account, unknown_id, unknown_id);
 
+    for protocol in [
+        ProtocolKind::OpenAi,
+        ProtocolKind::DeepSeek,
+        ProtocolKind::Xai,
+        ProtocolKind::MiMo,
+    ] {
+        let decoded = discover(
+            json!({"data":[{
+                "id":"shared-alias-model",
+                "display_name":" \t ",
+                "name":"Provider alias"
+            }]}),
+            protocol,
+        )
+        .await;
+        assert_eq!(decoded[0].display_name, "Provider alias", "{protocol:?}");
+    }
+
     let mut cached_account = provider("http://127.0.0.1:3", ProtocolKind::OpenAi);
     let query = ModelCatalogQuery::for_account(&cached_account).unwrap();
     let cache = ModelCatalogQueryCache {
@@ -1489,7 +1507,20 @@ async fn display_name_placeholders_fall_back_within_their_account_across_live_an
     cached_account
         .set_model_catalog_overlay(cache.models.clone())
         .unwrap();
-    assert_direct_and_canonical_display_name(&cached_account, model_id, local_name);
+    assert_direct_and_canonical_display_name(&cached_account, model_id, model_id);
+
+    let mut inherited_id = cached_model(model_id, ProtocolKind::OpenAi);
+    inherited_id.observation = Some(Default::default());
+    inherited_id
+        .observation
+        .as_mut()
+        .unwrap()
+        .declare(pl_model::model::ModelMetadataField::ContextWindow);
+    let mut legacy_default_cache = provider("http://127.0.0.1:5", ProtocolKind::OpenAi);
+    legacy_default_cache
+        .set_model_catalog_overlay(vec![inherited_id])
+        .unwrap();
+    assert_direct_and_canonical_display_name(&legacy_default_cache, model_id, local_name);
 
     let mut other_account = provider("http://127.0.0.1:4", ProtocolKind::Xai);
     other_account

@@ -201,17 +201,36 @@ pub(crate) fn apply_field(target: &mut ModelInfo, source: &ModelInfo, field: Mod
     }
 }
 
-/// Resolve an online presentation name without turning its ID-shaped placeholder into metadata.
+/// Resolve a presentation name while distinguishing explicit online names from inherited defaults.
 pub(crate) fn resolve_display_name(online: &ModelInfo, local: Option<&ModelInfo>) -> String {
-    readable_display_name(online)
+    observed_display_name(online)
         .or_else(|| local.and_then(readable_display_name))
         .unwrap_or(&online.model_id)
         .to_owned()
 }
 
+fn observed_display_name(model: &ModelInfo) -> Option<&str> {
+    let explicit = model.observation.as_ref().map(|observation| {
+        observation
+            .fields
+            .contains_key(&ModelMetadataField::DisplayName)
+    });
+    match explicit {
+        Some(true) => readable_name(&model.display_name),
+        Some(false) => None,
+        // Observation-less models are legacy or caller-constructed values. Preserve their
+        // previous non-ID alias behavior; their default ID cannot prove explicit presence.
+        None => (!model.display_name.trim().is_empty() && model.display_name != model.model_id)
+            .then_some(model.display_name.as_str()),
+    }
+}
+
 fn readable_display_name(model: &ModelInfo) -> Option<&str> {
-    (!model.display_name.trim().is_empty() && model.display_name != model.model_id)
-        .then_some(model.display_name.as_str())
+    readable_name(&model.display_name)
+}
+
+fn readable_name(name: &str) -> Option<&str> {
+    (!name.trim().is_empty()).then_some(name)
 }
 
 pub(crate) fn apply_parameter_defaults(target: &mut ModelInfo, source: &ModelInfo) {

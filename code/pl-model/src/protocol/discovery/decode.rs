@@ -103,6 +103,24 @@ pub(super) struct Record {
     pub(super) thinking_base_body: bool,
 }
 
+/// Prefer the first readable provider name while retaining presence when every candidate is blank.
+pub(super) fn presentation_name(
+    display_name: Option<String>,
+    name: Option<String>,
+) -> Option<String> {
+    display_name
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_owned)
+        .or_else(|| {
+            name.as_deref()
+                .filter(|value| !value.trim().is_empty())
+                .map(str::to_owned)
+        })
+        .or(display_name)
+        .or(name)
+}
+
 impl Record {
     fn declared_fields(&self) -> Vec<ModelMetadataField> {
         use ModelMetadataField::*;
