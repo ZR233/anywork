@@ -1144,6 +1144,8 @@ mod storage_fault_tests {
                 kind: pl_protocol::ThreadActivityKind::Thinking,
                 summary: "obsolete before baseline".into(),
                 summary_truncated: false,
+                thinking_summary: None,
+                thinking_seconds: None,
                 tools: Default::default(),
             })),
         })?;

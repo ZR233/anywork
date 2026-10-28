@@ -1,4 +1,4 @@
-//! 捕获文件的唯一写入者；预算、头部、块标签与终态计量位于同一生命周期。
+//! One raw dual-stream writer and shared budget; confirmed offsets freeze at the first fault.
 use crate::path::{io_error, remote_error};
 use pl_protocol::remote::{
     RemoteCapture, RemoteCaptureReceipt, RemoteError, RemoteErrorCode, RemoteOutputStream,
@@ -8,10 +8,11 @@ use tokio::io::AsyncWriteExt;
 
 pub(super) enum Capture {
     None,
-    File {
-        file: tokio::fs::File,
+    Files {
+        stdout: Box<tokio::fs::File>,
+        stderr: Box<tokio::fs::File>,
         receipt: RemoteCaptureReceipt,
-        plan: Box<pl_protocol::remote::RemoteCapturePlan>,
+        failed: bool,
     },
 }
 
@@ -23,49 +24,48 @@ pub(super) enum Acceptance {
 impl Capture {
     pub(super) async fn prepare(
         policy: &RemoteCapture,
-        path: Option<&Path>,
+        paths: Option<(&Path, &Path)>,
     ) -> Result<Self, RemoteError> {
-        match (policy, path) {
+        match (policy, paths) {
             (RemoteCapture::None, None) => Ok(Self::None),
-            (RemoteCapture::File { plan, .. }, Some(path)) => {
-                let limit_bytes = &plan.limit_bytes;
-                let header = &plan.header;
-                if header.len() as u64 > *limit_bytes {
+            (RemoteCapture::Files { limit_bytes, .. }, Some((stdout, stderr))) => {
+                if *limit_bytes == 0 || stdout == stderr {
                     return Err(remote_error(
-                        RemoteErrorCode::OutputLimitExceeded,
-                        format!(
-                            "capture header requires {} bytes, limit is {limit_bytes}; process was not started",
-                            header.len()
-                        ),
+                        RemoteErrorCode::InvalidRequest,
+                        "capture requires a positive shared budget and distinct stream paths",
                     ));
                 }
-                if let Some(parent) = path.parent() {
-                    tokio::fs::create_dir_all(parent)
-                        .await
-                        .map_err(|error| io_error("create capture directory", error))?;
+                for path in [stdout, stderr] {
+                    if let Some(parent) = path.parent() {
+                        tokio::fs::create_dir_all(parent)
+                            .await
+                            .map_err(|e| io_error("create capture directory", e))?;
+                    }
                 }
-                let mut file = crate::server::regular_file::create(path.to_owned())
+                let stdout = crate::server::regular_file::create(stdout.to_owned())
                     .await
-                    .map_err(|error| io_error("create capture file", error))?;
-                file.write_all(header.as_bytes())
+                    .map_err(|e| io_error("create stdout capture", e))?;
+                let stderr = crate::server::regular_file::create(stderr.to_owned())
                     .await
-                    .map_err(|error| io_error("write capture header", error))?;
-                Ok(Self::File {
-                    file,
-                    plan: Box::new(plan.clone()),
+                    .map_err(|e| io_error("create stderr capture", e))?;
+                Ok(Self::Files {
+                    stdout: Box::new(stdout),
+                    stderr: Box::new(stderr),
+                    failed: false,
                     receipt: RemoteCaptureReceipt {
                         limit_bytes: *limit_bytes,
-                        charged_bytes: header.len() as u64,
+                        stdout_confirmed_bytes: 0,
+                        stderr_confirmed_bytes: 0,
+                        captured_bytes: 0,
+                        charged_bytes: 0,
                         refused_bytes: 0,
                     },
                 })
             }
-            (RemoteCapture::None, Some(_)) | (RemoteCapture::File { .. }, None) => {
-                Err(remote_error(
-                    RemoteErrorCode::InvalidRequest,
-                    "capture policy and resolved path disagree",
-                ))
-            }
+            _ => Err(remote_error(
+                RemoteErrorCode::InvalidRequest,
+                "capture policy and resolved paths disagree",
+            )),
         }
     }
 
@@ -74,44 +74,76 @@ impl Capture {
         stream: RemoteOutputStream,
         body: &[u8],
     ) -> Result<Acceptance, RemoteError> {
-        let Self::File {
-            file,
+        let Self::Files {
+            stdout,
+            stderr,
             receipt,
-            plan,
+            failed,
         } = self
         else {
             return Ok(Acceptance::Accepted);
         };
-        let label = match stream {
-            RemoteOutputStream::Stdout => plan.stdout_prefix.as_bytes(),
-            RemoteOutputStream::Stderr => plan.stderr_prefix.as_bytes(),
-        };
-        let cost = crate::capture::chunk_cost(label, body, plan.terminate_line);
+        let cost = body.len() as u64;
+        if *failed {
+            return Ok(Acceptance::Refused);
+        }
         if receipt.refused_bytes > 0 || cost > receipt.limit_bytes - receipt.charged_bytes {
             receipt.refused_bytes = receipt.refused_bytes.saturating_add(cost);
             return Ok(Acceptance::Refused);
         }
-        crate::capture::write_chunk(file, label, body, plan.terminate_line)
-            .await
-            .map_err(|error| io_error("capture process output", error))?;
+        receipt.captured_bytes += cost;
         receipt.charged_bytes += cost;
+        let (file, confirmed) = match stream {
+            RemoteOutputStream::Stdout => (stdout, &mut receipt.stdout_confirmed_bytes),
+            RemoteOutputStream::Stderr => (stderr, &mut receipt.stderr_confirmed_bytes),
+        };
+        // Tokio file writes may complete in blocking IO. Flush before advancing the trusted prefix.
+        if let Err(error) = file.write_all(body).await {
+            *failed = true;
+            return Err(remote_error(
+                RemoteErrorCode::CaptureWrite,
+                error.to_string(),
+            ));
+        }
+        if let Err(error) = file.flush().await {
+            *failed = true;
+            return Err(remote_error(
+                RemoteErrorCode::CaptureFlush,
+                error.to_string(),
+            ));
+        }
+        *confirmed += cost;
         Ok(Acceptance::Accepted)
     }
 
     pub(super) async fn flush(&mut self) -> Result<(), RemoteError> {
-        match self {
-            Self::None => Ok(()),
-            Self::File { file, .. } => file
-                .flush()
-                .await
-                .map_err(|error| io_error("flush capture output", error)),
+        let Self::Files {
+            stdout,
+            stderr,
+            failed,
+            ..
+        } = self
+        else {
+            return Ok(());
+        };
+        if *failed {
+            return Ok(());
         }
+        for file in [stdout, stderr] {
+            if let Err(error) = file.flush().await {
+                *failed = true;
+                return Err(remote_error(
+                    RemoteErrorCode::CaptureFlush,
+                    error.to_string(),
+                ));
+            }
+        }
+        Ok(())
     }
-
     pub(super) fn receipt(&self) -> Option<RemoteCaptureReceipt> {
         match self {
             Self::None => None,
-            Self::File { receipt, .. } => Some(*receipt),
+            Self::Files { receipt, .. } => Some(*receipt),
         }
     }
 }

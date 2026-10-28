@@ -24,7 +24,7 @@ const _toolFieldPreviewBudgetBytes = 4 * 1024;
 /// 只用于有界收敛：步数用尽仍未从 render/widget 树卸载就如实失败，不靠固定 sleep。
 const _maxImageRecycleSteps = 12;
 
-/// 剧本里的 9 个工具调用身份（`pl-provider-fixture` 的 `gui_tool_scroll_script`）。
+/// 剧本里的 9 个业务调用身份（`pl-provider-fixture` 的 `gui_tool_scroll_script`）。
 ///
 /// 每个 canonical 工具调用都是独立条目：按 callId 精确判定 name/status，既不放过
 /// 漏项，也不接受陌生项；判定不依赖时间线顺序或任何活动分组。
@@ -39,6 +39,56 @@ const _expectedToolCalls = <({String callId, String name, String status})>[
   (callId: 'scroll-call-c', name: 'view_image', status: 'succeeded'),
   (callId: 'scroll-call-failed', name: 'exec', status: 'failed'),
 ];
+
+/// 剧本只在当前 exec 批次仍运行时发出 wait；次数取决于真实完成时序。
+/// 步骤编号包含各批次前的可选标题步骤，图片批次不发出 wait。
+bool _isFixtureWait(TimelineToolObservation tool) {
+  final match = RegExp(r'^scroll-wait-(2|5|8|11|17)-[1-9][0-9]*$')
+      .firstMatch(tool.callId);
+  if (match == null || tool.name != 'wait' || tool.status != 'succeeded') {
+    return false;
+  }
+  final expected = switch (int.parse(match.group(1)!)) {
+    2 => _expectedToolCalls.take(2),
+    5 => [_expectedToolCalls[2]],
+    8 => [_expectedToolCalls[3]],
+    11 => [_expectedToolCalls[4]],
+    17 => [_expectedToolCalls[8]],
+    _ => throw StateError('Unexpected fixture wait step'),
+  };
+  final allowed = {for (final call in expected) 'task:${call.callId}'};
+  final arguments = jsonDecode(tool.arguments);
+  final result = tool.result == null ? null : jsonDecode(tool.result!);
+  if (arguments is! Map ||
+      arguments.length != 2 ||
+      arguments['timeoutMs'] != 300000 ||
+      arguments['taskIds'] is! List ||
+      result is! Map ||
+      result['tasks'] is! List) {
+    return false;
+  }
+  final targets = arguments['taskIds'] as List;
+  final tasks = result['tasks'] as List;
+  return targets.isNotEmpty &&
+      targets.length == targets.toSet().length &&
+      targets.every(allowed.contains) &&
+      tasks.length == targets.length &&
+      tasks.every(
+        (task) =>
+            task is Map &&
+            targets.contains(task['taskId']) &&
+            task['toolId'] == 'exec' &&
+            const {
+              'running',
+              'succeeded',
+              'failed',
+              'cancelled',
+              'timedOut',
+            }.contains(task['status']),
+      ) &&
+      tasks.map((task) => (task as Map)['taskId']).toSet().length ==
+          targets.length;
+}
 
 /// 连续三次图片读取共用一条展示摘要，仍按 a/b/c 的原始调用身份验收。
 const _imageCallIds = <String>[
@@ -81,20 +131,22 @@ Map<String, Object?> _validateLongResult(
   if (decoded is! Map) {
     return <String, Object?>{'valid': false, 'reason': 'resultIsNotAnObject'};
   }
-  final content = decoded['stdout'];
+  final stdout = decoded['stdout'];
+  final stderr = decoded['stderr'];
+  final content = stdout is Map ? stdout['content'] : null;
   final state = decoded['state'];
   final stateData = state is Map ? state['data'] : null;
   final result = stateData is Map ? stateData['result'] : null;
-  final resultData = result is Map ? result['data'] : null;
   final deliveredBytes = utf8.encode(text).length;
   final checks = <String, Object?>{
+    'currentExecStreams': stdout is Map && stderr is Map,
     'terminalSuccess':
         state is Map &&
         state['kind'] == 'final' &&
         result is Map &&
         result['kind'] == 'succeeded',
-    'exitCodeZero': resultData is Map && resultData['exit_code'] == 0,
-    'stderrEmpty': decoded['stderr'] == '',
+    'exitCodeZero': decoded['exitCode'] == 0,
+    'stderrEmpty': stderr is Map && stderr['content'] == '',
     'fullContentMatchesFixture': content == expectedContent,
     'lengthMatchesDetail': deliveredBytes == expectedBytes,
     'fixtureExceedsCaptureChunk': expectedBytes > 6144,
@@ -548,10 +600,14 @@ Future<void> main(List<String> args) async {
       for (final expected in _expectedToolCalls)
         if (!toolsByCallId.containsKey(expected.callId)) expected.callId,
     ];
+    final fixtureWaits = <TimelineItemObservation>[
+      for (final item in toolItems)
+        if (_isFixtureWait(item.tool!)) item,
+    ];
     final unexpectedCallIds = <String>[
       for (final callId in toolsByCallId.keys)
         if (!_expectedToolCalls.any((expected) => expected.callId == callId))
-          callId,
+          if (!fixtureWaits.any((item) => item.tool!.callId == callId)) callId,
     ];
     final mismatchedCallIds = <String>[
       for (final expected in _expectedToolCalls)
@@ -559,19 +615,28 @@ Future<void> main(List<String> args) async {
             toolsByCallId[expected.callId]?.tool?.status != expected.status)
           expected.callId,
     ];
-    if (toolItems.length != _expectedToolCalls.length ||
+    if (toolItems.length != _expectedToolCalls.length + fixtureWaits.length ||
         duplicateCallIds.isNotEmpty ||
         missingCallIds.isNotEmpty ||
         unexpectedCallIds.isNotEmpty ||
         mismatchedCallIds.isNotEmpty) {
       throw StateError(
         'Tool calls do not match the fixture identities: '
-        'count=${toolItems.length} (expected ${_expectedToolCalls.length}), '
+        'count=${toolItems.length} '
+        '(expected ${_expectedToolCalls.length} + ${fixtureWaits.length} waits), '
         'duplicates=$duplicateCallIds, missing=$missingCallIds, '
         'unexpected=$unexpectedCallIds, '
         'nameOrStatusMismatch=$mismatchedCallIds',
       );
     }
+    evidence['fixtureWaits'] = [
+      for (final item in fixtureWaits)
+        {
+          'callId': item.tool!.callId,
+          'arguments': item.tool!.arguments,
+          'result': item.tool!.result,
+        },
+    ];
     final reasoningItems = loadedTimeline.items
         .where((item) => item.kind == 'reasoning')
         .toList();
@@ -1028,7 +1093,10 @@ Future<void> main(List<String> args) async {
         final expectedText = callId == 'scroll-call-medium'
             ? '${_longReadFixtureText().split('\n').take(12).join('\n')}\n'
             : 'Tool scrolling fixture\n';
-        if (decoded is! Map || decoded['stdout'] != expectedText) {
+        if (decoded is! Map ||
+            decoded['stdout'] is! Map ||
+            decoded['stdout']['content'] != expectedText ||
+            decoded['exitCode'] != 0) {
           throw StateError('Unexpected exec stdout for $callId: $decoded');
         }
       }

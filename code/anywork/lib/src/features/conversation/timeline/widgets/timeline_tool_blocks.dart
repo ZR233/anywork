@@ -35,9 +35,16 @@ bool timelineIsWebSearch(TimelineToolGroupMessage item) {
 
 /// 网页搜索同样是统一轻量行：默认只显示状态文案，查询、链接与结果在展开区。
 class TimelineWebSearchToolCard extends StatefulWidget {
-  const TimelineWebSearchToolCard({required this.item, super.key});
+  const TimelineWebSearchToolCard({
+    required this.item,
+    this.initiallyExpanded = false,
+    this.onExpansionChanged,
+    super.key,
+  });
 
   final TimelineToolGroupMessage item;
+  final bool initiallyExpanded;
+  final ValueChanged<bool>? onExpansionChanged;
 
   @override
   State<TimelineWebSearchToolCard> createState() =>
@@ -45,7 +52,13 @@ class TimelineWebSearchToolCard extends StatefulWidget {
 }
 
 class _TimelineWebSearchToolCardState extends State<TimelineWebSearchToolCard> {
-  bool _expanded = false;
+  late bool _expanded;
+
+  @override
+  void initState() {
+    super.initState();
+    _expanded = widget.initiallyExpanded;
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -122,7 +135,10 @@ class _TimelineWebSearchToolCardState extends State<TimelineWebSearchToolCard> {
     return ExpansionTile(
       key: ValueKey('timeline-tool-details:${item.id}'),
       initiallyExpanded: _expanded,
-      onExpansionChanged: (expanded) => setState(() => _expanded = expanded),
+      onExpansionChanged: (expanded) {
+        setState(() => _expanded = expanded);
+        widget.onExpansionChanged?.call(expanded);
+      },
       expandedCrossAxisAlignment: CrossAxisAlignment.stretch,
       tilePadding: EdgeInsets.zero,
       childrenPadding: const EdgeInsets.only(
@@ -309,12 +325,14 @@ class TimelineToolDetails extends StatefulWidget {
   const TimelineToolDetails({
     required this.item,
     this.inline = false,
-    this.bodyBuilder,
+    this.initiallyExpanded = false,
+    this.onExpansionChanged,
     super.key,
   });
 
   final TimelineToolGroupMessage item;
-  final Widget Function(String id, String text)? bodyBuilder;
+  final bool initiallyExpanded;
+  final ValueChanged<bool>? onExpansionChanged;
 
   /// 外层已经提供折叠身份（例如接管该行可见性的技能行）时只渲染详情主体，
   /// 不再重复一行工具标题；参数、结果、诊断与错误仍来自同一实现。
@@ -325,7 +343,13 @@ class TimelineToolDetails extends StatefulWidget {
 }
 
 class _TimelineToolDetailsState extends State<TimelineToolDetails> {
-  bool _expanded = false;
+  late bool _expanded;
+
+  @override
+  void initState() {
+    super.initState();
+    _expanded = widget.initiallyExpanded;
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -356,21 +380,19 @@ class _TimelineToolDetailsState extends State<TimelineToolDetails> {
           ),
         ),
       if (arguments != null && arguments.trim().isNotEmpty)
-        widget.bodyBuilder?.call(item.id, arguments) ??
-            StudioCodeBlock(
-              text: _prettyToolPayload(arguments),
-              language: context.l10n.timelineToolArguments,
-              maxHeight: 200,
-              margin: const EdgeInsets.only(top: 8),
-            ),
+        StudioCodeBlock(
+          text: _prettyToolPayload(arguments),
+          language: context.l10n.timelineToolArguments,
+          maxHeight: 200,
+          margin: const EdgeInsets.only(top: 8),
+        ),
       if (output != null && output.trim().isNotEmpty)
-        widget.bodyBuilder?.call(item.id, output) ??
-            StudioCodeBlock(
-              text: _prettyToolPayload(output),
-              language: context.l10n.timelineToolOutput,
-              maxHeight: 280,
-              margin: const EdgeInsets.only(top: 8),
-            ),
+        StudioCodeBlock(
+          text: _prettyToolPayload(output),
+          language: context.l10n.timelineToolOutput,
+          maxHeight: 280,
+          margin: const EdgeInsets.only(top: 8),
+        ),
       if (showError)
         Padding(
           padding: const EdgeInsets.only(top: 6),
@@ -392,7 +414,10 @@ class _TimelineToolDetailsState extends State<TimelineToolDetails> {
     final tile = ExpansionTile(
       key: ValueKey('timeline-tool-details:${item.id}'),
       initiallyExpanded: _expanded,
-      onExpansionChanged: (expanded) => setState(() => _expanded = expanded),
+      onExpansionChanged: (expanded) {
+        setState(() => _expanded = expanded);
+        widget.onExpansionChanged?.call(expanded);
+      },
       expandedCrossAxisAlignment: CrossAxisAlignment.stretch,
       tilePadding: EdgeInsets.zero,
       childrenPadding: const EdgeInsets.only(

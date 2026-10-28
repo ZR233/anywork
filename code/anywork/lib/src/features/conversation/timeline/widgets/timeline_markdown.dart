@@ -34,23 +34,31 @@ class TimelineMarkdown extends StatelessWidget {
     required this.onLink,
     required this.isSafeLink,
     required this.imageBuilder,
+    this.style,
+    this.maxLines,
+    this.overflow = TextOverflow.clip,
   });
   final String id;
   final String text;
   final ValueChanged<String> onLink;
   final bool Function(String) isSafeLink;
   final Widget Function(BuildContext, String) imageBuilder;
+  final TextStyle? style;
+  final int? maxLines;
+  final TextOverflow overflow;
 
   @override
   Widget build(BuildContext context) {
-    final style = context.text.bodyMedium?.copyWith(height: 1.57);
-    if (!timelineNeedsSafeMarkdown(text)) {
-      return TimelinePlainText(id: id, text: text, style: style);
+    final textStyle = style ?? context.text.bodyMedium?.copyWith(height: 1.57);
+    if (maxLines == null && !timelineNeedsSafeMarkdown(text)) {
+      return TimelinePlainText(id: id, text: text, style: textStyle);
     }
     return GptMarkdown(
       text,
       key: ValueKey('gpt-markdown-$id'),
-      style: style,
+      style: textStyle,
+      maxLines: maxLines,
+      overflow: overflow,
       // No global onLinkTap: unsafe targets must keep their text without any
       // gesture instead of relying on a final callback to refuse the launch.
       inlineLinkBuilder: (link) {

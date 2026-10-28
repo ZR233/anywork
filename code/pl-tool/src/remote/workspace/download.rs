@@ -54,7 +54,7 @@ impl RemoteWorkspaceFileBackend {
         path: &str,
         writer: &mut W,
     ) -> std::result::Result<u64, RemoteDownloadError> {
-        self.copy_capture(path, writer, None).await
+        self.copy_capture(path, writer, None, None).await
     }
     pub async fn copy_capture_bounded<W: AsyncWrite + Unpin + Send>(
         &self,
@@ -62,13 +62,25 @@ impl RemoteWorkspaceFileBackend {
         writer: &mut W,
         limit: u64,
     ) -> std::result::Result<u64, RemoteDownloadError> {
-        self.copy_capture(path, writer, Some(limit)).await
+        self.copy_capture(path, writer, Some(limit), None).await
+    }
+    /// Copies exactly the producer-confirmed prefix, retaining the original transfer identity.
+    pub async fn copy_capture_prefix<W: AsyncWrite + Unpin + Send>(
+        &self,
+        path: &str,
+        writer: &mut W,
+        confirmed: u64,
+        limit: u64,
+    ) -> std::result::Result<u64, RemoteDownloadError> {
+        self.copy_capture(path, writer, Some(limit), Some(confirmed))
+            .await
     }
     async fn copy_capture<W: AsyncWrite + Unpin + Send>(
         &self,
         path: &str,
         writer: &mut W,
         limit: Option<u64>,
+        prefix: Option<u64>,
     ) -> std::result::Result<u64, RemoteDownloadError> {
         let path = self
             .path_request(path.to_owned(), None)
@@ -88,6 +100,13 @@ impl RemoteWorkspaceFileBackend {
         let total = opened
             .total_len
             .ok_or(RemoteDownloadError::Inconsistent { offset: 0 })?;
+        let source_total = total;
+        let total = prefix.unwrap_or(source_total);
+        if total > source_total {
+            return Err(RemoteDownloadError::Inconsistent {
+                offset: source_total,
+            });
+        }
         if let Some(limit) = limit
             && total > limit
         {
@@ -123,7 +142,7 @@ impl RemoteWorkspaceFileBackend {
             };
             if actual != offset
                 || actual != requested
-                || total_len != total
+                || total_len != source_total
                 || reply.body.len() != count
             {
                 return Err(RemoteDownloadError::Inconsistent { offset });
@@ -151,7 +170,7 @@ impl RemoteWorkspaceFileBackend {
             ));
         };
         if final_state.revision != opened.revision
-            || Some(hex::encode(digest.finalize())) != opened.sha256
+            || (prefix.is_none() && Some(hex::encode(digest.finalize())) != opened.sha256)
         {
             return Err(RemoteDownloadError::Inconsistent { offset });
         }

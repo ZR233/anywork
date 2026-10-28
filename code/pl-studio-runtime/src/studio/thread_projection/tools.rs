@@ -280,9 +280,19 @@ fn command_exit_code(delivery: &ToolDelivery) -> Option<i32> {
     let payload = delivery.output.payload();
     if !matches!(delivery.tool_id.as_str(), "exec" | "write_stdin")
         || payload.format() != "pl.tool.exec"
-        || payload.version() != 1
+        || !matches!(payload.version(), 1 | 2)
     {
         return None;
+    }
+    if payload.version() == 2 {
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct CommandReceipt {
+            exit_code: Option<i32>,
+        }
+        return serde_json::from_str::<CommandReceipt>(payload.content())
+            .ok()?
+            .exit_code;
     }
     #[derive(serde::Deserialize)]
     struct CommandReceipt {

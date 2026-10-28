@@ -3,6 +3,8 @@ use std::collections::VecDeque;
 /// 保留输出前缀和后缀的有界缓冲。
 #[derive(Debug)]
 pub(super) struct HeadTailBuffer {
+    decoder: Option<encoding_rs::Decoder>,
+    text_lossy: bool,
     max_bytes: usize,
     head_budget: usize,
     tail_budget: usize,
@@ -18,6 +20,8 @@ impl HeadTailBuffer {
         let head_budget = max_bytes / 2;
         let tail_budget = max_bytes.saturating_sub(head_budget);
         Self {
+            decoder: Some(encoding_rs::UTF_8.new_decoder_without_bom_handling()),
+            text_lossy: false,
             max_bytes,
             head_budget,
             tail_budget,
@@ -29,7 +33,22 @@ impl HeadTailBuffer {
         }
     }
 
+    pub(super) fn text_lossy(&self) -> bool {
+        self.text_lossy
+    }
+    pub(super) fn finish_text(&mut self) {
+        if let Some(mut decoder) = self.decoder.take() {
+            let mut text = String::with_capacity(4);
+            let (_, _, lossy) = decoder.decode_to_string(b"", &mut text, true);
+            self.text_lossy |= lossy;
+        }
+    }
     pub(super) fn push_chunk(&mut self, chunk: &[u8]) {
+        if let Some(decoder) = &mut self.decoder {
+            let mut text = String::with_capacity(chunk.len().saturating_mul(3).saturating_add(4));
+            let (_, _, lossy) = decoder.decode_to_string(chunk, &mut text, false);
+            self.text_lossy |= lossy;
+        }
         if chunk.is_empty() {
             return;
         }
@@ -64,7 +83,34 @@ impl HeadTailBuffer {
         for chunk in &self.tail {
             tail.extend_from_slice(chunk);
         }
-        pl_output::OutputExcerpt::from_parts(head, tail, self.omitted_bytes)
+        let mut omitted = self.omitted_bytes;
+        if omitted > 0 {
+            // The bounded window may cut a valid code point. Those boundary bytes are omitted,
+            // rather than shown as decoding errors in an otherwise valid source stream.
+            let mut cursor = 0;
+            while cursor < head.len() {
+                match std::str::from_utf8(&head[cursor..]) {
+                    Ok(_) => break,
+                    Err(error) => match error.error_len() {
+                        Some(length) => cursor += error.valid_up_to() + length,
+                        None => {
+                            let end = cursor + error.valid_up_to();
+                            omitted += head.len() - end;
+                            head.truncate(end);
+                            break;
+                        }
+                    },
+                }
+            }
+            let skip = tail
+                .iter()
+                .take(3)
+                .take_while(|byte| (**byte & 0xc0) == 0x80)
+                .count();
+            tail.drain(..skip);
+            omitted += skip;
+        }
+        pl_output::OutputExcerpt::from_parts(head, tail, omitted)
     }
 
     pub(super) fn take_excerpt(&mut self) -> pl_output::OutputExcerpt {

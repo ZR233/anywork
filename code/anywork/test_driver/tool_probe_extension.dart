@@ -46,7 +46,6 @@ class ToolProbeExtension extends CommandExtension {
     Map<String, Object?> sample() {
       final element = target.evaluate().single;
       final box = element.renderObject! as RenderBox;
-      final widget = element.widget;
       final offset = box.localToGlobal(Offset.zero);
       final nested = find.descendant(
         of: target,
@@ -57,10 +56,11 @@ class ToolProbeExtension extends CommandExtension {
       // 状态只能从那个公开 widget 的 required `controller.isExpanded` 读取：不读
       // 私有 State、不加生产 controller/test hook。`null` 不是“没有状态”。
       bool? expanded;
-      if (widget is ExpansionTile) {
+      final expansion = _expansionTile(target);
+      if (expansion != null) {
         final expansibles = find
             .descendant(
-              of: target,
+              of: expansion,
               // `_DescendantFinderMixin` 用 matching 自己的 `skipOffstage` 全树求值，
               // 外层参数不会透传给它。惰性列表里尚未进入视口的行处在 offstage 子树，
               // 因此 matching 也必须显式包含 offstage，否则会误判“没有 Expansible”。
@@ -71,7 +71,7 @@ class ToolProbeExtension extends CommandExtension {
         if (expansibles.isEmpty) {
           final descendants = find
               .descendant(
-                of: target,
+                of: expansion,
                 matching: find.byElementPredicate((_) => true),
                 skipOffstage: false,
               )
@@ -171,12 +171,19 @@ class ToolProbeExtension extends CommandExtension {
       _removeMouse();
     } else if (probe.action == 'tap') {
       // Header, not the center of the whole expanded tile.
-      final header = _activityHeader(target);
+      final expansion = _expansionTile(target);
+      final header = expansion == null
+          ? _activityHeader(target)
+          : find
+                .descendant(of: expansion, matching: find.byType(ListTile))
+                .evaluate()
+                .first;
       final headerBox = header?.renderObject;
+      if (headerBox is! RenderBox) {
+        throw StateError('Tool target exposes no actual expandable header');
+      }
       await prober.tapAt(
-        headerBox is RenderBox
-            ? headerBox.localToGlobal(headerBox.size.center(Offset.zero))
-            : top + Offset(30, 20),
+        headerBox.localToGlobal(headerBox.size.center(Offset.zero)),
       );
     } else if (probe.action == 'wheelOutside') {
       GestureBinding.instance.handlePointerEvent(
@@ -225,6 +232,21 @@ class ToolProbeExtension extends CommandExtension {
       samples.add(sample());
     }
     return _ProbeResult(samples);
+  }
+
+  Finder? _expansionTile(Finder target) {
+    final widget = target.evaluate().single.widget;
+    if (widget is ExpansionTile) return target;
+    final key = widget.key;
+    if (key is! ValueKey<String> || !key.value.startsWith('timeline-block-')) {
+      return null;
+    }
+    final tiles = find.descendant(
+      of: target,
+      matching: find.byType(ExpansionTile, skipOffstage: false),
+      skipOffstage: false,
+    );
+    return tiles.evaluate().isEmpty ? null : tiles.first;
   }
 
   Element? _activityHeader(Finder target) {

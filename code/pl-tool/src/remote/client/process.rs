@@ -12,15 +12,16 @@ pub(super) async fn spawn(
     client: &RemoteClient,
     request: RemoteSpawnRequest,
     workspace: Option<Arc<workspace::WorkspaceLease>>,
+    start: Option<crate::command::CommandStartControl>,
 ) -> Result<ManagedCommand, RemoteClientError> {
     if client.is_closing() {
         return Err(RemoteClientError::Disconnected);
     }
-    let process_slot = client
-        .inner
-        .process_slots
-        .acquire(&client.inner.stopped)
-        .await?;
+    let process_slot = tokio::select! {
+        biased;
+        _ = startup_stopped(start.as_ref()) => return Err(RemoteClientError::Cancelled),
+        slot = client.inner.process_slots.acquire(&client.inner.stopped) => slot?,
+    };
     let quantum = client.fragment_bytes();
     let framing = base64::encoded_len(quantum, true)
         .unwrap_or(usize::MAX)
@@ -37,22 +38,26 @@ pub(super) async fn spawn(
     )?;
     // IO, startup and the next input exchange are one reservation. No command can consume
     // all host memory and then wait for a second reservation required to make progress.
-    let memory = Arc::new(
-        client
-            .inner
-            .budget
-            .reserve(
-                quantum
-                    .saturating_mul(4)
-                    .saturating_add(framing)
-                    .saturating_add(startup_cost.max(input_cost)),
-                &client.inner.stopped,
-            )
-            .await?,
-    );
+    let memory_cost = quantum
+        .saturating_mul(4)
+        .saturating_add(framing)
+        .saturating_add(startup_cost.max(input_cost));
+    let memory = Arc::new(tokio::select! {
+        biased;
+        _ = startup_stopped(start.as_ref()) => return Err(RemoteClientError::Cancelled),
+        memory = client.inner.budget.reserve(memory_cost, &client.inner.stopped) => memory?,
+    });
     let (stdin, input) = tokio::io::duplex(quantum);
     let (stdout, output) = tokio::io::duplex(quantum);
     let (stderr, errors) = tokio::io::duplex(quantum);
+    if let Some(start) = &start {
+        start.check().map_err(|_| RemoteClientError::Cancelled)?;
+    }
+    let (progress, input_progress) = watch::channel(crate::command::CommandInputProgress {
+        confirmed_bytes: 0,
+        close_state: crate::command::StdinCloseState::Open,
+        failure: None,
+    });
     let (started, startup) = oneshot::channel();
     let inner = client.inner.clone();
     let lifetime = client.lifetime.clone();
@@ -78,6 +83,8 @@ pub(super) async fn spawn(
                         memory,
                         quantum,
                         startup_reply,
+                        progress,
+                        start,
                     },
                     cancellation,
                     started,
@@ -90,11 +97,19 @@ pub(super) async fn spawn(
                     .map_err(|e| format!("remote process supervisor: {e}"))?
             }
         },
-    );
+    )
+    .with_input_progress(input_progress);
     startup
         .await
         .unwrap_or(Err(RemoteClientError::Disconnected))?;
     Ok(command)
+}
+
+async fn startup_stopped(start: Option<&crate::command::CommandStartControl>) {
+    match start {
+        Some(start) => start.stopped().await,
+        None => std::future::pending().await,
+    }
 }
 
 struct CommandStreams {
@@ -104,6 +119,8 @@ struct CommandStreams {
     memory: Arc<pl_remote_helper::budget::ByteLease>,
     quantum: usize,
     startup_reply: usize,
+    progress: watch::Sender<crate::command::CommandInputProgress>,
+    start: Option<crate::command::CommandStartControl>,
 }
 
 async fn supervise(
@@ -120,9 +137,11 @@ async fn supervise(
         memory,
         quantum,
         startup_reply,
+        progress,
+        start,
     } = streams;
     let id = request.process_id.clone();
-    let expects_capture = matches!(request.capture, RemoteCapture::File { .. });
+    let expects_capture = matches!(request.capture, RemoteCapture::Files { .. });
     let result = if cancellation.is_cancelled() {
         Err(RemoteClientError::Cancelled)
     } else {
@@ -135,7 +154,10 @@ async fn supervise(
                 _lease: memory.clone(),
             },
             startup_reply,
-            0,
+            SubmissionControl {
+                start,
+                ..Default::default()
+            },
         )
         .await
         .unwrap_or(Err(RemoteClientError::Disconnected))
@@ -162,15 +184,20 @@ async fn supervise(
     let input_stop = stop_input.clone();
     let input_memory = memory.clone();
     let mut input = inner.streams.spawn(async move {
-        forward_input(
+        let result = forward_input(
             &stdin_owner,
             &input_id,
             input,
             &input_stop,
             input_memory,
             quantum,
+            &progress,
         )
-        .await
+        .await;
+        if let Err(error) = &result {
+            progress.send_modify(|state| state.failure = Some(error.to_string()));
+        }
+        result
     });
     let output_owner = inner.clone();
     let output_id = id.clone();
@@ -235,30 +262,40 @@ async fn supervise(
             });
         }
     };
-    request_inner(
+    if let Err(error) = request_inner(
         &inner,
         RemoteRequest::ReleaseProcess { process_id: id },
         &[],
     )
     .await
-    .map_err(|e| e.to_string())?;
-    if let Some(error) = failure {
-        return Err(error);
-    }
-    if let Some(error) = exit.failure {
-        return Err(format!(
-            "remote command failed ({:?}): {}",
-            error.code, error.message
-        ));
+    {
+        failure.get_or_insert_with(|| error.to_string());
     }
     if exit.capture.is_some() != expects_capture {
-        return Err("capture receipt does not match command policy".into());
+        failure.get_or_insert_with(|| "capture receipt does not match command policy".into());
     }
     Ok(CommandExit {
+        supervision_failure: failure,
         exit_code: exit.exit_code,
+        signal: exit.signal,
+        capture_failure: exit.failure.map(|error| match error.code {
+            RemoteErrorCode::OutputRead => crate::command::CommandCaptureFailure::Read {
+                message: error.message,
+            },
+            RemoteErrorCode::CaptureFlush => crate::command::CommandCaptureFailure::Flush {
+                message: error.message,
+            },
+            _ => crate::command::CommandCaptureFailure::Write {
+                message: error.message,
+            },
+        }),
         capture: exit.capture.map(|receipt| CommandCaptureReceipt {
+            captured_bytes: receipt.captured_bytes,
             limit_bytes: receipt.limit_bytes,
-            committed_len: receipt.charged_bytes,
+            confirmed: crate::command::CommandCaptureOffsets {
+                stdout: receipt.stdout_confirmed_bytes,
+                stderr: receipt.stderr_confirmed_bytes,
+            },
             charged_bytes: receipt.charged_bytes,
             refused_bytes: receipt.refused_bytes,
         }),
@@ -272,6 +309,7 @@ async fn forward_input(
     stop: &CancellationToken,
     memory: Arc<pl_remote_helper::budget::ByteLease>,
     quantum: usize,
+    progress: &watch::Sender<crate::command::CommandInputProgress>,
 ) -> Result<(), RemoteClientError> {
     let mut offset = 0;
     loop {
@@ -281,6 +319,8 @@ async fn forward_input(
             count = input.read(&mut bytes) => count?,
         };
         let request = if count == 0 {
+            progress
+                .send_modify(|state| state.close_state = crate::command::StdinCloseState::Closing);
             RemoteRequest::CloseStdin {
                 process_id: id.to_owned(),
             }
@@ -301,14 +341,17 @@ async fn forward_input(
                 _lease: memory.clone(),
             },
             reply_limit,
-            0,
+            SubmissionControl::default(),
         );
         let reply = tokio::select! {
             reply = response => reply.unwrap_or(Err(RemoteClientError::Disconnected))?,
             _ = stop.cancelled() => return Ok(()),
         };
         if count == 0 {
-            return expect_ack(reply);
+            expect_ack(reply)?;
+            progress
+                .send_modify(|state| state.close_state = crate::command::StdinCloseState::Closed);
+            return Ok(());
         }
         let RemoteResponse::InputOffset { offset: confirmed } = reply.response else {
             return Err(response_error(reply.response));
@@ -319,6 +362,7 @@ async fn forward_input(
             ));
         }
         offset = confirmed;
+        progress.send_modify(|state| state.confirmed_bytes = confirmed);
     }
 }
 

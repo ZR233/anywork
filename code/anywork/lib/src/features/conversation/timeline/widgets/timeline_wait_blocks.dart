@@ -15,19 +15,29 @@ class TimelineWaitPanel extends StatefulWidget {
     required this.presentation,
     required this.identity,
     this.diagnostics,
+    this.initiallyExpanded = false,
+    this.onExpansionChanged,
     super.key,
   });
 
   final ThreadWaitPresentationView presentation;
   final String identity;
   final Widget? diagnostics;
+  final bool initiallyExpanded;
+  final ValueChanged<bool>? onExpansionChanged;
 
   @override
   State<TimelineWaitPanel> createState() => _TimelineWaitPanelState();
 }
 
 class _TimelineWaitPanelState extends State<TimelineWaitPanel> {
-  bool _expanded = false;
+  late bool _expanded;
+
+  @override
+  void initState() {
+    super.initState();
+    _expanded = widget.initiallyExpanded;
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -49,8 +59,10 @@ class _TimelineWaitPanelState extends State<TimelineWaitPanel> {
               key: ValueKey('wait-expand:$identity'),
               maintainState: true,
               initiallyExpanded: _expanded,
-              onExpansionChanged: (expanded) =>
-                  setState(() => _expanded = expanded),
+              onExpansionChanged: (expanded) {
+                setState(() => _expanded = expanded);
+                widget.onExpansionChanged?.call(expanded);
+              },
               dense: true,
               minTileHeight: 28,
               showTrailingIcon: false,

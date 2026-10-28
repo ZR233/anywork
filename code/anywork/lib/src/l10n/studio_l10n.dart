@@ -94,6 +94,8 @@ extension StudioLocalizationsX on BuildContext {
     final storage = view.storage;
     return switch (view.kind) {
       ConversationActivityKind.preparing => l10n.conversationActivityPreparing,
+      ConversationActivityKind.compacting =>
+        l10n.conversationActivityCompacting,
       ConversationActivityKind.thinking => l10n.timelineReasoningActive,
       ConversationActivityKind.responding => l10n.statusTurnResponding,
       ConversationActivityKind.planning => l10n.statusTurnPlanning,
@@ -392,6 +394,7 @@ extension StudioLocalizationsX on BuildContext {
 extension ConversationActivityKindX on ConversationActivityKind {
   IconData get icon => switch (this) {
     ConversationActivityKind.preparing => Icons.menu_book_outlined,
+    ConversationActivityKind.compacting => Icons.compress_outlined,
     ConversationActivityKind.thinking => Icons.psychology_alt_outlined,
     ConversationActivityKind.responding => Icons.edit_note_outlined,
     ConversationActivityKind.planning => Icons.route_outlined,

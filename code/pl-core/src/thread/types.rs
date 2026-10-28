@@ -204,6 +204,10 @@ pub enum ModelExecutionPhase {
     /// context, so it is the one phase that may genuinely run a separate preparation model. Running
     /// the hook does not by itself prove that a compaction or preparation model ran.
     PreparingContext,
+    /// Context compaction is actively summarizing or trimming context before the model request is
+    /// built. Entered when `force_compaction` is active or when the context-preparation hook
+    /// explicitly reports that it has started compacting.
+    CompactingContext,
     /// Message/steering/tool records and the immutable model request are being assembled.
     BuildingRequest,
     /// The model implementation is preparing the request (freezing, encoding, estimating) before the

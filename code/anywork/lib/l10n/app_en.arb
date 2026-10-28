@@ -1836,6 +1836,7 @@
   "recoveryCheckFailed": "Conversation and workspace check did not complete",
   "agentRoleRetired": "This subagent role has been retired. History is read-only.",
   "conversationActivityPreparing": "Preparing",
+  "conversationActivityCompacting": "Compacting",
   "conversationActivityRunningTool": "Running",
   "conversationActivitySaveFailed": "Save failed",
   "conversationActivitySavePaused": "Saving paused",

@@ -14,21 +14,27 @@ pub(super) async fn retain<B: CommandBackend, A: CommandOutputArchive>(
     archive: &A,
     thread_id: &str,
     snapshot: &CommandOutputSnapshot,
-) -> Result<ResourceReference, ToolError> {
+    stream: crate::command::CommandCaptureStream,
+) -> Result<(ResourceReference, u64), ToolError> {
     if snapshot.capture_usage.is_none() {
         return Err(ToolError::new(ExecFailure::Process(format!(
             "capture producer did not confirm its result; unverified capture was not archived: {}",
             snapshot.message
         ))));
     }
+    let mut repaired = snapshot.clone();
     if let Some(repair) = snapshot.capture_repair() {
-        let mut committed_len = repair.committed_len;
-        for chunk in &repair.chunks {
-            committed_len = backend
+        let mut confirmed = repair.confirmed;
+        for chunk in repair.chunks.iter().filter(|chunk| chunk.stream == stream) {
+            let path = match chunk.stream {
+                crate::command::CommandCaptureStream::Stdout => &snapshot.capture_file,
+                crate::command::CommandCaptureStream::Stderr => &snapshot.stderr_capture_file,
+            };
+            let committed_len = backend
                 .repair_output_chunk(
-                    &snapshot.capture_file,
+                    path,
                     chunk.stream,
-                    committed_len,
+                    confirmed.get(chunk.stream),
                     &chunk.pending,
                 )
                 .await
@@ -43,9 +49,11 @@ pub(super) async fn retain<B: CommandBackend, A: CommandOutputArchive>(
                         Arc::new(source),
                     ))
                 })?;
+            confirmed.set(chunk.stream, committed_len);
         }
+        repaired.capture_offsets = confirmed;
     }
-    let reference = archive.retain(thread_id, snapshot).await?;
+    let reference = archive.retain(thread_id, &repaired, stream).await?;
     reference.validate().map_err(ToolError::new)?;
-    Ok(reference)
+    Ok((reference, repaired.capture_offsets.get(stream)))
 }

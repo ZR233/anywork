@@ -288,3 +288,84 @@ async fn a_cancelled_execution_clears_the_execution_phase() {
     assert_eq!(thread.snapshot().model_execution, None);
     thread.close().await.unwrap();
 }
+
+#[derive(Debug)]
+struct GatedCompactionHook {
+    entered: std::sync::Mutex<Option<oneshot::Sender<()>>>,
+    start_compacting: std::sync::Mutex<Option<oneshot::Receiver<()>>>,
+    finish_compacting: std::sync::Mutex<Option<oneshot::Receiver<()>>>,
+}
+
+impl pl_core::thread::context_preparation::ContextPreparationHook for GatedCompactionHook {
+    async fn before_step(
+        &self,
+        request: pl_core::thread::context_preparation::ContextPreparationRequest,
+    ) -> pl_core::thread::context_preparation::ContextPreparation {
+        if let Some(entered) = self.entered.lock().unwrap().take() {
+            let _ = entered.send(());
+        }
+        let start_rx = self.start_compacting.lock().unwrap().take();
+        if let Some(rx) = start_rx {
+            let _ = rx.await;
+        }
+        request.enter_compacting();
+        let finish_rx = self.finish_compacting.lock().unwrap().take();
+        if let Some(rx) = finish_rx {
+            let _ = rx.await;
+        }
+        pl_core::thread::context_preparation::ContextPreparation::Unchanged
+    }
+}
+
+#[tokio::test]
+async fn context_preparation_transitions_to_compacting_context_when_compaction_enters() {
+    let (entered_tx, entered_rx) = oneshot::channel();
+    let (start_compact_tx, start_compact_rx) = oneshot::channel();
+    let (finish_compact_tx, finish_compact_rx) = oneshot::channel();
+
+    let thread = ThreadHandle::start(
+        "compacting-phase-thread".into(),
+        DynModelSession::new(GatedModel::idle()),
+    )
+    .unwrap();
+    thread
+        .set_context_preparation(Some(
+            pl_core::thread::context_preparation::ContextPreparer::new(GatedCompactionHook {
+                entered: std::sync::Mutex::new(Some(entered_tx)),
+                start_compacting: std::sync::Mutex::new(Some(start_compact_rx)),
+                finish_compacting: std::sync::Mutex::new(Some(finish_compact_rx)),
+            }),
+        ))
+        .await
+        .unwrap();
+
+    let mut state_rx = thread.subscribe();
+    let runner = tokio::spawn({
+        let thread = thread.clone();
+        async move { thread.run_turn(turn("compacting-turn")).await }
+    });
+
+    entered_rx.await.expect("hook must be entered");
+    assert_eq!(
+        thread.snapshot().model_execution,
+        Some(ModelExecutionPhase::PreparingContext)
+    );
+
+    start_compact_tx.send(()).expect("trigger compacting");
+    loop {
+        let snapshot = state_rx.next().await.expect("subscription must stay open");
+        if snapshot.model_execution == Some(ModelExecutionPhase::CompactingContext) {
+            break;
+        }
+    }
+    assert_eq!(
+        thread.snapshot().model_execution,
+        Some(ModelExecutionPhase::CompactingContext)
+    );
+
+    finish_compact_tx.send(()).expect("finish compacting");
+    let completion = runner.await.unwrap().unwrap();
+    assert_eq!(completion.outcome, TurnOutcome::Completed);
+    assert_eq!(thread.snapshot().model_execution, None);
+    thread.close().await.unwrap();
+}

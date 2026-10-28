@@ -5,6 +5,37 @@ anywork release notes are generated from Conventional Commits by Release Please.
 以下已发布记录保留当时的名称与行为，不作为当前工程规范；当前架构演进规则见
 [AGENTS.md](AGENTS.md)，数据迁移契约及实现缺口见[存储设计](design/17-studio-storage.md)。
 
+## [6.33.0](https://github.com/ZR233/anywork/compare/v6.32.0...v6.33.0) (2026-10-28)
+
+
+### ⚠ BREAKING CHANGES
+
+* **tool:** exec 新结果使用 pl.tool.exec v2，远程协议升级为 10；host/helper 必须同步升级，命令捕获与归档接口改为原始双流和每流确认偏移。
+* **tool:** 移除 list_files 工具和 WorkspaceFileBackend 的 list/close_listing 接口；模型应通过 exec 使用 rg 等命令搜索，read_file 路径错误不再附加候选搜索结果。
+* **tool:** 模型可见工具目录不再提供 read_file，读取文件内容需通过 exec 调用 平台读取命令。
+* **agent-runtime:** ModelToolCall 新增 rejection 字段，外部正常调用构造需填 None；ModelOutputViolation 新增 ToolCallRejected 和 ToolPermissionRevoked，穷尽匹配需处理。旧持久化记录保持可读，不推断新增拒绝事实。
+* **studio:** 重构任务模式全屏流程页与详情交互 ([#198](https://github.com/ZR233/anywork/issues/198))
+
+### Features
+
+* **studio:** 完善思考与工具工作组独立组件与预览 ([#199](https://github.com/ZR233/anywork/issues/199)) ([1fd210e](https://github.com/ZR233/anywork/commit/1fd210e006e3e1c71cc2fa10aef6a274d40ae7c9))
+* **studio:** 重构会话实时状态栏组件，支持泛型工具消息与无框纯文本流展示 ([#208](https://github.com/ZR233/anywork/issues/208)) ([932a17f](https://github.com/ZR233/anywork/commit/932a17f51e1ce8f2dc500a31dd8e19bb9fae39b3)), closes [#207](https://github.com/ZR233/anywork/issues/207)
+
+
+### Bug Fixes
+
+* **agent-runtime:** 接通 apply_patch freeform 声明并修复缩进被吞 ([#206](https://github.com/ZR233/anywork/issues/206)) ([6c6cc66](https://github.com/ZR233/anywork/commit/6c6cc661d36e2baa82dc9e75429c4be4d9f2bdef))
+* **agent-runtime:** 让未知工具调用进入有限纠错流程 ([#201](https://github.com/ZR233/anywork/issues/201)) ([8fc85f7](https://github.com/ZR233/anywork/commit/8fc85f72c7435398acd1b59a8b685188776dec47))
+* **model:** 统一模型名称的人工、在线与内置优先级 ([#197](https://github.com/ZR233/anywork/issues/197)) ([e7e537a](https://github.com/ZR233/anywork/commit/e7e537a0b72c094613fcab986ee5f2b46ef7f267))
+* **tool:** 重构 exec 执行与失败恢复契约 ([#204](https://github.com/ZR233/anywork/issues/204)) ([ad6e705](https://github.com/ZR233/anywork/commit/ad6e705c5267de2c68e7171326f6ea37d4596b77))
+
+
+### Refactoring
+
+* **studio:** 重构任务模式全屏流程页与详情交互 ([#198](https://github.com/ZR233/anywork/issues/198)) ([5635173](https://github.com/ZR233/anywork/commit/5635173eba2cba4990e9655cbcecee8d6c159f43))
+* **tool:** 移除 list_files 并改用显式命令搜索 ([#202](https://github.com/ZR233/anywork/issues/202)) ([0976d78](https://github.com/ZR233/anywork/commit/0976d7828b4be783519542925e377a54cb2f324e))
+* **tool:** 移除 read_file 工具，文件读取统一走 exec ([#205](https://github.com/ZR233/anywork/issues/205)) ([019221e](https://github.com/ZR233/anywork/commit/019221e89760022a21cb4be4b084a47ac577233e))
+
 ## [6.32.0](https://github.com/ZR233/anywork/compare/v6.31.0...v6.32.0) (2026-10-27)
 
 

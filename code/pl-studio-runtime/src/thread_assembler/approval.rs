@@ -56,6 +56,17 @@ pub(super) struct ApprovalPrompt {
     pub working_directory: Option<String>,
 }
 
+impl StudioExecutionPolicy {
+    fn denied(&self, reason: impl Into<String>) -> ToolError {
+        let error = PermissionDenied(reason.into());
+        if self.tool_id == pl_tool::exec::TOOL_EXEC {
+            pl_tool::exec::permission_denied(error)
+        } else {
+            ToolError::new(error)
+        }
+    }
+}
+
 impl ExecutionPolicy for StudioExecutionPolicy {
     async fn authorize(
         &self,
@@ -65,6 +76,18 @@ impl ExecutionPolicy for StudioExecutionPolicy {
         if context.cancellation.is_cancelled() {
             return Err(ToolError::new(pl_core::thread::ThreadError::Cancelled));
         }
+        let exec = if self.tool_id == pl_tool::exec::TOOL_EXEC {
+            Some(
+                pl_tool::exec::parse_and_validate_exec_input(input.content())
+                    .map_err(pl_tool::exec::ExecInputError::into_tool_error)?,
+            )
+        } else {
+            if self.tool_id == pl_tool::exec::TOOL_WRITE_STDIN {
+                pl_tool::exec::parse_and_validate_stdin_input(input.content())
+                    .map_err(pl_tool::exec::ExecInputError::into_tool_error)?;
+            }
+            None
+        };
         let may_escape = matches!(self.options.host, ApprovalHost::Local)
             && self
                 .options
@@ -85,9 +108,13 @@ impl ExecutionPolicy for StudioExecutionPolicy {
         let raw = input.content().to_owned();
         let root = self.options.workspace.root().to_owned();
         let host = self.options.host;
-        let assessment = tokio::task::spawn_blocking(move || match host {
-            ApprovalHost::Local => pl_tool::approval::assess(&name, &raw, &root),
-            ApprovalHost::Remote => pl_tool::approval::assess_remote(&name, &raw, &root),
+        let assessment = tokio::task::spawn_blocking(move || match (host, exec) {
+            (ApprovalHost::Local, Some(input)) => pl_tool::approval::assess_exec(&input, &root),
+            (ApprovalHost::Remote, Some(input)) => {
+                pl_tool::approval::assess_exec_remote(&input, &root)
+            }
+            (ApprovalHost::Local, None) => pl_tool::approval::assess(&name, &raw, &root),
+            (ApprovalHost::Remote, None) => pl_tool::approval::assess_remote(&name, &raw, &root),
         })
         .await
         .map_err(ToolError::new)?;
@@ -95,9 +122,7 @@ impl ExecutionPolicy for StudioExecutionPolicy {
             return Ok(ExecutionGrant::default());
         }
         if !may_escape {
-            return Err(ToolError::new(PermissionDenied(
-                "the assigned workspace is confined".into(),
-            )));
+            return Err(self.denied("the assigned workspace is confined"));
         }
         match self.options.mode {
             PermissionMode::FullAccess => Ok(external_grant()),
@@ -123,16 +148,16 @@ impl ExecutionPolicy for StudioExecutionPolicy {
                 {
                     pl_core::thread::permissions::PermissionDecision::Allow => Ok(external_grant()),
                     pl_core::thread::permissions::PermissionDecision::Deny => {
-                        Err(ToolError::new(PermissionDenied("denied by user".into())))
+                        Err(self.denied("denied by user"))
                     }
                 }
             }
             PermissionMode::AutoReview => {
-                let reviewer = self.options.reviewer.as_ref().ok_or_else(|| {
-                    ToolError::new(PermissionDenied(
-                        "automatic reviewer is not configured".into(),
-                    ))
-                })?;
+                let reviewer = self
+                    .options
+                    .reviewer
+                    .as_ref()
+                    .ok_or_else(|| self.denied("automatic reviewer is not configured"))?;
                 let decision = reviewer(ToolReviewRequest {
                     thread_id: context.thread_id.clone(),
                     turn_id: context.turn_id.clone(),
@@ -154,9 +179,7 @@ impl ExecutionPolicy for StudioExecutionPolicy {
                 .await;
                 match decision {
                     ToolApprovalDecision::Approved => Ok(external_grant()),
-                    ToolApprovalDecision::Denied { reason } => {
-                        Err(ToolError::new(PermissionDenied(reason)))
-                    }
+                    ToolApprovalDecision::Denied { reason } => Err(self.denied(reason)),
                 }
             }
         }

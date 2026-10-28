@@ -344,13 +344,14 @@ final class TimelineMessageController {
       partitionOwners[owner] = partition;
       owner.kind = timelineKind(rows[partition.first]!.item);
       owner.expanded = false;
-      owner.expandedMembers.clear();
+      final expandedMembers = <String>{};
       for (final id in partition) {
         final intent = intents[previousOwners[id]]!;
         owner.expanded = owner.expanded || intent.$1;
-        if (intent.$2.contains(id)) owner.expandedMembers.add(id);
+        if (intent.$2.contains(id)) expandedMembers.add(id);
         _owners[id] = owner;
       }
+      owner.stageExpandedMembers(expandedMembers);
     }
     if (removed != null) {
       _owners.remove(removed);

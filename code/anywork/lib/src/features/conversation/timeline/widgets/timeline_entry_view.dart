@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../../../../app/theme/studio_tokens.dart';
 import '../../../../domain/models/plan_confirmation_ownership.dart';
 import '../../../../l10n/studio_l10n.dart';
+import '../../../../shared/studio_code_block.dart';
 import '../../../../shared/studio_driver_keys.dart';
 import '../../../../shared/studio_driver_key_values.dart';
 import '../state/timeline_entry.dart';
@@ -79,9 +80,9 @@ class TimelineEntryView extends StatelessWidget {
         children: [
           SelectionContainer.disabled(
             child: InkWell(
+              key: StudioDriverKeys.timelineActivitySummary(entry.id),
               onTap: groupExpandable ? entry.toggle : null,
               child: TimelineActivityRow(
-                key: StudioDriverKeys.timelineActivitySummary(entry.id),
                 icon: entry.kind == TimelineEntryKind.activity
                     ? null
                     : Icons.account_tree_outlined,
@@ -130,6 +131,37 @@ class TimelineEntryView extends StatelessWidget {
   }
 
   Widget _member(BuildContext context, ConversationItem item) {
+    final descriptor = item.descriptor;
+    if (descriptor is ConversationToolDescriptor && descriptor.wait != null) {
+      final conversion = TimelineActivityGroupAdapter.convertItem(item);
+      final diagnostics = switch (conversion) {
+        TimelineActivityConverted(
+          message: final TimelineToolGroupMessage tool,
+        ) =>
+          timelineActivityToolDiagnostics(
+            item: tool,
+            details: timelineActivityMessageDetailNotice(
+              context,
+              tool,
+              onOpenDetail: onDetail,
+            ),
+          ),
+        _ => Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            _fields(item),
+            TimelineDetailNotices(item: item, onDetail: onDetail),
+          ],
+        ),
+      };
+      return TimelineWaitPanel(
+        identity: item.id,
+        presentation: descriptor.wait!,
+        diagnostics: diagnostics,
+        initiallyExpanded: entry.isMemberExpanded(item.id),
+        onExpansionChanged: (value) => entry.setMemberExpanded(item.id, value),
+      );
+    }
     if (entry.kind == TimelineEntryKind.activity && item.terminal) {
       final conversion = TimelineActivityGroupAdapter.convertItem(item);
       if (conversion is TimelineActivityConverted) {
@@ -141,6 +173,9 @@ class TimelineEntryView extends StatelessWidget {
           key: StudioDriverKeys.timelineBlock(item.id),
           child: TimelineActivityMemberView(
             message: conversion.message,
+            initiallyExpanded: entry.isMemberExpanded(item.id),
+            onExpansionChanged: (value) =>
+                entry.setMemberExpanded(item.id, value),
             pairedTool:
                 paired is TimelineActivityConverted &&
                     paired.message is TimelineToolGroupMessage
@@ -152,7 +187,6 @@ class TimelineEntryView extends StatelessWidget {
         );
       }
     }
-    final descriptor = item.descriptor;
     if (descriptor is ConversationToolDescriptor &&
         descriptor.userInput != null) {
       final input = item.userInput!;
@@ -173,13 +207,6 @@ class TimelineEntryView extends StatelessWidget {
         descriptor.invocation.name == 'show_image') {
       return _imageCard(context, item, descriptor);
     }
-    if (descriptor is ConversationToolDescriptor && descriptor.wait != null) {
-      return TimelineWaitPanel(
-        identity: item.id,
-        presentation: descriptor.wait!,
-        diagnostics: _fields(item),
-      );
-    }
     final (icon, label, issue) = _label(context, item);
     final runtimeNotice =
         descriptor is ConversationRawDescriptor &&
@@ -195,7 +222,7 @@ class TimelineEntryView extends StatelessWidget {
                     descriptor.payloads.isNotEmpty)) ||
             descriptor is ConversationSkillDescriptor ||
             descriptor is ConversationAgentDescriptor);
-    final expanded = entry.expandedMembers.contains(item.id);
+    final expanded = entry.isMemberExpanded(item.id);
     return Column(
       key: StudioDriverKeys.timelineBlock(item.id),
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -347,7 +374,9 @@ class TimelineEntryView extends StatelessWidget {
               top: 4,
               bottom: 6,
             ),
-            child: bodyBuilder(item, field.text),
+            child: item.descriptor is ConversationToolDescriptor
+                ? StudioCodeBlock(text: field.text, maxHeight: 280)
+                : bodyBuilder(item, field.text),
           ),
     ],
   );

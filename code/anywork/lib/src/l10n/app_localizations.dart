@@ -6726,6 +6726,12 @@ abstract class AppLocalizations {
   /// **'Preparing'**
   String get conversationActivityPreparing;
 
+  /// No description provided for @conversationActivityCompacting.
+  ///
+  /// In en, this message translates to:
+  /// **'Compacting'**
+  String get conversationActivityCompacting;
+
   /// No description provided for @conversationActivityRunningTool.
   ///
   /// In en, this message translates to:

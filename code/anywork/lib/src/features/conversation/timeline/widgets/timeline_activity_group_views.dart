@@ -240,6 +240,8 @@ class TimelineActivityMemberView extends StatelessWidget {
     this.pairedTool,
     this.onOpenDetail,
     this.bodyBuilder,
+    this.initiallyExpanded = false,
+    this.onExpansionChanged,
     super.key,
   });
 
@@ -247,6 +249,8 @@ class TimelineActivityMemberView extends StatelessWidget {
   final TimelineActivityGroupMessage message;
   final TimelineToolGroupMessage? pairedTool;
   final TimelineDetailOpenCallback? onOpenDetail;
+  final bool initiallyExpanded;
+  final ValueChanged<bool>? onExpansionChanged;
 
   @override
   Widget build(BuildContext context) {
@@ -303,6 +307,8 @@ class TimelineActivityMemberView extends StatelessWidget {
         entry: thinking,
         bodyBuilder: bodyBuilder,
         details: detailsWidget,
+        initiallyExpanded: initiallyExpanded,
+        onExpansionChanged: onExpansionChanged,
       ),
       final TimelineToolGroupMessage tool => _buildToolContent(
         context,
@@ -313,7 +319,8 @@ class TimelineActivityMemberView extends StatelessWidget {
         skill: skill,
         pairedTool: pairedTool,
         onOpenDetail: onOpenDetail,
-        bodyBuilder: bodyBuilder,
+        initiallyExpanded: initiallyExpanded,
+        onExpansionChanged: onExpansionChanged,
       ),
     };
   }
@@ -329,12 +336,11 @@ class TimelineActivityMemberView extends StatelessWidget {
       return TimelineWaitPanel(
         presentation: wait,
         identity: tool.id,
-        diagnostics: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            TimelineToolDetails(item: toolItem, bodyBuilder: bodyBuilder),
-            ?detailsWidget,
-          ],
+        initiallyExpanded: initiallyExpanded,
+        onExpansionChanged: onExpansionChanged,
+        diagnostics: timelineActivityToolDiagnostics(
+          item: toolItem,
+          details: detailsWidget,
         ),
       );
     }
@@ -342,26 +348,48 @@ class TimelineActivityMemberView extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         timelineIsWebSearch(toolItem)
-            ? TimelineWebSearchToolCard(item: toolItem)
-            : TimelineToolDetails(item: toolItem, bodyBuilder: bodyBuilder),
+            ? TimelineWebSearchToolCard(
+                item: toolItem,
+                initiallyExpanded: initiallyExpanded,
+                onExpansionChanged: onExpansionChanged,
+              )
+            : TimelineToolDetails(
+                item: toolItem,
+                initiallyExpanded: initiallyExpanded,
+                onExpansionChanged: onExpansionChanged,
+              ),
         ?detailsWidget,
       ],
     );
   }
 }
 
+/// 等待面板和独立完成项共享工具诊断、失败原因及截断字段详情入口。
+Widget timelineActivityToolDiagnostics({
+  required TimelineToolGroupMessage item,
+  Widget? details,
+}) => Column(
+  crossAxisAlignment: CrossAxisAlignment.stretch,
+  children: [
+    TimelineToolDetails(item: item),
+    ?details,
+  ],
+);
+
 class _TimelineControllerSkillRow extends StatefulWidget {
   const _TimelineControllerSkillRow({
     required this.skill,
     this.pairedTool,
     this.onOpenDetail,
-    this.bodyBuilder,
+    this.initiallyExpanded = false,
+    this.onExpansionChanged,
   });
 
-  final Widget Function(String id, String text)? bodyBuilder;
   final TimelineSkillGroupMessage skill;
   final TimelineToolGroupMessage? pairedTool;
   final TimelineDetailOpenCallback? onOpenDetail;
+  final bool initiallyExpanded;
+  final ValueChanged<bool>? onExpansionChanged;
 
   @override
   State<_TimelineControllerSkillRow> createState() =>
@@ -370,7 +398,13 @@ class _TimelineControllerSkillRow extends StatefulWidget {
 
 class _TimelineControllerSkillRowState
     extends State<_TimelineControllerSkillRow> {
-  bool _expanded = false;
+  late bool _expanded;
+
+  @override
+  void initState() {
+    super.initState();
+    _expanded = widget.initiallyExpanded;
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -416,7 +450,10 @@ class _TimelineControllerSkillRowState
     return ExpansionTile(
       key: ValueKey('timeline-skill-details:${skill.id}'),
       initiallyExpanded: _expanded,
-      onExpansionChanged: (expanded) => setState(() => _expanded = expanded),
+      onExpansionChanged: (expanded) {
+        setState(() => _expanded = expanded);
+        widget.onExpansionChanged?.call(expanded);
+      },
       expandedCrossAxisAlignment: CrossAxisAlignment.stretch,
       tilePadding: EdgeInsets.zero,
       childrenPadding: const EdgeInsets.only(
@@ -444,11 +481,7 @@ class _TimelineControllerSkillRowState
             ),
           ),
         if (pairedTool != null)
-          TimelineToolDetails(
-            item: pairedTool,
-            inline: true,
-            bodyBuilder: widget.bodyBuilder,
-          ),
+          TimelineToolDetails(item: pairedTool, inline: true),
         ?toolNotice,
         ?skillNotice,
       ],
@@ -483,6 +516,8 @@ class TimelineReasoningBlock extends StatefulWidget {
     required this.itemId,
     required this.entry,
     this.details,
+    this.initiallyExpanded = false,
+    this.onExpansionChanged,
     this.bodyBuilder,
     super.key,
   });
@@ -491,13 +526,21 @@ class TimelineReasoningBlock extends StatefulWidget {
   final Widget Function(String id, String text)? bodyBuilder;
   final TimelineThinkingGroupMessage entry;
   final Widget? details;
+  final bool initiallyExpanded;
+  final ValueChanged<bool>? onExpansionChanged;
 
   @override
   State<TimelineReasoningBlock> createState() => _TimelineReasoningBlockState();
 }
 
 class _TimelineReasoningBlockState extends State<TimelineReasoningBlock> {
-  bool _expanded = false;
+  late bool _expanded;
+
+  @override
+  void initState() {
+    super.initState();
+    _expanded = widget.initiallyExpanded;
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -555,7 +598,10 @@ class _TimelineReasoningBlockState extends State<TimelineReasoningBlock> {
     if (!expandable) return title;
     return ExpansionTile(
       initiallyExpanded: _expanded,
-      onExpansionChanged: (expanded) => setState(() => _expanded = expanded),
+      onExpansionChanged: (expanded) {
+        setState(() => _expanded = expanded);
+        widget.onExpansionChanged?.call(expanded);
+      },
       maintainState: false,
       showTrailingIcon: false,
       minTileHeight: 28,

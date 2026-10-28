@@ -15,6 +15,7 @@ import '../../presentation/providers/account_domains.dart';
 import '../../presentation/providers/thread_directory_store.dart';
 
 import '../../presentation/providers/thread_session_store.dart';
+import '../../presentation/providers/client_provider.dart';
 import '../../presentation/providers/bootstrap_store.dart';
 
 part 'shell_view.g.dart';
@@ -292,6 +293,10 @@ class ConversationActivityInput {
 @riverpod
 ConversationActivityInput? conversationActivityInput(Ref ref, String threadId) {
   final session = ref.watch(threadSessionStoreProvider(threadId));
+  if (ref.read(anyworkClientProvider).conversations.visibleThreadId.value !=
+      threadId) {
+    return null;
+  }
   if (session.workspace == null && !session.hasSnapshot) return null;
   return ConversationActivityInput(
     activity: session.activity,

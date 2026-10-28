@@ -7,6 +7,7 @@ import 'package:anywork/src/app/anywork_app.dart';
 import 'package:anywork/src/app/app_graph.dart';
 import 'package:anywork/src/app/studio_host_lifecycle.dart';
 import 'package:anywork/src/features/settings/statistics/view_models/statistics_repository_provider.dart';
+import 'package:anywork/src/features/shell/shell_view.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/platform/host_app_icons.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
@@ -211,6 +212,14 @@ void main() {
           expect(connection.requestCloseCalls, greaterThanOrEqualTo(1));
           expect(connection.closeCalls, 1);
           expect(graph.timeline.lease('thread-main'), isNull);
+          expect(
+            ProviderScope.containerOf(
+              tester.element(find.byType(AnyworkApp)),
+              listen: false,
+            ).read(conversationActivityInputProvider('thread-main')),
+            isNull,
+            reason: '隐藏路由不向实时状态栏交付冻结的正文读取来源',
+          );
           expect(oldLease.isRetired, isTrue);
           hiddenFrames = connection.deliveredFrames;
           hiddenAcks = connection.acknowledgements.length;

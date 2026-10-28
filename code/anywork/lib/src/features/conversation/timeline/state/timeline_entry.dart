@@ -1,3 +1,5 @@
+import 'dart:collection';
+
 import 'package:anywork_client/models.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_chat_core/flutter_chat_core.dart';
@@ -81,7 +83,9 @@ final class TimelineEntry extends ChangeNotifier {
   }
 
   bool expanded = false;
-  final Set<String> expandedMembers = {};
+  final Set<String> _expandedMembers = {};
+  Set<String> get expandedMembers => UnmodifiableSetView(_expandedMembers);
+  bool isMemberExpanded(String id) => _expandedMembers.contains(id);
   int version = 0;
 
   (String?, String)? _pairKey(ConversationItem item) =>
@@ -214,7 +218,7 @@ final class TimelineEntry extends ChangeNotifier {
     final removedPair = _pairs.remove(id);
     _members.remove(id);
     _ids.remove(id);
-    expandedMembers.remove(id);
+    _expandedMembers.remove(id);
     if (anchorItemId == id && _ids.isNotEmpty) anchorItemId = _ids.first;
     if (_refreshPair(key) || removedPair != null) {
       _visible();
@@ -245,6 +249,7 @@ final class TimelineEntry extends ChangeNotifier {
     for (final row in previous.values) {
       row.dispose();
     }
+    _expandedMembers.retainAll(_members.keys);
     for (final key in _skills.keys) {
       _refreshPair(key);
     }
@@ -329,8 +334,22 @@ final class TimelineEntry extends ChangeNotifier {
   }
 
   void toggleMember(String id) {
-    if (!expandedMembers.remove(id)) expandedMembers.add(id);
-    _members[id]?.publish();
+    setMemberExpanded(id, !isMemberExpanded(id));
+  }
+
+  void setMemberExpanded(String id, bool expanded) {
+    final changed = expanded
+        ? _expandedMembers.add(id)
+        : _expandedMembers.remove(id);
+    if (changed) _members[id]?.publish();
+  }
+
+  /// Structural transaction only; the controller publishes after ownership and
+  /// membership indexes have all been committed.
+  void stageExpandedMembers(Iterable<String> ids) {
+    _expandedMembers
+      ..clear()
+      ..addAll(ids);
   }
 
   @override

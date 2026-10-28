@@ -15,6 +15,9 @@ enum ConversationActivityKind {
   /// Turn 运行中但还没有运行中的 attempt。
   preparing,
 
+  /// 正在执行上下文压缩。
+  compacting,
+
   /// 思考中：等待 API 返回，或已开始产出 reasoning。
   thinking,
 
@@ -79,7 +82,14 @@ class ConversationActivityView {
   const ConversationActivityView({
     required this.identity,
     required this.kind,
+    this.turnId,
     this.summary,
+    this.thinkingSummary,
+    this.thinkingSeconds,
+    this.reasoningText,
+    this.responseText,
+    this.activeTools = const [],
+    this.toolDetails = const [],
     this.activeToolCount = 0,
     this.backgroundToolCount = 0,
     this.errorMessage,
@@ -97,8 +107,29 @@ class ConversationActivityView {
   /// 准确阶段，决定标签与图标。
   final ConversationActivityKind kind;
 
+  /// 当前所属 Turn 身份（用于思考摘要粘性与轮次边界判断）。
+  final String? turnId;
+
   /// 单行摘要；展示层只做视觉截断，不改变内容。
   final String? summary;
+
+  /// 当前 Turn 内粘性保留的最新思考摘要（Markdown 文本）。
+  final String? thinkingSummary;
+
+  /// 当前或最近一次思考阶段耗时秒数。
+  final int? thinkingSeconds;
+
+  /// 已按需读取到的完整流式推理正文。
+  final String? reasoningText;
+
+  /// 已按需读取到的完整流式回复正文（`responding` 阶段直接展示）。
+  final String? responseText;
+
+  /// 当前活跃的工具调用列表。
+  final List<ThreadActivityToolEntry> activeTools;
+
+  /// 已按需读取到的工具详情列表。
+  final List<ThreadActivityToolDetail> toolDetails;
 
   /// 并行工具数量；`<= 1` 表示没有并行工具，不显示数量。
   final int activeToolCount;
@@ -129,9 +160,10 @@ class ConversationActivityView {
 
   bool get hasDetails => expandable || details.isNotEmpty;
 
-  /// 是否以“等待”脉冲呈现：准备/等待模型/思考/执行/审批/输入/停止。
+  /// 是否以“等待”脉冲呈现：准备/压缩/等待模型/思考/执行/审批/输入/停止。
   bool get waits =>
       kind == ConversationActivityKind.preparing ||
+      kind == ConversationActivityKind.compacting ||
       kind == ConversationActivityKind.thinking ||
       kind == ConversationActivityKind.runningTool ||
       kind == ConversationActivityKind.awaitingApproval ||
@@ -144,7 +176,14 @@ class ConversationActivityView {
         other is ConversationActivityView &&
             identity == other.identity &&
             kind == other.kind &&
+            turnId == other.turnId &&
             summary == other.summary &&
+            thinkingSummary == other.thinkingSummary &&
+            thinkingSeconds == other.thinkingSeconds &&
+            reasoningText == other.reasoningText &&
+            responseText == other.responseText &&
+            _sameActiveTools(activeTools, other.activeTools) &&
+            _sameToolDetails(toolDetails, other.toolDetails) &&
             activeToolCount == other.activeToolCount &&
             backgroundToolCount == other.backgroundToolCount &&
             errorMessage == other.errorMessage &&
@@ -161,7 +200,14 @@ class ConversationActivityView {
   int get hashCode => Object.hash(
     identity,
     kind,
+    turnId,
     summary,
+    thinkingSummary,
+    thinkingSeconds,
+    reasoningText,
+    responseText,
+    Object.hashAll(activeTools),
+    Object.hashAll(toolDetails),
     activeToolCount,
     backgroundToolCount,
     errorMessage,
@@ -172,6 +218,28 @@ class ConversationActivityView {
     storage,
     wait,
   );
+}
+
+bool _sameActiveTools(
+  List<ThreadActivityToolEntry> left,
+  List<ThreadActivityToolEntry> right,
+) {
+  if (left.length != right.length) return false;
+  for (var index = 0; index < left.length; index++) {
+    if (left[index] != right[index]) return false;
+  }
+  return true;
+}
+
+bool _sameToolDetails(
+  List<ThreadActivityToolDetail> left,
+  List<ThreadActivityToolDetail> right,
+) {
+  if (left.length != right.length) return false;
+  for (var index = 0; index < left.length; index++) {
+    if (left[index] != right[index]) return false;
+  }
+  return true;
 }
 
 bool _sameDetails(
@@ -220,6 +288,7 @@ ConversationActivityView _typedActivity(
   final kind = switch (activity.kind) {
     // 等待 API 与已开始 reasoning 都是“思考中”：单行标签一致，摘要取最新非空逻辑行。
     ThreadActivityKind.preparing => ConversationActivityKind.preparing,
+    ThreadActivityKind.compacting => ConversationActivityKind.compacting,
     ThreadActivityKind.waitingApi => ConversationActivityKind.thinking,
     ThreadActivityKind.thinking => ConversationActivityKind.thinking,
     ThreadActivityKind.responding => ConversationActivityKind.responding,
@@ -240,13 +309,29 @@ ConversationActivityView _typedActivity(
   final details = currentDetail == null
       ? const <ConversationActivityDetail>[]
       : _activityDetails(currentDetail);
+  final reasoningText = currentDetail == null
+      ? null
+      : _joinContentParts(currentDetail.reasoning);
+  final responseText = currentDetail == null
+      ? null
+      : _joinContentParts(currentDetail.response);
   // 后端已明确该身份不再是当前活动（`superseded` / `ended`）时，没有可展开的当前
   // 内容：不提供展开入口，也不显示空的详情面板；新的身份会作为新活动重新提供详情。
   final detailResolved = detail == null || currentDetail != null;
+  final thinkingSummary = activity.thinkingSummary?.trim();
   return ConversationActivityView(
     identity: activity.identity,
     kind: kind,
+    turnId: activity.turnId,
     summary: summary.isEmpty ? null : summary,
+    thinkingSummary: thinkingSummary == null || thinkingSummary.isEmpty
+        ? null
+        : thinkingSummary,
+    thinkingSeconds: activity.thinkingSeconds,
+    reasoningText: reasoningText,
+    responseText: responseText,
+    activeTools: tools.active,
+    toolDetails: currentDetail?.tools ?? const [],
     activeToolCount: tools.count,
     backgroundToolCount: tools.background,
     details: details,
@@ -257,15 +342,27 @@ ConversationActivityView _typedActivity(
   );
 }
 
-/// 该活动是否有可展开的完整内容：工具（含并行多条）或推理/输出正文。
+String? _joinContentParts(List<ThreadActivityContentPart> parts) {
+  if (parts.isEmpty) return null;
+  return parts.map((part) => part.text).join();
+}
+
+/// 该活动是否有可展开的完整内容：工具（含并行多条）或推理正文；
+/// `responding` 文本输出直接流式展示全部内容，不可展开。
 bool _expandable(ThreadActivityView activity, ConversationActivityKind kind) {
+  if (kind == ConversationActivityKind.responding) return false;
   if (activity.tools.active.isNotEmpty) return true;
+  if (activity.thinkingSummary != null &&
+      activity.thinkingSummary!.trim().isNotEmpty) {
+    return true;
+  }
   return switch (kind) {
     ConversationActivityKind.thinking ||
-    ConversationActivityKind.responding ||
     ConversationActivityKind.planning ||
     ConversationActivityKind.runningTool => true,
     ConversationActivityKind.preparing ||
+    ConversationActivityKind.compacting ||
+    ConversationActivityKind.responding ||
     ConversationActivityKind.awaitingApproval ||
     ConversationActivityKind.awaitingInput ||
     ConversationActivityKind.stopping ||

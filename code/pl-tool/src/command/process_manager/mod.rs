@@ -10,8 +10,8 @@ use tokio::sync::{Mutex, Notify};
 use tokio_util::sync::CancellationToken;
 
 use super::backend::{
-    CommandBackend, CommandCaptureOwnership, CommandCaptureReceipt, CommandOutputSizes,
-    CommandOutputTarget, CommandSpawnRequest, CommandWriter,
+    CommandBackend, CommandCaptureOffsets, CommandCaptureOwnership, CommandCaptureReceipt,
+    CommandOutputSizes, CommandOutputTarget, CommandSpawnRequest, CommandWriter,
 };
 use super::head_tail_buffer::HeadTailBuffer;
 use crate::tool_error;
@@ -19,8 +19,13 @@ use pl_output::TruncatedOutput;
 
 mod lifecycle;
 mod snapshot;
+mod start_error;
+pub use start_error::{CommandRunError, CommandRunFailure};
 mod state;
+mod stdin;
 mod stream_io;
+use stdin::CommandInput;
+pub use stdin::{CommandInputOutcome, CommandInputReceipt};
 
 use lifecycle::{CommandLifecycle, spawn_lifecycle_task, wait_for_process_activity};
 use snapshot::message_for_state;
@@ -99,7 +104,8 @@ impl Drop for StartReservation {
 struct CommandProcessEntry {
     process_id: String,
     output_target: CommandOutputTarget,
-    stdin: Mutex<Option<CommandWriter>>,
+    stdin: Mutex<CommandInput>,
+    input_stopped: CancellationToken,
     state: Mutex<CommandProcessState>,
     notify: Notify,
     output_observer: Option<Arc<dyn CommandOutputObserver>>,
@@ -138,12 +144,14 @@ struct CommandProcessState {
     pending_stdout: HeadTailBuffer,
     pending_stderr: HeadTailBuffer,
     output_revision: u64,
+    exit: Option<crate::command::CommandExit>,
     /// 本 operation 的落盘上限（字节），启动时由 backend 声明或取 PL 默认值。
     capture_limit_bytes: u64,
     capture_ownership: CommandCaptureOwnership,
     producer_capture: Option<CommandCaptureReceipt>,
     /// 已接纳 chunk 按 backend 估算折出来的存储成本累计；stdout 与 stderr 共享这一个额度。
     capture_charged_bytes: u64,
+    capture_received_bytes: u64,
     /// 因额度耗尽或已失败而被拒绝接纳的 chunk 折算成本累计。
     ///
     /// 被拒的字节从不进入修复计划（计划只保留已接纳的字节），这里只记录"有多少输出被拒绝"，
@@ -156,7 +164,7 @@ struct CommandProcessState {
     /// The prepared header before any chunk, then updated to the exact length each confirmed append
     /// reported. A repair truncates back to this fact, so it never depends on a fragment-length read
     /// that could fail and be mistaken for "nothing written".
-    capture_committed_len: u64,
+    capture_offsets: CommandCaptureOffsets,
     /// Accepted capture chunks the backend has not confirmed writing yet, in acceptance order.
     ///
     /// Both streams push here through one plan, so a chunk one reader already accepted survives the
@@ -210,6 +218,8 @@ impl std::fmt::Debug for CommandStartRequest {
 
 #[derive(Debug)]
 pub struct CommandWriteRequest {
+    pub cancellation: CancellationToken,
+    pub close_stdin: bool,
     pub process_id: String,
     pub chars: String,
     pub yield_time: Duration,
@@ -221,11 +231,21 @@ pub struct CommandOutputSnapshot {
     pub state: CommandProcessLifecycle,
     pub process_id: Option<String>,
     pub stdout: TruncatedOutput,
+    pub stdout_omission_marker: Option<std::ops::Range<usize>>,
+    pub stderr_omission_marker: Option<std::ops::Range<usize>>,
     pub stderr: TruncatedOutput,
     pub output_file: PathBuf,
     pub capture_file: PathBuf,
+    pub stderr_capture_file: PathBuf,
+    pub stderr_output_file: PathBuf,
     pub message: String,
     pub output_revision: u64,
+    pub exit_code: Option<i32>,
+    pub signal: Option<i32>,
+    pub supervision_failure: Option<String>,
+    pub input_receipt: Option<CommandInputReceipt>,
+    pub stdout_text_lossy: bool,
+    pub stderr_text_lossy: bool,
     pub output_artifacts: Vec<serde_json::Value>,
     /// Typed reason the durable capture could not continue, when a hard output failure ended it.
     ///
@@ -241,7 +261,7 @@ pub struct CommandOutputSnapshot {
     ///
     /// The accepted bytes this operation really holds are this length plus every chunk still owed, so
     /// a reported size never depends on a fragment-length read that could fail and understate it.
-    pub capture_committed_len: u64,
+    pub capture_offsets: CommandCaptureOffsets,
     /// 本 operation 实际生效的单命令落盘上限（字节）。
     ///
     /// 它是 backend 声明的值，没有声明时是 [`MAX_CAPTURE_BYTES`]，因此快照能自证"这次上限是多少"，
@@ -285,7 +305,11 @@ impl CommandOutputSnapshot {
                 charged_bytes: *charged_bytes,
                 refused_bytes: *refused_bytes,
             }),
-            Some(CommandCaptureFailure::Write { .. } | CommandCaptureFailure::Read { .. })
+            Some(
+                CommandCaptureFailure::Write { .. }
+                | CommandCaptureFailure::Flush { .. }
+                | CommandCaptureFailure::Read { .. },
+            )
             | None => None,
         }
     }
@@ -314,6 +338,7 @@ pub enum CommandOutputStream {
 /// 用于把后台进程输出投影到上层 timeline 或其他 live 观察通道。
 pub trait CommandOutputObserver: Send + Sync + 'static {
     fn output_chunk(&self, stream: CommandOutputStream, chunk: &[u8], revision: u64);
+    fn output_closed(&self, _stream: CommandOutputStream) {}
     /// Reports a hard capture failure the moment the reader observes it.
     ///
     /// The reader calls this under the failing operation's own boundary, *before* the process tree
@@ -371,7 +396,8 @@ where
     ) -> Result<CommandOutputSnapshot, PureError> {
         let yield_time = request.yield_time;
         let max_output_chars = request.max_output_chars;
-        let entry = self.start_entry(request, None).await?;
+        let control = self.start_control(&request)?;
+        let entry = self.start_entry(request, None, control).await?;
         self.snapshot_after_wait(&entry.process_id, yield_time, max_output_chars)
             .await
     }
@@ -385,9 +411,39 @@ where
         &self,
         task_id: &str,
         request: CommandStartRequest,
-    ) -> Result<CommandOutputSnapshot, PureError> {
+    ) -> Result<CommandOutputSnapshot, CommandRunError> {
         let max_output_chars = request.max_output_chars;
-        let entry = self.start_entry(request, Some(task_id)).await?;
+        let control = self
+            .start_control(&request)
+            .map_err(|source| CommandRunError {
+                failure: CommandRunFailure::ArgumentOutOfRange,
+                process_started: Some(false),
+                source,
+            })?;
+        let entry = self
+            .start_entry(request, Some(task_id), control.clone())
+            .await
+            .map_err(|source| {
+                let stopped = control.check();
+                let failure = if control.start_attempted() {
+                    CommandRunFailure::StartUncertain
+                } else {
+                    match stopped {
+                        Err(super::backend::CommandStartError::Cancelled) => {
+                            CommandRunFailure::Cancelled
+                        }
+                        Err(super::backend::CommandStartError::Expired) => {
+                            CommandRunFailure::TimedOut
+                        }
+                        _ => CommandRunFailure::StartFailed,
+                    }
+                };
+                CommandRunError {
+                    failure,
+                    process_started: (!control.start_attempted()).then_some(false),
+                    source,
+                }
+            })?;
         loop {
             let notified = entry.notify.notified();
             tokio::pin!(notified);
@@ -397,13 +453,39 @@ where
             }
             notified.await;
         }
-        self.snapshot_entry(&entry, max_output_chars).await
+        self.snapshot_entry(&entry, max_output_chars)
+            .await
+            .map_err(|source| CommandRunError {
+                failure: CommandRunFailure::OutputPublication,
+                process_started: Some(true),
+                source,
+            })
+    }
+
+    fn start_control(
+        &self,
+        request: &CommandStartRequest,
+    ) -> Result<super::backend::CommandStartControl, PureError> {
+        let deadline = tokio::time::Instant::now()
+            .checked_add(request.timeout)
+            .ok_or_else(|| {
+                tool_error(
+                    "exec",
+                    "timeoutSeconds cannot be represented by this platform",
+                )
+            })?;
+        Ok(super::backend::CommandStartControl::new(
+            deadline,
+            request.cancellation_token.clone().unwrap_or_default(),
+            self.lifetime.0.clone(),
+        ))
     }
 
     async fn start_entry(
         &self,
         request: CommandStartRequest,
         task_id: Option<&str>,
+        start_control: super::backend::CommandStartControl,
     ) -> Result<Arc<CommandProcessEntry>, PureError> {
         let admitted_at = tokio::time::Instant::now();
         if request
@@ -479,16 +561,13 @@ where
         // 模型可见字节上限同样在启动时定一次；backend 没声明就是 `None`（既有语义）。
         let model_output_bytes_cap = self.backend.model_output_bytes_cap();
 
-        if request
-            .cancellation_token
-            .as_ref()
-            .is_some_and(CancellationToken::is_cancelled)
-        {
-            return Err(tool_error("exec", "Task cancelled before process creation"));
-        }
+        start_control
+            .check()
+            .map_err(|error| tool_error("exec", error))?;
         let child = self
             .backend
             .spawn(CommandSpawnRequest {
+                start_control: start_control.clone(),
                 process_id: process_id.clone(),
                 command: request.command,
                 cwd: working_directory,
@@ -501,12 +580,19 @@ where
         let stderr = child.take_stderr();
         let stdout_open = stdout.is_some();
         let stderr_open = stderr.is_some();
+        let input_progress = child.take_input_progress();
         let stdin = child.take_stdin();
         let output_failure = CancellationToken::new();
         let entry = Arc::new(CommandProcessEntry {
             process_id: process_id.clone(),
             output_target,
-            stdin: Mutex::new(stdin),
+            stdin: Mutex::new(CommandInput {
+                writer: stdin,
+                accepted_bytes: 0,
+                close_state: crate::command::StdinCloseState::Open,
+                progress: input_progress,
+            }),
+            input_stopped: CancellationToken::new(),
             state: Mutex::new(CommandProcessState::new(
                 stdout_open,
                 stderr_open,
@@ -534,7 +620,9 @@ where
             entry.clone(),
             child,
             CommandLifecycle {
-                timeout: request.timeout.saturating_sub(admitted_at.elapsed()),
+                timeout: start_control
+                    .deadline()
+                    .saturating_duration_since(tokio::time::Instant::now()),
                 task_cancellation: request.cancellation_token,
                 manager_cancellation: self.lifetime.0.clone(),
                 output_failure,
@@ -552,58 +640,6 @@ where
             tokio::spawn(read_stderr(entry.clone(), self.backend.clone(), stderr));
         }
         Ok(entry)
-    }
-
-    pub async fn write_stdin(
-        &self,
-        request: CommandWriteRequest,
-    ) -> Result<CommandOutputSnapshot, PureError> {
-        let Some(entry) = self.entry(&request.process_id).await else {
-            return Err(tool_error(
-                "write_stdin",
-                format!(
-                    "task '{}' has no live process. Inspect get_tool_task before starting another command.",
-                    request.process_id
-                ),
-            ));
-        };
-        if !request.chars.is_empty() {
-            if !entry.can_accept_input().await {
-                return self
-                    .snapshot_after_wait(
-                        &request.process_id,
-                        Duration::ZERO,
-                        request.max_output_chars,
-                    )
-                    .await;
-            }
-            let mut stdin = entry.stdin.lock().await;
-            let Some(stdin) = stdin.as_mut() else {
-                return Err(tool_error(
-                    "write_stdin",
-                    format!(
-                        "task '{}' does not accept stdin. Use wait for completion.",
-                        request.process_id
-                    ),
-                ));
-            };
-            stdin
-                .write_all(request.chars.as_bytes())
-                .await
-                .map_err(|error| {
-                    tool_error("write_stdin", format!("failed to write stdin: {error}"))
-                })?;
-            stdin.flush().await.map_err(|error| {
-                tool_error("write_stdin", format!("failed to flush stdin: {error}"))
-            })?;
-        }
-
-        self.snapshot_after_wait(
-            &request.process_id,
-            request.yield_time,
-            request.max_output_chars,
-        )
-        .await
     }
 
     fn reserve_start(
@@ -731,11 +767,7 @@ impl CommandProcessEntry {
     ) -> (CommandOutputSnapshot, CommandOutputSizes) {
         let mut state = self.state.lock().await;
         let process_id = (!state.lifecycle.is_final()).then(|| self.process_id.clone());
-        let message = message_for_state(
-            &state,
-            process_id.as_deref(),
-            self.output_target.model_file(),
-        );
+        let message = message_for_state(&state);
         let sizes = CommandOutputSizes {
             stdout_bytes: state.stdout.total_bytes() as u64,
             stderr_bytes: state.stderr.total_bytes() as u64,
@@ -751,8 +783,11 @@ impl CommandProcessEntry {
         let mut stdout_budget = max_output_chars.min(stdout_excerpt.display_len());
         let mut stderr_budget = max_output_chars.min(stderr_excerpt.display_len());
         let model_output_bytes_cap = state.model_output_bytes_cap();
-        if let Some(cap_bytes) = model_output_bytes_cap {
-            let cap_bytes = usize::try_from(cap_bytes).unwrap_or(usize::MAX);
+        {
+            let cap_bytes = model_output_bytes_cap
+                .map(|cap| usize::try_from(cap).unwrap_or(usize::MAX))
+                .unwrap_or(max_output_chars)
+                .min(max_output_chars);
             let total = stdout_budget.saturating_add(stderr_budget);
             if total > cap_bytes {
                 // 乘法在 u128 中进行，不能因饱和乘法把大预算错误分配给某一流。
@@ -762,9 +797,17 @@ impl CommandProcessEntry {
             }
         }
         let capture_plan = state.capture_repair();
-        let capture_committed_len = state.capture_committed_len;
+        let capture_offsets = state.capture_offsets;
         let capture_limit_bytes = state.capture_limit_bytes();
         let capture_usage = state.capture_usage();
+        let stdout_text_lossy = state.stdout.text_lossy();
+        let stderr_text_lossy = state.stderr.text_lossy();
+        let state_exit_code = state.exit.as_ref().and_then(|exit| exit.exit_code);
+        let state_signal = state.exit.as_ref().and_then(|exit| exit.signal);
+        let supervision_failure = state
+            .exit
+            .as_ref()
+            .and_then(|exit| exit.supervision_failure.clone());
         let lifecycle = state.lifecycle.clone();
         let output_revision = state.output_revision;
         let output_failure = state.output_failure.as_ref().map(|failure| match failure {
@@ -777,27 +820,43 @@ impl CommandProcessEntry {
                 // Producer 的载荷已经是唯一写入者的终态回执，不由客户端累加重写。
                 CommandCaptureOwnership::Producer => failure.clone(),
             },
-            CommandCaptureFailure::Read { .. } | CommandCaptureFailure::Write { .. } => {
-                failure.clone()
-            }
+            CommandCaptureFailure::Read { .. }
+            | CommandCaptureFailure::Write { .. }
+            | CommandCaptureFailure::Flush { .. } => failure.clone(),
         });
         drop(state);
-        let stdout = stdout_excerpt.project(stdout_budget);
-        let stderr = stderr_excerpt.project(stderr_budget);
+        let (stdout, stdout_omission_marker) = stdout_excerpt.project_with_omission(stdout_budget);
+        let (stderr, stderr_omission_marker) = stderr_excerpt.project_with_omission(stderr_budget);
         (
             CommandOutputSnapshot {
                 state: lifecycle,
                 process_id,
                 stdout,
                 stderr,
+                stdout_omission_marker,
+                stderr_omission_marker,
                 output_file: self.output_target.model_file().to_path_buf(),
                 capture_file: self.output_target.capture_file().to_path_buf(),
+                stderr_capture_file: self
+                    .output_target
+                    .stream_capture_file(super::backend::CommandCaptureStream::Stderr)
+                    .to_path_buf(),
+                stderr_output_file: self
+                    .output_target
+                    .stream_model_file(super::backend::CommandCaptureStream::Stderr)
+                    .to_path_buf(),
                 message,
                 output_revision,
+                exit_code: state_exit_code,
+                signal: state_signal,
+                supervision_failure,
+                input_receipt: None,
+                stdout_text_lossy,
+                stderr_text_lossy,
                 output_artifacts: Vec::new(),
                 output_failure,
                 capture_plan,
-                capture_committed_len,
+                capture_offsets,
                 capture_limit_bytes,
                 capture_usage,
                 model_output_bytes_cap,

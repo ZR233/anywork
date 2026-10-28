@@ -3559,6 +3559,9 @@ class AppLocalizationsZh extends AppLocalizations {
   String get conversationActivityPreparing => '准备中';
 
   @override
+  String get conversationActivityCompacting => '正在压缩';
+
+  @override
   String get conversationActivityRunningTool => '执行中';
 
   @override
