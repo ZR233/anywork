@@ -26,6 +26,7 @@ pub(super) struct Owner {
     pub(super) pending_model_update: Option<super::model_update::DeferredModelUpdate>,
     pub(super) pending_runtime_facts: std::collections::BTreeMap<String, RuntimeFact>,
     pub(super) context_preparation: Option<context_preparation::ContextPreparer>,
+    pub(super) compacting_progress: Option<watch::Receiver<bool>>,
     pub(super) model_progress: Option<(String, watch::Receiver<crate::model::ModelProgress>)>,
     pub(super) permission_leases:
         std::collections::BTreeMap<String, crate::tool::opaque::ExecutionAuthority>,

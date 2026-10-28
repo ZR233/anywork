@@ -13835,8 +13835,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   BridgeThreadActivity dco_decode_bridge_thread_activity(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 10)
-      throw Exception('unexpected arr length: expect 10 but see ${arr.length}');
+    if (arr.length != 12)
+      throw Exception('unexpected arr length: expect 12 but see ${arr.length}');
     return BridgeThreadActivity(
       threadId: dco_decode_String(arr[0]),
       identity: dco_decode_String(arr[1]),
@@ -13847,7 +13847,9 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       kind: dco_decode_bridge_thread_activity_kind(arr[6]),
       summary: dco_decode_String(arr[7]),
       summaryTruncated: dco_decode_bool(arr[8]),
-      tools: dco_decode_bridge_thread_activity_tools(arr[9]),
+      thinkingSummary: dco_decode_opt_String(arr[9]),
+      thinkingSeconds: dco_decode_opt_box_autoadd_u_64(arr[10]),
+      tools: dco_decode_bridge_thread_activity_tools(arr[11]),
     );
   }
 
@@ -26934,6 +26936,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_kind = sse_decode_bridge_thread_activity_kind(deserializer);
     var var_summary = sse_decode_String(deserializer);
     var var_summaryTruncated = sse_decode_bool(deserializer);
+    var var_thinkingSummary = sse_decode_opt_String(deserializer);
+    var var_thinkingSeconds = sse_decode_opt_box_autoadd_u_64(deserializer);
     var var_tools = sse_decode_bridge_thread_activity_tools(deserializer);
     return BridgeThreadActivity(
       threadId: var_threadId,
@@ -26945,6 +26949,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       kind: var_kind,
       summary: var_summary,
       summaryTruncated: var_summaryTruncated,
+      thinkingSummary: var_thinkingSummary,
+      thinkingSeconds: var_thinkingSeconds,
       tools: var_tools,
     );
   }
@@ -40265,6 +40271,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_bridge_thread_activity_kind(self.kind, serializer);
     sse_encode_String(self.summary, serializer);
     sse_encode_bool(self.summaryTruncated, serializer);
+    sse_encode_opt_String(self.thinkingSummary, serializer);
+    sse_encode_opt_box_autoadd_u_64(self.thinkingSeconds, serializer);
     sse_encode_bridge_thread_activity_tools(self.tools, serializer);
   }
 

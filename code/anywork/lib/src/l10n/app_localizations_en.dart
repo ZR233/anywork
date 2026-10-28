@@ -3739,6 +3739,9 @@ class AppLocalizationsEn extends AppLocalizations {
   String get conversationActivityPreparing => 'Preparing';
 
   @override
+  String get conversationActivityCompacting => 'Compacting';
+
+  @override
   String get conversationActivityRunningTool => 'Running';
 
   @override

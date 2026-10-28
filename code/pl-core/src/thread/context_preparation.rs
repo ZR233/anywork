@@ -17,6 +17,20 @@ pub struct ContextPreparationRequest {
     pub extensions: Arc<BTreeMap<String, ExtensionRecord>>,
     pub extension_sequence: u64,
     pub previous_usage: Option<PreviousContextUsage>,
+    compacting_sender: Option<watch::Sender<bool>>,
+}
+
+impl ContextPreparationRequest {
+    /// Reports that context preparation has entered active context compaction.
+    ///
+    /// While `before_step` is running, calling this method transitions the Thread's published
+    /// [`ModelExecutionPhase`] from [`ModelExecutionPhase::PreparingContext`] to
+    /// [`ModelExecutionPhase::CompactingContext`].
+    pub fn enter_compacting(&self) {
+        if let Some(sender) = &self.compacting_sender {
+            let _ = sender.send(true);
+        }
+    }
 }
 
 /// Candidate observation; validate the final input with [`Self::matches_input`] and its route.
@@ -192,21 +206,30 @@ impl Owner {
                             origin: origin.clone(),
                         })
                 }),
+            compacting_sender: None,
         };
+        let (compacting_tx, compacting_rx) = watch::channel(force_compaction);
+        let mut request = request;
+        request.compacting_sender = Some(compacting_tx);
+        self.compacting_progress = Some(compacting_rx);
+        if force_compaction {
+            self.enter_model_execution(ModelExecutionPhase::CompactingContext);
+        }
         let result = self
             .await_with_mailbox(crate::error_record::catch_boundary(
                 "context preparation",
                 hook.0.before_step(request),
             ))
-            .await
-            .map_err(|source| {
-                ThreadError::Model(Arc::new(ModelError {
-                    kind: crate::model::ModelFailureKind::ImplementationPanicked,
-                    details: None,
-                    usage: Default::default(),
-                    source: Some(Box::new(source)),
-                }))
-            })?;
+            .await;
+        self.compacting_progress = None;
+        let result = result.map_err(|source| {
+            ThreadError::Model(Arc::new(ModelError {
+                kind: crate::model::ModelFailureKind::ImplementationPanicked,
+                details: None,
+                usage: Default::default(),
+                source: Some(Box::new(source)),
+            }))
+        })?;
         if input.cancellation.is_cancelled() || self.interrupt.is_closing() {
             let mutations = match result {
                 ContextPreparation::Prepared {

@@ -1360,6 +1360,7 @@
   "recoveryCheckFailed": "历史会话和工作区检查未完成",
   "agentRoleRetired": "该子代理角色已停用，仅可查看历史记录。",
   "conversationActivityPreparing": "准备中",
+  "conversationActivityCompacting": "正在压缩",
   "conversationActivityRunningTool": "执行中",
   "conversationActivitySaveFailed": "保存故障",
   "conversationActivitySavePaused": "保存已暂停",

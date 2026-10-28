@@ -14,6 +14,9 @@ enum ThreadActivityKind {
   /// Turn 运行中但还没有运行中的 attempt（正在准备）。
   preparing,
 
+  /// 正在执行上下文压缩。
+  compacting,
+
   /// 已提交模型请求但尚无任何流式事实（等待 API）。
   waitingApi,
 
@@ -149,6 +152,8 @@ class ThreadActivityView {
     required this.kind,
     required this.summary,
     this.summaryTruncated = false,
+    this.thinkingSummary,
+    this.thinkingSeconds,
     this.tools = ThreadActivityTools.empty,
     this.inputId,
     this.attemptId,
@@ -168,6 +173,12 @@ class ThreadActivityView {
   /// 最新非空逻辑行；`summary` 为空串表示该阶段没有可展示摘要。
   final String summary;
   final bool summaryTruncated;
+
+  /// 当前活跃 Turn 内最新的思考摘要（Markdown 单段文本）；在后续工具执行阶段保持粘性。
+  final String? thinkingSummary;
+
+  /// 当前或最近一次思考阶段的耗时秒数。
+  final int? thinkingSeconds;
   final ThreadActivityTools tools;
 
   @override
@@ -183,6 +194,8 @@ class ThreadActivityView {
             kind == other.kind &&
             summary == other.summary &&
             summaryTruncated == other.summaryTruncated &&
+            thinkingSummary == other.thinkingSummary &&
+            thinkingSeconds == other.thinkingSeconds &&
             tools == other.tools;
   }
 
@@ -197,6 +210,8 @@ class ThreadActivityView {
     kind,
     summary,
     summaryTruncated,
+    thinkingSummary,
+    thinkingSeconds,
     tools,
   );
 }
