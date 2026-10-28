@@ -5,6 +5,18 @@ anywork release notes are generated from Conventional Commits by Release Please.
 以下已发布记录保留当时的名称与行为，不作为当前工程规范；当前架构演进规则见
 [AGENTS.md](AGENTS.md)，数据迁移契约及实现缺口见[存储设计](design/17-studio-storage.md)。
 
+## [6.32.0](https://github.com/ZR233/anywork/compare/v6.31.0...v6.32.0) (2026-10-27)
+
+
+### ⚠ BREAKING CHANGES
+
+* **studio:** close_agent 移除 workspaceDisposition，使用 target/force 参数及逐成员 executionClosed/worktreeCleanup 结果；worktree 派生要求实际 caller 干净且有有效 HEAD，最终关闭后不可续跑或新增评价。
+
+### Bug Fixes
+
+* **studio:** 修复 Windows Antigravity 服务器准备与登录 ([#194](https://github.com/ZR233/anywork/issues/194)) ([8911ce7](https://github.com/ZR233/anywork/commit/8911ce7444e5c9dd96e0c74617c30a68473da303))
+* **studio:** 修复工作树派生、最终关闭与恢复隔离 ([#196](https://github.com/ZR233/anywork/issues/196)) ([bf35812](https://github.com/ZR233/anywork/commit/bf35812a85cd32f59db18dad0e63ddc16242aa13))
+
 ## [6.31.0](https://github.com/ZR233/anywork/compare/v6.30.0...v6.31.0) (2026-10-27)
 
 

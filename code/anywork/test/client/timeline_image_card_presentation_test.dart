@@ -182,9 +182,9 @@ void main() {
   group('展示工具的呈现分类', () {
     test('show_image 载荷独立成图片卡片组，不并入普通工具活动组', () {
       final lease = leaseWith([
-        toolItem('call-before', ordinal: 1, name: 'read_file'),
+        toolItem('call-before', ordinal: 1, name: 'stat_path'),
         cardItem('card', ordinal: 2),
-        toolItem('call-after', ordinal: 3, name: 'read_file'),
+        toolItem('call-after', ordinal: 3, name: 'stat_path'),
         toolItem('read-image', ordinal: 4, name: 'view_image'),
       ]);
 

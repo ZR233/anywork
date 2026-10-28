@@ -1648,10 +1648,10 @@ void main() {
     await _pumpFrames(tester, frames: 2);
   });
 
-  testWidgets('单段思考一次展开保留概要和内容，缺失字段不生成空区块', (tester) async {
+  testWidgets('单段思考展开后展示组内概要行，仅含概要时不提供二次展开，含内容时可二次展开', (tester) async {
     for (final (summary, content) in [
-      (['Summary evidence'], ['Full reasoning evidence']),
-      (['Summary evidence'], <String>[]),
+      (['**Summary** `evidence`'], ['Full reasoning evidence']),
+      (['**Summary** `evidence`'], <String>[]),
       (<String>[], ['Full reasoning evidence']),
       (<String>['  '], <String>[]),
     ]) {
@@ -1665,12 +1665,14 @@ void main() {
               ordinal: 1,
               revision: 1,
               createdAt: timestamp,
-              updatedAt: timestamp,
+              updatedAt: timestamp.add(const Duration(seconds: 3)),
               saved: true,
               state: ThreadThinkingItemStateView(
                 summary: summary,
                 content: content,
-                lifecycle: CompletedThreadContentView(timestamp),
+                lifecycle: CompletedThreadContentView(
+                  timestamp.add(const Duration(seconds: 3)),
+                ),
               ),
             ),
             saved: true,
@@ -1696,27 +1698,39 @@ void main() {
       );
       await tester.pumpAndSettle();
       final group = lease.presentationFor('thinking')!;
+      final topSummaryFinder = find.byKey(
+        StudioDriverKeys.timelineActivitySummary(group.id),
+      );
+      final topRow = tester.widget<TimelineActivityRow>(topSummaryFinder);
+      expect(topRow.icon, isNull, reason: '顶层总折叠行去掉左侧图标');
+      expect(topRow.label, 'Worked for 3s', reason: '顶层总折叠行显示整组工作时长');
+
       await tester.tap(
         find
-            .ancestor(
-              of: find.byKey(
-                StudioDriverKeys.timelineActivitySummary(group.id),
-              ),
-              matching: find.byType(ListTile),
-            )
+            .ancestor(of: topSummaryFinder, matching: find.byType(ListTile))
             .first,
       );
       await tester.pumpAndSettle();
       final hasSummary = summary.any((chunk) => chunk.trim().isNotEmpty);
       final hasContent = content.any((chunk) => chunk.trim().isNotEmpty);
-      expect(
-        find.byKey(StudioDriverKeys.timelineActivitySummary('thinking')),
-        findsNothing,
+      final innerSummaryFinder = find.byKey(
+        StudioDriverKeys.timelineActivitySummary('thinking'),
       );
+      expect(innerSummaryFinder, findsOneWidget);
+      final innerRow = tester.widget<TimelineActivityRow>(innerSummaryFinder);
+      expect(innerRow.expandable, hasContent, reason: '仅含概要而无正文的思考行不提供二次展开能力');
       expect(
         find.byKey(const ValueKey('timeline-thinking-summary-thinking')),
         hasSummary ? findsOneWidget : findsNothing,
       );
+      if (hasContent) {
+        await tester.tap(
+          find
+              .ancestor(of: innerSummaryFinder, matching: find.byType(ListTile))
+              .first,
+        );
+        await tester.pumpAndSettle();
+      }
       expect(
         find.byKey(const ValueKey('timeline-thinking-content-thinking')),
         hasContent ? findsOneWidget : findsNothing,
@@ -1728,12 +1742,168 @@ void main() {
     }
   });
 
-  testWidgets('读取文件以状态和文件名单行展示，详情只在点击后构建', (tester) async {
+  testWidgets(
+    '独立 TimelineActivityGroupBlock 仅接受自有 sealed 消息，不感知轮次并支持持续追加与上层转换',
+    (tester) async {
+      final controller = TimelineActivityGroupController(
+        id: 'standalone-group',
+      );
+      addTearDown(controller.dispose);
+
+      // 1. 通过组件自有的 sealed TimelineThinkingGroupMessage 追加首条仅含概要的思考消息（无需传入 threadId/turnId）。
+      final replacedFirst = controller.add(
+        TimelineThinkingGroupMessage(
+          id: 'think-only-summary',
+          order: 1,
+          createdAt: timestamp,
+          completedAt: timestamp.add(const Duration(seconds: 2)),
+          summary: '正在设计方案 `step-1`',
+        ),
+      );
+      expect(replacedFirst, isFalse);
+
+      await tester.pumpWidget(
+        host(
+          Scaffold(body: TimelineActivityGroupBlock(controller: controller)),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      Finder topSummary() =>
+          find.byKey(StudioDriverKeys.timelineActivitySummary(controller.id));
+      TimelineActivityRow readTopRow() =>
+          tester.widget<TimelineActivityRow>(topSummary());
+
+      expect(readTopRow().icon, isNull);
+      expect(readTopRow().label, 'Worked for 2s');
+
+      // 2. 上层调用方通过 TimelineActivityGroupAdapter 将 StudioTimelineItem 转换为组件自有消息并追加。
+      final completedToolItem = StudioTimelineItem(
+        item: ThreadItemView(
+          id: 'tool-1',
+          threadId: 'thread',
+          turnId: 'turn-1',
+          ordinal: 2,
+          revision: 1,
+          createdAt: timestamp.add(const Duration(seconds: 2)),
+          updatedAt: timestamp.add(const Duration(seconds: 8)),
+          saved: true,
+          state: ThreadToolItemStateView(
+            invocation: const ThreadToolInvocationView(
+              toolCallId: 'tool-1',
+              name: 'stat_path',
+              arguments: '{"path":"/workspace/README.md"}',
+            ),
+            lifecycle: SucceededThreadToolView(
+              timestamp.add(const Duration(seconds: 8)),
+              const ThreadToolOutputView(
+                result: 'done',
+                attachments: [],
+                outputArtifacts: [],
+              ),
+            ),
+          ),
+        ),
+        saved: true,
+        lifecycle: StudioTimelineLifecycle.terminal,
+        omittedBytes: 0,
+        details: const [],
+      );
+      final convertedTool = TimelineActivityGroupAdapter.convertItem(
+        completedToolItem,
+      );
+      expect(convertedTool, isA<TimelineActivityConverted>());
+      final replacedTool = controller.add(
+        (convertedTool as TimelineActivityConverted).message,
+      );
+      expect(replacedTool, isFalse);
+      await tester.pumpAndSettle();
+      expect(readTopRow().icon, isNull);
+      expect(readTopRow().label, 'Worked for 8s · 1 tools');
+
+      // 3. 展开工作组，验证仅含概要的思考消息不提供二次展开（expandable: false）。
+      await tester.tap(
+        find.ancestor(of: topSummary(), matching: find.byType(ListTile)).first,
+      );
+      await tester.pumpAndSettle();
+      final innerThinkingSummary = find.byKey(
+        StudioDriverKeys.timelineActivitySummary('think-only-summary'),
+      );
+      expect(innerThinkingSummary, findsOneWidget);
+      expect(
+        tester.widget<TimelineActivityRow>(innerThinkingSummary).expandable,
+        isFalse,
+      );
+      expect(
+        find.byKey(
+          const ValueKey('timeline-thinking-summary-think-only-summary'),
+        ),
+        findsOneWidget,
+      );
+
+      // 4. 持续追加含正文的思考消息，验证同 id 幂等更新与含正文思考消息可展开。
+      controller.add(
+        TimelineThinkingGroupMessage(
+          id: 'think-with-content',
+          order: 3,
+          createdAt: timestamp.add(const Duration(seconds: 8)),
+          completedAt: timestamp.add(const Duration(seconds: 10)),
+          summary: '正在整理细节',
+          content: '完整推理正文',
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(readTopRow().label, 'Worked for 10s · 1 tools');
+      final expandableThinkingSummary = find.byKey(
+        StudioDriverKeys.timelineActivitySummary('think-with-content'),
+      );
+      expect(
+        tester
+            .widget<TimelineActivityRow>(expandableThinkingSummary)
+            .expandable,
+        isTrue,
+      );
+
+      // 5. 上层转换器对组外类型（助手正文、未完成项等）直接拒绝转换，由上层决定结束当前工作组。
+      final assistantItem = StudioTimelineItem(
+        item: ThreadItemView(
+          id: 'assistant-1',
+          threadId: 'thread',
+          turnId: 'turn-1',
+          ordinal: 4,
+          revision: 1,
+          createdAt: timestamp,
+          updatedAt: timestamp,
+          saved: true,
+          state: ThreadTextItemStateView(
+            channel: ThreadTextChannel.finalAnswer,
+            text: 'Answer',
+            attachments: const [],
+            lifecycle: CompletedThreadContentView(timestamp),
+          ),
+        ),
+        saved: true,
+        lifecycle: StudioTimelineLifecycle.terminal,
+        omittedBytes: 0,
+        details: const [],
+      );
+      final rejectedConversion = TimelineActivityGroupAdapter.convertItem(
+        assistantItem,
+      );
+      expect(rejectedConversion, isA<TimelineActivityConversionRejected>());
+      expect(
+        (rejectedConversion as TimelineActivityConversionRejected).reason,
+        TimelineActivityRejectionReason.nonActivityKind,
+      );
+    },
+  );
+
+  testWidgets('只读工具 stat_path 以状态和文件名单行展示，详情只在点击后构建', (tester) async {
     final lease = leaseFor(
       items: [
         toolItem(
           'read-1',
-          name: 'read_file',
+          name: 'stat_path',
           arguments: '{"path":"/workspace/src/target.dart"}',
         ),
       ],

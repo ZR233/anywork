@@ -115,12 +115,6 @@ impl Owner {
             if call.call_id.is_empty() {
                 return Some(ModelOutputViolation::EmptyCallIdentity);
             }
-            if plan.get(&call.tool_id).is_none() {
-                return Some(ModelOutputViolation::UnknownTool {
-                    tool_id: call.tool_id.clone(),
-                    call_id: call.call_id.clone(),
-                });
-            }
             // Call identity is global to the Thread: a call already admitted by the current context,
             // or by the independent live ledger of the current Turn must never be re-declared. The
             // ledger outlives any compaction of the attempts that declared those calls, so a long
@@ -137,6 +131,33 @@ impl Owner {
             {
                 return Some(ModelOutputViolation::DuplicateCallIdentity {
                     call_id: call.call_id.clone(),
+                });
+            }
+        }
+        // Mailbox changes can revoke this frozen plan while the provider future is pending. Keep
+        // that hard refusal in the rejected outcome so the returned output and usage are retained.
+        if !plan.remains_authorized(&self.tools) {
+            return Some(ModelOutputViolation::ToolPermissionRevoked);
+        }
+        // Scan every hard identity/authorization boundary before any recoverable rejection. A
+        // diagnostic unknown name is not an execution identity, even if it equals a real stable ID.
+        for call in &output.tool_calls {
+            if !matches!(
+                call.rejection,
+                Some(crate::model::ModelToolCallRejection::UnknownTool { .. })
+            ) && plan.get(&call.tool_id).is_none()
+            {
+                return Some(ModelOutputViolation::UnknownTool {
+                    tool_id: call.tool_id.clone(),
+                    call_id: call.call_id.clone(),
+                });
+            }
+        }
+        for call in &output.tool_calls {
+            if let Some(rejection) = &call.rejection {
+                return Some(ModelOutputViolation::ToolCallRejected {
+                    call_id: call.call_id.clone(),
+                    rejection: rejection.clone(),
                 });
             }
         }
@@ -306,10 +327,8 @@ impl Owner {
             self.state.attempts.last().is_some_and(|previous| {
                 previous.attempt_id == *source
                     && matches!(
-                        previous.status,
-                        AttemptStatus::Rejected {
-                            reason: ModelOutputViolation::SoloBatch { .. },
-                        }
+                        &previous.status,
+                        AttemptStatus::Rejected { reason } if reason.is_correctable()
                     )
             })
         });

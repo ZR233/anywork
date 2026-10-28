@@ -27,6 +27,7 @@ impl ModelSession for RepeatingModel {
         self.0 += 1;
         let calls = if self.0 <= 24 {
             vec![ModelToolCall {
+                rejection: None,
                 call_id: format!("call-{}", self.0),
                 tool_id: "tick".into(),
                 arguments: OpaquePayload::text("tick"),
@@ -143,6 +144,7 @@ impl ModelSession for ReusedCallModel {
                     vec![]
                 } else {
                     vec![ModelToolCall {
+                        rejection: None,
                         call_id: "fixed-call".into(),
                         tool_id: "tick".into(),
                         arguments: OpaquePayload::text("tick"),

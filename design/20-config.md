@@ -150,7 +150,7 @@ catalog = "deepseek"
 
 `models.accounts` 支持保存多个账号实例，同一账号模板可重复创建多个实例（唯一性仅约束映射表键名）。每个账号实例持久化以下内容：
 - **协议与模板身份**：明确的厂商协议适配选择 `protocol`、可选的 `template` 模板身份（完全自定义账号可不保存 `template`）。
-- **实例连接字段**：显示名称 `name`、服务端点 `base_url`、环境变量引用 `bearer_token_env`、自定义请求头 `http_headers`、工具协议策略 `tool_wire_policy` 与补丁工具类型 `apply_patch_tool_type`。
+- **实例连接字段**：显示名称 `name`、服务端点 `base_url`、环境变量引用 `bearer_token_env`、自定义请求头 `http_headers`、工具协议策略 `tool_wire_policy` 与补丁工具类型 `apply_patch_tool_type`。`apply_patch_tool_type = "freeform"` 表示该实例允许把内置补丁工具下发为 freeform（custom）工具；缺省值或非原生 custom 线协议时使用函数回退声明（形态与判定条件见 [09](./09-tool-runtime.md) §9.8）。
 - **模型目录（`catalog`）**：分为 `Bundled { catalog, additional_models, connection_overrides }` 或 `Explicit { models, connection_overrides }`。
 - **端点服务能力（`capabilities`）**：分为 `TemplateDefaults`（判别值为 `capabilities.source = "template_defaults"`，默认继承权威模板声明的服务能力）或显式声明的服务能力（自定义账号默认无附加服务能力）。
 
@@ -159,6 +159,8 @@ catalog = "deepseek"
 账号端点服务能力与单模型能力严格区分：账号服务能力表征服务端点是否支持 Responses 托管工具（hosted tools）、托管或独立联网搜索（携带 `OpenAIResponses` 或 `DeepSeekResponses` 方言）以及图像生成（携带 `Images` 方言与生图模型前缀）；模型能力则表征当前模型自身是否支持原生搜索、函数调用或多模态输入。官方 OpenAI 端点默认开启 Responses 托管工具，若用户覆盖为自定义 `base_url` 则默认关闭；xAI 权威端点默认继承 `prompt_cache_key` 缓存方言，若覆盖为非权威 `base_url` 则由 `TemplateDefaults` 自动撤销该缓存方言。
 
 内置目录模型与用户自定义或附加模型共用统一的数据结构（含 `model_id`、`display_name`、`description`、`context_window`、`max_context_window`、`auto_compact_token_limit`、`default_temperature`、`max_output_tokens`、`pricing`、`parameters`、`binding`、`capabilities`、`truncation_policy` 与 `base_instructions`）。其中 `capabilities` 为结构化输入能力矩阵（见 [06](./06-model.md)），显式声明支持的模态、来源与体积限制；未知模型默认为纯文本（`text-only`），非视觉模型在任何附件 I/O 与凭据读取前即拒绝图片输入。同账号下显式配置的同 ID 模型定义优先于绑定的内置定义，同 ID 在线明确字段优先于本地补全；不同账号之间的同名模型严禁交叉借用能力、参数或价格。
+
+展示名称优先级是上述字段规则的例外：已有手动模型的 `display_name` 优先于在线名称；没有手动名称时优先采用明确的非空白在线名称，缺失时才使用内置名称及原始 ID，具体规则由 [06](./06-model.md#67-模型目录启用资格与远程压缩) 统一定义。账号编辑页已支持手动模型的显示名称，不另设内置或在线模型的独立改名开关。
 
 ### 在线模型观察与目录来源管理
 

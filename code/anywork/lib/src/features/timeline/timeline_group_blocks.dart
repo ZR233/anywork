@@ -34,6 +34,20 @@ class _TimelinePresentationBlock extends StatelessWidget {
         ),
       );
     }
+    if (item is TimelineActivityGroup) {
+      return TimelineLiveActivityGroupBlock(
+        key: ValueKey(item.id),
+        group: item,
+        onOpenDetail: (itemId, field) => unawaited(
+          _openTimelineDetailViewer(
+            context,
+            lease: lease,
+            itemId: itemId,
+            field: field,
+          ),
+        ),
+      );
+    }
     return _TimelineGroupBlock(
       key: ValueKey(item.id),
       item: item,
@@ -123,23 +137,21 @@ class _TimelineGroupBlockState extends State<_TimelineGroupBlock> {
               icon: switch (item.kind) {
                 TimelinePresentationKind.images => Icons.image_outlined,
                 TimelinePresentationKind.recovery => Icons.sync,
-                // 纯技能组用技能图标；含思考的组仍以思考语义为先。
-                _ when item.thinkingCount == 0 && item.toolCount == 0 =>
-                  Icons.extension_outlined,
-                _ =>
-                  item.thinkingCount > 0
-                      ? Icons.psychology_alt_outlined
-                      : Icons.build_outlined,
+                TimelinePresentationKind.activity ||
+                TimelinePresentationKind.imageCard ||
+                TimelinePresentationKind.single => null,
               },
               label: _label(context, item),
-              isIssue: item.issueCount > 0,
+              isIssue:
+                  item.kind != TimelinePresentationKind.activity &&
+                  item.issueCount > 0,
               active: item is TimelineRecoveryGroup
                   ? (item.latest.source as StudioTimelineRecoverySource)
                             .notice ==
                         StudioTimelineRecoveryNotice.retry
                   : item.activeCount > 0,
               expanded: item.expanded,
-              expandable: _groupExpandable(item),
+              expandable: timelineGroupExpandable(item),
             ),
             children: [body!],
           ),
@@ -157,24 +169,6 @@ class _TimelineGroupBlockState extends State<_TimelineGroupBlock> {
               ),
       ),
     );
-  }
-
-  /// 单成员纯思考组只展示该思考已有正文：正文为空时不承诺一个空的展开区。
-  bool _groupExpandable(TimelinePresentationItem item) {
-    if (item.kind != TimelinePresentationKind.activity ||
-        item.thinkingCount != 1 ||
-        item.toolCount != 0 ||
-        item.skillCount != 0 ||
-        item.length != 1) {
-      return true;
-    }
-    final payload = item.first;
-    final state = payload.item.state;
-    if (state is! ThreadThinkingItemStateView) return true;
-    return state.summary.any((chunk) => chunk.trim().isNotEmpty) ||
-        state.content.any((chunk) => chunk.trim().isNotEmpty) ||
-        payload.details.any((detail) => detail.truncated) ||
-        payload.hasOmittedBody;
   }
 
   String _label(BuildContext context, TimelinePresentationItem item) {
@@ -198,84 +192,8 @@ class _TimelineGroupBlockState extends State<_TimelineGroupBlock> {
           : '';
       return [count, status].where((part) => part.isNotEmpty).join(' · ');
     }
-    if (item.thinkingCount > 0 && item.toolCount == 0 && item.skillCount == 0) {
-      // 纯思考组只汇总各思考成员的有效耗时，不把工具、等待或条目间隔计入。
-      return _reasoningGroupLabel(context, item);
-    }
-    // 可见工具与技能分别计数：同一次加载只算一次，不重复计成两种活动。
-    // 技能计数复用状态栏已有的 `statusSkillsCount`（已带复数形态），避免为一个数字
-    // 新增 ARB 条目与生成依赖；分组标题仍复用既有“思考/工具活动”措辞。
-    final counts = [
-      if (item.toolCount > 0) _toolCountPhrase(context, item),
-      if (item.skillCount > 0) context.l10n.statusSkillsCount(item.skillCount),
-    ];
-    final onlySkills =
-        item.toolCount == 0 && item.thinkingCount == 0 && counts.isNotEmpty;
-    // 纯技能组直接说明技能数量，既不显示“0 个工具”，也不冒充纯思考。
-    if (onlySkills) return counts.join(' · ');
-    // 含技能的混合组同样是“思考与工具”活动组，不落到纯思考措辞；纯思考已在上面返回。
-    final title = item.thinkingCount == 0
-        ? context.l10n.timelineToolGroupTitle
-        : item.toolCount > 0 || item.skillCount > 0
-        ? context.l10n.timelineActivityTitle
-        : context.l10n.timelineReasoningFallback;
-    if (counts.isEmpty) return title;
-    return '$title · ${counts.join(' · ')}';
+    return timelineActivityGroupLabel(context, item);
   }
-
-  /// 工具侧的计数文案：运行中与需要注意仍是同一段短语的一部分。
-  String _toolCountPhrase(BuildContext context, TimelinePresentationItem item) {
-    return switch ((item.issueCount > 0, item.runningToolCount > 0)) {
-      (true, true) => context.l10n.timelineToolGroupSummaryRunningWithIssues(
-        item.toolCount,
-        item.runningToolCount,
-        item.issueCount,
-      ),
-      (true, false) => context.l10n.timelineToolGroupSummaryIssues(
-        item.toolCount,
-        item.issueCount,
-      ),
-      (false, true) => context.l10n.timelineToolGroupSummaryRunning(
-        item.toolCount,
-        item.runningToolCount,
-      ),
-      (false, false) => context.l10n.timelineToolGroupSummary(item.toolCount),
-    };
-  }
-}
-
-/// 纯思考组的摘要：成员全部终态才汇总有效耗时，任何成员仍在进行即仍显示思考中。
-///
-/// 失败与取消保留各自真实状态；缺失或非法的成员时间只说明思考结束，不虚构时长。
-String _reasoningGroupLabel(
-  BuildContext context,
-  TimelinePresentationItem item,
-) {
-  final l10n = context.l10n;
-  var total = Duration.zero;
-  var active = false;
-  var failed = false;
-  var cancelled = false;
-  var unknown = false;
-  for (final payload in item.payloads) {
-    final member = payload.item;
-    if (member.state is! ThreadThinkingItemStateView) continue;
-    // 先聚合整组状态，再决定文案：任一成员未终态都仍显示思考中。
-    active = active || !member.isTerminal;
-    failed = failed || member.status == 'failed';
-    if (member.status == 'cancelled') cancelled = true;
-    final elapsed = _reasoningElapsed(member.createdAt, member.completedAt);
-    if (elapsed == null) {
-      unknown = true;
-    } else {
-      total += elapsed;
-    }
-  }
-  if (active) return l10n.timelineReasoningActive;
-  if (failed) return l10n.timelineReasoningFailed;
-  if (cancelled) return l10n.timelineReasoningCancelled;
-  if (unknown) return l10n.timelineReasoningEnded;
-  return _reasoningElapsedLabel(context, total);
 }
 
 /// Only an explicit expansion constructs member widgets; a long group uses a bounded lazy list.
@@ -294,23 +212,22 @@ class _TimelineGroupContents extends StatelessWidget {
     final paired = item.pairedToolId(id);
     // 技能行接管原调用：这里只构建一条技能行，原调用的详情仍从它的展开区读取。
     if (item.payload(id)?.item.skill != null) {
-      return _SkillActivity(
+      return TimelineSkillActivity(
         key: ValueKey('timeline-skill-activity-$id'),
         skill: item.member(id),
         tool: paired == null ? null : item.member(paired),
-        lease: lease,
-        threadId: threadId,
+        onOpenDetail: (itemId, field) => unawaited(
+          _openTimelineDetailViewer(
+            context,
+            lease: lease,
+            itemId: itemId,
+            field: field,
+          ),
+        ),
       );
     }
     // 只有活动组成员共享紧凑节奏；重连分组仍按普通条目间距阅读。
     final activity = item.kind == TimelinePresentationKind.activity;
-    // 单成员纯思考组：外层组摘要已承担折叠身份与展开意图，成员不再重复一行标题。
-    final embeddedReasoning =
-        activity &&
-        item.skillCount == 0 &&
-        item.thinkingCount == 1 &&
-        item.toolCount == 0 &&
-        item.visibleMemberIds.length == 1;
     return ValueListenableBuilder<TimelineMessagePayload>(
       key: ValueKey(id),
       valueListenable: item.member(id),
@@ -319,7 +236,6 @@ class _TimelineGroupContents extends StatelessWidget {
         lease: lease,
         threadId: threadId,
         inActivityGroup: activity,
-        embeddedReasoning: embeddedReasoning,
       ),
     );
   }
@@ -363,30 +279,10 @@ class _TimelineGroupContents extends StatelessWidget {
     ),
   );
 
-  /// 活动组成员整体缩进一档，并在组标题图标中心下方画低对比引导线表示归属。
-  ///
-  /// 引导线用 [DecoratedBox] 边框绘制，不占额外几何；图片图集与重连分组保持原布局。
+  /// 活动组成员整体缩进一档，并在左侧画低对比引导线表示归属。
   Widget _activityIndent(BuildContext context, Widget child) {
     if (item.kind != TimelinePresentationKind.activity) return child;
-    // 引导线落在组标题图标中心，成员从整档缩进处开始。
-    const half = TimelineActivityRow.groupIndent / 2;
-    return Padding(
-      padding: const EdgeInsets.only(left: half),
-      child: DecoratedBox(
-        decoration: BoxDecoration(
-          border: Border(
-            left: BorderSide(
-              color: context.colors.outlineVariant.withValues(alpha: 0.55),
-              width: 1,
-            ),
-          ),
-        ),
-        child: Padding(
-          padding: const EdgeInsets.only(left: half),
-          child: child,
-        ),
-      ),
-    );
+    return timelineActivityIndent(context, child);
   }
 }
 
@@ -410,12 +306,12 @@ class _TimelineImageGroupContents extends StatelessWidget {
           <
             ({
               TimelineMessagePayload payload,
-              _ToolItem call,
+              TimelineToolItem call,
               _ToolImageEntryRef? image,
             })
           >[];
       for (final payload in item.payloads) {
-        final call = _ToolItem(_entryViewOf(payload.item));
+        final call = TimelineToolItem(timelineEntryViewOf(payload.item));
         final images = _toolImageEntries([call]);
         if (images.isEmpty) {
           entries.add((payload: payload, call: call, image: null));
@@ -502,7 +398,7 @@ class _TimelineImageReadStatus extends StatelessWidget {
     required this.item,
     required this.onShowDetails,
   });
-  final _ToolItem item;
+  final TimelineToolItem item;
   final void Function(BuildContext) onShowDetails;
 
   @override
@@ -519,7 +415,7 @@ class _TimelineImageReadStatus extends StatelessWidget {
         }),
         const SizedBox(height: 8),
         Text(
-          _toolTitle(context, item),
+          timelineToolTitle(context, item),
           textAlign: TextAlign.center,
           maxLines: 3,
           overflow: TextOverflow.ellipsis,

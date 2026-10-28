@@ -9,7 +9,7 @@ use crate::workspace::ToolWorkspace;
 /// workspace 文件工具的统一后端。
 ///
 /// 工具层负责解析统一输入、生成统一 JSON 输出并执行 patch 匹配逻辑；
-/// backend 只表达“在某个 workspace 中读、写、删、列”的能力。本地目录、
+/// backend 只表达“在某个 workspace 中读、写、删”的能力。本地目录、
 /// Docker 容器或远程沙箱都应通过实现该 trait 接入，避免为同名 file 工具维护多套协议。
 pub trait WorkspaceFileBackend: fmt::Debug + Send + Sync {
     /// Creates an invocation-only access view, preserving physical confinement and write policy.
@@ -60,15 +60,6 @@ pub trait WorkspaceFileBackend: fmt::Debug + Send + Sync {
         &self,
         request: WorkspaceFileRemoveRequest,
     ) -> impl Future<Output = Result<()>> + Send;
-
-    /// Lists matching descendants without returning the requested directory itself.
-    fn list(
-        &self,
-        request: WorkspaceFileListRequest,
-    ) -> impl Future<Output = Result<WorkspaceFileListResult>> + Send;
-
-    /// Releases a partially consumed traversal. Unknown or already closed cursors are harmless.
-    fn close_listing(&self, cursor: String) -> impl Future<Output = Result<()>> + Send;
 
     /// Recursively creates a workspace-relative directory using the same confinement as writes.
     fn create_directory(
@@ -126,14 +117,6 @@ where
         self.backend.remove_file(request).await
     }
 
-    async fn list(&self, request: WorkspaceFileListRequest) -> Result<WorkspaceFileListResult> {
-        self.backend.list(request).await
-    }
-
-    async fn close_listing(&self, cursor: String) -> Result<()> {
-        self.backend.close_listing(cursor).await
-    }
-
     async fn create_directory(&self, path: String, cwd: Option<String>) -> Result<()> {
         self.workspace
             .ensure_relative_path_writable(cwd.as_deref(), &path)?;
@@ -182,28 +165,4 @@ pub struct WorkspaceFileWriteRequest {
 pub struct WorkspaceFileRemoveRequest {
     pub path: String,
     pub cwd: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WorkspaceFileListRequest {
-    pub path: String,
-    pub cwd: Option<String>,
-    pub glob: String,
-    pub max_files: usize,
-    pub cursor: Option<String>,
-    pub implicit_recovery: bool,
-    pub include_dirs: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WorkspaceFileListResult {
-    pub files: Vec<String>,
-    pub truncated: bool,
-    pub next_cursor: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WorkspaceFileListEntry {
-    pub path: String,
-    pub is_dir: bool,
 }

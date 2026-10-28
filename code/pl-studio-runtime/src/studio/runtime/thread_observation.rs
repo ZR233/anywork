@@ -2128,6 +2128,7 @@ mod storage_fault_tests {
             source: ContextSource::Assistant,
             content: vec![],
             tool_calls: vec![pl_core::model::ModelToolCall {
+                rejection: None,
                 call_id: call.into(),
                 tool_id: tool.into(),
                 arguments: OpaquePayload::text("{}"),

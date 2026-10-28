@@ -180,14 +180,3 @@ pub(super) fn terminal_turn<'de, D: Deserializer<'de>>(deserializer: D) -> Resul
         }
     }
 }
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub(super) struct FileRead {
-    pub path: String,
-    pub start_line: usize,
-    #[serde(deserialize_with = "required_option")]
-    pub next_start_line: Option<usize>,
-    pub content_hash: String,
-    pub text: String,
-}

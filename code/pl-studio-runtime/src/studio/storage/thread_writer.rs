@@ -2019,6 +2019,7 @@ pub(crate) mod storage_fault_tests {
                     tool_calls: ["first", "second"]
                         .into_iter()
                         .map(|id| ModelToolCall {
+                            rejection: None,
                             call_id: id.to_owned(),
                             tool_id: id.to_owned(),
                             arguments: OpaquePayload::text(id),
@@ -6154,6 +6155,7 @@ pub(crate) mod storage_fault_tests {
                         text: Arc::from("calling capture"),
                     }],
                     tool_calls: vec![ModelToolCall {
+                        rejection: None,
                         call_id: "capture-1".to_owned(),
                         tool_id: "capture".to_owned(),
                         arguments: OpaquePayload::text("capture"),

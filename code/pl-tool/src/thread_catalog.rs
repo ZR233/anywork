@@ -61,9 +61,7 @@ impl ThreadBuiltin {
                 "write_file",
                 "Write exact UTF-8 text to a workspace file using create, overwrite, or append mode.",
             ),
-            Self::File(kind) => {
-                ToolSpec::function(kind.name(), kind.description(), kind.input_schema())
-            }
+            Self::File(kind) => kind.to_spec(),
             Self::WriteStdin => schema::<crate::exec::WriteStdinInput>(
                 "write_stdin",
                 "Write nonempty input to an active exec task in this Thread. This does not start another command or wait for completion.",

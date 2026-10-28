@@ -122,7 +122,7 @@ pub(super) fn reviewer(
 ) -> Progress<Spawn> {
     let expected =
         serde_json::to_string(&completion_expectation(route)?).context("encode reviewer route")?;
-    let mut arguments = json!({"profileId":"reviewer","taskSummary":format!("Controlled review {case}"),"reviewTargetAgentId":target.agent_id,"modelSelection":route,"message":format!("[[delegation:child:rf-review:{case}]]\nDELEGATION_EXPECT_COMPLETION:{expected}\nApproved scope: inspect work/review-surface.txt through the real read_file tool, report synthetic findings with the assigned structured disposition. The supplier is scripted, not a real business-code review. Do not alter files or send messages. Stop on any conflict; feedback does not grant architecture authority.")});
+    let mut arguments = json!({"profileId":"reviewer","taskSummary":format!("Controlled review {case}"),"reviewTargetAgentId":target.agent_id,"modelSelection":route,"message":format!("[[delegation:child:rf-review:{case}]]\nDELEGATION_EXPECT_COMPLETION:{expected}\nApproved scope: inspect work/review-surface.txt through the real exec tool using the host platform's read command; require successful terminal output and hash the complete actual content, then report synthetic findings with the assigned structured disposition. The supplier is scripted, not a real business-code review. Do not alter files or send messages. Stop on any conflict; feedback does not grant architecture authority.")});
     if feedback {
         arguments["reviewFeedback"] = "toExecutor".into();
     }

@@ -1725,6 +1725,24 @@ class AppLocalizationsEn extends AppLocalizations {
   }
 
   @override
+  String get timelineGroupWorkedUnderSecond => 'Worked for less than 1s';
+
+  @override
+  String timelineGroupWorkedSeconds(int seconds) {
+    return 'Worked for ${seconds}s';
+  }
+
+  @override
+  String timelineGroupWorkedMinutes(int minutes) {
+    return 'Worked for ${minutes}m';
+  }
+
+  @override
+  String timelineGroupWorkedMinutesSeconds(int minutes, int seconds) {
+    return 'Worked for ${minutes}m ${seconds}s';
+  }
+
+  @override
   String get timelineReasoningSummary => 'Summary';
 
   @override
@@ -1819,13 +1837,13 @@ class AppLocalizationsEn extends AppLocalizations {
   String get timelineViewImageStopped => 'Stopped reading image';
 
   @override
-  String get timelineReadFileCompleted => 'Read';
+  String get timelineToolReadCompleted => 'Read';
 
   @override
-  String get timelineReadFileReading => 'Reading';
+  String get timelineToolReadReading => 'Reading';
 
   @override
-  String get timelineReadFileFailed => 'Unable to read';
+  String get timelineToolReadFailed => 'Unable to read';
 
   @override
   String get timelineToolEditSucceeded => 'Edited';
@@ -4287,6 +4305,31 @@ class AppLocalizationsEn extends AppLocalizations {
   String get modeEditorCollapse => 'Collapse';
 
   @override
+  String get modeEditorDetailStage => 'Stage details';
+
+  @override
+  String get modeEditorDetailTransition => 'Transition details';
+
+  @override
+  String get modeEditorFocusAll => 'All';
+
+  @override
+  String get modeEditorFocusSelected => 'Focused';
+
+  @override
+  String modeEditorDimmedEdges(int count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: 'Dimmed $count unrelated transitions',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String get modeEditorViewStage => 'View stage';
+
+  @override
   String get modeEditorNoWorkflowPeriod => 'This mode has no workflow.';
 
   @override
@@ -4320,6 +4363,9 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get modeEditorStageInstructions => 'Stage instructions';
+
+  @override
+  String get modeEditorCompletionCriteriaTitle => 'Completion criteria';
 
   @override
   String get modeEditorCompletionCriteria =>

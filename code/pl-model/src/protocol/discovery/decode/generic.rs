@@ -3,7 +3,8 @@
 //! `context_length`/原生价格字段不属于该契约。
 use super::reasoning::ReasoningDeclaration;
 use super::{
-    Capabilities, DiscoveryDialect, ModelCatalogQueryError, Record, nullable, required_id,
+    Capabilities, DiscoveryDialect, ModelCatalogQueryError, Record, nullable, presentation_name,
+    required_id,
 };
 use crate::model::*;
 use serde::Deserialize;
@@ -52,7 +53,7 @@ impl WireRecord {
         let id = required_id(self.id)?;
         Ok(Record {
             id,
-            display_name: self.display_name.or(self.name),
+            display_name: presentation_name(self.display_name, self.name),
             description: self.description,
             context_window: self.context_window,
             max_context_window: self.max_context_window,

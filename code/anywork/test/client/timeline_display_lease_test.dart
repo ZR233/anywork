@@ -871,7 +871,7 @@ void main() {
           // 运行中的技能读取没有任何激活事实：保留真实工具行。
           skillCall('skill-view-running', 1, succeeded: false),
           // 支持文件读取不是主技能加载：即使身份巧合也不配对。
-          skillCall('support-read', 2, name: 'read_file'),
+          skillCall('support-read', 2, name: 'list_files'),
           skillActivation('skill-support', 3, toolCallId: 'support-read'),
           // 用户手势来源不猜测与工具调用配对。
           skillCall('gesture-call', 4),
@@ -1944,5 +1944,77 @@ void main() {
       0,
       reason: 'interrupted turn 不产生问题指示',
     );
+  });
+
+  test('TimelineActivityGroup computes elapsedDuration across members', () {
+    final base = DateTime.utc(2026, 10, 28, 4, 0, 0);
+    final display = lease();
+    addTearDown(display.retire);
+    display.adoptBaseline(
+      StudioTimelineBaseline(
+        subscriptionId: 'sub',
+        version: 1,
+        before: null,
+        hasOlder: false,
+        items: [
+          StudioTimelineItem(
+            item: ThreadItemView(
+              id: 'think-1',
+              threadId: 'thread',
+              turnId: 'turn',
+              ordinal: 1,
+              revision: 1,
+              createdAt: base,
+              updatedAt: base.add(const Duration(seconds: 3)),
+              state: ThreadThinkingItemStateView(
+                summary: const ['Designing'],
+                content: const [],
+                lifecycle: CompletedThreadContentView(
+                  base.add(const Duration(seconds: 3)),
+                ),
+              ),
+            ),
+            saved: true,
+            lifecycle: StudioTimelineLifecycle.terminal,
+            omittedBytes: 0,
+            details: const [],
+          ),
+          StudioTimelineItem(
+            item: ThreadItemView(
+              id: 'tool-1',
+              threadId: 'thread',
+              turnId: 'turn',
+              ordinal: 2,
+              revision: 1,
+              createdAt: base.add(const Duration(seconds: 2)),
+              updatedAt: base.add(const Duration(seconds: 8)),
+              state: ThreadToolItemStateView(
+                invocation: const ThreadToolInvocationView(
+                  toolCallId: 'tool-1',
+                  name: 'stat_path',
+                  arguments: '{"path":"README.md"}',
+                ),
+                lifecycle: SucceededThreadToolView(
+                  base.add(const Duration(seconds: 8)),
+                  const ThreadToolOutputView(
+                    result: 'ok',
+                    attachments: [],
+                    outputArtifacts: [],
+                  ),
+                ),
+              ),
+            ),
+            saved: true,
+            lifecycle: StudioTimelineLifecycle.terminal,
+            omittedBytes: 0,
+            details: const [],
+          ),
+        ],
+      ),
+    );
+    final group =
+        timelinePresentationOf(display.controller.messages.single)!
+            as TimelineActivityGroup;
+    expect(group.elapsedDuration, const Duration(seconds: 8));
   });
 }
