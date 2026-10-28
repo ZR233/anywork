@@ -2592,6 +2592,8 @@ mod storage_fault_tests {
     /// 落盘、发布资格与预算随保槽/释放收束，最后真实关闭并回收全部观察与写入资源。
     #[tokio::test]
     async fn a_child_terminal_report_failure_retains_the_batch_until_a_real_retry() -> Result<()> {
+        use sea_orm::{Database, SqliteTransactionMode, TransactionOptions, TransactionTrait};
+
         let fixture = observation_fixture().await?;
         let child_id = "child-terminal-report";
         let parent_id = "child-terminal-report-parent";
@@ -2657,6 +2659,8 @@ mod storage_fault_tests {
         let terminal = handle.snapshot().commit_sequence;
 
         // Pass every earlier batch at the phase boundary; the terminal batch stays parked.
+        let mut first_released = None;
+        let mut writer_block = None;
         loop {
             let sequence = {
                 let mut entries = entered.lock().await;
@@ -2664,15 +2668,52 @@ mod storage_fault_tests {
                     .await?
                     .context("pending hook closed")?
             };
+            if let Some(first) = first_released.take() {
+                // The next phase proves the first write was handed over. Let
+                // that real write create the database, then hold its writer
+                // lock so the remaining earlier batches deterministically lag.
+                tokio::time::timeout(Duration::from_secs(10), sink.flush(child_id, first))
+                    .await??;
+                let database_path = fixture
+                    .store
+                    .registered_session_paths(child_id)?
+                    .history_database();
+                let options = crate::studio::paths::sqlite_file_options(
+                    &database_path,
+                    crate::studio::paths::SqliteFileMode::ReadWrite,
+                    |options| options.busy_timeout(Duration::from_secs(10)),
+                )
+                .await?;
+                let blocker = Database::connect(options).await?;
+                let writer_lock = blocker
+                    .begin_with_options(TransactionOptions {
+                        sqlite_transaction_mode: Some(SqliteTransactionMode::Immediate),
+                        ..Default::default()
+                    })
+                    .await?;
+                writer_block = Some((blocker, writer_lock));
+            }
             if sequence == terminal {
                 break;
             }
             control.send_replace(Some(Ok(())));
+            if writer_block.is_none() {
+                first_released = Some(sequence);
+            }
         }
         // The parked batch is already folded into the shared session: freeze its observable facts.
         let chat = fixture.store.chat_session(child_id).await?;
         let first = turn_items(&chat, "child-terminal-turn").await?;
         assert!(!first.is_empty());
+        let earlier = channel.handoff_ticket();
+        assert!(earlier < terminal);
+        assert!(channel.subscribe().borrow().committed_sequence < earlier);
+        let (blocker, writer_lock) = writer_block.context("earlier writes held by SQLite")?;
+        writer_lock.commit().await?;
+        blocker.close().await?;
+        tokio::time::timeout(Duration::from_secs(10), sink.flush(child_id, earlier)).await??;
+        // Only the parked batch and this projection remain charged. Earlier
+        // writer batches cannot drain between the two budget observations.
         let gauge_parked = channel_gauge(&channel);
         assert!(gauge_parked > 0);
 
@@ -2899,6 +2940,12 @@ mod storage_fault_tests {
         let chat = fixture.store.chat_session(child_id).await?;
         let first = turn_items(&chat, "cancel-wait-turn").await?;
         assert!(!first.is_empty());
+        // Compare the report's retained share independently of older writes.
+        tokio::time::timeout(
+            Duration::from_secs(10),
+            sink.flush(child_id, channel.handoff_ticket()),
+        )
+        .await??;
         let gauge_before = channel_gauge(&channel);
         let pending_bytes = pending.retained_bytes();
         assert!(pending_bytes > 0);
