@@ -19,7 +19,7 @@ use crate::workspace::ToolWorkspace;
 pub use backend::*;
 pub use container::ContainerWorkspaceFileBackend;
 pub use local::LocalWorkspaceFileBackend;
-pub use ops::{WorkspaceFileToolExecution, execute_workspace_file_tool};
+pub use ops::WorkspaceFileToolExecution;
 pub use patch::apply_patch_to_backend;
 pub use schema::*;
 

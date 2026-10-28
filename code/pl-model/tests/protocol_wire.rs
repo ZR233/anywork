@@ -13,7 +13,8 @@ use pl_model::{
     config::builtin_account_catalog,
     model::{ModelInfo, ModelTransportProfile, default_models},
     protocol::{
-        FileUploadCapability, PromptCacheDialect, ProtocolClient, ProtocolEndpoint, ProtocolKind,
+        ApplyPatchToolType, FileUploadCapability, PromptCacheDialect, ProtocolClient,
+        ProtocolEndpoint, ProtocolKind, ToolWirePolicy,
         openai::{CacheMode, OpenAiCompletion, OpenAiCompletionOptions, PromptCacheOptions},
     },
     runtime::{CancellationToken, ModelInvocationContext, ModelRuntime, ModelSession},
@@ -213,6 +214,25 @@ fn model(model_id: &str, profile: ModelTransportProfile) -> ModelInfo {
     let mut model = ModelInfo::compatible(model_id);
     model.binding.set_transport(profile);
     model
+}
+
+fn custom_tool_model() -> ModelInfo {
+    let mut info = model(
+        "custom-tool-fixture",
+        ModelTransportProfile::responses_http(),
+    );
+    info.capabilities.tools.custom_tools = true;
+    info.capabilities.tools.freeform_tools = true;
+    info
+}
+
+fn apply_patch_declaration() -> ToolSpec {
+    ToolSpec::custom_grammar(
+        "apply_patch",
+        "The `apply_patch` tool can be used to edit files. This is a FREEFORM tool, so do not wrap the patch in JSON.",
+        "lark",
+        r#"start: "*** Begin Patch\n" "*** Add File: notes.txt\n" "+hello\n" "*** End Patch""#,
+    )
 }
 
 /// Reconstruct the pre-migration (HEAD) native checkpoint binding from the frozen current one.
@@ -2762,12 +2782,18 @@ async fn responses_function_call_has_stable_item_and_call_id() {
 }
 
 #[tokio::test]
-async fn responses_custom_call_preserves_raw_input_and_programmatic_caller() {
+async fn apply_patch_freeform_declares_custom_grammar_for_native_responses() {
+    use pl_core::{
+        context::{ContextRecord, ContextSnapshot},
+        model::{ModelRequest, ModelToolDeclaration, ToolCallMode},
+    };
+    use pl_model::runtime::{ThreadModel, model_response_receipt, thread_tool_declaration};
+    let patch = "*** Begin Patch\n*** Add File: notes.txt\n+hello\n*** End Patch";
     let events = vec![
         json!({"type":"response.created","response":{"id":"custom-1"}}),
         json!({"type":"response.output_item.added","item":{"id":"custom-item","call_id":"custom-call","type":"custom_tool_call","name":"apply_patch"}}),
-        json!({"type":"response.custom_tool_call_input.delta","item_id":"custom-item","call_id":"custom-call","delta":"*** Begin Patch"}),
-        json!({"type":"response.output_item.done","item":{"id":"custom-item","call_id":"custom-call","type":"custom_tool_call","name":"apply_patch","input":"*** Begin Patch","caller":{"type":"program","caller_id":"program-1"}}}),
+        json!({"type":"response.custom_tool_call_input.delta","item_id":"custom-item","call_id":"custom-call","delta":patch}),
+        json!({"type":"response.output_item.done","item":{"id":"custom-item","call_id":"custom-call","type":"custom_tool_call","name":"apply_patch","input":patch,"caller":{"type":"program","caller_id":"program-1"}}}),
         json!({"type":"response.completed","response":{"id":"custom-1","usage":{"input_tokens":8,"output_tokens":4}}}),
     ];
     let fixture = FixtureServer::start(vec![Step::prompt(
@@ -2778,36 +2804,59 @@ async fn responses_custom_call_preserves_raw_input_and_programmatic_caller() {
     )])
     .await
     .unwrap();
-    let mut info = bundled("gpt-5.5");
-    info.binding
-        .set_transport(ModelTransportProfile::responses_http());
-    let runtime = ModelRuntime::new_with_account_id(
-        "fixture",
-        ProtocolEndpoint::openai(Some(fixture.base_url())),
-        info,
-    )
-    .unwrap();
-    let result = runtime
-        .complete(
-            CompletionRequest::builder()
-                .messages(vec![user("patch it")])
-                .tools(vec![ToolSpec::custom_grammar(
-                    "apply_patch",
-                    "Apply patch",
-                    "lark",
-                    "start: WORD",
-                )])
-                .build(),
-            ModelInvocationContext::default(),
-        )
+    let mut endpoint = ProtocolEndpoint::openai(Some(fixture.base_url()));
+    endpoint.apply_patch_tool_type = Some(ApplyPatchToolType::Freeform);
+    let runtime =
+        ModelRuntime::new_with_account_id("fixture", endpoint, custom_tool_model()).unwrap();
+    let mut session = ModelFactory::new(ThreadModel::new(runtime, None))
+        .open_session()
         .await
         .unwrap();
+    let prepared = session
+        .prepare(ModelRequest {
+            thread_id: "patch-thread".into(),
+            turn_id: "patch-turn".into(),
+            attempt_id: "patch-attempt".into(),
+            context: ContextSnapshot {
+                revision: 1,
+                records: vec![ContextRecord {
+                    id: "patch-input".into(),
+                    turn_id: Some("patch-turn".into()),
+                    source: ContextSource::User,
+                    content: vec![ContextContent::Text {
+                        text: "patch it".into(),
+                    }],
+                    tool_calls: vec![],
+                }]
+                .into(),
+            },
+            tools: vec![ModelToolDeclaration {
+                tool_id: "patch-executor".into(),
+                declaration: thread_tool_declaration(&apply_patch_declaration()).unwrap(),
+            }]
+            .into(),
+            tool_call_mode: ToolCallMode::Parallel,
+            solo_tool_ids: Default::default(),
+            committed_private_context: None,
+            resources: None,
+            cancellation: Default::default(),
+            progress: None,
+        })
+        .await
+        .unwrap();
+    let output = prepared.execute().await.unwrap();
+    session.close().await.unwrap();
+    assert_eq!(output.tool_calls.len(), 1);
+    assert_eq!(output.tool_calls[0].tool_id, "patch-executor");
+    assert_eq!(output.tool_calls[0].arguments.format(), "text/plain");
+    assert_eq!(output.tool_calls[0].arguments.content(), patch);
+    let result = model_response_receipt(&output).unwrap().unwrap().response;
     assert_eq!(result.tool_calls.len(), 1);
     let call = &result.tool_calls[0];
     assert_eq!(call.id, "custom-item");
     assert_eq!(call.call_id, "custom-call");
     assert_eq!(call.kind(), ToolCallKind::Custom);
-    assert_eq!(call.payload_text(), "*** Begin Patch");
+    assert_eq!(call.payload_text(), patch);
     assert_eq!(
         call.caller,
         Some(ToolCallCaller::Program {
@@ -2815,7 +2864,149 @@ async fn responses_custom_call_preserves_raw_input_and_programmatic_caller() {
         })
     );
     let records = fixture.finish().await.unwrap();
-    assert_eq!(records[0].body["tools"][0]["type"], "custom");
+    let tool = &records[0].body["tools"][0];
+    assert_eq!(tool["type"], "custom");
+    assert_eq!(tool["name"], "apply_patch");
+    let description = tool["description"].as_str().unwrap();
+    assert_eq!(description, apply_patch_declaration().description());
+    assert!(description.contains("FREEFORM"));
+    assert!(description.contains("do not wrap the patch in JSON"));
+    assert_eq!(tool["format"]["type"], "grammar");
+    assert_eq!(tool["format"]["syntax"], "lark");
+    assert!(
+        tool["format"]["definition"]
+            .as_str()
+            .unwrap()
+            .contains("*** Begin Patch")
+    );
+}
+
+#[tokio::test]
+async fn apply_patch_falls_back_to_function_without_freeform_tool_type() {
+    let fixture = FixtureServer::start(vec![Step::prompt(
+        Protocol::ResponsesHttp,
+        "patch fallback",
+        0,
+        Reply::Sse(responses_text("ready", "fallback-1", "custom-tool-fixture")),
+    )])
+    .await
+    .unwrap();
+    let mut endpoint = ProtocolEndpoint::openai(Some(fixture.base_url()));
+    endpoint.apply_patch_tool_type = None;
+    let runtime =
+        ModelRuntime::new_with_account_id("fixture", endpoint, custom_tool_model()).unwrap();
+    let lookup_schema = json!({"type":"object","properties":{"name":{"type":"string"}}});
+    runtime
+        .complete(
+            CompletionRequest::builder()
+                .messages(vec![user("patch fallback")])
+                .tools(vec![
+                    apply_patch_declaration(),
+                    ToolSpec::custom_grammar("query", "Query", "lark", "start: WORD"),
+                    ToolSpec::function("lookup", "Look up a symbol", lookup_schema.clone()),
+                ])
+                .build(),
+            ModelInvocationContext::default(),
+        )
+        .await
+        .unwrap();
+    let records = fixture.finish().await.unwrap();
+    let tools = records[0].body["tools"].as_array().unwrap();
+    let patch = tools
+        .iter()
+        .find(|tool| tool["name"] == "apply_patch")
+        .unwrap();
+    assert_eq!(patch["type"], "function");
+    let description = patch["description"].as_str().unwrap().to_ascii_lowercase();
+    assert!(description.contains("required `input` string"));
+    assert!(!description.contains("freeform"));
+    assert!(!description.contains("do not wrap the patch in json"));
+    assert_eq!(patch["parameters"]["required"], json!(["input"]));
+    assert_eq!(patch["parameters"]["properties"]["input"]["type"], "string");
+    assert!(
+        patch["parameters"]["properties"]["input"]["description"]
+            .as_str()
+            .unwrap()
+            .contains("*** Begin Patch")
+    );
+    let query = tools.iter().find(|tool| tool["name"] == "query").unwrap();
+    assert_eq!(query["type"], "custom");
+    assert_eq!(query["format"]["type"], "grammar");
+    let lookup = tools.iter().find(|tool| tool["name"] == "lookup").unwrap();
+    assert_eq!(lookup["type"], "function");
+    assert_eq!(lookup["parameters"], lookup_schema);
+}
+
+#[tokio::test]
+async fn apply_patch_falls_back_to_function_on_non_native_endpoint() {
+    let fixture = FixtureServer::start(vec![Step::prompt(
+        Protocol::ResponsesHttp,
+        "patch fallback",
+        0,
+        Reply::Sse(responses_text("ready", "fallback-1", "custom-tool-fixture")),
+    )])
+    .await
+    .unwrap();
+    let mut endpoint = ProtocolEndpoint::openai(Some(fixture.base_url()));
+    endpoint.tool_wire_policy = ToolWirePolicy::FunctionFallback;
+    endpoint.apply_patch_tool_type = Some(ApplyPatchToolType::Freeform);
+    let runtime =
+        ModelRuntime::new_with_account_id("fixture", endpoint, custom_tool_model()).unwrap();
+    runtime
+        .complete(
+            CompletionRequest::builder()
+                .messages(vec![user("patch fallback")])
+                .tools(vec![apply_patch_declaration()])
+                .build(),
+            ModelInvocationContext::default(),
+        )
+        .await
+        .unwrap();
+    let records = fixture.finish().await.unwrap();
+    let patch = &records[0].body["tools"][0];
+    assert_eq!(patch["name"], "apply_patch");
+    assert_eq!(patch["type"], "function");
+    let description = patch["description"].as_str().unwrap().to_ascii_lowercase();
+    assert!(description.contains("required `input` string"));
+    assert!(!description.contains("freeform"));
+    assert!(!description.contains("do not wrap the patch in json"));
+    assert_eq!(patch["parameters"]["required"], json!(["input"]));
+    assert_eq!(patch["parameters"]["properties"]["input"]["type"], "string");
+}
+
+#[tokio::test]
+async fn apply_patch_falls_back_to_function_without_required_model_capabilities() {
+    for (custom_tools, freeform_tools) in [(false, true), (true, false)] {
+        let fixture = FixtureServer::start(vec![Step::prompt(
+            Protocol::ResponsesHttp,
+            "patch fallback",
+            0,
+            Reply::Sse(responses_text("ready", "fallback-1", "custom-tool-fixture")),
+        )])
+        .await
+        .unwrap();
+        let mut endpoint = ProtocolEndpoint::openai(Some(fixture.base_url()));
+        endpoint.apply_patch_tool_type = Some(ApplyPatchToolType::Freeform);
+        let mut info = custom_tool_model();
+        info.capabilities.tools.custom_tools = custom_tools;
+        info.capabilities.tools.freeform_tools = freeform_tools;
+        let runtime = ModelRuntime::new_with_account_id("fixture", endpoint, info).unwrap();
+        runtime
+            .complete(
+                CompletionRequest::builder()
+                    .messages(vec![user("patch fallback")])
+                    .tools(vec![apply_patch_declaration()])
+                    .build(),
+                ModelInvocationContext::default(),
+            )
+            .await
+            .unwrap();
+        let records = fixture.finish().await.unwrap();
+        let patch = &records[0].body["tools"][0];
+        assert_eq!(patch["type"], "function");
+        assert_eq!(patch["parameters"]["required"], json!(["input"]));
+        assert_eq!(patch["parameters"]["properties"]["input"]["type"], "string");
+    }
 }
 
 #[tokio::test]
@@ -3775,24 +3966,37 @@ async fn native_compaction_returns_checkpoint_and_retains_reported_usage() {
         json!({"type":"response.output_item.done","item":checkpoint}),
         json!({"type":"response.completed","response":{"id":"compact-1","usage":{"input_tokens":20,"output_tokens":3}}}),
     ];
-    let fixture = FixtureServer::start(vec![Step::prompt(
-        Protocol::ResponsesHttp,
-        "compact",
-        0,
-        Reply::Sse(events),
-    )])
+    let fixture = FixtureServer::start(vec![
+        Step::prompt(
+            Protocol::ResponsesHttp,
+            "compact",
+            0,
+            Reply::Sse(responses_text("ready", "main-1", "custom-tool-fixture")),
+        ),
+        Step::prompt(Protocol::ResponsesHttp, "compact", 1, Reply::Sse(events)),
+    ])
     .await
     .unwrap();
     let mut endpoint = ProtocolEndpoint::openai(Some(fixture.base_url()));
     endpoint.service_capabilities.remote_compaction = true;
-    let mut info = bundled("gpt-5.5");
-    info.binding
-        .set_transport(ModelTransportProfile::responses_http());
-    let runtime = ModelRuntime::new_with_account_id("fixture", endpoint, info).unwrap();
+    endpoint.apply_patch_tool_type = None;
+    let runtime =
+        ModelRuntime::new_with_account_id("fixture", endpoint, custom_tool_model()).unwrap();
+    let prefix = CompletionRequest::builder()
+        .messages(vec![user("compact")])
+        .tools(vec![
+            apply_patch_declaration(),
+            ToolSpec::custom_grammar("query", "Query", "lark", "start: WORD"),
+        ])
+        .build();
+    runtime
+        .complete(prefix.clone(), ModelInvocationContext::default())
+        .await
+        .unwrap();
     let compacted = runtime
         .compaction()
         .unwrap()
-        .checkpoint(request("compact"), ModelInvocationContext::default())
+        .checkpoint(prefix, ModelInvocationContext::default())
         .await
         .unwrap();
     assert!(
@@ -3800,8 +4004,20 @@ async fn native_compaction_returns_checkpoint_and_retains_reported_usage() {
     );
     assert_eq!(compacted.accounting.usage.input_tokens, Some(20));
     let records = fixture.finish().await.unwrap();
+    assert_eq!(records.len(), 2);
+    assert_eq!(records[0].body["tools"], records[1].body["tools"]);
+    let tools = records[1].body["tools"].as_array().unwrap();
+    let patch = tools
+        .iter()
+        .find(|tool| tool["name"] == "apply_patch")
+        .unwrap();
+    assert_eq!(patch["type"], "function");
+    assert_eq!(patch["parameters"]["required"], json!(["input"]));
+    assert_eq!(patch["parameters"]["properties"]["input"]["type"], "string");
+    let query = tools.iter().find(|tool| tool["name"] == "query").unwrap();
+    assert_eq!(query["type"], "custom");
     assert_eq!(
-        records[0].body["input"].as_array().unwrap().last().unwrap()["type"],
+        records[1].body["input"].as_array().unwrap().last().unwrap()["type"],
         "compaction_trigger"
     );
 }

@@ -1,6 +1,6 @@
 //! Native remote compaction reuses the complete inference lifecycle and accounting.
 use super::{InvocationRunner, ModelInvocationContext};
-use crate::completion::tool_schema::CustomToolProjection;
+use crate::completion::tool_schema::ToolProjection;
 use crate::completion::{
     CompletionFailure, ModelCompactionRequest, ModelCompactionResponse, OpenAiCompactionMode,
 };
@@ -104,18 +104,8 @@ fn build_compaction_body(
         .capabilities
         .clone()
         .with_native_custom_tools(provider.endpoint().uses_native_custom_tools());
-    let custom_tools_native = provider.endpoint().uses_native_custom_tools()
-        && effective_capabilities.supports_custom_tools()
-        && effective_capabilities.supports_freeform_tools();
-    let custom_tool_projection = if custom_tools_native {
-        CustomToolProjection::Native
-    } else {
-        CustomToolProjection::ToFunction
-    };
-    let completion = request
-        .prefix
-        .clone()
-        .provider_compatible(custom_tool_projection);
+    let projection = ToolProjection::for_endpoint(provider.endpoint(), &effective_capabilities);
+    let completion = request.prefix.clone().provider_compatible(projection);
     completion.validate_against(&model_info.model_id, &effective_capabilities)?;
     let instruction_role = provider
         .endpoint()

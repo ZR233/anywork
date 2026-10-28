@@ -154,7 +154,7 @@ fn apply_chunks(content: &str, path: &Path, chunks: &[UpdateChunk]) -> PatchResu
         if chunk.old_lines.is_empty() {
             let insert_at = lines.len();
             replacements.push((insert_at, 0, chunk.new_lines.clone()));
-            cursor = insert_at;
+            // 纯新增安排在 EOF，但后续块仍需从原游标匹配尚未修改的内容。
             continue;
         }
 
@@ -187,75 +187,86 @@ fn find_chunk_replacement(
     cursor: usize,
     allow_preserved_json_context: bool,
 ) -> Option<(usize, usize, Vec<String>)> {
-    let mut candidates = vec![(chunk.old_lines.clone(), chunk.new_lines.clone())];
+    let mut candidates = vec![chunk.clone()];
     if let Some(candidate) = duplicated_edge_context_candidate(chunk) {
         candidates.push(candidate);
     }
 
-    for (old_lines, new_lines) in candidates {
-        if let Some(start) = find_sequence(lines, &old_lines, cursor, chunk.eof).or_else(|| {
-            if allow_preserved_json_context {
-                find_preserved_json_context_sequence(
-                    lines, &old_lines, &new_lines, cursor, chunk.eof,
-                )
-            } else {
-                None
-            }
-        }) {
-            let matched_lines = lines[start..start + old_lines.len()].to_vec();
-            let new_lines = preserve_matched_context_lines(&old_lines, &new_lines, &matched_lines);
-            return Some((start, old_lines.len(), new_lines));
+    for mut candidate in candidates {
+        if let Some(replacement) =
+            find_candidate_replacement(lines, &candidate, cursor, allow_preserved_json_context)
+        {
+            return Some(replacement);
         }
-        if old_lines.last().is_some_and(String::is_empty) {
-            let old_lines = old_lines[..old_lines.len() - 1].to_vec();
-            let new_lines = if new_lines.last().is_some_and(String::is_empty) {
-                new_lines[..new_lines.len() - 1].to_vec()
-            } else {
-                new_lines
-            };
-            if let Some(start) = find_sequence(lines, &old_lines, cursor, chunk.eof).or_else(|| {
-                if allow_preserved_json_context {
-                    find_preserved_json_context_sequence(
-                        lines, &old_lines, &new_lines, cursor, chunk.eof,
-                    )
-                } else {
-                    None
-                }
-            }) {
-                let matched_lines = lines[start..start + old_lines.len()].to_vec();
-                let new_lines =
-                    preserve_matched_context_lines(&old_lines, &new_lines, &matched_lines);
-                return Some((start, old_lines.len(), new_lines));
+        if candidate.old_lines.last().is_some_and(String::is_empty) {
+            candidate.old_lines.pop();
+            if candidate.new_lines.last().is_some_and(String::is_empty) {
+                candidate.new_lines.pop();
+            }
+            candidate
+                .context_line_indices
+                .retain(|&(old_index, new_index)| {
+                    old_index < candidate.old_lines.len() && new_index < candidate.new_lines.len()
+                });
+            if let Some(replacement) =
+                find_candidate_replacement(lines, &candidate, cursor, allow_preserved_json_context)
+            {
+                return Some(replacement);
             }
         }
     }
     None
 }
 
-fn preserve_matched_context_lines(
-    old_lines: &[String],
-    new_lines: &[String],
-    matched_lines: &[String],
-) -> Vec<String> {
-    let mut old_search_start = 0;
-    new_lines
-        .iter()
-        .map(|line| {
-            let Some(relative_index) = old_lines[old_search_start..]
-                .iter()
-                .position(|old_line| lines_equivalent(line, old_line))
-            else {
-                return line.clone();
-            };
-            let old_index = old_search_start + relative_index;
-            old_search_start = old_index + 1;
-            matched_lines[old_index].clone()
-        })
-        .collect()
+fn find_candidate_replacement(
+    lines: &[String],
+    candidate: &UpdateChunk,
+    cursor: usize,
+    allow_preserved_json_context: bool,
+) -> Option<(usize, usize, Vec<String>)> {
+    let start =
+        find_sequence(lines, &candidate.old_lines, cursor, candidate.eof).or_else(|| {
+            if allow_preserved_json_context {
+                find_preserved_json_context_sequence(
+                    lines,
+                    &candidate.old_lines,
+                    &candidate.context_line_indices,
+                    cursor,
+                    candidate.eof,
+                )
+            } else {
+                None
+            }
+        })?;
+    let matched_lines = &lines[start..start + candidate.old_lines.len()];
+    let new_lines = preserve_matched_context_lines(
+        &candidate.new_lines,
+        &candidate.context_line_indices,
+        matched_lines,
+    );
+    Some((start, candidate.old_lines.len(), new_lines))
 }
 
-fn duplicated_edge_context_candidate(chunk: &UpdateChunk) -> Option<(Vec<String>, Vec<String>)> {
+fn preserve_matched_context_lines(
+    new_lines: &[String],
+    context_line_indices: &[(usize, usize)],
+    matched_lines: &[String],
+) -> Vec<String> {
+    let mut preserved_lines = new_lines.to_vec();
+    for &(old_index, new_index) in context_line_indices {
+        preserved_lines[new_index] = matched_lines[old_index].clone();
+    }
+    preserved_lines
+}
+
+fn duplicated_edge_context_candidate(chunk: &UpdateChunk) -> Option<UpdateChunk> {
     if chunk.old_lines.len() != 2 || chunk.new_lines.len() <= chunk.old_lines.len() {
+        return None;
+    }
+    // 两端必须各有解析期的 old/new 上下文配对，不能由同文的删除或新增行推断。
+    let &(first_old_context, _) = chunk.context_line_indices.first()?;
+    let &(last_old_context, _) = chunk.context_line_indices.last()?;
+    if first_old_context != 0 || last_old_context != chunk.old_lines.len() - 1 {
         return None;
     }
     let first_old = chunk.old_lines.first()?;
@@ -268,5 +279,24 @@ fn duplicated_edge_context_candidate(chunk: &UpdateChunk) -> Option<(Vec<String>
     if !lines_equivalent(first_new, first_old) || !lines_equivalent(last_new, last_old) {
         return None;
     }
-    Some((vec![last_old.clone()], chunk.new_lines[1..].to_vec()))
+    // 新首行移除后，保留第一个仍有新行的上下文对应的旧行。
+    // 该旧行索引归零，新行索引减一，其余配对随被丢弃的旧行移除。
+    let retained_old_context = chunk
+        .context_line_indices
+        .iter()
+        .find_map(|&(old_index, new_index)| (new_index > 0).then_some(old_index))?;
+    let mut candidate = chunk.clone();
+    candidate.old_lines = vec![chunk.old_lines[retained_old_context].clone()];
+    candidate.new_lines.remove(0);
+    candidate
+        .context_line_indices
+        .retain_mut(|(old_index, new_index)| {
+            if *old_index != retained_old_context || *new_index == 0 {
+                return false;
+            }
+            *old_index = 0;
+            *new_index -= 1;
+            true
+        });
+    Some(candidate)
 }
