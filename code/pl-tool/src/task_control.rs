@@ -189,14 +189,14 @@ async fn query(access: &TaskAccess, input: QueryTaskInput) -> Result<ToolOutput,
     // The owner's task ledgers and effect window are bounded, so a finished task identity may have
     // left memory entirely. The durable store then answers the identity/status; a missing durable
     // fact stays a real "unknown task" error instead of reviving the task or faking a terminal.
-    let task = match access.get(&input.task_id) {
-        Ok(task) => task,
+    let (task, durable_delivery) = match access.get(&input.task_id) {
+        Ok(task) => (task, None),
         Err(ThreadError::TaskNotFound { .. }) => match access
             .durable(&input.task_id)
             .await
             .map_err(ToolError::new)?
         {
-            Some(fact) => fact.task,
+            Some(fact) => (fact.task, Some(fact.delivery)),
             None => {
                 return Err(ToolError::new(ThreadError::TaskNotFound {
                     task_id: input.task_id.clone(),
@@ -206,8 +206,19 @@ async fn query(access: &TaskAccess, input: QueryTaskInput) -> Result<ToolOutput,
         Err(error) => return Err(ToolError::new(error)),
     };
     let mut view = serde_json::json!({"task":TaskStatusView::from(&task)});
+    let delivery = if input.result_cursor.is_some() {
+        match durable_delivery {
+            Some(delivery) => delivery,
+            None => read_result(access, &input.task_id).await?,
+        }
+    } else {
+        None
+    };
+    if input.result_cursor.is_some() && task.status != TaskStatus::Running && delivery.is_none() {
+        return Err(ToolError::new(ThreadError::InvalidOutput));
+    }
     if let Some(start) = input.result_cursor
-        && let Some(delivery) = read_result(access, &input.task_id).await?
+        && let Some(delivery) = delivery
     {
         let payload = delivery.output.payload();
         let text = payload.content();
@@ -238,7 +249,7 @@ async fn read_result(
         // `InvalidOutput` means the commit already left the bounded live window: the durable calls
         // store holds the exact committed delivery, so the read is answered there instead of
         // reporting a missing result or repeating the tool.
-        Err(ThreadError::InvalidOutput) => Ok(access
+        Err(ThreadError::InvalidOutput | ThreadError::TaskNotFound { .. }) => Ok(access
             .durable(task_id)
             .await
             .map_err(ToolError::new)?

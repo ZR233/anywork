@@ -65,7 +65,7 @@ impl SessionFiles {
     pub fn command_output(&self, call_id: &str) -> PathBuf {
         self.commands()
             .join(opaque_call_key(call_id))
-            .join("output.log")
+            .join("stdout.log")
     }
 }
 

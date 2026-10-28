@@ -1,3 +1,4 @@
+//! Set PURE_SSH_TEST_SCOPE=exec for the exec/stdin matrix without unrelated workspace/Git/LSP journeys.
 #[path = "support/remote_manager.rs"]
 mod remote_manager;
 #[path = "support/remote_stream.rs"]
@@ -29,6 +30,11 @@ use tokio_util::sync::CancellationToken;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let exec_only = match std::env::var("PURE_SSH_TEST_SCOPE").as_deref() {
+        Ok("exec") => true,
+        Ok("full") | Err(std::env::VarError::NotPresent) => false,
+        other => anyhow::bail!("invalid PURE_SSH_TEST_SCOPE: {other:?}"),
+    };
     let host = required("PURE_SSH_TEST_SERVER")?;
     let workspace = required("PURE_SSH_TEST_WORKSPACE")?;
     let aarch64 = std::env::var_os("PURE_REMOTE_HELPER_AARCH64").map(PathBuf::from);
@@ -78,26 +84,28 @@ async fn main() -> anyhow::Result<()> {
     anyhow::ensure!(host.identity() == cached.identity());
     drop(cached);
     let files = Arc::new(host.files.clone());
-    files.create_directory("leases".into(), None).await?;
-    for cycle in 0..50 {
-        let path = format!("leases/{cycle}");
-        files.create_directory(path.clone(), None).await?;
-        let path = format!("{workspace}/{path}");
-        let opened = manager
-            .open_workspace_host("validation", path.clone())
-            .await?;
-        let identity = opened.files.workspace_id().to_owned();
-        drop(opened);
-        let reopened = manager.open_workspace_host("validation", path).await?;
-        anyhow::ensure!(
-            reopened.files.workspace_id() != identity,
-            "workspace cache permanently retained its last user"
-        );
-        drop(reopened);
+    if !exec_only {
+        files.create_directory("leases".into(), None).await?;
+        for cycle in 0..50 {
+            let path = format!("leases/{cycle}");
+            files.create_directory(path.clone(), None).await?;
+            let path = format!("{workspace}/{path}");
+            let opened = manager
+                .open_workspace_host("validation", path.clone())
+                .await?;
+            let identity = opened.files.workspace_id().to_owned();
+            drop(opened);
+            let reopened = manager.open_workspace_host("validation", path).await?;
+            anyhow::ensure!(
+                reopened.files.workspace_id() != identity,
+                "workspace cache permanently retained its last user"
+            );
+            drop(reopened);
+        }
+        files.remove_path("leases".into(), None, true).await?;
+        println!("workspace leases: 50 distinct open/drop/reopen cycles PASS");
+        remote_manager::verify_single_business_channel("multiple-workspaces")?;
     }
-    files.remove_path("leases".into(), None, true).await?;
-    println!("workspace leases: 50 distinct open/drop/reopen cycles PASS");
-    remote_manager::verify_single_business_channel("multiple-workspaces")?;
     files.create_directory("nested".to_string(), None).await?;
     files
         .write_text(WorkspaceFileWriteRequest {
@@ -179,6 +187,8 @@ async fn main() -> anyhow::Result<()> {
     let process_id = first.process_id.expect("running process id");
     let final_output = processes
         .write_stdin(CommandWriteRequest {
+            cancellation: CancellationToken::new(),
+            close_stdin: false,
             process_id,
             chars: "hello\n".to_string(),
             yield_time: Duration::from_secs(5),
@@ -194,10 +204,128 @@ async fn main() -> anyhow::Result<()> {
             cwd: None,
         })
         .await?;
-    assert!(capture.contains("stdout-one"));
-    assert!(capture.contains("stderr-one"));
-    assert!(capture.contains("stdin:hello"));
+    assert_eq!(capture, "stdout-one\nstdin:hello\n");
+    let stderr_capture = files
+        .read_text(WorkspaceFileReadRequest {
+            path: final_output
+                .stderr_capture_file
+                .to_string_lossy()
+                .into_owned(),
+            cwd: None,
+        })
+        .await?;
+    assert_eq!(stderr_capture, "stderr-one\n");
+
     validate_session_capture_layout(files.as_ref(), &final_output.capture_file).await?;
+
+    let eof = processes
+        .start(CommandStartRequest {
+            command: "cat > ssh-stdin-eof.txt".into(),
+            cwd: None,
+            allow_workspace_escape: false,
+            timeout: Duration::from_secs(20),
+            yield_time: Duration::ZERO,
+            max_output_chars: 1024,
+            session_id: "validation".into(),
+            tool_id: "eof".into(),
+            call_id: "eof".into(),
+            cancellation_token: None,
+            output_observer: None,
+        })
+        .await?;
+    let eof_id = eof.process_id.expect("EOF target");
+    let eof = processes
+        .write_stdin(CommandWriteRequest {
+            process_id: eof_id,
+            chars: "中文🌙\nfinite input\n".into(),
+            close_stdin: true,
+            cancellation: CancellationToken::new(),
+            yield_time: Duration::from_secs(5),
+            max_output_chars: 1024,
+        })
+        .await?;
+    anyhow::ensure!(eof.state.final_result().is_some());
+    let receipt = eof.input_receipt.as_ref().expect("EOF input receipt");
+    anyhow::ensure!(
+        receipt.accepted_bytes == 24
+            && receipt
+                .remote_confirmed_bytes
+                .is_some_and(|bytes| bytes <= 24)
+    );
+    anyhow::ensure!(
+        files
+            .read_text(WorkspaceFileReadRequest {
+                path: "ssh-stdin-eof.txt".into(),
+                cwd: None
+            })
+            .await?
+            == "中文🌙\nfinite input\n"
+    );
+    println!("SSH raw dual-stream and finite EOF receipt: {receipt:?}");
+
+    if exec_only {
+        for cancelled in [false, true] {
+            let stop = CancellationToken::new();
+            let id = if cancelled {
+                "task-ssh-cancel"
+            } else {
+                "task-ssh-timeout"
+            };
+            let marker = if cancelled {
+                "cancel-marker"
+            } else {
+                "timeout-marker"
+            };
+            let request = CommandStartRequest {
+                command: format!("sleep 5; touch {marker}"),
+                cwd: None,
+                allow_workspace_escape: false,
+                timeout: if cancelled {
+                    Duration::from_secs(20)
+                } else {
+                    Duration::from_millis(100)
+                },
+                yield_time: Duration::ZERO,
+                max_output_chars: 1024,
+                session_id: "validation".into(),
+                tool_id: id.into(),
+                call_id: id.into(),
+                cancellation_token: Some(stop.clone()),
+                output_observer: None,
+            };
+            let owner = {
+                let processes = processes.clone();
+                tokio::spawn(async move { processes.run_task(id, request).await })
+            };
+            if cancelled {
+                tokio::time::timeout(Duration::from_secs(10), async {
+                    loop {
+                        if processes.snapshot(id, 1024).await.is_some() {
+                            break;
+                        }
+                        tokio::time::sleep(Duration::from_millis(5)).await;
+                    }
+                })
+                .await?;
+                stop.cancel();
+            }
+            let result = tokio::time::timeout(Duration::from_secs(10), owner).await???;
+            anyhow::ensure!(if cancelled {
+                matches!(
+                    result.state.final_result(),
+                    Some(pl_tool::command::CommandProcessFinalResult::Cancelled)
+                )
+            } else {
+                result.state.is_timed_out()
+            });
+            anyhow::ensure!(files.stat_optional(marker.into(), None).await?.is_none());
+        }
+        manager.disconnect_server("validation").await?;
+        println!(
+            "SSH_EXEC_CONTRACT_ACCEPTANCE=PASS: raw dual streams, stdin ACK/EOF, timeout and cancellation"
+        );
+        return Ok(());
+    }
 
     let environment = run_remote(
         &host.git,
@@ -291,6 +419,7 @@ async fn main() -> anyhow::Result<()> {
     use pl_tool::command::{CommandBackend, CommandOutputTarget, CommandSpawnRequest};
     use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
     let mut tree = host.commands.spawn(CommandSpawnRequest {
+        start_control: pl_tool::command::CommandStartControl::new(tokio::time::Instant::now() + Duration::from_secs(60), CancellationToken::new(), CancellationToken::new()),
         process_id: "reconnect-tree".into(),
         command: "sleep 60 & child=$!; echo $child > tree.pid; printf 'ready\\n'; read line; printf 'continued:%s\\n' \"$line\"; kill $child; wait $child 2>/dev/null; exit 0".into(),
         cwd: ".".into(), output_target: CommandOutputTarget::new("reconnect.log", "reconnect.log"),
@@ -434,7 +563,7 @@ async fn validate_session_capture_layout(
     };
     let capture = capture.to_string_lossy().replace('\\', "/");
     anyhow::ensure!(
-        capture.starts_with(".anywork/sessions/") && capture.ends_with("/output.log"),
+        capture.starts_with(".anywork/sessions/") && capture.ends_with("/stdout.log"),
         "remote capture must use session commands layout: {capture}"
     );
     anyhow::ensure!(!capture.contains("target/pure"));

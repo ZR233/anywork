@@ -1,7 +1,14 @@
 //! Command tool declarations and Thread-owned implementations.
 mod capture_retention;
+mod input;
+mod output;
+pub use output::permission_denied;
 mod progress;
 mod thread;
+pub use input::{
+    ExecInputError, ValidatedExecInput, parse_and_validate_exec_input,
+    parse_and_validate_stdin_input,
+};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -24,11 +31,12 @@ pub struct ExecInput {
     /// the active permission and workspace policy.
     #[serde(default)]
     pub cwd: Option<PathBuf>,
-    /// Optional total timeout in seconds (default: 60).
+    /// Positive seconds from process-manager admission, including startup (default: 60).
+    /// Approval time is excluded; receiving a background receipt does not reset this deadline.
     #[serde(default)]
     #[schemars(range(min = 1))]
     pub timeout_seconds: Option<u64>,
-    /// Maximum stdout/stderr **bytes** returned to the model.
+    /// Combined stdout + stderr UTF-8 byte budget (default and maximum: 65536).
     ///
     /// The wire field name keeps the historical `maxOutputChars`, but the unit is bytes: the
     /// projection truncates the visible stdout/stderr text by `String` byte length, so multi-byte
@@ -45,10 +53,12 @@ pub struct ExecInput {
 pub struct WriteStdinInput {
     /// Task id returned by exec's acceptance receipt.
     pub task_id: String,
-    /// Nonempty text to write to stdin. This tool does not wait or poll.
-    #[schemars(length(min = 1))]
+    /// Text to write. Empty is valid only with closeStdin=true; use wait for polling.
     pub chars: String,
-    /// Maximum stdout/stderr characters returned to the model.
+    /// Close stdin after the requested text is accepted. Empty text sends only EOF.
+    #[serde(default)]
+    pub close_stdin: bool,
+    /// Combined stdout + stderr UTF-8 byte budget, clamped to 65536.
     #[serde(default)]
     #[schemars(range(min = 1))]
     pub max_output_chars: Option<usize>,

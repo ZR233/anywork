@@ -22,9 +22,12 @@ use crate::environment::ExecutionEnvironment;
 #[cfg(target_os = "linux")]
 use pl_remote_helper::client::ProcessCommand;
 
+pub use pl_remote_helper::start_control::{CommandStartControl, CommandStartError};
+
 /// 命令执行后端收到的启动请求。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct CommandSpawnRequest {
+    pub start_control: CommandStartControl,
     pub process_id: String,
     pub command: String,
     pub cwd: String,
@@ -34,6 +37,22 @@ pub struct CommandSpawnRequest {
 
 pub type CommandReader = Pin<Box<dyn AsyncRead + Send>>;
 pub type CommandWriter = Pin<Box<dyn AsyncWrite + Send>>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum StdinCloseState {
+    Open,
+    Closing,
+    Closed,
+}
+
+/// Cumulative helper acknowledgements, independent of local DuplexStream flush.
+#[derive(Debug, Clone)]
+pub struct CommandInputProgress {
+    pub confirmed_bytes: u64,
+    pub close_state: StdinCloseState,
+    pub failure: Option<String>,
+}
 type CommandWaitFuture =
     Pin<Box<dyn Future<Output = std::result::Result<CommandExit, String>> + Send>>;
 
@@ -76,8 +95,11 @@ impl std::fmt::Debug for CommandIo {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommandExit {
+    pub supervision_failure: Option<String>,
+    pub signal: Option<i32>,
+    pub capture_failure: Option<super::process_manager::CommandCaptureFailure>,
     pub exit_code: Option<i32>,
     pub capture: Option<CommandCaptureReceipt>,
 }
@@ -85,11 +107,38 @@ pub struct CommandExit {
 /// 实际捕获写入者交回的终态磁盘计量，拒绝量只包含实际观察到但未接纳的块。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CommandCaptureReceipt {
+    pub captured_bytes: u64,
     pub limit_bytes: u64,
     /// 主捕获文件的确认偏移，与包含所有副本的计费成本分开。
-    pub committed_len: u64,
+    pub confirmed: CommandCaptureOffsets,
     pub charged_bytes: u64,
     pub refused_bytes: u64,
+}
+
+/// Each raw stream advances only after its writer confirms the append.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommandCaptureOffsets {
+    pub stdout: u64,
+    pub stderr: u64,
+}
+
+impl CommandCaptureOffsets {
+    pub fn total(self) -> u64 {
+        self.stdout.saturating_add(self.stderr)
+    }
+    pub fn get(self, stream: CommandCaptureStream) -> u64 {
+        match stream {
+            CommandCaptureStream::Stdout => self.stdout,
+            CommandCaptureStream::Stderr => self.stderr,
+        }
+    }
+    pub fn set(&mut self, stream: CommandCaptureStream, value: u64) {
+        match stream {
+            CommandCaptureStream::Stdout => self.stdout = value,
+            CommandCaptureStream::Stderr => self.stderr = value,
+        }
+    }
 }
 
 /// 唯一负责在真实写盘前执行预算的边界。
@@ -106,6 +155,7 @@ pub struct ManagedCommand {
     stderr: Option<CommandReader>,
     wait: Option<CommandWaitFuture>,
     cancellation: CommandCancellation,
+    input_progress: Option<tokio::sync::watch::Receiver<CommandInputProgress>>,
 }
 
 impl std::fmt::Debug for ManagedCommand {
@@ -140,7 +190,21 @@ impl ManagedCommand {
             stderr: io.stderr,
             wait: Some(Box::pin(wait)),
             cancellation,
+            input_progress: None,
         }
+    }
+
+    pub fn with_input_progress(
+        mut self,
+        progress: tokio::sync::watch::Receiver<CommandInputProgress>,
+    ) -> Self {
+        self.input_progress = Some(progress);
+        self
+    }
+    pub fn take_input_progress(
+        &mut self,
+    ) -> Option<tokio::sync::watch::Receiver<CommandInputProgress>> {
+        self.input_progress.take()
     }
 
     /// Returns request-only cancellation, never ownership or proof of physical exit.
@@ -192,44 +256,38 @@ pub enum CommandCaptureStream {
 pub struct CommandOutputTarget {
     capture_file: PathBuf,
     model_file: PathBuf,
-    stdout_capture_file: Option<PathBuf>,
-    stderr_capture_file: Option<PathBuf>,
+    stderr_capture_file: PathBuf,
+    stderr_model_file: PathBuf,
 }
 
 impl CommandOutputTarget {
     pub fn new(capture_file: impl Into<PathBuf>, model_file: impl Into<PathBuf>) -> Self {
+        let capture_file = capture_file.into();
+        let model_file = model_file.into();
         Self {
-            capture_file: capture_file.into(),
-            model_file: model_file.into(),
-            stdout_capture_file: None,
-            stderr_capture_file: None,
+            stderr_capture_file: capture_file.with_file_name("stderr.log"),
+            stderr_model_file: model_file.with_file_name("stderr.log"),
+            capture_file,
+            model_file,
         }
     }
-
-    pub fn with_stream_capture_files(
-        mut self,
-        stdout: impl Into<PathBuf>,
-        stderr: impl Into<PathBuf>,
-    ) -> Self {
-        self.stdout_capture_file = Some(stdout.into());
-        self.stderr_capture_file = Some(stderr.into());
-        self
-    }
-
     pub fn capture_file(&self) -> &Path {
         &self.capture_file
     }
-
     pub fn model_file(&self) -> &Path {
         &self.model_file
     }
-
-    pub fn stdout_capture_file(&self) -> Option<&Path> {
-        self.stdout_capture_file.as_deref()
+    pub fn stream_capture_file(&self, stream: CommandCaptureStream) -> &Path {
+        match stream {
+            CommandCaptureStream::Stdout => &self.capture_file,
+            CommandCaptureStream::Stderr => &self.stderr_capture_file,
+        }
     }
-
-    pub fn stderr_capture_file(&self) -> Option<&Path> {
-        self.stderr_capture_file.as_deref()
+    pub fn stream_model_file(&self, stream: CommandCaptureStream) -> &Path {
+        match stream {
+            CommandCaptureStream::Stdout => &self.model_file,
+            CommandCaptureStream::Stderr => &self.stderr_model_file,
+        }
     }
 }
 
@@ -447,23 +505,33 @@ impl LocalCommandBackend {
         let specification = ProcessCommand::new(program.to_os_string())
             .args(args.iter().cloned())
             .current_dir(cwd);
-        self.spawn_supervised(specification).await
+        self.spawn_supervised(specification, None).await
     }
 
     /// Starts one business process under a per-child supervisor that retains the whole tree.
     #[cfg(target_os = "linux")]
-    async fn spawn_supervised(&self, specification: ProcessCommand) -> Result<ManagedCommand> {
+    async fn spawn_supervised(
+        &self,
+        specification: ProcessCommand,
+        start: Option<&CommandStartControl>,
+    ) -> Result<ManagedCommand> {
         use pl_remote_helper::client::{ManagedWorker, ProcessTermination};
         if let Some(error) = self.worker_failure.get() {
             return Err(command_error("exec", error));
         }
-        let mut worker = ManagedWorker::spawn(self.worker.worker_path(), specification)
-            .await
+        let worker = match start {
+            Some(start) => {
+                ManagedWorker::spawn_controlled(self.worker.worker_path(), specification, start)
+                    .await
+            }
+            None => ManagedWorker::spawn(self.worker.worker_path(), specification).await,
+        };
+        let mut worker = worker
             .map_err(|error| {
                 let error = std::sync::Arc::new(error);
                 if matches!(
                     error.as_ref(),
-                    pl_remote_helper::client::WorkerClientError::Bootstrap { .. }
+                    pl_remote_helper::client::WorkerClientError::Bootstrap { source, .. } if !matches!(source.as_ref(), pl_remote_helper::client::WorkerClientError::StartCancelled | pl_remote_helper::client::WorkerClientError::StartExpired)
                 ) {
                     let _ = self.worker_failure.set(error.clone());
                 }
@@ -494,6 +562,12 @@ impl LocalCommandBackend {
                 };
                 result
                     .map(|termination| CommandExit {
+                        supervision_failure: None,
+                        signal: match termination {
+                            ProcessTermination::Signal(signal) => Some(signal),
+                            _ => None,
+                        },
+                        capture_failure: None,
                         capture: None,
                         exit_code: match termination {
                             ProcessTermination::ExitCode(code) => Some(code),
@@ -519,12 +593,8 @@ impl CommandBackend for LocalCommandBackend {
         stream: CommandCaptureStream,
         chunk: &[u8],
     ) -> u64 {
-        let stream_copy = match stream {
-            CommandCaptureStream::Stdout => target.stdout_capture_file().is_some(),
-            CommandCaptureStream::Stderr => target.stderr_capture_file().is_some(),
-        };
-        pl_remote_helper::capture::chunk_cost(capture_prefix(stream), chunk, true)
-            + (chunk.len() as u64) * u64::from(stream_copy)
+        let _ = (target, stream);
+        chunk.len() as u64
     }
 
     async fn resolve_cwd(
@@ -568,7 +638,8 @@ impl CommandBackend for LocalCommandBackend {
         for (key, value) in &self.child_environment {
             specification = specification.env(key, value);
         }
-        self.spawn_supervised(specification).await
+        self.spawn_supervised(specification, Some(&request.start_control))
+            .await
     }
 
     #[cfg(not(target_os = "linux"))]
@@ -582,6 +653,11 @@ impl CommandBackend for LocalCommandBackend {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         let mut command = wrap_background_command(command);
+        request
+            .start_control
+            .check()
+            .map_err(|error| command_error("exec", error))?;
+        request.start_control.mark_start_attempted();
         let mut child = command
             .spawn()
             .map_err(|error| command_error("exec", error))?;
@@ -615,6 +691,9 @@ impl CommandBackend for LocalCommandBackend {
                 };
                 result
                     .map(|status| CommandExit {
+                        supervision_failure: None,
+                        signal: None,
+                        capture_failure: None,
                         exit_code: status.code(),
                         capture: None,
                     })
@@ -630,25 +709,14 @@ impl CommandBackend for LocalCommandBackend {
         working_directory: &str,
         capture_limit_bytes: u64,
     ) -> Result<u64> {
-        let header = capture_plan(command, working_directory, capture_limit_bytes).header;
-        if header.len() as u64 > capture_limit_bytes {
-            return Err(command_error(
-                "exec",
-                format!(
-                    "capture header requires {} bytes, limit is {capture_limit_bytes}; process was not started",
-                    header.len()
-                ),
-            ));
+        let _ = (command, working_directory, capture_limit_bytes);
+        prepare_local_capture_layout(&self.workspace_root, target.model_file()).await?;
+        for stream in [CommandCaptureStream::Stdout, CommandCaptureStream::Stderr] {
+            tokio::fs::write(target.stream_capture_file(stream), b"")
+                .await
+                .map_err(|error| command_error("exec", error))?;
         }
-        prepare_local_capture_layout(&self.workspace_root, target.model_file())
-            .await
-            .map_err(|error| command_error("exec", error))?;
-        tokio::fs::write(target.capture_file(), header.as_bytes())
-            .await
-            .map_err(|error| {
-                command_error("exec", format!("failed to write output file: {error}"))
-            })?;
-        Ok(header.len() as u64)
+        Ok(0)
     }
 
     async fn append_output_chunk(
@@ -658,50 +726,23 @@ impl CommandBackend for LocalCommandBackend {
         chunk: &[u8],
     ) -> Result<u64> {
         let mut file = tokio::fs::OpenOptions::new()
-            .create(true)
             .append(true)
-            .open(target.capture_file())
+            .open(target.stream_capture_file(stream))
             .await
-            .map_err(|error| {
-                command_error("exec", format!("failed to open output file: {error}"))
-            })?;
-        pl_remote_helper::capture::write_chunk(&mut file, capture_prefix(stream), chunk, true)
+            .map_err(|error| command_error("exec", error))?;
+        file.write_all(chunk)
             .await
-            .map_err(|error| {
-                command_error("exec", format!("failed to append output chunk: {error}"))
-            })?;
-        if let Some(stream_file) = match stream {
-            CommandCaptureStream::Stdout => target.stdout_capture_file(),
-            CommandCaptureStream::Stderr => target.stderr_capture_file(),
-        } {
-            let mut capture = tokio::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(stream_file)
-                .await
-                .map_err(|error| {
-                    command_error(
-                        "exec",
-                        format!("failed to open stream capture file: {error}"),
-                    )
-                })?;
-            capture.write_all(chunk).await.map_err(|error| {
-                command_error("exec", format!("failed to write stream capture: {error}"))
-            })?;
-            capture.flush().await.map_err(|error| {
-                command_error("exec", format!("failed to flush stream capture: {error}"))
-            })?;
-        }
-        file.flush().await.map_err(|error| {
-            command_error("exec", format!("failed to flush command output: {error}"))
-        })?;
+            .map_err(|error| command_error("exec", error))?;
+        file.flush()
+            .await
+            .map_err(|error| command_error("exec", error))?;
         confirmed_capture_len(&file).await
     }
 
     async fn repair_output_chunk(
         &self,
         capture_file: &Path,
-        stream: CommandCaptureStream,
+        _stream: CommandCaptureStream,
         committed_len: u64,
         chunk: &[u8],
     ) -> Result<u64> {
@@ -736,11 +777,9 @@ impl CommandBackend for LocalCommandBackend {
                     format!("failed to reopen output file for repair: {error}"),
                 )
             })?;
-        pl_remote_helper::capture::write_chunk(&mut file, capture_prefix(stream), chunk, true)
-            .await
-            .map_err(|error| {
-                command_error("exec", format!("failed to repair output chunk: {error}"))
-            })?;
+        file.write_all(chunk).await.map_err(|error| {
+            command_error("exec", format!("failed to repair output chunk: {error}"))
+        })?;
         file.flush().await.map_err(|error| {
             command_error("exec", format!("failed to flush command output: {error}"))
         })?;
@@ -788,27 +827,4 @@ async fn prepare_local_capture_layout(
         crate::workspace_file::LocalWorkspaceFileBackend::new(workspace_root.to_path_buf(), false)
             .await?;
     crate::workspace::prepare_command_capture(&backend, model_file).await
-}
-
-/// Host-owned capture policy, used by both local and remote physical writers.
-pub(crate) fn capture_plan(
-    command: &str,
-    working_directory: &str,
-    limit_bytes: u64,
-) -> pl_protocol::remote::RemoteCapturePlan {
-    pl_protocol::remote::RemoteCapturePlan {
-        header: format!("=== COMMAND ===\n{command}\n\n=== CWD ===\n{working_directory}\n\n"),
-        stdout_prefix: String::from_utf8_lossy(capture_prefix(CommandCaptureStream::Stdout))
-            .into_owned(),
-        stderr_prefix: String::from_utf8_lossy(capture_prefix(CommandCaptureStream::Stderr))
-            .into_owned(),
-        terminate_line: true,
-        limit_bytes,
-    }
-}
-fn capture_prefix(stream: CommandCaptureStream) -> &'static [u8] {
-    match stream {
-        CommandCaptureStream::Stdout => b"=== STDOUT ===\n",
-        CommandCaptureStream::Stderr => b"=== STDERR ===\n",
-    }
 }

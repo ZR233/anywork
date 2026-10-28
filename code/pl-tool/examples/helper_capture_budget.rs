@@ -1,4 +1,5 @@
 //! 用独立 stdio helper 验证物理磁盘预算、双流与无归档长流，不需要产品实例。
+use anyhow::Context as _;
 use pl_protocol::remote::{
     REMOTE_PROTOCOL_VERSION, RemoteCapture, RemoteErrorCode, RemoteRequest, RemoteResponse,
     RemoteSpawnRequest,
@@ -67,14 +68,16 @@ async fn main() -> anyhow::Result<()> {
         cwd: ".".into(),
         environment: BTreeMap::new(),
         capture,
+        remaining_timeout_ms: None,
     };
     let error = client
         .spawn_process(request(
-            "header",
+            "invalid-capture",
             "touch must-not-start",
-            RemoteCapture::File {
-                path: "tiny.log".into(),
-                plan: capture_plan(1),
+            RemoteCapture::Files {
+                stdout_path: "tiny.log".into(),
+                stderr_path: "tiny-err.log".into(),
+                limit_bytes: 0,
             },
         ))
         .await;
@@ -82,11 +85,11 @@ async fn main() -> anyhow::Result<()> {
         matches!(
             error,
             Err(RemoteClientError::Remote {
-                code: RemoteErrorCode::OutputLimitExceeded,
+                code: RemoteErrorCode::InvalidRequest,
                 ..
             })
         ),
-        "header must be refused before file creation/spawn"
+        "invalid capture budget must be refused before file creation/spawn"
     );
     anyhow::ensure!(
         !root.path().join("tiny.log").exists() && !root.path().join("must-not-start").exists()
@@ -96,17 +99,19 @@ async fn main() -> anyhow::Result<()> {
         (
             "stdout",
             "head -c 20000000 /dev/zero",
-            RemoteCapture::File {
-                path: "stdout.log".into(),
-                plan: capture_plan(MAX_CAPTURE_BYTES),
+            RemoteCapture::Files {
+                stdout_path: "stdout.log".into(),
+                stderr_path: "stdout-err.log".into(),
+                limit_bytes: MAX_CAPTURE_BYTES,
             },
         ),
         (
             "both",
             "python3 -c 'import os; [(os.write(1, b\"a\"*4096),os.write(2, b\"b\"*4096)) for _ in range(3000)]'",
-            RemoteCapture::File {
-                path: "both.log".into(),
-                plan: capture_plan(MAX_CAPTURE_BYTES),
+            RemoteCapture::Files {
+                stdout_path: "both.log".into(),
+                stderr_path: "both-err.log".into(),
+                limit_bytes: MAX_CAPTURE_BYTES,
             },
         ),
         ("stream", "head -c 20000000 /dev/zero", RemoteCapture::None),
@@ -143,26 +148,24 @@ async fn main() -> anyhow::Result<()> {
             let receipt = exit
                 .capture
                 .ok_or_else(|| anyhow::anyhow!("missing physical receipt"))?;
-            let disk = std::fs::metadata(root.path().join(format!("{id}.log")))?.len();
+            let disk = std::fs::metadata(root.path().join(format!("{id}.log")))?.len()
+                + std::fs::metadata(root.path().join(format!("{id}-err.log")))?.len();
             anyhow::ensure!(
                 receipt.limit_bytes == MAX_CAPTURE_BYTES && receipt.charged_bytes == disk
             );
             anyhow::ensure!(receipt.refused_bytes > 0 && disk <= MAX_CAPTURE_BYTES);
-            let archive = std::fs::read(root.path().join(format!("{id}.log")))?;
-            let raw = archive
-                .split(|byte| *byte == b'\n')
-                .filter(|line| {
-                    !line.is_empty()
-                        && (line.iter().all(|byte| *byte == 0)
-                            || line.iter().all(|byte| *byte == b'a')
-                            || line.iter().all(|byte| *byte == b'b'))
-                })
-                .map(|line| line.len() as u64)
-                .sum::<u64>();
+            let stdout = std::fs::read(root.path().join(format!("{id}.log")))?;
+            let stderr = std::fs::read(root.path().join(format!("{id}-err.log")))?;
             anyhow::ensure!(
-                raw == out + err,
-                "raw output and actual archived bytes differ"
+                stdout.len() as u64 == receipt.confirmed.stdout
+                    && stderr.len() as u64 == receipt.confirmed.stderr
             );
+            anyhow::ensure!(
+                stdout
+                    .iter()
+                    .all(|byte| *byte == if id == "both" { b'a' } else { 0 })
+            );
+            anyhow::ensure!(stderr.iter().all(|byte| *byte == b'b'));
             if id == "both" {
                 anyhow::ensure!(out > 0 && err > 0);
             }
@@ -172,7 +175,9 @@ async fn main() -> anyhow::Result<()> {
     atomic_overwrite_publishes_and_refuses_symlinks(client.clone(), root.path()).await?;
     client.close().await?;
     anyhow::ensure!(child.wait().await?.success(), "helper did not close");
-    println!("header_preflight=passed");
+    #[cfg(target_os = "linux")]
+    capture_flush_failure_preserves_exit().await?;
+    println!("raw_capture_preflight=passed");
     Ok(())
 }
 
@@ -242,15 +247,6 @@ async fn atomic_overwrite_publishes_and_refuses_symlinks(
     Ok(())
 }
 
-fn capture_plan(limit_bytes: u64) -> pl_protocol::remote::RemoteCapturePlan {
-    pl_protocol::remote::RemoteCapturePlan {
-        header: "capture fixture\n".into(),
-        stdout_prefix: "=== STDOUT ===\n".into(),
-        stderr_prefix: "=== STDERR ===\n".into(),
-        terminate_line: true,
-        limit_bytes,
-    }
-}
 async fn write_file(
     client: &RemoteClient,
     request: pl_protocol::remote::RemoteWriteRequest,
@@ -292,5 +288,101 @@ async fn write_file(
             &[],
         )
         .await?;
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+async fn capture_flush_failure_preserves_exit() -> anyhow::Result<()> {
+    let root = tempfile::tempdir()?;
+    // RLIMIT_FSIZE affects regular capture files, while the business process writes to a pipe.
+    // Ignoring SIGXFSZ makes the physical writer observe EFBIG instead of killing the helper.
+    let mut child = tokio::process::Command::new("sh")
+        .args([
+            "-c",
+            "trap '' XFSZ; exec prlimit --fsize=0 -- pl-remote-helper --serve",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .kill_on_drop(true)
+        .spawn()?;
+    let client =
+        RemoteClient::from_streams(child.stdout.take().unwrap(), child.stdin.take().unwrap())
+            .await?;
+    let outcome = async {
+        client
+            .request(
+                RemoteRequest::Hello {
+                    protocol_version: REMOTE_PROTOCOL_VERSION,
+                },
+                &[],
+            )
+            .await?;
+
+        let workspace = client
+            .request(
+                RemoteRequest::OpenWorkspace {
+                    path: root.path().display().to_string(),
+                },
+                &[],
+            )
+            .await?;
+        let RemoteResponse::WorkspaceOpened(workspace) = workspace.response else {
+            anyhow::bail!("workspace response");
+        };
+        let mut command = client
+            .spawn_process(RemoteSpawnRequest {
+                process_id: "capture-flush-failure".into(),
+                workspace_id: workspace.workspace_id,
+                program: "/bin/sh".into(),
+                arguments: vec!["-c".into(), "printf data; exit 0".into()],
+                remove_environment: vec![],
+                cwd: ".".into(),
+                environment: Default::default(),
+                remaining_timeout_ms: Some(10000),
+                capture: RemoteCapture::Files {
+                    stdout_path: "stdout.log".into(),
+                    stderr_path: "stderr.log".into(),
+                    limit_bytes: 65536,
+                },
+            })
+            .await?;
+        drop(command.take_stdin());
+        let mut stdout = command.take_stdout().unwrap();
+        let mut stderr = command.take_stderr().unwrap();
+        let mut out_sink = tokio::io::sink();
+        let mut err_sink = tokio::io::sink();
+        let (_, _, exit) = tokio::join!(
+            tokio::io::copy(&mut stdout, &mut out_sink),
+            tokio::io::copy(&mut stderr, &mut err_sink),
+            command.wait()
+        );
+        let exit = exit.map_err(anyhow::Error::msg)?;
+        anyhow::ensure!(
+            exit.exit_code == Some(0),
+            "capture failure must retain business exit: {exit:?}"
+        );
+        anyhow::ensure!(matches!(
+            exit.capture_failure,
+            Some(
+                pl_tool::command::CommandCaptureFailure::Flush { .. }
+                    | pl_tool::command::CommandCaptureFailure::Write { .. }
+            )
+        ));
+        let receipt = exit
+            .capture
+            .context("capture failure must retain its receipt")?;
+        anyhow::ensure!(receipt.confirmed.total() == 0 && receipt.captured_bytes == 4);
+        println!(
+            "OK  real capture EFBIG: exit=0, typed write/flush failure, confirmed=0 captured=4"
+        );
+        anyhow::Ok(())
+    }
+    .await;
+    let close = client.close().await;
+    let waited = child.wait().await;
+    outcome?;
+    close?;
+    anyhow::ensure!(waited?.success());
     Ok(())
 }

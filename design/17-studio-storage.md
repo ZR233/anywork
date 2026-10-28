@@ -99,7 +99,9 @@ Studio 数据根目录（默认 `~/.anywork/`）的目录结构如下：
 <workspace>/.anywork/sessions/<thread-key>/
 ├── scratch/                        # 临时脚本、中间数据与一次性探针
 ├── artifacts/                      # 尚未交付至用户指定项目位置的待交付产物
-└── commands/<call-key>/output.log  # 命令执行的原始捕获输出；call-key 为调用身份的安全摘要
+└── commands/<call-key>/           # call-key 为调用身份的安全摘要
+    ├── stdout.log                # stdout 原始字节，不插入流标签或补换行
+    └── stderr.log                # stderr 原始字节，与 stdout 共用捕获及归档额度
 ```
 
 本地工作区、Git 工作树与远端 SSH 工作区统一使用相同的 `<thread-key>` 身份映射与相对目录布局；即便是共享同一代码检出目录（checkout）的多个会话，也各自拥有独立的 `<thread-key>` 临时目录。SSH 远端项目的执行侧路径位于远端服务器的工作区内，严禁使用本地宿主主目录路径替代。会话宿主数据目录下的 `scratch/` 仅用于宿主内部文件传输暂存，而工作区内的执行侧 `scratch/` 则供模型存放任务中间文件，两者均不承担可靠对话历史的持久化责任。命令输出与工具媒体在完成可靠内容寻址归档后才对外发布稳定资源引用，此后工作区内的执行侧临时文件即便被清理也不会破坏历史记录读取。

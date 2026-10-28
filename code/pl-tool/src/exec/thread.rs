@@ -10,10 +10,9 @@ use pl_core::tool::{
     ToolOutput,
     opaque::{CallContext, Registration, RegistryError, Tool, ToolError},
 };
-use serde::Serialize;
 use sha2::{Digest, Sha256};
 
-use super::{DEFAULT_TIMEOUT_SECS, ExecInput, MAX_MODEL_OUTPUT_BYTES};
+use super::{DEFAULT_TIMEOUT_SECS, MAX_MODEL_OUTPUT_BYTES};
 use crate::command::{
     CommandBackend,
     process_manager::{
@@ -42,6 +41,7 @@ pub trait CommandOutputArchive: fmt::Debug + Send + Sync + 'static {
         &self,
         thread_id: &str,
         snapshot: &CommandOutputSnapshot,
+        stream: crate::command::CommandCaptureStream,
     ) -> impl Future<Output = Result<ResourceReference, ToolError>> + Send;
 }
 
@@ -122,6 +122,7 @@ struct ArchiveRetentionObligation<A: CommandOutputArchive, B: CommandBackend> {
     call_id: String,
     snapshot: CommandOutputSnapshot,
     kind: StorageFaultKind,
+    stream: crate::command::CommandCaptureStream,
 }
 
 impl<A: CommandOutputArchive, B: CommandBackend> ArchiveRetentionObligation<A, B> {
@@ -132,6 +133,7 @@ impl<A: CommandOutputArchive, B: CommandBackend> ArchiveRetentionObligation<A, B
         call_id: &str,
         snapshot: CommandOutputSnapshot,
         kind: StorageFaultKind,
+        stream: crate::command::CommandCaptureStream,
     ) -> Self {
         Self {
             archive,
@@ -140,6 +142,16 @@ impl<A: CommandOutputArchive, B: CommandBackend> ArchiveRetentionObligation<A, B
             call_id: call_id.to_owned(),
             snapshot,
             kind,
+            stream,
+        }
+    }
+}
+
+impl<A: CommandOutputArchive, B: CommandBackend> ArchiveRetentionObligation<A, B> {
+    fn capture_path(&self) -> &std::path::Path {
+        match self.stream {
+            crate::command::CommandCaptureStream::Stdout => &self.snapshot.capture_file,
+            crate::command::CommandCaptureStream::Stderr => &self.snapshot.stderr_capture_file,
         }
     }
 }
@@ -152,15 +164,16 @@ impl<A: CommandOutputArchive, B: CommandBackend> OutputRetryObligation
         // and the return path both name the same fragment, so the owner attaches one obligation even
         // when the failure is reported twice, and two parallel operations (different paths) keep
         // separate obligations instead of one overwriting the other.
-        self.snapshot.capture_file.display().to_string()
+        self.capture_path().display().to_string()
     }
     fn retry(&self) -> OutputRetryFuture<'_> {
         Box::pin(async move {
-            let reference = super::capture_retention::retain(
+            let (reference, _) = super::capture_retention::retain(
                 &*self.backend,
                 &*self.archive,
                 &self.thread_id,
                 &self.snapshot,
+                self.stream,
             )
             .await
             .map_err(|error| ColdStoreError {
@@ -180,7 +193,7 @@ impl<A: CommandOutputArchive, B: CommandBackend> OutputRetryObligation
         // The bytes this operation really accepted: the fragment the backend last confirmed writing,
         // plus every accepted chunk still owed. Both are facts the obligation already carries, so the
         // reported size never depends on a fragment-length read that could fail and understate it.
-        let committed = self.snapshot.capture_committed_len;
+        let committed = self.snapshot.capture_offsets.get(self.stream);
         let pending: u64 = self
             .snapshot
             .capture_repair()
@@ -188,6 +201,7 @@ impl<A: CommandOutputArchive, B: CommandBackend> OutputRetryObligation
                 repair
                     .chunks
                     .iter()
+                    .filter(|chunk| chunk.stream == self.stream)
                     .map(|chunk| chunk.pending.len() as u64)
                     .sum()
             })
@@ -196,7 +210,7 @@ impl<A: CommandOutputArchive, B: CommandBackend> OutputRetryObligation
     }
 
     fn location(&self) -> String {
-        self.snapshot.capture_file.display().to_string()
+        self.capture_path().display().to_string()
     }
 
     fn kind(&self) -> StorageFaultKind {
@@ -216,33 +230,46 @@ impl<B: CommandBackend> Tool for ThreadWriteStdinTool<B> {
         input: OpaquePayload,
         context: CallContext,
     ) -> Result<ToolOutput, ToolError> {
-        let input: super::WriteStdinInput =
-            serde_json::from_str(input.content()).map_err(ToolError::new)?;
-        if input.chars.is_empty() || input.max_output_chars == Some(0) {
-            return Err(ToolError::new(ExecFailure::InvalidInput));
-        }
+        let input = super::parse_and_validate_stdin_input(input.content())
+            .map_err(super::ExecInputError::into_tool_error)?;
         let access = context
             .tasks
             .as_ref()
             .ok_or_else(|| ToolError::new(ExecFailure::InvalidInput))?;
         let target = access.get(&input.task_id).map_err(ToolError::new)?;
+        if target.tool_id == super::TOOL_EXEC
+            && target.status != pl_core::thread::task::TaskStatus::Running
+            && input.chars.is_empty()
+            && input.close_stdin
+        {
+            let receipt = serde_json::json!({"targetTaskId": target.id, "status": target.status, "acceptedBytes": 0, "deliveryPending": false, "detail": "Target is terminal; historical stdin close state is unavailable. No input was sent and no process was started."});
+            let text = serde_json::to_string(&receipt).map_err(ToolError::new)?;
+            let payload =
+                OpaquePayload::new("pl.tool.stdin", 2, text.clone()).map_err(ToolError::new)?;
+            return Ok(ToolOutput::new(
+                payload,
+                vec![ContextContent::Text {
+                    text: Arc::from(text),
+                }],
+            ));
+        }
         if target.tool_id != super::TOOL_EXEC
             || target.status != pl_core::thread::task::TaskStatus::Running
             || target.cancel_requested
         {
-            return Err(ToolError::new(ExecFailure::TaskUnavailable {
-                task_id: input.task_id,
-                status: target.status,
-                cancelled: target.cancel_requested,
-            }));
+            return Err(super::output::stdin_unavailable(&target));
         }
         if context.cancellation.is_cancelled() {
             return Err(ToolError::new(pl_core::thread::ThreadError::Cancelled));
         }
+        let requested = input.max_output_chars.unwrap_or(MAX_MODEL_OUTPUT_BYTES);
+        let target_task_id = input.task_id.clone();
         let snapshot = self
             .processes
             .write_stdin(crate::command::process_manager::CommandWriteRequest {
                 process_id: safe_identity(&target.call_id),
+                cancellation: context.cancellation.clone(),
+                close_stdin: input.close_stdin,
                 chars: input.chars,
                 yield_time: Duration::ZERO,
                 max_output_chars: input
@@ -252,7 +279,32 @@ impl<B: CommandBackend> Tool for ThreadWriteStdinTool<B> {
             })
             .await
             .map_err(ToolError::new)?;
-        projection(&snapshot, None)
+        let cancelled = matches!(
+            snapshot
+                .input_receipt
+                .as_ref()
+                .map(|receipt| receipt.outcome),
+            Some(crate::command::CommandInputOutcome::Cancelled)
+        );
+        let failed = matches!(
+            snapshot
+                .input_receipt
+                .as_ref()
+                .map(|receipt| receipt.outcome),
+            Some(
+                crate::command::CommandInputOutcome::Partial
+                    | crate::command::CommandInputOutcome::Failed
+            )
+        );
+        let output =
+            super::output::projection(&snapshot, &[], &context, requested, Some(&target_task_id))?;
+        if cancelled {
+            return Err(ToolError::new(pl_core::thread::ThreadError::Cancelled).with_output(output));
+        }
+        if failed {
+            return Err(ToolError::new(ExecFailure::Process("stdin delivery incomplete; inspect accepted and confirmed offsets before continuing".into())).with_output(output));
+        }
+        Ok(output)
     }
 }
 
@@ -270,12 +322,8 @@ pub enum ExecFailure {
         status: pl_core::thread::task::TaskStatus,
         cancelled: bool,
     },
-    #[error("write_stdin requires nonempty input and an active exec task in this Thread")]
+    #[error("write_stdin requires task access from its owning Thread")]
     InvalidInput,
-    #[error("exec command must not be empty")]
-    EmptyCommand,
-    #[error("exec timeoutSeconds and maxOutputChars must be positive")]
-    InvalidLimit,
     #[error("command did not complete successfully: {0}")]
     Process(String),
     /// 命令输出触及本 operation 的单命令落盘上限：命令已被终止，已写出的部分保留并照常归档。
@@ -301,13 +349,10 @@ impl<B: CommandBackend, A: CommandOutputArchive> Tool for ThreadExecTool<B, A> {
         input: OpaquePayload,
         context: CallContext,
     ) -> Result<ToolOutput, ToolError> {
-        let input: ExecInput = serde_json::from_str(input.content()).map_err(ToolError::new)?;
-        if input.command.trim().is_empty() {
-            return Err(ToolError::new(ExecFailure::EmptyCommand));
-        }
-        if input.timeout_seconds == Some(0) || input.max_output_chars == Some(0) {
-            return Err(ToolError::new(ExecFailure::InvalidLimit));
-        }
+        let input = super::parse_and_validate_exec_input(input.content())
+            .map_err(super::ExecInputError::into_tool_error)?
+            .into_input();
+        let requested = input.max_output_chars.unwrap_or(MAX_MODEL_OUTPUT_BYTES);
         let task_id = safe_identity(&context.call_id);
         let max_output_chars = input
             .max_output_chars
@@ -358,68 +403,101 @@ impl<B: CommandBackend, A: CommandOutputArchive> Tool for ThreadExecTool<B, A> {
                     else {
                         continue;
                     };
-                    if let Some(fault) = capture_output_fault(
-                        &failure,
-                        archive.clone(),
-                        processes.backend(),
-                        &thread_id,
-                        &call_id,
-                        &snapshot,
-                    ) {
-                        report_output_storage_fault(tasks.as_ref(), &fault).await;
+                    for stream in [
+                        crate::command::CommandCaptureStream::Stdout,
+                        crate::command::CommandCaptureStream::Stderr,
+                    ] {
+                        if let Some(fault) = capture_output_fault(
+                            &failure,
+                            archive.clone(),
+                            processes.backend(),
+                            &thread_id,
+                            &call_id,
+                            &snapshot,
+                            stream,
+                        ) {
+                            report_output_storage_fault(tasks.as_ref(), &fault).await;
+                        }
                     }
                 }
             }
         });
-        let snapshot = super::progress::drive(execution, previews, context.tasks.as_ref())
-            .await
-            .map_err(ToolError::new)?;
+        let result = super::progress::drive(execution, previews, context.tasks.as_ref()).await;
         reporter.abort();
+        let _ = reporter.await;
+        let mut snapshot = result.map_err(|error| super::output::start_error(error, &context))?;
         // Build the typed output fault the moment the capture failed and report it through the running
         // call's reliable channel *before* the archive and projection, so other model/tool admission is
         // blocked immediately instead of only when this call unwinds. A write or read failure keeps its
         // retriable obligation (re-save the accepted capture). 命中声明的单命令捕获上限不算可靠保存
         // 故障，因此这里不产出存储故障：已接纳字节留在捕获里走正常归档，工具结果给出 typed 的容量
         // 终止，准入照常继续。
-        let capture_fault = snapshot.output_failure.clone().and_then(|failure| {
-            capture_output_fault(
-                &failure,
-                self.archive.clone(),
-                self.processes.backend(),
-                &context.thread_id,
-                &context.call_id,
-                &snapshot,
-            )
-        });
-        if let Some(fault) = &capture_fault {
-            report_output_storage_fault(context.tasks.as_ref(), fault).await;
-        }
-        let retained = super::capture_retention::retain(
-            &*self.processes.backend(),
-            &*self.archive,
-            &context.thread_id,
-            &snapshot,
-        )
-        .await;
-        let output = projection(&snapshot, retained.as_ref().ok())?;
-        if let Err(error) = retained {
-            // The archive itself could not store the capture: keep the retriable obligation on the
-            // typed fault and report it through the running call's reliable channel as well, so the
-            // pause is in force before this call returns.
-            let error = attach_archive_obligation(
-                error,
-                self.archive.clone(),
-                self.processes.backend(),
-                &context.thread_id,
-                &context.call_id,
-                &snapshot,
-            );
-            if let Some(fault) = error
-                .source
-                .downcast_ref::<OutputStorageFault>()
-                .map(|fault| Arc::new(fault.clone()))
+        let mut capture_fault = None;
+        let mut resources = Vec::new();
+        let mut archive_error = None;
+        for stream in [
+            crate::command::CommandCaptureStream::Stdout,
+            crate::command::CommandCaptureStream::Stderr,
+        ] {
+            if let Some(failure) = &snapshot.output_failure
+                && let Some(fault) = capture_output_fault(
+                    failure,
+                    self.archive.clone(),
+                    self.processes.backend(),
+                    &context.thread_id,
+                    &context.call_id,
+                    &snapshot,
+                    stream,
+                )
             {
                 report_output_storage_fault(context.tasks.as_ref(), &fault).await;
+                capture_fault.get_or_insert(fault);
+            }
+            match super::capture_retention::retain(
+                &*self.processes.backend(),
+                &*self.archive,
+                &context.thread_id,
+                &snapshot,
+                stream,
+            )
+            .await
+            {
+                Ok((reference, confirmed)) => {
+                    snapshot.capture_offsets.set(stream, confirmed);
+                    resources.push((stream, reference));
+                }
+                Err(error) => {
+                    let error = attach_archive_obligation(
+                        error,
+                        self.archive.clone(),
+                        self.processes.backend(),
+                        &context.thread_id,
+                        &context.call_id,
+                        &snapshot,
+                        stream,
+                    );
+                    if let Some(fault) = error.source.downcast_ref::<OutputStorageFault>() {
+                        report_output_storage_fault(
+                            context.tasks.as_ref(),
+                            &Arc::new(fault.clone()),
+                        )
+                        .await;
+                    }
+                    if archive_error.is_none() {
+                        archive_error = Some(error);
+                    }
+                }
+            }
+        }
+        let output = super::output::projection(&snapshot, &resources, &context, requested, None)?;
+        if let Some(error) = archive_error {
+            if matches!(
+                snapshot.state.final_result(),
+                Some(CommandProcessFinalResult::Cancelled)
+            ) {
+                return Err(
+                    ToolError::new(pl_core::thread::ThreadError::Cancelled).with_output(output)
+                );
             }
             return Err(error.with_output(output));
         }
@@ -484,12 +562,13 @@ fn capture_output_fault<A: CommandOutputArchive, B: CommandBackend>(
     thread_id: &str,
     call_id: &str,
     snapshot: &CommandOutputSnapshot,
+    stream: crate::command::CommandCaptureStream,
 ) -> Option<Arc<OutputStorageFault>> {
     let kind = match failure {
         CommandCaptureFailure::OutputLimitExceeded { .. } => return None,
-        CommandCaptureFailure::Write { .. } | CommandCaptureFailure::Read { .. } => {
-            StorageFaultKind::WriteFailed
-        }
+        CommandCaptureFailure::Write { .. }
+        | CommandCaptureFailure::Flush { .. }
+        | CommandCaptureFailure::Read { .. } => StorageFaultKind::WriteFailed,
     };
     let source = ColdStoreError {
         source: Box::new(std::io::Error::other(failure.message())),
@@ -503,6 +582,7 @@ fn capture_output_fault<A: CommandOutputArchive, B: CommandBackend>(
             call_id,
             snapshot.clone(),
             kind,
+            stream,
         ),
     ))))
 }
@@ -519,6 +599,7 @@ fn attach_archive_obligation<A: CommandOutputArchive, B: CommandBackend>(
     thread_id: &str,
     call_id: &str,
     snapshot: &CommandOutputSnapshot,
+    stream: crate::command::CommandCaptureStream,
 ) -> ToolError {
     let Some(fault) = error.source.downcast_ref::<OutputStorageFault>() else {
         return error;
@@ -532,6 +613,7 @@ fn attach_archive_obligation<A: CommandOutputArchive, B: CommandBackend>(
         call_id,
         snapshot.clone(),
         kind,
+        stream,
     ));
     ToolError::new(OutputStorageFault::new(kind, source).with_obligation(obligation))
 }
@@ -555,64 +637,4 @@ async fn report_output_storage_fault(
 fn safe_identity(id: &str) -> String {
     let digest = Sha256::digest(id.as_bytes());
     format!("task-{}", hex::encode(digest))
-}
-
-fn projection(
-    snapshot: &CommandOutputSnapshot,
-    resource: Option<&ResourceReference>,
-) -> Result<ToolOutput, ToolError> {
-    #[derive(Serialize)]
-    #[serde(rename_all = "camelCase")]
-    struct Record<'a> {
-        state: &'a crate::command::process_manager::CommandProcessLifecycle,
-        process_id: &'a Option<String>,
-        stdout: &'a pl_output::TruncatedOutput,
-        stderr: &'a pl_output::TruncatedOutput,
-        capture_file: &'a std::path::Path,
-        output_file: &'a std::path::Path,
-        output_artifacts: &'a [serde_json::Value],
-        resource: Option<&'a ResourceReference>,
-        output_revision: u64,
-        message: &'a str,
-    }
-    #[derive(Serialize)]
-    #[serde(rename_all = "camelCase")]
-    struct Preview<'a> {
-        state: &'a crate::command::process_manager::CommandProcessLifecycle,
-        stdout: &'a str,
-        stderr: &'a str,
-        archived: bool,
-    }
-    let payload = serde_json::to_string(&Record {
-        state: &snapshot.state,
-        process_id: &snapshot.process_id,
-        stdout: &snapshot.stdout,
-        stderr: &snapshot.stderr,
-        capture_file: &snapshot.capture_file,
-        output_file: &snapshot.output_file,
-        output_artifacts: &snapshot.output_artifacts,
-        resource,
-        output_revision: snapshot.output_revision,
-        message: &snapshot.message,
-    })
-    .map_err(ToolError::new)?;
-    let preview = serde_json::to_string(&Preview {
-        state: &snapshot.state,
-        stdout: &snapshot.stdout.content,
-        stderr: &snapshot.stderr.content,
-        archived: resource.is_some(),
-    })
-    .map_err(ToolError::new)?;
-    let mut content = vec![ContextContent::Text {
-        text: Arc::from(preview),
-    }];
-    if let Some(resource) = resource {
-        content.push(ContextContent::Resource {
-            reference: resource.clone(),
-        });
-    }
-    Ok(ToolOutput::new(
-        OpaquePayload::new("pl.tool.exec", 1, payload).map_err(ToolError::new)?,
-        content,
-    ))
 }

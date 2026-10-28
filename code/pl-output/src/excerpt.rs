@@ -48,23 +48,38 @@ impl OutputExcerpt {
 
     /// 整段输出（含省略行）不超过 `max_bytes`；边界始终落在 UTF-8 字符之间。
     pub fn project(self, max_bytes: usize) -> TruncatedOutput {
+        self.project_with_omission(max_bytes).0
+    }
+
+    /// Returns the generated omission marker's byte range separately from source text.
+    /// Consumers can account for omitted source bytes without mistaking marker bytes for output.
+    pub fn project_with_omission(
+        self,
+        max_bytes: usize,
+    ) -> (TruncatedOutput, Option<std::ops::Range<usize>>) {
         let available = self.head.len().saturating_add(self.tail.len());
         if self.omitted_bytes == 0 && available <= max_bytes {
-            return TruncatedOutput {
-                content: self.head,
-                was_truncated: false,
-                original_length: self.original_length,
-            };
+            return (
+                TruncatedOutput {
+                    content: self.head,
+                    was_truncated: false,
+                    original_length: self.original_length,
+                },
+                None,
+            );
         }
         if max_bytes < MARKER.len() {
             let end = self
                 .head
                 .floor_char_boundary(max_bytes.min(self.head.len()));
-            return TruncatedOutput {
-                content: self.head[..end].into(),
-                was_truncated: true,
-                original_length: self.original_length,
-            };
+            return (
+                TruncatedOutput {
+                    content: self.head[..end].into(),
+                    was_truncated: true,
+                    original_length: self.original_length,
+                },
+                None,
+            );
         }
         let payload = max_bytes - MARKER.len();
         let head_budget = payload / 2;
@@ -84,11 +99,14 @@ impl OutputExcerpt {
         content.push_str(&self.head[..head_end]);
         content.push_str(MARKER);
         content.push_str(&tail_source[tail_start..]);
-        TruncatedOutput {
-            content,
-            was_truncated: true,
-            original_length: self.original_length,
-        }
+        (
+            TruncatedOutput {
+                content,
+                was_truncated: true,
+                original_length: self.original_length,
+            },
+            Some(head_end..head_end + MARKER.len()),
+        )
     }
 }
 

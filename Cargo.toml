@@ -38,6 +38,8 @@ tower = "0.5.3"
 futures = "0.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1.0.154"
+serde_path_to_error = "0.1.20"
+encoding_rs = "0.8.42"
 prost = "0.14.4"
 flate2 = "1"
 schemars = "=1.2.3"

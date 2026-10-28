@@ -66,11 +66,11 @@ impl ThreadBuiltin {
             }
             Self::WriteStdin => schema::<crate::exec::WriteStdinInput>(
                 "write_stdin",
-                "Write nonempty input to an active exec task in this Thread. This does not start another command or wait for completion.",
+                "Write text to the original exec receipt taskId. closeStdin=true sends EOF after text; empty chars is valid only for EOF. Accepted bytes and remote ACKs are distinct: never resend accepted input after cancellation. Use wait to observe completion.",
             ),
             Self::Exec => schema::<crate::exec::ExecInput>(
                 "exec",
-                "Run a shell command in the configured workspace. Completion includes process exit and output drain. Long commands return a task receipt; use wait or get_tool_task to observe completion. Full output is archived as a resource.",
+                "Execute one independent shell (cwd defaults to workspace root). timeoutSeconds is the total admission-to-exit budget and remains active after a task receipt. maxOutputChars is a combined stdout+stderr UTF-8 byte budget capped at 65536. Results distinguish execution, capture and archive facts and provide exact stdoutFile/stderrFile paths. Never reconstruct paths or repeat side effects to recover output; query the original receipt.",
             ),
             Self::FinishTurn => schema::<crate::finish_turn::FinishTurnInput>(
                 "finish_turn",
@@ -94,7 +94,7 @@ impl ThreadBuiltin {
             ),
             Self::Task(TaskControlKind::Query) => schema::<crate::task_control::QueryTaskInput>(
                 "get_tool_task",
-                "Read task status without consuming events. Use resultCursor to page through the immutable complete payload after completion.",
+                "Read this Thread receipt taskId without consuming events. resultCursor=0 starts UTF-8 byte pages of the immutable payload; follow nextCursor. This cursor does not page raw stdout/stderr files. Finished results remain queryable after resident eviction; never rerun commands to recover output.",
             ),
             Self::Task(TaskControlKind::Cancel) => schema::<crate::task_control::CancelTaskInput>(
                 "cancel_tool_task",

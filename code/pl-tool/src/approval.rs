@@ -34,6 +34,41 @@ pub struct ToolAccessAssessment {
 /// Invocation capability issued by Studio after authorizing access beyond a host-permitted workspace.
 pub const HOST_WORKSPACE_ACCESS: &str = "pl.tool.workspace.external";
 
+/// Assesses only the cwd already accepted by exec's strict input contract.
+pub fn assess_exec(input: &crate::exec::ValidatedExecInput, root: &Path) -> ToolAccessAssessment {
+    let external = input.cwd().is_some_and(|cwd| {
+        ToolPathPolicy::new(root.to_path_buf(), false, "exec").map_or(true, |policy| {
+            path_requires_external_access(&cwd.to_string_lossy(), &policy)
+        })
+    });
+    exec_assessment(input, external)
+}
+
+/// Remote cwd assessment never resolves paths through the host filesystem.
+pub fn assess_exec_remote(
+    input: &crate::exec::ValidatedExecInput,
+    root: &Path,
+) -> ToolAccessAssessment {
+    let external = input.cwd().is_some_and(|cwd| {
+        crate::remote::path::relative_workspace_path(&root.to_string_lossy(), cwd).is_err()
+    });
+    exec_assessment(input, external)
+}
+
+fn exec_assessment(
+    input: &crate::exec::ValidatedExecInput,
+    external: bool,
+) -> ToolAccessAssessment {
+    ToolAccessAssessment {
+        requested_access: if external {
+            WorkspaceAccess::ExternalAllowed
+        } else {
+            WorkspaceAccess::WorkspaceOnly
+        },
+        working_directory: input.cwd().map(|cwd| cwd.to_string_lossy().into_owned()),
+    }
+}
+
 /// Interprets built-in tool parameters for the Studio approval policy.
 /// Invalid JSON requests conservative external access; typed execution still validates parameters.
 pub fn assess(name: &str, raw: &str, root: &Path) -> ToolAccessAssessment {
@@ -112,7 +147,6 @@ fn requested_paths_for_tool(name: &str, arguments: &serde_json::Value) -> Vec<St
         return argument_path(arguments, "filePath").into_iter().collect();
     }
     match name {
-        "exec" => get_working_directory(arguments).into_iter().collect(),
         "write_stdin" => Vec::new(),
         "read_file" | "write_file" | "stat_path" | "view_image" | "create_directory"
         | "delete_path" => argument_path(arguments, "path").into_iter().collect(),

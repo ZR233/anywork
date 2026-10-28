@@ -1,7 +1,7 @@
 //! Physical process and filesystem capabilities over a single resumable HTTP/2 connection.
 
 pub mod budget;
-pub mod capture;
+pub mod start_control;
 pub mod transport;
 
 pub use pl_protocol::remote::RemoteError;

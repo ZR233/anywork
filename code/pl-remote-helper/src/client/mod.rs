@@ -14,6 +14,10 @@ pub use tokio::sync::watch::Receiver as CleanupReceiver;
 /// Failures of the supervisor transport, distinct from business process failure.
 #[derive(Debug, thiserror::Error)]
 pub enum WorkerClientError {
+    #[error("command cancelled before business Start")]
+    StartCancelled,
+    #[error("command deadline expired before business Start")]
+    StartExpired,
     #[error("worker {executable:?} bootstrap failed: {source}; stderr: {stderr}")]
     Bootstrap {
         executable: std::path::PathBuf,
@@ -48,5 +52,14 @@ pub enum WorkerClientError {
 impl WorkerClientError {
     fn io(operation: &'static str, source: std::io::Error) -> Self {
         Self::Io { operation, source }
+    }
+}
+
+impl From<crate::start_control::CommandStartError> for WorkerClientError {
+    fn from(error: crate::start_control::CommandStartError) -> Self {
+        match error {
+            crate::start_control::CommandStartError::Cancelled => Self::StartCancelled,
+            crate::start_control::CommandStartError::Expired => Self::StartExpired,
+        }
     }
 }

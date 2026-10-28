@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-pub const REMOTE_PROTOCOL_VERSION: u32 = 9;
+pub const REMOTE_PROTOCOL_VERSION: u32 = 10;
 
 /// Allocation for one connection, derived by its host from current resources and demand.
 /// Values are bytes, not eagerly allocated buffers. Existing grants survive shrinkage.
@@ -284,6 +284,7 @@ pub struct RemoteSpawnRequest {
     pub cwd: String,
     pub environment: BTreeMap<String, String>,
     pub capture: RemoteCapture,
+    pub remaining_timeout_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -349,21 +350,11 @@ pub struct RemoteProcessExit {
 )]
 pub enum RemoteCapture {
     None,
-    File {
-        path: String,
-        plan: RemoteCapturePlan,
+    Files {
+        stdout_path: String,
+        stderr_path: String,
+        limit_bytes: u64,
     },
-}
-
-/// Opaque host-generated capture formatting, interpreted by the shared physical writer.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RemoteCapturePlan {
-    pub header: String,
-    pub stdout_prefix: String,
-    pub stderr_prefix: String,
-    pub terminate_line: bool,
-    pub limit_bytes: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -391,6 +382,9 @@ pub struct RemoteOutputRecord {
 #[serde(rename_all = "camelCase")]
 pub struct RemoteCaptureReceipt {
     pub limit_bytes: u64,
+    pub stdout_confirmed_bytes: u64,
+    pub stderr_confirmed_bytes: u64,
+    pub captured_bytes: u64,
     pub charged_bytes: u64,
     /// 实际读到但因预算拒绝写入的成本，不估算尚未读取的内核缓冲。
     pub refused_bytes: u64,
@@ -406,6 +400,10 @@ pub struct RemoteError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum RemoteErrorCode {
+    OutputRead,
+    CaptureWrite,
+    CaptureFlush,
+    StartExpired,
     OutputLimitExceeded,
     InvalidRequest,
     ProtocolMismatch,

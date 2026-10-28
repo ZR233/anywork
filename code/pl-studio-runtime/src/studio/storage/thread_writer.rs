@@ -5853,9 +5853,7 @@ pub(crate) mod storage_fault_tests {
         partial.extend_from_slice(&pending[..4]);
         std::fs::write(&capture_file, &partial)?;
         let mut expected = committed.clone();
-        expected.extend_from_slice(b"=== STDOUT ===\n");
         expected.extend_from_slice(&pending);
-        expected.push(b'\n');
 
         let retries = Arc::new(AtomicUsize::new(0));
         let created: Arc<Mutex<Vec<Arc<CaptureRepairObligation>>>> =
@@ -6146,13 +6144,19 @@ pub(crate) mod storage_fault_tests {
                 self.retries.fetch_add(1, Ordering::SeqCst);
                 // Replay the plan in acceptance order: one truncation back to the backend-confirmed
                 // offset, then every accepted chunk re-appended with its own framing.
-                let mut committed_len = self.plan.committed_len;
+                let mut confirmed = self.plan.confirmed;
                 for chunk in &self.plan.chunks {
-                    committed_len = pl_tool::command::CommandBackend::repair_output_chunk(
+                    let capture = match chunk.stream {
+                        pl_tool::command::CommandCaptureStream::Stdout => self.capture_file.clone(),
+                        pl_tool::command::CommandCaptureStream::Stderr => {
+                            self.capture_file.with_file_name("stderr.log")
+                        }
+                    };
+                    let committed_len = pl_tool::command::CommandBackend::repair_output_chunk(
                         &self.backend,
-                        &self.capture_file,
+                        &capture,
                         chunk.stream,
-                        committed_len,
+                        confirmed.get(chunk.stream),
                         &chunk.pending,
                     )
                     .await
@@ -6161,6 +6165,7 @@ pub(crate) mod storage_fault_tests {
                             source: Box::new(std::io::Error::other(error.to_string())),
                         }
                     })?;
+                    confirmed.set(chunk.stream, committed_len);
                 }
                 let reference = self
                     .archive
@@ -6178,7 +6183,7 @@ pub(crate) mod storage_fault_tests {
             })
         }
         fn received_bytes(&self) -> u64 {
-            self.plan.committed_len
+            self.plan.confirmed.total()
         }
         fn location(&self) -> String {
             self.capture_file.display().to_string()
@@ -6255,12 +6260,7 @@ pub(crate) mod storage_fault_tests {
 
         let expected = {
             let mut expected = committed_prefix;
-            expected.extend_from_slice(b"=== STDOUT ===\n");
             expected.extend_from_slice(&stdout_pending);
-            expected.push(b'\n');
-            expected.extend_from_slice(b"=== STDERR ===\n");
-            expected.extend_from_slice(&stderr_pending);
-            expected.push(b'\n');
             expected
         };
 
@@ -6271,7 +6271,10 @@ pub(crate) mod storage_fault_tests {
             capture_file: capture_file.clone(),
             call_id: "capture-2".to_owned(),
             plan: pl_tool::command::CaptureRepair {
-                committed_len,
+                confirmed: pl_tool::command::CommandCaptureOffsets {
+                    stdout: committed_len,
+                    stderr: 0,
+                },
                 chunks: vec![
                     pl_tool::command::CaptureRepairChunk {
                         stream: pl_tool::command::CommandCaptureStream::Stdout,
@@ -6287,6 +6290,10 @@ pub(crate) mod storage_fault_tests {
         });
 
         let first = obligation.retry().await?;
+        assert_eq!(
+            std::fs::read(capture_file.with_file_name("stderr.log"))?,
+            stderr_pending
+        );
         let pl_core::thread::cold::OutputRetryOutcome::StoredWithRepair(first) = first else {
             anyhow::bail!("the repair must name the stored reference");
         };
@@ -6395,6 +6402,9 @@ pub(crate) mod storage_fault_tests {
                 move |_cancellation| async move {
                     exit.notified().await;
                     Ok(pl_tool::command::CommandExit {
+                        supervision_failure: None,
+                        signal: None,
+                        capture_failure: None,
                         exit_code: Some(0),
                         capture: None,
                     })
@@ -6611,16 +6621,21 @@ pub(crate) mod storage_fault_tests {
         // Replay the plan through the real local backend and archive it: the stored reference must read
         // back exactly the accepted bytes, in acceptance order, with the failed append left off.
         let real = pl_tool::command::LocalCommandBackend::new(temp.path().to_path_buf());
-        let mut committed_len = plan.committed_len;
+        let mut confirmed = plan.confirmed;
         for chunk in &plan.chunks {
-            committed_len = real
+            let capture = match chunk.stream {
+                pl_tool::command::CommandCaptureStream::Stdout => &snapshot.capture_file,
+                pl_tool::command::CommandCaptureStream::Stderr => &snapshot.stderr_capture_file,
+            };
+            let committed_len = real
                 .repair_output_chunk(
-                    &snapshot.capture_file,
+                    capture,
                     chunk.stream,
-                    committed_len,
+                    confirmed.get(chunk.stream),
                     &chunk.pending,
                 )
                 .await?;
+            confirmed.set(chunk.stream, committed_len);
         }
         let reference = archive
             .retain_command_capture(&snapshot.capture_file)
@@ -6631,10 +6646,13 @@ pub(crate) mod storage_fault_tests {
             stored.contains("OUT-1"),
             "the archive keeps the stdout chunk: {stored}"
         );
-        assert!(
-            stored.contains("ERR-1"),
-            "the archive keeps the stderr chunk: {stored}"
-        );
+        let stderr_reference = archive
+            .retain_command_capture(&snapshot.stderr_capture_file)
+            .await?;
+        let stderr =
+            ResourceReader::read(&archive, stderr_reference, CancellationToken::new()).await?;
+        assert_eq!(stderr.as_ref(), b"ERR-1\n");
+        assert_eq!(stored.as_ref(), "OUT-1\n");
 
         Ok(())
     }

@@ -16,7 +16,7 @@ Shell 命令规则：始终遵循本提示中运行时生成的 `Platform` devel
 - 这些路径相对于当前实际 workspace；SSH 路径属于远端，不能用本地 home 替代。每个 root、child、reviewer 都有自己的会话文件目录，共享 checkout 不代表共享临时目录。
 - 最终代码、正式文档及用户指定产物仍写到要求的位置；非项目交付物报告实际路径。工程工具已有明确的构建、缓存或验收输出入口时保持该入口，不为中间文件随意改变构建 cwd。
 - 上游 Skill 示例中的相对输出目录或 `/tmp` 仅作示例；模型主动创建的任务中间产物应通过该工具支持的输出/临时目录参数指向本会话目录，除非用户明确指定位置。不要原地修改只读 Skill，或把一次性截图、日志、凭据和会话绝对路径沉淀为长期 Skill 资产。
-- 宿主数据库、归属清单、可靠资源和传输暂存由运行时管理，不手工维护；helper 安装缓存也不是任务 scratch。使用命令结果返回的 `outputFile` 或可靠资源引用，不自行拼接历史 capture 路径。
+- 宿主数据库、归属清单、可靠资源和传输暂存由运行时管理，不手工维护；helper 安装缓存也不是任务 scratch。使用命令结果返回的 `stdoutFile`、`stderrFile` 或可靠资源引用，不自行拼接历史 capture 路径。
 - 会话临时目录不扩大业务 `writablePaths`、只读角色或 confined 边界；不要修改邻居会话和内部 capture。清理仅限本次明确拥有且已停止使用的临时产物，不覆盖用户忽略规则，不清空历史、配置、附件或未知文件。
 
 可见输出通道：
@@ -33,8 +33,11 @@ Shell 命令规则：始终遵循本提示中运行时生成的 `Platform` devel
 
 通用工具协作：
 - 普通工具快速完成时直接返回结果，否则返回 `accepted` 任务回执；受理不代表执行成功。空闲时只调用 `wait` 接收后台工具结果、定时器、agent 与外部消息；`wait` 必须独占一次响应。任务跨 Turn 存活、结束 Turn 不取消任务只是生命周期事实，不构成提前结束协调工作的理由。
-- `exec` 快速完成时直接返回结果，否则返回含 `taskId` 的回执，命令退出且输出排空后才有终态。`write_stdin` 只向该任务写入非空输入，不轮询；取消使用 `cancel_tool_task`，跨 Turn 查找既有句柄使用 `list_tool_tasks`，不要重复启动命令。
-- 需要完整 stdout/stderr 时，读取工具结果里的 `outputFile`，不要要求命令工具把大输出完整塞回上下文。
+- `exec` 快速完成时直接返回结果，否则返回含真实 `taskId` 的回执，命令退出且输出排空后才有终态。`timeoutSeconds`（默认 60 秒）包含启动准备，收到回执不会解除或重置期限；`cwd` 每次独立，不继承前次 cd。
+- `write_stdin` 只向原 exec 的真实 taskId 发送文本；`closeStdin=true` 在文本之后发送 EOF，空字符串仅在发送 EOF 时有效。观察完成使用 `wait`，取消原命令使用 `cancel_tool_task`。取消一次 stdin 调用不隐式取消目标 exec，也不能重发已经接纳的输入。读取 acceptedBytes、remoteConfirmedBytes 和 deliveryPending 判断事实；本地接纳不表示业务程序已经消费。
+- exec/stdin 失败先读 diagnostic 和执行事实：只有 `processStarted=false` 才能确定未启动。非零退出、超时、取消、捕获/归档失败均不能据此重跑有副作用的命令。取消调用的即时提示可能省略部分回执；用该次调用自身的真实 taskId 查询 `get_tool_task(resultCursor=0)`，按 nextCursor 续读。stdin 回执的 targetTaskId 指原 exec，不是这次 stdin 调用。缺失句柄从 `list_tool_tasks` 获取，不能用 callId 或物理文件名拼接。
+- `maxOutputChars` 保留历史名称，实际是 stdout+stderr 合计的 UTF-8 字节预算，默认及最大 65,536。wasTruncated 表示展示省略；captureStatus 表示原始捕获完整性；textLossy 表示文本解码损失，三者不能互相替代。
+- 需要更多输出时，逐字使用结果里的 `stdoutFile`、`stderrFile` 读取原始文件；不从 taskId、callId 或哈希规则推导路径。字段缺失时查询原任务的 immutable payload，不猜路径、不重跑原命令补日志。`resultCursor` 仅分页该 payload，并非原始日志文件游标。执行侧路径按当前会话缓存保留，重开历史时优先依据可靠资源身份；没有实际物化的历史资源不能视为旧路径仍可读。
 - 文件工具包括读取、写入、列目录、stat、建目录、删除、复制、移动和 `apply_patch`。路径可以使用 workspace-relative 形式；运行时会按 workspace root 解析并执行权限检查。
 - 编辑已有文本文件时优先用 `apply_patch` 做精确修改；不要把 patch 当作普通正文输出。
 - `apply_patch` 使用 Codex 风格 patch，不接受 `---/+++` unified diff、`*** File:` 元数据头或 “Insert after ...” 这类自然语言编辑指令。更新文件的最小格式是 `*** Begin Patch`、`*** Update File: <path>`、`@@`、增删行和 `*** End Patch`。
