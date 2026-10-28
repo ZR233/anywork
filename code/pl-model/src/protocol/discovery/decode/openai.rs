@@ -1,7 +1,9 @@
 //! OpenAI Models API (`data`/`id`) and the currently deployed Codex rich `models`/`slug`
 //! declaration. Codex-only defaults belong to this boundary only.
 use super::reasoning::ReasoningDeclaration;
-use super::{Capabilities, DiscoveryDialect, ModelCatalogQueryError, Record, nullable};
+use super::{
+    Capabilities, DiscoveryDialect, ModelCatalogQueryError, Record, nullable, presentation_name,
+};
 use crate::model::*;
 use serde::Deserialize;
 
@@ -69,8 +71,7 @@ impl WireRecord {
         let id = self.identifier()?;
         Ok(Record {
             id,
-            // OpenAI/Codex keeps its richer `display_name`/`name` presentation.
-            display_name: self.display_name.or(self.name),
+            display_name: presentation_name(self.display_name, self.name),
             description: self.description,
             context_window: self.context_window,
             max_context_window: self.max_context_window,

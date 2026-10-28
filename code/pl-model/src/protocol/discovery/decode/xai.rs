@@ -1,7 +1,9 @@
 //! xAI `/models`: `data`/`id`、`context_length`、官方 token 价格单位与
 //! `capabilities.reasoning_effort` / `default_reasoning_effort`。
 use super::reasoning::ReasoningDeclaration;
-use super::{DiscoveryDialect, ModelCatalogQueryError, Record, nullable, required_id};
+use super::{
+    DiscoveryDialect, ModelCatalogQueryError, Record, nullable, presentation_name, required_id,
+};
 use crate::model::*;
 use serde::Deserialize;
 
@@ -150,7 +152,7 @@ impl WireRecord {
         let id = required_id(self.id)?;
         Ok(Record {
             id,
-            display_name: self.display_name.or(self.name),
+            display_name: presentation_name(self.display_name, self.name),
             context_window: self.context_length.map(Some),
             reasoning,
             binding: self.binding,
