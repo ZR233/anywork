@@ -37,15 +37,34 @@ async fn main() -> Result<()> {
     let home = artifacts.join("studio-home");
     // Never resume an older observation's pending credential migration.
     std::fs::create_dir(&home).context("observation requires a new isolated Studio home")?;
-    let workspace = tempfile::Builder::new()
-        .prefix("anywork-observation-workspace-")
-        .tempdir()?
-        .keep();
+    let ssh_alias = match std::env::var("ANYWORK_OBSERVATION_SSH_ALIAS") {
+        Ok(alias) => Some(alias),
+        Err(std::env::VarError::NotPresent) => None,
+        Err(error) => return Err(error.into()),
+    };
+    let workspace = match (
+        &ssh_alias,
+        std::env::var_os("ANYWORK_OBSERVATION_SSH_WORKSPACE"),
+    ) {
+        (None, None) => tempfile::Builder::new()
+            .prefix("anywork-observation-workspace-")
+            .tempdir()?
+            .keep(),
+        (Some(alias), Some(path)) => {
+            anyhow::ensure!(
+                !alias.trim().is_empty() && !path.is_empty() && path.to_str().is_some(),
+                "observation SSH alias and workspace must both be nonempty"
+            );
+            PathBuf::from(path)
+        }
+        _ => anyhow::bail!(
+            "ANYWORK_OBSERVATION_SSH_ALIAS and ANYWORK_OBSERVATION_SSH_WORKSPACE must be set together"
+        ),
+    };
     std::fs::write(
         artifacts.join("workspace-path.txt"),
         workspace.to_string_lossy().as_bytes(),
     )?;
-    std::fs::create_dir_all(&workspace)?;
     let workspace_mode = match std::env::var("ANYWORK_OBSERVATION_WORKSPACE_MODE").as_deref() {
         Ok("worktree") => pl_protocol::ThreadWorkspaceMode::Worktree,
         Ok("local") | Err(std::env::VarError::NotPresent) => {
@@ -54,6 +73,10 @@ async fn main() -> Result<()> {
         other => anyhow::bail!("invalid observation workspace mode: {other:?}"),
     };
     if workspace_mode == pl_protocol::ThreadWorkspaceMode::Worktree {
+        anyhow::ensure!(
+            ssh_alias.is_none(),
+            "SSH observation requires an existing isolated workspace in local mode"
+        );
         initialize_repository(&workspace)?;
     }
     // Copy the validated bytes, never save a hydrated config: credentials belong to the user.
@@ -128,12 +151,17 @@ async fn main() -> Result<()> {
         .map(|v| v.parse::<u64>())
         .transpose()?
         .unwrap_or(180);
-    let runtime = StudioRuntime::initialize(StudioRuntimeOptions {
+    let mut options = StudioRuntimeOptions {
         studio_home: Some(home),
         host: StudioHostKind::Desktop,
         ..StudioRuntimeOptions::desktop()
-    })
-    .await?;
+    };
+    if let Some(bundle) = std::env::var_os("ANYWORK_OBSERVATION_HELPER_BUNDLE") {
+        options = options.with_remote_helper_source(
+            pl_studio_runtime::RemoteHelperSource::Bundled(PathBuf::from(bundle)),
+        );
+    }
+    let runtime = StudioRuntime::initialize(options).await?;
     let mut observers = Vec::new();
     let result = collect(
         &runtime,
@@ -145,6 +173,7 @@ async fn main() -> Result<()> {
             workspace_mode,
             seconds,
             selected_route,
+            ssh_alias: ssh_alias.as_deref(),
         },
     )
     .await;
@@ -170,6 +199,7 @@ struct Observation<'a> {
     workspace_mode: pl_protocol::ThreadWorkspaceMode,
     seconds: u64,
     selected_route: Option<ObservationRoute>,
+    ssh_alias: Option<&'a str>,
 }
 
 struct ObservationRoute {
@@ -217,12 +247,24 @@ async fn collect(
         workspace_mode,
         seconds,
         selected_route,
+        ssh_alias,
     } = observation;
     anyhow::ensure!(
         runtime.runtime_snapshot().await?.startup_recovery.is_none(),
         "isolated Studio startup reset configuration; refusing to observe a default account"
     );
-    let project = runtime.open_project(workspace).await?;
+    let project = match ssh_alias {
+        Some(alias) => {
+            runtime
+                .open_remote_project(alias, workspace.to_string_lossy().into_owned())
+                .await?
+        }
+        None => runtime.open_project(workspace).await?,
+    };
+    std::fs::write(
+        artifacts.join("project.json"),
+        serde_json::to_vec_pretty(&project)?,
+    )?;
     let route = runtime
         .read_settings()?
         .config

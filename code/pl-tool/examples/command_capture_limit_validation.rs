@@ -6,15 +6,9 @@
 //! 本 crate 已有的人工入口形式（见 `ssh_remote_validation.rs`）：用公开 API 驱动真实实现，断言失败
 //! 即返回非零退出码，由主代理/发布者在目标机上执行。
 //!
-//! 覆盖的缺陷敏感面：
-//! 1. 单命令落盘上限按 backend 声明的**存储成本**计费，而不是原始流字节：合并输出与 per-stream
-//!    捕获各算一份、再加每 chunk 的 framing，因此"原始字节还没到上限"就会正确停下。
-//! 2. 触及上限会取消后台命令、等它真实结束，并以 typed `OutputLimitExceeded` 落幕（终态不是
-//!    `Succeeded`，也不是 timeout/cancelled）。
-//! 3. 容量终止与**可靠存储写失败**保持区分：前者不欠修复（`capture_repair()` 为 `None`），
-//!    工具结果的 typed 错误是 `ExecFailure::OutputLimitExceeded`；后者仍是带
-//!    `OutputRetryObligation` 的 `OutputStorageFault`。
-//! 4. 后端声明的模型可见上限按**字节**计而不是 Unicode 字符：多字节正文不会按字符数放大上下文。
+//! 覆盖严格输入与 no-start 诊断、共享原始双流预算、真实存储故障和修复、64 KiB 正文
+//! 额度及独立协议包装、准备阶段 deadline/cancellation、stdin 背压取消及 UTF-8 边界。可选真实进程入口
+//! 还验证有限输入与 EOF、无末尾换行和无效编码的原始字节。
 //!
 //! 运行（确定性部分不需要任何外部依赖）：
 //! ```text
@@ -53,10 +47,6 @@ use tokio_util::sync::CancellationToken;
 
 /// 假后端声明的单命令落盘上限：小到能在毫秒级触顶，又足够验证"成本而不是原始字节"。
 const FAKE_CAPTURE_LIMIT_BYTES: u64 = 64 * 1024;
-/// 假后端按"合并输出 + per-stream 捕获"两份计费，与 Mai 容器的真实落盘一致。
-const FAKE_STORAGE_COPIES: u64 = 2;
-/// 每 chunk 的 framing 折算（`=== STDOUT ===\n` 之类）。
-const FAKE_FRAME_BYTES: u64 = 15;
 /// 假后端声明的模型可见字节上限。
 ///
 /// 取一个能被多字节正文明显区分的值：同一个上限按字符计会放进 256 个汉字（768 字节），
@@ -89,11 +79,16 @@ async fn main() -> anyhow::Result<()> {
         }
     }
     println!("OK  0..128 字节预算、原始长度、跨片段 UTF-8 与唯一省略行");
+    exec_input_contract().await?;
     session_layout_and_directory_policy().await?;
     concurrent_pool_ignore_create_is_idempotent().await?;
-    limit_is_charged_as_storage_cost_and_terminates().await?;
+    raw_capture_budget_terminates().await?;
     write_failure_keeps_its_retry_obligation().await?;
+    combined_requested_output_budget().await?;
     model_output_cap_counts_bytes_not_chars().await?;
+    model_body_budget_preserves_metadata().await?;
+    preparation_deadline_and_cancellation().await?;
+    backpressured_stdin_cancellation().await?;
     let (mut producer, _root) = scripted_backend(
         Arc::new(CaptureFacts::default()),
         ScriptedBehavior::finite_multibyte(),
@@ -111,6 +106,9 @@ async fn main() -> anyhow::Result<()> {
 
     if std::env::var("PURE_PL_COMMAND_REAL_BACKEND").as_deref() == Ok("1") {
         real_backend_limit_terminates_process().await?;
+        real_stdin_eof_and_raw_utf8().await?;
+        #[cfg(target_os = "linux")]
+        worker_bootstrap_cancellation().await?;
     } else {
         println!(
             "-- 跳过真实进程验证（PURE_PL_COMMAND_REAL_BACKEND=1 且 PATH 上有 pl-remote-helper 时执行）"
@@ -118,6 +116,174 @@ async fn main() -> anyhow::Result<()> {
     }
 
     println!("== 全部断言通过 ==");
+    Ok(())
+}
+
+async fn exec_input_contract() -> anyhow::Result<()> {
+    use pl_tool::exec::parse_and_validate_exec_input;
+    for (raw, code, field) in [
+        ("{", "exec.invalid_json", None),
+        (r#"{"cwd":"/outside"}"#, "exec.invalid_arguments", None),
+        (
+            r#"{"command":"echo x","working_directory":"/outside"}"#,
+            "exec.invalid_arguments",
+            None,
+        ),
+        (
+            r#"{"command":"echo x","timeoutSeconds":"60"}"#,
+            "exec.invalid_arguments",
+            Some("timeoutSeconds"),
+        ),
+        (
+            r#"{"command":"   "}"#,
+            "exec.empty_command",
+            Some("command"),
+        ),
+        (
+            r#"{"command":"echo x","timeoutSeconds":0}"#,
+            "exec.argument_out_of_range",
+            Some("timeoutSeconds"),
+        ),
+        (
+            r#"{"command":"echo x","maxOutputChars":0}"#,
+            "exec.argument_out_of_range",
+            Some("maxOutputChars"),
+        ),
+        (r#"{"command":"echo x"} {}"#, "exec.invalid_json", None),
+    ] {
+        let error = parse_and_validate_exec_input(raw).expect_err("invalid input");
+        anyhow::ensure!(error.code == code);
+        if let Some(field) = field {
+            anyhow::ensure!(error.field.as_deref() == Some(field));
+        }
+        let error = error.into_tool_error();
+        anyhow::ensure!(
+            error
+                .source
+                .downcast_ref::<pl_tool::exec::ExecInputError>()
+                .is_some()
+        );
+        let (backend, _root) = scripted_backend(
+            Arc::new(CaptureFacts::default()),
+            ScriptedBehavior::finite_multibyte(),
+            None,
+        )?;
+        let archive = Arc::new(FixedArchive::default());
+        let tool = ThreadExecTool::new(
+            Arc::new(backend),
+            archive.clone(),
+            CommandAccess::WorkspaceOnly,
+        );
+        let thread = pl_core::thread::ThreadHandle::start(
+            "exec-input-contract".into(),
+            pl_core::model::DynModelSession::new(ScriptedToolCalls::single_exec(
+                raw.into(),
+                "exec-input-call".into(),
+            )),
+        )?;
+        thread
+            .register_tools(
+                tool.registrations(OpaquePayload::text("exec"), OpaquePayload::text("stdin"))?,
+            )
+            .await?;
+        thread
+            .run_turn(pl_core::thread::TurnInput {
+                turn_id: "validation-turn".into(),
+                attempt_prefix: "validation-step".into(),
+                content: vec![],
+                max_model_steps: pl_core::thread::ModelStepLimit::Limited(
+                    std::num::NonZeroU32::new(2).unwrap(),
+                ),
+                cancellation: CancellationToken::new(),
+            })
+            .await?;
+        let effects = thread.effects().await?;
+        let delivery = effects
+            .iter()
+            .flat_map(|effect| effect.deliveries.iter())
+            .find(|delivery| delivery.tool_id == "exec")
+            .context("exec result was not committed")?;
+        let receipt: serde_json::Value = serde_json::from_str(delivery.output.payload().content())?;
+        anyhow::ensure!(
+            receipt["processStarted"] == false && receipt["diagnostic"]["code"] == code
+        );
+        anyhow::ensure!(archive.calls.load(Ordering::SeqCst) == 0);
+        thread.close().await?;
+    }
+    let command = "  printf 'original spacing'  ";
+    let raw = serde_json::json!({"command": command, "cwd":"."}).to_string();
+    let input = parse_and_validate_exec_input(&raw)?;
+    anyhow::ensure!(input.into_input().command == command);
+    for (raw, valid) in [
+        (r#"{"taskId":"task:real","chars":""}"#, false),
+        (
+            r#"{"taskId":"task:real","chars":"","closeStdin":true}"#,
+            true,
+        ),
+        (
+            r#"{"taskId":"task:real","chars":"x","maxOutputChars":0}"#,
+            false,
+        ),
+    ] {
+        anyhow::ensure!(pl_tool::exec::parse_and_validate_stdin_input(raw).is_ok() == valid);
+    }
+    println!("OK  strict input, original source/field, no-start diagnostics, EOF validation");
+    let (backend, _root) = scripted_backend(
+        Arc::new(CaptureFacts::default()),
+        ScriptedBehavior::finite_multibyte(),
+        None,
+    )?;
+    let archive = Arc::new(FixedArchive::default());
+    let tool = ThreadExecTool::new(
+        Arc::new(backend),
+        archive.clone(),
+        CommandAccess::WorkspaceOnly,
+    );
+    let thread = pl_core::thread::ThreadHandle::start(
+        "exec-large-error-metadata".into(),
+        pl_core::model::DynModelSession::new(ScriptedToolCalls::single_exec(
+            format!(
+                r#"{{"command":"must-not-run","timeoutSeconds":{}}}"#,
+                u64::MAX
+            ),
+            "m".repeat(70000),
+        )),
+    )?;
+    thread
+        .register_tools(
+            tool.registrations(OpaquePayload::text("exec"), OpaquePayload::text("stdin"))?,
+        )
+        .await?;
+    thread
+        .run_turn(pl_core::thread::TurnInput {
+            turn_id: "large-error-turn".into(),
+            attempt_prefix: "large-error".into(),
+            content: vec![],
+            max_model_steps: pl_core::thread::ModelStepLimit::Limited(
+                std::num::NonZeroU32::new(2).unwrap(),
+            ),
+            cancellation: CancellationToken::new(),
+        })
+        .await?;
+    let effects = thread.effects().await?;
+    let delivery = effects
+        .iter()
+        .flat_map(|effect| effect.deliveries.iter())
+        .find(|delivery| delivery.tool_id == "exec")
+        .context("missing range error")?;
+    let record: serde_json::Value = serde_json::from_str(delivery.output.payload().content())?;
+    let pl_core::context::ContextContent::Text { text } = &delivery.output.context()[0] else {
+        anyhow::bail!("missing model error receipt");
+    };
+    anyhow::ensure!(serde_json::from_str::<serde_json::Value>(text)? == record);
+    anyhow::ensure!(record["taskId"] == format!("task:{}", "m".repeat(70000)));
+    anyhow::ensure!(record["processStarted"] == false);
+    anyhow::ensure!(record["diagnostic"]["code"] == "exec.argument_out_of_range");
+    anyhow::ensure!(archive.calls.load(Ordering::SeqCst) == 0);
+    thread.close().await?;
+    println!(
+        "OK  metadata-only error keeps full identity and diagnostic in payload and model receipt"
+    );
     Ok(())
 }
 
@@ -389,7 +555,7 @@ where
 }
 
 /// 用例 1~3：成本计费、超限取消并真实落幕、typed 容量终止。
-async fn limit_is_charged_as_storage_cost_and_terminates() -> anyhow::Result<()> {
+async fn raw_capture_budget_terminates() -> anyhow::Result<()> {
     let facts = Arc::new(CaptureFacts::default());
     let (backend, root) = scripted_backend(
         facts.clone(),
@@ -430,16 +596,14 @@ async fn limit_is_charged_as_storage_cost_and_terminates() -> anyhow::Result<()>
         "触顶时必须有被拒绝接纳的输出，否则上限没有生效"
     );
 
-    // 成本计费：每个被接纳的 chunk 只贡献 2 份字节 + 一份 framing。
+    // 每个原始 chunk 只写入所属流一次，双流共用一个预算。
     let appended_raw = facts.appended_raw.load(Ordering::SeqCst);
     let appends = facts.appends.load(Ordering::SeqCst);
     anyhow::ensure!(appends > 0, "上限之前必须先有真正落盘的已接纳 chunk");
     anyhow::ensure!(
         snapshot.capture_usage.expect("manager usage").charged_bytes
-            == facts.prepared_bytes.load(Ordering::SeqCst)
-                + appended_raw * FAKE_STORAGE_COPIES
-                + appends * FAKE_FRAME_BYTES,
-        "落盘预算必须按存储成本计费（两份 + framing）：charged={} raw={} appends={}",
+            == facts.prepared_bytes.load(Ordering::SeqCst) + appended_raw,
+        "落盘预算必须等于接纳的双流原始字节：charged={} raw={} appends={}",
         snapshot.capture_usage.expect("manager usage").charged_bytes,
         appended_raw,
         appends
@@ -449,8 +613,8 @@ async fn limit_is_charged_as_storage_cost_and_terminates() -> anyhow::Result<()>
         "已接纳成本不得超过声明上限"
     );
     anyhow::ensure!(
-        appended_raw < FAKE_CAPTURE_LIMIT_BYTES,
-        "原始字节仍在上限之内就触顶，证明计费覆盖了分流与 framing：raw={appended_raw}"
+        appended_raw == FAKE_CAPTURE_LIMIT_BYTES,
+        "原始双流合计精确触顶：raw={appended_raw}"
     );
     anyhow::ensure!(
         facts.repairs.load(Ordering::SeqCst) == 0,
@@ -474,7 +638,7 @@ async fn limit_is_charged_as_storage_cost_and_terminates() -> anyhow::Result<()>
     let disk_bytes = capture_files_len(root.path())?;
     anyhow::ensure!(
         disk_bytes <= FAKE_CAPTURE_LIMIT_BYTES,
-        "声明上限必须覆盖头部与 framing 在内的全部磁盘占用：disk={disk_bytes}"
+        "声明上限必须覆盖双流合计磁盘占用：disk={disk_bytes}"
     );
     println!(
         "OK  成本计费：charged={} raw={} appends={} refused={} disk={disk_bytes}",
@@ -545,6 +709,278 @@ async fn write_failure_keeps_its_retry_obligation() -> anyhow::Result<()> {
         "写失败不得伪装成 typed 容量终止"
     );
     println!("OK  存储写失败仍是带义务的 OutputStorageFault（kind=WriteFailed, obligation=Some）");
+    Ok(())
+}
+
+async fn model_body_budget_preserves_metadata() -> anyhow::Result<()> {
+    for output_limit in [false, true] {
+        for budget in [1, 127, 65536, usize::MAX] {
+            let behavior = ScriptedBehavior {
+                total_bytes: if output_limit { 128 * 1024 } else { 24000 },
+                pattern: if output_limit { b"A" } else { b"\0\n\\\"\x01" },
+                dual_stream: true,
+                ..ScriptedBehavior::finite_multibyte()
+            };
+            let (backend, _root) =
+                scripted_backend(Arc::new(CaptureFacts::default()), behavior, None)?;
+            let tool = ThreadExecTool::new(
+                Arc::new(backend),
+                Arc::new(FixedArchive::default()),
+                CommandAccess::WorkspaceOnly,
+            );
+            let thread = pl_core::thread::ThreadHandle::start(
+                "exec-serialized-budget".into(),
+                pl_core::model::DynModelSession::new(ScriptedToolCalls::single_exec(
+                    serde_json::json!({"command":"scripted-output", "maxOutputChars":budget})
+                        .to_string(),
+                    "serialized-budget-call".into(),
+                )),
+            )?;
+            thread
+                .register_tools(
+                    tool.registrations(OpaquePayload::text("exec"), OpaquePayload::text("stdin"))?,
+                )
+                .await?;
+            thread
+                .run_turn(pl_core::thread::TurnInput {
+                    turn_id: "serialized-budget-turn".into(),
+                    attempt_prefix: "serialized-budget".into(),
+                    content: vec![],
+                    max_model_steps: pl_core::thread::ModelStepLimit::Limited(
+                        std::num::NonZeroU32::new(2).unwrap(),
+                    ),
+                    cancellation: CancellationToken::new(),
+                })
+                .await?;
+            let delivery = tokio::time::timeout(
+                Duration::from_secs(60),
+                thread.wait_task("task:serialized-budget-call", CancellationToken::new()),
+            )
+            .await??;
+            thread.close().await?;
+            let output = &delivery.output;
+            anyhow::ensure!(
+                output.payload().format() == "pl.tool.exec" && output.payload().version() == 2
+            );
+            let pl_core::context::ContextContent::Text { text } = &output.context()[0] else {
+                anyhow::bail!("missing model JSON");
+            };
+            let view: serde_json::Value = serde_json::from_str(text)?;
+            let record: serde_json::Value = serde_json::from_str(output.payload().content())?;
+            anyhow::ensure!(
+                view == record,
+                "protocol wrapping must not trim body or metadata a second time"
+            );
+            let visible = view["stdout"]["content"].as_str().unwrap().len()
+                + view["stderr"]["content"].as_str().unwrap().len();
+            anyhow::ensure!(visible <= budget.min(65536));
+            anyhow::ensure!(view["stdoutFile"].is_string() && view["stderrFile"].is_string());
+            if output_limit {
+                anyhow::ensure!(
+                    view["captureStatus"] == "partial"
+                        && view["diagnostic"]["code"] == "exec.output_limit"
+                );
+                anyhow::ensure!(matches!(
+                    delivery.outcome,
+                    pl_core::thread::ToolOutcome::Failed(_)
+                ));
+            } else {
+                anyhow::ensure!(view["captureStatus"] == "complete");
+            }
+        }
+    }
+    println!(
+        "OK  committed success/failure body obeys 1/127/65536-byte budgets; escaping and metadata preserve the complete record"
+    );
+    Ok(())
+}
+
+async fn preparation_deadline_and_cancellation() -> anyhow::Result<()> {
+    for cancelled in [false, true] {
+        let facts = Arc::new(CaptureFacts::default());
+        let behavior = ScriptedBehavior {
+            gated_prepare: true,
+            ..ScriptedBehavior::finite_multibyte()
+        };
+        let (backend, _root) = scripted_backend(facts.clone(), behavior, None)?;
+        let manager = CommandProcessManager::new(Arc::new(backend));
+        let cancellation = CancellationToken::new();
+        let mut request = start_request();
+        request.timeout = if cancelled {
+            Duration::from_secs(30)
+        } else {
+            Duration::from_millis(10)
+        };
+        request.cancellation_token = Some(cancellation.clone());
+        let owner =
+            tokio::spawn(async move { manager.run_task("task-preparation-gate", request).await });
+        tokio::time::timeout(Duration::from_secs(2), facts.prepared.notified())
+            .await
+            .context("prepare gate was never reached")?;
+        if cancelled {
+            cancellation.cancel();
+        } else {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        facts.release_prepare.notify_one();
+        let error = owner
+            .await?
+            .expect_err("expired/cancelled preparation must not spawn");
+        anyhow::ensure!(
+            error.process_started == Some(false) && !facts.spawned.load(Ordering::SeqCst)
+        );
+    }
+    println!("OK  gated preparation: deadline and cancellation both prevent business spawn");
+    Ok(())
+}
+
+struct BackpressuredInput {
+    first: bool,
+    facts: Arc<CaptureFacts>,
+}
+impl Drop for BackpressuredInput {
+    fn drop(&mut self) {
+        self.facts.input_dropped.store(true, Ordering::SeqCst);
+    }
+}
+impl tokio::io::AsyncWrite for BackpressuredInput {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        _: &mut Context<'_>,
+        bytes: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        if self.first {
+            self.first = false;
+            self.facts.input_written.notify_one();
+            Poll::Ready(Ok(bytes.len().min(32)))
+        } else {
+            Poll::Pending
+        }
+    }
+    fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Poll::Pending
+    }
+    fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+}
+async fn backpressured_stdin_cancellation() -> anyhow::Result<()> {
+    let facts = Arc::new(CaptureFacts::default());
+    let behavior = ScriptedBehavior {
+        backpressured_stdin: true,
+        exit_without_cancellation: false,
+        ..ScriptedBehavior::finite_multibyte()
+    };
+    let (backend, _root) = scripted_backend(facts.clone(), behavior, None)?;
+    let tool = ThreadExecTool::new(
+        Arc::new(backend),
+        Arc::new(FixedArchive::default()),
+        CommandAccess::WorkspaceOnly,
+    );
+    let calls = [
+        (
+            "backpressure-target",
+            "exec",
+            serde_json::json!({"command":"blocked-input", "timeoutSeconds":30}),
+        ),
+        (
+            "backpressure-input",
+            "write_stdin",
+            serde_json::json!({"taskId":"task:backpressure-target", "chars":"中🌙".repeat(1000)}),
+        ),
+        (
+            "cancel-input",
+            "cancel_tool_task",
+            serde_json::json!({"taskId":"task:backpressure-input"}),
+        ),
+    ]
+    .into_iter()
+    .map(
+        |(call_id, tool_id, arguments)| pl_core::model::ModelToolCall {
+            call_id: call_id.into(),
+            tool_id: tool_id.into(),
+            arguments: OpaquePayload::text(arguments.to_string()),
+            rejection: None,
+        },
+    )
+    .collect();
+    let thread = pl_core::thread::ThreadHandle::start(
+        "backpressure-scheduling".into(),
+        pl_core::model::DynModelSession::new(ScriptedToolCalls { calls }),
+    )?;
+    let mut registrations =
+        tool.registrations(OpaquePayload::text("exec"), OpaquePayload::text("stdin"))?;
+    registrations.push(
+        pl_tool::task_control::TaskControlTool::new(pl_tool::task_control::TaskControlKind::Cancel)
+            .registration(OpaquePayload::text("cancel"))?,
+    );
+    thread.register_tools(registrations).await?;
+    let run = tokio::time::timeout(
+        Duration::from_secs(8),
+        thread.run_turn(pl_core::thread::TurnInput {
+            turn_id: "backpressure-turn".into(),
+            attempt_prefix: "backpressure".into(),
+            content: vec![],
+            max_model_steps: pl_core::thread::ModelStepLimit::Limited(
+                std::num::NonZeroU32::new(4).unwrap(),
+            ),
+            cancellation: CancellationToken::new(),
+        }),
+    )
+    .await;
+    if run.is_err() {
+        thread.close().await?;
+        anyhow::bail!("blocked stdin never yielded its own receipt so the model could cancel it");
+    }
+    run??;
+    let input = tokio::time::timeout(
+        Duration::from_secs(2),
+        thread.wait_task("task:backpressure-input", CancellationToken::new()),
+    )
+    .await??;
+    let receipt: serde_json::Value = serde_json::from_str(input.output.payload().content())?;
+    let snapshot = thread.snapshot();
+    let target_running = snapshot
+        .tasks
+        .get("task:backpressure-target")
+        .is_some_and(|task| task.status == pl_core::thread::task::TaskStatus::Running);
+    thread.close().await?;
+    anyhow::ensure!(matches!(
+        input.outcome,
+        pl_core::thread::ToolOutcome::Cancelled
+    ));
+    anyhow::ensure!(
+        receipt["inputReceipt"]["acceptedBytes"] == 32
+            && receipt["inputReceipt"]["outcome"] == "cancelled"
+    );
+    anyhow::ensure!(receipt["targetTaskId"] == "task:backpressure-target" && target_running);
+    println!(
+        "OK  model receives blocked stdin task, cancels it, queries exact accepted prefix; original exec stays alive"
+    );
+    Ok(())
+}
+
+async fn combined_requested_output_budget() -> anyhow::Result<()> {
+    for budget in [1, 127, 65536] {
+        let behavior = ScriptedBehavior {
+            dual_stream: true,
+            ..ScriptedBehavior::finite_multibyte()
+        };
+        let (backend, _root) = scripted_backend(Arc::new(CaptureFacts::default()), behavior, None)?;
+        let manager = CommandProcessManager::new(Arc::new(backend));
+        let mut request = start_request();
+        request.max_output_chars = budget;
+        let snapshot = manager.run_task("task-combined-budget", request).await?;
+        let visible = snapshot.stdout.content.len() + snapshot.stderr.content.len();
+        anyhow::ensure!(
+            visible <= budget,
+            "combined requested budget exceeded: {visible} > {budget}"
+        );
+        if budget < 8192 {
+            anyhow::ensure!(snapshot.stdout.was_truncated && snapshot.stderr.was_truncated);
+        }
+    }
+    println!("OK  stdout + stderr share requested byte budget including maxOutputChars=1");
     Ok(())
 }
 
@@ -680,11 +1116,12 @@ async fn real_backend_limit_terminates_process() -> anyhow::Result<()> {
                 &root.path().display().to_string(),
                 1
             )
-            .await
-            .is_err()
+            .await?
+            == 0
     );
     anyhow::ensure!(
-        !target.capture_file().exists() && !root.path().join("must-not-start").exists()
+        std::fs::read(target.capture_file())?.is_empty()
+            && !root.path().join("must-not-start").exists()
     );
     let manager = CommandProcessManager::new(Arc::new(LowBudgetBackend::new(
         local,
@@ -709,7 +1146,10 @@ async fn real_backend_limit_terminates_process() -> anyhow::Result<()> {
             stream.was_truncated && stream.content.matches("[output omitted]").count() == 1
         );
     }
-    let disk = tokio::fs::metadata(&snapshot.capture_file).await?.len();
+    let disk = tokio::fs::metadata(&snapshot.capture_file).await?.len()
+        + tokio::fs::metadata(&snapshot.stderr_capture_file)
+            .await?
+            .len();
     anyhow::ensure!(
         snapshot
             .capture_usage
@@ -717,11 +1157,85 @@ async fn real_backend_limit_terminates_process() -> anyhow::Result<()> {
             .charged_bytes
             == disk
     );
-    println!("OK  本地头部预检与双流滚动窗口：原始长度准确、一次投影、计费等于磁盘长度");
+    println!("OK  本地无头部原始文件与双流滚动窗口：原始长度准确、一次投影、计费等于磁盘长度");
     Ok(())
 }
 
 /// 一次运行的观察事实：由 backend 在真实落盘/取消时记录，供断言使用。
+async fn real_stdin_eof_and_raw_utf8() -> anyhow::Result<()> {
+    let root = tempfile::tempdir()?;
+    let manager = CommandProcessManager::new(Arc::new(pl_tool::command::LocalCommandBackend::new(
+        root.path(),
+    )));
+    let mut request = start_request();
+    request.command = "cat > stdin.txt; printf done".into();
+    let started = manager.start(request).await?;
+    let process_id = started.process_id.context("running exec")?;
+    let text = "中文🌙\nfinite input\n";
+    let result = manager
+        .write_stdin(pl_tool::command::CommandWriteRequest {
+            process_id: process_id.clone(),
+            chars: text.into(),
+            close_stdin: true,
+            cancellation: CancellationToken::new(),
+            yield_time: Duration::ZERO,
+            max_output_chars: 1024,
+        })
+        .await?;
+    let receipt = result.input_receipt.as_ref().context("input receipt")?;
+    anyhow::ensure!(
+        receipt.accepted_bytes == text.len() as u64
+            && !receipt.delivery_pending
+            && receipt.close_state == Some(pl_tool::command::StdinCloseState::Closed)
+    );
+    if result.state.final_result().is_none() {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                if let Some(snapshot) = manager.snapshot(&process_id, 1024).await
+                    && snapshot.state.final_result().is_some()
+                {
+                    return anyhow::Ok(());
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await??;
+    }
+    anyhow::ensure!(std::fs::read(root.path().join("stdin.txt"))? == text.as_bytes());
+    for (id, command, expected, lossy) in [
+        (
+            "task-raw-utf8",
+            r#"python3 -c 'import os,time; b="中文🌙".encode(); os.write(1,b[:2]); time.sleep(0.02); os.write(1,b[2:]); os.write(2,b"error")'"#,
+            "中文🌙".as_bytes().to_vec(),
+            false,
+        ),
+        (
+            "task-invalid-utf8",
+            "python3 -c 'import os; os.write(1,bytes([255,97,226]))'",
+            vec![255, 97, 226],
+            true,
+        ),
+        (
+            "task-long-utf8",
+            r#"python3 -c 'import os; os.write(1,"中文🌙".encode()*20000)'"#,
+            "中文🌙".repeat(20000).into_bytes(),
+            false,
+        ),
+    ] {
+        let mut request = start_request();
+        request.command = command.into();
+        let snapshot = manager.run_task(id, request).await?;
+        anyhow::ensure!(std::fs::read(&snapshot.capture_file)? == expected);
+        anyhow::ensure!(snapshot.stdout_text_lossy == lossy);
+        if !lossy {
+            anyhow::ensure!(!snapshot.stdout.content.contains('�'));
+        }
+        anyhow::ensure!(snapshot.capture_offsets.stdout == expected.len() as u64);
+    }
+    println!("OK  real finite stdin + EOF; raw no-newline UTF-8/invalid bytes/window boundaries");
+    Ok(())
+}
+
 #[derive(Debug, Default)]
 struct CaptureFacts {
     prepared_bytes: AtomicU64,
@@ -729,6 +1243,11 @@ struct CaptureFacts {
     appends: AtomicU64,
     repairs: AtomicU64,
     process_cancelled: AtomicBool,
+    spawned: AtomicBool,
+    prepared: tokio::sync::Notify,
+    release_prepare: tokio::sync::Notify,
+    input_written: tokio::sync::Notify,
+    input_dropped: AtomicBool,
 }
 
 /// 假后端的行为开关。
@@ -738,6 +1257,9 @@ struct ScriptedBehavior {
     pattern: &'static [u8],
     exit_without_cancellation: bool,
     fail_first_append: bool,
+    dual_stream: bool,
+    gated_prepare: bool,
+    backpressured_stdin: bool,
 }
 
 impl ScriptedBehavior {
@@ -747,6 +1269,9 @@ impl ScriptedBehavior {
             pattern: b"0123456789abcdef",
             exit_without_cancellation: false,
             fail_first_append: false,
+            dual_stream: false,
+            gated_prepare: false,
+            backpressured_stdin: false,
         }
     }
 
@@ -763,6 +1288,9 @@ impl ScriptedBehavior {
             pattern: MULTIBYTE_PATTERN.as_bytes(),
             exit_without_cancellation: true,
             fail_first_append: false,
+            dual_stream: false,
+            gated_prepare: false,
+            backpressured_stdin: false,
         }
     }
 }
@@ -806,6 +1334,9 @@ impl<B: std::fmt::Debug> std::fmt::Debug for LowBudgetBackend<B> {
 
 impl<B: CommandBackend> CommandBackend for LowBudgetBackend<B> {
     type Error = <B as CommandBackend>::Error;
+    fn process_capacity(&self) -> Option<usize> {
+        self.inner.process_capacity()
+    }
 
     fn capture_limit_bytes(&self) -> Option<u64> {
         Some(self.capture_limit_bytes)
@@ -930,6 +1461,9 @@ impl ScriptedBackend {
 
 impl CommandBackend for ScriptedBackend {
     type Error = std::io::Error;
+    fn process_capacity(&self) -> Option<usize> {
+        Some(8)
+    }
 
     fn capture_ownership(&self) -> pl_tool::command::CommandCaptureOwnership {
         pl_tool::command::CommandCaptureOwnership::Manager
@@ -941,7 +1475,7 @@ impl CommandBackend for ScriptedBackend {
         _stream: CommandCaptureStream,
         chunk: &[u8],
     ) -> u64 {
-        chunk.len() as u64 * FAKE_STORAGE_COPIES + FAKE_FRAME_BYTES
+        chunk.len() as u64
     }
 
     async fn resolve_cwd(
@@ -960,16 +1494,14 @@ impl CommandBackend for ScriptedBackend {
         _command: &str,
     ) -> Result<CommandOutputTarget, Self::Error> {
         let model_file = command_output_model_path(session_id, tool_id);
-        let capture_file = self.root.join("captures").join("combined.log");
-        Ok(
-            CommandOutputTarget::new(capture_file, model_file).with_stream_capture_files(
-                self.stream_capture_path(CommandCaptureStream::Stdout),
-                self.stream_capture_path(CommandCaptureStream::Stderr),
-            ),
-        )
+        Ok(CommandOutputTarget::new(
+            self.stream_capture_path(CommandCaptureStream::Stdout),
+            model_file,
+        ))
     }
 
     async fn spawn(&self, _request: CommandSpawnRequest) -> Result<ManagedCommand, Self::Error> {
+        self.facts.spawned.store(true, Ordering::SeqCst);
         let reader = FixedPatternReader {
             pattern: self.behavior.pattern.to_vec(),
             offset: 0,
@@ -980,9 +1512,20 @@ impl CommandBackend for ScriptedBackend {
         Ok(ManagedCommand::new(
             None,
             CommandIo {
-                stdin: None,
+                stdin: self.behavior.backpressured_stdin.then(|| {
+                    Box::pin(BackpressuredInput {
+                        first: true,
+                        facts: self.facts.clone(),
+                    }) as pl_tool::command::CommandWriter
+                }),
                 stdout: Some(Box::pin(reader)),
-                stderr: None,
+                stderr: self.behavior.dual_stream.then(|| {
+                    Box::pin(FixedPatternReader {
+                        pattern: self.behavior.pattern.to_vec(),
+                        offset: 0,
+                        remaining: self.behavior.total_bytes,
+                    }) as pl_tool::command::CommandReader
+                }),
             },
             move |cancellation| async move {
                 if !exit_without_cancellation {
@@ -992,6 +1535,9 @@ impl CommandBackend for ScriptedBackend {
                 }
                 facts.process_cancelled.store(true, Ordering::SeqCst);
                 Ok(CommandExit {
+                    supervision_failure: None,
+                    signal: None,
+                    capture_failure: None,
                     exit_code: Some(0),
                     capture: None,
                 })
@@ -1006,20 +1552,16 @@ impl CommandBackend for ScriptedBackend {
         working_directory: &str,
         capture_limit_bytes: u64,
     ) -> Result<u64, Self::Error> {
-        let header = format!("=== COMMAND ===\n{command}\n\n=== CWD ===\n{working_directory}\n\n");
-        if header.len() as u64 > capture_limit_bytes {
-            return Err(std::io::Error::other("capture header exceeds budget"));
+        let _ = (command, working_directory, capture_limit_bytes);
+        if self.behavior.gated_prepare {
+            self.facts.prepared.notify_one();
+            self.facts.release_prepare.notified().await;
         }
-        if let Some(parent) = target.capture_file().parent() {
-            tokio::fs::create_dir_all(parent).await?;
-        }
+        tokio::fs::create_dir_all(target.capture_file().parent().unwrap()).await?;
         for stream in [CommandCaptureStream::Stdout, CommandCaptureStream::Stderr] {
-            if let Some(parent) = self.stream_capture_path(stream).parent() {
-                tokio::fs::create_dir_all(parent).await?;
-            }
+            tokio::fs::write(target.stream_capture_file(stream), b"").await?;
         }
-        tokio::fs::write(target.capture_file(), header.as_bytes()).await?;
-        Ok(header.len() as u64)
+        Ok(0)
     }
 
     async fn append_output_chunk(
@@ -1031,26 +1573,12 @@ impl CommandBackend for ScriptedBackend {
         if self.behavior.fail_first_append {
             return Err(std::io::Error::other("scripted capture append failure"));
         }
-        let label = match stream {
-            CommandCaptureStream::Stdout => "STDOUT",
-            CommandCaptureStream::Stderr => "STDERR",
-        };
         let mut file = tokio::fs::OpenOptions::new()
-            .create(true)
             .append(true)
-            .open(target.capture_file())
-            .await?;
-        tokio::io::AsyncWriteExt::write_all(&mut file, format!("=== {label} ===\n").as_bytes())
+            .open(target.stream_capture_file(stream))
             .await?;
         tokio::io::AsyncWriteExt::write_all(&mut file, chunk).await?;
         tokio::io::AsyncWriteExt::flush(&mut file).await?;
-        let mut stream_file = tokio::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(self.stream_capture_path(stream))
-            .await?;
-        tokio::io::AsyncWriteExt::write_all(&mut stream_file, chunk).await?;
-        tokio::io::AsyncWriteExt::flush(&mut stream_file).await?;
         self.facts
             .appended_raw
             .fetch_add(chunk.len() as u64, Ordering::SeqCst);
@@ -1075,12 +1603,7 @@ impl CommandBackend for ScriptedBackend {
             .append(true)
             .open(capture_file)
             .await?;
-        let label = match stream {
-            CommandCaptureStream::Stdout => "STDOUT",
-            CommandCaptureStream::Stderr => "STDERR",
-        };
-        tokio::io::AsyncWriteExt::write_all(&mut file, format!("=== {label} ===\n").as_bytes())
-            .await?;
+        let _ = stream;
         tokio::io::AsyncWriteExt::write_all(&mut file, chunk).await?;
         tokio::io::AsyncWriteExt::flush(&mut file).await?;
         Ok(file.metadata().await?.len())
@@ -1144,9 +1667,10 @@ impl CommandOutputArchive for FixedArchive {
         &self,
         _thread_id: &str,
         snapshot: &CommandOutputSnapshot,
+        stream: CommandCaptureStream,
     ) -> Result<ResourceReference, ToolError> {
         self.calls.fetch_add(1, Ordering::SeqCst);
-        let byte_len = snapshot.capture_committed_len;
+        let byte_len = snapshot.capture_offsets.get(stream);
         ResourceReference::new(
             "pl-tool://command-capture-limit-validation".to_string(),
             format!("sha256:{}", "0".repeat(64)),
@@ -1162,12 +1686,20 @@ async fn run_exec_tool<B: CommandBackend + 'static>(
     backend: B,
     archive: Arc<FixedArchive>,
 ) -> Result<pl_core::tool::ToolOutput, ToolError> {
+    run_exec_tool_with_budget(backend, archive, None).await
+}
+
+async fn run_exec_tool_with_budget<B: CommandBackend + 'static>(
+    backend: B,
+    archive: Arc<FixedArchive>,
+    budget: Option<usize>,
+) -> Result<pl_core::tool::ToolOutput, ToolError> {
     let tool = ThreadExecTool::new(Arc::new(backend), archive, CommandAccess::WorkspaceOnly);
     let input = ExecInput {
         command: "while :; do printf '0123456789abcdef'; done".to_string(),
         cwd: None,
         timeout_seconds: Some(30),
-        max_output_chars: None,
+        max_output_chars: budget,
     };
     let content = serde_json::to_string(&input).map_err(ToolError::new)?;
     let payload = OpaquePayload::new("application/json", 1, content).map_err(ToolError::new)?;
@@ -1242,4 +1774,113 @@ fn capture_files_len(root: &Path) -> anyhow::Result<u64> {
         total += entry?.metadata()?.len();
     }
     Ok(total)
+}
+
+struct ScriptedToolCalls {
+    calls: std::collections::VecDeque<pl_core::model::ModelToolCall>,
+}
+impl ScriptedToolCalls {
+    fn single_exec(raw: String, call_id: String) -> Self {
+        Self {
+            calls: [pl_core::model::ModelToolCall {
+                call_id,
+                tool_id: "exec".into(),
+                arguments: OpaquePayload::text(raw),
+                rejection: None,
+            }]
+            .into(),
+        }
+    }
+}
+impl pl_core::model::ModelSession for ScriptedToolCalls {
+    async fn prepare(
+        &mut self,
+        request: pl_core::model::ModelRequest,
+    ) -> Result<pl_core::model::PreparedModelCall, pl_core::model::ModelError> {
+        let calls = self.calls.pop_front().into_iter().collect();
+        Ok(pl_core::model::PreparedModelCall::new(async move {
+            Ok(pl_core::model::ModelStepOutput {
+                attempt_id: request.attempt_id,
+                base_context_revision: request.context.revision,
+                content: vec![],
+                tool_calls: calls,
+                private_context: None,
+                usage: Default::default(),
+            })
+        }))
+    }
+    async fn close(&mut self) -> Result<(), pl_core::model::ModelError> {
+        Ok(())
+    }
+}
+
+#[cfg(target_os = "linux")]
+async fn worker_bootstrap_cancellation() -> anyhow::Result<()> {
+    use pl_remote_helper::client::{ManagedWorker, ProcessCommand, WorkerClientError};
+    use pl_remote_helper::start_control::CommandStartControl;
+    use std::os::unix::fs::PermissionsExt;
+    for configure in [false, true] {
+        let root = tempfile::tempdir()?;
+        let script = root.path().join("held-worker.py");
+        let frame =
+            serde_json::to_string(&pl_protocol::process_worker::ProcessWorkerEvent::Ready {
+                protocol_version: pl_protocol::process_worker::PROCESS_WORKER_PROTOCOL_VERSION,
+            })? + "\n";
+        let announce = if configure {
+            format!(
+                "wire.sendall({}.encode())\nwire.recv(4, socket.MSG_WAITALL)\n",
+                serde_json::to_string(&frame)?
+            )
+        } else {
+            String::new()
+        };
+        std::fs::write(
+            &script,
+            format!(
+                "#!/usr/bin/env python3\nimport pathlib,socket,sys,time\nwire=socket.socket(fileno=int(sys.argv[2]))\n{announce}pathlib.Path(__file__).with_name('entered').write_text('entered')\ntime.sleep(30)\n"
+            ),
+        )?;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))?;
+        let cancellation = CancellationToken::new();
+        let control = CommandStartControl::new(
+            tokio::time::Instant::now() + Duration::from_secs(20),
+            cancellation.clone(),
+            CancellationToken::new(),
+        );
+        let mut command = ProcessCommand::new("touch")
+            .args([root.path().join("must-not-start").into_os_string()]);
+        if configure {
+            command = command
+                .env("PADDING_A", "x".repeat(100000))
+                .env("PADDING_B", "x".repeat(100000));
+        }
+        let owner = {
+            let control = control.clone();
+            tokio::spawn(async move {
+                ManagedWorker::spawn_controlled(&script, command, &control).await
+            })
+        };
+        let entered = tokio::time::timeout(Duration::from_secs(3), async {
+            while !root.path().join("entered").exists() {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await;
+        cancellation.cancel();
+        let error = owner
+            .await?
+            .expect_err("held worker must be cancelled and reaped");
+        entered?;
+        let mut source = &error;
+        while let WorkerClientError::Bootstrap { source: nested, .. } = source {
+            source = nested;
+        }
+        anyhow::ensure!(
+            matches!(source, WorkerClientError::StartCancelled),
+            "bootstrap did not observe cancellation: {error}"
+        );
+        anyhow::ensure!(!control.start_attempted() && !root.path().join("must-not-start").exists());
+    }
+    println!("OK  real worker Ready/configure cancellation: no business Start and owner reaped");
+    Ok(())
 }

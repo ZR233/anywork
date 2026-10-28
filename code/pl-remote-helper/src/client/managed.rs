@@ -64,26 +64,44 @@ impl ManagedWorker {
         executable: &Path,
         command: ProcessCommand,
     ) -> Result<Self, WorkerClientError> {
+        let control = crate::start_control::CommandStartControl::new(
+            tokio::time::Instant::now() + Duration::from_secs(10),
+            tokio_util::sync::CancellationToken::new(),
+            tokio_util::sync::CancellationToken::new(),
+        );
+        Self::spawn_controlled(executable, command, &control).await
+    }
+
+    /// Uses the admitting command's deadline through Ready, configure and Start.
+    /// After Start may have been sent, this owner cancels and joins before returning errors.
+    pub async fn spawn_controlled(
+        executable: &Path,
+        command: ProcessCommand,
+        control: &crate::start_control::CommandStartControl,
+    ) -> Result<Self, WorkerClientError> {
+        control.check()?;
         let configuration = command.encode()?;
-        let mut worker = Self::ready(executable).await?;
-        match tokio::time::timeout(
-            Duration::from_secs(10),
-            worker.control.configure(&configuration),
-        )
-        .await
+        let mut worker = Self::ready_controlled(executable, control).await?;
+        if let Err(error) = control
+            .bootstrap(worker.control.configure(&configuration))
+            .await
         {
-            Ok(Ok(())) => {}
-            Ok(Err(error)) => return Err(worker.bootstrap_failure(executable, error).await),
-            Err(_) => {
-                return Err(worker
-                    .bootstrap_failure(executable, WorkerClientError::ReadinessTimeout)
-                    .await);
-            }
+            return Err(worker.bootstrap_failure(executable, error).await);
         }
-        // Once sending Start is attempted, killing the supervisor could orphan a process.
+        if let Err(error) = control.check() {
+            return Err(worker.bootstrap_failure(executable, error.into()).await);
+        }
         worker.phase = Phase::Starting;
-        if let Err(error) = worker.control.send(ProcessWorkerCommand::Start).await {
+        control.mark_start_attempted();
+        let sent = tokio::select! {
+            biased;
+            _ = control.stopped() => Err(WorkerClientError::Closed),
+            result = worker.control.send(ProcessWorkerCommand::Start) => result,
+        };
+        if let Err(error) = sent {
             worker.fail(error);
+            // Closing the control transport asks the supervisor to reap any business tree.
+            worker.control.close();
             worker.wait().await?;
             return Err(WorkerClientError::Protocol(
                 "Start failed without a transport error",
@@ -129,6 +147,19 @@ impl ManagedWorker {
     }
 
     async fn ready(executable: &Path) -> Result<Self, WorkerClientError> {
+        let control = crate::start_control::CommandStartControl::new(
+            tokio::time::Instant::now() + Duration::from_secs(10),
+            tokio_util::sync::CancellationToken::new(),
+            tokio_util::sync::CancellationToken::new(),
+        );
+        Self::ready_controlled(executable, &control).await
+    }
+
+    async fn ready_controlled(
+        executable: &Path,
+        start: &crate::start_control::CommandStartControl,
+    ) -> Result<Self, WorkerClientError> {
+        start.check()?;
         let (child, events, control) =
             transport::spawn(executable).map_err(|source| WorkerClientError::Bootstrap {
                 executable: executable.into(),
@@ -144,37 +175,35 @@ impl ManagedWorker {
             status: None,
             failure: None,
         };
-        let ready = tokio::time::timeout(Duration::from_secs(10), async {
-            match worker.events.next().await? {
-                Some(ProcessWorkerEvent::Ready { protocol_version })
-                    if protocol_version == PROCESS_WORKER_PROTOCOL_VERSION =>
-                {
-                    Ok(())
+        let ready = start
+            .bootstrap(async {
+                match worker.events.next().await? {
+                    Some(ProcessWorkerEvent::Ready { protocol_version })
+                        if protocol_version == PROCESS_WORKER_PROTOCOL_VERSION =>
+                    {
+                        Ok(())
+                    }
+                    Some(ProcessWorkerEvent::Ready { protocol_version }) => {
+                        Err(WorkerClientError::VersionMismatch {
+                            expected: PROCESS_WORKER_PROTOCOL_VERSION,
+                            actual: protocol_version,
+                        })
+                    }
+                    Some(_) => Err(WorkerClientError::Protocol("expected Ready")),
+                    None => {
+                        let status = worker
+                            .child
+                            .wait()
+                            .await
+                            .map_err(|e| WorkerClientError::io("bootstrapExit", e))?;
+                        Err(WorkerClientError::WorkerExit(status))
+                    }
                 }
-                Some(ProcessWorkerEvent::Ready { protocol_version }) => {
-                    Err(WorkerClientError::VersionMismatch {
-                        expected: PROCESS_WORKER_PROTOCOL_VERSION,
-                        actual: protocol_version,
-                    })
-                }
-                Some(_) => Err(WorkerClientError::Protocol("expected Ready")),
-                None => {
-                    let status = worker
-                        .child
-                        .wait()
-                        .await
-                        .map_err(|e| WorkerClientError::io("bootstrapExit", e))?;
-                    Err(WorkerClientError::WorkerExit(status))
-                }
-            }
-        })
-        .await;
+            })
+            .await;
         match ready {
-            Ok(Ok(())) => Ok(worker),
-            Ok(Err(error)) => Err(worker.bootstrap_failure(executable, error).await),
-            Err(_) => Err(worker
-                .bootstrap_failure(executable, WorkerClientError::ReadinessTimeout)
-                .await),
+            Ok(()) => Ok(worker),
+            Err(error) => Err(worker.bootstrap_failure(executable, error).await),
         }
     }
 

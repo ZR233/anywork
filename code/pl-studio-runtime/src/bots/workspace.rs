@@ -219,7 +219,6 @@ fn migrate_owned_directory(
     pl_tool::workspace::path_safety::validate_path_for_write(target_container, target)
         .map_err(std::io::Error::other)?;
     reject_link(target)?;
-    std::fs::create_dir_all(target)?;
     let marker = target.join(".migration-complete");
     if marker.exists() {
         reject_link(&marker)?;
@@ -230,10 +229,19 @@ fn migrate_owned_directory(
         }
         return Ok(());
     }
+    // A catalog refresh may have passed admission before the source went offline. Only a
+    // live source workspace can prove that an absent owned directory means an empty migration.
+    if !std::fs::metadata(source_container)?.is_dir() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotADirectory,
+            "workspace migration source is not a directory",
+        ));
+    }
     pl_tool::workspace::path_safety::validate_path_for_write(source_container, source)
         .map_err(std::io::Error::other)?;
     reject_link(source)?;
-    if source != target && source.is_dir() {
+    std::fs::create_dir_all(target)?;
+    if source != target && source.try_exists()? {
         copy_owned_directory(source, target)?;
     }
     pl_tool::workspace::write_file_atomically(&marker, source.to_string_lossy().as_bytes())?;
@@ -300,6 +308,31 @@ mod migration_tests {
     use std::fs;
 
     #[test]
+    fn incomplete_migration_cannot_publish_completion_after_source_workspace_disappears() {
+        let temp = tempfile::tempdir().unwrap();
+        let business = temp.path().join("business");
+        let source = business.join(".anywork/sessions/owned");
+        let target = temp.path().join("bot/workspace/.anywork/sessions/owned");
+        fs::create_dir_all(&business).unwrap();
+        // An existing workspace may legitimately have no old Thread-owned files.
+        migrate_owned_directory(&business, &source, temp.path(), &target, "owned").unwrap();
+        fs::write(target.join("new-work.txt"), "preserve target work").unwrap();
+        fs::rename(&business, temp.path().join("source-offline")).unwrap();
+        // A completed migration is independent of the old source.
+        migrate_owned_directory(&business, &source, temp.path(), &target, "owned").unwrap();
+        fs::remove_file(target.join(".migration-complete")).unwrap();
+        assert!(
+            migrate_owned_directory(&business, &source, temp.path(), &target, "owned").is_err(),
+            "a missing source workspace is not proof of an empty completed migration"
+        );
+        assert!(!target.join(".migration-complete").exists());
+        assert_eq!(
+            fs::read_to_string(target.join("new-work.txt")).unwrap(),
+            "preserve target work"
+        );
+    }
+
+    #[test]
     fn interrupted_copy_resumes_without_overwriting_new_files_or_touching_business_data() {
         let temp = tempfile::tempdir().unwrap();
         let business = temp.path().join("business");
@@ -354,5 +387,28 @@ mod migration_tests {
             !source.exists(),
             "a completed migration must not recreate its old source"
         );
+
+        // A refresh can pass admission before its completion marker disappears. The copy boundary
+        // must still reject an unavailable source rather than publish a new completion for no copy.
+        let marker = target.join(".migration-complete");
+        let completion = fs::read(&marker).unwrap();
+        fs::remove_file(&marker).unwrap();
+        let error =
+            migrate_owned_directory(&business, &source, temp.path(), &target, "owned").unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+        assert!(!marker.exists());
+        assert!(!source.exists());
+        assert_eq!(
+            fs::read_to_string(target.join("scratch/new.txt")).unwrap(),
+            "new work"
+        );
+        let nested_target = business.join("studio-home/bot/workspace/owned");
+        let error =
+            migrate_owned_directory(&business, &source, temp.path(), &nested_target, "owned")
+                .unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+        assert!(!business.exists());
+        fs::write(&marker, completion).unwrap();
+        migrate_owned_directory(&business, &source, temp.path(), &target, "owned").unwrap();
     }
 }

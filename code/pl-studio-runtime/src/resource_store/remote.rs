@@ -39,12 +39,21 @@ impl CommandOutputArchive for RemoteCommandOutputArchive {
         &self,
         _: &str,
         snapshot: &pl_tool::command::CommandOutputSnapshot,
+        stream: pl_tool::command::CommandCaptureStream,
     ) -> Result<ResourceReference, ToolError> {
-        let path = snapshot
-            .capture_file
-            .to_str()
-            .ok_or_else(|| ToolError::new(ResourceStoreError::Identity))?
-            .replace('\\', "/");
+        if snapshot.capture_offsets.total() > MAX_COMMAND_ARCHIVE_BYTES {
+            return Err(retention_failure(ResourceStoreError::TooLarge {
+                limit: MAX_COMMAND_ARCHIVE_BYTES,
+            }));
+        }
+        let confirmed = snapshot.capture_offsets.get(stream);
+        let path = match stream {
+            pl_tool::command::CommandCaptureStream::Stdout => &snapshot.capture_file,
+            pl_tool::command::CommandCaptureStream::Stderr => &snapshot.stderr_capture_file,
+        }
+        .to_str()
+        .ok_or_else(|| ToolError::new(ResourceStoreError::Identity))?
+        .replace('\\', "/");
         let scratch = self.host_scratch.clone();
         let staging = tokio::task::spawn_blocking(move || {
             std::fs::create_dir_all(&scratch)
@@ -63,7 +72,7 @@ impl CommandOutputArchive for RemoteCommandOutputArchive {
         // capture is refused without a full download. A local staging write failure is a storage
         // obligation; a transport/oversize failure is not, so it stays a plain tool error.
         self.files
-            .copy_capture_bounded(&path, &mut writer, MAX_COMMAND_ARCHIVE_BYTES)
+            .copy_capture_prefix(&path, &mut writer, confirmed, MAX_COMMAND_ARCHIVE_BYTES)
             .await
             .map_err(remote_download_failure)?;
         writer.sync_all().await.map_err(retention_io_fault)?;

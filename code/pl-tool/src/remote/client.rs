@@ -524,14 +524,15 @@ impl RemoteClient {
         &self,
         request: RemoteSpawnRequest,
     ) -> Result<crate::command::ManagedCommand, RemoteClientError> {
-        process::spawn(self, request, None).await
+        process::spawn(self, request, None, None).await
     }
     pub(super) async fn spawn_workspace_process(
         &self,
         lease: Arc<workspace::WorkspaceLease>,
         request: RemoteSpawnRequest,
+        start: Option<crate::command::CommandStartControl>,
     ) -> Result<crate::command::ManagedCommand, RemoteClientError> {
-        process::spawn(self, request, Some(lease)).await
+        process::spawn(self, request, Some(lease), start).await
     }
 }
 
@@ -563,7 +564,7 @@ impl UploadReservation {
                 _lease: self.memory,
             },
             self.reply_limit,
-            0,
+            SubmissionControl::default(),
         );
         async move {
             received
@@ -729,7 +730,10 @@ async fn submit(
         workspace,
         ReplyMemory::Owned { _lease: memory },
         reply_limit,
-        admission,
+        SubmissionControl {
+            admission_wait_micros: admission,
+            ..Default::default()
+        },
     ))
 }
 fn request_cost<'a>(
@@ -800,6 +804,11 @@ impl AcquiredResource {
         }
     }
 }
+#[derive(Default)]
+struct SubmissionControl {
+    admission_wait_micros: u64,
+    start: Option<crate::command::CommandStartControl>,
+}
 fn submit_reserved(
     inner: &Arc<RemoteClientInner>,
     request: RemoteRequest,
@@ -807,7 +816,7 @@ fn submit_reserved(
     workspace: Option<Arc<workspace::WorkspaceLease>>,
     mut memory: ReplyMemory,
     reply_limit: usize,
-    admission_wait_micros: u64,
+    control: SubmissionControl,
 ) -> PendingReply {
     let id = format!(
         "{}-{}",
@@ -815,11 +824,15 @@ fn submit_reserved(
         inner.next_request_id.fetch_add(1, Ordering::Relaxed)
     );
     let (reply, received) = oneshot::channel();
+    let SubmissionControl {
+        admission_wait_micros,
+        start,
+    } = control;
     let owner = inner.clone();
     let acquired = AcquiredResource::for_request(&request);
     inner.streams.spawn(async move {
         let _workspace = workspace;
-        let mut result = perform(&owner, &id, request, body, reply_limit).await;
+        let mut result = perform(&owner, &id, request, body, reply_limit, start).await;
         if let Ok(reply) = &mut result {
             // The request and unused response promise are no longer resident. Keeping their
             // whole admission quantum in a tiny control reply can deadlock the next heartbeat
@@ -855,6 +868,7 @@ async fn perform(
     request: RemoteRequest,
     body: Bytes,
     reply_limit: usize,
+    start: Option<crate::command::CommandStartControl>,
 ) -> Result<RemoteReply, RemoteClientError> {
     let started = std::time::Instant::now();
     let control = request.is_control();
@@ -862,20 +876,45 @@ async fn perform(
     let mut not_started_generation = None;
     let mut submitted_generation = None;
     let reply = loop {
-        let (generation, wire) = ready(inner).await?;
+        let (generation, wire) = if !uncertain {
+            if let Some(start) = &start {
+                tokio::select! {
+                    biased;
+                    _ = start.stopped() => return Err(RemoteClientError::Cancelled),
+                    result = ready(inner) => result?,
+                }
+            } else {
+                ready(inner).await?
+            }
+        } else {
+            ready(inner).await?
+        };
         let epoch = inner
             .hello
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .as_ref()
             .map_or(0, |hello| hello.session.epoch);
-        let query = if uncertain && !control {
+        let mut query = if uncertain && !control {
             RemoteRequest::OperationResult {
                 operation_id: id.to_owned(),
             }
         } else {
             request.clone()
         };
+        if !uncertain && let Some(start) = &start {
+            start.check().map_err(|_| RemoteClientError::Cancelled)?;
+            if let RemoteRequest::Spawn(request) = &mut query {
+                request.remaining_timeout_ms = Some(
+                    start
+                        .deadline()
+                        .saturating_duration_since(tokio::time::Instant::now())
+                        .as_millis()
+                        .min(u64::MAX as u128) as u64,
+                );
+            }
+            start.mark_start_attempted();
+        }
         let data = if uncertain && !control {
             Bytes::new()
         } else {
@@ -936,6 +975,9 @@ async fn perform(
                     });
                 }
                 not_started_generation = Some(generation);
+                if let Some(start) = &start {
+                    start.confirm_not_started();
+                }
                 uncertain = false;
             }
             Ok(reply) => break reply,
@@ -1191,6 +1233,7 @@ async fn wait_process(
         RemoteRequest::WaitProcess { process_id },
         Bytes::new(),
         limit,
+        None,
     )
     .await
 }

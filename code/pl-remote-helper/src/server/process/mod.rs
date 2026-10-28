@@ -7,6 +7,7 @@ use crate::client::{ChildStdin, ManagedWorker, ProcessCommand, ProcessTerminatio
 use journal::Journal;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::{Notify, watch};
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
@@ -52,7 +53,7 @@ impl ProcessRegistry {
         &self,
         request: RemoteSpawnRequest,
         cwd: PathBuf,
-        capture: Option<PathBuf>,
+        capture: Option<(PathBuf, PathBuf)>,
     ) -> Result<(), RemoteError> {
         if self.closing.is_cancelled() {
             return Err(closed());
@@ -133,10 +134,32 @@ impl ProcessRegistry {
         entry: &Entry,
         request: &RemoteSpawnRequest,
         cwd: PathBuf,
-        capture_path: Option<PathBuf>,
+        capture_path: Option<(PathBuf, PathBuf)>,
     ) -> Result<RemoteProcessExit, RemoteError> {
-        let mut capture =
-            capture::Capture::prepare(&request.capture, capture_path.as_deref()).await?;
+        let remaining = request
+            .remaining_timeout_ms
+            .map(Duration::from_millis)
+            .unwrap_or(Duration::from_secs(10));
+        let deadline = tokio::time::Instant::now()
+            .checked_add(remaining)
+            .ok_or_else(|| {
+                remote_error(
+                    RemoteErrorCode::InvalidRequest,
+                    "remaining timeout cannot be represented",
+                )
+            })?;
+        let start = crate::start_control::CommandStartControl::new(
+            deadline,
+            entry.cancel.clone(),
+            self.closing.clone(),
+        );
+        let mut capture = capture::Capture::prepare(
+            &request.capture,
+            capture_path
+                .as_ref()
+                .map(|(out, err)| (out.as_path(), err.as_path())),
+        )
+        .await?;
         if entry.cancel.is_cancelled() {
             return Err(closed());
         }
@@ -151,7 +174,7 @@ impl ProcessRegistry {
         }
         let executable =
             std::env::current_exe().map_err(|e| io_error("locate process worker", e))?;
-        let mut worker = ManagedWorker::spawn(&executable, command)
+        let mut worker = ManagedWorker::spawn_controlled(&executable, command, &start)
             .await
             .map_err(|e| remote_error(RemoteErrorCode::Io, e.to_string()))?;
         entry.input.lock().await.writer = worker.take_stdin();
@@ -183,7 +206,9 @@ impl ProcessRegistry {
                 let count = match count {
                     Ok(count) => count,
                     Err(error) => {
-                        failure.get_or_insert_with(|| io_error("read process output", error));
+                        failure.get_or_insert_with(|| {
+                            remote_error(RemoteErrorCode::OutputRead, error.to_string())
+                        });
                         entry.cancel.cancel();
                         0
                     }

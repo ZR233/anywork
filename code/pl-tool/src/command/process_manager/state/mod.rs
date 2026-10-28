@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 use super::{CommandProcessState, HeadTailBuffer, INTERNAL_BUFFER_BYTES, StreamKind};
-use crate::command::CommandCaptureStream;
+use crate::command::{CommandCaptureOffsets, CommandCaptureStream};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", content = "data", rename_all = "camelCase")]
@@ -71,12 +71,12 @@ pub enum CommandTerminationReason {
 
 /// One accepted capture chunk a failed capture has not stored yet, in acceptance order.
 ///
-/// It keeps the stream the bytes came from, so the repair restores the same framing, and the exact
+/// It keeps the stream the bytes came from, so the repair restores the correct raw file, and the exact
 /// accepted bytes, so a retry re-materializes them verbatim instead of re-running the command. The
 /// bytes are shared with the reader that accepted them, so retaining the plan never copies output.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CaptureRepairChunk {
-    /// Stream the pending bytes came from, so the repair restores the same framing.
+    /// Stream whose raw file receives the pending bytes.
     pub stream: CommandCaptureStream,
     /// The accepted chunk the failed capture could not store.
     pub pending: Arc<[u8]>,
@@ -93,7 +93,7 @@ pub struct CaptureRepairChunk {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CaptureRepair {
     /// Length of the capture fragment the backend last confirmed: truncate back here before replaying.
-    pub committed_len: u64,
+    pub confirmed: CommandCaptureOffsets,
     /// Accepted chunks the failed capture did not store, in the order they were accepted.
     pub chunks: Vec<CaptureRepairChunk>,
 }
@@ -121,14 +121,21 @@ pub enum CommandCaptureFailure {
     /// The accepted bytes the failed append could not store are named by the snapshot's
     /// [`CaptureRepair`], so a retry re-materializes exactly those bytes instead of archiving a short
     /// fragment as if it were whole.
-    Write { message: String },
+    Write {
+        message: String,
+    },
+    Flush {
+        message: String,
+    },
     /// The operation's own output stream could not be read any further.
     ///
     /// A read failure is not a healthy end of output: the capture is truncated at this point, so the
     /// operation is stopped and reported with the bytes already accepted instead of being treated as a
     /// clean exit. It is typed like a write failure because it is the same "accepted output could not
     /// be captured" fact, and the retained capture can be re-saved through the same obligation.
-    Read { message: String },
+    Read {
+        message: String,
+    },
 }
 
 impl CommandCaptureFailure {
@@ -142,6 +149,7 @@ impl CommandCaptureFailure {
             } => format!(
                 "command output exceeded the {limit_bytes}-byte per-command capture limit: {charged_bytes} bytes of capture were stored and {refused_bytes} bytes of observed storage cost were refused"
             ),
+            Self::Flush { message } => format!("command output capture flush failed: {message}"),
             Self::Write { message } => format!("command output capture failed: {message}"),
             Self::Read { message } => format!("command output stream could not be read: {message}"),
         }
@@ -263,13 +271,18 @@ impl CommandProcessState {
             pending_stdout: HeadTailBuffer::new(INTERNAL_BUFFER_BYTES),
             pending_stderr: HeadTailBuffer::new(INTERNAL_BUFFER_BYTES),
             output_revision: 0,
+            exit: None,
             capture_limit_bytes,
             capture_ownership,
             producer_capture: None,
             capture_charged_bytes: capture_committed_len,
+            capture_received_bytes: capture_committed_len,
             capture_refused_bytes: 0,
             model_output_bytes_cap,
-            capture_committed_len,
+            capture_offsets: CommandCaptureOffsets {
+                stdout: capture_committed_len,
+                stderr: 0,
+            },
             capture_pending: std::collections::VecDeque::new(),
             capture_write_failed: false,
             capture_drained: false,
@@ -329,6 +342,7 @@ impl CommandProcessState {
             };
         }
         self.capture_charged_bytes += storage_cost;
+        self.capture_received_bytes += chunk.len() as u64;
         self.capture_pending.push_back(CaptureRepairChunk {
             stream,
             pending: Arc::from(chunk),
@@ -343,11 +357,12 @@ impl CommandProcessState {
         if self.capture_ownership != crate::command::CommandCaptureOwnership::Producer
             || receipt.limit_bytes != self.capture_limit_bytes
             || receipt.charged_bytes > receipt.limit_bytes
-            || receipt.committed_len > receipt.charged_bytes
+            || receipt.confirmed.total() > receipt.captured_bytes
+            || receipt.captured_bytes > receipt.charged_bytes
         {
             return Err("producer capture receipt violates ownership or budget".into());
         }
-        self.capture_committed_len = receipt.committed_len;
+        self.capture_offsets = receipt.confirmed;
         self.producer_capture = Some(receipt);
         if receipt.refused_bytes > 0 {
             let failure = CommandCaptureFailure::OutputLimitExceeded {
@@ -371,8 +386,9 @@ impl CommandProcessState {
         match self.capture_ownership {
             crate::command::CommandCaptureOwnership::Manager => {
                 Some(crate::command::CommandCaptureReceipt {
+                    captured_bytes: self.capture_received_bytes,
                     limit_bytes: self.capture_limit_bytes,
-                    committed_len: self.capture_committed_len,
+                    confirmed: self.capture_offsets,
                     charged_bytes: self.capture_charged_bytes,
                     refused_bytes: self.capture_refused_bytes,
                 })
@@ -393,8 +409,9 @@ impl CommandProcessState {
 
     /// Confirms the front chunk was stored and the fragment is now `committed_len` bytes long.
     pub(super) fn confirm_front_capture(&mut self, committed_len: u64) {
-        self.capture_pending.pop_front();
-        self.capture_committed_len = committed_len;
+        if let Some(chunk) = self.capture_pending.pop_front() {
+            self.capture_offsets.set(chunk.stream, committed_len);
+        }
     }
 
     /// Marks that a capture write failed, so no further chunk may be appended.
@@ -430,7 +447,7 @@ impl CommandProcessState {
             return None;
         }
         Some(CaptureRepair {
-            committed_len: self.capture_committed_len,
+            confirmed: self.capture_offsets,
             chunks: self.capture_pending.iter().cloned().collect(),
         })
     }
@@ -546,8 +563,14 @@ impl CommandProcessState {
             }
             CommandProcessTransition::StreamClosed(stream) => {
                 match stream {
-                    StreamKind::Stdout => self.stdout_open = false,
-                    StreamKind::Stderr => self.stderr_open = false,
+                    StreamKind::Stdout => {
+                        self.stdout_open = false;
+                        self.stdout.finish_text();
+                    }
+                    StreamKind::Stderr => {
+                        self.stderr_open = false;
+                        self.stderr.finish_text();
+                    }
                 }
                 // The final result is published here only once the capture writer has settled the
                 // plan: a stream closing is not enough on its own, because the writer may still owe

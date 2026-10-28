@@ -102,7 +102,9 @@ impl ExecutionBackend for RemoteExecutionBackend {
                     cwd,
                     environment: request.env,
                     capture: RemoteCapture::None,
+                    remaining_timeout_ms: None,
                 },
+                None,
             )
             .await
             .map_err(|source| RemoteExecutionError::Spawn { source })?;
