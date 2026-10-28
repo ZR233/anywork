@@ -384,7 +384,7 @@ pub fn gui_tool_scroll_expected_arguments(
     )])
 }
 
-/// Real file listings and a long shell argument for observing tool expansion.
+/// Real file reads and a long shell argument for observing tool expansion.
 /// Each prompt is followed by enough text to put its tools inside the timeline.
 /// `powershell` selects the workspace's command dialect, independently of this host.
 pub fn gui_tool_scroll_script(powershell: bool, resource_lifecycle: bool) -> Vec<Step> {
@@ -403,15 +403,23 @@ pub fn gui_tool_scroll_script(powershell: bool, resource_lifecycle: bool) -> Vec
         ("scroll-item-c", "scroll-call-c"),
         ("scroll-item-failed", "scroll-call-failed"),
     ];
+    // Counts consume identities in exact order: short/read-second, medium, long,
+    // arguments, a/b/c, failed.
+    let prompts = [
+        ("Tool scroll short", 2),
+        ("Tool scroll medium", 1),
+        ("Tool scroll long", 1),
+        ("Tool scroll arguments", 1),
+        ("Tool scroll multiple", 3),
+        ("Tool scroll failed", 1),
+    ];
+    assert_eq!(
+        prompts.iter().map(|(_, count)| *count).sum::<usize>(),
+        identities.len(),
+        "prompt counts must consume each declared tool identity exactly once"
+    );
     let mut next_identity = 0;
-    for (prompt, lines, count) in [
-        ("Tool scroll short", 1, 2),
-        ("Tool scroll medium", 12, 1),
-        ("Tool scroll long", 200, 1),
-        ("Tool scroll arguments", 0, 1),
-        ("Tool scroll multiple", 80, 3),
-        ("Tool scroll failed", 0, 1),
-    ] {
+    for (prompt, count) in prompts {
         let calls = identities[next_identity..next_identity + count]
             .iter()
             .map(|&(item_id, call_id)| {
@@ -437,6 +445,32 @@ pub fn gui_tool_scroll_script(powershell: bool, resource_lifecycle: bool) -> Vec
                         .to_string(),
                     };
                 }
+                if item_id == "scroll-item-medium" {
+                    return RealtimeToolCall {
+                        item_id,
+                        call_id,
+                        name: "read_file",
+                        arguments: json!({"path":"scroll-fixture/long-read.txt", "maxLines":12})
+                            .to_string(),
+                    };
+                }
+                if item_id == "scroll-item-long" {
+                    return RealtimeToolCall {
+                        item_id,
+                        call_id,
+                        name: "read_file",
+                        arguments: json!({"path":"scroll-fixture/long-read.txt", "maxLines":500})
+                            .to_string(),
+                    };
+                }
+                if item_id == "scroll-item-failed" {
+                    return RealtimeToolCall {
+                        item_id,
+                        call_id,
+                        name: "read_file",
+                        arguments: json!({"path":"scroll-fixture/missing.txt"}).to_string(),
+                    };
+                }
                 if let Some(arguments) = expected_arguments.get(call_id) {
                     return RealtimeToolCall {
                         item_id,
@@ -445,12 +479,7 @@ pub fn gui_tool_scroll_script(powershell: bool, resource_lifecycle: bool) -> Vec
                         arguments: arguments.clone(),
                     };
                 }
-                RealtimeToolCall {
-                    item_id,
-                    call_id,
-                    name: "list_files",
-                    arguments: json!({"path":"scroll-fixture", "limit":lines}).to_string(),
-                }
+                unreachable!("all tool scroll calls are defined above")
             })
             .collect::<Vec<_>>();
         next_identity += count;
@@ -515,8 +544,8 @@ pub fn gui_tool_scroll_script(powershell: bool, resource_lifecycle: bool) -> Vec
         .map(|(item_id, call_id)| RealtimeToolCall {
             item_id,
             call_id,
-            name: "list_files",
-            arguments: json!({"path":"scroll-fixture", "limit":1}).to_string(),
+            name: "read_file",
+            arguments: json!({"path":"scroll-fixture/entry-000.txt"}).to_string(),
         })
         .collect();
     script.add(|step| {

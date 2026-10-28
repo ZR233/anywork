@@ -1,5 +1,5 @@
 use crate::tool_error;
-use pl_protocol::{PureError, Result};
+use pl_protocol::Result;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -14,9 +14,6 @@ use super::schema::*;
 
 const DEFAULT_READ_FILE_LINES: usize = 200;
 const MAX_READ_FILE_LINES: usize = 500;
-const MAX_READ_PATH_SUGGESTIONS: usize = 5;
-const DEFAULT_LIST_FILES_LIMIT: usize = 100;
-const MAX_LIST_FILES_LIMIT: usize = 200;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct WorkspaceFileToolExecution {
@@ -58,7 +55,6 @@ where
     };
     let value = match kind {
         WorkspaceFileToolKind::ReadFile => read_file(backend, arguments).await?,
-        WorkspaceFileToolKind::ListFiles => list_files(backend, arguments).await?,
         WorkspaceFileToolKind::ApplyPatch => apply_patch(backend, arguments).await?,
     };
     Ok(Some(WorkspaceFileToolExecution::json(value)?))
@@ -99,12 +95,7 @@ where
         path: input.path.clone(),
         cwd: input.working_directory.cwd.clone(),
     };
-    let stat = match backend.stat(stat_request).await {
-        Ok(stat) => stat,
-        Err(error) => {
-            return Err(unresolved_read_path_error(backend, &input.path, error).await);
-        }
-    };
+    let stat = backend.stat(stat_request).await?;
     if !stat.is_file {
         return Err(tool_error(
             TOOL_READ_FILE,
@@ -135,111 +126,6 @@ where
         "nextStartLine": next_start_line,
         "contentHash": pl_core::context::content_hash(content.as_bytes()),
         "text": text,
-    }))
-}
-
-async fn unresolved_read_path_error<B>(backend: &B, path: &str, error: PureError) -> PureError
-where
-    B: WorkspaceFileBackend,
-{
-    let recovery = match same_name_candidates(backend, path).await {
-        Ok((candidates, incomplete)) => {
-            json!({"candidatePaths":candidates,"incomplete":incomplete})
-        }
-        Err(reason) => json!({"candidatePaths":[],"unavailableReason":reason.to_string()}),
-    };
-    tool_error(TOOL_READ_FILE, format!("{error}; recovery={recovery}"))
-}
-
-async fn same_name_candidates<B: WorkspaceFileBackend>(
-    backend: &B,
-    path: &str,
-) -> Result<(Vec<String>, bool)> {
-    let Some(file_name) = path_file_name(path) else {
-        return Ok((Vec::new(), false));
-    };
-    let result = backend
-        .list(WorkspaceFileListRequest {
-            path: ".".into(),
-            cwd: None,
-            glob: format!("**/{file_name}"),
-            max_files: MAX_READ_PATH_SUGGESTIONS,
-            include_dirs: false,
-            cursor: None,
-            implicit_recovery: true,
-        })
-        .await?;
-    let candidates = result
-        .files
-        .into_iter()
-        .filter(|candidate| path_file_name(candidate).is_some_and(|name| name == file_name))
-        .take(MAX_READ_PATH_SUGGESTIONS)
-        .map(|path| path.strip_prefix("./").unwrap_or(&path).replace('\\', "/"))
-        .collect();
-    Ok((candidates, result.truncated))
-}
-
-fn path_file_name(path: &str) -> Option<&str> {
-    path.rsplit(['/', '\\'])
-        .find(|component| !component.is_empty())
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub(super) struct ListFilesInput {
-    /// Directory to list; defaults to the current working directory.
-    path: Option<String>,
-    #[serde(flatten)]
-    working_directory: WorkingDirectoryInput,
-    /// Optional file glob; omitted or blank uses `*`.
-    glob: Option<String>,
-    #[serde(flatten)]
-    pagination: PaginationInput,
-    /// Include directory entries in addition to files.
-    include_dirs: Option<bool>,
-}
-
-async fn list_files<B>(backend: &B, arguments: Value) -> Result<Value>
-where
-    B: WorkspaceFileBackend,
-{
-    let input: ListFilesInput = deserialize_tool_input(TOOL_LIST_FILES, arguments)?;
-    let path = path_or_current(input.path);
-    let glob = input
-        .glob
-        .filter(|glob| !glob.trim().is_empty())
-        .unwrap_or_else(|| "*".to_string());
-    let include_dirs = input.include_dirs.unwrap_or(false);
-    let limit = input.pagination.limit.unwrap_or(DEFAULT_LIST_FILES_LIMIT);
-    if !(1..=MAX_LIST_FILES_LIMIT).contains(&limit) {
-        return Err(tool_error(
-            TOOL_LIST_FILES,
-            format!("limit must be between 1 and {MAX_LIST_FILES_LIMIT}"),
-        ));
-    }
-    let result = backend
-        .list(WorkspaceFileListRequest {
-            path: path.clone(),
-            cwd: input.working_directory.cwd,
-            glob: glob.clone(),
-            max_files: limit,
-            include_dirs,
-            cursor: input.pagination.cursor,
-            implicit_recovery: false,
-        })
-        .await?;
-    let files = result.files;
-    let next_cursor = result.next_cursor;
-    let result_hash = pl_core::context::content_hash(serde_json::to_string(&files)?.as_bytes());
-    Ok(json!({
-        "path": path,
-        "glob": glob,
-        "includeDirs": include_dirs,
-        "files": files,
-        "count": files.len(),
-        "nextCursor": next_cursor,
-        "cursorReset": false,
-        "resultHash": result_hash,
     }))
 }
 
@@ -275,19 +161,4 @@ where
 struct WorkingDirectoryInput {
     /// Optional working directory used to resolve relative paths.
     cwd: Option<String>,
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-struct PaginationInput {
-    /// Maximum results in this page.
-    #[schemars(range(min = 1, max = 200))]
-    limit: Option<usize>,
-    /// Exact nextCursor from the corresponding previous page; omit on the first page.
-    cursor: Option<String>,
-}
-
-fn path_or_current(path: Option<String>) -> String {
-    path.filter(|path| !path.trim().is_empty())
-        .unwrap_or_else(|| ".".to_string())
 }

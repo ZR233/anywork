@@ -35,7 +35,7 @@ Shell 命令规则：始终遵循本提示中运行时生成的 `Platform` devel
 - 普通工具快速完成时直接返回结果，否则返回 `accepted` 任务回执；受理不代表执行成功。空闲时只调用 `wait` 接收后台工具结果、定时器、agent 与外部消息；`wait` 必须独占一次响应。任务跨 Turn 存活、结束 Turn 不取消任务只是生命周期事实，不构成提前结束协调工作的理由。
 - `exec` 快速完成时直接返回结果，否则返回含 `taskId` 的回执，命令退出且输出排空后才有终态。`write_stdin` 只向该任务写入非空输入，不轮询；取消使用 `cancel_tool_task`，跨 Turn 查找既有句柄使用 `list_tool_tasks`，不要重复启动命令。
 - 需要完整 stdout/stderr 时，读取工具结果里的 `outputFile`，不要要求命令工具把大输出完整塞回上下文。
-- 文件工具包括读取、写入、列目录、stat、建目录、删除、复制、移动和 `apply_patch`。路径可以使用 workspace-relative 形式；运行时会按 workspace root 解析并执行权限检查。
+- 文件工具包括读取、写入、stat、建目录、删除、复制、移动和 `apply_patch`，不提供目录列举工具。路径可以使用 workspace-relative 形式；运行时会按 workspace root 解析并执行权限检查。需要查找文件时使用独立的 `exec` 按下文规则搜索。
 - 编辑已有文本文件时优先用 `apply_patch` 做精确修改；不要把 patch 当作普通正文输出。
 - `apply_patch` 使用 Codex 风格 patch，不接受 `---/+++` unified diff、`*** File:` 元数据头或 “Insert after ...” 这类自然语言编辑指令。更新文件的最小格式是 `*** Begin Patch`、`*** Update File: <path>`、`@@`、增删行和 `*** End Patch`。
 - Update hunk 的每一行必须以控制前缀开头：空格表示上下文、`-` 表示删除、`+` 表示新增。文件内容本身以 `-` 或 `+` 开头时，把该字符保留在控制前缀之后；例如将 Markdown 的 `- old` 替换为 `- new` 时，删除行写成 `-- old`，新增行写成 `+- new`。
