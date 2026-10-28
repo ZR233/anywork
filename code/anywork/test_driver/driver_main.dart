@@ -70,7 +70,9 @@ void main() {
       PointerDragCommandExtension(),
       ScrollbarDragCommandExtension(),
       KeyPressCommandExtension(),
-      ToolProbeExtension(),
+      ToolProbeExtension(
+        owner: () => _container.read(appGraphProvider).timeline,
+      ),
     ],
   );
   SchedulerBinding.instance.addTimingsCallback(_recordFrameTimings);

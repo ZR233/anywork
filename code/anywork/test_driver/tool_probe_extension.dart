@@ -1,7 +1,10 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_row.dart';
+import 'package:anywork/src/presentation/view_models/timeline_session_owner.dart';
 import 'package:anywork/src/shared/studio_driver_state.dart';
+import 'package:anywork_client/studio_client.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
@@ -11,8 +14,11 @@ import 'package:flutter_driver/flutter_driver.dart' hide find;
 import 'package:flutter_test/flutter_test.dart';
 
 import 'tool_probe.dart';
+import 'raw_tap_extension.dart';
 
 class ToolProbeExtension extends CommandExtension {
+  ToolProbeExtension({required this.owner});
+  final TimelineSessionOwner Function() owner;
   static const _mouseDevice = 901;
   int? _mouseViewId;
 
@@ -32,6 +38,9 @@ class ToolProbeExtension extends CommandExtension {
     CommandHandlerFactory handlerFactory,
   ) async {
     final probe = command as ToolProbe;
+    if (probe.action == 'retryOlder') {
+      return _observeRetry(probe, prober, finderFactory, handlerFactory);
+    }
     final target = probe.finder is ByValueKey
         ? find.byKey(
             ValueKey<String>((probe.finder as ByValueKey).keyValue as String),
@@ -135,6 +144,9 @@ class ToolProbeExtension extends CommandExtension {
                 'axis': (e.state as ScrollableState).position.axis.name,
                 'pixels': (e.state as ScrollableState).position.pixels,
                 'max': (e.state as ScrollableState).position.maxScrollExtent,
+                'visibleHeight': _visibleInViewports(
+                  e.renderObject! as RenderBox,
+                ).height.clamp(0.0, double.infinity),
               },
         ],
       };
@@ -169,7 +181,7 @@ class ToolProbeExtension extends CommandExtension {
       );
     } else if (probe.action == 'leaveHover') {
       _removeMouse();
-    } else if (probe.action == 'tap') {
+    } else if (probe.action == 'tap' || probe.action == 'revealHeader') {
       // Header, not the center of the whole expanded tile.
       final expansion = _expansionTile(target);
       final header = expansion == null
@@ -182,9 +194,13 @@ class ToolProbeExtension extends CommandExtension {
       if (headerBox is! RenderBox) {
         throw StateError('Tool target exposes no actual expandable header');
       }
-      await prober.tapAt(
-        headerBox.localToGlobal(headerBox.size.center(Offset.zero)),
-      );
+      if (probe.action == 'revealHeader') {
+        await Scrollable.ensureVisible(header!);
+      } else {
+        await prober.tapAt(
+          headerBox.localToGlobal(headerBox.size.center(Offset.zero)),
+        );
+      }
     } else if (probe.action == 'wheelOutside') {
       GestureBinding.instance.handlePointerEvent(
         PointerScrollEvent(
@@ -193,6 +209,23 @@ class ToolProbeExtension extends CommandExtension {
           kind: PointerDeviceKind.mouse,
         ),
       );
+    } else if (probe.action == 'revealInner') {
+      final candidates = find
+          .descendant(of: target, matching: find.byType(Scrollable))
+          .evaluate()
+          .whereType<StatefulElement>()
+          .where(
+            (e) =>
+                (e.state as ScrollableState).position.axis == Axis.vertical &&
+                (e.state as ScrollableState).position.maxScrollExtent > 0,
+          );
+      if (candidates.isEmpty) {
+        throw StateError('No vertically scrollable tool payload');
+      }
+      // A completed activity group has its own bounded viewport. Revealing
+      // only the outer tool header does not reveal a payload below it. Use
+      // Flutter's public nested-scroll contract before sending a real wheel.
+      await Scrollable.ensureVisible(candidates.last);
     } else if (probe.action == 'wheelInner') {
       final scrollables = find.descendant(
         of: target,
@@ -232,6 +265,54 @@ class ToolProbeExtension extends CommandExtension {
       samples.add(sample());
     }
     return _ProbeResult(samples);
+  }
+
+  Future<Result> _observeRetry(
+    ToolProbe command,
+    WidgetController prober,
+    CreateFinderFactory finderFactory,
+    CommandHandlerFactory handlerFactory,
+  ) async {
+    final display = owner();
+    final before = display.source.value;
+    if (before == null || before.isLoadingOlder || before.olderError == null) {
+      throw StateError('Retry requires a settled page failure');
+    }
+    final completed = Completer<void>();
+    final samples = <Object?>[];
+    var tapping = false;
+    var admitted = false;
+    final observation = display.source.watch((view) {
+      if (!tapping ||
+          view == null ||
+          view.threadId != before.threadId ||
+          view.generation != before.generation) {
+        return;
+      }
+      if (view.isLoadingOlder && view.olderError == null) admitted = true;
+      if (!admitted) return;
+      final error = view.olderError;
+      samples.add({
+        'threadId': view.threadId,
+        'generation': view.generation,
+        'loadingOlder': view.isLoadingOlder,
+        'olderErrorCode': error is StudioFailure ? error.code.name : null,
+        'olderErrorCorrelationId': error is StudioFailure
+            ? error.correlationId
+            : null,
+      });
+      if (!view.isLoadingOlder && !completed.isCompleted) completed.complete();
+    });
+    try {
+      await RawTapCommandExtension(onBeforeTap: () => tapping = true)
+          .call(command, prober, finderFactory, handlerFactory);
+      await completed.future.timeout(
+        command.timeout ?? const Duration(seconds: 10),
+      );
+      return _ProbeResult(samples);
+    } finally {
+      observation.cancel();
+    }
   }
 
   Finder? _expansionTile(Finder target) {

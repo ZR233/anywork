@@ -1134,14 +1134,16 @@ Future<void> main(List<String> args) async {
       final tile = find.byValueKey('timeline-block-${toolItem.id}');
       await place(tile, 125);
       final expanded = await probe(tile, 'tap');
+      await File('${output.path}/case-$index-tool-expanded.json')
+          .writeAsString(jsonEncode(expanded));
       await File('${output.path}/case-$index-tool-expanded.png')
           .writeAsBytes(await driver.screenshot());
       final nested = (expanded['samples'] as List).last['nested'] as List;
       Map<String, dynamic>? inside;
       if (nested.any((s) => s['axis'] == 'vertical' && (s['max'] as num) > 0)) {
-        // Move the output into the viewport; the tool title may now be above it.
-        await place(tile, 80);
+        await probe(tile, 'revealInner');
         inside = await probe(tile, 'wheelInner', dy: 60);
+        await probe(tile, 'revealHeader');
         await place(tile, 125);
       }
       // 收起前必须把真实 header 重新带回可点区域：展开后标题可能已被原生反向布局

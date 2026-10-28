@@ -6,8 +6,9 @@ import 'package:flutter_driver/flutter_driver.dart';
 import 'flutter_driver_session.dart';
 import 'pointer_scroll.dart';
 import 'timeline_observation.dart';
+import 'tool_probe.dart';
 
-/// Real paced output, native page Busy, frozen coverage and explicit UI recovery.
+/// Real paced output, explicit page boundaries, frozen coverage and UI recovery.
 /// No product state, storage rows or loading flags are injected.
 Future<Map<String, Object?>> observeStreamingHistory(
   FlutterDriverSession driver,
@@ -108,13 +109,19 @@ Future<Map<String, Object?>> observeStreamingHistory(
     }
   }
   if (frozen == null) {
-    throw StateError('Uncommitted gap did not report a retryable page failure');
+    throw StateError('Streaming history did not expose its page boundary');
   }
   final start = TimelineObservation.parse(frozen);
   final failureCode = (frozen['timeline'] as Map)['olderErrorCode'];
-  if (failureCode != 'busy') {
+  final failureCorrelation =
+      (frozen['timeline'] as Map)['olderErrorCorrelationId'];
+  final continuityExpired =
+      failureCode == 'protocol' &&
+      failureCorrelation == 'timeline-page-continuity';
+  if (failureCode != 'busy' && !continuityExpired) {
     throw StateError(
-      'Expected the real native gap Busy, received $failureCode: ${start.olderError}',
+      'Unexpected page failure $failureCode/$failureCorrelation: '
+      '${start.olderError}',
     );
   }
   start.requireConsistentIds();
@@ -125,7 +132,7 @@ Future<Map<String, Object?>> observeStreamingHistory(
     find.byValueKey('timeline-retry-older'),
     timeout: const Duration(seconds: 10),
   );
-  await File('${output.path}/streaming-history-busy.png')
+  await File('${output.path}/streaming-history-boundary.png')
       .writeAsBytes(await driver.screenshot());
   final completed = await until('background completion', (state) {
     final workspace = state['workspace'] as Map?;
@@ -146,7 +153,20 @@ Future<Map<String, Object?>> observeStreamingHistory(
   }
   await File('${output.path}/streaming-history-frozen.png')
       .writeAsBytes(await driver.screenshot());
-  await driver.rawTap(find.byValueKey('timeline-retry-older'));
+  final retryAdmission = await driver.sendCommand(
+    ToolProbe(find.byValueKey('timeline-retry-older'), 'retryOlder'),
+  );
+  final retrySamples = retryAdmission['samples'] as List;
+  if (!retrySamples.any(
+        (value) =>
+            value['threadId'] == start.threadId &&
+            value['generation'] == start.generation &&
+            value['loadingOlder'] == true &&
+            value['olderErrorCode'] == null,
+      ) ||
+      retrySamples.last['loadingOlder'] != false) {
+    throw StateError('Retry UI did not publish admission and completion');
+  }
   final retried = await until('retry after admission', (state) {
     if (!settled(state)) return false;
     final content = TimelineObservation.parse(state);
@@ -197,6 +217,9 @@ Future<Map<String, Object?>> observeStreamingHistory(
     'busyDuringFailure': busy(frozen),
     'failure': '${start.olderError}',
     'failureCode': failureCode,
+    'failureCorrelationId': failureCorrelation,
+    'boundary': continuityExpired ? 'coverageExpired' : 'storageBusy',
+    'retryAdmission': retryAdmission,
     'before': start.summary(),
     'frozenAfterCompletion': end.summary(),
     'bodyUnchanged': body(frozen) == body(completed),
