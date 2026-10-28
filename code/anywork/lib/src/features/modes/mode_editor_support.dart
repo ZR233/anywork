@@ -30,6 +30,7 @@ abstract final class ModeEditorKeys {
   static const copy = ValueKey<String>('mode-editor-copy');
   static const deleteMode = ValueKey<String>('mode-editor-delete');
   static const reload = ValueKey<String>('mode-editor-reload');
+  static const more = ValueKey<String>('mode-editor-more');
   static const undo = ValueKey<String>('mode-editor-undo');
   static const redo = ValueKey<String>('mode-editor-redo');
   static const addState = ValueKey<String>('mode-editor-add-state');
@@ -41,6 +42,7 @@ abstract final class ModeEditorKeys {
   static const validate = ValueKey<String>('mode-editor-validate');
   static const autoLayout = ValueKey<String>('mode-editor-auto-layout');
   static const fitView = ValueKey<String>('mode-editor-fit-view');
+  static const canvas = ValueKey<String>('mode-editor-canvas');
   static const zoomIn = ValueKey<String>('mode-editor-zoom-in');
   static const zoomOut = ValueKey<String>('mode-editor-zoom-out');
   static const closeDetail = ValueKey<String>('mode-editor-close-detail');

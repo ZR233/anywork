@@ -4347,6 +4347,9 @@ class AppLocalizationsEn extends AppLocalizations {
   String get modeEditorStageInstructions => 'Stage instructions';
 
   @override
+  String get modeEditorCompletionCriteriaTitle => 'Completion criteria';
+
+  @override
   String get modeEditorCompletionCriteria =>
       'Completion criteria (one per line)';
 

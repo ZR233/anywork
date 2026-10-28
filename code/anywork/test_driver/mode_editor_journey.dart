@@ -180,24 +180,16 @@ class ModeEditorJourney {
   }
 
   Future<void> openEditor() async {
-    // settings-open is hidden while settings is on the navigator; only push
-    // when we really are back on the studio shell.
+    // Wait for page exits before probing the destination; a departing route
+    // still owns its keys during the pop animation.
+    await driver.waitForAbsent(find.byValueKey('mode-workspace-back'));
     try {
       await driver.waitFor(
-        find.byValueKey('mode-workspace-back'),
+        find.byValueKey('settings-back'),
         timeout: const Duration(seconds: 2),
       );
-      // Still inside the workspace; leave it first without any dirty draft.
-      await tap('mode-workspace-back');
     } catch (_) {
-      try {
-        await driver.waitFor(
-          find.byValueKey('settings-back'),
-          timeout: const Duration(seconds: 2),
-        );
-      } catch (_) {
-        await tap('settings-open');
-      }
+      await tap('settings-open');
     }
     await tap('settings-tab-workModes');
     await driver.waitFor(
@@ -214,10 +206,12 @@ class ModeEditorJourney {
         timeout: const Duration(seconds: 3),
       );
       await tap('mode-workspace-back');
+      await driver.waitForAbsent(find.byValueKey('mode-workspace-back'));
     } catch (_) {
       /* already left the workspace */
     }
-    await leaveToStudio();
+    await tap('settings-back');
+    await driver.waitForAbsent(find.byValueKey('settings-back'));
   }
 
   /// 目录条目进入全屏工作区并等待文档就绪。
@@ -333,6 +327,34 @@ class ModeEditorJourney {
     require(builtin['readOnly'] == true, 'builtin is read only');
     await tap('mode-editor-fit-view');
     await capture('builtin-read-only');
+    final planningNode = find.byValueKey('mode-editor-node-planning');
+    final canvas = find.byValueKey('mode-editor-canvas');
+    final beforeCanvas = await driver.getTopLeft(canvas);
+    final beforeDetail = await driver.getTopLeft(planningNode);
+    await tap('mode-editor-node-working');
+    final afterCanvas = await driver.getTopLeft(canvas);
+    final afterDetail = await driver.getTopLeft(planningNode);
+    require(
+      (afterDetail.dx - afterCanvas.dx - beforeDetail.dx + beforeCanvas.dx)
+                  .abs() <
+              1 &&
+          (afterDetail.dy - afterCanvas.dy - beforeDetail.dy + beforeCanvas.dy)
+                  .abs() <
+              1,
+      'opening detail preserves canvas viewport',
+    );
+    await tap('mode-editor-fit-view');
+    await capture('builtin-stage-detail');
+    await driver.scrollUntilVisible(
+      find.byValueKey('mode-editor-detail-scroll'),
+      find.byValueKey('mode-editor-outgoing-edge:working->integrating'),
+      dyScroll: -180,
+      timeout: const Duration(seconds: 20),
+    );
+    await tap('mode-editor-outgoing-edge:working->integrating');
+    await capture('builtin-transition-detail');
+    await tap('mode-editor-close-detail');
+    await tap('mode-editor-fit-view');
     final original = jsonEncode(builtin['document']);
     await driver.dragBy(
       find.byValueKey('mode-editor-node-planning'),
@@ -486,7 +508,7 @@ class ModeEditorJourney {
           ),
       'stage deleted',
     );
-    await tap('mode-editor-close-detail');
+    await driver.waitForAbsent(find.byValueKey('mode-editor-close-detail'));
     await save();
     await tap('mode-editor-tab-flow');
     await tap('mode-editor-node-working');
@@ -526,6 +548,7 @@ class ModeEditorJourney {
     );
     await tap('mode-workspace-back');
     await tap('mode-editor-unsaved-discard');
+    await driver.waitForAbsent(find.byValueKey('mode-workspace-back'));
     await openEditor();
     await openMode(_modeId, 'discard restored canonical');
     checks['unsaved discard restored canonical'] = true;
@@ -561,13 +584,14 @@ class ModeEditorJourney {
     await tap('mode-editor-node-working');
     final property = find.byValueKey('mode-editor-detail-scroll');
     await driver.waitFor(property, timeout: const Duration(seconds: 30));
-    final beforeScroll = await driver.getTopLeft(property);
+    final field = find.byValueKey('mode-editor-detail-state-title');
+    final beforeScroll = await driver.getTopLeft(field);
     await driver.scrollBy(
       find.byValueKey('mode-editor-detail-scroll'),
       -180,
       mouseWheel: true,
     );
-    final afterScroll = await driver.getTopLeft(property);
+    final afterScroll = await driver.getTopLeft(field);
     require(
       afterScroll.dy < beforeScroll.dy - 20,
       'native wheel scrolls narrow details',
@@ -585,6 +609,7 @@ class ModeEditorJourney {
     final bytes = await file.readAsBytes();
     final catalogBefore = (await editor())['catalogRevision'];
     await file.writeAsString('{ invalid external document');
+    await tap('mode-editor-more');
     await tap('mode-editor-reload');
     await waitEditor(
       (state) => state['busy'] == false && state['error'] != null,
@@ -595,6 +620,7 @@ class ModeEditorJourney {
       'failed reload keeps published catalog',
     );
     await file.writeAsBytes(bytes);
+    await tap('mode-editor-more');
     await tap('mode-editor-reload');
     await waitEditor(
       (state) => state['busy'] == false && state['error'] == null,
@@ -622,6 +648,7 @@ class ModeEditorJourney {
     await submit(1);
     await checkpointStage('graph-updated');
     await openEditor();
+    await openMode(_modeId, 'reopen for prompt update');
     update = documentOf(await editor());
     update['prompt'] = 'mode-editor-prompt-only\n仅更新提示词，保留工作流进度。';
     await jsonDraft(update);
@@ -631,6 +658,8 @@ class ModeEditorJourney {
     await checkpointStage('prompt-updated');
     await submit(3, wait: false);
     await openEditor();
+    await openMode(_modeId, 'reopen for deletion');
+    await tap('mode-editor-more');
     await tap('mode-editor-delete');
     await tap('mode-editor-delete-confirm');
     final deleted = await waitEditor(

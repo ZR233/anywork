@@ -2104,6 +2104,7 @@
   "modeEditorInitialStateLockedHint": "The workflow always keeps one initial state; enable another stage instead.",
   "modeEditorInitialStateHint": "A run starts from this stage.",
   "modeEditorStageInstructions": "Stage instructions",
+  "modeEditorCompletionCriteriaTitle": "Completion criteria",
   "modeEditorCompletionCriteria": "Completion criteria (one per line)",
   "modeEditorAtomicCriteriaRequired": "An atomic stage needs at least one completion criterion; Rust validates on save.",
   "modeEditorOutgoingTransitions": "Outgoing transitions",

@@ -7806,6 +7806,12 @@ abstract class AppLocalizations {
   /// **'Stage instructions'**
   String get modeEditorStageInstructions;
 
+  /// No description provided for @modeEditorCompletionCriteriaTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Completion criteria'**
+  String get modeEditorCompletionCriteriaTitle;
+
   /// No description provided for @modeEditorCompletionCriteria.
   ///
   /// In en, this message translates to:

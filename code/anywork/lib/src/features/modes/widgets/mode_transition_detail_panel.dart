@@ -12,9 +12,9 @@ import 'package:flutter/material.dart';
 
 import '../../../app/theme/studio_tokens.dart';
 import '../../../l10n/app_localizations.dart';
-import '../../../l10n/studio_l10n.dart';
 import '../mode_editor_support.dart';
 import 'mode_editor_fields.dart';
+import 'mode_detail_sections.dart';
 import 'mode_stage_detail_panel.dart' show WorkflowTransitionRef;
 
 /// 转换详情面板：点击连线后展示来源、目标与完整转换条件。
@@ -85,85 +85,64 @@ class ModeTransitionDetailPanel extends StatelessWidget {
         Expanded(
           child: ListView(
             key: const ValueKey('mode-editor-detail-scroll'),
-            padding: const EdgeInsets.fromLTRB(16, 14, 16, 12),
+            padding: const EdgeInsets.fromLTRB(24, 16, 24, 12),
             children: [
-              Row(
-                children: [
-                  const Icon(Icons.arrow_forward, size: 18),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      l10n.modeEditorStateTransition,
-                      style: context.text.titleMedium?.copyWith(
-                        color: context.colors.onSurface,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                  ),
-                ],
+              Text(
+                '$sourceTitle → $targetTitle',
+                style: context.text.titleLarge?.copyWith(
+                  fontWeight: FontWeight.w600,
+                ),
               ),
-              const SizedBox(height: 6),
-              Wrap(
-                spacing: 6,
-                runSpacing: 4,
-                crossAxisAlignment: WrapCrossAlignment.center,
-                children: [
-                  _StageLink(
-                    label: sourceTitle,
+              const SizedBox(height: 20),
+              if (readOnly) ...[
+                ModeDetailSection(
+                  title: l10n.modeEditorSourceState,
+                  child: ModeDetailStageLink(
+                    title: sourceTitle,
+                    subtitle: transition.sourceStateId,
                     onTap: () => onSelectStage(transition.sourceStateId),
                   ),
-                  Icon(
-                    Icons.trending_flat,
-                    size: 15,
+                ),
+                Center(
+                  child: Icon(
+                    Icons.south,
+                    size: 18,
                     color: context.colors.onSurfaceVariant,
                   ),
-                  _StageLink(
-                    label: targetTitle,
-                    onTap: () => onSelectStage(transition.targetStateId),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 16),
-              if (readOnly) ...[
-                _ReadOnlyRow(
-                  label: l10n.modeEditorSourceState,
-                  text: sourceTitle,
-                  onView: () => onSelectStage(transition.sourceStateId),
                 ),
-                _ReadOnlyRow(
-                  label: l10n.modeEditorTargetState,
-                  text: targetTitle,
-                  onView: () => onSelectStage(transition.targetStateId),
+                const SizedBox(height: 12),
+                Text(
+                  l10n.modeEditorTargetState,
+                  style: context.text.titleSmall,
                 ),
-                Padding(
-                  padding: const EdgeInsets.only(bottom: 12),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        l10n.modeEditorTransitionGuard,
-                        style: context.text.labelSmall?.copyWith(
-                          color: context.colors.onSurfaceVariant,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                      const SizedBox(height: 4),
-                      SelectableText(
-                        transition.guard.isEmpty
-                            ? l10n.modeEditorGuardRequiredShort
-                            : transition.guard,
-                        style: context.text.bodySmall?.copyWith(
-                          color: context.colors.onSurface,
-                          height: 1.5,
-                        ),
-                      ),
-                    ],
+                const SizedBox(height: 12),
+                ModeDetailStageLink(
+                  title: targetTitle,
+                  subtitle: transition.targetStateId,
+                  onTap: () => onSelectStage(transition.targetStateId),
+                ),
+                ModeDetailSection(
+                  title: l10n.modeEditorTransitionGuard,
+                  child: Container(
+                    padding: const EdgeInsets.all(16),
+                    decoration: BoxDecoration(
+                      color: context.colors.surface,
+                      borderRadius: BorderRadius.circular(StudioRadii.sm),
+                    ),
+                    child: SelectableText(
+                      transition.guard.isEmpty
+                          ? l10n.modeEditorGuardRequiredShort
+                          : transition.guard,
+                      style: context.text.bodyMedium?.copyWith(height: 1.65),
+                    ),
                   ),
                 ),
+                const SizedBox(height: 16),
                 Text(
                   l10n.modeEditorTransitionRuleHint,
                   style: context.text.bodySmall?.copyWith(
                     color: context.colors.onSurfaceVariant,
+                    height: 1.5,
                   ),
                 ),
               ] else ...[
@@ -246,17 +225,8 @@ class ModeTransitionDetailPanel extends StatelessWidget {
             ],
           ),
         ),
-        // 内置只读形态常驻提示，替代不可用的编辑控件。
         if (readOnly)
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
-            child: Text(
-              l10n.modeEditorCatalogReadOnlyHint,
-              style: context.text.labelSmall?.copyWith(
-                color: context.colors.onSurfaceVariant,
-              ),
-            ),
-          ),
+          ModeDetailReadOnlyNotice(text: l10n.modeEditorCatalogReadOnlyHint),
         if (!readOnly)
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
@@ -274,87 +244,6 @@ class ModeTransitionDetailPanel extends StatelessWidget {
             ),
           ),
       ],
-    );
-  }
-}
-
-class _StageLink extends StatelessWidget {
-  const _StageLink({required this.label, required this.onTap});
-
-  final String label;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(StudioRadii.xs),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text(
-              label,
-              style: context.text.labelMedium?.copyWith(
-                color: context.colors.primary,
-                fontWeight: FontWeight.w600,
-              ),
-            ),
-            const SizedBox(width: 3),
-            Icon(
-              Icons.chevron_right,
-              size: 14,
-              color: context.colors.onSurfaceVariant,
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _ReadOnlyRow extends StatelessWidget {
-  const _ReadOnlyRow({
-    required this.label,
-    required this.text,
-    required this.onView,
-  });
-
-  final String label;
-  final String text;
-  final VoidCallback onView;
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 12),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            label,
-            style: context.text.labelSmall?.copyWith(
-              color: context.colors.onSurfaceVariant,
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-          const SizedBox(height: 4),
-          Row(
-            children: [
-              Expanded(child: SelectableText(text)),
-              TextButton.icon(
-                onPressed: onView,
-                icon: const Icon(Icons.visibility_outlined, size: 15),
-                label: Text(context.l10n.modeEditorViewStage),
-                style: TextButton.styleFrom(
-                  visualDensity: VisualDensity.compact,
-                ),
-              ),
-            ],
-          ),
-        ],
-      ),
     );
   }
 }

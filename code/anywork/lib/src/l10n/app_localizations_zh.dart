@@ -4125,6 +4125,9 @@ class AppLocalizationsZh extends AppLocalizations {
   String get modeEditorStageInstructions => '阶段说明';
 
   @override
+  String get modeEditorCompletionCriteriaTitle => '完成标准';
+
+  @override
   String get modeEditorCompletionCriteria => '完成标准（每行一条）';
 
   @override

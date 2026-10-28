@@ -1652,6 +1652,7 @@
   "modeEditorInitialStateLockedHint": "工作流总保留一个初始状态；请在其他阶段启用。",
   "modeEditorInitialStateHint": "进入此模式后从该阶段开始。",
   "modeEditorStageInstructions": "阶段说明",
+  "modeEditorCompletionCriteriaTitle": "完成标准",
   "modeEditorCompletionCriteria": "完成标准（每行一条）",
   "modeEditorAtomicCriteriaRequired": "工作阶段至少需要一条完成标准，保存前由 Rust 编译器校验。",
   "modeEditorOutgoingTransitions": "后续转换",

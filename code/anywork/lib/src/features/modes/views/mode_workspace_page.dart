@@ -452,10 +452,12 @@ class _ModeWorkspacePageState extends ConsumerState<ModeWorkspacePage>
     final readOnly = editor.readOnly;
     final busy = editor.busy;
     final dirty = editor.dirty;
+    final compact = MediaQuery.sizeOf(context).width < 700;
     final title = document?.definition.displayName.isEmpty ?? true
         ? document?.definition.id ?? ''
         : document!.definition.displayName;
     return AppBar(
+      toolbarHeight: 64,
       leading: BackButton(
         key: ModeEditorKeys.backButton,
         onPressed: () async {
@@ -479,7 +481,11 @@ class _ModeWorkspacePageState extends ConsumerState<ModeWorkspacePage>
             ),
           ),
           const SizedBox(width: 8),
-          if (readOnly) _AppBarChip(label: l10n.modeEditorReadOnly),
+          if (readOnly)
+            _AppBarChip(
+              label: l10n.modeEditorReadOnly,
+              icon: Icons.lock_outline,
+            ),
           if (dirty) ...[
             const SizedBox(width: 6),
             _AppBarChip(
@@ -498,43 +504,50 @@ class _ModeWorkspacePageState extends ConsumerState<ModeWorkspacePage>
         ],
       ),
       actions: [
-        IconButton(
-          key: ModeEditorKeys.undo,
-          tooltip: l10n.modeEditorUndo,
-          onPressed: editor.canUndo
-              ? ref.read(anyworkClientProvider).modeEditor.undo
-              : null,
-          icon: const Icon(Icons.undo, size: 18),
-        ),
-        IconButton(
-          key: ModeEditorKeys.redo,
-          tooltip: l10n.modeEditorRedo,
-          onPressed: editor.canRedo
-              ? ref.read(anyworkClientProvider).modeEditor.redo
-              : null,
-          icon: const Icon(Icons.redo, size: 18),
-        ),
-        IconButton(
-          key: ModeEditorKeys.reload,
-          tooltip: l10n.modeEditorReload,
-          onPressed: busy ? null : _reload,
-          icon: const Icon(Icons.refresh, size: 18),
-        ),
-        OutlinedButton.icon(
-          key: ModeEditorKeys.copy,
-          onPressed: busy ? null : _duplicateMode,
-          icon: const Icon(Icons.copy_all_outlined, size: 17),
-          label: Text(l10n.modeEditorDuplicate),
-        ),
-        if (!readOnly)
+        if (!readOnly && !compact)
           IconButton(
-            key: ModeEditorKeys.deleteMode,
-            tooltip: l10n.modeEditorDeleteMode,
-            onPressed: busy ? null : _deleteMode,
-            icon: Icon(
-              Icons.delete_outline,
-              size: 18,
-              color: context.colors.error,
+            key: ModeEditorKeys.undo,
+            tooltip: l10n.modeEditorUndo,
+            onPressed: editor.canUndo
+                ? ref.read(anyworkClientProvider).modeEditor.undo
+                : null,
+            icon: const Icon(Icons.undo, size: 18),
+          ),
+        if (!readOnly && !compact)
+          IconButton(
+            key: ModeEditorKeys.redo,
+            tooltip: l10n.modeEditorRedo,
+            onPressed: editor.canRedo
+                ? ref.read(anyworkClientProvider).modeEditor.redo
+                : null,
+            icon: const Icon(Icons.redo, size: 18),
+          ),
+        if (compact)
+          IconButton(
+            key: ModeEditorKeys.copy,
+            tooltip: l10n.modeEditorDuplicate,
+            onPressed: busy ? null : _duplicateMode,
+            icon: const Icon(Icons.copy_all_outlined, size: 18),
+          )
+        else
+          OutlinedButton.icon(
+            key: ModeEditorKeys.copy,
+            onPressed: busy ? null : _duplicateMode,
+            icon: const Icon(Icons.copy_all_outlined, size: 17),
+            label: Text(l10n.modeEditorDuplicate),
+          ),
+        if (readOnly)
+          Padding(
+            padding: const EdgeInsets.only(left: 12),
+            child: FilledButton.icon(
+              onPressed: () {
+                _tabs.index = ModeWorkspaceSection.preview.index;
+                ref
+                    .read(modeWorkspaceControllerProvider.notifier)
+                    .setSection(ModeWorkspaceSection.preview);
+              },
+              icon: const Icon(Icons.play_arrow_outlined, size: 18),
+              label: Text(l10n.modeEditorTabPreview),
             ),
           ),
         if (!readOnly)
@@ -547,29 +560,104 @@ class _ModeWorkspacePageState extends ConsumerState<ModeWorkspacePage>
               label: Text(l10n.modeEditorSave),
             ),
           ),
+        MenuAnchor(
+          menuChildren: [
+            if (!readOnly && compact) ...[
+              MenuItemButton(
+                key: ModeEditorKeys.undo,
+                onPressed: editor.canUndo
+                    ? ref.read(anyworkClientProvider).modeEditor.undo
+                    : null,
+                leadingIcon: const Icon(Icons.undo, size: 18),
+                child: Text(l10n.modeEditorUndo),
+              ),
+              MenuItemButton(
+                key: ModeEditorKeys.redo,
+                onPressed: editor.canRedo
+                    ? ref.read(anyworkClientProvider).modeEditor.redo
+                    : null,
+                leadingIcon: const Icon(Icons.redo, size: 18),
+                child: Text(l10n.modeEditorRedo),
+              ),
+            ],
+            MenuItemButton(
+              key: ModeEditorKeys.reload,
+              onPressed: busy ? null : _reload,
+              leadingIcon: const Icon(Icons.refresh, size: 18),
+              child: Text(l10n.modeEditorReload),
+            ),
+            if (!readOnly)
+              MenuItemButton(
+                key: ModeEditorKeys.deleteMode,
+                onPressed: busy ? null : _deleteMode,
+                leadingIcon: Icon(
+                  Icons.delete_outline,
+                  size: 18,
+                  color: context.colors.error,
+                ),
+                child: Text(l10n.modeEditorDeleteMode),
+              ),
+          ],
+          builder: (context, controller, child) => IconButton(
+            key: ModeEditorKeys.more,
+            tooltip: MaterialLocalizations.of(context).moreButtonTooltip,
+            onPressed: () =>
+                controller.isOpen ? controller.close() : controller.open(),
+            icon: const Icon(Icons.more_horiz),
+          ),
+        ),
+        const SizedBox(width: 12),
       ],
       bottom: TabBar(
         controller: _tabs,
+        isScrollable: true,
+        tabAlignment: TabAlignment.start,
+        padding: const EdgeInsets.symmetric(horizontal: 12),
+        labelPadding: const EdgeInsets.symmetric(horizontal: 20),
         tabs: [
           Tab(
             key: ModeEditorKeys.tabFlow,
-            icon: const Icon(Icons.account_tree_outlined, size: 16),
-            text: l10n.modeEditorTabFlow,
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.account_tree_outlined, size: 16),
+                const SizedBox(width: 8),
+                Text(l10n.modeEditorTabFlow),
+              ],
+            ),
           ),
           Tab(
             key: ModeEditorKeys.tabPreview,
-            icon: const Icon(Icons.play_circle_outline, size: 16),
-            text: l10n.modeEditorTabPreview,
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.play_circle_outline, size: 16),
+                const SizedBox(width: 8),
+                Text(l10n.modeEditorTabPreview),
+              ],
+            ),
           ),
           Tab(
             key: ModeEditorKeys.tabJson,
-            icon: const Icon(Icons.data_object, size: 16),
-            text: l10n.modeEditorTabJson,
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.data_object, size: 16),
+                const SizedBox(width: 8),
+                Text(l10n.modeEditorTabJson),
+              ],
+            ),
           ),
           Tab(
             key: ModeEditorKeys.tabSettings,
-            icon: const Icon(Icons.tune, size: 16),
-            text: l10n.modeEditorTabSettings,
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.tune, size: 16),
+                const SizedBox(width: 8),
+                Text(l10n.modeEditorTabSettings),
+              ],
+            ),
           ),
         ],
       ),
@@ -631,7 +719,6 @@ class _ModeWorkspacePageState extends ConsumerState<ModeWorkspacePage>
         if (notice != null) _showNotice(notice);
       },
       onAutoLayout: _autoLayout,
-      onValidate: _validate,
       onEnableWorkflow: _enableWorkflow,
       selectedStateId: switch (selection) {
         ModeStageSelection(:final stateId) => stateId,
@@ -649,52 +736,52 @@ class _ModeWorkspacePageState extends ConsumerState<ModeWorkspacePage>
       document: document,
       selection: selection,
     );
-    // 宽屏详情面板以 overlay 叠加在画布右侧而不是挤占 Row 槽位：画布约束
-    // 在详情开合时保持不变，拖动中的手势与视口/缩放都不会被布局变化打断。
+    // Keep the canvas in the same element slot when details open or close;
+    // its controller owns the viewport across the constraint change.
     return LayoutBuilder(
       builder: (context, constraints) {
         final wide = constraints.maxWidth >= modeWorkspaceWideBreakpoint;
-        return Column(
+        return Row(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            _focusBar(
-              context,
-              viewState: viewState,
-              dimmedCount: dimmedCount,
-              summary: workflow == null
-                  ? null
-                  : context.l10n.modeEditorWorkflowSummary(
-                      workflow.states.length,
-                      workflow.transitions.length,
-                    ),
-            ),
             Expanded(
-              child: Stack(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  Positioned.fill(child: canvas),
-                  if (wide && detail != null)
-                    Positioned(
-                      top: 0,
-                      right: 0,
-                      bottom: 0,
-                      width: 320,
-                      child: DecoratedBox(
-                        decoration: BoxDecoration(
-                          color: context.colors.surfaceContainerLow,
-                          border: Border(
-                            left: BorderSide(
-                              color: context.colors.outlineVariant,
-                            ),
+                  _focusBar(
+                    context,
+                    viewState: viewState,
+                    dimmedCount: dimmedCount,
+                    title: workflow?.title,
+                    summary: workflow == null
+                        ? null
+                        : context.l10n.modeEditorWorkflowSummary(
+                            workflow.states.length,
+                            workflow.transitions.length,
                           ),
-                        ),
-                        child: detail,
-                      ),
-                    ),
+                  ),
+                  Expanded(child: canvas),
+                  if (viewState.validationRequested && editor.issues.isNotEmpty)
+                    _issuePanel(context, editor.issues),
                 ],
               ),
             ),
-            if (viewState.validationRequested && editor.issues.isNotEmpty)
-              _issuePanel(context, editor.issues),
+            if (wide && detail != null)
+              SizedBox(
+                width: (constraints.maxWidth * 0.28).clamp(360, 420),
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    color: context.colors.surfaceContainerLow,
+                    border: Border(
+                      left: BorderSide(color: context.colors.outlineVariant),
+                    ),
+                  ),
+                  child: Material(
+                    color: context.colors.surfaceContainerLow,
+                    child: detail,
+                  ),
+                ),
+              ),
           ],
         );
       },
@@ -739,54 +826,78 @@ class _ModeWorkspacePageState extends ConsumerState<ModeWorkspacePage>
     BuildContext context, {
     required ModeWorkspaceViewState viewState,
     required int dimmedCount,
+    String? title,
     String? summary,
   }) {
     final l10n = context.l10n;
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
-      child: Row(
+    return Container(
+      color: context.colors.surfaceContainerLowest,
+      padding: const EdgeInsets.fromLTRB(24, 16, 24, 12),
+      child: Wrap(
+        spacing: 20,
+        runSpacing: 12,
+        crossAxisAlignment: WrapCrossAlignment.center,
+        alignment: WrapAlignment.spaceBetween,
         children: [
-          if (summary != null) ...[
-            Padding(
-              padding: const EdgeInsets.only(right: 10),
-              child: Text(
-                summary,
-                style: context.text.labelSmall?.copyWith(
-                  color: context.colors.onSurfaceVariant,
+          if (summary != null)
+            Wrap(
+              spacing: 12,
+              runSpacing: 6,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              children: [
+                if (title != null && title.isNotEmpty)
+                  Text(
+                    title,
+                    style: context.text.titleMedium?.copyWith(
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                Text(
+                  summary,
+                  style: context.text.bodySmall?.copyWith(
+                    color: context.colors.onSurfaceVariant,
+                  ),
                 ),
-              ),
+              ],
             ),
-          ],
-          SegmentedButton<ModeWorkflowFocus>(
-            key: viewState.focus == ModeWorkflowFocus.focused
-                ? ModeEditorKeys.focusSelected
-                : ModeEditorKeys.focusAll,
-            segments: [
-              ButtonSegment(
-                value: ModeWorkflowFocus.all,
-                icon: const Icon(Icons.hub_outlined, size: 16),
-                label: Text(l10n.modeEditorFocusAll),
+          Wrap(
+            spacing: 12,
+            runSpacing: 8,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
+              SegmentedButton<ModeWorkflowFocus>(
+                key: viewState.focus == ModeWorkflowFocus.focused
+                    ? ModeEditorKeys.focusSelected
+                    : ModeEditorKeys.focusAll,
+                segments: [
+                  ButtonSegment(
+                    value: ModeWorkflowFocus.focused,
+                    label: Text(l10n.modeEditorFocusSelected),
+                  ),
+                  ButtonSegment(
+                    value: ModeWorkflowFocus.all,
+                    label: Text(l10n.modeEditorFocusAll),
+                  ),
+                ],
+                selected: {viewState.focus},
+                onSelectionChanged: (values) => ref
+                    .read(modeWorkspaceControllerProvider.notifier)
+                    .setFocus(values.first),
+                showSelectedIcon: false,
               ),
-              ButtonSegment(
-                value: ModeWorkflowFocus.focused,
-                icon: const Icon(Icons.center_focus_strong, size: 16),
-                label: Text(l10n.modeEditorFocusSelected),
+              OutlinedButton.icon(
+                key: ModeEditorKeys.validate,
+                onPressed: _validate,
+                icon: const Icon(Icons.fact_check_outlined, size: 16),
+                label: Text(l10n.modeEditorValidate),
               ),
             ],
-            selected: {viewState.focus},
-            onSelectionChanged: (values) => ref
-                .read(modeWorkspaceControllerProvider.notifier)
-                .setFocus(values.first),
-            showSelectedIcon: false,
           ),
           if (viewState.focus == ModeWorkflowFocus.focused && dimmedCount > 0)
-            Padding(
-              padding: const EdgeInsets.only(left: 10),
-              child: Text(
-                l10n.modeEditorDimmedEdges(dimmedCount),
-                style: context.text.labelSmall?.copyWith(
-                  color: context.colors.onSurfaceVariant,
-                ),
+            Text(
+              l10n.modeEditorDimmedEdges(dimmedCount),
+              style: context.text.bodySmall?.copyWith(
+                color: context.colors.onSurfaceVariant,
               ),
             ),
         ],
@@ -811,7 +922,7 @@ class _ModeWorkspacePageState extends ConsumerState<ModeWorkspacePage>
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         Padding(
-          padding: const EdgeInsets.fromLTRB(16, 12, 8, 8),
+          padding: const EdgeInsets.fromLTRB(24, 12, 12, 0),
           child: Row(
             children: [
               Expanded(
@@ -836,7 +947,6 @@ class _ModeWorkspacePageState extends ConsumerState<ModeWorkspacePage>
             ],
           ),
         ),
-        Divider(height: 1, color: context.colors.outlineVariant),
         Expanded(
           child: switch (selection) {
             ModeStageSelection(:final stateId) => () {
@@ -974,11 +1084,17 @@ class _ModeWorkspacePageState extends ConsumerState<ModeWorkspacePage>
 }
 
 class _AppBarChip extends StatelessWidget {
-  const _AppBarChip({required this.label, this.color, this.foreground});
+  const _AppBarChip({
+    required this.label,
+    this.color,
+    this.foreground,
+    this.icon,
+  });
 
   final String label;
   final Color? color;
   final Color? foreground;
+  final IconData? icon;
 
   @override
   Widget build(BuildContext context) {
@@ -988,12 +1104,25 @@ class _AppBarChip extends StatelessWidget {
         color: color ?? context.colors.surfaceContainerHigh,
         borderRadius: BorderRadius.circular(StudioRadii.pill),
       ),
-      child: Text(
-        label,
-        style: context.text.labelSmall?.copyWith(
-          color: foreground ?? context.colors.onSurfaceVariant,
-          fontWeight: FontWeight.w600,
-        ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (icon != null) ...[
+            Icon(
+              icon,
+              size: 14,
+              color: foreground ?? context.colors.onSurfaceVariant,
+            ),
+            const SizedBox(width: 5),
+          ],
+          Text(
+            label,
+            style: context.text.labelSmall?.copyWith(
+              color: foreground ?? context.colors.onSurfaceVariant,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ],
       ),
     );
   }

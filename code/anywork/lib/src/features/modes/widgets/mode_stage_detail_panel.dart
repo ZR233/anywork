@@ -18,6 +18,7 @@ import '../../../app/theme/studio_tokens.dart';
 import '../../../l10n/app_localizations.dart';
 import '../mode_editor_support.dart';
 import 'mode_editor_fields.dart';
+import 'mode_detail_sections.dart';
 
 /// 阶段详情面板：点击阶段卡片后展示的完整阶段信息。
 ///
@@ -68,7 +69,7 @@ class ModeStageDetailPanel extends StatelessWidget {
         Expanded(
           child: ListView(
             key: const ValueKey('mode-editor-detail-scroll'),
-            padding: const EdgeInsets.fromLTRB(16, 14, 16, 12),
+            padding: const EdgeInsets.fromLTRB(24, 16, 24, 12),
             children: [
               Row(
                 children: [
@@ -85,7 +86,7 @@ class ModeStageDetailPanel extends StatelessWidget {
                   Expanded(
                     child: Text(
                       state.title.isEmpty ? state.id : state.title,
-                      style: context.text.titleMedium?.copyWith(
+                      style: context.text.titleLarge?.copyWith(
                         color: context.colors.onSurface,
                         fontWeight: FontWeight.w600,
                       ),
@@ -93,7 +94,7 @@ class ModeStageDetailPanel extends StatelessWidget {
                   ),
                 ],
               ),
-              const SizedBox(height: 6),
+              const SizedBox(height: 12),
               Wrap(
                 spacing: 6,
                 runSpacing: 4,
@@ -124,23 +125,42 @@ class ModeStageDetailPanel extends StatelessWidget {
               ),
               const SizedBox(height: 14),
               if (readOnly) ...[
-                _ReadOnlyField(
-                  label: l10n.modeEditorStageTitle,
-                  text: state.title,
+                ModeDetailSection(
+                  title: l10n.modeEditorStageInstructions,
+                  child: SelectableText(
+                    state.instructions.isEmpty ? '—' : state.instructions,
+                    style: context.text.bodyMedium?.copyWith(height: 1.65),
+                  ),
                 ),
-                _ReadOnlyField(
-                  label: l10n.modeEditorStageKind,
-                  text: finalStage
-                      ? l10n.modeEditorFinalState
-                      : l10n.modeEditorAtomicStage,
-                ),
-                _ReadOnlyField(
-                  label: l10n.modeEditorStageInstructions,
-                  text: state.instructions,
-                ),
-                _ReadOnlyField(
-                  label: l10n.modeEditorCompletionCriteria,
-                  text: state.completionCriteria.join('\n'),
+                ModeDetailSection(
+                  title: l10n.modeEditorCompletionCriteriaTitle,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      if (state.completionCriteria.isEmpty) const Text('—'),
+                      for (final criterion in state.completionCriteria)
+                        Padding(
+                          padding: const EdgeInsets.only(bottom: 10),
+                          child: Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const Padding(
+                                padding: EdgeInsets.only(top: 8, right: 10),
+                                child: Icon(Icons.circle, size: 5),
+                              ),
+                              Expanded(
+                                child: SelectableText(
+                                  criterion,
+                                  style: context.text.bodyMedium?.copyWith(
+                                    height: 1.6,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                    ],
+                  ),
                 ),
               ] else ...[
                 ModeEditorTextField(
@@ -244,14 +264,16 @@ class ModeStageDetailPanel extends StatelessWidget {
                     ),
                   ),
                 ),
-              const SizedBox(height: 18),
+              const SizedBox(height: 20),
+              Divider(height: 1, color: context.colors.outlineVariant),
+              const SizedBox(height: 20),
               Row(
                 children: [
                   Expanded(
                     child: Text(
                       l10n.modeEditorOutgoingTransitions,
-                      style: context.text.labelMedium?.copyWith(
-                        color: context.colors.onSurfaceVariant,
+                      style: context.text.titleSmall?.copyWith(
+                        color: context.colors.onSurface,
                         fontWeight: FontWeight.w600,
                       ),
                     ),
@@ -272,20 +294,16 @@ class ModeStageDetailPanel extends StatelessWidget {
                     color: context.colors.onSurfaceVariant,
                   ),
                 ),
+              const SizedBox(height: 12),
               for (final transition in outgoing)
-                ListTile(
-                  key: ModeEditorKeys.edge(connectionId(transition)),
-                  contentPadding: EdgeInsets.zero,
-                  dense: true,
-                  leading: const Icon(Icons.arrow_forward, size: 16),
-                  title: Text(stateTitle(workflow, transition.targetStateId)),
-                  subtitle: Text(
-                    transition.guard.isEmpty
-                        ? l10n.modeEditorGuardRequiredShort
-                        : transition.guard,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
+                ModeDetailStageLink(
+                  key: ValueKey(
+                    'mode-editor-outgoing-${connectionId(transition)}',
                   ),
+                  title: stateTitle(workflow, transition.targetStateId),
+                  subtitle: transition.guard.isEmpty
+                      ? l10n.modeEditorGuardRequiredShort
+                      : transition.guard,
                   onTap: () => onSelectTransition(connectionId(transition)),
                   trailing: readOnly
                       ? null
@@ -302,17 +320,8 @@ class ModeStageDetailPanel extends StatelessWidget {
             ],
           ),
         ),
-        // 内置只读形态常驻提示，替代不可用的编辑控件。
         if (readOnly)
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
-            child: Text(
-              l10n.modeEditorCatalogReadOnlyHint,
-              style: context.text.labelSmall?.copyWith(
-                color: context.colors.onSurfaceVariant,
-              ),
-            ),
-          ),
+          ModeDetailReadOnlyNotice(text: l10n.modeEditorCatalogReadOnlyHint),
         // 破坏性操作固定在面板底部，不随内容滚动。
         if (!readOnly)
           Padding(
@@ -354,40 +363,6 @@ class _Badge extends StatelessWidget {
           color: context.colors.onPrimaryContainer,
           fontWeight: FontWeight.w600,
         ),
-      ),
-    );
-  }
-}
-
-class _ReadOnlyField extends StatelessWidget {
-  const _ReadOnlyField({required this.label, required this.text});
-
-  final String label;
-  final String text;
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 12),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            label,
-            style: context.text.labelSmall?.copyWith(
-              color: context.colors.onSurfaceVariant,
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-          const SizedBox(height: 4),
-          SelectableText(
-            text.isEmpty ? '—' : text,
-            style: context.text.bodySmall?.copyWith(
-              color: context.colors.onSurface,
-              height: 1.5,
-            ),
-          ),
-        ],
       ),
     );
   }
