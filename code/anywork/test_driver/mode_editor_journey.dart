@@ -578,7 +578,7 @@ class ModeEditorJourney {
     // Native resize: narrow screens enter the detail as a routed page.
     final pidReply = jsonDecode(await driver.requestData('pid')) as Map;
     final pid = pidReply['pid'] as int;
-    final resized = resizeOwnedWindow(guiPid: pid, width: 760, height: 860);
+    final resized = resizeOwnedWindow(guiPid: pid, width: 760, height: 640);
     require(resized.resized, 'native resize applied');
     await tap('mode-editor-tab-flow');
     await tap('mode-editor-node-working');
