@@ -672,6 +672,9 @@ class ModeEditorJourney {
       !(deleted['catalog'] as List).any((mode) => mode['id'] == _modeId),
       'deleted Mode removed from catalog',
     );
+    // The canonical catalog is published before the delete action pops its page.
+    // Wait for that navigation to finish before issuing a separate Back action.
+    await driver.waitForAbsent(find.byValueKey('mode-workspace-back'));
     await checkpointStage('deleted-running');
     await leaveToStudio();
     await waitSnapshot(
