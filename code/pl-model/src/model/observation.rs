@@ -98,7 +98,7 @@ impl ModelObservation {
 pub(crate) fn apply_field(target: &mut ModelInfo, source: &ModelInfo, field: ModelMetadataField) {
     use ModelMetadataField::*;
     match field {
-        DisplayName => target.display_name.clone_from(&source.display_name),
+        DisplayName => target.display_name = resolve_display_name(source, Some(target)),
         Description => target.description.clone_from(&source.description),
         ContextWindow => target.context_window = source.context_window,
         MaxContextWindow => target.max_context_window = source.max_context_window,
@@ -199,6 +199,19 @@ pub(crate) fn apply_field(target: &mut ModelInfo, source: &ModelInfo, field: Mod
                 .collect();
         }
     }
+}
+
+/// Resolve an online presentation name without turning its ID-shaped placeholder into metadata.
+pub(crate) fn resolve_display_name(online: &ModelInfo, local: Option<&ModelInfo>) -> String {
+    readable_display_name(online)
+        .or_else(|| local.and_then(readable_display_name))
+        .unwrap_or(&online.model_id)
+        .to_owned()
+}
+
+fn readable_display_name(model: &ModelInfo) -> Option<&str> {
+    (!model.display_name.trim().is_empty() && model.display_name != model.model_id)
+        .then_some(model.display_name.as_str())
 }
 
 pub(crate) fn apply_parameter_defaults(target: &mut ModelInfo, source: &ModelInfo) {

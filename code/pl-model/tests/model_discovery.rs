@@ -1409,6 +1409,101 @@ async fn missing_metadata_uses_exact_success_then_default_but_explicit_empty_and
     server.finish().await;
 }
 
+fn assert_direct_and_canonical_display_name(
+    account: &AccountConfig,
+    model_id: &str,
+    expected: &str,
+) {
+    let direct = account
+        .effective_models(None)
+        .unwrap()
+        .into_iter()
+        .find(|model| model.model_id == model_id)
+        .unwrap();
+    assert_eq!(direct.display_name, expected);
+
+    let account_id = AccountId::new("display-name-account").unwrap();
+    let mut canonical = AgentModelConfig {
+        accounts: [(account_id.clone(), account.clone())].into(),
+        routes: Default::default(),
+    };
+    canonical.reconcile_model_catalog().unwrap();
+    let rebuilt = canonical.accounts[&account_id]
+        .effective_models(None)
+        .unwrap()
+        .into_iter()
+        .find(|model| model.model_id == model_id)
+        .unwrap();
+    assert_eq!(rebuilt.display_name, expected);
+}
+
+#[tokio::test]
+async fn display_name_placeholders_fall_back_within_their_account_across_live_and_cached_catalogs()
+{
+    let model_id = "gpt-6.1-terra";
+    let local_name = "GPT-6.1 Terra";
+    let live_cases = [
+        (json!({"data":[{"id":model_id}]}), local_name),
+        (
+            json!({"data":[{"id":model_id,"display_name":" \t "}]}),
+            local_name,
+        ),
+        (
+            json!({"data":[{"id":model_id,"display_name":model_id}]}),
+            local_name,
+        ),
+        (
+            json!({"data":[{"id":model_id,"display_name":"  Provider Terra alias  "}]}),
+            "  Provider Terra alias  ",
+        ),
+    ];
+    let mut observed = Vec::new();
+    for (body, expected) in live_cases {
+        let models = discover(body, ProtocolKind::OpenAi).await;
+        let mut account = provider("http://127.0.0.1:1", ProtocolKind::OpenAi);
+        account.set_model_catalog_overlay(models.clone()).unwrap();
+        assert_direct_and_canonical_display_name(&account, model_id, expected);
+        observed.push(models.into_iter().next().unwrap());
+    }
+
+    let mut unknown_account = provider("http://127.0.0.1:2", ProtocolKind::OpenAi);
+    let unknown_id = "future-lowercase-model";
+    unknown_account
+        .set_model_catalog_overlay(
+            discover(
+                json!({"data":[{"id":unknown_id,"display_name":"   "}]}),
+                ProtocolKind::OpenAi,
+            )
+            .await,
+        )
+        .unwrap();
+    assert_direct_and_canonical_display_name(&unknown_account, unknown_id, unknown_id);
+
+    let mut cached_account = provider("http://127.0.0.1:3", ProtocolKind::OpenAi);
+    let query = ModelCatalogQuery::for_account(&cached_account).unwrap();
+    let cache = ModelCatalogQueryCache {
+        identity: query.identity().into(),
+        etag: Some("display-name-cache".into()),
+        models: vec![serde_json::from_value(serde_json::to_value(&observed[2]).unwrap()).unwrap()],
+    };
+    cached_account
+        .set_model_catalog_overlay(cache.models.clone())
+        .unwrap();
+    assert_direct_and_canonical_display_name(&cached_account, model_id, local_name);
+
+    let mut other_account = provider("http://127.0.0.1:4", ProtocolKind::Xai);
+    other_account
+        .set_model_catalog_overlay(
+            discover(
+                json!({"data":[{"id":model_id,"display_name":model_id}]}),
+                ProtocolKind::Xai,
+            )
+            .await,
+        )
+        .unwrap();
+    assert_direct_and_canonical_display_name(&other_account, model_id, model_id);
+}
+
 #[tokio::test]
 async fn gpt61_id_only_inventory_and_old_fallback_cache_enable_real_image_input() {
     use pl_model::{
