@@ -66,11 +66,11 @@ impl ThreadBuiltin {
             }
             Self::WriteStdin => schema::<crate::exec::WriteStdinInput>(
                 "write_stdin",
-                "Write text to the original exec receipt taskId. closeStdin=true sends EOF after text; empty chars is valid only for EOF. Accepted bytes and remote ACKs are distinct: never resend accepted input after cancellation. Use wait to observe completion.",
+                "Write text to the original exec receipt taskId. closeStdin=true sends EOF after text; empty chars is valid only for EOF. A blocked write returns its own task receipt: cancel that input task to stop writing without stopping exec, then query its result. Accepted bytes and remote ACKs are distinct: never resend accepted input after cancellation. Wait for the input task before actions that require completed delivery.",
             ),
             Self::Exec => schema::<crate::exec::ExecInput>(
                 "exec",
-                "Execute one independent shell (cwd defaults to workspace root). timeoutSeconds is the total admission-to-exit budget and remains active after a task receipt. maxOutputChars is a combined stdout+stderr UTF-8 byte budget capped at 65536. Results distinguish execution, capture and archive facts and provide exact stdoutFile/stderrFile paths. Never reconstruct paths or repeat side effects to recover output; query the original receipt.",
+                "Execute one independent shell (cwd defaults to workspace root). timeoutSeconds is the total admission-to-exit budget and remains active after a task receipt. maxOutputChars caps combined stdout+stderr text at 65536 UTF-8 bytes; metadata, JSON escaping and protocol wrappers are additional. Results distinguish execution, capture and archive facts. stdoutFile/stderrFile are exact workspace-root-relative paths: read them with cwd omitted or set to '.', even when the original command used another cwd. Never reconstruct paths or repeat side effects to recover output; query the original receipt.",
             ),
             Self::FinishTurn => schema::<crate::finish_turn::FinishTurnInput>(
                 "finish_turn",

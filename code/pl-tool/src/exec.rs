@@ -16,10 +16,10 @@ pub use thread::{CommandAccess, CommandOutputArchive, ExecFailure, ThreadExecToo
 pub const TOOL_EXEC: &str = "exec";
 pub const TOOL_WRITE_STDIN: &str = "write_stdin";
 const DEFAULT_TIMEOUT_SECS: u64 = 60;
-/// `maxOutputChars` 缺省/上限对应的模型可见输出预算，单位是**字节**（见 [`ExecInput`]）。
+/// `maxOutputChars` 缺省/上限对应的模型可见正文预算，单位是**字节**（见 [`ExecInput`]）。
 ///
-/// 保留历史字段名；按 stdout/stderr 合计的 UTF-8 字节计量。
-const MAX_MODEL_OUTPUT_BYTES: usize = 64 * 1024;
+/// 保留历史字段名；按 stdout/stderr 合计的 UTF-8 字节计量，元数据及协议包装另计。
+const MAX_MODEL_BODY_BYTES: usize = 64 * 1024;
 /// `exec` 的结构化输入。
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -38,6 +38,7 @@ pub struct ExecInput {
     // before authorization, without a model substituting null/default to satisfy the schema.
     pub timeout_seconds: Option<u64>,
     /// Positive combined stdout + stderr UTF-8 byte budget (default and maximum: 65536).
+    /// Metadata, JSON escaping and protocol wrappers are additional and do not consume this budget.
     ///
     /// The wire field name keeps the historical `maxOutputChars`, but the unit is bytes: the
     /// projection truncates the visible stdout/stderr text by `String` byte length, so multi-byte

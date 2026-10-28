@@ -2,6 +2,8 @@
 
 本文定义 `anywork` 自动化门禁、本地模拟账号、原生 GUI 人工验收与实时状态新鲜度矩阵的唯一权威契约。客户端与前端生命周期见 [25](./25-frontend-state.md)，时间线内容与预算计量见 [26](./26-timeline-content.md)，飞书机器人与 ACP 接入验收见 [27](./27-bots.md) 与 [28](./28-acp.md)。
 
+真实模型工具观察复用 `collaboration_observe`，显式指定用户已配置的账号与模型，在独立 Studio 数据根和工作区内运行。SSH 观察同时指定 `ANYWORK_OBSERVATION_SSH_ALIAS` 与 `ANYWORK_OBSERVATION_SSH_WORKSPACE`，别名使用已有 SSH 配置，工作区须预先独立创建；观察器不改写用户 SSH 配置。通过 `ANYWORK_OBSERVATION_HELPER_BUNDLE` 指向标准构建生成的 helper 资源目录，沿生产 SSH 项目与工具装配路径执行。采集完成与模型自述均不构成通过判定，须独立核对真实回执、原始字节、资源摘要及进程回收。
+
 ## 24.1 自动化测试责任
 
 ### 子智能体退休与恢复影响的证明边界

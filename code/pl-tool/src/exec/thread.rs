@@ -12,7 +12,7 @@ use pl_core::tool::{
 };
 use sha2::{Digest, Sha256};
 
-use super::{DEFAULT_TIMEOUT_SECS, MAX_MODEL_OUTPUT_BYTES};
+use super::{DEFAULT_TIMEOUT_SECS, MAX_MODEL_BODY_BYTES};
 use crate::command::{
     CommandBackend,
     process_manager::{
@@ -90,8 +90,7 @@ impl<B: CommandBackend, A: CommandOutputArchive> ThreadExecTool<B, A> {
         };
         Ok(vec![
             self.registration(exec)?,
-            Registration::new(super::TOOL_WRITE_STDIN.into(), stdin, input)?
-                .foreground_coexisting(),
+            Registration::new(super::TOOL_WRITE_STDIN.into(), stdin, input)?,
         ])
     }
 
@@ -262,7 +261,7 @@ impl<B: CommandBackend> Tool for ThreadWriteStdinTool<B> {
         if context.cancellation.is_cancelled() {
             return Err(ToolError::new(pl_core::thread::ThreadError::Cancelled));
         }
-        let requested = input.max_output_chars.unwrap_or(MAX_MODEL_OUTPUT_BYTES);
+        let requested = input.max_output_chars.unwrap_or(MAX_MODEL_BODY_BYTES);
         let target_task_id = input.task_id.clone();
         let snapshot = self
             .processes
@@ -274,8 +273,8 @@ impl<B: CommandBackend> Tool for ThreadWriteStdinTool<B> {
                 yield_time: Duration::ZERO,
                 max_output_chars: input
                     .max_output_chars
-                    .unwrap_or(MAX_MODEL_OUTPUT_BYTES)
-                    .min(MAX_MODEL_OUTPUT_BYTES),
+                    .unwrap_or(MAX_MODEL_BODY_BYTES)
+                    .min(MAX_MODEL_BODY_BYTES),
             })
             .await
             .map_err(ToolError::new)?;
@@ -352,12 +351,12 @@ impl<B: CommandBackend, A: CommandOutputArchive> Tool for ThreadExecTool<B, A> {
         let input = super::parse_and_validate_exec_input(input.content())
             .map_err(super::ExecInputError::into_tool_error)?
             .into_input();
-        let requested = input.max_output_chars.unwrap_or(MAX_MODEL_OUTPUT_BYTES);
+        let requested = input.max_output_chars.unwrap_or(MAX_MODEL_BODY_BYTES);
         let task_id = safe_identity(&context.call_id);
         let max_output_chars = input
             .max_output_chars
-            .unwrap_or(MAX_MODEL_OUTPUT_BYTES)
-            .min(MAX_MODEL_OUTPUT_BYTES);
+            .unwrap_or(MAX_MODEL_BODY_BYTES)
+            .min(MAX_MODEL_BODY_BYTES);
         let (observer, previews, failures) = super::progress::ExecOutputObserver::channel();
         let execution = self.processes.run_task(
             &task_id,

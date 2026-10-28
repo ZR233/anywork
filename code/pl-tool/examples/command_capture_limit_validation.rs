@@ -6,8 +6,8 @@
 //! 本 crate 已有的人工入口形式（见 `ssh_remote_validation.rs`）：用公开 API 驱动真实实现，断言失败
 //! 即返回非零退出码，由主代理/发布者在目标机上执行。
 //!
-//! 覆盖严格输入与 no-start 诊断、共享原始双流预算、真实存储故障和修复、64 KiB 序列化
-//! 投影、准备阶段 deadline/cancellation、stdin 背压取消及 UTF-8 边界。可选真实进程入口
+//! 覆盖严格输入与 no-start 诊断、共享原始双流预算、真实存储故障和修复、64 KiB 正文
+//! 额度及独立协议包装、准备阶段 deadline/cancellation、stdin 背压取消及 UTF-8 边界。可选真实进程入口
 //! 还验证有限输入与 EOF、无末尾换行和无效编码的原始字节。
 //!
 //! 运行（确定性部分不需要任何外部依赖）：
@@ -86,7 +86,7 @@ async fn main() -> anyhow::Result<()> {
     write_failure_keeps_its_retry_obligation().await?;
     combined_requested_output_budget().await?;
     model_output_cap_counts_bytes_not_chars().await?;
-    serialized_projection_budget().await?;
+    model_body_budget_preserves_metadata().await?;
     preparation_deadline_and_cancellation().await?;
     backpressured_stdin_cancellation().await?;
     let (mut producer, _root) = scripted_backend(
@@ -176,11 +176,10 @@ async fn exec_input_contract() -> anyhow::Result<()> {
         );
         let thread = pl_core::thread::ThreadHandle::start(
             "exec-input-contract".into(),
-            pl_core::model::DynModelSession::new(SingleExecModel {
-                raw: raw.into(),
-                first: true,
-                call_id: "exec-input-call".into(),
-            }),
+            pl_core::model::DynModelSession::new(ScriptedToolCalls::single_exec(
+                raw.into(),
+                "exec-input-call".into(),
+            )),
         )?;
         thread
             .register_tools(
@@ -242,14 +241,13 @@ async fn exec_input_contract() -> anyhow::Result<()> {
     );
     let thread = pl_core::thread::ThreadHandle::start(
         "exec-large-error-metadata".into(),
-        pl_core::model::DynModelSession::new(SingleExecModel {
-            raw: format!(
+        pl_core::model::DynModelSession::new(ScriptedToolCalls::single_exec(
+            format!(
                 r#"{{"command":"must-not-run","timeoutSeconds":{}}}"#,
                 u64::MAX
             ),
-            first: true,
-            call_id: "m".repeat(70000),
-        }),
+            "m".repeat(70000),
+        )),
     )?;
     thread
         .register_tools(
@@ -273,17 +271,19 @@ async fn exec_input_contract() -> anyhow::Result<()> {
         .flat_map(|effect| effect.deliveries.iter())
         .find(|delivery| delivery.tool_id == "exec")
         .context("missing range error")?;
-    anyhow::ensure!(
-        serde_json::to_vec(delivery.output.context())?.len() <= 65536,
-        "start error metadata exceeded model projection budget"
-    );
     let record: serde_json::Value = serde_json::from_str(delivery.output.payload().content())?;
+    let pl_core::context::ContextContent::Text { text } = &delivery.output.context()[0] else {
+        anyhow::bail!("missing model error receipt");
+    };
+    anyhow::ensure!(serde_json::from_str::<serde_json::Value>(text)? == record);
     anyhow::ensure!(record["taskId"] == format!("task:{}", "m".repeat(70000)));
     anyhow::ensure!(record["processStarted"] == false);
     anyhow::ensure!(record["diagnostic"]["code"] == "exec.argument_out_of_range");
     anyhow::ensure!(archive.calls.load(Ordering::SeqCst) == 0);
     thread.close().await?;
-    println!("OK  oversized start-error identity keeps full payload and bounded model receipt");
+    println!(
+        "OK  metadata-only error keeps full identity and diagnostic in payload and model receipt"
+    );
     Ok(())
 }
 
@@ -712,37 +712,85 @@ async fn write_failure_keeps_its_retry_obligation() -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn serialized_projection_budget() -> anyhow::Result<()> {
-    for budget in [1, 127, 65536, usize::MAX] {
-        let behavior = ScriptedBehavior {
-            total_bytes: 24000,
-            pattern: b"\0\n\\\"\x01",
-            dual_stream: true,
-            ..ScriptedBehavior::finite_multibyte()
-        };
-        let (backend, _root) = scripted_backend(Arc::new(CaptureFacts::default()), behavior, None)?;
-        let output =
-            run_exec_tool_with_budget(backend, Arc::new(FixedArchive::default()), Some(budget))
+async fn model_body_budget_preserves_metadata() -> anyhow::Result<()> {
+    for output_limit in [false, true] {
+        for budget in [1, 127, 65536, usize::MAX] {
+            let behavior = ScriptedBehavior {
+                total_bytes: if output_limit { 128 * 1024 } else { 24000 },
+                pattern: if output_limit { b"A" } else { b"\0\n\\\"\x01" },
+                dual_stream: true,
+                ..ScriptedBehavior::finite_multibyte()
+            };
+            let (backend, _root) =
+                scripted_backend(Arc::new(CaptureFacts::default()), behavior, None)?;
+            let tool = ThreadExecTool::new(
+                Arc::new(backend),
+                Arc::new(FixedArchive::default()),
+                CommandAccess::WorkspaceOnly,
+            );
+            let thread = pl_core::thread::ThreadHandle::start(
+                "exec-serialized-budget".into(),
+                pl_core::model::DynModelSession::new(ScriptedToolCalls::single_exec(
+                    serde_json::json!({"command":"scripted-output", "maxOutputChars":budget})
+                        .to_string(),
+                    "serialized-budget-call".into(),
+                )),
+            )?;
+            thread
+                .register_tools(
+                    tool.registrations(OpaquePayload::text("exec"), OpaquePayload::text("stdin"))?,
+                )
                 .await?;
-        anyhow::ensure!(
-            output.payload().format() == "pl.tool.exec" && output.payload().version() == 2
-        );
-        anyhow::ensure!(serde_json::to_vec(output.context())?.len() <= 65536);
-        let pl_core::context::ContextContent::Text { text } = &output.context()[0] else {
-            anyhow::bail!("missing model JSON");
-        };
-        let view: serde_json::Value = serde_json::from_str(text)?;
-        let visible = view["stdout"]["content"].as_str().unwrap().len()
-            + view["stderr"]["content"].as_str().unwrap().len();
-        anyhow::ensure!(visible <= budget.min(65536));
-        anyhow::ensure!(
-            view["captureStatus"] == "complete"
-                && view["stdoutFile"].is_string()
-                && view["stderrFile"].is_string()
-        );
+            thread
+                .run_turn(pl_core::thread::TurnInput {
+                    turn_id: "serialized-budget-turn".into(),
+                    attempt_prefix: "serialized-budget".into(),
+                    content: vec![],
+                    max_model_steps: pl_core::thread::ModelStepLimit::Limited(
+                        std::num::NonZeroU32::new(2).unwrap(),
+                    ),
+                    cancellation: CancellationToken::new(),
+                })
+                .await?;
+            let delivery = tokio::time::timeout(
+                Duration::from_secs(60),
+                thread.wait_task("task:serialized-budget-call", CancellationToken::new()),
+            )
+            .await??;
+            thread.close().await?;
+            let output = &delivery.output;
+            anyhow::ensure!(
+                output.payload().format() == "pl.tool.exec" && output.payload().version() == 2
+            );
+            let pl_core::context::ContextContent::Text { text } = &output.context()[0] else {
+                anyhow::bail!("missing model JSON");
+            };
+            let view: serde_json::Value = serde_json::from_str(text)?;
+            let record: serde_json::Value = serde_json::from_str(output.payload().content())?;
+            anyhow::ensure!(
+                view == record,
+                "protocol wrapping must not trim body or metadata a second time"
+            );
+            let visible = view["stdout"]["content"].as_str().unwrap().len()
+                + view["stderr"]["content"].as_str().unwrap().len();
+            anyhow::ensure!(visible <= budget.min(65536));
+            anyhow::ensure!(view["stdoutFile"].is_string() && view["stderrFile"].is_string());
+            if output_limit {
+                anyhow::ensure!(
+                    view["captureStatus"] == "partial"
+                        && view["diagnostic"]["code"] == "exec.output_limit"
+                );
+                anyhow::ensure!(matches!(
+                    delivery.outcome,
+                    pl_core::thread::ToolOutcome::Failed(_)
+                ));
+            } else {
+                anyhow::ensure!(view["captureStatus"] == "complete");
+            }
+        }
     }
     println!(
-        "OK  escaped control bytes: serialized model content <=64KiB, body 1/127/clamped requests"
+        "OK  committed success/failure body obeys 1/127/65536-byte budgets; escaping and metadata preserve the complete record"
     );
     Ok(())
 }
@@ -824,58 +872,90 @@ async fn backpressured_stdin_cancellation() -> anyhow::Result<()> {
         ..ScriptedBehavior::finite_multibyte()
     };
     let (backend, _root) = scripted_backend(facts.clone(), behavior, None)?;
-    let manager = CommandProcessManager::new(Arc::new(backend));
-    let target_cancel = CancellationToken::new();
-    let mut request = start_request();
-    request.cancellation_token = Some(target_cancel.clone());
-    let started = manager.start(request).await?;
-    let process_id = started.process_id.context("target process")?;
-    let input_cancel = CancellationToken::new();
-    let writer = {
-        let manager = manager.clone();
-        let cancellation = input_cancel.clone();
-        let process_id = process_id.clone();
-        tokio::spawn(async move {
-            manager
-                .write_stdin(pl_tool::command::CommandWriteRequest {
-                    process_id,
-                    chars: "中🌙".repeat(100000),
-                    cancellation,
-                    close_stdin: false,
-                    yield_time: Duration::ZERO,
-                    max_output_chars: 1024,
-                })
-                .await
-        })
-    };
-    facts.input_written.notified().await;
-    input_cancel.cancel();
-    let result = tokio::time::timeout(Duration::from_secs(2), writer).await???;
-    let receipt = result.input_receipt.context("partial receipt")?;
-    anyhow::ensure!(
-        receipt.accepted_bytes == 32
-            && matches!(
-                receipt.outcome,
-                pl_tool::command::CommandInputOutcome::Cancelled
-            )
+    let tool = ThreadExecTool::new(
+        Arc::new(backend),
+        Arc::new(FixedArchive::default()),
+        CommandAccess::WorkspaceOnly,
     );
-    anyhow::ensure!(
-        result.state.final_result().is_none() && !facts.input_dropped.load(Ordering::SeqCst)
+    let calls = [
+        (
+            "backpressure-target",
+            "exec",
+            serde_json::json!({"command":"blocked-input", "timeoutSeconds":30}),
+        ),
+        (
+            "backpressure-input",
+            "write_stdin",
+            serde_json::json!({"taskId":"task:backpressure-target", "chars":"中🌙".repeat(1000)}),
+        ),
+        (
+            "cancel-input",
+            "cancel_tool_task",
+            serde_json::json!({"taskId":"task:backpressure-input"}),
+        ),
+    ]
+    .into_iter()
+    .map(
+        |(call_id, tool_id, arguments)| pl_core::model::ModelToolCall {
+            call_id: call_id.into(),
+            tool_id: tool_id.into(),
+            arguments: OpaquePayload::text(arguments.to_string()),
+            rejection: None,
+        },
+    )
+    .collect();
+    let thread = pl_core::thread::ThreadHandle::start(
+        "backpressure-scheduling".into(),
+        pl_core::model::DynModelSession::new(ScriptedToolCalls { calls }),
+    )?;
+    let mut registrations =
+        tool.registrations(OpaquePayload::text("exec"), OpaquePayload::text("stdin"))?;
+    registrations.push(
+        pl_tool::task_control::TaskControlTool::new(pl_tool::task_control::TaskControlKind::Cancel)
+            .registration(OpaquePayload::text("cancel"))?,
     );
-    target_cancel.cancel();
-    tokio::time::timeout(Duration::from_secs(2), async {
-        loop {
-            if let Some(snapshot) = manager.snapshot(&process_id, 1024).await
-                && snapshot.state.final_result().is_some()
-            {
-                break;
-            }
-            tokio::task::yield_now().await;
-        }
-    })
-    .await?;
+    thread.register_tools(registrations).await?;
+    let run = tokio::time::timeout(
+        Duration::from_secs(8),
+        thread.run_turn(pl_core::thread::TurnInput {
+            turn_id: "backpressure-turn".into(),
+            attempt_prefix: "backpressure".into(),
+            content: vec![],
+            max_model_steps: pl_core::thread::ModelStepLimit::Limited(
+                std::num::NonZeroU32::new(4).unwrap(),
+            ),
+            cancellation: CancellationToken::new(),
+        }),
+    )
+    .await;
+    if run.is_err() {
+        thread.close().await?;
+        anyhow::bail!("blocked stdin never yielded its own receipt so the model could cancel it");
+    }
+    run??;
+    let input = tokio::time::timeout(
+        Duration::from_secs(2),
+        thread.wait_task("task:backpressure-input", CancellationToken::new()),
+    )
+    .await??;
+    let receipt: serde_json::Value = serde_json::from_str(input.output.payload().content())?;
+    let snapshot = thread.snapshot();
+    let target_running = snapshot
+        .tasks
+        .get("task:backpressure-target")
+        .is_some_and(|task| task.status == pl_core::thread::task::TaskStatus::Running);
+    thread.close().await?;
+    anyhow::ensure!(matches!(
+        input.outcome,
+        pl_core::thread::ToolOutcome::Cancelled
+    ));
+    anyhow::ensure!(
+        receipt["inputReceipt"]["acceptedBytes"] == 32
+            && receipt["inputReceipt"]["outcome"] == "cancelled"
+    );
+    anyhow::ensure!(receipt["targetTaskId"] == "task:backpressure-target" && target_running);
     println!(
-        "OK  stdin backpressure: exact accepted prefix, prompt cancellation, target stays alive"
+        "OK  model receives blocked stdin task, cancels it, queries exact accepted prefix; original exec stays alive"
     );
     Ok(())
 }
@@ -1696,26 +1776,28 @@ fn capture_files_len(root: &Path) -> anyhow::Result<u64> {
     Ok(total)
 }
 
-struct SingleExecModel {
-    raw: String,
-    first: bool,
-    call_id: String,
+struct ScriptedToolCalls {
+    calls: std::collections::VecDeque<pl_core::model::ModelToolCall>,
 }
-impl pl_core::model::ModelSession for SingleExecModel {
+impl ScriptedToolCalls {
+    fn single_exec(raw: String, call_id: String) -> Self {
+        Self {
+            calls: [pl_core::model::ModelToolCall {
+                call_id,
+                tool_id: "exec".into(),
+                arguments: OpaquePayload::text(raw),
+                rejection: None,
+            }]
+            .into(),
+        }
+    }
+}
+impl pl_core::model::ModelSession for ScriptedToolCalls {
     async fn prepare(
         &mut self,
         request: pl_core::model::ModelRequest,
     ) -> Result<pl_core::model::PreparedModelCall, pl_core::model::ModelError> {
-        let calls = if std::mem::take(&mut self.first) {
-            vec![pl_core::model::ModelToolCall {
-                call_id: self.call_id.clone(),
-                tool_id: "exec".into(),
-                arguments: OpaquePayload::text(self.raw.clone()),
-                rejection: None,
-            }]
-        } else {
-            vec![]
-        };
+        let calls = self.calls.pop_front().into_iter().collect();
         Ok(pl_core::model::PreparedModelCall::new(async move {
             Ok(pl_core::model::ModelStepOutput {
                 attempt_id: request.attempt_id,

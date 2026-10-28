@@ -191,7 +191,7 @@ pub(super) fn projection(
     while !snapshot.message.is_char_boundary(detail_end) {
         detail_end -= 1;
     }
-    let mut record = Record {
+    let record = Record {
         task_id: context.tasks.as_ref().and_then(|tasks| {
             tasks
                 .list()
@@ -248,7 +248,7 @@ pub(super) fn projection(
         stdout_resource,
         stderr_resource,
         requested_body_bytes: requested,
-        effective_body_bytes: requested.min(super::MAX_MODEL_OUTPUT_BYTES).min(
+        effective_body_bytes: requested.min(super::MAX_MODEL_BODY_BYTES).min(
             snapshot
                 .model_output_bytes_cap
                 .and_then(|cap| usize::try_from(cap).ok())
@@ -261,52 +261,18 @@ pub(super) fn projection(
         }),
         next_action,
     };
-    let payload = OpaquePayload::new(
-        "pl.tool.exec",
-        2,
-        serde_json::to_string(&record).map_err(ToolError::new)?,
-    )
-    .map_err(ToolError::new)?;
-    let content = loop {
-        let mut content = vec![ContextContent::Text {
-            text: Arc::from(serde_json::to_string(&record).map_err(ToolError::new)?),
-        }];
-        for (_, reference) in resources {
-            content.push(ContextContent::Resource {
-                reference: reference.clone(),
-            });
-        }
-        let bytes = serde_json::to_vec(&content).map_err(ToolError::new)?.len();
-        if bytes <= super::MAX_MODEL_OUTPUT_BYTES {
-            break content;
-        }
-        if record.stdout.content.is_empty() && record.stderr.content.is_empty() {
-            break vec![ContextContent::Text {
-                text: Arc::from(
-                    "{\"diagnostic\":{\"code\":\"exec.metadata_too_large\",\"nextAction\":\"query_original_payload\"},\"processStarted\":null,\"wasTruncated\":true}",
-                ),
-            }];
-        }
-        // Rebuild valid JSON at each step. Never split serialized JSON or required metadata.
-        let reduce = (bytes - super::MAX_MODEL_OUTPUT_BYTES).div_ceil(2).max(1);
-        let stdout_len = record.stdout.content.len();
-        let stderr_len = record.stderr.content.len();
-        let total = stdout_len + stderr_len;
-        let out_reduce = ((reduce as u128 * stdout_len as u128) / total as u128) as usize;
-        record.stdout = stream(
-            snapshot,
-            crate::command::CommandCaptureStream::Stdout,
-            prefix(record.stdout.content, stdout_len.saturating_sub(out_reduce)),
-        );
-        record.stderr = stream(
-            snapshot,
-            crate::command::CommandCaptureStream::Stderr,
-            prefix(
-                record.stderr.content,
-                stderr_len.saturating_sub(reduce - out_reduce),
-            ),
-        );
-    };
+    let text = serde_json::to_string(&record).map_err(ToolError::new)?;
+    let payload = OpaquePayload::new("pl.tool.exec", 2, text.clone()).map_err(ToolError::new)?;
+    // Only decoded stdout/stderr text consumes the body budget. Metadata, reliable-resource
+    // references and JSON escaping are additional protocol content; never trim the body again.
+    let mut content = vec![ContextContent::Text {
+        text: Arc::from(text),
+    }];
+    for (_, reference) in resources {
+        content.push(ContextContent::Resource {
+            reference: reference.clone(),
+        });
+    }
     Ok(ToolOutput::new(payload, content))
 }
 
@@ -450,19 +416,13 @@ pub(super) fn start_error(
     }
 }
 
-/// Error receipts obey the same serialized-content budget as successful exec projections.
-/// The immutable payload keeps complete identities even when metadata alone exceeds the cap.
+/// Metadata-only receipts do not consume the stdout/stderr body budget.
 pub(super) fn receipt_output(format: &'static str, text: String) -> Result<ToolOutput, ToolError> {
     let payload = OpaquePayload::new(format, 2, text.clone()).map_err(ToolError::new)?;
-    let mut content = vec![ContextContent::Text {
-        text: Arc::from(text),
-    }];
-    if serde_json::to_vec(&content).map_err(ToolError::new)?.len() > super::MAX_MODEL_OUTPUT_BYTES {
-        content = vec![ContextContent::Text {
-            text: Arc::from(
-                "{\"diagnostic\":{\"code\":\"exec.metadata_too_large\",\"nextAction\":\"query_original_payload\"},\"wasTruncated\":true}",
-            ),
-        }];
-    }
-    Ok(ToolOutput::new(payload, content))
+    Ok(ToolOutput::new(
+        payload,
+        vec![ContextContent::Text {
+            text: Arc::from(text),
+        }],
+    ))
 }
