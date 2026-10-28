@@ -1,4 +1,4 @@
-part of 'timeline_view.dart';
+part of 'timeline_activity_group_views.dart';
 
 Map<String, String> _markdownImageAlts(String source) {
   final alts = <String, String>{};
@@ -57,12 +57,12 @@ Widget _studioMarkdownImage(
   BuildContext context,
   String destination,
   String alt,
-  _MarkdownSurface surface,
+  TimelineMarkdownSurface surface,
 ) {
   final url = _safeHttpsImageUrl(destination);
   final enabled =
-      surface == _MarkdownSurface.assistant ||
-      surface == _MarkdownSurface.panel;
+      surface == TimelineMarkdownSurface.assistant ||
+      surface == TimelineMarkdownSurface.panel;
   if (!enabled || url == null) {
     return Text(alt.isNotEmpty ? alt : destination);
   }
@@ -81,19 +81,18 @@ String? _safeHttpsImageUrl(String value) {
   return uri.toString();
 }
 
-class _RemoteMarkdownImageCard extends ConsumerStatefulWidget {
+class _RemoteMarkdownImageCard extends StatefulWidget {
   const _RemoteMarkdownImageCard({required this.url, required this.alt});
 
   final String url;
   final String alt;
 
   @override
-  ConsumerState<_RemoteMarkdownImageCard> createState() =>
+  State<_RemoteMarkdownImageCard> createState() =>
       _RemoteMarkdownImageCardState();
 }
 
-class _RemoteMarkdownImageCardState
-    extends ConsumerState<_RemoteMarkdownImageCard> {
+class _RemoteMarkdownImageCardState extends State<_RemoteMarkdownImageCard> {
   ImageProvider? _image;
   bool _failed = false;
 
@@ -198,9 +197,16 @@ class _RemoteMarkdownImageCardState
   }
 
   Future<void> _loadAndOpen() async {
-    final account = ref.read(timelineRemoteImageProviderFactoryProvider)(
-      widget.url,
-    );
+    TimelineRemoteImageProviderFactory factory = NetworkImage.new;
+    try {
+      factory = ProviderScope.containerOf(
+        context,
+        listen: false,
+      ).read(timelineRemoteImageProviderFactoryProvider);
+    } on StateError {
+      // Standalone previews and widget tests without ProviderScope use default NetworkImage.
+    }
+    final account = factory(widget.url);
     Object? loadError;
     await precacheImage(
       account,
@@ -227,7 +233,7 @@ class _RemoteMarkdownImageCardState
   Future<void> _open() async {
     final image = _image;
     if (image == null || !mounted) return;
-    await _showStudioImageDialog(
+    await showStudioImageDialog(
       context,
       image,
       dialogKey: StudioDriverKeys.markdownImageDialog(widget.url),

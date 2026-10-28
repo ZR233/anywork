@@ -3146,6 +3146,30 @@ abstract class AppLocalizations {
   /// **'Thought for {minutes}m {seconds}s'**
   String timelineReasoningElapsedMinutesSeconds(int minutes, int seconds);
 
+  /// No description provided for @timelineGroupWorkedUnderSecond.
+  ///
+  /// In en, this message translates to:
+  /// **'Worked for less than 1s'**
+  String get timelineGroupWorkedUnderSecond;
+
+  /// No description provided for @timelineGroupWorkedSeconds.
+  ///
+  /// In en, this message translates to:
+  /// **'Worked for {seconds}s'**
+  String timelineGroupWorkedSeconds(int seconds);
+
+  /// No description provided for @timelineGroupWorkedMinutes.
+  ///
+  /// In en, this message translates to:
+  /// **'Worked for {minutes}m'**
+  String timelineGroupWorkedMinutes(int minutes);
+
+  /// No description provided for @timelineGroupWorkedMinutesSeconds.
+  ///
+  /// In en, this message translates to:
+  /// **'Worked for {minutes}m {seconds}s'**
+  String timelineGroupWorkedMinutesSeconds(int minutes, int seconds);
+
   /// No description provided for @timelineReasoningSummary.
   ///
   /// In en, this message translates to:

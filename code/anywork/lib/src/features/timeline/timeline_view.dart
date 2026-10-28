@@ -10,39 +10,32 @@ import 'package:flutter/services.dart';
 import 'package:flutter_chat_core/flutter_chat_core.dart';
 import 'package:flutter_chat_ui/flutter_chat_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:gpt_markdown/gpt_markdown.dart';
 
 import '../../app/theme/studio_tokens.dart';
 import '../../domain/models/plan_confirmation_ownership.dart';
 import '../../domain/models/studio_models.dart';
 import '../../l10n/studio_l10n.dart';
-import '../../platform/external_url_launcher.dart';
 import '../../presentation/providers/client_provider.dart';
 import '../../presentation/view_models/timeline_session_owner.dart';
 import '../../shared/studio_chrome.dart';
-import '../../shared/studio_driver_key_values.dart';
 import '../../shared/studio_driver_keys.dart';
 import '../../shared/typed_json.dart';
-import 'markdown_repair.dart';
+import 'timeline_activity_group_views.dart';
 import 'timeline_activity_row.dart';
 import 'timeline_wait_blocks.dart';
 
-part 'timeline_agent_blocks.dart';
+export 'timeline_activity_group_adapter.dart';
+export 'timeline_activity_group_models.dart';
+export 'timeline_activity_group_views.dart'
+    show TimelineActivityGroupBlock, TimelineDetailOpenCallback;
+
 part 'timeline_detail_viewer.dart';
 part 'timeline_image_blocks.dart';
 part 'timeline_image_card.dart';
-part 'timeline_markdown_blocks.dart';
 part 'timeline_message_blocks.dart';
 part 'timeline_group_blocks.dart';
 part 'timeline_plan_blocks.dart';
-part 'timeline_remote_image_blocks.dart';
-part 'timeline_tool_blocks.dart';
 part 'timeline_user_input_blocks.dart';
-
-typedef TimelineRemoteImageProviderFactory = ImageProvider Function(String url);
-
-final timelineRemoteImageProviderFactoryProvider =
-    Provider<TimelineRemoteImageProviderFactory>((ref) => NetworkImage.new);
 
 /// 读者自己的作者身份：库只把它用于气泡布局。
 const String _timelineUserAuthorId = 'user';

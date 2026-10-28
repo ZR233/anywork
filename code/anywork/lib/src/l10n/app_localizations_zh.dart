@@ -1629,6 +1629,24 @@ class AppLocalizationsZh extends AppLocalizations {
   }
 
   @override
+  String get timelineGroupWorkedUnderSecond => '工作了不到 1 秒';
+
+  @override
+  String timelineGroupWorkedSeconds(int seconds) {
+    return '工作了 $seconds 秒';
+  }
+
+  @override
+  String timelineGroupWorkedMinutes(int minutes) {
+    return '工作了 $minutes 分';
+  }
+
+  @override
+  String timelineGroupWorkedMinutesSeconds(int minutes, int seconds) {
+    return '工作了 $minutes 分 $seconds 秒';
+  }
+
+  @override
   String get timelineReasoningSummary => '概要';
 
   @override
