@@ -19,7 +19,7 @@ pub(in crate::bots) struct AudienceScope {
     pub has_older_closed: bool,
 }
 
-pub(super) async fn read_origin<C: ConnectionTrait>(
+pub(in crate::bots::storage) async fn read_origin<C: ConnectionTrait>(
     db: &C,
     thread: &str,
 ) -> Result<Option<ThreadOrigin>, FeishuError> {
@@ -34,7 +34,7 @@ pub(super) async fn read_origin<C: ConnectionTrait>(
     .transpose()
 }
 
-pub(super) async fn proven_origin<C: ConnectionTrait>(
+pub(in crate::bots::storage) async fn proven_origin<C: ConnectionTrait>(
     db: &C,
     thread: &str,
     bot: &str,
@@ -48,7 +48,7 @@ pub(super) async fn proven_origin<C: ConnectionTrait>(
     Ok(Some(origin))
 }
 
-pub(super) async fn head<C: ConnectionTrait>(
+pub(in crate::bots::storage) async fn head<C: ConnectionTrait>(
     db: &C,
     chat: &str,
 ) -> Result<Option<Authorization>, FeishuError> {
@@ -63,7 +63,7 @@ pub(super) async fn head<C: ConnectionTrait>(
     .transpose()
 }
 
-pub(super) async fn load_auth<C: ConnectionTrait>(
+pub(in crate::bots::storage) async fn load_auth<C: ConnectionTrait>(
     db: &C,
     id: &BotAuthorizationId,
 ) -> Result<Option<Authorization>, FeishuError> {
@@ -240,16 +240,7 @@ impl BotStateStore {
         auth: &BotAuthorizationId,
         item: &str,
     ) -> Result<Option<DeliveryObservation>, FeishuError> {
-        let Some(row)=self.audience_db()?.query_one_raw(statement("SELECT state_json,thread_id FROM bot_delivery_items WHERE chat_id=? AND generation=? AND item_id=?",
-            vec![auth.chat_id.clone().into(),i64::try_from(auth.generation).map_err(|_|unreadable())?.into(),item.into()])).await.map_err(storage)? else{return Ok(None)};
-        let fact: DeliveryObservation =
-            serde_json::from_str(&strict_text(&row, "state_json")?).map_err(|_| unreadable())?;
-        if fact.authorization != *auth
-            || fact.item_id != item
-            || fact.thread_id != strict_text(&row, "thread_id")?
-        {
-            return Err(unreadable());
-        }
-        Ok(Some(fact))
+        // 当前唯一账本派生：作用域与完整授权身份共同核对，冷查询不初始化存储。
+        self.delivery_observation(auth, item).await
     }
 }

@@ -5,26 +5,18 @@ use anyhow::{Context, Result, bail, ensure};
 use sea_orm::sqlx::sqlite::{SqliteJournalMode, SqliteSynchronous};
 use sea_orm::{
     ConnectOptions, ConnectionTrait, Database, DatabaseBackend, DatabaseConnection, Statement,
-    TransactionTrait,
 };
 
+use super::schema::{STUDIO_DATABASE_SCHEMA_VERSION, migrate};
 use crate::studio::catalog::CatalogStore;
 use crate::studio::paths::{SqliteFileMode, StudioPaths, default_db_path, sqlite_file_options};
 use crate::studio::records::ProjectRecord;
 use crate::studio::store::settings::SettingsStore;
 use crate::studio::store::workspaces::WorkspaceStore;
 use crate::studio::store::{StudioDatabaseError, StudioStore};
-use crate::studio::store_support::{STUDIO_DATABASE_SCHEMA_VERSION, initialize_studio_schema};
 
 /// 可原地升级到当前 schema 的上一版本；模式匹配需要 const 模式。
 const UPGRADEABLE_STUDIO_DATABASE_SCHEMA_VERSION: i64 = 22;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ExistingDatabaseState {
-    Current,
-    /// 上一个大版本的 v2 产品库：打开后按事务原地升级到当前 schema，保留全部数据。
-    UpgradeRequired,
-}
 
 /// Whether a resolved Studio home already owns persistent state from an earlier run.
 ///
@@ -55,7 +47,7 @@ impl StudioStore {
 
     pub async fn open_memory() -> Result<Self> {
         let db = connect_memory().await?;
-        initialize_studio_schema(&db).await?;
+        migrate(&db).await?;
         validate_database(&db).await?;
         let home = tempfile::Builder::new()
             .prefix("anywork-memory-store-")
@@ -91,17 +83,14 @@ impl StudioStore {
         let path = resolve_configured_database_path(path).await?;
         let database_exists = tokio::fs::try_exists(&path).await?;
         let family_exists = database_family_exists(&path).await?;
-        let existing_state = if database_exists {
-            Some(inspect_database(&path).await?)
-        } else {
-            if family_exists {
-                return Err(StudioDatabaseError::CorruptDatabase {
-                    reason: "orphan Studio WAL/SHM files".into(),
-                }
-                .into());
+        if database_exists {
+            inspect_database(&path).await?;
+        } else if family_exists {
+            return Err(StudioDatabaseError::CorruptDatabase {
+                reason: "orphan Studio WAL/SHM files".into(),
             }
-            None
-        };
+            .into());
+        }
         // The data root is resolved once; every session, call and attachment path comes from the
         // canonical layout instead of being re-joined by each consumer.
         let paths = StudioPaths::resolve(Some(studio_home_from_database(&path)?))?;
@@ -118,41 +107,16 @@ impl StudioStore {
             /* max_connections */ 1,
         )
         .await?;
-        let created = existing_state.is_none();
         let initialization = async {
-            if created {
-                initialize_studio_schema(&db).await?;
-            } else if existing_state == Some(ExistingDatabaseState::UpgradeRequired) {
-                // v2 内的结构升级在打开可写连接后原地完成：事务内加列并推进
-                // user_version，保留全部已有数据（design/17 §17.1）。
-                upgrade_product_schema(&db).await?;
-            }
-            // ExistingDatabaseState::Current was already verified before opening writable.
-            // Old session storage remains isolated outside v2.
+            migrate(&db).await?;
             validate_database(&db).await
         }
         .await;
         if let Err(error) = initialization {
-            let close = db.close().await;
-            let cleanup = if created {
-                delete_database_family(&path).await
-            } else {
-                Ok(())
-            };
-            return match (close, cleanup) {
-                (Ok(()), Ok(())) => Err(error).context("Studio database initialization failed"),
-                (Err(close_error), Ok(())) => {
-                    Err(crate::studio::startup::cleanup_error(close_error).context(error))
-                }
-                (Ok(()), Err(cleanup_error)) => {
-                    Err(crate::studio::startup::cleanup_error(cleanup_error).context(error))
-                }
-                (Err(close_error), Err(cleanup_error)) => {
-                    Err(crate::studio::startup::cleanup_error(close_error)
-                        .context(cleanup_error)
-                        .context(error))
-                }
-            };
+            return Err(match db.close().await {
+                Ok(()) => error.context("Studio database initialization failed"),
+                Err(cleanup) => crate::studio::startup::cleanup_error(cleanup).context(error),
+            });
         }
         // Canonical TOML is the only fact source for directory and settings reads. A missing or
         // corrupt document on an installation that already owns state fails startup instead of
@@ -210,6 +174,10 @@ impl StudioStore {
     }
 
     pub(crate) async fn close(&self) -> Result<()> {
+        // Both normal shutdown and failed startup have sealed Thread creation/recovery admission.
+        // Do not release the backing stores while a cancelled initialization caller still owns
+        // SQL, publication or a failed preparation that requires explicit recovery.
+        self.thread_persistence.drain_history_preparations().await?;
         let (calls, product) = tokio::join!(self.calls.close(), self.db.close_by_ref());
         calls?;
         product?;
@@ -457,17 +425,19 @@ async fn connect_read_only_database(path: &Path) -> Result<DatabaseConnection> {
         .with_context(|| format!("无法以只读方式打开 Studio 数据库：{}", path.display()))
 }
 
-async fn inspect_database(path: &Path) -> Result<ExistingDatabaseState> {
+async fn inspect_database(path: &Path) -> Result<()> {
     let database = connect_read_only_database(path).await?;
-    let version = database_schema_version(&database).await;
+    let version = async {
+        super::schema::preflight(&database).await.map_err(|error| {
+            crate::studio::startup::migration_error("Studio product", "preflight", error)
+        })?;
+        database_schema_version(&database).await
+    }
+    .await;
     let validation = match version {
-        Ok(STUDIO_DATABASE_SCHEMA_VERSION) => validate_database(&database)
-            .await
-            .map(|()| ExistingDatabaseState::Current),
+        Ok(STUDIO_DATABASE_SCHEMA_VERSION) => validate_database(&database).await,
         // 上一个大版本的 v2 库可以在打开后原地升级；更早的 dev 版本仍交给启动入口。
-        Ok(UPGRADEABLE_STUDIO_DATABASE_SCHEMA_VERSION..=24) => {
-            Ok(ExistingDatabaseState::UpgradeRequired)
-        }
+        Ok(0 | UPGRADEABLE_STUDIO_DATABASE_SCHEMA_VERSION..=24) => Ok(()),
         Ok(19..=21) => Err(StudioDatabaseError::StorageMigrationRequired.into()),
         Ok(found) => Err(StudioDatabaseError::UnsupportedSchema {
             found,
@@ -485,45 +455,6 @@ async fn inspect_database(path: &Path) -> Result<ExistingDatabaseState> {
             Err(crate::studio::startup::cleanup_error(close_error).context(error))
         }
     }
-}
-
-/// Applies v22..v24 → v25 in one transaction, preserving all existing v2 rows.
-///
-/// Missing directory fields retain their explicit historical defaults. In particular v24's core
-/// Closed rows do not acquire an explicit-close intent. Appended columns match canonical creation
-/// order so the schema fingerprint remains identical; existing evaluations and history survive.
-async fn upgrade_product_schema(db: &DatabaseConnection) -> Result<()> {
-    let tx = db.begin().await?;
-    let version = database_schema_version(&tx).await?;
-    if version == STUDIO_DATABASE_SCHEMA_VERSION {
-        tx.commit().await?;
-        return Ok(());
-    }
-    anyhow::ensure!(
-        (22..=24).contains(&version),
-        "Studio database upgrade requires schema version {}, found {version}",
-        STUDIO_DATABASE_SCHEMA_VERSION - 1
-    );
-    if version == 22 {
-        tx.execute_unprepared("ALTER TABLE threads ADD COLUMN last_user_message_at INTEGER")
-            .await?;
-    }
-    if version <= 23 {
-        tx.execute_unprepared(
-            "ALTER TABLE threads ADD COLUMN delegation_mode TEXT NOT NULL DEFAULT 'profile';
-        ALTER TABLE threads ADD COLUMN delegation_preference TEXT NOT NULL DEFAULT 'balanced';
-        ALTER TABLE threads ADD COLUMN frozen_model_json TEXT;",
-        )
-        .await?;
-        crate::studio::store_support::create_agent_evaluations(&tx).await?;
-    }
-    tx.execute_unprepared("ALTER TABLE threads ADD COLUMN explicitly_closed INTEGER NOT NULL DEFAULT 0 CHECK(explicitly_closed IN (0,1))").await?;
-    tx.execute_unprepared(&format!(
-        "PRAGMA user_version = {STUDIO_DATABASE_SCHEMA_VERSION}"
-    ))
-    .await?;
-    tx.commit().await?;
-    Ok(())
 }
 
 async fn validate_database(db: &DatabaseConnection) -> Result<()> {
@@ -581,7 +512,7 @@ async fn database_schema_version(db: &impl sea_orm::ConnectionTrait) -> Result<i
 
 async fn expected_schema_fingerprint() -> Result<String> {
     let database = connect_memory().await?;
-    initialize_studio_schema(&database).await?;
+    migrate(&database).await?;
     let fingerprint = schema_fingerprint(&database).await;
     database.close().await?;
     fingerprint
@@ -598,7 +529,8 @@ async fn schema_fingerprint_where(db: &DatabaseConnection, predicate: &str) -> R
             format!(
                 "SELECT type, name, tbl_name, sql
              FROM sqlite_schema
-             WHERE name NOT LIKE 'sqlite_%'
+             WHERE name NOT GLOB 'sqlite_*'
+               AND tbl_name <> 'seaql_migrations'
                AND type IN ('table', 'index')
                AND sql IS NOT NULL
                AND {predicate}
@@ -648,35 +580,6 @@ async fn database_family_exists(path: &Path) -> Result<bool> {
         }
     }
     Ok(false)
-}
-
-async fn delete_database_family(path: &Path) -> Result<()> {
-    let parent = path
-        .parent()
-        .context("configured Studio database path has no parent")?;
-    let parent = std::fs::canonicalize(parent)
-        .context("failed to resolve configured Studio database directory")?;
-    let members = database_family_paths(path);
-    for member in &members {
-        if tokio::fs::try_exists(member).await? {
-            validate_database_family_member(member, &parent)?;
-        }
-    }
-    for member in members {
-        match tokio::fs::remove_file(&member).await {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => {
-                return Err(error).with_context(|| {
-                    format!(
-                        "failed to delete incompatible Studio database file {}",
-                        member.display()
-                    )
-                });
-            }
-        }
-    }
-    Ok(())
 }
 
 fn validate_database_family_member(path: &Path, expected_parent: &Path) -> Result<()> {
@@ -758,6 +661,148 @@ mod major_version_storage_tests {
 mod v2_schema_upgrade_tests {
     use super::super::directory::{DirectoryDelta, ProjectDirectoryRecord, apply_directory_delta};
     use super::*;
+    use sea_orm::TransactionTrait;
+
+    #[tokio::test]
+    async fn invalid_migration_lineage_is_rejected_before_product_writes() -> Result<()> {
+        // These are corrupt completion facts, not old formats without official records. A current
+        // schema must not let a later recorded step excuse an earlier missing conversion.
+        for mutation in [
+            "DELETE FROM seaql_migrations WHERE version='m20261026_000001_product_schema'",
+            "DELETE FROM seaql_migrations WHERE version='m20261026_000002_product_directory_fields'",
+            "UPDATE seaql_migrations SET version='m20990101_000001_unknown' WHERE version='m20261026_000004_product_explicit_close'",
+            "DELETE FROM seaql_migrations WHERE version='m20261026_000004_product_explicit_close'; PRAGMA user_version=22",
+        ] {
+            let temp = tempfile::tempdir()?;
+            let paths = StudioPaths::resolve(Some(temp.path().to_path_buf()))?;
+            let store = StudioStore::open(paths.database()).await?;
+            store.database().execute_unprepared(
+                "INSERT INTO app_settings(key,value,updated_at) VALUES('lineage-sentinel','preserved raw material',7)",
+            ).await?;
+            store.database().execute_unprepared(mutation).await?;
+            let original_steps = recorded_product_steps(store.database()).await?;
+            let original_format = database_schema_version(store.database()).await?;
+            store.close().await?;
+
+            let failure = match StudioStore::open(paths.database()).await {
+                Ok(reopened) => {
+                    reopened.close().await?;
+                    anyhow::bail!("invalid product lineage was accepted: {mutation}");
+                }
+                Err(error) => error,
+            };
+            assert!(
+                format!("{failure:#}").contains("preflight"),
+                "lineage must fail before attempting a migration: {failure:#}"
+            );
+            assert_eq!(
+                crate::studio::startup::StudioStartupError::input("product test", failure).kind,
+                crate::studio::startup::StudioStartupErrorKind::Migration
+            );
+            let probe = connect_read_only_database(&paths.database()).await?;
+            assert_eq!(recorded_product_steps(&probe).await?, original_steps);
+            assert_eq!(database_schema_version(&probe).await?, original_format);
+            let sentinel = probe
+                .query_one_raw(Statement::from_string(
+                    DatabaseBackend::Sqlite,
+                    "SELECT value,updated_at FROM app_settings WHERE key='lineage-sentinel'",
+                ))
+                .await?
+                .context("retained product material")?;
+            assert_eq!(
+                sentinel.try_get::<String>("", "value")?,
+                "preserved raw material"
+            );
+            assert_eq!(sentinel.try_get::<i64>("", "updated_at")?, 7);
+            probe.close().await?;
+        }
+
+        // A genuine new database's first migration already produces format 25. Pending later
+        // steps are legal here; requiring all four records merely because of format 25 is wrong.
+        let temp = tempfile::tempdir()?;
+        let paths = StudioPaths::resolve(Some(temp.path().to_path_buf()))?;
+        let store = StudioStore::open(paths.database()).await?;
+        store
+            .database()
+            .execute_unprepared(
+                "DELETE FROM seaql_migrations WHERE version<>'m20261026_000001_product_schema'",
+            )
+            .await?;
+        store.close().await?;
+        let resumed = StudioStore::open(paths.database()).await?;
+        assert_eq!(recorded_product_steps(resumed.database()).await?.len(), 4);
+        assert_eq!(database_schema_version(resumed.database()).await?, 25);
+        resumed.close().await?;
+
+        // SQLite reserves the literal sqlite_ prefix, not names matched by LIKE's wildcard '_'.
+        // Such a user table is neither an empty unversioned source nor part of a current schema.
+        for current_schema in [false, true] {
+            let temp = tempfile::tempdir()?;
+            let path = temp.path().join("product.sqlite");
+            if current_schema {
+                StudioStore::open(path.clone()).await?.close().await?;
+            }
+            let options = sqlite_file_options(&path, SqliteFileMode::Create, |options| {
+                configure_sqlite(options, SqliteSynchronous::Full)
+            })
+            .await?;
+            let source = connect_sqlite(options, 1).await?;
+            source
+                .execute_unprepared(
+                    "CREATE TABLE sqlitex_unknown_authority(value TEXT NOT NULL);
+                 INSERT INTO sqlitex_unknown_authority VALUES('retained unknown authority');",
+                )
+                .await?;
+            let original_version = database_schema_version(&source).await?;
+            let original_steps = if current_schema {
+                recorded_product_steps(&source).await?
+            } else {
+                Vec::new()
+            };
+            if let Ok(accepted) = StudioStore::open(path).await {
+                accepted.close().await?;
+                anyhow::bail!("unknown sqlitex table was accepted, current={current_schema}");
+            }
+            assert_eq!(database_schema_version(&source).await?, original_version);
+            let retained = source
+                .query_one_raw(Statement::from_string(
+                    DatabaseBackend::Sqlite,
+                    "SELECT value FROM sqlitex_unknown_authority",
+                ))
+                .await?
+                .context("retained unknown source table")?;
+            assert_eq!(
+                retained.try_get_by_index::<String>(0)?,
+                "retained unknown authority"
+            );
+            if current_schema {
+                assert_eq!(recorded_product_steps(&source).await?, original_steps);
+            } else {
+                assert!(
+                    source
+                        .query_one_raw(Statement::from_string(
+                            DatabaseBackend::Sqlite,
+                            "SELECT 1 FROM sqlite_schema WHERE name='seaql_migrations'",
+                        ))
+                        .await?
+                        .is_none()
+                );
+            }
+            source.close().await?;
+        }
+        Ok(())
+    }
+
+    async fn recorded_product_steps(db: &DatabaseConnection) -> Result<Vec<String>> {
+        db.query_all_raw(Statement::from_string(
+            DatabaseBackend::Sqlite,
+            "SELECT version FROM seaql_migrations ORDER BY version",
+        ))
+        .await?
+        .into_iter()
+        .map(|row| row.try_get("", "version").map_err(anyhow::Error::from))
+        .collect()
+    }
 
     #[tokio::test]
     async fn schema_24_catalog_3_closed_child_does_not_invent_close_intent() -> Result<()> {
@@ -801,7 +846,7 @@ mod v2_schema_upgrade_tests {
         store
             .database()
             .execute_unprepared(
-                "ALTER TABLE threads DROP COLUMN explicitly_closed; PRAGMA user_version=24",
+                "ALTER TABLE threads DROP COLUMN explicitly_closed; DROP TABLE IF EXISTS seaql_migrations; PRAGMA user_version=24",
             )
             .await?;
         store.close().await?;
@@ -922,7 +967,7 @@ mod v2_schema_upgrade_tests {
             ALTER TABLE threads DROP COLUMN frozen_model_json;
             ALTER TABLE threads DROP COLUMN explicitly_closed;
             DROP TABLE agent_evaluations;
-            PRAGMA user_version = 23;",
+            DROP TABLE IF EXISTS seaql_migrations; PRAGMA user_version=23;",
             )
             .await?;
         store.close().await?;
@@ -1075,15 +1120,46 @@ mod v2_schema_upgrade_tests {
             .await?;
         store
             .database()
-            .execute_unprepared("PRAGMA user_version = 22")
+            .execute_unprepared("DROP TABLE IF EXISTS seaql_migrations; PRAGMA user_version=22")
             .await?;
         assert_eq!(
             database_schema_version(store.database()).await?,
             UPGRADEABLE_STUDIO_DATABASE_SCHEMA_VERSION
         );
-        drop(store);
+        // Fail the delegation DDL after its ALTERs. Its entire step and completion record must
+        // roll back, while the preceding directory-field migration remains committed for retry.
+        store
+            .database()
+            .execute_unprepared("CREATE TABLE agent_evaluations(unrelated INTEGER)")
+            .await?;
+        store.close().await?;
+        let failure = match StudioStore::open(&database).await {
+            Ok(_) => anyhow::bail!("conflicting legacy DDL was accepted"),
+            Err(error) => error,
+        };
+        assert!(format!("{failure:#}").contains("m20261026_000003_product_delegation"));
+        let probe = connect_read_only_database(&database).await?;
+        assert_eq!(database_schema_version(&probe).await?, 23);
+        assert!(
+            !sea_orm_migration::SchemaManager::new(&probe)
+                .has_column("threads", "delegation_mode")
+                .await?
+        );
+        assert!(probe.query_one_raw(Statement::from_string(DatabaseBackend::Sqlite,
+            "SELECT version FROM seaql_migrations WHERE version='m20261026_000003_product_delegation'"))
+            .await?.is_none());
+        probe.close().await?;
+        let probe = connect_sqlite(
+            sqlite_file_options(&database, SqliteFileMode::ReadWrite, |options| options).await?,
+            1,
+        )
+        .await?;
+        probe
+            .execute_unprepared("DROP TABLE agent_evaluations")
+            .await?;
+        probe.close().await?;
 
-        // 重新打开：只读探测识别 22 → 打开可写连接后事务内原地升级并校验指纹。
+        // 重新打开：从已提交步骤接续原地升级，并校验 canonical 指纹与业务事实。
         let upgraded = StudioStore::open(&database).await?;
         assert_eq!(
             database_schema_version(upgraded.database()).await?,

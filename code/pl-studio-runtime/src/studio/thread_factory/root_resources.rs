@@ -89,7 +89,7 @@ impl StudioThreadFactory {
             .map_err(|error| resource_error("resolve bot ownership", error))?;
         let config = self.services.config_runtime.read()?.config;
         let protocol_thread: pl_protocol::Thread = thread.clone().into();
-        let mut checkpoint =
+        let checkpoint =
             super::recovery::load_checkpoint_for_recovery(&self.services.store, &protocol_thread)
                 .await
                 .map_err(|error| resource_error("load Thread checkpoint", error))?;
@@ -112,30 +112,19 @@ impl StudioThreadFactory {
             Some(_) => VerifiedAgentIdentity::BotRoot,
             None => VerifiedAgentIdentity::GenericRoot,
         };
-        if let Some(checkpoint) = &mut checkpoint {
-            let history = self
-                .services
-                .store
-                .history_for(&thread.project_id, id)
-                .await
-                .map_err(|error| resource_error("open Mode recovery writer", error))?;
-            *checkpoint = history
-                .migrate_recovery_checkpoint(checkpoint, |state| {
-                    crate::mode::migrate_mode_snapshot(state, &self.services.thread_modes)?;
-                    // A root's saved Mode identity is required evidence: without it neither the
-                    // Mode nor the legacy Agent role can be attributed, so the original
-                    // checkpoint stays as it is.
-                    anyhow::ensure!(
-                        state.extensions.contains_key("studio.mode"),
-                        "root Thread has no saved Mode identity; original checkpoint preserved"
-                    );
-                    // Mode recovery reads the saved role text before this migration rewrites the
-                    // snapshot structure; the Agent identity is the verified one above.
-                    crate::instruction::migrate_saved_representation(state, &saved_identity)?;
-                    Ok(())
-                })
-                .await
-                .map_err(|error| resource_error("migrate saved Mode and instructions", error))?;
+        if let Some(checkpoint) = &checkpoint {
+            let saved_mode = crate::mode::saved_registered_mode(&checkpoint.state)
+                .map_err(|error| resource_error("validate saved Mode", error))?;
+            if saved_mode.is_none() {
+                return Err(ThreadAssemblyError::Identity(
+                    "root Thread has no saved Mode identity; original checkpoint preserved".into(),
+                ));
+        }
+            super::history_preparation::validate_current_instructions(
+                &checkpoint.state,
+                &saved_identity,
+            )
+            .map_err(|error| resource_error("validate saved root instructions", error))?;
         }
         let saved = checkpoint
             .as_ref()
@@ -239,6 +228,19 @@ impl StudioThreadFactory {
             thread_id: id.to_owned(),
             reason: error.to_string(),
         })?;
+        if workspace_mode == pl_protocol::ThreadWorkspaceMode::Worktree {
+            crate::studio::agent_host::workspace_preparation::verify_root_session_worktree(
+                &self.services.worktrees,
+                &self.services.ssh_manager,
+                &project,
+                &thread.root_thread_id,
+            )
+            .await
+            .map_err(|error| ThreadAssemblyError::Workspace {
+                thread_id: id.to_owned(),
+                reason: error.to_string(),
+            })?;
+        }
         let workspace = ToolWorkspace::new(match workspace_mode {
             pl_protocol::ThreadWorkspaceMode::Local => AgentWorkspace::local(&root),
             pl_protocol::ThreadWorkspaceMode::Worktree => {

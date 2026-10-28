@@ -296,7 +296,7 @@ pub(crate) async fn thread_inputs(home: &Path, thread_id: &str) -> Result<Vec<Th
     Ok(rows)
 }
 
-/// Bounded recursive search for per-Thread `history.sqlite` files.
+/// Bounded recursive search for per-Thread `history-current.sqlite` files.
 ///
 /// Exceeding a bound is an error: a truncated search would silently report
 /// "no checkpoint" for a Thread that really exists.
@@ -326,7 +326,7 @@ fn collect_history_databases(dir: &Path, depth: usize, found: &mut Vec<PathBuf>)
             collect_history_databases(&path, depth + 1, found)?;
         } else if path
             .file_name()
-            .is_some_and(|name| name == "history.sqlite")
+            .is_some_and(|name| name == "history-current.sqlite")
         {
             found.push(path);
             anyhow::ensure!(
@@ -343,6 +343,163 @@ fn bot_state_db(home: &Path, bot_id: &str) -> PathBuf {
         .join("bots")
         .join(bot_id)
         .join("state.sqlite")
+}
+
+/// Identity of the durable history database that really owns one Thread.
+#[derive(Debug, Clone)]
+pub(crate) struct HistoryIdentity {
+    pub database_id: String,
+    pub thread_id: String,
+    pub applied_write_sequence: u64,
+}
+
+/// One immutable fact receipt as the producer stored it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct HistoryReceiptRow {
+    pub item_id: String,
+    pub revision: u64,
+    pub kind: String,
+    pub digest: String,
+    pub payload: String,
+    pub sequence: u64,
+}
+
+/// One read snapshot of the durable history identity and its start receipts.
+///
+/// Every field here comes from the same SELECT, so the identity can never be
+/// proven by one connection and the receipts by another.
+#[derive(Debug, Clone)]
+pub(crate) struct HistoryReceiptSnapshot {
+    pub identity: HistoryIdentity,
+    pub receipts: Vec<HistoryReceiptRow>,
+}
+
+/// Locates only the history database file that claims `thread_id`.
+///
+/// This metadata read exists purely to pick a file; it is never accepted as the
+/// verification authority. The authoritative identity and the receipts are read
+/// together in [`history_receipt_snapshot`].
+pub(crate) async fn locate_history_path(home: &Path, thread_id: &str) -> Result<PathBuf> {
+    let mut databases = Vec::new();
+    collect_history_databases(home, 0, &mut databases)?;
+    let mut found: Option<PathBuf> = None;
+    for path in databases {
+        let mut connection = connect(&path).await?;
+        let row = sea_orm::sqlx::query(
+            "SELECT database_id, thread_id, applied_write_seq FROM history_meta WHERE id=1",
+        )
+        .fetch_optional(&mut connection)
+        .await
+        .with_context(|| format!("failed to read history_meta in {}", path.display()))?;
+        let Some(row) = row else {
+            connection.close().await?;
+            continue;
+        };
+        let seen_thread: String = row
+            .try_get("thread_id")
+            .with_context(|| format!("history thread identity missing in {}", path.display()))?;
+        connection
+            .close()
+            .await
+            .with_context(|| format!("failed to close {}", path.display()))?;
+        if seen_thread != thread_id {
+            continue;
+        }
+        anyhow::ensure!(
+            found.is_none(),
+            "Thread {thread_id} appears in more than one history database"
+        );
+        found = Some(path);
+    }
+    found.with_context(|| format!("no history database holds Thread {thread_id}"))
+}
+
+/// Reads the history identity and the start receipts in one read snapshot.
+///
+/// A single `history_meta LEFT JOIN history_fact_receipts` statement gives one
+/// SQLite read snapshot for both, so no field can be taken from one connection
+/// and compared with rows from another. Read or ownership failures are returned,
+/// never swallowed.
+pub(crate) async fn history_receipt_snapshot(
+    home: &Path,
+    thread_id: &str,
+) -> Result<HistoryReceiptSnapshot> {
+    let path = locate_history_path(home, thread_id).await?;
+    let mut connection = connect(&path).await?;
+    let rows = sea_orm::sqlx::query(
+        "SELECT m.database_id, m.thread_id, m.applied_write_seq, \
+                r.item_id, r.revision, r.kind, r.digest, r.payload, r.last_write_seq \
+         FROM history_meta m \
+         LEFT JOIN history_fact_receipts r \
+           ON r.kind IN ('audience-start','turn-start') \
+         WHERE m.id = 1 \
+         ORDER BY r.last_write_seq, r.item_id",
+    )
+    .fetch_all(&mut connection)
+    .await
+    .with_context(|| {
+        format!(
+            "failed to read the history identity and receipts in {}",
+            path.display()
+        )
+    })?;
+    anyhow::ensure!(
+        !rows.is_empty(),
+        "history metadata is missing in {}",
+        path.display()
+    );
+    let first = &rows[0];
+    let database_id: String = first
+        .try_get("database_id")
+        .with_context(|| format!("history database identity missing in {}", path.display()))?;
+    let seen_thread: String = first
+        .try_get("thread_id")
+        .with_context(|| format!("history thread identity missing in {}", path.display()))?;
+    let applied: i64 = first
+        .try_get("applied_write_seq")
+        .with_context(|| format!("history watermark missing in {}", path.display()))?;
+    anyhow::ensure!(
+        !database_id.is_empty() && !seen_thread.is_empty(),
+        "the read history snapshot has an incomplete identity"
+    );
+    anyhow::ensure!(
+        seen_thread == thread_id,
+        "the read history snapshot belongs to Thread {seen_thread}, not the requested Thread"
+    );
+    let mut receipts = Vec::new();
+    for row in &rows {
+        anyhow::ensure!(
+            row.try_get::<String, _>("database_id")? == database_id
+                && row.try_get::<String, _>("thread_id")? == seen_thread,
+            "rows of the read snapshot disagree on the history identity"
+        );
+        let Some(item_id) = row.try_get::<Option<String>, _>("item_id")? else {
+            continue;
+        };
+        receipts.push(HistoryReceiptRow {
+            item_id,
+            revision: u64::try_from(row.try_get::<i64, _>("revision")?)
+                .context("receipt revision is negative")?,
+            kind: row.try_get("kind")?,
+            digest: row.try_get("digest")?,
+            payload: row.try_get("payload")?,
+            sequence: u64::try_from(row.try_get::<i64, _>("last_write_seq")?)
+                .context("receipt sequence is negative")?,
+        });
+    }
+    connection
+        .close()
+        .await
+        .with_context(|| format!("failed to close {}", path.display()))?;
+    Ok(HistoryReceiptSnapshot {
+        identity: HistoryIdentity {
+            database_id,
+            thread_id: seen_thread,
+            applied_write_sequence: u64::try_from(applied)
+                .context("history watermark is not a non-negative sequence")?,
+        },
+        receipts,
+    })
 }
 
 pub(crate) async fn card_streams(home: &Path, bot_id: &str) -> Result<Vec<CardStreamRow>> {

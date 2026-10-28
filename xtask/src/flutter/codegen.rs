@@ -359,6 +359,7 @@ fn run_frb_codegen(workspace_root: &Path, app_dir: &Path) -> Result<()> {
     let rust_output = rust_root.join("src").join("frb_generated.rs");
     let dart_output = app_dir.join("lib").join("src").join("rust");
     reset_frb_generated_dart_tree(&dart_output)?;
+    reset_frb_generated_rust_file(&rust_output)?;
     let args = vec![
         OsString::from("generate"),
         OsString::from("--rust-root"),
@@ -405,6 +406,25 @@ fn reset_frb_generated_dart_tree(dart_output: &Path) -> Result<()> {
     }
     fs::remove_dir_all(dart_output)
         .with_context(|| format!("failed to rebuild {}", dart_output.display()))
+}
+
+/// Cargo expansion must parse the handwritten API, not stale or conflicted codecs. Keep the
+/// declared module present but empty during expansion; FRB supplies its complete implementation.
+fn reset_frb_generated_rust_file(rust_output: &Path) -> Result<()> {
+    match fs::symlink_metadata(rust_output) {
+        Ok(metadata) if !metadata.is_file() => bail!(
+            "refusing to rebuild {}: not a plain generated file",
+            rust_output.display()
+        ),
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("failed to inspect {}", rust_output.display()));
+        }
+    }
+    fs::write(rust_output, "")
+        .with_context(|| format!("failed to rebuild {}", rust_output.display()))
 }
 
 fn codegen_rust_path(path: &Path) -> OsString {

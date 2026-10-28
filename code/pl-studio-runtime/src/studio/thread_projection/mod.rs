@@ -8,8 +8,8 @@ mod compactions;
 mod completions;
 mod content;
 pub(in crate::studio) use content::{
-    input_presentation, prompt_request_digest, referenced_attachment_ids,
-    saved_prompt_request_digest,
+    continuation_request_digest, input_presentation, prompt_request_digest,
+    referenced_attachment_ids, saved_prompt_request_digest,
 };
 mod effect;
 pub(in crate::studio) use effect::project_effect_items;

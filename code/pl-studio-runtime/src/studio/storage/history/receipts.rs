@@ -24,6 +24,7 @@ impl HistoryStore {
             !item_id.is_empty() && revision > 0 && !kind.is_empty(),
             "invalid immutable receipt identity"
         );
+        self.wait_for_initialization().await?;
         let _initializing = self.state.init.read().await;
         let Some(connection) = self.read_only_connection().await? else {
             return Ok(None);

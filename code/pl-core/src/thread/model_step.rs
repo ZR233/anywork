@@ -161,6 +161,10 @@ impl Owner {
             return Err(ThreadError::PendingToolCommit);
         }
         self.await_storage_admission(cancellation).await?;
+        // A claimed continuation only authorizes a model request once its own admission commit is
+        // durable. The wait is a host wait: stop, close and messages still arrive, and a stop answers
+        // cancellation before any input was consumed.
+        self.await_continuation_durability(cancellation).await?;
         self.publish_snapshot();
         if self.state.lifecycle != ThreadLifecycle::Open || self.interrupt.is_closing() {
             return Err(ThreadError::Closed);
@@ -516,7 +520,25 @@ impl Owner {
         self.consume_steering(&steering_ids, &input.turn_id, &input.attempt_id)?;
         self.retry_plan = Some((input.attempt_id.clone(), plan.clone()));
         self.state.context = context;
+        // Whether this admission really executes queued work — a Message input of this batch or of the
+        // steering set, or the messages it delivers. That is what serves a point nothing claims any
+        // more, and it is measured before the watermark and the inputs move.
+        let ran_queued_work = consumed_messages > self.state.consumed_messages
+            || self
+                .active_inputs
+                .iter()
+                .chain(steering_ids.iter())
+                .any(|id| {
+                    self.state.inputs.iter().any(|record| {
+                        record.input.id == *id
+                            && record.input.purpose == input::InputPurpose::Message
+                    })
+                });
         self.state.consumed_messages = consumed_messages;
+        // The point a claimed input or message stood for is cleared in the very commit that consumes
+        // that fact. A point whose work this batch did not carry stays exactly as it is, so a stop
+        // right before admission leaves the owed work untouched.
+        self.settle_continuation_claim(ran_queued_work);
         self.state.attempts = attempts.clone().into();
         self.state
             .attempt_ids

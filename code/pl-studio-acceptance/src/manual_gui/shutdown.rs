@@ -1057,7 +1057,7 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
             // the forced exit so the reopen can read the exact file back.
             let mut lock = SqliteWriteLock::acquire(
                 &database,
-                "shutdown history.sqlite",
+                "shutdown history-current.sqlite",
                 Duration::from_secs(120),
             )?;
             fs::write(working.join("shutdown-signal-storage-lock-held"), "held")?;
@@ -2317,7 +2317,7 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
             let before = history_lock_watermark(&database)?;
             let mut lock = SqliteWriteLock::acquire(
                 &database,
-                "shutdown concurrent history.sqlite",
+                "shutdown concurrent history-current.sqlite",
                 Duration::from_secs(120),
             )?;
             let (native_pid, start_ticks, children) = snapshot_native(output, "concurrent-stop")?;

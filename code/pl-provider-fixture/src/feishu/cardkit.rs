@@ -49,6 +49,26 @@ const CARD_CREATE_PATH: &str = "/open-apis/cardkit/v1/cards";
 const CARD_ELEMENT_PATH: &str =
     "/open-apis/cardkit/v1/cards/{card_id}/elements/{element_id}/content";
 const CARD_SETTINGS_PATH: &str = "/open-apis/cardkit/v1/cards/{card_id}/settings";
+/// Official whole-card update: replaces the same entity in place.
+const CARD_UPDATE_PATH: &str = "/open-apis/cardkit/v1/cards/{card_id}";
+
+/// Official whole-card update body.
+///
+/// The complete JSON 2.0 document is nested as a string, so its serialized size
+/// is a real request fact and is recorded next to the raw request bytes.
+#[derive(Deserialize, serde::Serialize)]
+pub(crate) struct CardWholeBody {
+    pub card: CardWholeCard,
+    pub sequence: i64,
+    pub uuid: Option<String>,
+}
+
+#[derive(Deserialize, serde::Serialize)]
+pub(crate) struct CardWholeCard {
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub data: String,
+}
 
 pub(crate) async fn card_create(
     State(state): State<HttpState>,
@@ -209,6 +229,331 @@ pub(crate) async fn card_create(
             .await;
             state.cancel.cancelled().await;
             Response::new(Body::empty())
+        }
+    }
+}
+
+/// Official complete-card budget of one whole-card update, in bytes.
+///
+/// The nested serialized document and the real request bytes are both bounded by
+/// the same documented 30,000-byte budget; neither is re-serialized smaller.
+const CARD_WHOLE_MAX_BYTES: usize = 30_000;
+
+/// Official `PUT /open-apis/cardkit/v1/cards/:card_id` whole-card update.
+///
+/// The same card entity is replaced in place, so its card id, message identity,
+/// stream state and sequence counter stay shared with element-content and
+/// settings operations. Rejections (cross-application scope, expired card,
+/// closed stream, over-budget JSON, invalid JSON 2.0, repeated uuid, non
+/// increasing sequence) leave the stored card untouched.
+///
+/// The documented 30 KB entity/request budget is answered before any uuid
+/// replay: a retry that pads only the outer request bytes while reusing an
+/// applied uuid, sequence and document is refused instead of being reported as
+/// an idempotent success.
+pub(crate) async fn card_whole_update(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(card_id): Path<String>,
+    raw: Bytes,
+) -> Response {
+    let request_bytes = raw.len();
+    if !auth_ok(
+        &state.shared,
+        headers.get(axum::http::header::AUTHORIZATION),
+    )
+    .await
+    {
+        record_reject(
+            &state.shared,
+            "PUT",
+            CARD_UPDATE_PATH,
+            Some(CallKind::CardUpdate),
+            "unauthorized".into(),
+        )
+        .await;
+        return Json(json!({"code": 99991663, "msg": "unauthorized"})).into_response();
+    }
+    if let Some(reason) = kind_blocked(&state.shared, CallKind::CardUpdate).await {
+        record_reject(
+            &state.shared,
+            "PUT",
+            CARD_UPDATE_PATH,
+            Some(CallKind::CardUpdate),
+            reason.clone(),
+        )
+        .await;
+        return card_error(99991672, &reason);
+    }
+    if !card_scope(&state.shared).await {
+        // The peer models exactly one application; a second synthetic
+        // application is the documented "no card write scope" answer, never a
+        // silent success on another owner's card.
+        record_card(
+            &state.shared,
+            "PUT",
+            CARD_UPDATE_PATH,
+            CallKind::CardUpdate,
+            card_observation(
+                CardOperation::WholeCard,
+                card_id.clone(),
+                request_bytes,
+                false,
+                card::CODE_NO_PERMISSION,
+            ),
+            true,
+            Some("synthetic application lacks cardkit:card:write (cross-application)".into()),
+        )
+        .await;
+        return card_error(card::CODE_NO_PERMISSION, "no card permission");
+    }
+    let body: CardWholeBody = match serde_json::from_slice(&raw) {
+        Ok(body) => body,
+        Err(error) => {
+            record_reject(
+                &state.shared,
+                "PUT",
+                CARD_UPDATE_PATH,
+                Some(CallKind::CardUpdate),
+                format!("card whole body json: {error}"),
+            )
+            .await;
+            return card_error(232001, "card update body must be JSON");
+        }
+    };
+    if body.card.kind != "card_json" {
+        record_reject(
+            &state.shared,
+            "PUT",
+            CARD_UPDATE_PATH,
+            Some(CallKind::CardUpdate),
+            format!("card update type {} is not card_json", body.card.kind),
+        )
+        .await;
+        return card_error(232001, "card update type must be card_json");
+    }
+    let parsed = match card::parse_card_json(&body.card.data) {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            record_reject(
+                &state.shared,
+                "PUT",
+                CARD_UPDATE_PATH,
+                Some(CallKind::CardUpdate),
+                format!("whole card data: {error:#}"),
+            )
+            .await;
+            return card_error(232001, "invalid card data");
+        }
+    };
+    // The whole-card body is a document, not an element delta: keep its own
+    // serialized identity so an observer can audit the exact submitted card.
+    let mut observation = CardObservation {
+        sequence: Some(body.sequence),
+        uuid: body.uuid.clone(),
+        content: Some(parsed.content.clone()),
+        card_bytes: Some(parsed.entity_bytes),
+        ..card_observation(
+            CardOperation::WholeCard,
+            card_id.clone(),
+            request_bytes,
+            false,
+            0,
+        )
+    };
+    let Some(_guard) = lock_card(&state, &card_id).await else {
+        return Response::new(Body::empty());
+    };
+    // The documented size budget belongs to the submitted document, so it is
+    // answered before the uuid replay below. Nothing is claimed or written here,
+    // so a refusal leaves the uuid claim, the sequence and the entity untouched.
+    // An unknown target stays a wire violation of its own, so it still goes to
+    // the shared validation instead of being masked by the size answer.
+    let over_budget =
+        parsed.entity_bytes > CARD_WHOLE_MAX_BYTES || request_bytes > CARD_WHOLE_MAX_BYTES;
+    if over_budget && card_entity_exists(&state.shared, &card_id).await {
+        let mut too_large = observation;
+        too_large.accepted = false;
+        too_large.code = card::CODE_CARD_TOO_LARGE;
+        record_card(
+            &state.shared,
+            "PUT",
+            CARD_UPDATE_PATH,
+            CallKind::CardUpdate,
+            too_large,
+            true,
+            Some(format!(
+                "whole card {} bytes / request {} bytes exceeds the {CARD_WHOLE_MAX_BYTES}-byte budget",
+                parsed.entity_bytes, request_bytes
+            )),
+        )
+        .await;
+        return card_error(
+            card::CODE_CARD_TOO_LARGE,
+            "card entity or request exceeds 30000 bytes",
+        );
+    }
+    let uuid_payload = json!({
+        "card": body.card.data,
+        "sequence": body.sequence,
+    })
+    .to_string();
+    if let Some(uuid) = &body.uuid
+        && let Some(response) = replay_card_uuid(
+            &state.shared,
+            "PUT",
+            CARD_UPDATE_PATH,
+            CallKind::CardUpdate,
+            uuid,
+            &card_id,
+            CardOperation::WholeCard,
+            &uuid_payload,
+            &observation,
+        )
+        .await
+    {
+        return response;
+    }
+    if let Some(response) = validate_card_operation(
+        &state.shared,
+        "PUT",
+        CARD_UPDATE_PATH,
+        CallKind::CardUpdate,
+        &card_id,
+        "",
+        body.sequence,
+        body.uuid.as_deref(),
+        false,
+        &mut observation,
+    )
+    .await
+    {
+        return response;
+    }
+    let Some(disposition) = card_disposition(&state).await else {
+        return Response::new(Body::empty());
+    };
+    if let CardDisposition::Reject { code, msg } = disposition {
+        if code == CARD_STREAM_TIMEOUT_CODE {
+            mark_stream_closed(&state.shared, &card_id).await;
+        }
+        observation.accepted = false;
+        observation.code = code;
+        record_card(
+            &state.shared,
+            "PUT",
+            CARD_UPDATE_PATH,
+            CallKind::CardUpdate,
+            observation,
+            true,
+            Some(format!("scripted reject: {msg}")),
+        )
+        .await;
+        return card_error(code, &msg);
+    }
+    let dropped = matches!(disposition, CardDisposition::AcceptThenDrop);
+    let outcome = {
+        let mut inner = state.shared.lock().await;
+        let index = inner
+            .cards
+            .entities
+            .iter()
+            .position(|entity| entity.card_id == card_id)
+            .expect("card entity existed before the whole-card update");
+        match claim_card_uuid(
+            &mut inner,
+            body.uuid.as_deref(),
+            &card_id,
+            CardOperation::WholeCard,
+            &uuid_payload,
+        ) {
+            UuidClaim::Conflict => Applied::Conflict,
+            UuidClaim::Replay => Applied::Replay,
+            UuidClaim::Fresh => {
+                let entity = &mut inner.cards.entities[index];
+                entity.data = parsed.data.clone();
+                entity.element_id = parsed.element_id.clone();
+                entity.content = parsed.content.clone();
+                entity.entity_bytes = parsed.entity_bytes;
+                entity.last_sequence = body.sequence;
+                entity.whole_card_updates += 1;
+                Applied::Composed
+            }
+        }
+    };
+    match outcome {
+        Applied::Conflict => {
+            let mut conflict = observation;
+            conflict.accepted = false;
+            conflict.code = card::CODE_UUID_CONFLICT;
+            record_card(
+                &state.shared,
+                "PUT",
+                CARD_UPDATE_PATH,
+                CallKind::CardUpdate,
+                conflict,
+                true,
+                Some("uuid reused for another whole-card payload, card or operation".to_owned()),
+            )
+            .await;
+            card_error(card::CODE_UUID_CONFLICT, "uuid payload conflict")
+        }
+        Applied::Replay => {
+            let mut replay = observation;
+            replay.accepted = true;
+            replay.idempotent = true;
+            replay.code = 0;
+            record_card(
+                &state.shared,
+                "PUT",
+                CARD_UPDATE_PATH,
+                CallKind::CardUpdate,
+                replay,
+                true,
+                Some("idempotent replay of the same uuid whole-card payload".to_owned()),
+            )
+            .await;
+            card_ok()
+        }
+        Applied::TooLarge => {
+            // The pre-commit size guard above already rejects; this arm keeps the
+            // shared commit outcome exhaustive without a second platform state.
+            let mut too_large = observation;
+            too_large.accepted = false;
+            too_large.code = card::CODE_CARD_TOO_LARGE;
+            record_card(
+                &state.shared,
+                "PUT",
+                CARD_UPDATE_PATH,
+                CallKind::CardUpdate,
+                too_large,
+                true,
+                Some("whole card exceeds the 30000 byte entity limit".to_owned()),
+            )
+            .await;
+            card_error(card::CODE_CARD_TOO_LARGE, "card entity exceeds 30000 bytes")
+        }
+        Applied::Composed => {
+            let mut observation = observation;
+            observation.accepted = true;
+            observation.code = 0;
+            observation.response_dropped = dropped;
+            record_card(
+                &state.shared,
+                "PUT",
+                CARD_UPDATE_PATH,
+                CallKind::CardUpdate,
+                observation,
+                true,
+                None,
+            )
+            .await;
+            if dropped {
+                // Applied, but the product never learns the answer.
+                state.cancel.cancelled().await;
+                return Response::new(Body::empty());
+            }
+            card_ok()
         }
     }
 }
@@ -1095,6 +1440,7 @@ fn operation_label(operation: CardOperation) -> &'static str {
     match operation {
         CardOperation::Create => "card create",
         CardOperation::Send => "card send",
+        CardOperation::WholeCard => "whole card update",
         CardOperation::Update => "card element update",
         CardOperation::Settings => "card settings update",
         CardOperation::Close => "card stream close",
@@ -1121,6 +1467,7 @@ fn card_observation(
         content: None,
         streaming_mode: None,
         summary: None,
+        card_bytes: None,
         accepted,
         code,
         request_bytes,
@@ -1156,6 +1503,7 @@ async fn allocate_card(
         streaming_closed: false,
         expired: false,
         updates: 0,
+        whole_card_updates: 0,
         settings_updates: 0,
     });
     let ordinal = inner.cards.next_ordinal;
@@ -1172,6 +1520,7 @@ async fn allocate_card(
         content: Some(parsed.content.clone()),
         streaming_mode: None,
         summary: None,
+        card_bytes: Some(parsed.entity_bytes),
         accepted: true,
         code: 0,
         request_bytes,
@@ -1284,6 +1633,21 @@ impl Drop for WaitingGuard {
 /// Enters the per-card boundary. `None` means the request was cancelled while
 /// queued (peer observation mechanism); the caller ends the response without a
 /// record, and the registration is already released.
+/// Read-only existence probe for a whole-card target.
+///
+/// The documented size budget must be answered before the uuid replay, so the
+/// handler needs to know whether the target exists without claiming a uuid,
+/// advancing a sequence or writing an entity. An unknown target keeps its own
+/// wire violation in the shared validation, never a silent size answer.
+async fn card_entity_exists(shared: &Shared, card_id: &str) -> bool {
+    let inner = shared.lock().await;
+    inner
+        .cards
+        .entities
+        .iter()
+        .any(|entity| entity.card_id == card_id)
+}
+
 pub(crate) async fn lock_card(state: &HttpState, card_id: &str) -> Option<CardLockGuard> {
     let entry = {
         let mut inner = state.shared.lock().await;
@@ -1578,6 +1942,7 @@ async fn commit_card_send(
         content: None,
         streaming_mode: None,
         summary: None,
+        card_bytes: None,
         accepted: true,
         code: 0,
         request_bytes,

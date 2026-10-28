@@ -24,8 +24,36 @@ ThreadAudience knownAudience({
   int controlRevision = 1,
   int summaryVersion = 1,
   String phase = 'active',
+  bool neverAuthorized = false,
+  String botId = 'bot',
+  String chatId = 'chat',
 }) {
-  final ref = authorization(generation, controlRevision);
+  // Both identity components are parameters: a known binding may be replaced
+  // by another bot or another chat of the same bot, and neither may inherit the
+  // old target's authorization.
+  final target = BotAudienceTarget(
+    botId: botId,
+    botName: '机器人',
+    chatId: chatId,
+    chatName: '讨论 群',
+    kind: BotConversationKind.group,
+  );
+  final ref = BotAuthorizationRef(
+    id: BotAuthorizationId(
+      botId: botId,
+      chatId: chatId,
+      generation: generation,
+    ),
+    revision: controlRevision,
+  );
+  // A verified target with no authorization head is a real host result: the
+  // binding is known and current, but no authorization was ever created. It is
+  // not a historical close and carries no generation.
+  if (neverAuthorized && phase != 'closed') {
+    throw ArgumentError(
+      'Only a closed position can prove absent authorization',
+    );
+  }
   final started = BotStartedAuthorization(
     authorization: ref,
     bindingRevision: 3,
@@ -36,11 +64,13 @@ ThreadAudience knownAudience({
   );
   return ThreadAudienceKnown(
     audience: BotThreadAudience(
-      target: audienceTarget,
+      target: target,
       binding: BotThreadBindingPositionCurrent(
         cas: BotSyncCas(
           bindingRevision: 3,
-          authorizationHead: BotAuthorizationHeadPresent(authorization: ref),
+          authorizationHead: neverAuthorized
+              ? const BotAuthorizationHeadNone()
+              : BotAuthorizationHeadPresent(authorization: ref),
         ),
         sync: switch (phase) {
           'active' => BotCurrentSyncActive(authorization: started),
@@ -56,7 +86,7 @@ ThreadAudience knownAudience({
           _ => throw ArgumentError(phase),
         },
       ),
-      latestClosed: phase == 'closed'
+      latestClosed: phase == 'closed' && !neverAuthorized
           ? BotClosedAuthorization(
               authorization: ref,
               bindingRevision: 3,
@@ -82,6 +112,32 @@ ThreadAudience knownAudience({
     ),
   );
 }
+
+/// A Thread whose binding was replaced: it still explains its own closed
+/// audience and unfinished obligations, but exposes no writable CAS.
+ThreadAudience replacedAudience() => ThreadAudienceKnown(
+  audience: BotThreadAudience(
+    target: audienceTarget,
+    binding: const BotThreadBindingPositionReplaced(
+      lastBindingRevision: 3,
+      currentBindingRevision: 4,
+    ),
+    hasOlderClosed: false,
+    delivery: const BotDeliverySummary(
+      version: 1,
+      pendingItems: 0,
+      unknownOperations: 0,
+      incompleteItems: 0,
+      countsCapped: false,
+    ),
+    legacyFinal: const BotLegacyFinalSummary(
+      unfinishedChains: 0,
+      unknownOperations: 0,
+      needsAttention: false,
+      countsCapped: false,
+    ),
+  ),
+);
 
 ThreadWorkspace audienceWorkspace(
   ThreadAudience audience, {
@@ -134,7 +190,6 @@ AnyworkClient audienceClient(
       skillsByProject: const {},
       threadModeCatalog: const ThreadModeCatalogView(),
       accountUsageState: AccountUsageStateSnapshot(revision: 1),
-      modelPerformance: const ModelPerformanceSnapshotView(),
       updaterState: DisabledUpdaterStateSnapshot(
         revision: 1,
         updatedAt: DateTime.utc(2026),

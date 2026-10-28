@@ -30,9 +30,23 @@ abstract interface class BootstrapTransport {
 }
 
 abstract interface class CommandTransport {
-  Future<InterruptTurnCommandReply> interruptTurn(
+  /// 精确停止一个已观察到的执行。
+  ///
+  /// 目标身份由调用方从规范投影冻结（主会话取自身运行时执行，成员行取智能体目录），
+  /// 不按执行时的当前状态重定向。受理不等于已经结束。
+  Future<StopThreadCommandReply> stopThread(
     String threadId,
-    String turnId, {
+    String executionId, {
+    required OperationId operationId,
+  });
+
+  /// 无新内容继续主会话。
+  ///
+  /// 只接受主会话目标；子会话继续由主智能体调度。受理不等于新轮次已开始。
+  Future<ContinueThreadCommandReply> continueThread(
+    String threadId,
+    String continuationId, {
+    required int expectedModelRouteRevision,
     required OperationId operationId,
   });
   Future<SubmitPromptReceipt> submitPrompt(
@@ -40,6 +54,15 @@ abstract interface class CommandTransport {
     StudioPromptInput input, {
     required int expectedModelRouteRevision,
   });
+
+  /// 按原操作身份回查一次继续操作的受理与消费事实；查询不激活执行。
+  Future<ContinuationOperationView> readContinuationOperation(
+    String threadId,
+    String operationId,
+  );
+
+  /// 主会话可见的子任务待决交互；列举不激活任何子会话。
+  Future<List<ChildInteractionSummary>> readChildInteractions(String threadId);
 }
 
 /// Typed Mode authoring commands and read-only validation helpers.
@@ -329,13 +352,31 @@ abstract class StudioTransport
   Future<bool> removeAttachmentDraft(String draftId);
   Future<Uint8List> readAttachmentDraft(String draftId);
   Future<Uint8List> readThreadAttachment(String threadId, String attachmentId);
-  Future<InterruptTurnCommandReply> interruptTurn(
+  Future<StopThreadCommandReply> stopThread(
     String threadId,
-    String turnId, {
+    String executionId, {
     required OperationId operationId,
   });
+  Future<ContinueThreadCommandReply> continueThread(
+    String threadId,
+    String continuationId, {
+    required int expectedModelRouteRevision,
+    required OperationId operationId,
+  });
+  Future<ContinuationOperationView> readContinuationOperation(
+    String threadId,
+    String operationId,
+  );
+  Future<List<ChildInteractionSummary>> readChildInteractions(String threadId);
+
+  /// 在一个宿主会话名义下决议交互。
+  ///
+  /// 主会话决议自己的交互时 [hostThreadId] 就是该会话；主会话转交子任务问题时它仍是主会话，
+  /// 原交互身份与 [expectedRevision] 原样透传，决议结果落在原交互所属会话。
   Future<InteractionCommandReply> respondInteraction(
+    String hostThreadId,
     String interactionId,
+    int expectedRevision,
     InteractionResolutionCommand resolution, {
     required OperationId operationId,
   });

@@ -596,7 +596,7 @@ fn collect(dir: &Path, depth: usize, found: &mut Vec<PathBuf>) -> Result<()> {
             collect(&path, depth + 1, found)?;
         } else if path
             .file_name()
-            .is_some_and(|name| name == "history.sqlite")
+            .is_some_and(|name| name == "history-current.sqlite")
         {
             found.push(path);
         }

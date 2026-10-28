@@ -5,6 +5,7 @@ import 'dart:convert';
 
 import 'package:anywork/src/app/app_graph.dart';
 import 'package:anywork/src/domain/models/agent_workspace_view.dart';
+import 'package:anywork/src/domain/models/plan_confirmation_ownership.dart';
 import 'package:anywork/src/features/interaction/composer_view.dart';
 import 'package:anywork/src/features/shell/shell_view.dart';
 import 'package:anywork/src/features/status/status_view.dart';
@@ -706,12 +707,16 @@ void main() {
     expect(userInputOf('qa-plan-cancelled')!['planDecision'], 'cancelled');
     expect(userInputOf('qa-plan-approved')!['isPlanConfirmation'], isTrue);
     expect(userInputOf('qa-plan-approved')!['planDecision'], 'approved');
+    // 旧普通问答复用保留 ID：归属只看工具名，仍是普通问答。
+    expect(userInputOf('qa-plan-legacy')!['isPlanConfirmation'], isFalse);
+    expect(userInputOf('qa-plan-legacy')!['planDecision'], isNull);
     // 每个问答条目都始终输出该键（固定 schema）。
     for (final id in const [
       'qa-normal',
       'qa-plan-pending',
       'qa-plan-cancelled',
       'qa-plan-approved',
+      'qa-plan-legacy',
     ]) {
       expect(userInputOf(id)!.containsKey('isPlanConfirmation'), isTrue);
       expect(userInputOf(id)!.containsKey('planDecision'), isTrue);
@@ -1251,6 +1256,7 @@ StudioTimelineBaseline _factsBaseline() => StudioTimelineBaseline(
     _toolItem(
       'qa-plan-pending',
       5,
+      name: planSubmitToolName,
       userInput: ThreadToolUserInputView(
         interactionId: 'plan-pending',
         questions: [
@@ -1265,6 +1271,7 @@ StudioTimelineBaseline _factsBaseline() => StudioTimelineBaseline(
     _toolItem(
       'qa-plan-cancelled',
       6,
+      name: planSubmitToolName,
       userInput: ThreadToolUserInputView(
         interactionId: 'plan-cancelled',
         questions: [
@@ -1279,8 +1286,29 @@ StudioTimelineBaseline _factsBaseline() => StudioTimelineBaseline(
     _toolItem(
       'qa-plan-approved',
       7,
+      name: planSubmitToolName,
       userInput: ThreadToolUserInputView(
         interactionId: 'plan-approved',
+        questions: [
+          _factsQuestion(
+            id: agentSessionPlanConfirmationQuestionId,
+            text: '# Plan',
+          ),
+        ],
+        state: const ResolvedThreadToolUserInputView([
+          ThreadUserInputAnswerView(
+            questionId: agentSessionPlanConfirmationQuestionId,
+            answers: [agentSessionPlanApproveAnswer],
+          ),
+        ]),
+      ),
+    ),
+    // 旧历史的普通问答工具复用过保留的问题 ID：它仍必须报告为普通问答。
+    _toolItem(
+      'qa-plan-legacy',
+      8,
+      userInput: ThreadToolUserInputView(
+        interactionId: 'plan-legacy',
         questions: [
           _factsQuestion(
             id: agentSessionPlanConfirmationQuestionId,

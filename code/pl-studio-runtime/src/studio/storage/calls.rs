@@ -50,7 +50,9 @@ pub(crate) use summary::{PurposeUsageProjection, SessionUsageProjection};
 use event::CallLogRecord;
 use log::{CallLog, LOG_CLEANUP_INTERVAL};
 
-pub(crate) const CALLS_SCHEMA_VERSION: i64 = 7;
+/// Historical format used by the existing SQLite source fixtures, not a runtime selector.
+#[cfg(test)]
+const CALLS_SCHEMA_VERSION: i64 = 7;
 /// `calls` 目录下日志段所在子目录名。
 const CALL_LOG_DIR_NAME: &str = "logs";
 /// 一天对应的秒数；日志轮转/保留期以 UTC 自然日为准。
@@ -289,6 +291,7 @@ impl CallsStore {
     }
 
     async fn prepare_with_policy(path: &Path, policy: CallsOpenPolicy) -> Result<Self> {
+        schema::inspect_existing(path).await?;
         if let Some(parent) = path.parent() {
             tokio::fs::create_dir_all(parent).await?;
         }
@@ -296,10 +299,6 @@ impl CallsStore {
             .parent()
             .unwrap_or_else(|| Path::new("."))
             .to_path_buf();
-        let mut log = match policy {
-            CallsOpenPolicy::Degraded => CallLog::open(root_dir.join(CALL_LOG_DIR_NAME)).await?,
-            CallsOpenPolicy::Strict => CallLog::prepare(root_dir.join(CALL_LOG_DIR_NAME)).await?,
-        };
         let mut options = crate::studio::paths::sqlite_file_options(
             path,
             crate::studio::paths::SqliteFileMode::Create,
@@ -319,13 +318,26 @@ impl CallsStore {
             .acquire_timeout(Duration::from_secs(8))
             .sqlx_logging(false);
         let db = Database::connect(options).await?;
-        if let Err(error) = schema::initialize(&db, &mut log, &root_dir).await {
+        if let Err(error) = schema::initialize(&db, &root_dir).await {
             let error = crate::studio::startup::input_error(error);
-            db.close()
-                .await
-                .context("failed to close calls database after initialization failure")?;
+            if let Err(cleanup) = db.close().await {
+                return Err(error.context(format!("calls database cleanup failed: {cleanup}")));
+            }
             return Err(error);
         }
+        let log = match policy {
+            CallsOpenPolicy::Degraded => CallLog::open(root_dir.join(CALL_LOG_DIR_NAME)).await,
+            CallsOpenPolicy::Strict => CallLog::prepare(root_dir.join(CALL_LOG_DIR_NAME)).await,
+        };
+        let mut log = match log {
+            Ok(log) => log,
+            Err(error) => {
+                if let Err(cleanup) = db.close().await {
+                    return Err(crate::studio::startup::cleanup_error(cleanup).context(error));
+                }
+                return Err(error);
+            }
+        };
         let mut startup_error = None;
         if let Err(error) = log.rebuild_index(&db).await {
             if policy == CallsOpenPolicy::Strict {
@@ -1430,10 +1442,17 @@ mod storage_fault_tests {
         assert!(failures[0].contains("injected invalid call"));
         assert!(deferred.is_none());
         // An independent connection observes both committed facts before a receipt is advanced.
-        let reopened = CallsStore::open(&temp.path().join("calls.sqlite")).await?;
+        // The injected probe is intentionally not a supported production schema. Inspect the
+        // committed transaction through a real read-only connection, without re-adopting it.
+        let mut options = crate::studio::paths::sqlite_file_options(
+            &temp.path().join("calls.sqlite"),
+            crate::studio::paths::SqliteFileMode::ReadOnly,
+            |options| options,
+        )
+        .await?;
+        options.max_connections(1).min_connections(1);
+        let reopened = Database::connect(options).await?;
         let rows = reopened
-            .writer
-            .db
             .query_all_raw(statement(
                 "SELECT thread_id FROM call_watermarks ORDER BY thread_id",
                 vec![],
@@ -1446,14 +1465,12 @@ mod storage_fault_tests {
         assert_eq!(ids, ["first", "last"]);
         // RAISE(FAIL) preserves earlier trigger writes unless the mutation's savepoint rolls back.
         let failed_writes = reopened
-            .writer
-            .db
             .query_all_raw(statement("SELECT thread_id FROM failure_probe", vec![]))
             .await?;
         assert!(failed_writes.is_empty());
         assert_eq!(*store.writer.durable_ticket.borrow(), 0);
         store.stop_best_effort();
-        reopened.stop_best_effort();
+        reopened.close().await?;
         Ok(())
     }
 }

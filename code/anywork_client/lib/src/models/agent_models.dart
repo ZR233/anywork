@@ -1,5 +1,53 @@
 import 'delegation_models.dart';
 
+/// 一个会话当前执行的生命周期阶段。
+///
+/// 阶段来自规范状态里的执行记录，不按「有没有活动轮次」推导：准备、等待保存、
+/// 等待准入与清理期间同样有可停止的执行身份。
+enum AgentExecutionPhase {
+  preparing,
+  awaitingStorage,
+  awaitingAdmission,
+  running,
+  stopping;
+
+  /// Canonical wire 标签。
+  String get label => name;
+
+  /// 停止请求已被受理、清理尚未结束。
+  bool get isStopping => this == AgentExecutionPhase.stopping;
+}
+
+/// 主会话自身或智能体目录某一行的当前执行身份。
+///
+/// 精确停止的目标就是这里的 [id]；它独立于当前选中的会话与轮次投影。
+final class AgentExecutionView {
+  const AgentExecutionView({
+    required this.id,
+    required this.phase,
+    this.turnId,
+  });
+
+  final String id;
+  final AgentExecutionPhase phase;
+
+  /// 已创建轮次时为其编号；准备期允许为空。
+  final String? turnId;
+
+  bool get isStopping => phase.isStopping;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is AgentExecutionView &&
+          id == other.id &&
+          phase == other.phase &&
+          turnId == other.turnId;
+
+  @override
+  int get hashCode => Object.hash(id, phase, turnId);
+}
+
 sealed class StudioAgentState {
   const StudioAgentState();
 
@@ -185,6 +233,9 @@ class StudioAgentView {
     this.summary,
     this.depth = 0,
     this.rootThreadId,
+    this.execution,
+    this.canStop = false,
+    this.awaitingScheduling = false,
   });
 
   final String id;
@@ -201,6 +252,20 @@ class StudioAgentView {
   final String? rootThreadId;
   final StudioAgentState state;
   final DateTime updatedAt;
+
+  /// 该成员当前执行；未装载或没有当前执行时为空。
+  ///
+  /// 停止目标来自这里，而不是当前选中会话的轮次。
+  final AgentExecutionView? execution;
+
+  /// 用户是否可对这一行发起精确停止。
+  final bool canStop;
+
+  /// 该成员有未认领的继续点，等待主智能体调度。
+  ///
+  /// 已关闭、正常完成或未装载为 `false`。它是成员行的规范事实，不用于推导
+  /// [canStop]，也不代表用户可以在客户端继续该成员。
+  final bool awaitingScheduling;
 
   String get status => state.label;
 
@@ -223,7 +288,10 @@ class StudioAgentView {
           depth == other.depth &&
           rootThreadId == other.rootThreadId &&
           state == other.state &&
-          updatedAt == other.updatedAt;
+          updatedAt == other.updatedAt &&
+          execution == other.execution &&
+          canStop == other.canStop &&
+          awaitingScheduling == other.awaitingScheduling;
 
   @override
   int get hashCode => Object.hash(
@@ -241,5 +309,8 @@ class StudioAgentView {
     rootThreadId,
     state,
     updatedAt,
+    execution,
+    canStop,
+    awaitingScheduling,
   );
 }

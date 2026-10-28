@@ -19,7 +19,7 @@ pub(crate) const AUDIENCE_START_EXTENSION: &str = "studio.audience-start";
 const AUDIENCE_START_FORMAT: &str = "pl.studio.audience-start";
 pub(crate) const AUDIENCE_START_RECEIPT: &str = "audience-start";
 pub(crate) const TURN_START_RECEIPT: &str = "turn-start";
-const FORMAT_VERSION: u32 = 1;
+pub(crate) const FORMAT_VERSION: u32 = 1;
 /// Each identity describes exactly one cut/start, never a mutable progress record.
 pub(crate) const RECEIPT_REVISION: u64 = 1;
 

@@ -32,9 +32,29 @@ pub(super) const INDEXES: &[(&str, &str)] = &[
     ),
 ];
 
+/// 当前（十号）结构只保留仍在使用的差异索引：卡片表已不是投递事实来源。
+pub(super) const CURRENT_INDEXES: &[(&str, &str)] = &[
+    (
+        "bot_binding_thread_lookup",
+        "CREATE INDEX bot_binding_thread_lookup ON binding_operations(thread_id)",
+    ),
+    (
+        "bot_route_thread_lookup",
+        "CREATE INDEX bot_route_thread_lookup ON thread_bindings(thread_id)",
+    ),
+    (
+        "bot_route_creation_lookup",
+        "CREATE INDEX bot_route_creation_lookup ON thread_bindings(creation_id)",
+    ),
+];
+
 #[derive(Clone, Copy)]
 pub(super) enum Boundary {
     SchemaEight,
+    /// The divergent file6/file7 formats provably have no card table.
+    FileWithoutCards,
+    /// Same immutable nine-format facts, before the official step installs optional indexes.
+    ImportNine,
     Current,
 }
 
@@ -215,7 +235,7 @@ pub(super) async fn collect<C: ConnectionTrait>(
             // the route CAS, not the immutable creation revision retained by the original sources.
             let bound = strict_text(&row, "status")? == "bound";
             current_bound |= bound;
-            if matches!(boundary, Boundary::SchemaEight) || bound {
+            if !matches!(boundary, Boundary::Current | Boundary::ImportNine) || bound {
                 merge_revision(&mut proof.revision, strict_watermark(&row, "revision")?)?;
             }
         }
@@ -247,34 +267,60 @@ pub(super) async fn collect<C: ConnectionTrait>(
             break;
         }
     }
-    let mut after = String::new();
-    loop {
-        let rows = db
-            .query_all_raw(statement(
-                "SELECT c.identity,c.bot_id AS card_bot,c.chat_id AS card_chat,
+    if !matches!(boundary, Boundary::FileWithoutCards) {
+        let mut after = String::new();
+        loop {
+            let rows = db
+                .query_all_raw(statement(
+                    "SELECT c.identity,c.bot_id AS card_bot,c.chat_id AS card_chat,
              COALESCE(w.bot_id,'') AS bot_id,COALESCE(w.chat_id,'') AS chat_id,
              COALESCE(w.project_id,'') AS project_id,COALESCE(w.creation_id,'') AS creation_id,
              COALESCE(w.binding_revision,0) AS binding_revision
              FROM bot_card_streams c LEFT JOIN inbound_work w ON w.identity=c.identity
              WHERE c.thread_id=? AND c.identity>? ORDER BY c.identity LIMIT 64",
-                vec![thread.into(), after.into()],
-            ))
-            .await
-            .map_err(storage)?;
-        let done = rows.len() < 64;
-        after = String::new();
-        for row in rows {
-            after = strict_text(&row, "identity")?;
-            merge_text(&mut proof.bot, strict_text(&row, "card_bot")?)?;
-            merge_text(&mut proof.chat, strict_text(&row, "card_chat")?)?;
-            proof.source(&row)?;
-        }
-        if done {
-            break;
+                    vec![thread.into(), after.into()],
+                ))
+                .await
+                .map_err(storage)?;
+            let done = rows.len() < 64;
+            after = String::new();
+            for row in rows {
+                after = strict_text(&row, "identity")?;
+                merge_text(&mut proof.bot, strict_text(&row, "card_bot")?)?;
+                merge_text(&mut proof.chat, strict_text(&row, "card_chat")?)?;
+                proof.source(&row)?;
+            }
+            if done {
+                break;
+            }
         }
     }
     if let Some(creation) = proof.creation.clone() {
-        check_creation_thread(db, &creation, thread).await?;
+        if matches!(boundary, Boundary::Current) {
+            check_creation_thread(db, &creation, thread).await?;
+        } else {
+            // Before audience9, neither origin tables nor its performance indexes exist.
+            // Prove the same association directly from the immutable source, not by preparing
+            // those structures inside a supposedly read-only preflight.
+            let select = if matches!(boundary, Boundary::FileWithoutCards) {
+                "SELECT thread_id FROM thread_bindings WHERE creation_id=?1 AND thread_id<>'' AND thread_id<>?2 UNION ALL SELECT thread_id FROM binding_operations WHERE creation_id=?1 AND thread_id<>'' AND thread_id<>?2 LIMIT 1"
+            } else if matches!(boundary, Boundary::ImportNine) {
+                "SELECT thread_id FROM thread_bindings WHERE creation_id=?1 AND thread_id<>'' AND thread_id<>?2 UNION ALL SELECT thread_id FROM binding_operations WHERE creation_id=?1 AND thread_id<>'' AND thread_id<>?2 UNION ALL SELECT c.thread_id FROM inbound_work w JOIN bot_card_streams c ON c.identity=w.identity WHERE w.creation_id=?1 AND c.thread_id<>?2 UNION ALL SELECT thread_id FROM bot_audience_origins WHERE creation_id=?1 AND thread_id<>?2 LIMIT 1"
+            } else {
+                "SELECT thread_id FROM thread_bindings WHERE creation_id=?1 AND thread_id<>'' AND thread_id<>?2 UNION ALL SELECT thread_id FROM binding_operations WHERE creation_id=?1 AND thread_id<>'' AND thread_id<>?2 UNION ALL SELECT c.thread_id FROM inbound_work w JOIN bot_card_streams c ON c.identity=w.identity WHERE w.creation_id=?1 AND c.thread_id<>?2 LIMIT 1"
+            };
+            if db
+                .query_one_raw(statement(
+                    select,
+                    vec![creation.clone().into(), thread.into()],
+                ))
+                .await
+                .map_err(storage)?
+                .is_some()
+            {
+                return Err(unreadable());
+            }
+        }
         let mut after = String::new();
         loop {
             let rows = db.query_all_raw(statement(
@@ -288,7 +334,7 @@ pub(super) async fn collect<C: ConnectionTrait>(
                 after = strict_text(&row, "identity")?;
                 // An inbound in nine may have observed a later attention CAS. For a non-current
                 // route, only the independently joined card/creation operation proves birth rev.
-                if matches!(boundary, Boundary::Current) && !current_bound {
+                if matches!(boundary, Boundary::Current | Boundary::ImportNine) && !current_bound {
                     proof.source_identity(&row)?;
                 } else {
                     proof.source(&row)?;

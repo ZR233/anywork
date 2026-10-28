@@ -40,6 +40,47 @@ const PAIRING_CLEANUP_PENDING: &str = "pairing request cleanup did not finish, s
 const BOT_DIRECTORY_UNREADABLE: &str =
     "bot directory could not be read; local data is retained for retry";
 
+/// Credential lookup needs no copy of the bot's potentially large trust sets.
+pub(super) struct BotCredentialSelection {
+    pub(super) bot_id: String,
+    pub(super) app_id: String,
+    selected_ref: Option<crate::config::BotCredentialRef>,
+    config_revision: u64,
+}
+
+impl BotCredentialSelection {
+    pub(super) fn capture(config: &BotConfigFile) -> Self {
+        Self {
+            bot_id: config.id.clone(),
+            app_id: config.feishu().app_id.clone(),
+            selected_ref: config.selected_ref.clone(),
+            config_revision: config.config_revision,
+        }
+    }
+
+    /// Covers the selection and lookup copies before any owned field is captured.
+    pub(super) fn freeze_bytes(config: &BotConfigFile) -> Result<usize, FeishuError> {
+        super::occupancy::counted_text_bytes([
+            (config.id.as_str(), 8),
+            (config.feishu().app_id.as_str(), 8),
+            (
+                config
+                    .selected_ref
+                    .as_ref()
+                    .map_or("", |selected| selected.version.as_str()),
+                8,
+            ),
+        ])
+    }
+
+    fn matches(&self, config: &BotConfigFile) -> bool {
+        self.bot_id == config.id
+            && self.app_id == config.feishu().app_id
+            && self.selected_ref == config.selected_ref
+            && self.config_revision == config.config_revision
+    }
+}
+
 pub(crate) struct BotRecord {
     pub(crate) published: Option<Arc<ManagedBot>>,
     pub(crate) operation: Arc<BotOperationOwner>,
@@ -327,6 +368,13 @@ struct SettledCommit {
     candidate_app: Option<String>,
 }
 
+/// Preparing historical ownership must not activate external producers or resource upkeep.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(in crate::bots) enum DirectoryRecovery {
+    PrepareHistory,
+    Activate,
+}
+
 /// 确定事实收尾的连接与投影选项。
 struct FinalizeOptions {
     /// 是否由本次收尾启动连接（注册路径留给其保存回执后的既有入口）。
@@ -568,14 +616,46 @@ impl BotRuntime {
         owner.submit_registration_save(request).await
     }
 
-    pub(crate) async fn recover_bot_dir(&self, bot_id: &str) -> Result<(), FeishuError> {
+    pub(in crate::bots) async fn recover_bot_dir(
+        &self,
+        bot_id: &str,
+        recovery: DirectoryRecovery,
+    ) -> Result<(), FeishuError> {
         let dir = self.inner.paths.bot_dir(bot_id);
         let loaded = load_config_for_recovery(&dir)?;
         if loaded.is_none() && !has_credential_journal(&dir) {
+            if recovery == DirectoryRecovery::PrepareHistory
+                && tokio::fs::try_exists(dir.join("state.sqlite"))
+                    .await
+                    .map_err(|error| {
+                        FeishuError::new(
+                            FeishuErrorKind::Unavailable,
+                            "historical bot ownership could not be inspected",
+                            true,
+                            None,
+                        )
+                        .with_source(error)
+                    })?
+            {
+                return Err(FeishuError::new(
+                    FeishuErrorKind::Unavailable,
+                    "historical bot ledger has no recoverable configuration; original data retained",
+                    false,
+                    None,
+                ));
+            }
             return Ok(());
         }
         let owner = self.ensure_record(bot_id).await?;
-        let Some(settled) = owner.recover_existing(loaded).await? else {
+        let Some(settled) = owner.recover_existing(loaded, recovery).await? else {
+            if recovery == DirectoryRecovery::PrepareHistory {
+                return Err(FeishuError::new(
+                    FeishuErrorKind::Unavailable,
+                    "historical bot ownership remains unresolved; original data retained",
+                    true,
+                    None,
+                ));
+            }
             return Ok(());
         };
         // 启动恢复没有旧进程 socket：确定事实的认领收敛、发布与连接启动共用提交收尾。
@@ -584,12 +664,23 @@ impl BotRuntime {
                 &settled,
                 None,
                 FinalizeOptions {
-                    start_connection: true,
+                    start_connection: recovery == DirectoryRecovery::Activate,
                     coordinate_connection: true,
                     clear_pairing: None,
                 },
             )
             .await?;
+        if recovery == DirectoryRecovery::PrepareHistory {
+            if owner.published().await.is_none() {
+                return Err(FeishuError::new(
+                    FeishuErrorKind::Unavailable,
+                    "historical bot ownership is not determined; original data retained",
+                    true,
+                    None,
+                ));
+            }
+            return Ok(());
+        }
         // Resource recovery has its own bounded cursor/failure, not a credential decision.
         // The producer gate starts dirty even if this caller leaves before registering upkeep.
         if let Err(error) = self.maintain_send_resources(bot_id).await {
@@ -1327,6 +1418,7 @@ impl BotOperationOwner {
     async fn recover_existing(
         &self,
         loaded: Option<BotConfigFile>,
+        recovery: DirectoryRecovery,
     ) -> Result<Option<SettledCommit>, FeishuError> {
         let _serial = self.serial.lock().await;
         match self.verify_recovered_directory(loaded, None).await {
@@ -1351,7 +1443,13 @@ impl BotOperationOwner {
                 }
                 Ok(Some(*settled))
             }
-            // 未决与不可核实都已更新投影并保持封口；加载继续，不丢弃现场。
+            VerifiedDirectory::Uncertain(error) | VerifiedDirectory::Unverified(error)
+                if recovery == DirectoryRecovery::PrepareHistory =>
+            {
+                Err(error)
+            }
+            // Normal service loading keeps its existing per-bot diagnostic isolation. History
+            // preparation above cannot turn an undetermined owner into a negative binding proof.
             VerifiedDirectory::Unpublished
             | VerifiedDirectory::Uncertain(_)
             | VerifiedDirectory::Unverified(_) => Ok(None),
@@ -2206,6 +2304,7 @@ impl BotOperationOwner {
             submitting: AtomicBool::new(false),
             audience_changes: super::audience::watch_channel(),
             audience_recovery_cursor: Mutex::new(Default::default()),
+            publication_recovery_cursor: Mutex::new(None),
         });
         // Startup owns schema preparation. Cold audience queries must never migrate a database.
         managed.store.identity_occupancy().await?;
@@ -2219,14 +2318,14 @@ impl BotOperationOwner {
         Ok(managed)
     }
 
-    pub(crate) async fn read_selected_secret(
+    pub(super) async fn read_selected_secret(
         &self,
-        config: &BotConfigFile,
+        selection: &BotCredentialSelection,
     ) -> Result<String, FeishuError> {
         let credentials = self.runtime.inner.config.bot_credentials();
-        let bot_id = config.id.clone();
-        let app_id = config.feishu().app_id.clone();
-        let selected = config.selected_ref.clone();
+        let bot_id = selection.bot_id.clone();
+        let app_id = selection.app_id.clone();
+        let selected = selection.selected_ref.clone();
         let inspected = self
             .run_inspect(move || {
                 credentials
@@ -2250,12 +2349,8 @@ impl BotOperationOwner {
             ));
         };
         if let Some(managed) = self.published().await {
-            let current = managed.config.lock().await.clone();
-            if current.id != config.id
-                || current.feishu().app_id != config.feishu().app_id
-                || current.selected_ref != config.selected_ref
-                || current.config_revision != config.config_revision
-            {
+            let current = managed.config.lock().await;
+            if !selection.matches(&current) {
                 return Err(FeishuError::new(
                     FeishuErrorKind::Conflict,
                     "bot credential material was superseded",
@@ -2263,10 +2358,13 @@ impl BotOperationOwner {
                     None,
                 ));
             }
+            // Keep selection validation and replacement ordered with config publication.
+            // TokenLease::replace takes only its own in-memory lock, never config or IO.
             managed
                 .token
-                .replace(config.feishu().app_id.clone(), secret.clone())
+                .replace(selection.app_id.clone(), secret.clone())
                 .await;
+            drop(current);
         }
         Ok(secret)
     }

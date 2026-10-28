@@ -57,6 +57,51 @@ impl StudioErrorCode {
     }
 }
 
+/// 结构化错误详情里的稳定原因标签。
+///
+/// 错误类别说明「哪一类失败」，原因标签进一步说明同类别下的具体产品含义，使调用方不必解析
+/// 提示文本即可区分「子会话由主智能体调度」「继续点已不再可用」等情况。标签与
+/// [`StudioError::details`] 的 `reason` 字段一一对应。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum StudioErrorReason {
+    /// 用户不能对子会话发送、继续或提交；子会话的执行由主智能体调度。
+    ChildThreadRequiresParentScheduling,
+    /// 目标会话当前没有可认领的继续点。
+    ContinuationUnavailable,
+    /// 目标继续点已被另一次受理认领。
+    ContinuationClaimed,
+    /// 调用方冻结的继续点已经不是当前继续点。
+    StaleContinuation,
+    /// 调用方冻结的执行编号不是当前执行。
+    StaleExecution,
+    /// 该会话仍有当前执行或正在清理，不能开始新的轮次。
+    ExecutionInProgress,
+    /// 交互不允许由主会话转交处理。
+    InteractionNotHosted,
+    /// 交互版本已经不是调用方观察到的那个。
+    StaleInteraction,
+    /// 目标会话已归档：只读，不能执行、停止或决议其中的工作。
+    ThreadArchived,
+}
+
+impl StudioErrorReason {
+    /// 稳定 camelCase 标签，与序列化结果一致。
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::ChildThreadRequiresParentScheduling => "childThreadRequiresParentScheduling",
+            Self::ContinuationUnavailable => "continuationUnavailable",
+            Self::ContinuationClaimed => "continuationClaimed",
+            Self::StaleContinuation => "staleContinuation",
+            Self::StaleExecution => "staleExecution",
+            Self::ExecutionInProgress => "executionInProgress",
+            Self::InteractionNotHosted => "interactionNotHosted",
+            Self::StaleInteraction => "staleInteraction",
+            Self::ThreadArchived => "threadArchived",
+        }
+    }
+}
+
 /// A redacted API error. Internal diagnostics are correlated through `correlation_id` only.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, thiserror::Error, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -86,6 +131,30 @@ impl StudioError {
     pub fn with_details(mut self, details: Value) -> Self {
         self.details = Some(Box::new(details));
         self
+    }
+
+    /// Attaches the stable reason label and any extra structured facts.
+    ///
+    /// Only identities and reasons are carried: never prompt text, tool arguments or model output.
+    pub fn with_reason(mut self, reason: StudioErrorReason, extra: Value) -> Self {
+        let mut details = match extra {
+            Value::Object(details) => details,
+            _ => serde_json::Map::new(),
+        };
+        details.insert(
+            "reason".to_owned(),
+            Value::String(reason.label().to_owned()),
+        );
+        self.details = Some(Box::new(Value::Object(details)));
+        self
+    }
+
+    /// The stable reason label this error carries, when it has one.
+    pub fn reason(&self) -> Option<&str> {
+        self.details
+            .as_ref()
+            .and_then(|details| details.get("reason"))
+            .and_then(Value::as_str)
     }
 
     pub fn invalid_argument(message: impl Into<String>) -> Self {

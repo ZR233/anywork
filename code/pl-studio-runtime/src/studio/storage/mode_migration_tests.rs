@@ -2,7 +2,11 @@
 //! SQLite checkpoint, history writer and history schema-upgrade paths.
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::history::{EffectCommit, HistoryStore};
+use super::history::test_support::{
+    assert_current, assert_pending, import_origin, import_source, seed_legacy_installation,
+    source_checkpoint, source_evidence,
+};
+use super::history::{EffectCommit, HistoryInitialization, HistoryStore, MigrationFault};
 use crate::agent::definition::{
     AgentDefinitionOrigin, AgentDefinitionScope, ResolvedAgentDefinition, VerifiedAgentIdentity,
 };
@@ -85,11 +89,170 @@ fn legacy_state(manager: &ThreadModeManager) -> Result<ThreadSnapshot> {
     })
 }
 
+/// Source/target ownership for representation fixtures. The source is generated through the real
+/// current writer, then explicitly describes a pre-official v2 input. No source is renamed to a
+/// target and no completion rows are forged. The tested import always uses the real Migrator.
+struct HistoryFixture {
+    source: HistoryStore,
+    target: HistoryStore,
+    path: std::path::PathBuf,
+    imported: std::sync::atomic::AtomicBool,
+    attempted: std::sync::atomic::AtomicBool,
+    frozen: std::sync::atomic::AtomicBool,
+}
+
+#[derive(Debug, Clone)]
+struct FixtureIdentityFailure(std::sync::Arc<anyhow::Error>);
+
+impl std::fmt::Display for FixtureIdentityFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "trusted fixture identity conversion failed: {}", self.0)
+    }
+}
+
+impl std::error::Error for FixtureIdentityFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.0.as_ref().as_ref())
+    }
+}
+
+impl std::ops::Deref for HistoryFixture {
+    type Target = HistoryStore;
+    fn deref(&self) -> &Self::Target {
+        if self.imported.load(std::sync::atomic::Ordering::Acquire) {
+            &self.target
+        } else {
+            &self.source
+        }
+    }
+}
+
+async fn existing_history(path: &std::path::Path, thread_id: &str) -> Result<HistoryFixture> {
+    let target_path = path.with_file_name("history-current.sqlite");
+    let source = HistoryStore::open(path, thread_id).await?;
+    let target = HistoryStore::open(&target_path, thread_id).await?;
+    let imported = tokio::fs::try_exists(&target_path).await?;
+    if imported {
+        target.prepare_activation().await?;
+    } else {
+        source.initialize(HistoryInitialization::New).await?;
+    }
+    Ok(HistoryFixture {
+        source,
+        target,
+        path: path.into(),
+        imported: imported.into(),
+        attempted: false.into(),
+        frozen: false.into(),
+    })
+}
+
+async fn import_bound_source(path: &std::path::Path, thread_id: &str) -> Result<HistoryStore> {
+    let history =
+        HistoryStore::open(&path.with_file_name("history-current.sqlite"), thread_id).await?;
+    history
+        .initialize(HistoryInitialization::ImportV2 {
+            source_database: path.into(),
+            legacy_state: super::state::StateStore::new(
+                path.parent().context("source parent")?.into(),
+                thread_id,
+            ),
+            migrate_execution_identity: std::sync::Arc::new(|_| Ok(())),
+        })
+        .await?;
+    Ok(history)
+}
+
+impl HistoryFixture {
+    async fn freeze_source(&self) -> Result<()> {
+        if !self.frozen.swap(true, std::sync::atomic::Ordering::AcqRel) {
+            let db = raw_database(&self.path).await?;
+            db.execute_unprepared(
+                "DELETE FROM seaql_migrations; UPDATE history_meta SET schema_version=8",
+            )
+            .await?;
+            db.close().await?;
+        }
+        Ok(())
+    }
+
+    async fn import_identity(
+        &self,
+        migrate: impl FnOnce(&mut ThreadSnapshot) -> Result<()>,
+    ) -> Result<ThreadCheckpoint> {
+        if self.imported.load(std::sync::atomic::Ordering::Acquire) {
+            return self
+                .target
+                .checkpoint()
+                .await?
+                .context("completed target checkpoint");
+        }
+        self.freeze_source().await?;
+        let source = source_evidence(&self.path).await?;
+        let result = if !self
+            .attempted
+            .swap(true, std::sync::atomic::Ordering::AcqRel)
+        {
+            let checkpoint = self.source.checkpoint().await;
+            // Precompute only the trusted pure callback's result. Even a conversion error is
+            // returned by the real target migration, not before its transaction begins. Retrying
+            // the owner reuses exactly these frozen input facts and the original error chain.
+            let converted = (|| -> Result<(ThreadSnapshot, ThreadSnapshot)> {
+                let mut candidate = checkpoint?.context("source checkpoint")?.state;
+                crate::studio::agent_close::is_explicitly_closed(&candidate)?;
+                crate::studio::model_route::migration::upgrade(&mut candidate)?;
+                crate::studio::delegation::migrate(&mut candidate)?;
+                let expected = candidate.clone();
+                migrate(&mut candidate)?;
+                Ok((expected, candidate))
+            })()
+            .map_err(|error| FixtureIdentityFailure(std::sync::Arc::new(error)));
+            let thread_id = self.source.thread_id().to_owned();
+            self.target
+                .initialize(HistoryInitialization::ImportV2 {
+                    source_database: self.path.clone(),
+                    legacy_state: super::state::StateStore::new(
+                        self.path.parent().context("source parent")?.into(),
+                        &thread_id,
+                    ),
+                    migrate_execution_identity: std::sync::Arc::new(move |state| {
+                        let (expected, candidate) = converted.as_ref().map_err(Clone::clone)?;
+                        anyhow::ensure!(
+                            serde_json::to_value(&*state)? == serde_json::to_value(&expected)?,
+                            "identity callback input changed"
+                        );
+                        *state = candidate.clone();
+                        Ok(())
+                    }),
+                })
+                .await
+        } else {
+            self.target.retry_initialization().await
+        };
+        assert_eq!(
+            source_evidence(&self.path).await?,
+            source,
+            "representation import must not modify any original source fact or byte"
+        );
+        if result.is_err() {
+            assert_pending(&self.path.with_file_name("history-current.sqlite")).await?;
+        }
+        result?;
+        self.imported
+            .store(true, std::sync::atomic::Ordering::Release);
+        self.target
+            .checkpoint()
+            .await?
+            .context("imported checkpoint")
+    }
+}
+
 async fn persist(store: &HistoryStore, state: ThreadSnapshot, append: bool) -> Result<()> {
+    store.initialize(HistoryInitialization::New).await?;
     let sequence = state.commit_sequence;
     let empty = BTreeSet::new();
     let effect = ThreadEffectBatch {
-        thread_id: "migration".into(),
+        thread_id: store.thread_id().into(),
         sequence,
         context: append.then(|| ContextChange::Append {
             revision: state.context.revision,
@@ -106,7 +269,7 @@ async fn persist(store: &HistoryStore, state: ThreadSnapshot, append: bool) -> R
             .into(),
         ..Default::default()
     };
-    let checkpoint = ThreadCheckpoint::capture("migration".into(), sequence, state);
+    let checkpoint = ThreadCheckpoint::capture(store.thread_id().into(), sequence, state);
     store
         .commit_checkpoint_effect(
             &checkpoint,
@@ -126,6 +289,233 @@ async fn persist(store: &HistoryStore, state: ThreadSnapshot, append: bool) -> R
         .await
 }
 
+/// One isolated Studio host for restored-Thread scenarios.
+///
+/// The production factory assembles a restored root Thread and publishes its tool binding, so the
+/// context-preparation hook resolves that Thread's live preparation owner exactly as the host
+/// does. Nothing here substitutes a test-only owner: the services are the component types the
+/// lifecycle builder wires, every byte of state lives under one temporary Studio home, and the
+/// only model endpoint is a loopback address that is already closed.
+struct MigrationHost {
+    _temp: tempfile::TempDir,
+    workspace: std::path::PathBuf,
+    store: crate::studio::StudioStore,
+    factory: crate::studio::StudioThreadFactory,
+    assembler: crate::thread_assembler::StudioThreadAssembler,
+    config_runtime: crate::config::ConfigRuntime,
+    thread_modes: ThreadModeManager,
+    route: pl_model::config::ModelRouteConfig,
+}
+
+impl MigrationHost {
+    async fn open() -> Result<Self> {
+        use crate::config::{ConfigPaths, ConfigStore, StudioConfig};
+        use crate::studio::paths::StudioPaths;
+        use pl_model::config::{AccountConfig, AccountId, ModelRouteConfig};
+        use pl_model::model::ModelInfo;
+        use pl_model::protocol::ProtocolEndpoint;
+
+        let temp = tempfile::tempdir()?;
+        let home = temp.path().join("home");
+        let workspace = temp.path().join("workspace");
+        tokio::fs::create_dir_all(&workspace).await?;
+        // The one durable route points at a loopback address that is already closed: preparation
+        // must still run through the real hook, while the step's model call fails without any
+        // external service or credential.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+        let endpoint = format!("http://{}", listener.local_addr()?);
+        drop(listener);
+        let mut model = ModelInfo::compatible("migration-model");
+        model.base_instructions = "frozen migration base".into();
+        let account_id = AccountId::new("migration-fixture")?;
+        let route = ModelRouteConfig {
+            account_id: account_id.clone(),
+            model_id: model.model_id.clone(),
+            effort: None,
+        };
+        let mut config = StudioConfig::default_config()?;
+        config.models.accounts.clear();
+        config.models.accounts.insert(
+            account_id,
+            AccountConfig::from_explicit_models(
+                ProtocolEndpoint::compatible("Migration fixture", endpoint),
+                vec![model],
+            ),
+        );
+        for selected in config
+            .models
+            .routes
+            .values_mut()
+            .chain(config.mode_model_routes.values_mut())
+        {
+            *selected = route.clone();
+        }
+        let paths = StudioPaths::resolve(Some(home.clone()))?;
+        let config_paths = ConfigPaths::from_config_dir(&home);
+        ConfigStore::new(config_paths.clone()).save(&config)?;
+        let config_runtime =
+            crate::config::ConfigRuntime::initialize(ConfigStore::new(config_paths))?;
+        let thread_modes = config_runtime.thread_mode_manager();
+        let store = crate::studio::StudioStore::open(paths.database()).await?;
+        let writer = crate::studio::agent_host::ThreadWriteBehindWriter::new(store.clone());
+        let product_events = crate::studio::ProductEventBus::new(store.clone(), writer.clone());
+        let skills_dir = paths.system_skills_dir();
+        tokio::fs::create_dir_all(&skills_dir).await?;
+        let helper_source = crate::worker_assets::RemoteHelperSource::External;
+        let bots = crate::bots::BotRuntime::new(
+            paths.clone(),
+            config_runtime.clone(),
+            product_events.clone(),
+        )?;
+        let services = crate::studio::thread_factory::StudioThreadServices {
+            store: store.clone(),
+            worktrees: crate::studio::agent_host::worktree_lease::WorktreeLeaseOwner::new(writer),
+            product_events: product_events.clone(),
+            config_runtime: config_runtime.clone(),
+            mcp_runtime: pl_tool::mcp::McpRuntime::new(pl_tool::mcp::McpConnector::default())
+                .handle(),
+            lsp_runtime: pl_lsp::runtime::LspRuntimeRegistry::new(),
+            skills: crate::studio::runtime::SkillCatalogRuntime::new(product_events, skills_dir),
+            thread_modes: thread_modes.clone(),
+            ssh_manager: std::sync::Arc::new(crate::worker_assets::ssh_manager(&helper_source)),
+            helper_source,
+            bots,
+        };
+        Ok(Self {
+            _temp: temp,
+            workspace,
+            store,
+            factory: crate::studio::StudioThreadFactory::new(services),
+            assembler: crate::thread_assembler::StudioThreadAssembler::default(),
+            config_runtime,
+            thread_modes,
+            route,
+        })
+    }
+
+    /// The exact route root preparation resolves for the restored Thread.
+    fn resolved_route(&self) -> Result<pl_model::config::ResolvedModelRoute> {
+        let config = self.config_runtime.read()?.config;
+        let route = config
+            .models
+            .resolve_route(crate::config::root_agent_route_id(), &self.route)?;
+        crate::studio::delegation::validate_credential(&route)?;
+        Ok(route)
+    }
+
+    fn simple_mode(&self) -> Result<std::sync::Arc<crate::mode::RegisteredThreadMode>> {
+        self.thread_modes
+            .snapshot()
+            .mode(&pl_protocol::ThreadModeId::simple())
+            .context("built-in simple Mode")
+    }
+
+    fn legacy_simple_state(
+        &self,
+        mut extensions: BTreeMap<String, ExtensionRecord>,
+    ) -> Result<ThreadSnapshot> {
+        let mode = self.simple_mode()?;
+        extensions.insert(
+            "studio.mode".into(),
+            record(
+                4,
+                "pl.studio.mode",
+                1,
+                &serde_json::to_string(&mode.descriptor().id)?,
+            )?,
+        );
+        extensions.insert(
+            "studio.instructions".into(),
+            ExtensionRecord {
+                revision: 5,
+                payload: legacy_instructions(
+                    legacy_block("modelBase", "base", "base"),
+                    vec![legacy_block("executionProfile", "Simple", mode.prompt())],
+                    Vec::new(),
+                )?,
+            },
+        );
+        Ok(saved_state(extensions))
+    }
+
+    /// Registers one restored Thread and commits its saved checkpoint through the product store.
+    async fn persist_restored(
+        &self,
+        project_id: &str,
+        thread_id: &str,
+        state: ThreadSnapshot,
+    ) -> Result<HistoryStore> {
+        use crate::studio::store::directory::{DirectoryDelta, ProjectDirectoryRecord};
+        let workspace = self.workspace.to_string_lossy().into_owned();
+        let mut delta = DirectoryDelta::upsert_project(ProjectDirectoryRecord {
+            id: project_id.into(),
+            name: "Migration".into(),
+            path: workspace.clone(),
+            ssh_alias: None,
+            created_at: 1,
+            updated_at: 1,
+            last_opened_at: None,
+            closed: false,
+        });
+        let (registered, _) = DirectoryDelta::register_root_thread(
+            thread_id.into(),
+            project_id,
+            thread_id,
+            pl_protocol::ThreadModeId::simple(),
+            pl_protocol::ThreadWorkspaceMode::Local,
+            workspace,
+        );
+        delta.thread_upserts = registered.thread_upserts;
+        self.store.persist_directory_summaries(&delta).await?;
+        let paths = self.store.session_paths(project_id, thread_id)?;
+        let history = HistoryStore::open(&paths.legacy_history_database(), thread_id).await?;
+        persist(&history, state, true).await?;
+        let db = raw_database(&paths.legacy_history_database()).await?;
+        db.execute_unprepared(
+            "DELETE FROM seaql_migrations; UPDATE history_meta SET schema_version=8",
+        )
+        .await?;
+        db.close().await?;
+        Ok(history)
+    }
+
+    /// Product root preparation publishes this Thread's tool binding; assembly then publishes the
+    /// owner with the production context-preparation hook and the current-state checkpoint.
+    async fn prepare_restored_root(
+        &self,
+        thread_id: &str,
+        delegation: pl_protocol::DelegationSettings,
+    ) -> Result<pl_core::thread::ThreadHandle> {
+        self.factory.prepare_history_catalog().await?;
+        let mut spec = self
+            .factory
+            .prepare_root_thread(crate::thread_assembler::ThreadPreparation {
+                identity: crate::thread_assembler::ThreadActivation {
+                    id: thread_id.to_owned(),
+                    parent_id: None,
+                },
+                cancellation: tokio_util::sync::CancellationToken::new(),
+                agent_controls: Vec::new(),
+                delegation: Some(delegation),
+            })
+            .await?;
+        // The durable writer has its own history fault-injection suite; this case protects the
+        // preparation hook, so the owner is assembled without attaching a second storage
+        // incarnation and its queue.
+        spec.cold_store = None;
+        Ok(self.assembler.assemble(spec).await?)
+    }
+
+    /// Real product close: the assembled owner settles its storage, then the factory seals the
+    /// tool bindings it published for this Thread.
+    async fn close(self, thread_id: &str) -> Result<()> {
+        let closed = self.assembler.close(thread_id).await;
+        self.factory.stop_all_tool_operations();
+        closed?;
+        Ok(())
+    }
+}
+
 #[tokio::test]
 async fn mode_definition_migration_preserves_history_and_restores_after_source_deletion()
 -> Result<()> {
@@ -134,11 +524,31 @@ async fn mode_definition_migration_preserves_history_and_restores_after_source_d
     let manager = ThreadModeManager::default();
     let original = legacy_state(&manager)?;
     let workflow = original.extensions["studio.workflow"].clone();
-    let store = HistoryStore::open(&path, "migration").await?;
+    let store = existing_history(&path, "migration").await?;
     persist(&store, original.clone(), true).await?;
     let legacy = store.checkpoint().await?.context("legacy checkpoint")?;
+    store.freeze_source().await?;
+    let source = source_evidence(&path).await?;
+    store
+        .target
+        .set_migration_fault(Some(MigrationFault::IdentityUpdate));
+    let failure = store
+        .import_identity(|state| {
+            crate::mode::migrate_mode_snapshot(state, &manager)?;
+            Ok(())
+        })
+        .await
+        .expect_err("Mode conversion must reach the target checkpoint write");
+    assert!(format!("{failure:#}").contains("injected target history migration write failure"));
+    assert_pending(&path.with_file_name("history-current.sqlite")).await?;
+    assert_eq!(
+        serde_json::to_value(store.checkpoint().await?.context("preserved Mode")?)?,
+        serde_json::to_value(&legacy)?
+    );
+    assert_eq!(source_evidence(&path).await?, source);
+    store.target.set_migration_fault(None);
     let migrated = store
-        .migrate_recovery_checkpoint(&legacy, |state| {
+        .import_identity(|state| {
             crate::mode::migrate_mode_snapshot(state, &manager)?;
             Ok(())
         })
@@ -163,22 +573,24 @@ async fn mode_definition_migration_preserves_history_and_restores_after_source_d
     let before_retry = serde_json::to_vec(&durable)?;
     assert!(
         store
-            .migrate_recovery_checkpoint(&legacy, |state| {
+            .import_identity(|state| {
                 crate::mode::migrate_mode_snapshot(state, &manager)?;
                 Ok(())
             })
             .await
-            .is_err(),
-        "a stale recovery candidate must not overwrite the migrated checkpoint"
+            .is_ok(),
+        "an applied official migration is idempotent"
     );
     assert_eq!(
         serde_json::to_vec(&store.checkpoint().await?.context("unchanged checkpoint")?)?,
         before_retry
     );
+    assert_current(&path.with_file_name("history-current.sqlite"), "migration").await?;
+    assert_eq!(source_evidence(&path).await?, source);
     drop(store);
     manager.remove_source(&ThreadModeSourceId::new("migration-fixture")?);
     assert!(manager.snapshot().modes().next().is_none());
-    let reopened = HistoryStore::open(&path, "migration").await?;
+    let reopened = existing_history(&path, "migration").await?;
     let mut checkpoint = reopened
         .checkpoint()
         .await?
@@ -204,14 +616,14 @@ async fn unavailable_legacy_mode_definition_never_resets_or_rewrites_the_checkpo
     let path = directory.path().join("history.sqlite");
     let manager = ThreadModeManager::default();
     let original = legacy_state(&manager)?;
-    let store = HistoryStore::open(&path, "migration").await?;
+    let store = existing_history(&path, "migration").await?;
     persist(&store, original.clone(), true).await?;
     manager.remove_source(&ThreadModeSourceId::new("migration-fixture")?);
     let checkpoint = store.checkpoint().await?.context("checkpoint")?;
     let before = serde_json::to_vec(&checkpoint)?;
     assert!(
         store
-            .migrate_recovery_checkpoint(&checkpoint, |state| {
+            .import_identity(|state| {
                 crate::mode::migrate_mode_snapshot(state, &manager)?;
                 Ok(())
             })
@@ -378,7 +790,7 @@ async fn legacy_root_instruction_source_becomes_the_mode_source_and_survives_a_r
 {
     let directory = tempfile::tempdir()?;
     let path = directory.path().join("history.sqlite");
-    let store = HistoryStore::open(&path, "migration").await?;
+    let store = existing_history(&path, "migration").await?;
     // 旧版显式 base 覆盖带 label/path/正文：迁移必须逐项保留，不能被 base 丢弃或改写。
     let original = instruction_state(legacy_instructions(
         legacy_block_with_path(
@@ -408,13 +820,10 @@ async fn legacy_root_instruction_source_becomes_the_mode_source_and_survives_a_r
         ],
     )?);
     persist(&store, original.clone(), true).await?;
-    let checkpoint = store.checkpoint().await?.context("legacy checkpoint")?;
     // 没有可验证渠道归属的旧根会话迁移到明确渠道未指定的 legacy-root，而不是当前普通根。
     let root = VerifiedAgentIdentity::GenericRoot;
     let migrated = store
-        .migrate_recovery_checkpoint(&checkpoint, |state| {
-            crate::instruction::migrate_saved_representation(state, &root)
-        })
+        .import_identity(|state| crate::instruction::migrate_saved_representation(state, &root))
         .await?;
     let payload = &migrated.state.extensions["studio.instructions"].payload;
     assert_eq!(payload.version(), 3);
@@ -543,7 +952,7 @@ async fn legacy_root_instruction_source_becomes_the_mode_source_and_survives_a_r
     );
 
     drop(store);
-    let reopened = HistoryStore::open(&path, "migration").await?;
+    let reopened = existing_history(&path, "migration").await?;
     let durable = reopened
         .checkpoint()
         .await?
@@ -577,7 +986,7 @@ async fn legacy_root_instruction_source_becomes_the_mode_source_and_survives_a_r
 async fn v2_generic_root_migration_preserves_shape_content_and_user_source_ids() -> Result<()> {
     let directory = tempfile::tempdir()?;
     let path = directory.path().join("history.sqlite");
-    let store = HistoryStore::open(&path, "migration").await?;
+    let store = existing_history(&path, "migration").await?;
     let previous = crate::instruction::InstructionSnapshot {
         agent: agent_identity(
             "root:main",
@@ -631,7 +1040,7 @@ async fn v2_generic_root_migration_preserves_shape_content_and_user_source_ids()
     assert_eq!(prior_user_records.len(), 1);
 
     let migrated = store
-        .migrate_recovery_checkpoint(&checkpoint, |state| {
+        .import_identity(|state| {
             crate::instruction::migrate_saved_representation(
                 state,
                 &VerifiedAgentIdentity::GenericRoot,
@@ -716,7 +1125,7 @@ async fn v2_generic_root_migration_preserves_shape_content_and_user_source_ids()
     );
 
     drop(store);
-    let reopened = HistoryStore::open(&path, "migration").await?;
+    let reopened = existing_history(&path, "migration").await?;
     let durable = reopened
         .checkpoint()
         .await?
@@ -799,7 +1208,7 @@ async fn v2_root_identity_contract_round_trips_without_reselecting_current_entry
     for (case, id, revision, origin, has_agent, is_bot) in cases {
         let directory = tempfile::tempdir()?;
         let path = directory.path().join("history.sqlite");
-        let store = HistoryStore::open(&path, "migration").await?;
+        let store = existing_history(&path, "migration").await?;
         let mut developer = Vec::new();
         if has_agent {
             developer.push(instruction_block(
@@ -826,14 +1235,13 @@ async fn v2_root_identity_contract_round_trips_without_reselecting_current_entry
         };
         let original = instruction_state(previous_snapshot_payload(&previous)?);
         persist(&store, original.clone(), true).await?;
-        let checkpoint = store.checkpoint().await?.context("v2 root checkpoint")?;
         let verified = if is_bot {
             VerifiedAgentIdentity::BotRoot
         } else {
             VerifiedAgentIdentity::GenericRoot
         };
         let migrated = store
-            .migrate_recovery_checkpoint(&checkpoint, |state| {
+            .import_identity(|state| {
                 crate::instruction::migrate_saved_representation(state, &verified)
             })
             .await?;
@@ -865,7 +1273,7 @@ async fn v2_root_identity_contract_round_trips_without_reselecting_current_entry
         assert_eq!(migrated.state.context, original.context, "{case}");
 
         drop(store);
-        let reopened = HistoryStore::open(&path, "migration").await?;
+        let reopened = existing_history(&path, "migration").await?;
         let durable = reopened
             .checkpoint()
             .await?
@@ -946,7 +1354,7 @@ async fn v2_bad_shape_or_untrusted_root_identity_preserves_sqlite_checkpoint() -
     ] {
         let directory = tempfile::tempdir()?;
         let path = directory.path().join("history.sqlite");
-        let store = HistoryStore::open(&path, "migration").await?;
+        let store = existing_history(&path, "migration").await?;
         let original = instruction_state(previous_snapshot_payload(&previous)?);
         persist(&store, original.clone(), true).await?;
         let checkpoint = store.checkpoint().await?.context("v2 checkpoint")?;
@@ -958,7 +1366,7 @@ async fn v2_bad_shape_or_untrusted_root_identity_preserves_sqlite_checkpoint() -
         };
         assert!(
             store
-                .migrate_recovery_checkpoint(&checkpoint, |state| {
+                .import_identity(|state| {
                     crate::instruction::migrate_saved_representation(state, &verified)
                 })
                 .await
@@ -976,11 +1384,15 @@ async fn v2_bad_shape_or_untrusted_root_identity_preserves_sqlite_checkpoint() -
             "{case} must leave the original checkpoint intact"
         );
         drop(store);
-        let reopened = HistoryStore::open(&path, "migration").await?;
-        let durable = reopened
-            .checkpoint()
+        let reopened =
+            HistoryStore::open(&path.with_file_name("history-current.sqlite"), "migration").await?;
+        assert!(
+            reopened.checkpoint().await.is_err(),
+            "a cold current reader cannot fall back to the refused source"
+        );
+        let durable = source_checkpoint(&path, "migration")
             .await?
-            .context("reopened v2 checkpoint")?;
+            .context("reopened immutable v2 source checkpoint")?;
         assert_eq!(durable.state.context, original.context);
         assert_eq!(
             durable.state.extensions["studio.instructions"].payload,
@@ -996,37 +1408,19 @@ async fn v2_bad_shape_or_untrusted_root_identity_preserves_sqlite_checkpoint() -
 #[tokio::test]
 async fn restored_v2_multi_record_instructions_are_normalized_once() -> Result<()> {
     use crate::instruction::{InstructionSnapshot, InstructionSourceKind};
-    use pl_core::{
-        model::ModelFactory,
-        thread::{StepInput, ThreadHandle},
-    };
-    use pl_model::{
-        completion::OpenAiCompactionMode,
-        config::{AccountId, ResolvedModelRoute},
-        model::ModelInfo,
-        protocol::ProtocolEndpoint,
-        runtime::{ModelRuntime, ThreadModel},
-    };
+    use pl_core::thread::StepInput;
+    use pl_model::runtime::{ModelRuntime, ThreadModel};
     use std::sync::Arc;
 
-    let manager = ThreadModeManager::default();
-    let registry = crate::studio::thread::register_builtins(&manager)?;
-    let mode = registry
-        .mode(&pl_protocol::ThreadModeId::simple())
-        .context("built-in simple Mode")?;
-    let mut model_info = ModelInfo::compatible("migration-model");
-    model_info.base_instructions = "frozen migration base".into();
-    let endpoint = ProtocolEndpoint::compatible("migration fixture", "http://127.0.0.1:0");
-    let route = ResolvedModelRoute {
-        pricing_mode: Default::default(),
-        role: crate::config::root_agent_route_id(),
-        account_id: AccountId::new("migration-account")?,
-        endpoint,
-        context: model_info.resolve_context(None),
-        model: model_info,
-        effort: None,
-    };
-    let model = ThreadModel::new(ModelRuntime::from_route(&route)?, None);
+    let thread_id = "migration";
+    let project_id = "project-migration";
+    let host = MigrationHost::open().await?;
+    let mode = host.simple_mode()?;
+    // The fixture must describe the same frozen route the host resolves for this Thread, so the
+    // saved instruction base and the published binding describe real facts rather than copies.
+    let route = host.resolved_route()?;
+    let base_instructions = route.model.base_instructions.clone();
+    let model = ThreadModel::new(ModelRuntime::from_route(&route)?, route.reasoning_config());
     let snapshot = InstructionSnapshot {
         agent: agent_identity(
             "root:main",
@@ -1041,7 +1435,7 @@ async fn restored_v2_multi_record_instructions_are_normalized_once() -> Result<(
             InstructionSourceKind::ModelBase,
             "model base",
             None,
-            "frozen migration base",
+            &base_instructions,
         ),
         developer: vec![
             expected_block(
@@ -1071,8 +1465,10 @@ async fn restored_v2_multi_record_instructions_are_normalized_once() -> Result<(
         )],
     };
     let instruction_payload = snapshot_payload(&snapshot)?;
-    let mode_payload =
-        crate::mode::encode_mode_snapshot(&crate::mode::SavedThreadMode::capture(&mode, None))?;
+    let mode_payload = crate::mode::encode_mode_snapshot(&crate::mode::SavedThreadMode::capture(
+        mode.as_ref(),
+        None,
+    ))?;
     let binding_payload = OpaquePayload::new(
         "pl.studio.instruction-binding",
         1,
@@ -1132,9 +1528,13 @@ async fn restored_v2_multi_record_instructions_are_normalized_once() -> Result<(
             tool_calls: Vec::new(),
         },
     ]);
+    // Dispatch provenance belongs to the frozen root: saved delegation is required evidence for
+    // root recovery and is orthogonal to the instruction migration this case protects.
+    let delegation = pl_protocol::DelegationSettings::default();
+    let delegation_payload = crate::studio::delegation::encode(delegation)?;
     let original = ThreadSnapshot {
         commit_sequence: 1,
-        extension_sequence: 3,
+        extension_sequence: 4,
         extensions: BTreeMap::from([
             (
                 "studio.mode".into(),
@@ -1155,6 +1555,13 @@ async fn restored_v2_multi_record_instructions_are_normalized_once() -> Result<(
                 ExtensionRecord {
                     revision: 3,
                     payload: binding_payload,
+                },
+            ),
+            (
+                crate::studio::delegation::EXTENSION.into(),
+                ExtensionRecord {
+                    revision: 4,
+                    payload: delegation_payload,
                 },
             ),
         ]),
@@ -1185,27 +1592,12 @@ async fn restored_v2_multi_record_instructions_are_normalized_once() -> Result<(
         .join("\n");
     assert_eq!(original_instruction_text, snapshot.trusted_text());
 
-    let directory = tempfile::tempdir()?;
-    let history_path = directory.path().join("history.sqlite");
-    let store = HistoryStore::open(&history_path, "migration").await?;
-    persist(&store, original, true).await?;
-    let checkpoint = store
-        .checkpoint()
-        .await?
-        .context("v2 multi-record checkpoint")?;
-    let thread = ThreadHandle::resume(
-        "migration".into(),
-        ModelFactory::new(model.clone()).open_session().await?,
-        Some(checkpoint),
-    )?;
-    thread
-        .set_context_preparation(crate::compaction::preparer(
-            &route,
-            model,
-            OpenAiCompactionMode::Local,
-            manager,
-        )?)
+    host.persist_restored(project_id, thread_id, original)
         .await?;
+    // Opening saved history keeps the multi-record context exactly as it was saved. Only the
+    // Thread's first real preparation may normalize it, through the hook that product assembly
+    // installed from the same factory that published this Thread's tool binding.
+    let thread = host.prepare_restored_root(thread_id, delegation).await?;
 
     let step = |attempt: &str| StepInput {
         turn_id: "restore-instructions".into(),
@@ -1270,7 +1662,7 @@ async fn restored_v2_multi_record_instructions_are_normalized_once() -> Result<(
 
     assert!(thread.step(step("prepare-again")).await.is_err());
     assert_eq!(thread.snapshot().context, normalized);
-    thread.close().await?;
+    host.close(thread_id).await?;
     Ok(())
 }
 
@@ -1561,7 +1953,7 @@ async fn legacy_child_instruction_source_becomes_the_agent_source_of_its_frozen_
 -> Result<()> {
     let directory = tempfile::tempdir()?;
     let path = directory.path().join("history.sqlite");
-    let store = HistoryStore::open(&path, "migration").await?;
+    let store = existing_history(&path, "migration").await?;
     let original = instruction_state(legacy_instructions(
         legacy_block("modelBase", "model base", "base"),
         vec![legacy_block(
@@ -1577,12 +1969,9 @@ async fn legacy_child_instruction_source_becomes_the_agent_source_of_its_frozen_
         )],
     )?);
     persist(&store, original.clone(), true).await?;
-    let checkpoint = store.checkpoint().await?.context("legacy checkpoint")?;
     let child = VerifiedAgentIdentity::child(&migration_child_profile())?;
     let migrated = store
-        .migrate_recovery_checkpoint(&checkpoint, |state| {
-            crate::instruction::migrate_saved_representation(state, &child)
-        })
+        .import_identity(|state| crate::instruction::migrate_saved_representation(state, &child))
         .await?;
     let snapshot = crate::instruction::decode_snapshot(
         &migrated.state.extensions["studio.instructions"].payload,
@@ -1644,7 +2033,7 @@ async fn conflicting_saved_instruction_identity_fails_without_rewriting_the_chec
 -> Result<()> {
     let directory = tempfile::tempdir()?;
     let path = directory.path().join("history.sqlite");
-    let store = HistoryStore::open(&path, "migration").await?;
+    let store = existing_history(&path, "migration").await?;
     let original = instruction_state(legacy_instructions(
         legacy_block("modelBase", "model base", "base"),
         vec![
@@ -1659,7 +2048,7 @@ async fn conflicting_saved_instruction_identity_fails_without_rewriting_the_chec
     let before = serde_json::to_vec(&checkpoint)?;
     assert!(
         store
-            .migrate_recovery_checkpoint(&checkpoint, |state| {
+            .import_identity(|state| {
                 crate::instruction::migrate_saved_representation(state, &root)
             })
             .await
@@ -2226,14 +2615,14 @@ fn bot_ownership_is_verified_by_decoding_not_by_extension_presence() -> Result<(
 async fn missing_instruction_snapshot_fails_without_rewriting_or_defaulting() -> Result<()> {
     let directory = tempfile::tempdir()?;
     let path = directory.path().join("history.sqlite");
-    let store = HistoryStore::open(&path, "migration").await?;
+    let store = existing_history(&path, "migration").await?;
     let original = saved_state(BTreeMap::new());
     persist(&store, original.clone(), true).await?;
     let checkpoint = store.checkpoint().await?.context("checkpoint")?;
     let before = serde_json::to_vec(&checkpoint)?;
     assert!(
         store
-            .migrate_recovery_checkpoint(&checkpoint, |state| {
+            .import_identity(|state| {
                 crate::instruction::migrate_saved_representation(
                     state,
                     &VerifiedAgentIdentity::GenericRoot,
@@ -2248,8 +2637,15 @@ async fn missing_instruction_snapshot_fails_without_rewriting_or_defaulting() ->
         before
     );
     drop(store);
-    let reopened = HistoryStore::open(&path, "migration").await?;
-    let durable = reopened.checkpoint().await?.context("durable checkpoint")?;
+    let reopened =
+        HistoryStore::open(&path.with_file_name("history-current.sqlite"), "migration").await?;
+    assert!(
+        reopened.checkpoint().await.is_err(),
+        "missing target must not read a legacy checkpoint"
+    );
+    let durable = source_checkpoint(&path, "migration")
+        .await?
+        .context("durable immutable source checkpoint")?;
     assert!(!durable.state.extensions.contains_key("studio.instructions"));
     assert_eq!(durable.state.context, original.context);
     Ok(())
@@ -2260,7 +2656,7 @@ async fn missing_instruction_snapshot_fails_without_rewriting_or_defaulting() ->
 async fn missing_frozen_child_profile_fails_without_writing_anything() -> Result<()> {
     let directory = tempfile::tempdir()?;
     let path = directory.path().join("history.sqlite");
-    let store = HistoryStore::open(&path, "migration").await?;
+    let store = existing_history(&path, "migration").await?;
     let original = saved_state(BTreeMap::from([(
         "studio.workspace".into(),
         record(2, "pl.studio.workspace", 1, "\"receipt\"")?,
@@ -2272,20 +2668,33 @@ async fn missing_frozen_child_profile_fails_without_writing_anything() -> Result
         crate::studio::model_route::saved_profile(&checkpoint.state)?.is_none(),
         "该 checkpoint 没有冻结 Profile"
     );
-    let error =
-        crate::studio::model_route::required_saved_profile(&checkpoint.state, "child-missing")
-            .expect_err("缺冻结 Profile 必须失败");
+    let error = store
+        .import_identity(|state| {
+            let profile =
+                crate::studio::model_route::required_saved_profile(state, "child-missing")?;
+            let identity = VerifiedAgentIdentity::child(&profile)?;
+            crate::instruction::migrate_saved_representation(state, &identity)
+        })
+        .await
+        .expect_err("缺冻结 Profile 必须使真实目标导入失败");
     assert!(
-        error.to_string().contains("has no frozen Agent Profile"),
-        "{error}"
+        format!("{error:#}").contains("has no frozen Agent Profile"),
+        "{error:#}"
     );
     assert_eq!(
         serde_json::to_vec(&store.checkpoint().await?.context("retained checkpoint")?)?,
         before
     );
     drop(store);
-    let reopened = HistoryStore::open(&path, "migration").await?;
-    let durable = reopened.checkpoint().await?.context("durable checkpoint")?;
+    let reopened =
+        HistoryStore::open(&path.with_file_name("history-current.sqlite"), "migration").await?;
+    assert!(
+        reopened.checkpoint().await.is_err(),
+        "a missing current target cannot default the frozen Profile"
+    );
+    let durable = source_checkpoint(&path, "migration")
+        .await?
+        .context("durable immutable source checkpoint")?;
     assert!(
         !durable
             .state
@@ -2344,7 +2753,12 @@ fn record(revision: u64, format: &str, version: u32, content: &str) -> Result<Ex
 fn saved_state(extensions: BTreeMap<String, ExtensionRecord>) -> ThreadSnapshot {
     ThreadSnapshot {
         commit_sequence: 1,
-        extension_sequence: 6,
+        extension_sequence: extensions
+            .values()
+            .map(|record| record.revision)
+            .max()
+            .unwrap_or(0)
+            .max(6),
         extensions,
         context: ContextSnapshot {
             revision: 1,
@@ -2363,16 +2777,8 @@ fn saved_state(extensions: BTreeMap<String, ExtensionRecord>) -> ThreadSnapshot 
     }
 }
 
-async fn migrate_model_access(
-    store: &HistoryStore,
-    checkpoint: &ThreadCheckpoint,
-) -> Result<ThreadCheckpoint> {
-    store
-        .migrate_recovery_checkpoint(
-            checkpoint,
-            crate::studio::model_route::migrate_saved_representation,
-        )
-        .await
+async fn migrate_model_access(store: &HistoryFixture) -> Result<ThreadCheckpoint> {
+    store.import_identity(|_| Ok(())).await
 }
 
 /// 故障注入与结构降级只通过真实 SQLite 文件完成，不使用生产句柄的私有入口。
@@ -2424,22 +2830,343 @@ async fn registered_history(
     store.history_for(&thread.project_id, &thread.id).await
 }
 
+async fn downgrade_checkpoint_to_schema_four(path: &std::path::Path) -> Result<String> {
+    use sea_orm::{DatabaseBackend, Statement};
+    let db = raw_database(path).await?;
+    let row = db
+        .query_one_raw(Statement::from_string(
+            DatabaseBackend::Sqlite,
+            "SELECT payload FROM session_checkpoint WHERE id=1",
+        ))
+        .await?
+        .context("saved checkpoint")?;
+    let mut legacy: serde_json::Value =
+        serde_json::from_str(&row.try_get::<String>("", "payload")?)?;
+    legacy["schemaVersion"] = serde_json::json!(4);
+    let saved = legacy["state"].as_object_mut().context("saved state")?;
+    for field in ["execution", "executionSequence", "continuation"] {
+        saved.remove(field);
+    }
+    let encoded = serde_json::to_string(&legacy)?;
+    db.execute_raw(Statement::from_sql_and_values(
+        DatabaseBackend::Sqlite,
+        "UPDATE session_checkpoint SET payload=?,payload_hash=? WHERE id=1",
+        vec![
+            encoded.clone().into(),
+            pl_core::context::content_hash(encoded.as_bytes()).into(),
+        ],
+    ))
+    .await?;
+    db.execute_unprepared(
+        "DROP TABLE IF EXISTS seaql_migrations; UPDATE history_meta SET schema_version=8",
+    )
+    .await?;
+    db.close().await?;
+    Ok(encoded)
+}
+
+/// A table-current v2 database can still contain a retired checkpoint envelope. Opening it must
+/// migrate atomically, preserve proven provenance, and leave ordinary cold reads strictly read-only.
+#[tokio::test]
+async fn checkpoint_envelope_upgrade_is_atomic_and_preserves_v2_history() -> Result<()> {
+    use pl_core::{model::ModelUsageBinding, thread::ModelUsageOrigin};
+    use sea_orm::{DatabaseBackend, Statement};
+
+    let directory = tempfile::tempdir()?;
+    let path = directory.path().join("history.sqlite");
+    let history = HistoryStore::open(&path, "migration").await?;
+    let mut state = saved_state(BTreeMap::from([(
+        "vendor.unknown".into(),
+        record(6, "vendor.unknown", 7, "opaque bytes must survive")?,
+    )]));
+    state.last_attempt_usage_origin = Some(ModelUsageOrigin {
+        binding: ModelUsageBinding {
+            route_identity: None,
+            model: "saved-model".into(),
+            context_window: Some(4096),
+            max_context_window: Some(8192),
+            auto_compact_limit: Some(3000),
+        },
+        input_revision: 1,
+        context_revision: 1,
+        input_record_count: 1,
+        input_hash: Some("saved-input-hash".into()),
+    });
+    persist(&history, state, true).await?;
+    let before = history.checkpoint().await?.context("saved checkpoint")?;
+    drop(history);
+
+    let encoded = downgrade_checkpoint_to_schema_four(&path).await?;
+    let source = source_evidence(&path).await?;
+    let target_path = directory.path().join("history-current.sqlite");
+    let cold = HistoryStore::open(&target_path, "migration").await?;
+    assert!(
+        cold.checkpoint().await.is_err(),
+        "cold queries must not convert legacy state"
+    );
+    cold.set_migration_fault(Some(MigrationFault::EnvelopeUpdate));
+    let failure = cold
+        .initialize(import_origin(&path, "migration")?)
+        .await
+        .expect_err("the explicit import must reach the target checkpoint transaction");
+    assert!(format!("{failure:#}").contains("injected target history migration write failure"));
+    assert!(format!("{failure:#}").contains("m20261026_100001_history_current"));
+    assert_eq!(
+        crate::studio::startup::StudioStartupError::input("history", failure).kind,
+        crate::studio::startup::StudioStartupErrorKind::Migration
+    );
+    assert_pending(&target_path).await?;
+    assert_eq!(source_evidence(&path).await?, source);
+    let db = raw_database(&path).await?;
+    let row = db.query_one_raw(Statement::from_string(DatabaseBackend::Sqlite,
+        "SELECT schema_version,payload FROM history_meta,session_checkpoint WHERE history_meta.id=1 AND session_checkpoint.id=1"))
+        .await?.context("preserved source")?;
+    assert_eq!(row.try_get::<i64>("", "schema_version")?, 8);
+    assert_eq!(row.try_get::<String>("", "payload")?, encoded);
+    assert!(
+        db.query_one_raw(Statement::from_string(
+            DatabaseBackend::Sqlite,
+            "SELECT 1 FROM sqlite_schema WHERE type='table' AND name='seaql_migrations'"
+        ))
+        .await?
+        .is_none(),
+        "target import cannot invent completion records in the source"
+    );
+    db.close().await?;
+    cold.set_migration_fault(None);
+    cold.retry_initialization().await?;
+    let reopened = HistoryStore::open(&target_path, "migration").await?;
+    reopened.prepare_activation().await?;
+    let after = reopened
+        .checkpoint()
+        .await?
+        .context("upgraded checkpoint")?;
+    let mut expected = before.clone();
+    crate::studio::model_route::migration::upgrade(&mut expected.state)?;
+    crate::studio::delegation::migrate(&mut expected.state)?;
+    assert_eq!(
+        serde_json::to_value(&after)?,
+        serde_json::to_value(&expected)?
+    );
+    assert_current(&target_path, "migration").await?;
+    assert_eq!(source_evidence(&path).await?, source);
+    let bytes = serde_json::to_vec(&after)?;
+    reopened.prepare_activation().await?;
+    assert_eq!(
+        serde_json::to_vec(
+            &reopened
+                .checkpoint()
+                .await?
+                .context("idempotent checkpoint")?
+        )?,
+        bytes
+    );
+    drop(reopened);
+    let cold = HistoryStore::open(&target_path, "migration").await?;
+    assert_eq!(
+        serde_json::to_value(
+            cold.read_only_checkpoint_with_latest_turn()
+                .await?
+                .context("cold checkpoint after upgrade")?
+                .0
+        )?,
+        serde_json::to_value(expected)?
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn cold_child_open_and_parent_recovery_prepare_checkpoint_envelopes() -> Result<()> {
+    use crate::config::{ConfigPaths, ConfigStore, StudioConfig};
+    use crate::studio::store::directory::DirectoryDelta;
+    use crate::{StudioHostKind, StudioRuntimeOptions};
+    use pl_model::{
+        config::{AccountConfig, AccountId, ModelRouteConfig},
+        model::ModelInfo,
+        protocol::ProtocolEndpoint,
+    };
+    let directory = tempfile::tempdir()?;
+    let home = directory.path().join("home");
+    let workspace = directory.path().join("workspace");
+    tokio::fs::create_dir(&workspace).await?;
+    let account_id = AccountId::new("storage-fixture")?;
+    let route = ModelRouteConfig {
+        account_id: account_id.clone(),
+        model_id: "storage-model".into(),
+        effort: None,
+    };
+    let mut config = StudioConfig::default_config()?;
+    config.models.accounts.clear();
+    config.models.accounts.insert(
+        account_id,
+        AccountConfig::from_explicit_models(
+            ProtocolEndpoint::compatible("Storage fixture", "http://127.0.0.1:0"),
+            vec![ModelInfo::compatible(&route.model_id)],
+        ),
+    );
+    for selected in config
+        .models
+        .routes
+        .values_mut()
+        .chain(config.mode_model_routes.values_mut())
+    {
+        *selected = route.clone();
+    }
+    ConfigStore::new(ConfigPaths::from_config_dir(&home)).save(&config)?;
+    let options = || StudioRuntimeOptions {
+        studio_home: Some(home.clone()),
+        host: StudioHostKind::Test,
+        ..StudioRuntimeOptions::desktop()
+    };
+    let runtime = crate::StudioRuntime::initialize(options()).await?;
+    let project = runtime.open_project(&workspace).await?;
+    let root = runtime.create_thread(&project.id, "Legacy root").await?;
+    runtime.shutdown_runtime().await?;
+    drop(runtime);
+    let store = crate::studio::StudioStore::open(&home.join("studio/v2/studio.sqlite")).await?;
+    let mut children = Vec::new();
+    for (id, role) in [
+        ("retired-child", crate::config::ROOT_AGENT_ROUTE_KEY),
+        ("cold-child", "executor"),
+        ("archived-child", "reviewer"),
+    ] {
+        let mut child = bound_thread(id);
+        child.project_id = project.id.clone();
+        child.parent_thread_id = Some(root.id.clone());
+        child.root_thread_id = root.id.clone();
+        child.role = role.into();
+        child.archived = id == "archived-child";
+        store
+            .persist_directory_summaries(&DirectoryDelta {
+                thread_upserts: vec![child.clone()],
+                ..Default::default()
+            })
+            .await?;
+        let paths = store.session_paths(&project.id, id)?;
+        let path = paths.legacy_history_database();
+        let history = HistoryStore::open(&path, id).await?;
+        let mut profile: serde_json::Value = serde_json::from_str(LEGACY_PROFILE)?;
+        profile["profileId"] = role.into();
+        profile["displayName"] = id.into();
+        profile["providerId"] = "storage-fixture".into();
+        profile["model"] = "storage-model".into();
+        profile["effort"] = serde_json::Value::Null;
+        profile["systemInstructions"] = "Frozen child role text".into();
+        let state = saved_state(BTreeMap::from([
+            (
+                "studio.agent-profile".into(),
+                record(
+                    2,
+                    "pl.studio.agent-profile",
+                    1,
+                    &serde_json::to_string(&profile)?,
+                )?,
+            ),
+            (
+                "studio.instructions".into(),
+                ExtensionRecord {
+                    revision: 3,
+                    payload: legacy_instructions(
+                        legacy_block("modelBase", "model base", "base"),
+                        vec![legacy_block(
+                            "executionProfile",
+                            id,
+                            "Frozen child role text",
+                        )],
+                        Vec::new(),
+                    )?,
+                },
+            ),
+        ]));
+        persist(&history, state, true).await?;
+        drop(history);
+        downgrade_checkpoint_to_schema_four(&path).await?;
+        let evidence = source_evidence(&path).await?;
+        assert!(!paths.history_database().exists());
+        children.push((child, path, paths.history_database(), evidence));
+    }
+    let root_paths = store.session_paths(&project.id, &root.id)?;
+    let root_path = root_paths.legacy_history_database();
+    seed_legacy_installation(&root_paths.history_database(), &root_path, &root.id).await?;
+    downgrade_checkpoint_to_schema_four(&root_path).await?;
+    let root_evidence = source_evidence(&root_path).await?;
+    store.close().await?;
+    drop(store);
+    let runtime = crate::StudioRuntime::initialize(options()).await?;
+    let result = async {
+        // The retired child's first saved-state lookup decides whether an owner may be installed.
+        // It must happen after migration even when that lookup proves the child is not sealed.
+        let child = &children[0].0;
+        let mut subscription = runtime
+            .subscribe_thread(pl_protocol::ThreadSubscriptionRequest {
+                thread_id: child.id.clone(),
+            })
+            .await?;
+        anyhow::ensure!(
+            subscription.recv().await?.is_some(),
+            "missing retired child baseline"
+        );
+        drop(subscription);
+        // The composer can ask for child interactions while the root subscription is opening.
+        // That read must wait for storage preparation, without activating a child itself.
+        let (subscription, interactions) = tokio::join!(
+            runtime.subscribe_thread(pl_protocol::ThreadSubscriptionRequest {
+                thread_id: root.id.clone(),
+            }),
+            runtime.read_child_interactions(&root.id),
+        );
+        let mut subscription = subscription?;
+        interactions?;
+        anyhow::ensure!(
+            subscription.recv().await?.is_some(),
+            "missing root baseline"
+        );
+        drop(subscription);
+        for (child, source, current, evidence) in children {
+            let saved = HistoryStore::open(&current, &child.id)
+                .await?
+                .checkpoint()
+                .await?
+                .context("current child checkpoint")?;
+            anyhow::ensure!(
+                saved.schema_version == ThreadCheckpoint::SCHEMA_VERSION,
+                "child envelope was not upgraded"
+            );
+            anyhow::ensure!(
+                child.archived || runtime.thread_snapshot(&child.id).await?.thread.id == child.id,
+                "child snapshot unavailable after opening"
+            );
+            assert_current(&current, &child.id).await?;
+            assert_eq!(source_evidence(&source).await?, evidence);
+        }
+        assert_current(&root_paths.history_database(), &root.id).await?;
+        assert_eq!(source_evidence(&root_path).await?, root_evidence);
+        anyhow::Ok(())
+    }
+    .await;
+    let shutdown = runtime.shutdown_runtime().await;
+    result?;
+    shutdown?;
+    Ok(())
+}
+
 #[tokio::test]
 async fn legacy_root_route_representation_is_committed_once_before_recovery() -> Result<()> {
     let directory = tempfile::tempdir()?;
     let path = directory.path().join("history.sqlite");
-    let store = HistoryStore::open(&path, "migration").await?;
+    let store = existing_history(&path, "migration").await?;
     let plan = ExtensionRecord {
         revision: 5,
         payload: crate::plan_tool::encode_plan_state(&Default::default())?,
     };
-    let original = saved_state(BTreeMap::from([
+    let mut original = saved_state(BTreeMap::from([
         (
             "studio.model-route".into(),
             record(2, "pl.studio.model-route", 1, LEGACY_ROUTE)?,
         ),
         ("studio.plan".into(), plan.clone()),
     ]));
+    crate::studio::delegation::migrate(&mut original)?;
     persist(&store, original.clone(), true).await?;
     let legacy = store.checkpoint().await?.context("legacy checkpoint")?;
     assert_eq!(
@@ -2449,7 +3176,7 @@ async fn legacy_root_route_representation_is_committed_once_before_recovery() ->
         1
     );
 
-    let migrated = migrate_model_access(&store, &legacy).await?;
+    let migrated = migrate_model_access(&store).await?;
     assert_eq!(migrated.state_revision, legacy.state_revision);
     assert_eq!(migrated.history_fence, legacy.history_fence);
     assert_eq!(
@@ -2488,7 +3215,7 @@ async fn legacy_root_route_representation_is_committed_once_before_recovery() ->
     );
     drop(store);
 
-    let reopened = HistoryStore::open(&path, "migration").await?;
+    let reopened = existing_history(&path, "migration").await?;
     let durable = reopened
         .checkpoint()
         .await?
@@ -2501,12 +3228,8 @@ async fn legacy_root_route_representation_is_committed_once_before_recovery() ->
         "重开后持久化为当前版本"
     );
     let before_retry = serde_json::to_vec(&durable)?;
-    let again = migrate_model_access(&reopened, &durable).await?;
+    let again = migrate_model_access(&reopened).await?;
     assert_eq!(serde_json::to_vec(&again)?, before_retry, "第二次没有变化");
-    assert!(
-        migrate_model_access(&reopened, &legacy).await.is_err(),
-        "旧候选不得覆盖已提交的表示"
-    );
     assert_eq!(
         serde_json::to_vec(
             &reopened
@@ -2521,12 +3244,11 @@ async fn legacy_root_route_representation_is_committed_once_before_recovery() ->
 
 #[tokio::test]
 async fn shared_recovery_entry_commits_saved_representations_before_publishing() -> Result<()> {
-    let directory = tempfile::tempdir()?;
-    let database_path = directory.path().join("studio/v2/studio.sqlite");
-    let store = crate::studio::StudioStore::open(&database_path).await?;
+    let host = MigrationHost::open().await?;
+    let store = &host.store;
+    let database_path = store.paths().database();
     let thread = bound_thread("migration");
-    let history = registered_history(&store, &thread).await?;
-    let mut original = saved_state(BTreeMap::from([
+    let mut original = host.legacy_simple_state(BTreeMap::from([
         (
             "studio.model-route".into(),
             record(2, "pl.studio.model-route", 1, LEGACY_ROUTE)?,
@@ -2535,32 +3257,34 @@ async fn shared_recovery_entry_commits_saved_representations_before_publishing()
             "studio.agent-profile".into(),
             record(3, "pl.studio.agent-profile", 1, LEGACY_PROFILE)?,
         ),
-    ]));
+    ]))?;
     original.lifecycle = pl_core::thread::ThreadLifecycle::Closed;
-    persist(&history, original.clone(), true).await?;
+    let source_history = host
+        .persist_restored(&thread.project_id, &thread.id, original.clone())
+        .await?;
+    let paths = store.session_paths(&thread.project_id, &thread.id)?;
+    let source_path = paths.legacy_history_database();
+    let source = source_evidence(&source_path).await?;
+    let history = store.history_for(&thread.project_id, &thread.id).await?;
+    history.set_migration_fault(Some(MigrationFault::ModelAccessUpdate));
 
-    let before = history
+    let before = source_history
         .checkpoint()
         .await?
         .context("pre-migration checkpoint")?;
-    let faults = raw_database(
-        &store
-            .session_paths(&thread.project_id, &thread.id)?
-            .history_database(),
-    )
-    .await?;
-    faults
-        .execute_unprepared(
-            "CREATE TRIGGER block_delegation_migration BEFORE UPDATE ON session_checkpoint
-        BEGIN SELECT RAISE(ABORT,'injected delegation migration write fault'); END",
-        )
-        .await?;
+    let failure = host
+        .factory
+        .prepare_history_catalog()
+        .await
+        .expect_err("catalog import must reach the target model-access update");
+    assert!(format!("{failure:#}").contains("injected target history migration write failure"));
+    assert_pending(&paths.history_database()).await?;
     assert!(
-        crate::studio::thread_factory::recovery::load_checkpoint_for_recovery(&store, &thread)
+        crate::studio::thread_factory::recovery::load_checkpoint_for_recovery(store, &thread)
             .await
             .is_err()
     );
-    let preserved = history
+    let preserved = source_history
         .checkpoint()
         .await?
         .context("preserved checkpoint")?;
@@ -2575,13 +3299,19 @@ async fn shared_recovery_entry_commits_saved_representations_before_publishing()
             .extensions
             .contains_key(crate::studio::delegation::EXTENSION)
     );
-    faults
-        .execute_unprepared("DROP TRIGGER block_delegation_migration")
-        .await?;
-    drop(faults);
+    assert_eq!(source_evidence(&source_path).await?, source);
+    history.set_migration_fault(None);
+    assert!(
+        host.factory.prepare_history_catalog().await.is_err(),
+        "catalog preparation must retain the failed owner's result until explicit retry"
+    );
+    assert_pending(&paths.history_database()).await?;
+    history.retry_initialization().await?;
+    host.factory.prepare_history_catalog().await?;
+    assert_current(&paths.history_database(), &thread.id).await?;
 
     let recovered =
-        crate::studio::thread_factory::recovery::load_checkpoint_for_recovery(&store, &thread)
+        crate::studio::thread_factory::recovery::load_checkpoint_for_recovery(store, &thread)
             .await?
             .context("recovered checkpoint")?;
     assert_eq!(recovered.state_revision, original.commit_sequence);
@@ -2622,12 +3352,14 @@ async fn shared_recovery_entry_commits_saved_representations_before_publishing()
     );
 
     let again =
-        crate::studio::thread_factory::recovery::load_checkpoint_for_recovery(&store, &thread)
+        crate::studio::thread_factory::recovery::load_checkpoint_for_recovery(store, &thread)
             .await?
             .context("second recovery")?;
     assert_eq!(serde_json::to_vec(&again)?, serde_json::to_vec(&recovered)?);
+    assert_eq!(source_evidence(&source_path).await?, source);
     drop(history);
-    drop(store);
+    drop(source_history);
+    store.close().await?;
 
     let reopened = crate::studio::StudioStore::open(&database_path).await?;
     let history = reopened.history_for(&thread.project_id, &thread.id).await?;
@@ -2647,6 +3379,7 @@ async fn shared_recovery_entry_commits_saved_representations_before_publishing()
         .route;
     assert_eq!(route.account_id.as_str(), "deepseek");
     assert_eq!(route.model_id, "deepseek-flash");
+    reopened.close().await?;
     Ok(())
 }
 
@@ -2657,27 +3390,46 @@ async fn unknown_close_intent_encoding_preserves_checkpoint_and_history() -> Res
         ("pl.studio.agent-close", 2, "{}"),
         ("pl.studio.agent-close", 1, r#"{"closed":false}"#),
     ] {
-        let directory = tempfile::tempdir()?;
-        let store =
-            crate::studio::StudioStore::open(directory.path().join("studio/v2/studio.sqlite"))
-                .await?;
+        let host = MigrationHost::open().await?;
+        let store = &host.store;
         let thread = bound_thread("migration");
-        let history = registered_history(&store, &thread).await?;
-        let state = saved_state(BTreeMap::from([(
+        let state = host.legacy_simple_state(BTreeMap::from([(
             crate::studio::agent_close::EXTENSION.into(),
             record(8, format, version, content)?,
-        )]));
-        persist(&history, state, true).await?;
-        let before = history.checkpoint().await?.context("original checkpoint")?;
+        )]))?;
+        let source_history = host
+            .persist_restored(&thread.project_id, &thread.id, state)
+            .await?;
+        let paths = store.session_paths(&thread.project_id, &thread.id)?;
+        let source = source_evidence(&paths.legacy_history_database()).await?;
+        let before = source_history
+            .checkpoint()
+            .await?
+            .context("original checkpoint")?;
+        let failure = host
+            .factory
+            .prepare_history_catalog()
+            .await
+            .expect_err("invalid old close encoding must fail target import");
+        assert!(format!("{failure:#}").contains("m20261026_100001_history_current"));
+        assert_pending(&paths.history_database()).await?;
         assert!(
-            crate::studio::thread_factory::recovery::load_checkpoint_for_recovery(&store, &thread)
+            crate::studio::thread_factory::recovery::load_checkpoint_for_recovery(store, &thread)
                 .await
                 .is_err()
         );
-        let after = history.checkpoint().await?.context("retained checkpoint")?;
+        let after = source_history
+            .checkpoint()
+            .await?
+            .context("retained checkpoint")?;
         assert_eq!(serde_json::to_vec(&after)?, serde_json::to_vec(&before)?);
-        assert_eq!(history.watermark().await?, before.history_fence);
-        store.close().await?;
+        assert_eq!(source_history.watermark().await?, before.history_fence);
+        assert_eq!(
+            source_evidence(&paths.legacy_history_database()).await?,
+            source
+        );
+        // This intentionally failed owner stays failed; closing still waits its real terminal job.
+        assert!(store.close().await.is_err());
     }
     Ok(())
 }
@@ -2686,11 +3438,12 @@ async fn unknown_close_intent_encoding_preserves_checkpoint_and_history() -> Res
 async fn legacy_child_profile_representation_is_committed_once_before_recovery() -> Result<()> {
     let directory = tempfile::tempdir()?;
     let path = directory.path().join("history.sqlite");
-    let store = HistoryStore::open(&path, "migration").await?;
-    let original = saved_state(BTreeMap::from([(
+    let store = existing_history(&path, "migration").await?;
+    let mut original = saved_state(BTreeMap::from([(
         "studio.agent-profile".into(),
         record(3, "pl.studio.agent-profile", 1, LEGACY_PROFILE)?,
     )]));
+    crate::studio::delegation::migrate(&mut original)?;
     persist(&store, original, true).await?;
     let legacy = store.checkpoint().await?.context("legacy checkpoint")?;
     assert_eq!(
@@ -2700,7 +3453,7 @@ async fn legacy_child_profile_representation_is_committed_once_before_recovery()
         1
     );
 
-    let migrated = migrate_model_access(&store, &legacy).await?;
+    let migrated = migrate_model_access(&store).await?;
     let saved = &migrated.state.extensions["studio.agent-profile"];
     assert_eq!(saved.revision, 3);
     assert_eq!(saved.payload.version(), 2);
@@ -2712,12 +3465,16 @@ async fn legacy_child_profile_representation_is_committed_once_before_recovery()
     assert_eq!(profile.model_id, "deepseek-flash");
     assert_eq!(profile.effort.as_deref(), Some("high"));
     let mut expected = legacy.clone();
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(saved.payload.content())?,
+        serde_json::to_value(&profile)?,
+    );
     expected
         .state
         .extensions
         .get_mut("studio.agent-profile")
         .context("saved profile")?
-        .payload = crate::studio::model_route::encode_profile(&profile)?;
+        .payload = saved.payload.clone();
     assert_eq!(
         serde_json::to_vec(&migrated)?,
         serde_json::to_vec(&expected)?,
@@ -2732,9 +3489,8 @@ async fn legacy_child_profile_representation_is_committed_once_before_recovery()
     );
     drop(store);
 
-    let reopened = HistoryStore::open(&path, "migration").await?;
-    let checkpoint = reopened.checkpoint().await?.context("reopened profile")?;
-    let again = migrate_model_access(&reopened, &checkpoint).await?;
+    let reopened = existing_history(&path, "migration").await?;
+    let again = migrate_model_access(&reopened).await?;
     assert_eq!(
         serde_json::to_vec(&again)?,
         serde_json::to_vec(&durable)?,
@@ -2747,22 +3503,52 @@ async fn legacy_child_profile_representation_is_committed_once_before_recovery()
 async fn failed_representation_write_preserves_the_saved_version_and_retries() -> Result<()> {
     let directory = tempfile::tempdir()?;
     let path = directory.path().join("history.sqlite");
-    let store = HistoryStore::open(&path, "migration").await?;
+    let store = existing_history(&path, "migration").await?;
     let original = saved_state(BTreeMap::from([(
         "studio.model-route".into(),
         record(2, "pl.studio.model-route", 1, LEGACY_ROUTE)?,
     )]));
     persist(&store, original, true).await?;
     let legacy = store.checkpoint().await?.context("legacy checkpoint")?;
-    // 真实故障注入：checkpoint 写入被 SQLite 触发器拒绝。
+    // Unknown source fields are import facts, not a projection reconstructed from typed state.
     let faults = raw_database(&path).await?;
+    let row = faults
+        .query_one_raw(sea_orm::Statement::from_sql_and_values(
+            sea_orm::DatabaseBackend::Sqlite,
+            "SELECT payload FROM session_checkpoint WHERE id=1",
+            vec![],
+        ))
+        .await?
+        .context("source checkpoint")?;
+    let mut encoded: serde_json::Value =
+        serde_json::from_str(&row.try_get::<String>("", "payload")?)?;
+    encoded["state"]["producerState"] = serde_json::json!(["keep", 9]);
+    encoded["state"]["extensions"]["studio.model-route"]["producerRecord"] = true.into();
+    encoded["state"]["extensions"]["studio.model-route"]["payload"]["producerCodec"] =
+        "keep".into();
+    let encoded = serde_json::to_string(&encoded)?;
     faults
-        .execute_unprepared(
-            "CREATE TRIGGER block_checkpoint_update BEFORE UPDATE ON session_checkpoint \
-             BEGIN SELECT RAISE(ABORT,'injected checkpoint write fault'); END",
-        )
+        .execute_raw(sea_orm::Statement::from_sql_and_values(
+            sea_orm::DatabaseBackend::Sqlite,
+            "UPDATE session_checkpoint SET payload=?,payload_hash=? WHERE id=1",
+            vec![
+                encoded.clone().into(),
+                pl_core::context::content_hash(encoded.as_bytes()).into(),
+            ],
+        ))
         .await?;
-    assert!(migrate_model_access(&store, &legacy).await.is_err());
+    faults.close().await?;
+    store.freeze_source().await?;
+    let source = source_evidence(&path).await?;
+    store
+        .target
+        .set_migration_fault(Some(MigrationFault::ModelAccessUpdate));
+    let failure = migrate_model_access(&store)
+        .await
+        .expect_err("target model-access write must fail");
+    assert!(format!("{failure:#}").contains("injected target history migration write failure"));
+    let target_path = path.with_file_name("history-current.sqlite");
+    assert_pending(&target_path).await?;
     let preserved = store.checkpoint().await?.context("preserved checkpoint")?;
     assert_eq!(
         preserved.state.extensions["studio.model-route"],
@@ -2776,11 +3562,9 @@ async fn failed_representation_write_preserves_the_saved_version_and_retries() -
         1
     );
 
-    faults
-        .execute_unprepared("DROP TRIGGER block_checkpoint_update")
-        .await?;
-    drop(faults);
-    let migrated = migrate_model_access(&store, &legacy).await?;
+    assert_eq!(source_evidence(&path).await?, source);
+    store.target.set_migration_fault(None);
+    let migrated = migrate_model_access(&store).await?;
     assert_eq!(
         migrated.state.extensions["studio.model-route"]
             .payload
@@ -2797,6 +3581,30 @@ async fn failed_representation_write_preserves_the_saved_version_and_retries() -
             .extensions["studio.model-route"],
         migrated.state.extensions["studio.model-route"]
     );
+    let target = raw_database(&target_path).await?;
+    let row = target
+        .query_one_raw(sea_orm::Statement::from_string(
+            sea_orm::DatabaseBackend::Sqlite,
+            "SELECT payload FROM session_checkpoint WHERE id=1",
+        ))
+        .await?
+        .context("migrated raw checkpoint")?;
+    let raw: serde_json::Value = serde_json::from_str(&row.try_get::<String>("", "payload")?)?;
+    assert_eq!(
+        raw["state"]["producerState"],
+        serde_json::json!(["keep", 9])
+    );
+    assert_eq!(
+        raw["state"]["extensions"]["studio.model-route"]["producerRecord"],
+        true
+    );
+    assert_eq!(
+        raw["state"]["extensions"]["studio.model-route"]["payload"]["producerCodec"],
+        "keep"
+    );
+    target.close().await?;
+    assert_current(&target_path, "migration").await?;
+    assert_eq!(source_evidence(&path).await?, source);
     Ok(())
 }
 
@@ -2833,18 +3641,27 @@ fn opaque_record(id: &str, content: &str) -> Result<ContextRecord> {
 #[tokio::test]
 async fn legacy_native_compaction_receipt_upgrades_sources_through_the_history_upgrade()
 -> Result<()> {
-    let directory = tempfile::tempdir()?;
-    let database_path = directory.path().join("studio/v2/studio.sqlite");
-    let store = crate::studio::StudioStore::open(&database_path).await?;
+    let host = MigrationHost::open().await?;
+    let store = &host.store;
     let thread = bound_thread("migration");
-    let history = registered_history(&store, &thread).await?;
-    let history_path = store
-        .session_paths(&thread.project_id, &thread.id)?
-        .history_database();
-    let mut state = saved_state(BTreeMap::from([(
+    let mut state = host.legacy_simple_state(BTreeMap::from([(
         crate::compaction::LATEST_RECEIPT.into(),
         record(7, "pl.studio.compaction", 1, LEGACY_NATIVE_RECEIPT)?,
-    )]));
+    )]))?;
+    // A real saved source already includes this same receipt in its reliable cumulative summary.
+    // Fold through the producer's accounting path before the checkpoint and SQL costs are saved.
+    crate::studio::thread_projection::fold_effect_accounting(
+        &mut state.usage_summary,
+        &pl_core::thread::ThreadEffectBatch {
+            sequence: state.commit_sequence,
+            extensions: vec![pl_core::thread::extensions::ExtensionChange::Put {
+                id: crate::compaction::LATEST_RECEIPT.into(),
+                record: state.extensions[crate::compaction::LATEST_RECEIPT].clone(),
+            }]
+            .into(),
+            ..Default::default()
+        },
+    )?;
     let mut records = state.context.records.to_vec();
     records.push(legacy_native_context(
         "compact-call",
@@ -2855,24 +3672,58 @@ async fn legacy_native_compaction_receipt_upgrades_sources_through_the_history_u
         "不可改写的用户/厂商正文",
     )?);
     state.context.records = records.into();
-    persist(&history, state.clone(), true).await?;
-    let before = history.checkpoint().await?.context("legacy checkpoint")?;
-    raw_database(&history_path)
-        .await?
-        .execute_unprepared("UPDATE history_meta SET schema_version=5")
+    let source_history = host
+        .persist_restored(&thread.project_id, &thread.id, state)
         .await?;
-    drop(history);
-    drop(store);
+    let paths = store.session_paths(&thread.project_id, &thread.id)?;
+    let source_path = paths.legacy_history_database();
+    let before = source_history
+        .checkpoint()
+        .await?
+        .context("legacy checkpoint")?;
+    let source_db = raw_database(&source_path).await?;
+    source_db
+        .execute_unprepared(
+            "DROP TABLE IF EXISTS seaql_migrations; UPDATE history_meta SET schema_version=5",
+        )
+        .await?;
+    source_db.close().await?;
+    let source = source_evidence(&source_path).await?;
+    assert!(!tokio::fs::try_exists(paths.history_database()).await?);
 
     // 真实共同恢复入口：旧库结构升级必须能从 v1 原生回执恢复来源而不是先硬失败。
-    let reopened = crate::studio::StudioStore::open(&database_path).await?;
-    let upgraded = reopened.history_for(&thread.project_id, &thread.id).await?;
+    host.factory.prepare_history_catalog().await?;
+    let upgraded = store.history_for(&thread.project_id, &thread.id).await?;
     let checkpoint =
-        crate::studio::thread_factory::recovery::load_checkpoint_for_recovery(&reopened, &thread)
+        crate::studio::thread_factory::recovery::load_checkpoint_for_recovery(store, &thread)
             .await?
             .context("upgraded checkpoint")?;
     assert_eq!(checkpoint.state_revision, before.state_revision);
     assert_eq!(checkpoint.history_fence, before.history_fence);
+    assert_eq!(checkpoint.state.usage_summary, before.state.usage_summary);
+    assert_eq!(checkpoint.state.usage_summary.inference_count, 1);
+    assert_eq!(checkpoint.state.usage_summary.total_tokens, 3);
+    assert_eq!(
+        checkpoint.state.usage_summary.estimated_costs,
+        vec![pl_core::thread::UsageCost {
+            currency: "USD".into(),
+            amount: 0.25,
+        }]
+    );
+    assert_eq!(
+        upgraded
+            .accounting()
+            .await?
+            .context("saved compaction costs")?
+            .purpose_costs,
+        vec![(
+            Some("compaction".into()),
+            vec![pl_protocol::RuntimeCostAmount {
+                currency: "USD".into(),
+                amount: 0.25,
+            }],
+        )]
+    );
     assert_eq!(
         checkpoint.state.context.revision,
         before.state.context.revision
@@ -2928,6 +3779,19 @@ async fn legacy_native_compaction_receipt_upgrades_sources_through_the_history_u
         unchanged,
         "再次激活没有变化"
     );
+    host.factory.prepare_history_catalog().await?;
+    assert_eq!(
+        serde_json::to_vec(
+            &upgraded
+                .checkpoint()
+                .await?
+                .context("stable catalog checkpoint")?
+        )?,
+        unchanged
+    );
+    assert_current(&paths.history_database(), &thread.id).await?;
+    assert_eq!(source_evidence(&source_path).await?, source);
+    store.close().await?;
     Ok(())
 }
 
@@ -2936,7 +3800,7 @@ async fn legacy_native_compaction_receipt_upgrades_sources_through_the_history_u
 async fn unusable_legacy_compaction_source_fails_closed_without_rewriting() -> Result<()> {
     let directory = tempfile::tempdir()?;
     let path = directory.path().join("history.sqlite");
-    let store = HistoryStore::open(&path, "migration").await?;
+    let store = existing_history(&path, "migration").await?;
     let mut state = saved_state(BTreeMap::from([(
         crate::compaction::LATEST_RECEIPT.into(),
         record(7, "pl.studio.compaction", 1, LEGACY_NATIVE_RECEIPT)?,
@@ -2957,22 +3821,40 @@ async fn unusable_legacy_compaction_source_fails_closed_without_rewriting() -> R
     });
     state.context.records = records.into();
     persist(&store, state, true).await?;
-    raw_database(&path)
-        .await?
-        .execute_unprepared("UPDATE history_meta SET schema_version=5")
+    store.freeze_source().await?;
+    let source_db = raw_database(&path).await?;
+    source_db
+        .execute_unprepared(
+            "DROP TABLE IF EXISTS seaql_migrations; UPDATE history_meta SET schema_version=5",
+        )
         .await?;
-    drop(store);
+    source_db.close().await?;
+    let source = source_evidence(&path).await?;
 
-    let failed = HistoryStore::open(&path, "migration").await?;
-    assert!(failed.prepare_activation().await.is_err());
+    let target_path = path.with_file_name("history-current.sqlite");
+    let failed = &store.target;
+    let failure = failed
+        .initialize(import_origin(&path, "migration")?)
+        .await
+        .expect_err("unusable source must fail the official target step");
+    assert!(format!("{failure:#}").contains("m20261026_100001_history_current"));
+    assert_pending(&target_path).await?;
     assert!(
-        failed.prepare_activation().await.is_err(),
-        "升级步骤没有被标记完成，仍可重试"
+        failed
+            .initialize(import_origin(&path, "migration")?)
+            .await
+            .is_err(),
+        "失败结果保留，普通重复初始化不会偷偷重跑"
     );
-    drop(failed);
+    assert!(
+        failed.retry_initialization().await.is_err(),
+        "原始来源不变，显式重试仍然失败闭锁"
+    );
+    assert_pending(&target_path).await?;
+    assert!(failed.checkpoint().await.is_err());
     // 原数据与旧版本仍可重试读取，升级没有被部分提交。
-    let retryable = HistoryStore::open(&path, "migration").await?;
-    let checkpoint = retryable
+    let checkpoint = store
+        .source
         .checkpoint()
         .await?
         .context("preserved checkpoint")?;
@@ -2989,6 +3871,8 @@ async fn unusable_legacy_compaction_source_fails_closed_without_rewriting() -> R
     };
     assert_eq!(payload.version(), 1, "失败不升级来源结构");
     assert_eq!(payload.content(), unusable, "原正文逐字保留");
+    assert_eq!(source_evidence(&path).await?, source);
+    assert_eq!(stored_format(&path).await?, 5);
 
     // 单一解码边界本身拒绝未知旧适配值与未来版本。
     let unsafe_receipt = LEGACY_NATIVE_RECEIPT.replace("\"deepSeek\"", "\"mysteryVendor\"");
@@ -3010,29 +3894,45 @@ async fn shared_history_checkpoint_waits_for_identity_and_keeps_cold_reads_empty
         .session_paths(&thread.project_id, thread_id)?
         .history_database();
 
-    let missing = crate::studio::thread_factory::recovery::load_checkpoint(&store, &thread).await?;
-    assert!(missing.is_none(), "缺库冷读必须为空且不创建文件");
+    let missing =
+        crate::studio::thread_factory::recovery::load_checkpoint_read_only(&store, &thread)
+            .await
+            .expect_err("缺库冷读必须返回未就绪，而不是正常空历史");
+    assert!(format!("{missing:#}").contains("explicit initialization is required"));
     assert!(!tokio::fs::try_exists(&history_path).await?);
 
     let (entered, release) = history.arm_init_gate().await;
     let writer = history.clone();
     let mut drive_state = SharedHistoryDrive {
-        persist: Some(tokio::spawn(async move {
-            persist(&writer, saved_state(BTreeMap::new()), true).await
+        initialize: Some(tokio::spawn(async move {
+            writer.initialize(HistoryInitialization::New).await
         })),
         checkpoint: None,
+        recovery: None,
         release: Some(release),
     };
     let drive = drive_state
         .run(&store, &thread, thread_id, &history_path, entered)
         .await;
-    let cleanup = drive_state.reclaim().await;
-    let recovered = finish_shared_history_drive(drive, cleanup)?;
+    let cleanup = drive_state.reclaim(&store).await;
+    finish_shared_history_drive(drive, cleanup)?;
+    assert_eq!(history.watermark().await?, 0);
+    assert_current(&history_path, thread_id).await?;
+
+    // The first actual save is ordered after complete empty New publication. No scheduler race
+    // between initialization and a writer batch decides what the waiting readers may observe.
+    persist(&history, saved_state(BTreeMap::new()), true).await?;
+    let recovered =
+        crate::studio::thread_factory::recovery::load_checkpoint_read_only(&store, &thread)
+            .await?
+            .context("saved checkpoint after New")?;
     assert_eq!(recovered.thread_id, thread_id);
     assert_eq!(recovered.state_revision, 1);
+    assert_eq!(recovered.history_fence, 1);
+    assert_eq!(history.watermark().await?, 1);
     let foreign = store
         .state_for(&thread.project_id, "other-thread")?
-        .load(&history)
+        .load_read_only(&history)
         .await
         .expect_err("错 Thread 的 history 句柄必须失败闭锁");
     assert!(
@@ -3043,21 +3943,25 @@ async fn shared_history_checkpoint_waits_for_identity_and_keeps_cold_reads_empty
     );
 
     drop(history);
+    store.close().await?;
     drop(store);
     let damaged = crate::studio::StudioStore::open(&database_path).await?;
-    raw_database(&history_path)
-        .await?
+    let faults = raw_database(&history_path).await?;
+    faults
         .execute_unprepared("DELETE FROM history_meta")
         .await?;
-    let error = crate::studio::thread_factory::recovery::load_checkpoint(&damaged, &thread)
-        .await
-        .expect_err("损坏 identity 必须失败闭锁");
+    faults.close().await?;
+    let error =
+        crate::studio::thread_factory::recovery::load_checkpoint_read_only(&damaged, &thread)
+            .await
+            .expect_err("损坏 identity 必须失败闭锁");
     assert!(
         error
             .to_string()
             .contains("history database identity row is missing"),
         "{error}"
     );
+    damaged.close().await?;
     Ok(())
 }
 
@@ -3093,8 +3997,9 @@ async fn join_shared_history_handle<T>(
 }
 
 struct SharedHistoryDrive {
-    persist: Option<tokio::task::JoinHandle<Result<()>>>,
+    initialize: Option<tokio::task::JoinHandle<Result<()>>>,
     checkpoint: Option<tokio::task::JoinHandle<Result<Option<ThreadCheckpoint>>>>,
+    recovery: Option<tokio::task::JoinHandle<Result<Option<ThreadCheckpoint>>>>,
     release: Option<tokio::sync::oneshot::Sender<()>>,
 }
 
@@ -3106,11 +4011,30 @@ impl SharedHistoryDrive {
         thread_id: &str,
         history_path: &std::path::Path,
         entered: tokio::sync::oneshot::Receiver<()>,
-    ) -> Result<ThreadCheckpoint> {
-        wait_shared_history_stage("writer gate arrived", entered).await??;
+    ) -> Result<()> {
+        wait_shared_history_stage("initialization gate arrived", entered).await??;
         assert!(
-            tokio::fs::try_exists(history_path).await?,
-            "writer connect 已创建文件，但 identity 尚未提交"
+            !tokio::fs::try_exists(history_path).await?,
+            "未完成的目标仅属于准备owner，不得发布canonical名称"
+        );
+        let prefix = format!(
+            ".{}.prepare-",
+            history_path
+                .file_name()
+                .context("history filename")?
+                .to_string_lossy()
+        );
+        let mut entries =
+            tokio::fs::read_dir(history_path.parent().context("history parent")?).await?;
+        let mut preparations = 0;
+        while let Some(entry) = entries.next_entry().await? {
+            if entry.file_name().to_string_lossy().starts_with(&prefix) {
+                preparations += 1;
+            }
+        }
+        assert_eq!(
+            preparations, 1,
+            "the blocked owner holds one unpublished preparation"
         );
 
         let waiting_history = store.history(thread_id).await?;
@@ -3118,33 +4042,77 @@ impl SharedHistoryDrive {
         let waiting = store.clone();
         let waiting_thread = thread.clone();
         self.checkpoint = Some(tokio::spawn(async move {
-            crate::studio::thread_factory::recovery::load_checkpoint(&waiting, &waiting_thread)
-                .await
+            crate::studio::thread_factory::recovery::load_checkpoint_read_only(
+                &waiting,
+                &waiting_thread,
+            )
+            .await
         }));
         wait_shared_history_stage("reader waiting on shared init", reader_waiting).await??;
+        assert!(
+            !self
+                .checkpoint
+                .as_ref()
+                .context("checkpoint task")?
+                .is_finished()
+        );
+        let recovery_waiting = waiting_history.arm_reader_before_init().await;
+        let waiting = store.clone();
+        let waiting_thread = thread.clone();
+        self.recovery = Some(tokio::spawn(async move {
+            crate::studio::thread_factory::recovery::load_checkpoint_for_recovery(
+                &waiting,
+                &waiting_thread,
+            )
+            .await
+        }));
+        wait_shared_history_stage("recovery waiting on shared init", recovery_waiting).await??;
+        assert!(
+            !self
+                .recovery
+                .as_ref()
+                .context("recovery task")?
+                .is_finished()
+        );
         self.release
             .take()
-            .context("writer gate already released")?
+            .context("initialization gate already released")?
             .send(())
-            .map_err(|_| anyhow::anyhow!("writer dropped the init gate"))?;
+            .map_err(|_| anyhow::anyhow!("initialization owner dropped the init gate"))?;
 
-        join_shared_history_handle("persist join", &mut self.persist).await?;
-        join_shared_history_handle("checkpoint join", &mut self.checkpoint)
-            .await?
-            .context("shared checkpoint")
+        join_shared_history_handle("initialize join", &mut self.initialize).await?;
+        assert!(
+            join_shared_history_handle("checkpoint join", &mut self.checkpoint)
+                .await?
+                .is_none(),
+            "completed empty New has no invented checkpoint"
+        );
+        assert!(
+            join_shared_history_handle("recovery join", &mut self.recovery)
+                .await?
+                .is_none()
+        );
+        Ok(())
     }
 
-    async fn reclaim(self) -> Result<()> {
+    async fn reclaim(self, store: &crate::studio::StudioStore) -> Result<()> {
         if let Some(release) = self.release {
             let _ = release.send(());
         }
-        let persist = reclaim_shared_history_task("persist", self.persist).await;
+        let initialize = reclaim_shared_history_task("initialize", self.initialize).await;
         let checkpoint = reclaim_shared_history_task("checkpoint", self.checkpoint).await;
-        match (persist, checkpoint) {
-            (Ok(()), Ok(())) => Ok(()),
-            (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
-            (Err(persist), Err(checkpoint)) => Err(persist.context(checkpoint)),
-        }
+        let recovery = reclaim_shared_history_task("recovery", self.recovery).await;
+        let preparation = store
+            .thread_persistence()
+            .drain_history_preparations()
+            .await;
+        finish_shared_history_drive(
+            finish_shared_history_drive(
+                finish_shared_history_drive(initialize, checkpoint),
+                recovery,
+            ),
+            preparation,
+        )
     }
 }
 
@@ -3173,4 +4141,536 @@ fn finish_shared_history_drive<T>(drive: Result<T>, cleanup: Result<()>) -> Resu
         (Ok(_), Err(cleanup)) => Err(cleanup),
         (Err(drive), Err(cleanup)) => Err(drive.context(format!("cleanup: {cleanup:#}"))),
     }
+}
+
+/// All Studio-owned database families reject unknown future formats and migration names before
+/// a writer changes the SQLite file. History imports a proven old source, but never adopts an
+/// unproven current target. Product/calls retain their independent adoption contracts.
+#[tokio::test]
+async fn studio_databases_adopt_current_files_and_refuse_future_writes() -> Result<()> {
+    use crate::studio::{StudioStore, paths::StudioPaths, storage::calls::CallsStore};
+    use sea_orm::{DatabaseBackend, Statement};
+    for family in ["product", "history", "calls"] {
+        for fault in [
+            "format",
+            "migration",
+            "missing_table",
+            "checkpoint",
+            "missing_ledger",
+        ] {
+            if matches!(fault, "checkpoint" | "missing_ledger") && family != "history" {
+                continue;
+            }
+            let directory = tempfile::tempdir()?;
+            if family == "history" {
+                let source_path = directory.path().join("history.sqlite");
+                let path = directory.path().join("history-current.sqlite");
+                let producer = HistoryStore::open(&source_path, "adoption").await?;
+                producer.commit(1, &[], &[]).await?;
+                // ForwardNine was a released pre-framework source, not a current target with
+                // its official completion removed. Preserve that distinction explicitly.
+                let db = raw_database(&source_path).await?;
+                db.execute_unprepared(
+                    "DROP TABLE seaql_migrations; UPDATE history_meta SET schema_version=9",
+                )
+                .await?;
+                db.close().await?;
+                let source = source_evidence(&source_path).await?;
+                let current = import_source(&source_path, &path, "adoption").await?;
+                assert_eq!(current.watermark().await?, 1);
+                let checkpoint = current.checkpoint().await?.context("imported checkpoint")?;
+                let db = raw_database(&path).await?;
+                match fault {
+                    "format" => {
+                        db.execute_unprepared("UPDATE history_meta SET schema_version=999")
+                            .await?;
+                    }
+                    "migration" => {
+                        db.execute_unprepared("INSERT INTO seaql_migrations(version,applied_at) VALUES('m99999999_future',1)").await?;
+                    }
+                    "missing_table" => {
+                        db.execute_unprepared("DROP TABLE history_items").await?;
+                    }
+                    "missing_ledger" => {
+                        db.execute_unprepared("DROP TABLE seaql_migrations").await?;
+                    }
+                    "checkpoint" => {
+                        let mut checkpoint = checkpoint;
+                        checkpoint.schema_version = ThreadCheckpoint::SCHEMA_VERSION + 1;
+                        let payload = serde_json::to_string(&checkpoint)?;
+                        db.execute_raw(Statement::from_sql_and_values(
+                            DatabaseBackend::Sqlite,
+                            "UPDATE session_checkpoint SET payload=?,payload_hash=? WHERE id=1",
+                            vec![
+                                payload.clone().into(),
+                                pl_core::context::content_hash(payload.as_bytes()).into(),
+                            ],
+                        ))
+                        .await?;
+                    }
+                    _ => unreachable!("fixed corruption fixture"),
+                }
+                db.close().await?;
+                let before = source_evidence(&path).await?;
+                let refused = HistoryStore::open(&path, "adoption").await?;
+                assert!(
+                    refused.prepare_activation().await.is_err(),
+                    "unproven current {fault} was accepted"
+                );
+                assert!(
+                    refused
+                        .initialize(HistoryInitialization::New)
+                        .await
+                        .is_err(),
+                    "New cannot repair an existing unproven target"
+                );
+                assert!(refused.checkpoint().await.is_err());
+                assert_eq!(
+                    source_evidence(&path).await?,
+                    before,
+                    "refused target {fault} changed"
+                );
+                assert_eq!(
+                    source_evidence(&source_path).await?,
+                    source,
+                    "target rejection must not touch or fall back to source"
+                );
+                continue;
+            }
+            let paths = StudioPaths::resolve(Some(directory.path().to_path_buf()))?;
+            let path = if family == "product" {
+                paths.database()
+            } else {
+                paths.calls_database()
+            };
+            for generation in 0..2 {
+                if family == "product" {
+                    StudioStore::open(&path).await?.close().await?;
+                } else {
+                    CallsStore::prepare(&path).await?.close().await?;
+                }
+                if generation == 0 {
+                    let db = raw_database(&path).await?;
+                    db.execute_unprepared("DROP TABLE seaql_migrations").await?;
+                    db.close().await?;
+                }
+            }
+            let db = raw_database(&path).await?;
+            let completed = db
+                .query_all_raw(Statement::from_string(
+                    DatabaseBackend::Sqlite,
+                    "SELECT version FROM seaql_migrations",
+                ))
+                .await?;
+            assert!(!completed.is_empty(), "current {family} must be enrolled");
+            if fault == "migration" {
+                db.execute_unprepared(
+                    "INSERT INTO seaql_migrations(version,applied_at) VALUES('m99999999_future',1)",
+                )
+                .await?;
+            } else if fault == "missing_table" {
+                db.execute_unprepared(if family == "product" {
+                    "DROP TABLE seaql_migrations; DROP TABLE studio_objects"
+                } else {
+                    "DROP TABLE seaql_migrations; DROP TABLE call_usage_summary"
+                })
+                .await?;
+            } else {
+                db.execute_unprepared(if family == "product" {
+                    "PRAGMA user_version=999"
+                } else {
+                    "UPDATE calls_meta SET schema_version=999"
+                })
+                .await?;
+            }
+            db.close().await?;
+            let before = tokio::fs::read(&path).await?;
+            let failure = if family == "product" {
+                StudioStore::open(&path).await.map(|_| ())
+            } else {
+                CallsStore::prepare(&path).await.map(|_| ())
+            };
+            assert!(failure.is_err(), "future {family} {fault} was accepted");
+            assert_eq!(
+                tokio::fs::read(&path).await?,
+                before,
+                "future {family} changed"
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Releases the steps a file written before this build could have recorded, in sequence order.
+const RELEASED_STEPS: [&str; 8] = [
+    "m20261026_000001_history_schema",
+    "m20261026_000002_history_input_presentation",
+    "m20261026_000003_history_input_bindings",
+    "m20261026_000004_history_context_sources",
+    "m20261026_000005_history_tool_answers",
+    "m20261026_000006_history_checkpoint_v5",
+    "m20261026_000007_history_model_access",
+    "m20261026_000008_history_execution_identity",
+];
+
+/// A new Thread uses only the current target step. Its first real save is not a legacy import and
+/// retains unknown producer payloads without running old representation conversions.
+#[tokio::test]
+async fn new_history_file_is_created_at_the_current_format() -> Result<()> {
+    let directory = tempfile::tempdir()?;
+    let path = directory.path().join("history.sqlite");
+    let thread_id = "created-format";
+    let store = HistoryStore::open(&path, thread_id).await?;
+    persist(
+        &store,
+        saved_state(BTreeMap::from([(
+            "vendor.unknown".into(),
+            record(6, "vendor.unknown", 7, "opaque bytes must survive")?,
+        )])),
+        true,
+    )
+    .await?;
+    assert_eq!(
+        stored_format(&path).await?,
+        10,
+        "a created file reaches the current format"
+    );
+    let recorded = recorded_steps(&path).await?;
+    assert_eq!(
+        recorded,
+        vec!["m20261026_100001_history_current".to_owned()],
+        "a current target records only the step it actually executed"
+    );
+    let checkpoint = store.checkpoint().await?.context("saved checkpoint")?;
+    assert_eq!(
+        checkpoint.state.extensions["vendor.unknown"]
+            .payload
+            .content(),
+        "opaque bytes must survive"
+    );
+    Ok(())
+}
+
+/// A synthetic prefix: the released step names recorded by hand plus format 8. It proves the prefix
+/// rule and the appended conversion, but it is **not** evidence of a real previous-build execution —
+/// `schema::lineage_tests::released_eight_file_upgrades_to_the_public_artifact_format` is.
+#[tokio::test]
+async fn synthetic_eight_prefix_advances_through_the_public_artifact_step() -> Result<()> {
+    let directory = tempfile::tempdir()?;
+    let path = directory.path().join("history.sqlite");
+    let thread_id = "released-eight";
+    let store = HistoryStore::open(&path, thread_id).await?;
+    persist(
+        &store,
+        saved_state(BTreeMap::from([(
+            "vendor.unknown".into(),
+            record(6, "vendor.unknown", 7, "opaque bytes must survive")?,
+        )])),
+        true,
+    )
+    .await?;
+    drop(store);
+
+    // Hand-written forgeries of the released lineage: eight known names, no newer step, format 8.
+    let db = raw_database(&path).await?;
+    let rows = RELEASED_STEPS
+        .iter()
+        .enumerate()
+        .map(|(index, name)| format!("('{name}',{})", index + 1))
+        .collect::<Vec<_>>()
+        .join(",");
+    db.execute_unprepared(&format!(
+        "DROP TABLE IF EXISTS seaql_migrations; \
+         CREATE TABLE seaql_migrations (version TEXT NOT NULL PRIMARY KEY, applied_at INTEGER NOT NULL); \
+         INSERT INTO seaql_migrations(version,applied_at) VALUES {rows}; \
+         UPDATE history_meta SET schema_version=8"
+    ))
+    .await?;
+    db.close().await?;
+
+    let source = source_evidence(&path).await?;
+    let advanced = import_bound_source(&path, thread_id).await?;
+    assert_current(&path.with_file_name("history-current.sqlite"), thread_id).await?;
+    assert_eq!(stored_format(&path).await?, 8);
+    assert!(
+        recorded_steps(&path.with_file_name("history-current.sqlite"))
+            .await?
+            .contains(&"m20261026_100001_history_current".to_owned()),
+        "the target records its own completed import"
+    );
+    // The released records are still exactly the ones the file had: nothing was rewritten.
+    let recorded = recorded_steps(&path).await?;
+    for step in RELEASED_STEPS {
+        assert!(
+            recorded.contains(&step.to_owned()),
+            "{step} must stay recorded"
+        );
+    }
+    let checkpoint = advanced
+        .checkpoint()
+        .await?
+        .context("preserved checkpoint")?;
+    assert_eq!(
+        checkpoint.state.extensions["vendor.unknown"]
+            .payload
+            .content(),
+        "opaque bytes must survive"
+    );
+    assert_eq!(source_evidence(&path).await?, source);
+    drop(advanced);
+    Ok(())
+}
+
+/// A history file written by an earlier build may already declare format 9 without any official
+/// migration record. Import verifies the whole promised structure, never lowers the source format
+/// or invents old completion rows, and records only the actual current target step.
+#[tokio::test]
+async fn forward_format_nine_without_records_is_adopted_without_downgrade() -> Result<()> {
+    let directory = tempfile::tempdir()?;
+    let path = directory.path().join("history.sqlite");
+    let thread_id = "forward-nine";
+    let store = HistoryStore::open(&path, thread_id).await?;
+    persist(
+        &store,
+        saved_state(BTreeMap::from([(
+            "vendor.unknown".into(),
+            record(6, "vendor.unknown", 7, "opaque bytes must survive")?,
+        )])),
+        true,
+    )
+    .await?;
+    drop(store);
+
+    let db = raw_database(&path).await?;
+    db.execute_unprepared(
+        "DROP TABLE IF EXISTS seaql_migrations; UPDATE history_meta SET schema_version=9",
+    )
+    .await?;
+    db.close().await?;
+
+    let source = source_evidence(&path).await?;
+    let reopened = import_bound_source(&path, thread_id).await?;
+    reopened.prepare_activation().await?;
+    assert_eq!(
+        stored_format(&path).await?,
+        9,
+        "adoption never lowers the declared format"
+    );
+    let current_path = path.with_file_name("history-current.sqlite");
+    assert_current(&current_path, thread_id).await?;
+    let recorded = recorded_steps(&current_path).await?;
+    assert_eq!(
+        recorded,
+        vec!["m20261026_100001_history_current".to_owned()],
+        "a forward source does not masquerade as target migration execution"
+    );
+    let checkpoint = reopened
+        .checkpoint()
+        .await?
+        .context("preserved checkpoint")?;
+    assert_eq!(
+        checkpoint.state.extensions["vendor.unknown"]
+            .payload
+            .content(),
+        "opaque bytes must survive"
+    );
+    drop(reopened);
+
+    // Reopening fixes the lineage: the same records, the same format, nothing replayed.
+    let stable = HistoryStore::open(&current_path, thread_id).await?;
+    stable.prepare_activation().await?;
+    assert_eq!(stored_format(&path).await?, 9);
+    assert_eq!(recorded_steps(&current_path).await?, recorded);
+    assert_eq!(source_evidence(&path).await?, source);
+    Ok(())
+}
+
+/// Known step names recorded out of order are a mixed lineage: refused before any write, with the
+/// file preserved and no completion record invented.
+#[tokio::test]
+async fn mixed_known_step_records_are_refused_without_writing() -> Result<()> {
+    use sea_orm::{DatabaseBackend, Statement};
+
+    let directory = tempfile::tempdir()?;
+    let path = directory.path().join("history.sqlite");
+    let thread_id = "mixed-lineage";
+    let store = HistoryStore::open(&path, thread_id).await?;
+    persist(&store, saved_state(BTreeMap::new()), true).await?;
+    drop(store);
+
+    let db = raw_database(&path).await?;
+    db.execute_unprepared(
+        "DROP TABLE IF EXISTS seaql_migrations; \
+         CREATE TABLE seaql_migrations (version TEXT NOT NULL PRIMARY KEY, applied_at INTEGER NOT NULL); \
+         INSERT INTO seaql_migrations(version,applied_at) VALUES \
+           ('m20261026_000001_history_schema',1), \
+           ('m20261026_000003_history_input_bindings',2); \
+         UPDATE history_meta SET schema_version=8",
+    )
+    .await?;
+    db.close().await?;
+
+    let source = source_evidence(&path).await?;
+    let target_path = path.with_file_name("history-current.sqlite");
+    let target = HistoryStore::open(&target_path, thread_id).await?;
+    let failure = target
+        .initialize(import_origin(&path, thread_id)?)
+        .await
+        .expect_err("a mixed lineage must be refused");
+    assert!(
+        format!("{failure:#}").contains("legal prefix"),
+        "unexpected failure: {failure:#}"
+    );
+    let db = raw_database(&path).await?;
+    let rows = db
+        .query_all_raw(Statement::from_string(
+            DatabaseBackend::Sqlite,
+            "SELECT version FROM seaql_migrations",
+        ))
+        .await?;
+    assert_eq!(rows.len(), 2, "no completion record was invented");
+    let format = db
+        .query_one_raw(Statement::from_string(
+            DatabaseBackend::Sqlite,
+            "SELECT schema_version FROM history_meta WHERE id=1",
+        ))
+        .await?
+        .context("preserved history identity")?
+        .try_get::<i64>("", "schema_version")?;
+    assert_eq!(format, 8, "the refused source keeps its own format");
+    db.close().await?;
+    assert_pending(&target_path).await?;
+    assert_eq!(source_evidence(&path).await?, source);
+    Ok(())
+}
+
+/// A forward format that only looks current is refused: a missing promised index or column is not
+/// silently recreated by the create step, and no completion record is written for the refused file.
+#[tokio::test]
+async fn forward_format_nine_with_missing_structure_is_refused_without_writes() -> Result<()> {
+    use sea_orm::{DatabaseBackend, Statement};
+
+    for (breakage, fragment, repaired) in [
+        (
+            "DROP INDEX history_items_by_kind",
+            "history_items_by_kind",
+            "SELECT 1 FROM sqlite_schema WHERE type='index' AND name='history_items_by_kind'",
+        ),
+        (
+            "ALTER TABLE history_fact_receipts DROP COLUMN last_write_seq",
+            "history_fact_receipts",
+            "SELECT 1 FROM pragma_table_info('history_fact_receipts') WHERE name='last_write_seq'",
+        ),
+        (
+            "ALTER TABLE session_checkpoint RENAME TO broken_checkpoint;
+             CREATE TABLE session_checkpoint (
+               id INTEGER PRIMARY KEY CHECK (id=1), revision INTEGER NOT NULL,
+               context_revision INTEGER NOT NULL, context_count INTEGER NOT NULL,
+               payload TEXT NOT NULL CHECK (json_valid(payload)), payload_hash TEXT NOT NULL,
+               legacy_cleanup INTEGER NOT NULL DEFAULT 1);
+             INSERT INTO session_checkpoint SELECT * FROM broken_checkpoint;
+             DROP TABLE broken_checkpoint",
+            "session_checkpoint",
+            "SELECT 1 FROM pragma_table_info('session_checkpoint') WHERE name='legacy_cleanup' AND dflt_value='0'",
+        ),
+        (
+            "ALTER TABLE history_meta RENAME TO broken_meta;
+             CREATE TABLE history_meta (
+               id INTEGER PRIMARY KEY, schema_version INTEGER NOT NULL,
+               database_id TEXT NOT NULL, thread_id TEXT NOT NULL, applied_write_seq INTEGER NOT NULL);
+             INSERT INTO history_meta SELECT * FROM broken_meta;
+             DROP TABLE broken_meta",
+            "history_meta",
+            "SELECT 1 FROM sqlite_schema WHERE name='history_meta' AND instr(lower(sql),'check')>0",
+        ),
+        (
+            "ALTER TABLE current_context RENAME TO broken_context;
+             CREATE TABLE current_context (
+               ordinal INTEGER PRIMARY KEY, record_id TEXT NOT NULL,
+               payload TEXT NOT NULL CHECK (json_valid(payload)), payload_hash TEXT NOT NULL);
+             INSERT INTO current_context SELECT * FROM broken_context;
+             DROP TABLE broken_context",
+            "current_context",
+            "SELECT 1 FROM pragma_index_list('current_context') WHERE [unique]=1 AND partial=0",
+        ),
+    ] {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("history.sqlite");
+        let thread_id = "forward-broken";
+        let store = HistoryStore::open(&path, thread_id).await?;
+        persist(&store, saved_state(BTreeMap::new()), true).await?;
+        drop(store);
+
+        let db = raw_database(&path).await?;
+        db.execute_unprepared(&format!(
+            "{breakage}; DROP TABLE IF EXISTS seaql_migrations; \
+             UPDATE history_meta SET schema_version=9"
+        ))
+        .await?;
+        db.close().await?;
+
+        let source = source_evidence(&path).await?;
+        let target_path = path.with_file_name("history-current.sqlite");
+        let target = HistoryStore::open(&target_path, thread_id).await?;
+        let failure = target.initialize(import_origin(&path, thread_id)?).await
+            .expect_err("an unproven forward format must be refused");
+        assert!(
+            format!("{failure:#}").contains(fragment),
+            "the failure must name the missing structure ({fragment}): {failure:#}"
+        );
+        let db = raw_database(&path).await?;
+        assert!(
+            db.query_one_raw(Statement::from_string(
+                DatabaseBackend::Sqlite,
+                "SELECT 1 FROM sqlite_schema WHERE type='table' AND name='seaql_migrations'",
+            ))
+            .await?
+            .is_none(),
+            "a refused file gets no ledger"
+        );
+        assert!(
+            db.query_one_raw(Statement::from_string(DatabaseBackend::Sqlite, repaired))
+                .await?
+                .is_none(),
+            "the missing structure is not silently recreated"
+        );
+        db.close().await?;
+        assert_pending(&target_path).await?;
+        assert_eq!(stored_format(&path).await?, 9);
+        assert_eq!(source_evidence(&path).await?, source);
+    }
+    Ok(())
+}
+
+/// The format the file declares, read on its own connection.
+async fn stored_format(path: &std::path::Path) -> Result<i64> {
+    use sea_orm::{DatabaseBackend, Statement};
+    let db = raw_database(path).await?;
+    let format = db
+        .query_one_raw(Statement::from_string(
+            DatabaseBackend::Sqlite,
+            "SELECT schema_version FROM history_meta WHERE id=1",
+        ))
+        .await?
+        .context("history format")?
+        .try_get::<i64>("", "schema_version")?;
+    db.close().await?;
+    Ok(format)
+}
+
+/// The recorded step names, in the order the ledger stores them.
+async fn recorded_steps(path: &std::path::Path) -> Result<Vec<String>> {
+    use sea_orm::{DatabaseBackend, Statement};
+    let db = raw_database(path).await?;
+    let steps = db
+        .query_all_raw(Statement::from_string(
+            DatabaseBackend::Sqlite,
+            "SELECT version FROM seaql_migrations ORDER BY applied_at,version",
+        ))
+        .await?
+        .iter()
+        .map(|row| row.try_get::<String>("", "version"))
+        .collect::<Result<Vec<_>, _>>()?;
+    db.close().await?;
+    Ok(steps)
 }

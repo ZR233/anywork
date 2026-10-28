@@ -43,6 +43,7 @@ NewThreadStartEvent _newThreadStartEventFromFrb(
         retryable: error.retryable,
         correlationId: error.correlationId,
         detailsJson: error.detailsJson,
+        reason: _failureReasonFromDetails(error.detailsJson),
       ),
     ),
   );

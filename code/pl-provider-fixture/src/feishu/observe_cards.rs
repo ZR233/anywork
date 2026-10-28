@@ -15,7 +15,7 @@ use reqwest::Client;
 
 use super::observe::observe_http_client;
 use super::types::{DIRECT_CHAT_ID, GROUP_CHAT_ID, PAIRING_DIRECT_CHAT_ID, TENANT_ACCESS_TOKEN};
-use super::{CardDisposition, CardOperation, FeishuPeer};
+use super::{CardDisposition, CardObservation, CardOperation, FeishuPeer};
 
 pub(super) async fn observe_markdown_and_cards(
     client: &Client,
@@ -78,24 +78,6 @@ pub(super) async fn observe_markdown_and_cards(
         .await?;
     ensure!(replay["code"] == 0, "card update replay {replay}");
 
-    let settings_path = format!("{origin}/open-apis/cardkit/v1/cards/{card_id}/settings");
-    let closed: serde_json::Value = client
-        .patch(&settings_path)
-        .bearer_auth(TENANT_ACCESS_TOKEN)
-        .json(&serde_json::json!({
-            "settings": serde_json::json!({
-                "config": { "streaming_mode": false },
-                "summary": { "content": "fixture finished" }
-            })
-            .to_string(),
-            "sequence": 2
-        }))
-        .send()
-        .await?
-        .json()
-        .await?;
-    ensure!(closed["code"] == 0, "card settings {closed}");
-
     let sent: serde_json::Value = client
         .post(format!(
             "{origin}/open-apis/im/v1/messages?receive_id_type=chat_id"
@@ -117,6 +99,118 @@ pub(super) async fn observe_markdown_and_cards(
         .await?;
     ensure!(sent["code"] == 0, "card send {sent}");
 
+    // Official whole-card update: the same entity is replaced in place with the
+    // complete JSON 2.0 document (answer body plus a separate host notice), and
+    // its sequence shares the one counter with element content and settings.
+    let host_notice =
+        "内容已截断，以下不是完整答复或代码；全文保留在 Studio，可要求导出 Markdown 文件";
+    let whole_card = serde_json::json!({
+        "schema": "2.0",
+        "config": {
+            "streaming_mode": true,
+            "update_multi": true,
+            "wide_screen_mode": true
+        },
+        "body": {
+            "elements": [
+                {
+                    "tag": "markdown",
+                    "element_id": "fixture_body",
+                    "content": "# 标题\n\n- 一\n\n- 二（全卡更新正文）"
+                },
+                { "tag": "hr" },
+                { "tag": "plain_text", "content": host_notice }
+            ]
+        }
+    })
+    .to_string();
+    let whole_bytes = whole_card.len();
+    let whole_path = format!("{origin}/open-apis/cardkit/v1/cards/{card_id}");
+    let whole_body = serde_json::json!({
+        "card": { "type": "card_json", "data": whole_card },
+        "sequence": 2,
+        "uuid": "uuid-card-fixture-whole-1"
+    });
+    let whole_request_bytes = serde_json::to_vec(&whole_body)?.len();
+    let whole: serde_json::Value = client
+        .put(&whole_path)
+        .bearer_auth(TENANT_ACCESS_TOKEN)
+        .json(&whole_body)
+        .send()
+        .await?
+        .json()
+        .await?;
+    ensure!(whole["code"] == 0, "whole card update {whole}");
+    // Same identity and payload: answered again, applied once.
+    let whole_replay: serde_json::Value = client
+        .put(&whole_path)
+        .bearer_auth(TENANT_ACCESS_TOKEN)
+        .json(&whole_body)
+        .send()
+        .await?
+        .json()
+        .await?;
+    ensure!(
+        whole_replay["code"] == 0,
+        "whole card replay {whole_replay}"
+    );
+    // The documented 30 KB budget is a property of the submitted request, so it
+    // is answered before any uuid replay: an over-budget retry that reuses the
+    // applied uuid, sequence and inner document must not be reported as an
+    // idempotent success. Only outer JSON whitespace changes here, so the parsed
+    // document and the uuid payload stay byte-identical to the applied update.
+    let compact_body = serde_json::to_string(&whole_body)?;
+    let padded_body = compact_body.replacen('{', &format!("{{{}", " ".repeat(30_000)), 1);
+    ensure!(
+        compact_body.len() <= 30_000 && padded_body.len() > 30_000,
+        "the padded replay must exceed the 30000-byte request budget while its document stays inside it"
+    );
+    let padded_replay: serde_json::Value = client
+        .put(&whole_path)
+        .bearer_auth(TENANT_ACCESS_TOKEN)
+        .header("content-type", "application/json")
+        .body(padded_body)
+        .send()
+        .await?
+        .json()
+        .await?;
+    ensure!(
+        padded_replay["code"] == 200_860,
+        "an over-budget replay of an applied uuid must be refused by the request budget, got {padded_replay}"
+    );
+    let after_padded = control
+        .card_entities()
+        .await
+        .into_iter()
+        .find(|entity| entity.card_id == card_id)
+        .context("card entity after the over-budget replay")?;
+    ensure!(
+        after_padded.whole_card_updates == 1
+            && after_padded.last_sequence == 2
+            && after_padded.entity_json.contains(host_notice),
+        "a refused over-budget replay must keep the applied whole-card state (updates={}, sequence={})",
+        after_padded.whole_card_updates,
+        after_padded.last_sequence
+    );
+
+    let settings_path = format!("{origin}/open-apis/cardkit/v1/cards/{card_id}/settings");
+    let closed: serde_json::Value = client
+        .patch(&settings_path)
+        .bearer_auth(TENANT_ACCESS_TOKEN)
+        .json(&serde_json::json!({
+            "settings": serde_json::json!({
+                "config": { "streaming_mode": false },
+                "summary": { "content": "fixture finished" }
+            })
+            .to_string(),
+            "sequence": 3
+        }))
+        .send()
+        .await?
+        .json()
+        .await?;
+    ensure!(closed["code"] == 0, "card settings {closed}");
+
     let entities = control.card_entities().await;
     let entity = entities
         .iter()
@@ -125,6 +219,23 @@ pub(super) async fn observe_markdown_and_cards(
     ensure!(
         entity.updates == 1,
         "idempotent replay must not count as an update"
+    );
+    ensure!(
+        entity.whole_card_updates == 1,
+        "idempotent whole-card replay must not count as an update"
+    );
+    ensure!(
+        entity.last_sequence == 3,
+        "element content, whole card and settings must share one sequence counter"
+    );
+    ensure!(
+        entity.entity_json.contains(host_notice)
+            && entity.entity_json.contains("二（全卡更新正文）"),
+        "the replaced entity must hold the whole-card body and the separate host notice"
+    );
+    ensure!(
+        entity.entity_bytes == whole_bytes,
+        "the stored entity must be the exact submitted whole-card document"
     );
     ensure!(entity.settings_updates == 1, "settings count");
     ensure!(
@@ -138,7 +249,72 @@ pub(super) async fn observe_markdown_and_cards(
         ordinals.windows(2).all(|pair| pair[0] < pair[1]),
         "card operation ordinals must increase"
     );
+    let whole_ops: Vec<&CardObservation> = observations
+        .iter()
+        .filter(|item| item.operation == CardOperation::WholeCard)
+        .collect();
+    let applied_count = whole_ops
+        .iter()
+        .filter(|item| item.accepted && !item.idempotent)
+        .count();
+    let replay_count = whole_ops
+        .iter()
+        .filter(|item| item.accepted && item.idempotent)
+        .count();
+    let refused_count = whole_ops.iter().filter(|item| !item.accepted).count();
+    ensure!(
+        applied_count == 1 && replay_count == 1 && refused_count == 1,
+        "the whole-card log must hold one applied update, one idempotent replay and one over-budget refusal, got applied={applied_count} replay={replay_count} refused={refused_count}"
+    );
+    let applied = whole_ops
+        .iter()
+        .find(|item| item.accepted && !item.idempotent)
+        .context("applied whole-card observation")?;
+    ensure!(
+        applied.card_id == card_id
+            && applied.uuid.as_deref() == Some("uuid-card-fixture-whole-1")
+            && applied.sequence == Some(2)
+            && applied.card_bytes == Some(whole_bytes)
+            && applied.request_bytes == whole_request_bytes
+            && applied.request_bytes > whole_bytes,
+        "the whole-card observation must keep the real entity and nested request bytes"
+    );
+    ensure!(
+        whole_ops
+            .iter()
+            .any(|item| item.idempotent && item.accepted),
+        "the replay must be recorded as an idempotent whole-card fact"
+    );
+    // The refused over-budget replay keeps the documented answer and the real
+    // byte split: the nested document stays inside the budget while the padded
+    // request bytes exceed it, and the applied state is untouched.
+    let refused = whole_ops
+        .iter()
+        .find(|item| !item.accepted)
+        .context("refused whole-card observation")?;
+    ensure!(
+        refused.code == 200_860
+            && refused.card_id == card_id
+            && refused.uuid.as_deref() == Some("uuid-card-fixture-whole-1")
+            && refused.sequence == Some(2)
+            && refused.card_bytes == Some(whole_bytes)
+            && refused.request_bytes > 30_000
+            && refused.card_bytes.is_some_and(|bytes| bytes <= 30_000),
+        "an over-budget replay must be refused by the request budget only (code {}, request {} bytes, entity {:?} bytes)",
+        refused.code,
+        refused.request_bytes,
+        refused.card_bytes
+    );
+    ensure!(
+        !refused.idempotent,
+        "a refused over-budget replay must never be counted as an idempotent success"
+    );
 
+    // A reused sequence and an invalid JSON 2.0 document are wire violations of
+    // the official contract, not scripted platform answers. They belong to the
+    // explicit invariant peer (`observe_card_protocol_invariants`), which owns
+    // those rejections, so this journey's report stays free of self-inflicted
+    // violations.
     // Operator-set 14-day window: an explicit documented rejection.
     let second: serde_json::Value = client
         .post(format!("{origin}/open-apis/cardkit/v1/cards"))
@@ -164,6 +340,21 @@ pub(super) async fn observe_markdown_and_cards(
         .json()
         .await?;
     ensure!(expired["code"] == 200_750, "expired card {expired}");
+    let expired_whole: serde_json::Value = client
+        .put(format!("{origin}/open-apis/cardkit/v1/cards/{expired_id}"))
+        .bearer_auth(TENANT_ACCESS_TOKEN)
+        .json(&serde_json::json!({
+            "card": { "type": "card_json", "data": card_json },
+            "sequence": 1
+        }))
+        .send()
+        .await?
+        .json()
+        .await?;
+    ensure!(
+        expired_whole["code"] == 200_750,
+        "expired whole-card {expired_whole}"
+    );
 
     // Synthetic application scope sample: documented not-authorized answer.
     control.set_card_scope_allowed(false).await;
@@ -176,6 +367,22 @@ pub(super) async fn observe_markdown_and_cards(
         .json()
         .await?;
     ensure!(denied["code"] == 300_311, "card scope {denied}");
+    let denied_whole: serde_json::Value = client
+        .put(format!("{origin}/open-apis/cardkit/v1/cards/{card_id}"))
+        .bearer_auth(TENANT_ACCESS_TOKEN)
+        .json(&serde_json::json!({
+            "card": { "type": "card_json", "data": whole_card },
+            "sequence": 9,
+            "uuid": "uuid-card-fixture-whole-scope"
+        }))
+        .send()
+        .await?
+        .json()
+        .await?;
+    ensure!(
+        denied_whole["code"] == 300_311,
+        "cross-application whole-card {denied_whole}"
+    );
     control.set_card_scope_allowed(true).await;
 
     // Real encoded entity sizes: the acceptance must not be a scripted code.
@@ -199,6 +406,77 @@ pub(super) async fn observe_markdown_and_cards(
             "entity size {target} expected code {expected}, got {answer}"
         );
     }
+    // Official whole-card budget: a nested document of 30,001 bytes is refused,
+    // and so is a document whose real request bytes (escaping included) exceed
+    // 30,000 even though its entity fits. Neither changes the stored card.
+    let sized_card: serde_json::Value = client
+        .post(format!("{origin}/open-apis/cardkit/v1/cards"))
+        .bearer_auth(TENANT_ACCESS_TOKEN)
+        .json(&serde_json::json!({ "type": "card_json", "data": card_json }))
+        .send()
+        .await?
+        .json()
+        .await?;
+    ensure!(sized_card["code"] == 0, "sized whole card {sized_card}");
+    let sized_id = sized_card["data"]["card_id"]
+        .as_str()
+        .context("sized card id")?
+        .to_owned();
+    let sized_path = format!("{origin}/open-apis/cardkit/v1/cards/{sized_id}");
+    let mut over_entity = card_json_with_len(30_001);
+    let over_entity_body = serde_json::json!({
+        "card": { "type": "card_json", "data": over_entity },
+        "sequence": 1
+    });
+    let rejected_entity: serde_json::Value = client
+        .put(&sized_path)
+        .bearer_auth(TENANT_ACCESS_TOKEN)
+        .json(&over_entity_body)
+        .send()
+        .await?
+        .json()
+        .await?;
+    ensure!(
+        rejected_entity["code"] == 200_860,
+        "over-budget whole-card entity {rejected_entity}"
+    );
+    // 14,000 quotes escape to a 28 KB entity; nested inside the whole-card body
+    // they escape again and push the real request beyond 30,000 bytes.
+    over_entity = card_json_with_content(&"\"".repeat(14_000));
+    ensure!(
+        over_entity.len() <= 30_000,
+        "the escaped request sample must still fit the entity budget"
+    );
+    let escaped_body = serde_json::json!({
+        "card": { "type": "card_json", "data": over_entity },
+        "sequence": 2
+    });
+    ensure!(
+        serde_json::to_vec(&escaped_body)?.len() > 30_000,
+        "the escaped whole-card request must exceed the request budget"
+    );
+    let rejected_request: serde_json::Value = client
+        .put(&sized_path)
+        .bearer_auth(TENANT_ACCESS_TOKEN)
+        .json(&escaped_body)
+        .send()
+        .await?
+        .json()
+        .await?;
+    ensure!(
+        rejected_request["code"] == 200_860,
+        "over-budget whole-card request {rejected_request}"
+    );
+    let sized_entity = control
+        .card_entities()
+        .await
+        .into_iter()
+        .find(|entity| entity.card_id == sized_id)
+        .context("sized card entity")?;
+    ensure!(
+        sized_entity.last_sequence == 0 && sized_entity.whole_card_updates == 0,
+        "rejected whole-card requests must not change the stored card"
+    );
 
     // A closed stream rejects further content with the documented code, and a
     // settings reopen is the only bounded way back.
@@ -697,6 +975,103 @@ pub(super) async fn observe_card_protocol_invariants() -> Result<()> {
             .to_owned();
         let content_path =
             format!("{origin}/open-apis/cardkit/v1/cards/{card_id}/elements/fixture_body/content");
+
+        // Whole-card document validation answers are documented codes, but a
+        // reused sequence or a non-conforming JSON 2.0 document is still a wire
+        // violation of the official contract. The observer keeps these probes on
+        // this peer, whose report explicitly owns the rejections, and never on
+        // the accepted journey peer.
+        let whole_entity = |entities: Vec<super::CardEntityReport>, id: &str| {
+            entities
+                .into_iter()
+                .find(|entity| entity.card_id == id)
+                .map(|entity| {
+                    (
+                        entity.entity_json,
+                        entity.last_sequence,
+                        entity.whole_card_updates,
+                    )
+                })
+        };
+        let whole_card_json = card_json_with_len(1_024);
+        let whole_created: serde_json::Value = client
+            .post(format!("{origin}/open-apis/cardkit/v1/cards"))
+            .bearer_auth(TENANT_ACCESS_TOKEN)
+            .json(&serde_json::json!({ "type": "card_json", "data": whole_card_json }))
+            .send()
+            .await?
+            .json()
+            .await?;
+        ensure!(
+            whole_created["code"] == 0,
+            "invariant whole card {whole_created}"
+        );
+        let whole_id = whole_created["data"]["card_id"]
+            .as_str()
+            .context("invariant whole card id")?
+            .to_owned();
+        let whole_path = format!("{origin}/open-apis/cardkit/v1/cards/{whole_id}");
+        let first_whole: serde_json::Value = client
+            .put(&whole_path)
+            .bearer_auth(TENANT_ACCESS_TOKEN)
+            .json(&serde_json::json!({
+                "card": { "type": "card_json", "data": whole_card_json },
+                "sequence": 1,
+                "uuid": "uuid-invariant-whole-first"
+            }))
+            .send()
+            .await?
+            .json()
+            .await?;
+        ensure!(
+            first_whole["code"] == 0,
+            "invariant first whole card {first_whole}"
+        );
+        let whole_before = whole_entity(control.card_entities().await, &whole_id)
+            .context("invariant whole entity before the rejections")?;
+        let repeated_whole: serde_json::Value = client
+            .put(&whole_path)
+            .bearer_auth(TENANT_ACCESS_TOKEN)
+            .json(&serde_json::json!({
+                "card": { "type": "card_json", "data": whole_card_json },
+                "sequence": 1,
+                "uuid": "uuid-invariant-whole-repeat"
+            }))
+            .send()
+            .await?
+            .json()
+            .await?;
+        ensure!(
+            repeated_whole["code"] == 300_317,
+            "a reused whole-card sequence must be rejected {repeated_whole}"
+        );
+        let invalid_document = serde_json::json!({
+            "schema": "2.0",
+            "config": { "streaming_mode": true, "update_multi": false },
+            "body": { "elements": [{ "tag": "markdown", "element_id": "fixture_body", "content": "x" }] }
+        })
+        .to_string();
+        let invalid_whole: serde_json::Value = client
+            .put(&whole_path)
+            .bearer_auth(TENANT_ACCESS_TOKEN)
+            .json(&serde_json::json!({
+                "card": { "type": "card_json", "data": invalid_document },
+                "sequence": 2
+            }))
+            .send()
+            .await?
+            .json()
+            .await?;
+        ensure!(
+            invalid_whole["code"] == 232_001,
+            "update_multi=false must be rejected on a whole-card update {invalid_whole}"
+        );
+        let whole_after = whole_entity(control.card_entities().await, &whole_id)
+            .context("invariant whole entity after the rejections")?;
+        ensure!(
+            whole_after == whole_before,
+            "rejected whole-card requests must not change the stored card, {whole_before:?} -> {whole_after:?}"
+        );
 
         // Two writers, newest first: the older sequence must be rejected, and
         // the final state must be the accepted newer body.
@@ -1607,14 +1982,23 @@ pub(super) async fn observe_card_protocol_invariants() -> Result<()> {
             .violations
             .iter()
             .any(|item| item.contains("sequence")),
-        "the stale-sequence attempt must be recorded as a violation: {:?}",
+        "the stale-sequence attempts must be recorded as violations: {:?}",
+        report.violations
+    );
+    ensure!(
+        report
+            .violations
+            .iter()
+            .any(|item| item.contains("update_multi")),
+        "the invalid whole-card document must be recorded as a violation: {:?}",
         report.violations
     );
     println!(
         "feishu_card_invariants: stale_sequence=300317 double_send=one_id/one_side_effect \
          send_identity=mutation-refused/missing-uuid-refused/unknown-replay-one_id \
          dedup_flag=exact-call wait_cancel=released/next-ok uuid_retry=same_id uuid_conflict=200770 \
-         update_size=30720-pass/30721-200860 qps=5-ok/6-violation target_isolation=ok join=ok"
+         update_size=30720-pass/30721-200860 whole_card=300317-sequence/232001-update_multi/entity-unchanged \
+         qps=5-ok/6-violation target_isolation=ok join=ok"
     );
     Ok(())
 }

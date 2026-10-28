@@ -17,6 +17,7 @@ pub struct BridgeThreadItem {
 #[derive(Debug, Clone, PartialEq)]
 pub enum BridgeThreadItemState {
     Raw {
+        origin: BridgeRawItemOrigin,
         payloads: Vec<BridgeRawPayload>,
         notice: String,
         recorded_at: i64,
@@ -94,6 +95,13 @@ pub struct BridgeRawPayload {
     pub format: String,
     pub version: u32,
     pub content: String,
+}
+
+/// Why one raw record exists; the payload list cannot tell the two apart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BridgeRawItemOrigin {
+    Stored,
+    RuntimeControl,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

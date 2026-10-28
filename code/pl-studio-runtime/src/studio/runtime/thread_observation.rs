@@ -509,6 +509,8 @@ impl ThreadObservations {
                 continue;
             }
             let child = pl_protocol::Thread::from(child);
+            // Parent recovery explicitly prepares its cold children's storage before projecting
+            // their facts. It never activates a child, rebuilds its workspace or asks a model.
             let Some(checkpoint) =
                 crate::studio::thread_factory::recovery::load_checkpoint_for_recovery(
                     &services.store,
@@ -518,6 +520,10 @@ impl ThreadObservations {
             else {
                 continue;
             };
+            // A cold child's interruption is a fact the list must publish: a restart otherwise loses
+            // "stopped, waiting for the main agent" for every member that is not loaded again. This
+            // reads only the saved checkpoint — no activation, no workspace, no model request.
+            directory::publish_cold_scheduling_state(services, &child, &checkpoint.state).await?;
             if let Some(turn) = checkpoint
                 .state
                 .turns
@@ -1569,6 +1575,9 @@ mod storage_fault_tests {
     }
 
     async fn register_test_thread(store: &StudioStore, thread: &pl_protocol::Thread) -> Result<()> {
+        store
+            .initialize_new_history_for(&thread.project_id, &thread.id)
+            .await?;
         let mut delta = crate::studio::store::directory::DirectoryDelta::upsert_project(
             crate::studio::store::directory::ProjectDirectoryRecord {
                 id: thread.project_id.clone(),
@@ -1841,7 +1850,9 @@ mod storage_fault_tests {
             elapsed_ms: None,
         };
         let input = InputRecord {
+            continuation: None,
             input: ThreadInput {
+                purpose: pl_core::thread::input::InputPurpose::Message,
                 id: input_id.into(),
                 payload: OpaquePayload::new(
                     "pl.studio.interaction-continuation",

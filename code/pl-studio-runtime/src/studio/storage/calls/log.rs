@@ -350,10 +350,21 @@ impl CallLog {
 
     /// Rebuilds the disposable locator index from complete retained records after a crash.
     pub(super) async fn rebuild_index(&self, db: &DatabaseConnection) -> Result<()> {
+        let tx = db.begin().await?;
+        self.rebuild_index_in_transaction(&tx).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Rebuild within the caller's transaction, including migration completion bookkeeping.
+    /// JSONL remains independently durable; this only replaces disposable SQL projections.
+    pub(super) async fn rebuild_index_in_transaction(
+        &self,
+        db: &impl ConnectionTrait,
+    ) -> Result<()> {
         let mut segments = list_segments(&self.dir).await?;
         segments.sort_by_key(|segment| (segment.day, segment.seq));
-        let tx = db.begin().await?;
-        tx.execute_unprepared("DELETE FROM call_log_index").await?;
+        db.execute_unprepared("DELETE FROM call_log_index").await?;
         let mut recovered_samples = 0usize;
         for segment in segments {
             ensure!(
@@ -370,7 +381,7 @@ impl CallLog {
                 let text = std::str::from_utf8(&line[..line.len() - 1])?;
                 let record = event::decode_record(text)?;
                 super::index_record(
-                    &tx,
+                    db,
                     &record,
                     text,
                     &AppendedRecord {
@@ -391,17 +402,16 @@ impl CallLog {
                     )
                     && let Some(sample) = super::performance::sample_from_record(&record)
                 {
-                    super::performance::record(&tx, &sample).await?;
+                    super::performance::record(db, &sample).await?;
                     recovered_samples += 1;
                     if recovered_samples.is_multiple_of(256) {
-                        super::performance::trim(&tx).await?;
+                        super::performance::trim(db).await?;
                     }
                 }
                 offset += line.len();
             }
         }
-        super::performance::trim(&tx).await?;
-        tx.commit().await?;
+        super::performance::trim(db).await?;
         Ok(())
     }
 

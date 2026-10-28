@@ -228,7 +228,9 @@ impl StudioRuntime {
         let prepared = runtime.prepare_global(observer, cancellation).await;
         if let Err(error) = prepared {
             observer(StudioStartupStage::ClosingResources);
-            runtime.dispose_startup().await?;
+            if let Err(cleanup) = runtime.dispose_startup().await {
+                return Err(cleanup.retaining_startup_failure(error));
+            }
             return Err(error);
         }
         Ok(runtime)
@@ -292,6 +294,20 @@ impl StudioRuntime {
         if let Some(error) = failures.into_iter().reduce(prefer_environment) {
             return Err(error);
         }
+        check_cancelled(cancellation)?;
+        self.thread_factory
+            .prepare_history_catalog()
+            .await
+            .map_err(|error| {
+                StudioStartupError::input(
+                    "history_current",
+                    crate::studio::startup::migration_error(
+                        "history-current",
+                        "prepare_catalog",
+                        error,
+                    ),
+                )
+            })?;
         // 有界展示投影在启动时显式建立一次：已有调用的统计/费用立即成为最新首帧；
         // 查询路径只读该投影，不再承担建立/写盘职责。
         self.model_performance.initialize_projection().await;

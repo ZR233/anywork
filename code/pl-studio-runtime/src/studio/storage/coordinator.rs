@@ -13,6 +13,23 @@ use tokio::sync::{Notify, watch};
 use crate::studio::storage::history::{HistoryStore, HistoryStoreShare};
 use crate::studio::storage::thread_writer::HistoryChannel;
 
+#[derive(Debug, thiserror::Error)]
+#[error("Thread {thread_id} history initialization retry failed")]
+struct HistoryInitializationRetryFailure {
+    thread_id: String,
+    #[source]
+    source: anyhow::Error,
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("history initialization retry failed for Threads {thread_ids} ({} failures)", .remaining.len() + 1)]
+struct HistoryInitializationRetryFailures {
+    thread_ids: String,
+    #[source]
+    first: HistoryInitializationRetryFailure,
+    remaining: Vec<HistoryInitializationRetryFailure>,
+}
+
 /// Per-Thread persistence watermarks and queue pressure reported by the owning writer.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct ThreadPersistenceMetrics {
@@ -449,7 +466,9 @@ impl ThreadPersistenceCoordinator {
             .history
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .retain(|_, share| HistoryStore::from_share(share).is_some());
+            .retain(|_, share| {
+                HistoryStore::from_share(share).is_some() || share.preparation_pending_or_failed()
+            });
         self.refresh();
     }
 
@@ -464,7 +483,11 @@ impl ThreadPersistenceCoordinator {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let revived = history.get(thread_id).and_then(HistoryStore::from_share);
-        if revived.is_none() {
+        if revived.is_none()
+            && !history
+                .get(thread_id)
+                .is_some_and(HistoryStoreShare::preparation_pending_or_failed)
+        {
             // The last holder released the Thread; drop the dead entry instead of remembering it.
             history.remove(thread_id);
         }
@@ -485,12 +508,84 @@ impl ThreadPersistenceCoordinator {
             .history
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        history.retain(|_, share| {
+            HistoryStore::from_share(share).is_some() || share.preparation_pending_or_failed()
+        });
         let existing = history.get(thread_id).and_then(HistoryStore::from_share);
         if let Some(existing) = existing {
             return existing;
         }
         history.insert(thread_id.to_owned(), store.shared());
         store.clone()
+    }
+
+    /// Explicit persistence recovery only, under the caller's lifecycle admission boundary. Take
+    /// handles under the registry lock, then retry sequentially outside it. Cancellation abandons
+    /// this waiter only: each accepted retry remains owned by the original registered job.
+    /// No eligible Failed owner is a no-op, not a readiness guarantee: pending/unobserved and
+    /// interrupted preparations remain registered and still require their normal readiness checks.
+    pub(crate) async fn retry_history_initializations(&self) -> Result<()> {
+        let failed: Vec<_> = self
+            .0
+            .history
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .filter_map(|(thread, share)| {
+                share
+                    .confirmed_failed_initialization()
+                    .map(|history| (thread.clone(), history))
+            })
+            .collect();
+        let mut failures = Vec::new();
+        for (thread_id, history) in failed {
+            if let Err(source) = history.retry_initialization().await {
+                failures.push(HistoryInitializationRetryFailure { thread_id, source });
+            }
+        }
+        let thread_ids = failures
+            .iter()
+            .map(|failure| failure.thread_id.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let mut failures = failures.into_iter();
+        let Some(first) = failures.next() else {
+            return Ok(());
+        };
+        Err(HistoryInitializationRetryFailures {
+            thread_ids,
+            first,
+            remaining: failures.collect(),
+        }
+        .into())
+    }
+
+    /// Called only after Thread/data-root lifecycle admission has closed. Retains every job's join
+    /// future during the wait, including if this shutdown waiter is cancelled. No in-flight SQL or
+    /// publication is aborted. Failed/panicked jobs remain registered for diagnosis, not replay.
+    pub(crate) async fn drain_history_preparations(&self) -> Result<()> {
+        let jobs: Vec<_> = self
+            .0
+            .history
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .map(|(thread, share)| (thread.clone(), share.clone()))
+            .collect();
+        let results =
+            futures::future::join_all(jobs.iter().map(|(_, share)| share.drain_preparation()))
+                .await;
+        let failures: Vec<_> = jobs
+            .iter()
+            .zip(results)
+            .filter_map(|((thread, _), result)| {
+                result.err().map(|error| format!("{thread}: {error:#}"))
+            })
+            .collect();
+        if !failures.is_empty() {
+            bail!("history preparation drain failed: {}", failures.join("; "));
+        }
+        Ok(())
     }
 
     /// Publishes the cumulative usage summary of one Thread.

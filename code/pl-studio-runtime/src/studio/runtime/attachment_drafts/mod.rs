@@ -9,24 +9,50 @@ mod validate;
 pub(super) use runtime::AttachmentDraftRuntime;
 
 use anyhow::{Context, Result};
+use pl_core::context::{ResourceReadError, ResourceReader, ResourceReference};
 use pl_protocol::studio::{
     AdmitAttachmentDraftsRequest, AdmitAttachmentDraftsResponse, StudioAttachmentAdmissionContext,
+    StudioError, StudioErrorCode,
 };
 
 use crate::resource_store::RESOURCE_ID_PREFIX;
 
 use super::StudioRuntime;
-use validate::{admission_rejection, preflight_sources};
+use validate::preflight_sources;
 
 impl StudioRuntime {
+    /// 受信宿主读取本 Thread 的精确归档原件，不暴露可变 store 或回读工作区路径。
+    /// 调用者须先证明公开资格并持有读取及出站副本预算；此入口只证明归属和字节。
+    pub(crate) async fn read_thread_resource_exact(
+        &self,
+        thread_id: &str,
+        reference: ResourceReference,
+        cancel: tokio_util::sync::CancellationToken,
+    ) -> std::result::Result<std::sync::Arc<[u8]>, ResourceReadError> {
+        if cancel.is_cancelled() {
+            return Err(ResourceReadError::Cancelled);
+        }
+        self.read_owned_thread(thread_id).await.map_err(|error| {
+            ResourceReadError::Unavailable {
+                source: error.into(),
+            }
+        })?;
+        let resources = self
+            .store
+            .thread_resources(thread_id)
+            .await
+            .map_err(|error| ResourceReadError::Unavailable {
+                source: error.into(),
+            })?;
+        resources.read(reference, cancel).await
+    }
+
     pub async fn preflight_attachment_drafts(
         &self,
         request: &AdmitAttachmentDraftsRequest,
     ) -> Result<()> {
         self.validate_attachment_context(&request.context).await?;
-        preflight_sources(&request.sources)
-            .map(|_| ())
-            .map_err(admission_rejection)
+        preflight_sources(&request.sources).map(|_| ())
     }
 
     pub async fn admit_attachment_drafts(
@@ -50,17 +76,47 @@ impl StudioRuntime {
         &self,
         context: &StudioAttachmentAdmissionContext,
     ) -> Result<()> {
+        let config = self.config_runtime.read()?;
         match context {
             StudioAttachmentAdmissionContext::ExistingThread { thread_id } => {
-                self.read_owned_thread(thread_id).await?;
+                let thread = self.read_owned_thread(thread_id).await?;
+                let state = self.read_thread_state(thread_id).await?;
+                let (_, selector) = crate::studio::model_route::route_record(
+                    &state,
+                    thread.parent_thread_id.is_some(),
+                )?
+                .context(StudioError::invalid_argument("会话未保存附件模型路由。"))?;
+                let role = if thread.parent_thread_id.is_some() {
+                    pl_protocol::AgentRoleId::new(thread.role)?
+                } else {
+                    crate::config::root_agent_route_id()
+                };
+                config
+                    .config
+                    .models
+                    .resolve_route(role, &selector)
+                    .context(StudioError::invalid_argument(
+                        "附件所选模型不可用，请重新选择模型。",
+                    ))?;
             }
-            StudioAttachmentAdmissionContext::NewThread { mode } => {
-                let mode = pl_protocol::ThreadModeId::from_label(mode)
-                    .map_err(|_| anyhow::anyhow!("mode must be an available mode.* id"))?;
-                self.thread_modes
-                    .snapshot()
-                    .mode(&mode)
-                    .context("requested Thread Mode is unavailable")?;
+            StudioAttachmentAdmissionContext::NewThread { route } => {
+                let selector = super::settings_api::validated_route(
+                    &config.config,
+                    "attachment",
+                    &route.account_id,
+                    &route.model_id,
+                    route.effort.as_deref(),
+                )
+                .context(StudioError::invalid_argument(
+                    "附件所选模型不可用，请重新选择模型。",
+                ))?;
+                config
+                    .config
+                    .models
+                    .resolve_route(crate::config::root_agent_route_id(), &selector)
+                    .context(StudioError::invalid_argument(
+                        "附件所选模型不可用，请重新选择模型。",
+                    ))?;
             }
         }
         Ok(())
@@ -89,14 +145,21 @@ impl StudioRuntime {
                 .pending_public_artifact(&attachment_id)?;
             let history = self.store.history(&thread_id).await?;
             let durable = history.public_artifact_reference(&attachment_id).await?;
-            anyhow::ensure!(
-                pending
-                    .as_ref()
-                    .zip(durable.as_ref())
-                    .is_none_or(|(pending, durable)| pending == durable),
-                "conflicting canonical public artifact metadata"
-            );
-            if let Some(reference) = pending.or(durable) {
+            // Pending metadata can only corroborate saved authorization, never replace it.
+            if let Some(pending) = pending.as_ref() {
+                let durable = durable.as_ref().ok_or_else(|| {
+                    StudioError::new(
+                        StudioErrorCode::Busy,
+                        "产物尚待可靠保存，请稍后重试。",
+                        true,
+                    )
+                })?;
+                anyhow::ensure!(
+                    pending == durable,
+                    "conflicting canonical public artifact metadata"
+                );
+            }
+            if let Some(reference) = durable {
                 use pl_core::context::ResourceReader;
                 let bytes = self
                     .store

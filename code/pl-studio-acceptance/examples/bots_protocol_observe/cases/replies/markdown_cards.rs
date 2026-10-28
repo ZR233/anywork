@@ -9,6 +9,13 @@
 //!    update is observed while the Turn is still open; the final body and the
 //!    closed stream must match the canonical Final exactly, while the
 //!    commentary channel stays local.
+//!
+//! This whole case encodes the **frozen legacy limited-reply policy** (one card
+//! per Turn, Commentary local). The complete conversation frontend publishes one
+//! card per public item, including Commentary, and is observed by
+//! `conversation-frontend*`. A scope gate below refuses to assert the legacy
+//! channel policy while the Thread holds an active full-frontend authorization,
+//! so the two policies can never share one passed verdict.
 //! B. A Final whose card entity would exceed 30 KB must be refused locally: no
 //!    card side effect reaches the platform and the full local history stays.
 //! C. A synthetic application without `cardkit:card:write` must surface the
@@ -1322,9 +1329,17 @@ async fn inner(session: &mut Session, evidence: &mut Vec<String>) -> Result<Case
     // in a field nobody looked at.
     assert_non_selected_payload_is_audited(session, evidence).await?;
 
+    // This case may only claim the frozen legacy limited-reply policy with a real
+    // legacy source. Without migrated-ledger material the check fails explicitly
+    // instead of letting this pass share one identity with the complete frontend
+    // policy observed by `conversation-frontend`.
+    let legacy_thread = wait_thread_binding(&session.home, &bot_id, DIRECT_CHAT_ID).await?;
+    let legacy_source =
+        super::assert_legacy_limited_source(session, &legacy_thread, FINAL_MARKER).await?;
+    evidence.push(format!("scope: {legacy_source}"));
     let mut result = report::passed(
         CASE,
-        "one JSON 2.0 card entity was created once, sent once, updated cumulatively while the Turn was open and closed with the exact canonical Final while the commentary channel stayed local; over-limit, missing scope, unknown creation, preview growth, a blank canonical Final (same card, noFinalReply, exact summary, hash cleared), an unanswered body update and an unanswered stream close stayed explicit outcomes with their original identities across a same-home restart, without plain-message fallback, replay, new sequence or truncation",
+        "legacy limited-reply scope only: one JSON 2.0 card entity was created once, sent once, updated cumulatively while the Turn was open and closed with the exact canonical Final while the commentary channel stayed local (a full-frontend authorization would be a different policy, owned by conversation-frontend); over-limit, missing scope, unknown creation, preview growth, a blank canonical Final (same card, noFinalReply, exact summary, hash cleared), an unanswered body update and an unanswered stream close stayed explicit outcomes with their original identities across a same-home restart, without plain-message fallback, replay, new sequence or truncation",
     );
     result.evidence = evidence.clone();
     Ok(result)

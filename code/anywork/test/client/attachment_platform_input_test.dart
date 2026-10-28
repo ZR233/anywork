@@ -16,6 +16,8 @@ import 'package:desktop_drop/desktop_drop.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'support/test_statistics_feed.dart';
+
 /// Only native admission responses are supplied. Platform method channels,
 /// pixel decoding, staging I/O and Client input ownership are production.
 final class _AttachmentTransport implements StudioTransport {
@@ -124,11 +126,56 @@ const _project = StudioProject(
   path: '/project',
 );
 
+/// Canonical settings and the mode route. The new-thread admission resolves
+/// this route before any platform I/O (main's route freeze), so a fixture
+/// without configuration would never start the prepared operation.
+void _seedSettings(AnyworkClient client) {
+  client.settings.merge(
+    SettingsStateSnapshot(
+      revision: 1,
+      modelCatalogRevision: 1,
+      accounts: const [
+        AccountSettingsView(
+          id: 'account',
+          name: 'Provider',
+          baseUrl: 'http://local.invalid',
+          defaultModelId: 'alpha',
+          status: 'configured',
+          usageLabel: '',
+          models: [
+            AccountModelView(
+              modelId: 'alpha',
+              displayName: 'Alpha',
+              typeSupport: [ModelTypeSupportView(modelType: ModelType.text)],
+              reasoningEfforts: ['medium'],
+              defaultReasoningEffort: 'medium',
+            ),
+          ],
+        ),
+      ],
+      modeModelRoutes: const [
+        ModeModelRouteView(
+          modeId: ThreadModeId.simple,
+          accountId: 'account',
+          modelId: 'alpha',
+          effort: 'medium',
+        ),
+      ],
+    ),
+  );
+}
+
 AppGraph _graph(_AttachmentTransport transport) {
-  final graph = AppGraph(transport: transport, clientId: 'attachment-platform');
+  final graph = AppGraph(
+    transport: transport,
+    // Statistics are an unrelated AppGraph owner; this suite never reads them.
+    statisticsFeed: const TestStatisticsFeedPort(),
+    clientId: 'attachment-platform',
+  );
   graph.client.project.applyProjectDirectory(
     ProjectDirectoryState(values: [_project], revision: 1),
   );
+  _seedSettings(graph.client);
   addTearDown(() async {
     if (transport.admissionGate case final gate? when !gate.isCompleted) {
       gate.complete();

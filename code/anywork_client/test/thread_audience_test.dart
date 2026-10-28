@@ -328,4 +328,174 @@ void main() {
       expect(transport.history.length, 2);
     },
   );
+
+  test('verified target without an authorization head enables on the empty-head CAS and keeps its receipt owned until the boundary', () async {
+    final transport = AudienceTransport();
+    final client = audienceClient(transport);
+    addTearDown(client.close);
+    final session = client.session('thread');
+    final observers = client.budget.used(ResourceKind.observer);
+    session.applySnapshot(
+      audienceWorkspace(knownAudience(phase: 'closed', neverAuthorized: true)),
+    );
+    final audience = session.state.audience;
+    // A verified current target with no authorization head has nothing to
+    // query: no generation exists and no historical close may be invented.
+    expect(
+      (audience.known!.binding as BotThreadBindingPositionCurrent)
+          .cas
+          .authorizationHead,
+      const BotAuthorizationHeadNone(),
+    );
+    expect(audience.known!.latestClosed, isNull);
+    expect(audience.queryAuthorization, isNull);
+    final enable = client.botThreadSync.change(
+      'thread',
+      BotThreadSyncAction.enable,
+    );
+    final first = await transport.nextControl();
+    expect(
+      first.request.expected,
+      const BotSyncCas(
+        bindingRevision: 3,
+        authorizationHead: BotAuthorizationHeadNone(),
+      ),
+    );
+    expect(first.request.threadId, 'thread');
+    expect(first.request.action, BotThreadSyncAction.enable);
+    final prepared = knownAudience(generation: 1, phase: 'pending');
+    first.complete(prepared, pending: true, effective: false);
+    final reply = await enable;
+    expect(reply.state, isA<BotThreadSyncCommandStatePendingStart>());
+    expect(
+      (reply.state as BotThreadSyncCommandStatePendingStart).authorization,
+      authorization(1, 1).id,
+      reason: 'the first authorization of this target is generation 1',
+    );
+    final progress = client.botThreadSync.forThread('thread')!;
+    expect(
+      progress.operation.id.value,
+      first.request.operationId,
+      reason: 'the stable request identity owns the receipt',
+    );
+    expect(reply.receipt.targets.single.resourceKey, 'bot-audience:thread:1');
+    expect(progress.operation.state.value.durable, isTrue);
+    expect(progress.operation.state.value.effective, isFalse);
+    expect(
+      progress.operation.state.value.observed,
+      isFalse,
+      reason: 'a durable prepare is not yet visible in the audience',
+    );
+    session.applySnapshot(audienceWorkspace(prepared, revision: 2));
+    expect(
+      progress.operation.state.value.observed,
+      isTrue,
+      reason: 'the new generation now confirms this exact receipt',
+    );
+    expect(
+      progress.operation.state.value.effective,
+      isFalse,
+      reason: 'PendingStart is not an effective boundary',
+    );
+    // The successor Close is admitted on the new head and is not queued
+    // behind the pending Enable taking effect.
+    final close = client.botThreadSync.change(
+      'thread',
+      BotThreadSyncAction.close,
+    );
+    final second = await transport.nextControl();
+    expect(
+      second.request.expected,
+      BotSyncCas(
+        bindingRevision: 3,
+        authorizationHead: BotAuthorizationHeadPresent(
+          authorization: authorization(1, 1),
+        ),
+      ),
+    );
+    final closed = knownAudience(
+      generation: 1,
+      controlRevision: 2,
+      phase: 'closed',
+    );
+    session.applySnapshot(audienceWorkspace(closed, revision: 3));
+    second.complete(closed);
+    await close;
+    final settled = client.botThreadSync.forThread('thread')!;
+    expect(settled.request.operationId, second.request.operationId);
+    expect(settled.operation.state.value.observed, isTrue);
+    expect(settled.operation.state.value.effective, isTrue);
+    expect(settled.superseded, isFalse);
+    expect(transport.controls, hasLength(2));
+    expect(
+      client.budget.used(ResourceKind.observer),
+      observers,
+      reason: 'settled controls release their own observation permits',
+    );
+    session.applySnapshot(audienceWorkspace(knownAudience(), revision: 4));
+  });
+
+  test(
+    'the control matrix admits no unproven or backward transition',
+    () async {
+      final transport = AudienceTransport();
+      final client = audienceClient(transport);
+      addTearDown(client.close);
+      final session = client.session('thread');
+      Future<void> rejected(
+        BotThreadSyncAction action,
+        StudioFailureCode code,
+      ) async {
+        await expectLater(
+          client.botThreadSync.change('thread', action),
+          throwsA(
+            isA<StudioFailure>().having((error) => error.code, 'code', code),
+          ),
+        );
+      }
+
+      // PendingStart owns its start intent: Enable may not supersede it, while
+      // Close remains the admissible successor.
+      session.applySnapshot(audienceWorkspace(knownAudience(phase: 'pending')));
+      await rejected(
+        BotThreadSyncAction.enable,
+        StudioFailureCode.invalidArgument,
+      );
+      await rejected(
+        BotThreadSyncAction.pause,
+        StudioFailureCode.invalidArgument,
+      );
+      await rejected(
+        BotThreadSyncAction.resume,
+        StudioFailureCode.invalidArgument,
+      );
+      session.applySnapshot(audienceWorkspace(replacedAudience(), revision: 2));
+      for (final action in BotThreadSyncAction.values) {
+        await rejected(action, StudioFailureCode.permissionDenied);
+      }
+      session.applySnapshot(
+        audienceWorkspace(const ThreadAudienceUnbound(), revision: 3),
+      );
+      for (final action in BotThreadSyncAction.values) {
+        await rejected(action, StudioFailureCode.permissionDenied);
+      }
+      session.applySnapshot(
+        audienceWorkspace(
+          const ThreadAudienceUnavailable(
+            reason: ThreadAudienceUnavailableReason.ownershipUnproven,
+          ),
+          revision: 4,
+        ),
+      );
+      for (final action in BotThreadSyncAction.values) {
+        await rejected(action, StudioFailureCode.permissionDenied);
+      }
+      expect(
+        transport.controls,
+        isEmpty,
+        reason: 'a rejected intent must never reach the host control endpoint',
+      );
+      expect(client.botThreadSync.forThread('thread'), isNull);
+    },
+  );
 }

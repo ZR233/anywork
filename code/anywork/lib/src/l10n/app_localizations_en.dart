@@ -114,7 +114,7 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get sidebarArchiveSessionConfirmBody =>
-      'Archiving ends any running work, deletes this session tree\'s worktree along with any uncommitted or unmerged content, then moves the session out of the list. Continue?';
+      'Archiving stops active work in this session and its child sessions, then moves them to the archived list. Session history, workspaces, branches, and uncommitted content are kept. Continue?';
 
   @override
   String get sidebarArchiveSessionConfirmAction => 'Archive';
@@ -1102,6 +1102,14 @@ class AppLocalizationsEn extends AppLocalizations {
       'Session mode cannot change while the session is running or a workflow is active';
 
   @override
+  String get statusSelectorsNotReady =>
+      'Session settings are not ready yet, or a submission is in flight; the selection is unavailable for now.';
+
+  @override
+  String get statusModeNeedsProject =>
+      'Choose a project before setting the session mode.';
+
+  @override
   String get composerWorkspaceModeLabel => 'Session workspace';
 
   @override
@@ -1460,10 +1468,6 @@ class AppLocalizationsEn extends AppLocalizations {
   }
 
   @override
-  String get composerAgentRuntimeDriven =>
-      'This agent session is driven by the runtime';
-
-  @override
   String get statusSkillsSection => 'Skills';
 
   @override
@@ -1677,6 +1681,9 @@ class AppLocalizationsEn extends AppLocalizations {
   String get timelineViewImageFailed => 'Failed to read image';
 
   @override
+  String get timelineViewImageStopped => 'Stopped reading image';
+
+  @override
   String get timelineReadFileCompleted => 'Read';
 
   @override
@@ -1847,6 +1854,24 @@ class AppLocalizationsEn extends AppLocalizations {
   String get timelineToolWaitFailed => 'Wait failed';
 
   @override
+  String get timelineTurnStopped => 'Turn stopped';
+
+  @override
+  String get timelineTurnCancelled => 'Turn cancelled';
+
+  @override
+  String get timelineTurnRuntimeShutdown => 'Runtime shut down; turn stopped';
+
+  @override
+  String get timelineTurnAgentClosed => 'Agent closed; turn stopped';
+
+  @override
+  String get timelineTurnRecoveryStopped => 'Turn stopped during recovery';
+
+  @override
+  String get timelineTurnCoalesced => 'Turn merged into a later turn';
+
+  @override
   String timelineToolCompleted(String name) {
     return '$name completed';
   }
@@ -1899,7 +1924,7 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String timelineToolInterrupted(String name) {
-    return '$name interrupted';
+    return '$name stopped';
   }
 
   @override
@@ -2925,7 +2950,7 @@ class AppLocalizationsEn extends AppLocalizations {
   }
 
   @override
-  String get settingsWorktreeCleanup => 'Clean up worktree and branch';
+  String get settingsWorktreeCleanup => 'Remove worktree (keep branch)';
 
   @override
   String get settingsWorktreeOwnerSession => 'Session worktree';
@@ -3195,6 +3220,13 @@ class AppLocalizationsEn extends AppLocalizations {
   String get timelineRawRecord => 'Original history record';
 
   @override
+  String get timelineRuntimeNotice => 'Runtime notice';
+
+  @override
+  String get timelineRuntimeNoticeDetail =>
+      'This session continued after it was stopped. This entry is a runtime notice and carries no user input.';
+
+  @override
   String get sidebarSearch => 'Search projects and sessions';
 
   @override
@@ -3256,7 +3288,7 @@ class AppLocalizationsEn extends AppLocalizations {
   String get sidebarArchived => 'Archived';
 
   @override
-  String get sidebarRestore => 'Restore session';
+  String get sidebarRestore => 'Unarchive session';
 
   @override
   String get sidebarPin => 'Pin';
@@ -3475,6 +3507,32 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get settingsWorktreeDirty => 'dirty';
+
+  @override
+  String get settingsWorktreeClean => 'No uncommitted changes';
+
+  @override
+  String get settingsWorktreeDirtyUnknown => 'Change status unknown';
+
+  @override
+  String get settingsWorktreeChangedFilesUnknown =>
+      'Changed files are not yet known. Retry the inspection.';
+
+  @override
+  String get settingsWorktreeInspectionAvailable => 'Worktree verified';
+
+  @override
+  String get settingsWorktreeInspectionMissing => 'Worktree missing';
+
+  @override
+  String get settingsWorktreeInspectionIdentityMismatch =>
+      'Worktree identity mismatch';
+
+  @override
+  String get settingsWorktreeInspectionUnavailable => 'Inspection unavailable';
+
+  @override
+  String get settingsWorktreeRetry => 'Retry inspection';
 
   @override
   String get startupPreparing => 'Preparing application…';
@@ -4336,7 +4394,7 @@ class AppLocalizationsEn extends AppLocalizations {
   String get timelineWaitFailed => 'Wait failed';
 
   @override
-  String get timelineWaitInterrupted => 'Wait interrupted';
+  String get timelineWaitInterrupted => 'Wait stopped';
 
   @override
   String timelineWaitTargetCount(int count) {
@@ -4389,7 +4447,7 @@ class AppLocalizationsEn extends AppLocalizations {
   String get timelineWaitStatusCancelled => 'Cancelled';
 
   @override
-  String get timelineWaitStatusInterrupted => 'Interrupted';
+  String get timelineWaitStatusInterrupted => 'Stopped';
 
   @override
   String get conversationActivityWaitingTools => 'Waiting for tools';
@@ -5265,6 +5323,7 @@ class AppLocalizationsEn extends AppLocalizations {
       'This model\'s canonical identity changed. Reload its details.';
 
   @override
+<<<<<<< HEAD
   String get audienceTitle => 'Feishu audience';
 
   @override
@@ -5470,4 +5529,156 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get artifactSaveFailed => 'Could not save the original artifact';
+=======
+  String get composerContinue => 'Continue';
+
+  @override
+  String get composerContinueTooltip =>
+      'Continue the interrupted work without new input';
+
+  @override
+  String get composerStopping => 'Stopping';
+
+  @override
+  String get composerContinuing => 'Continuing';
+
+  @override
+  String get composerContinueReasonUserStop => 'Stopped by the user';
+
+  @override
+  String get composerContinueReasonHostShutdown =>
+      'The app exited while this session was still running';
+
+  @override
+  String get composerContinueReasonProcessInterrupted =>
+      'The process was interrupted';
+
+  @override
+  String get composerContinueReasonStepLimit => 'The step budget ran out';
+
+  @override
+  String get composerContinueReasonExecutionFailed => 'Execution failed';
+
+  @override
+  String get composerContinueReasonUnknown => 'Execution was interrupted';
+
+  @override
+  String get composerBlockedStorage =>
+      'Saving has not finished yet, so continuing is unavailable.';
+
+  @override
+  String get composerBlockedModel =>
+      'The current model is unavailable, so continuing is unavailable.';
+
+  @override
+  String get composerBlockedWorkspace =>
+      'The session workspace is unavailable, so continuing is unavailable.';
+
+  @override
+  String get composerBlockedArchived =>
+      'This session is archived, so continuing is unavailable.';
+
+  @override
+  String get composerBlockerUnknown =>
+      'The last action could not be confirmed. Check the session state before retrying.';
+
+  @override
+  String get composerFailureChildRequiresParentScheduling =>
+      'A child agent is scheduled by the main agent.';
+
+  @override
+  String get composerFailureContinuationUnavailable =>
+      'There is no interrupted work left to continue.';
+
+  @override
+  String get composerFailureContinuationClaimed =>
+      'The continuation was already accepted and is being prepared.';
+
+  @override
+  String get composerFailureStaleContinuation =>
+      'The observed continuation point is out of date.';
+
+  @override
+  String get composerFailureStaleExecution =>
+      'The observed execution already ended or was replaced.';
+
+  @override
+  String get composerFailureExecutionInProgress =>
+      'The session is still executing or settling.';
+
+  @override
+  String get composerFailureInteractionNotHosted =>
+      'This interaction is decided in the main session.';
+
+  @override
+  String get composerFailureStaleInteraction =>
+      'This interaction was already updated. Open it again.';
+
+  @override
+  String agentStopSemantics(String name) {
+    return 'Stop member $name';
+  }
+
+  @override
+  String get agentStopping => 'Stopping';
+
+  @override
+  String get agentStopWaitingScheduling =>
+      'Stopped, waiting for the main agent to schedule';
+
+  @override
+  String agentStopFailed(String message) {
+    return 'Stop was not accepted: $message';
+  }
+
+  @override
+  String get composerAgentReadOnlyTitle => 'Child session (read-only)';
+
+  @override
+  String get composerAgentReadOnlyWaiting =>
+      'Waiting for the main agent to schedule this member.';
+
+  @override
+  String get composerAgentReadOnlyScope =>
+      'History, progress, model and workspace are shown for review only. Ask the main agent when this member should continue.';
+
+  @override
+  String get composerAgentReadOnlyPending =>
+      'A pending question or permission request is decided in the main session.';
+
+  @override
+  String childInteractionFrom(String agent) {
+    return 'From $agent';
+  }
+
+  @override
+  String childInteractionRevision(int revision) {
+    return 'Revision $revision';
+  }
+
+  @override
+  String get childInteractionAnswerSaved =>
+      'The answer is saved. The main agent decides whether this member continues.';
+
+  @override
+  String get childInteractionApprovalResolved =>
+      'The original permission wait is decided. The original call may continue when it was approved, and is not executed when it was denied.';
+
+  @override
+  String childInteractionDecideFailed(String message) {
+    return 'The decision was not accepted: $message';
+  }
+
+  @override
+  String childInteractionLoadFailed(String message) {
+    return 'Child interactions could not be read: $message';
+  }
+
+  @override
+  String get childInteractionRetry => 'Reload';
+
+  @override
+  String get childInteractionDecisionAccepted =>
+      'The decision was accepted. Waiting for the session to confirm it.';
+>>>>>>> a9e4e807ee6dd891378fc89d60ebd25f846d9b87
 }

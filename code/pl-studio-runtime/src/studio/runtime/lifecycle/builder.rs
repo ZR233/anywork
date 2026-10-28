@@ -188,7 +188,7 @@ impl StudioRuntime {
             attachment_drafts,
             ssh_manager,
             service_stops: Default::default(),
-            archive_task: Default::default(),
+            thread_lifecycle_task: Default::default(),
             lifecycle_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
             shutdown_latch: Default::default(),
             shutdown_run: Default::default(),
@@ -202,6 +202,19 @@ impl StudioRuntime {
         let keep = std::sync::Arc::new(runtime.clone());
         runtime.bots.attach_host(std::sync::Arc::downgrade(&keep));
         runtime.bot_host = Some(keep);
+        // An internal scheduling activation reports its failure through the runtime's single Recovery
+        // registry, exactly like an explicit activation does.
+        let recovering = runtime.clone();
+        runtime
+            .threads
+            .set_workspace_recovery(Some(std::sync::Arc::new(move |thread, error| {
+                let recovering = recovering.clone();
+                Box::pin(async move {
+                    recovering
+                        .publish_session_workspace_issue(&thread, &error)
+                        .await;
+                })
+            })))?;
         Ok(runtime)
     }
 }

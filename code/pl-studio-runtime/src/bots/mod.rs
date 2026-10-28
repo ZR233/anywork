@@ -12,13 +12,14 @@ mod credentials;
 mod delivery;
 mod host;
 mod inbound;
+mod ingress;
 mod media;
 mod occupancy;
 mod operation;
 mod owner;
 mod protocol;
+mod publication;
 mod registration;
-mod reply;
 mod send;
 mod send_resources;
 mod send_service;
@@ -85,7 +86,51 @@ pub(crate) enum BotInteractionRead {
 enum SendAuthority {
     Owner,
     InboundReply(Box<storage::reply::InboundReply>),
+    Publication(Box<PublicationSendAuthority>),
     Tool { project_id: String },
+}
+
+/// 自动前端的发送上下文；只有受信宿主可以组合原作用域、Saved 产物及创建目标。
+#[derive(Debug, Clone)]
+pub(in crate::bots) struct PublicationSendAuthority {
+    pub scope: storage::publication::DeliveryScope,
+    pub permit: storage::PublicationFilePermit,
+    pub target: storage::target::TargetKind,
+}
+
+impl PublicationSendAuthority {
+    pub(in crate::bots) fn freeze_bytes(&self, copies: usize) -> Result<usize, FeishuError> {
+        let repeated = copies
+            .checked_mul(4)
+            .ok_or_else(occupancy::freeze_budget_error)?;
+        let artifact = &self.permit.artifact;
+        let peer = match &self.target {
+            storage::target::TargetKind::Group => "",
+            storage::target::TargetKind::Direct { open_id } => open_id,
+        };
+        let bytes = occupancy::counted_text_bytes([
+            (self.scope.bot_id.as_str(), repeated),
+            (self.scope.chat_id.as_str(), repeated),
+            (self.scope.thread_id.as_str(), copies),
+            (self.scope.app_id.as_str(), copies),
+            (self.scope.project_id.as_str(), copies),
+            (self.scope.creation_id.as_str(), copies),
+            (self.permit.token.owner_id.as_str(), copies),
+            (self.permit.entity.item_id(), copies),
+            (self.permit.entity.publication_id(), copies),
+            (artifact.thread_id(), copies),
+            (artifact.turn_id(), copies),
+            (artifact.item_id(), copies),
+            (artifact.publication_id(), copies),
+            (artifact.tool_call_id(), copies),
+            (artifact.display_name(), copies),
+            (artifact.resource().id.as_str(), copies),
+            (artifact.resource().content_digest.as_str(), copies),
+            (artifact.resource().media_type.as_str(), copies),
+            (peer, copies),
+        ])?;
+        occupancy::counted_extra_bytes(bytes, [(1024, copies)])
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -102,6 +147,10 @@ pub(crate) enum InboundWorkOutcome {
         diagnostic: String,
     },
     NeedsAttention {
+        diagnostic: String,
+    },
+    /// 原创建身份已证冲突，由入站存储同事务完成工作与 creating 路由收束。
+    CreationConflict {
         diagnostic: String,
     },
     /// 执行认领已被接管或无法确认续约：本持有者不再收束状态、不再发起新副作用。

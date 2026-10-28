@@ -302,6 +302,7 @@ pub(super) fn send_claim_freeze_bytes(
     }
     let source_bytes = match authority {
         SendAuthority::InboundReply(reply) => reply.freeze_bytes(4)?,
+        SendAuthority::Publication(publication) => publication.freeze_bytes(4)?,
         _ => 0,
     };
     for segment in &record.segments {
@@ -532,6 +533,12 @@ impl BotRuntime {
         let claimed = match &authority {
             SendAuthority::InboundReply(reply) => {
                 managed.store.claim_reply_send(&record, reply).await?
+            }
+            SendAuthority::Publication(publication) => {
+                managed
+                    .store
+                    .claim_publication_file_send(&record, &publication.permit)
+                    .await?
             }
             _ => managed.store.claim_send(&record).await?,
         };
@@ -1083,6 +1090,8 @@ impl BotRuntime {
         // A core cut may be queued behind a running Turn. Stop only our wait, retaining its
         // durable intent, before joining occupancy or waiting for outer Thread shutdown.
         self.inner.audience_prepares.stop_and_drain().await?;
+        // 观察先停止新增动作并收束原请求，再排空其交给发送账本的在途结算。
+        self.inner.publications.stop_and_drain().await?;
         // 占用任务必须在取消发布器之前收束：reply_cancel.cancel() 会让 publisher
         // 自行退出，之后再等待就无法保证任务终态通知被真实发布。收束后先经既有
         // publish_gate 做一次真实重建，再冻结并关闭发布器与其余任务。
@@ -1260,19 +1269,48 @@ impl BotRuntime {
         managed: &ManagedBot,
         config: &BotConfigFile,
     ) -> Result<String, FeishuError> {
+        let selection = super::operation::BotCredentialSelection::capture(config);
+        self.token_for_selection(managed, &selection).await
+    }
+
+    /// Only a credential-selection snapshot is owned across token IO; trust is read again at
+    /// publication admission and this helper never grants a platform-write capability.
+    pub(in crate::bots) async fn publication_token(
+        &self,
+        managed: &ManagedBot,
+        expected_app_id: &str,
+    ) -> Result<String, FeishuError> {
+        let config = managed.config.lock().await;
+        if !config.enabled || config.feishu().app_id != expected_app_id {
+            return Err(FeishuError::new(
+                FeishuErrorKind::Permission,
+                "publication credential identity is no longer active",
+                false,
+                None,
+            ));
+        }
+        let _budget = self.inner.occupancy.text_budget(
+            super::operation::BotCredentialSelection::freeze_bytes(&config)?,
+        )?;
+        let selection = super::operation::BotCredentialSelection::capture(&config);
+        drop(config);
+        self.token_for_selection(managed, &selection).await
+    }
+
+    async fn token_for_selection(
+        &self,
+        managed: &ManagedBot,
+        selection: &super::operation::BotCredentialSelection,
+    ) -> Result<String, FeishuError> {
         self.inner
             .http
             .policy()
-            .require_synthetic_app(&config.feishu().app_id)?;
-        if managed
-            .token
-            .identity_matches(&config.feishu().app_id)
-            .await
-        {
+            .require_synthetic_app(&selection.app_id)?;
+        if managed.token.identity_matches(&selection.app_id).await {
             return managed.token.access_token().await;
         }
-        let owner = self.ensure_record(&config.id).await?;
-        owner.read_selected_secret(config).await?;
+        let owner = self.ensure_record(&selection.bot_id).await?;
+        owner.read_selected_secret(selection).await?;
         managed.token.access_token().await
     }
 
@@ -1322,6 +1360,9 @@ impl BotRuntime {
         }
         if let SendAuthority::InboundReply(reply) = authority {
             super::source::authorize_source_identity(config, chat_id, &reply.source)?;
+        }
+        if let SendAuthority::Publication(publication) = authority {
+            super::source::authorize_publication_identity(config, chat_id, publication)?;
         }
         Ok(())
     }
@@ -1821,7 +1862,7 @@ impl BotRuntime {
             return Ok(());
         }
         replies.spawn(async move {
-            let outcome = runtime.dispatch_prompt(inbound, &worker_id, cancel).await;
+            let outcome = runtime.dispatch_inbound(inbound, &worker_id, cancel).await;
             if let Ok(managed) = runtime.managed(&finisher.bot_id).await {
                 let finish = match &outcome {
                     super::InboundWorkOutcome::Completed => {
@@ -1838,6 +1879,9 @@ impl BotRuntime {
                     }
                     super::InboundWorkOutcome::NeedsAttention { diagnostic } => Some(
                         super::storage::WorkFinish::NeedsAttention(diagnostic.as_str()),
+                    ),
+                    super::InboundWorkOutcome::CreationConflict { diagnostic } => Some(
+                        super::storage::WorkFinish::CreationConflict(diagnostic.as_str()),
                     ),
                     // 失租：后继持有者已接管，本持有者的收束被账本拒绝，不能假 Completed。
                     super::InboundWorkOutcome::LostClaim => None,
@@ -1943,6 +1987,9 @@ impl BotRuntime {
                     }
                     if let Err(error) = runtime.restore_unfinished_inbound(&bot_id).await {
                         tracing::warn!(bot_id, %error, "inbound recovery sweep failed");
+                    }
+                    if let Err(error) = runtime.recover_publications(&bot_id).await {
+                        tracing::warn!(bot_id,kind=?error.kind(),"publication recovery sweep failed");
                     }
                 }
             }

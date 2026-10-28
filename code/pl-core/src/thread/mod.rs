@@ -9,6 +9,7 @@ mod checkpoint;
 pub mod cold;
 pub mod context_preparation;
 mod continuation;
+pub mod decisions;
 pub mod extensions;
 mod facts;
 pub mod inbox;

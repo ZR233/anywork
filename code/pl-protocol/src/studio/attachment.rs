@@ -31,7 +31,7 @@ pub enum StudioAttachmentDraftSource {
 #[serde(rename_all = "camelCase", tag = "type", deny_unknown_fields)]
 pub enum StudioAttachmentAdmissionContext {
     ExistingThread { thread_id: String },
-    NewThread { mode: String },
+    NewThread { route: super::NewThreadModelRoute },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]

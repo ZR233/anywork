@@ -508,6 +508,8 @@ pub struct RecordedCall {
 pub enum CardOperation {
     Create,
     Send,
+    /// Official whole-card update: the same entity is replaced in place.
+    WholeCard,
     Update,
     /// Settings update that carries only `summary` and keeps the stream mode.
     Settings,
@@ -557,6 +559,12 @@ pub struct CardObservation {
     pub streaming_mode: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
+    /// Serialized size of a whole-card update's complete JSON 2.0 document.
+    ///
+    /// A whole-card request carries the nested serialized card, so the entity
+    /// size and the request size are independent facts; both are recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub card_bytes: Option<usize>,
     pub accepted: bool,
     /// Business code of the answer: 0 on success.
     pub code: i32,
@@ -595,6 +603,8 @@ pub struct CardEntityReport {
     pub streaming_closed: bool,
     pub expired: bool,
     pub updates: usize,
+    /// Whole-card updates that replaced this same entity in place.
+    pub whole_card_updates: usize,
     pub settings_updates: usize,
 }
 

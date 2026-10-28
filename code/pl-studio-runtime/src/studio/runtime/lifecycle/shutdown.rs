@@ -567,7 +567,7 @@ impl ShutdownCollector {
 /// 定位 SQLite / OS 失败原因。这里保留**结构性的事实**：typed `StudioError` 的稳定诊断码与
 /// 已脱敏 message、`std::io::Error` 的 kind 与原始 OS 错误码、`sea_orm::DbErr` 的失败分类与
 /// 可公开的 SQL 错误码；未知类型只保留规模。所有分支都不写正文或凭据。
-fn redacted_chain(error: &anyhow::Error) -> String {
+pub(super) fn redacted_chain(error: &anyhow::Error) -> String {
     let mut parts = Vec::new();
     for cause in error.chain() {
         if let Some(studio) = cause.downcast_ref::<pl_protocol::studio::StudioError>() {
@@ -624,9 +624,9 @@ pub(crate) enum ServiceStopFailure {
 
 /// 外部服务关闭的共享完成句柄。
 ///
-/// 关闭任务在 runtime 中只启动一次并常驻于 `ServiceStopSlot`；重复严格关闭 / 重试只再次观测
-/// 同一个共享 completion，不重启 stop，也不因等待超时而丢失 owner 或句柄。底层 owned task 与
-/// completion 都由 slot 常驻持有，运行时会持续 poll 到结束。
+/// 一次关闭尝试的 owned task 与 completion 常驻于 `ServiceStopSlot`，Pending 或等待超时
+/// 只再次观测同一结果，不丢弃任务或重复启动。只有具备可重试收束契约的领域，才可在确认
+/// 该尝试终态失败后，于下一次显式关闭建立同一 owner 的后继尝试。
 type ServiceStopCompletion = futures::future::Shared<
     futures::future::BoxFuture<'static, Result<(), Arc<ServiceStopFailure>>>,
 >;
@@ -670,6 +670,7 @@ pub(crate) struct ServiceStopSlots {
     pub(crate) lsp: ServiceStopSlot,
     pub(crate) ssh: ServiceStopSlot,
     pub(crate) attachment_inspection: ServiceStopSlot,
+    pub(crate) bots: ServiceStopSlot,
 }
 
 /// 本次编排要 join 的服务关闭共享句柄（按需从常驻槽位 ensure）。
@@ -1309,16 +1310,26 @@ impl StudioRuntime {
         // issue、不会伪报 Clean）。这些阶段彼此独立，因此并发发起、并发等待（不会用前一个的等待
         // 耗尽后续阶段预算）。
         let mut producers: FuturesUnordered<StageBranch> = FuturesUnordered::new();
-        // 附件检查是独立准备资源，严格关闭也只做有界等待。关闭 job 常驻保留，超时后重试只
-        // join 同一结果（包括错误 / panic），不重复 close；只捕获草稿 owner，避免引用 runtime 成环。
+        // 附件批次是独立准备资源。Pending/超时仍 join 原 job；只有已确认返回失败的
+        // close 才可由下一次显式关闭重试同一 owner 的清理，panic 不自动重做。
+        // 只捕获草稿 owner，避免引用 runtime 成环。
         let inspection_slot = Arc::clone(&self.service_stops.attachment_inspection);
         let attachment_drafts = self.attachment_drafts.clone();
         producers.push(
             async move {
-                let job = ensure_service_stop(&inspection_slot, move || {
-                    ServiceStopJob::spawn(async move { attachment_drafts.close().await })
-                })
-                .await;
+                let job = {
+                    let mut slot = inspection_slot.lock().await;
+                    if slot.as_ref().is_some_and(|job| {
+                        matches!(job.completion.peek(), Some(Err(failure))
+                            if matches!(failure.as_ref(), ServiceStopFailure::Failed(_)))
+                    }) {
+                        *slot = None;
+                    }
+                    slot.get_or_insert_with(move || {
+                        ServiceStopJob::spawn(async move { attachment_drafts.close().await })
+                    })
+                    .clone()
+                };
                 vec![
                     join_service_outcome(
                         budget,
@@ -1517,19 +1528,48 @@ impl StudioRuntime {
             |runtime| async move { runtime.stop_agent_profiles_forwarder().await },
         ));
 
-        independent.push(self.stage_branch(
-            budget,
-            stage_order::BOTS,
-            "bots",
-            Some(SERVICE_STAGE_LIMIT),
-            |runtime| async move {
-                runtime
-                    .bots
-                    .shutdown()
-                    .await
-                    .map_err(|error| anyhow::Error::from(error.studio_error()))
-            },
-        ));
+        let bots_slot = Arc::clone(&self.service_stops.bots);
+        let bots = self.bots.clone();
+        independent.push(
+            async move {
+                let job = {
+                    let mut slot = bots_slot.lock().await;
+                    // 超时未消耗完成结果：保留原 job。只有此前已观察到真实终态失败，
+                    // 后续显式关闭才可重新收束原 bot owner；绝不覆盖仍在执行的句柄。
+                    let failed = slot.as_ref().is_some_and(|job| {
+                        matches!(job.completion.peek(), Some(Err(failure))
+                            if matches!(failure.as_ref(), ServiceStopFailure::Failed(_)))
+                    });
+                    if let Some(job) = slot.as_ref()
+                        && !failed
+                    {
+                        job.clone()
+                    } else {
+                        let job = ServiceStopJob::spawn(async move {
+                            bots.shutdown()
+                                .await
+                                .map_err(|error| anyhow::Error::from(error.studio_error()))
+                        });
+                        *slot = Some(job.clone());
+                        job
+                    }
+                };
+                vec![
+                    join_service_outcome(
+                        budget,
+                        stage_order::BOTS,
+                        "bots",
+                        job,
+                        // Strict shutdown must settle started HTTP results, not exit its
+                        // executor after a generic five-second service wait. Bounded exit
+                        // still observes the one absolute deadline through stage_policy.
+                        None,
+                    )
+                    .await,
+                ]
+            }
+            .boxed(),
+        );
 
         // 写入生产者依赖的共享完成信号：写入链在生产者收束观测结束后继续持久化；SSH 依赖同一份
         // 生产者事实——远端工具由 Turn / Agent 等生产者驱动，它们未收束时不得先切断 SSH 通信——

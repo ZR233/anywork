@@ -29,7 +29,11 @@ impl StudioRuntime {
         }
         // 冷数据回源：未驻留 Thread 的目录元数据只从 `catalog.toml` 读取。
         let Some(record) = self.store.read_thread(thread_id).await? else {
-            return Err(anyhow::anyhow!("selected Thread not found"));
+            // An unknown Thread is an API-visible rejection: answering it as an internal failure
+            // would hide a deleted or foreign identity behind a redacted 500.
+            return Err(anyhow::Error::new(
+                pl_protocol::studio::StudioError::not_found("session"),
+            ));
         };
         Ok(pl_protocol::Thread::from(record))
     }
@@ -93,25 +97,39 @@ impl StudioRuntime {
     }
 
     pub(super) async fn shutdown_agent_framework(&self) -> Result<()> {
-        // Shutdown already owns lifecycle admission; an accepted archive released it only after
-        // its full close/commit continuation concluded. Join the retained task before storage stops.
-        let archive = background_task::finish(&self.archive_task).await;
-        self.archive_task.lock().await.take();
+        // Shutdown owns lifecycle admission; accepted archive/cleanup operations release it only
+        // after their terminal commit. Retain the task until its real completion is observed.
+        let lifecycle = background_task::finish(&self.thread_lifecycle_task).await;
+        self.thread_lifecycle_task.lock().await.take();
         let mut thread_failures = self.threads.close_all().await;
-        if let Err(source) = archive {
+        if let Err(source) = lifecycle {
             thread_failures.push((
-                "archive-operation".into(),
+                "thread-lifecycle-operation".into(),
                 crate::thread_assembler::ThreadAssemblyError::Resource {
-                    operation: "join archive operation",
+                    operation: "join Thread lifecycle operation",
                     source: source.into(),
                 },
             ));
         }
         thread_failures.extend(self.thread_factory.drain_pending_file_operations().await);
+        // Neither independent owner should be held behind the other's slow or failed cleanup.
+        let (history_preparation, pool_io) = tokio::join!(
+            self.store.thread_persistence().drain_history_preparations(),
+            self.agent_facility.worktrees.close_pool_io()
+        );
+        if let Err(error) = history_preparation {
+            thread_failures.push((
+                "history-preparation".into(),
+                crate::thread_assembler::ThreadAssemblyError::Resource {
+                    operation: "drain retained history initialization",
+                    source: error.into_boxed_dyn_error(),
+                },
+            ));
+        }
         // The pool service exists before any Thread. Attempt its drain even when another
         // close failed; the owned agentFramework stage retains intermediate outcomes and
         // the same service owner across cancellation of a shutdown waiter.
-        if let Err(error) = self.agent_facility.worktrees.close_pool_io().await {
+        if let Err(error) = pool_io {
             thread_failures.push((
                 "worktree-pool-io".into(),
                 crate::thread_assembler::ThreadAssemblyError::Resource {

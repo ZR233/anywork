@@ -213,7 +213,12 @@ class _TimelineMessageBlock extends StatelessWidget {
   }) {
     final history = userInput ?? item.tool?.userInput;
     if (history != null) {
-      final receipt = history.planReceipt;
+      // 计划语义只属于发起计划确认的那次工具调用：旧历史的普通问答工具可能复用过
+      // 保留的问题 ID，因此不能按问题 ID/标题推断，只看工具条目自己的权威名称。
+      // 普通问答历史继续走同一只读回执，不隐藏、也不冒充计划。
+      final receipt = ownsPlanConfirmation(item.tool?.name)
+          ? history.planReceipt
+          : null;
       if (receipt != null) {
         // 待确认期间只保留尾部唯一摘要入口，不出现第二张计划历史卡。
         if (!receipt.isResolved) return const SizedBox.shrink();
@@ -610,6 +615,20 @@ class _RawRecordBlock extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // 运行时说明不是历史载荷：它没有可展开内容，标题和正文都由界面本地化，
+    // 不能用“原始历史记录”冒充，也不能把框架内部句子当作用户可见文案。
+    if (record.origin == ThreadRawItemOrigin.runtimeControl) {
+      return Padding(
+        padding: const EdgeInsets.only(bottom: 8),
+        child: TimelineActivityRow(
+          key: ValueKey('runtime-notice-$itemId'),
+          icon: Icons.info_outline,
+          label: context.l10n.timelineRuntimeNotice,
+          tooltip: context.l10n.timelineRuntimeNoticeDetail,
+          expandable: false,
+        ),
+      );
+    }
     return Padding(
       padding: const EdgeInsets.only(bottom: 8),
       child: Column(
@@ -670,7 +689,11 @@ class _CompactionBlock extends StatelessWidget {
   }
 }
 
-/// Turn 的失败/中断结论文本；正常完成的 Turn 不额外占一行。
+/// Turn 的终态结论；正常完成的 Turn 不额外占一行。
+///
+/// 取消与中断是正常控制结果，不等同执行失败：使用与思考／工具摘要对齐的
+/// 紧凑中性状态行（停止图标 + 本地化文案），不使用错误底色或错误图标；
+/// 真正失败与预算限制继续给出明确原因的错误横幅（design/19 §19.9）。
 class _TurnOutcomeBlock extends StatelessWidget {
   const _TurnOutcomeBlock({required this.item});
 
@@ -678,10 +701,30 @@ class _TurnOutcomeBlock extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final reason = item.error;
-    if (!item.isTerminal || reason == null || reason.isEmpty) {
-      return const SizedBox.shrink();
-    }
+    if (!item.isTerminal) return const SizedBox.shrink();
+    return switch (item.state) {
+      ThreadTurnItemStateView(:final state) => switch (state) {
+        CancelledStudioTurnState(:final cause) => Semantics(
+          liveRegion: true,
+          child: TimelineActivityRow(
+            key: ValueKey('timeline-turn-outcome:${item.id}'),
+            icon: Icons.stop_circle_outlined,
+            label: _turnCancellationLabel(context, cause),
+            expandable: false,
+          ),
+        ),
+        FailedStudioTurnState() ||
+        BudgetLimitedStudioTurnState() => _turnErrorBanner(context, item.error),
+        QueuedStudioTurnState() ||
+        RunningStudioTurnState() ||
+        CompletedStudioTurnState() => const SizedBox.shrink(),
+      },
+      _ => _turnErrorBanner(context, item.error),
+    };
+  }
+
+  Widget _turnErrorBanner(BuildContext context, String? reason) {
+    if (reason == null || reason.isEmpty) return const SizedBox.shrink();
     return Semantics(
       liveRegion: true,
       child: Container(
@@ -711,6 +754,23 @@ class _TurnOutcomeBlock extends StatelessWidget {
     );
   }
 }
+
+/// 按 typed 取消原因本地化。当前点击停止与运行中发送新消息都收束为
+/// `Interrupted`；typed `UserRequested`（如 demo 停止）同样表示正常用户控制。
+/// 两者都用中性“本轮已停止”；不根据草稿或活动推断打断来源，也不暗示已自动
+/// 继续。`Unspecified` 保留“本轮已取消”。
+String _turnCancellationLabel(
+  BuildContext context,
+  StudioTurnCancellationCause cause,
+) => switch (cause) {
+  InterruptedTurnCancellation() ||
+  UserRequestedTurnCancellation() => context.l10n.timelineTurnStopped,
+  UnspecifiedTurnCancellation() => context.l10n.timelineTurnCancelled,
+  RuntimeShutdownTurnCancellation() => context.l10n.timelineTurnRuntimeShutdown,
+  AgentClosedTurnCancellation() => context.l10n.timelineTurnAgentClosed,
+  RecoveryTurnCancellation() => context.l10n.timelineTurnRecoveryStopped,
+  CoalescedTurnCancellation() => context.l10n.timelineTurnCoalesced,
+};
 
 /// 一条技能激活的可见活动行，必要时与原 `skill_view` 调用共享这一行。
 ///
@@ -890,15 +950,10 @@ class _MarkdownBubble extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
+    // 取消与中断是正常控制结果，不用错误气泡；只有真实失败/拒绝/预算限制保留。
     final isIssue =
         !isUser &&
-        const {
-          'failed',
-          'interrupted',
-          'cancelled',
-          'denied',
-          'budgetLimited',
-        }.contains(entry.status);
+        const {'failed', 'denied', 'budgetLimited'}.contains(entry.status);
     final surface = isUser
         ? _MarkdownSurface.user
         : isIssue

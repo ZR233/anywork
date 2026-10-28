@@ -54,7 +54,8 @@ impl SkillProvider for RemoteSkillProvider {
             if self
                 .backend
                 .stat_optional(root.clone(), None)
-                .await?
+                .await
+                .map_err(super::workspace::remote_file_error)?
                 .is_none()
             {
                 return Ok(SkillProviderObservation {

@@ -17,6 +17,7 @@ export 'src/studio/stores/acp_auth_store.dart';
 export 'src/studio/stores/acp_install_store.dart';
 export 'src/studio/stores/bots_store.dart';
 export 'src/studio/stores/bots_send_store.dart';
+export 'src/studio/stores/child_interaction_store.dart';
 export 'src/studio/stores/domain_sync.dart';
 export 'src/studio/stores/lsp_store.dart';
 export 'src/studio/stores/canonical_clock.dart';

@@ -120,11 +120,11 @@ return newThread(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( String threadId)?  existingThread,TResult Function( String mode)?  newThread,required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( String threadId)?  existingThread,TResult Function( BridgeNewThreadModelRoute route)?  newThread,required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case BridgeAttachmentAdmissionContext_ExistingThread() when existingThread != null:
 return existingThread(_that.threadId);case BridgeAttachmentAdmissionContext_NewThread() when newThread != null:
-return newThread(_that.mode);case _:
+return newThread(_that.route);case _:
   return orElse();
 
 }
@@ -142,11 +142,11 @@ return newThread(_that.mode);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( String threadId)  existingThread,required TResult Function( String mode)  newThread,}) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( String threadId)  existingThread,required TResult Function( BridgeNewThreadModelRoute route)  newThread,}) {final _that = this;
 switch (_that) {
 case BridgeAttachmentAdmissionContext_ExistingThread():
 return existingThread(_that.threadId);case BridgeAttachmentAdmissionContext_NewThread():
-return newThread(_that.mode);}
+return newThread(_that.route);}
 }
 /// A variant of `when` that fallback to returning `null`
 ///
@@ -160,11 +160,11 @@ return newThread(_that.mode);}
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( String threadId)?  existingThread,TResult? Function( String mode)?  newThread,}) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( String threadId)?  existingThread,TResult? Function( BridgeNewThreadModelRoute route)?  newThread,}) {final _that = this;
 switch (_that) {
 case BridgeAttachmentAdmissionContext_ExistingThread() when existingThread != null:
 return existingThread(_that.threadId);case BridgeAttachmentAdmissionContext_NewThread() when newThread != null:
-return newThread(_that.mode);case _:
+return newThread(_that.route);case _:
   return null;
 
 }
@@ -244,10 +244,10 @@ as String,
 
 
 class BridgeAttachmentAdmissionContext_NewThread extends BridgeAttachmentAdmissionContext {
-  const BridgeAttachmentAdmissionContext_NewThread({required this.mode}): super._();
+  const BridgeAttachmentAdmissionContext_NewThread({required this.route}): super._();
 
 
- final  String mode;
+ final  BridgeNewThreadModelRoute route;
 
 /// Create a copy of BridgeAttachmentAdmissionContext
 /// with the given fields replaced by the non-null parameter values.
@@ -259,18 +259,18 @@ $BridgeAttachmentAdmissionContext_NewThreadCopyWith<BridgeAttachmentAdmissionCon
 
 @override
 bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeAttachmentAdmissionContext_NewThread&&(identical(other.mode, mode) || other.mode == mode));
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeAttachmentAdmissionContext_NewThread&&(identical(other.route, route) || other.route == route));
 }
 
 
 @override
 int get hashCode {
-    return Object.hash(runtimeType,mode);
+    return Object.hash(runtimeType,route);
 }
 
 @override
 String toString() {
-    return 'BridgeAttachmentAdmissionContext.newThread(mode: $mode)';
+    return 'BridgeAttachmentAdmissionContext.newThread(route: $route)';
 }
 
 
@@ -281,7 +281,7 @@ abstract mixin class $BridgeAttachmentAdmissionContext_NewThreadCopyWith<$Res> i
   factory $BridgeAttachmentAdmissionContext_NewThreadCopyWith(BridgeAttachmentAdmissionContext_NewThread value, $Res Function(BridgeAttachmentAdmissionContext_NewThread) _then) = _$BridgeAttachmentAdmissionContext_NewThreadCopyWithImpl;
 @useResult
 $Res call({
- String mode
+ BridgeNewThreadModelRoute route
 });
 
 
@@ -298,10 +298,10 @@ class _$BridgeAttachmentAdmissionContext_NewThreadCopyWithImpl<$Res>
 
 /// Create a copy of BridgeAttachmentAdmissionContext
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') $Res call({Object? mode = null,}) {
+@pragma('vm:prefer-inline') $Res call({Object? route = null,}) {
   return _then(BridgeAttachmentAdmissionContext_NewThread(
-mode: null == mode ? _self.mode : mode // ignore: cast_nullable_to_non_nullable
-as String,
+route: null == route ? _self.route : route // ignore: cast_nullable_to_non_nullable
+as BridgeNewThreadModelRoute,
   ));
 }
 

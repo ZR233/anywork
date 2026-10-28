@@ -130,7 +130,7 @@ impl StudioRuntime {
             .await
     }
 
-    /// Reads the frozen definition, never the current prompt catalog. Old privacy promises stay old.
+    /// Checks the frozen role's supported content identity; never replaces saved instructions.
     pub(crate) async fn bot_thread_supports_public_frontend(
         &self,
         thread_id: &str,

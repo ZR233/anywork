@@ -4,6 +4,7 @@ mod attachment_files;
 mod child_resources;
 mod close_child;
 mod errors;
+mod history_preparation;
 pub(crate) mod recovery;
 mod restore_child;
 mod root_resources;

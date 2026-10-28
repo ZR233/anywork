@@ -10,6 +10,7 @@ use pl_core::{
         context_preparation::{
             ContextPreparation, ContextPreparationHook, ContextPreparationRequest, ContextPreparer,
         },
+        input::InputPurpose,
     },
 };
 use std::sync::{Arc, Mutex};
@@ -47,6 +48,7 @@ async fn preparation_exposes_only_the_pending_turn_initiator_not_later_tool_step
     for id in ["first", "next"] {
         let input = ThreadInput {
             id: id.into(),
+            purpose: InputPurpose::Message,
             payload: OpaquePayload::text(format!("opaque {id}")),
             context: vec![text(&format!("user input {id}"))],
         };

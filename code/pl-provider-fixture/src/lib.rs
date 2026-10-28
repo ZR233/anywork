@@ -3719,6 +3719,88 @@ pub fn responses_reasoning_commentary_text_segments(
     vec![prefix, body, item_done, response_completed]
 }
 
+/// Ordered segments for one attempt that publishes several real public items.
+///
+/// Every commentary entry becomes its own assistant message item declaring
+/// `phase: "commentary"` and carrying the caller's stable item id, so a
+/// projection that keeps one public text item per message can be observed per
+/// identity instead of as one concatenated body. The final message streams
+/// `head` and then `tail` on the same identity, which is the revision-update
+/// shape. `tail_calls` rides on the same attempt after the final item.
+///
+/// Segment order: reasoning, one segment per commentary item, final head, final
+/// tail, final item (plus any tool calls), `response.completed`. Serving it
+/// through [`Reply::SegmentedSse`] with one stage between adjacent segments lets
+/// an observer act while the attempt is still open.
+pub fn responses_public_items_segments(
+    reasoning_lines: &[&str],
+    commentary_items: &[(&str, &str)],
+    head: &str,
+    tail: &str,
+    tail_calls: &[RealtimeToolCall<'_>],
+    id: &str,
+    model: &str,
+) -> Vec<Vec<Value>> {
+    let summary = reasoning_lines.join("\n");
+    let answer = format!("{head}{tail}");
+    let mut segments = Vec::new();
+    let mut prefix = vec![
+        json!({"type":"response.created","response":{"id":id,"model":model}}),
+        json!({"type":"response.output_item.added","output_index":0,"item":{"id":"reasoning-1","type":"reasoning","summary":[],"content":[]}}),
+    ];
+    let last = reasoning_lines.len().saturating_sub(1);
+    for (index, line) in reasoning_lines.iter().enumerate() {
+        let delta = if index == last {
+            (*line).to_string()
+        } else {
+            format!("{line}\n")
+        };
+        prefix.push(json!({"type":"response.reasoning_summary_text.delta","output_index":0,"item_id":"reasoning-1","summary_index":0,"delta":delta}));
+    }
+    prefix.push(json!({"type":"response.output_item.done","output_index":0,"item":{"id":"reasoning-1","type":"reasoning","summary":[{"id":"reasoning-1-part","type":"summary_text","text":summary}]}}));
+    segments.push(prefix);
+    // One segment per commentary item so an observer can stop between two real
+    // public items instead of only before or after the whole attempt.
+    for (index, (item_id, text)) in commentary_items.iter().enumerate() {
+        let output_index = index + 1;
+        segments.push(vec![
+            json!({"type":"response.output_item.added","output_index":output_index,"item":{"id":item_id,"type":"message","role":"assistant","phase":"commentary","content":[]}}),
+            json!({"type":"response.output_text.delta","output_index":output_index,"item_id":item_id,"content_index":0,"delta":text}),
+            json!({"type":"response.output_item.done","output_index":output_index,"item":{"id":item_id,"type":"message","role":"assistant","phase":"commentary","content":[{"type":"output_text","text":text}]}}),
+        ]);
+    }
+    let final_index = commentary_items.len() + 1;
+    segments.push(vec![
+        json!({"type":"response.output_item.added","output_index":final_index,"item":{"id":"message-1","type":"message","role":"assistant","content":[]}}),
+        json!({"type":"response.output_text.delta","output_index":final_index,"item_id":"message-1","content_index":0,"delta":head}),
+    ]);
+    segments.push(vec![
+        json!({"type":"response.output_text.delta","output_index":final_index,"item_id":"message-1","content_index":0,"delta":tail}),
+    ]);
+    let mut item_done = vec![
+        json!({"type":"response.output_item.done","output_index":final_index,"item":{"id":"message-1","type":"message","role":"assistant","content":[{"type":"output_text","text":answer}]}}),
+    ];
+    // Tool calls ride on the same attempt as the public text, which is the shape
+    // a Turn needs to publish progress and then end in a local interaction.
+    for (index, call) in tail_calls.iter().enumerate() {
+        let output_index = final_index + index + 1;
+        item_done.push(json!({"type":"response.output_item.added","output_index":output_index,"item":{"id":call.item_id,"type":"function_call","name":call.name,"call_id":call.call_id}}));
+        item_done.push(json!({"type":"response.function_call_arguments.delta","output_index":output_index,"item_id":call.item_id,"call_id":call.call_id,"delta":call.arguments}));
+        item_done.push(json!({"type":"response.output_item.done","output_index":output_index,"item":{"id":call.item_id,"call_id":call.call_id,"type":"function_call","name":call.name,"arguments":call.arguments}}));
+    }
+    let mut output = Vec::new();
+    for (_, text) in commentary_items {
+        output.push(json!({"type":"message","role":"assistant","phase":"commentary","content":[{"type":"output_text","text":text}]}));
+    }
+    output.push(json!({"type":"message","role":"assistant","content":[{"type":"output_text","text":answer}]}));
+    for call in tail_calls {
+        output.push(json!({"type":"function_call","id":call.item_id,"call_id":call.call_id,"name":call.name,"arguments":call.arguments}));
+    }
+    segments.push(item_done);
+    segments.push(vec![json!({"type":"response.completed","response":{"id":id,"model":model,"output":output,"usage":{"input_tokens":11,"output_tokens":8,"output_tokens_details":{"reasoning_tokens":3}}}})]);
+    segments
+}
+
 /// Reasoning plus one final message whose text arrives in two stages.
 ///
 /// `head` is streamed as the first `output_text.delta` of `message-1`; `tail`

@@ -164,6 +164,18 @@ final class ThreadAudienceScope extends ReadModel<ThreadAudienceItemsState> {
   void _invalidate() {
     _incarnation++;
     final audience = _client.session(threadId).state.audience;
+    final target = audience.known?.target;
+    final selected = _explicitAuthorization;
+    if (selected != null &&
+        (target == null ||
+            target.botId != selected.id.botId ||
+            target.chatId != selected.id.chatId)) {
+      // A closed authorization stays explainable only while this Thread still
+      // proves the same bot/chat target. Losing that proof (unavailable,
+      // unbound or a different scope) must not keep an old authorization's
+      // receipts as displayable current context or re-query them.
+      _explicitAuthorization = null;
+    }
     final authorization = _explicitAuthorization ?? audience.queryAuthorization;
     _audience = audience;
     _authorization = authorization;

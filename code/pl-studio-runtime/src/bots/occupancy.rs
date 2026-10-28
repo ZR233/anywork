@@ -89,7 +89,6 @@ impl OccupancyTasks {
     /// or shutdown resource maintenance). This only allocates the same global permits; that owner
     /// must register before spawning and recheck its own admission/seal boundary.
     pub(super) fn task_budget(&self, bytes: usize) -> Result<OccupancyBudget, FeishuError> {
-        let amount = u32::try_from(bytes).map_err(|_| freeze_budget_error())?;
         if bytes > OCCUPANCY_TEXT_BYTES {
             return Err(freeze_budget_error());
         }
@@ -98,6 +97,18 @@ impl OccupancyTasks {
             .clone()
             .try_acquire_owned()
             .map_err(|_| capacity_error())?;
+        let mut budget = self.text_budget(bytes)?;
+        budget._slot = Some(slot);
+        Ok(budget)
+    }
+
+    /// Temporary material of an already-owned bot task. This reserves the same global text
+    /// budget without registering a second task or consuming another task slot.
+    pub(super) fn text_budget(&self, bytes: usize) -> Result<OccupancyBudget, FeishuError> {
+        let amount = u32::try_from(bytes).map_err(|_| freeze_budget_error())?;
+        if bytes > OCCUPANCY_TEXT_BYTES {
+            return Err(freeze_budget_error());
+        }
         let text_permit = self
             .text
             .clone()
@@ -105,7 +116,7 @@ impl OccupancyTasks {
             .map_err(|_| capacity_error())?;
         Ok(OccupancyBudget {
             text: self.text.clone(),
-            _slot: Some(slot),
+            _slot: None,
             text_permit: Some(text_permit),
             held: bytes,
         })

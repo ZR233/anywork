@@ -32,6 +32,9 @@ final class _DraftTransport implements StudioTransport {
   int startCalls = 0;
   final List<String> removed = [];
   int promptCalls = 0;
+
+  /// 非空时提交以该错误结束；用于证明已知拒绝不会被当成未知结果。
+  Object? promptFailure;
   int? promptRouteRevision;
   int? canonicalRouteRevision;
   final List<int> submittedRouteRevisions = [];
@@ -40,6 +43,7 @@ final class _DraftTransport implements StudioTransport {
     ({AttachmentAdmissionContext context, List<AttachmentDraftSource> sources})
   >
   admissions = [];
+  final List<AttachmentAdmissionContext> admissionContexts = [];
   Object? admissionFailure;
   int settingsWrites = 0;
   bool removeSucceeds = true;
@@ -61,6 +65,7 @@ final class _DraftTransport implements StudioTransport {
     promptCalls += 1;
     promptRouteRevision = expectedModelRouteRevision;
     submittedRouteRevisions.add(expectedModelRouteRevision);
+    if (promptFailure case final failure?) return Future.error(failure);
     if (canonicalRouteRevision != null &&
         canonicalRouteRevision != expectedModelRouteRevision) {
       return Future.error(
@@ -117,6 +122,7 @@ final class _DraftTransport implements StudioTransport {
   ) async {
     admissionCalls += 1;
     admissions.add((context: context, sources: List.of(sources)));
+    admissionContexts.add(context);
     final failure = admissionFailure;
     if (failure != null) throw failure;
     return [
@@ -363,6 +369,86 @@ Future<void> _close(AnyworkClient client, _DraftTransport transport) async {
 }
 
 void main() {
+  test('new Thread attachments freeze the selected route and recover after rejection', () async {
+    final transport = _DraftTransport();
+    final staged = Completer<String?>();
+    final cleaned = <String>[];
+    final client = _client(
+      transport,
+      stage: (_) => staged.future,
+      cleanup: (path) async => cleaned.add(path),
+    );
+    final owner = client.startDraft;
+    owner.updateDraft(_project.id, 'keep this draft');
+    owner.setModelIntent(ThreadModeId.simple, 'account', 'beta');
+    Future<void> prepareNewThreadWith(
+      Future<void> Function(AttachmentDraftInput input) prepare,
+    ) => client.attachments.prepareNewThread(
+      projectId: _project.id,
+      mode: ThreadModeId.simple,
+      prepare: prepare,
+    );
+    await prepareNewThreadWith(
+      (input) =>
+          input.admit([const AttachmentDraftSource.localFile('/first.bin')]),
+    );
+    await prepareNewThreadWith(
+      (input) => input.admit([
+        AttachmentDraftSource.remoteUrl('https://example.invalid/second.bin'),
+      ]),
+    );
+    final paste = prepareNewThreadWith(
+      (input) => input.addClipboardImage(Uint8List.fromList([1, 2, 3])),
+    );
+    owner.setModelIntent(ThreadModeId.simple, 'account', 'alpha');
+    staged.complete('/clipboard.png');
+    await paste;
+    expect(
+      transport.admissionContexts.map((context) {
+        final route = (context as NewThreadAttachmentAdmissionContext).route;
+        return (route.accountId, route.modelId, route.effort);
+      }),
+      List.filled(3, ('account', 'beta', 'high')),
+      reason: 'All sources use the selection at admission intent, including before staging',
+    );
+    expect(cleaned, ['/clipboard.png']);
+    final admitted = client.attachments.state
+        .newThread(_project.id)
+        .attachments;
+    transport.admissionFailure = const StudioFailure(
+      code: StudioFailureCode.invalidArgument,
+      message: 'Unsupported file media type',
+      retryable: false,
+      correlationId: 'rejected-file',
+    );
+    await prepareNewThreadWith(
+      (input) => input.admit([
+        const AttachmentDraftSource.localFile('/unsupported.bin'),
+      ]),
+    );
+    final rejected = client.attachments.state.newThread(_project.id);
+    expect(rejected.error, contains('Unsupported file media type'));
+    expect(rejected.attachments, admitted);
+    expect(owner.state.forProject(_project.id).text, 'keep this draft');
+    expect(client.budget.used(ResourceKind.attachment), 3);
+    transport.admissionFailure = null;
+    await prepareNewThreadWith(
+      (input) => input.admit([
+        const AttachmentDraftSource.localFile('/supported.bin'),
+      ]),
+    );
+    final recovered = client.attachments.state.newThread(_project.id);
+    expect(recovered.error, isNull);
+    expect(recovered.attachments.length, 4);
+    final last =
+        transport.admissionContexts.last as NewThreadAttachmentAdmissionContext;
+    expect(last.route.modelId, 'alpha');
+    expect(transport.settingsWrites, 0);
+    await owner.discardProject(_project.id);
+    await _close(client, transport);
+    expect(client.budget.used(ResourceKind.attachment), 0);
+  });
+
   test('actual composer preserves revision 9 text and attachments after revision 8 ACK', () async {
     final transport = _DraftTransport();
     final client = _client(transport);
@@ -1185,9 +1271,23 @@ void main() {
     expect(cleaned, isEmpty);
     expect(transport.admissions, hasLength(1));
     final admission = transport.admissions.single;
+    final frozenRoute =
+        (admission.context as NewThreadAttachmentAdmissionContext).route;
+    final intendedRoute = client.startDraft.resolveRoute(ThreadModeId.simple);
     expect(
-      (admission.context as NewThreadAttachmentAdmissionContext).mode,
-      ThreadModeId.simple,
+      (
+        frozenRoute.modeId,
+        frozenRoute.accountId,
+        frozenRoute.modelId,
+        frozenRoute.effort,
+      ),
+      (
+        intendedRoute.modeId,
+        intendedRoute.accountId,
+        intendedRoute.modelId,
+        intendedRoute.effort,
+      ),
+      reason: 'the admission route is frozen at intent, before the read',
     );
     expect(
       admission.sources.map(
@@ -1740,5 +1840,54 @@ void main() {
     expect(client.attachments.unresolvedStagingPaths, isEmpty);
     expect(client.budget.used(ResourceKind.attachment), 0);
     await client.close();
+  });
+
+  test('a child target rejection stays typed, keeps the draft and never becomes unknown', () async {
+    final transport = _DraftTransport();
+    final client = _client(transport);
+    client.session('thread').applySnapshot(_workspace());
+    final owner = client.composer('thread');
+    owner.updateDraft('继续这个子任务');
+    await owner.prepareAttachments(
+      (input) => input.addLocalFiles(['/child.bin']),
+    );
+    final attachmentIds = owner.state.attachments
+        .map((item) => item.id)
+        .toList();
+    transport.promptFailure = const StudioFailure(
+      code: StudioFailureCode.permissionDenied,
+      message: 'A child agent is continued and instructed by the main session, not by the user',
+      retryable: false,
+      correlationId: 'child-requires-parent-scheduling',
+      reason: StudioFailureReason.childThreadRequiresParentScheduling,
+    );
+    await owner.submit();
+
+    expect(transport.promptCalls, 1);
+    expect(
+      owner.state.draft,
+      '继续这个子任务',
+      reason: 'A typed rejection never clears the user draft',
+    );
+    expect(owner.state.attachments.map((item) => item.id), attachmentIds);
+    expect(owner.state.isSubmissionPending, isFalse);
+    expect(owner.state.error, isNotNull);
+    final operation = client.mutations.operations.single;
+    expect(
+      operation.failurePhase,
+      OperationPhase.rejected,
+      reason: 'A known rejection is not an unknown outcome',
+    );
+    expect(
+      (operation.error! as StudioFailure).reason,
+      StudioFailureReason.childThreadRequiresParentScheduling,
+    );
+    expect(
+      transport.removed,
+      isEmpty,
+      reason: 'Rejected admission keeps the frozen attachment references',
+    );
+    await owner.discard();
+    await _close(client, transport);
   });
 }

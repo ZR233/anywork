@@ -19,8 +19,6 @@ pub(crate) const FEISHU_ROOT_ID: &str = "root:feishu";
 /// 旧通用根会话没有可验证的渠道归属时使用：它保留原正文，明确表示渠道未指定，既不能用于
 /// 新建，也不能被派发，更不是正常运行的后备身份。
 pub(crate) const LEGACY_ROOT_ID: &str = "root:legacy";
-/// First frozen Feishu definition that permits public commentary and explicit artifacts.
-pub(crate) const FEISHU_FRONTEND_REVISION: &str = "2";
 /// 旧版混用来源迁移后的修订：明确区别于任何当前内置或 Profile 修订。
 const MIGRATED_REVISION: &str = "legacy";
 /// 根定义占用保留命名空间，因此不能与用户 Agent Profile 名称冲突，也不能被派发。

@@ -1049,11 +1049,11 @@ mod layout_migration_tests {
         let session = store.session_paths("project-a", "thread-a")?;
         assert!(!tokio::fs::try_exists(&source).await?);
         assert_eq!(
-            tokio::fs::read(session.history_database()).await?,
+            tokio::fs::read(session.legacy_history_database()).await?,
             b"history-bytes"
         );
         {
-            let mut wal = session.history_database().into_os_string();
+            let mut wal = session.legacy_history_database().into_os_string();
             wal.push("-wal");
             assert_eq!(tokio::fs::read(wal).await?, b"wal-bytes");
         }
@@ -1073,7 +1073,7 @@ mod layout_migration_tests {
         drop(store);
         let reopened = StudioStore::open(paths.database()).await?;
         assert_eq!(
-            tokio::fs::read(session.history_database()).await?,
+            tokio::fs::read(session.legacy_history_database()).await?,
             b"history-bytes"
         );
         drop(reopened);
@@ -1111,7 +1111,7 @@ mod layout_migration_tests {
         let source = write_legacy_session(&paths, "thread-a", b"source-bytes").await?;
         let session = paths.session_paths("project-a", "thread-a")?;
         tokio::fs::create_dir_all(session.root()).await?;
-        tokio::fs::write(session.history_database(), b"existing-target").await?;
+        tokio::fs::write(session.legacy_history_database(), b"existing-target").await?;
         let error = StudioStore::open(paths.database())
             .await
             .err()
@@ -1123,7 +1123,7 @@ mod layout_migration_tests {
             b"source-bytes"
         );
         assert_eq!(
-            tokio::fs::read(session.history_database()).await?,
+            tokio::fs::read(session.legacy_history_database()).await?,
             b"existing-target"
         );
         assert!(!temp.path().join("startup-backups").exists());
@@ -1182,7 +1182,7 @@ mod layout_migration_tests {
         .await?;
         let store = StudioStore::open(paths.database()).await?;
         assert_eq!(
-            tokio::fs::read(session.history_database()).await?,
+            tokio::fs::read(session.legacy_history_database()).await?,
             b"moved-bytes"
         );
         assert!(!tokio::fs::try_exists(&source).await?);
@@ -1295,7 +1295,7 @@ mod layout_migration_tests {
         assert!(is_layout_error(&error));
         let session = paths.session_paths("project-a", "thread-a")?;
         assert_eq!(
-            tokio::fs::read(session.history_database()).await?,
+            tokio::fs::read(session.legacy_history_database()).await?,
             b"history-bytes"
         );
         assert!(
@@ -1552,7 +1552,7 @@ mod layout_migration_tests {
         reset_layout_for_legacy(&paths, "project-a", "thread-a").await?;
         let session = paths.session_paths("project-a", "thread-a")?;
         tokio::fs::create_dir_all(session.root()).await?;
-        tokio::fs::write(session.history_database(), b"foreign-target").await?;
+        tokio::fs::write(session.legacy_history_database(), b"foreign-target").await?;
         let journal = LayoutJournal {
             schema_version: LAYOUT_JOURNAL_SCHEMA_VERSION,
             completed: false,
@@ -1578,7 +1578,7 @@ mod layout_migration_tests {
         };
         assert!(is_layout_error(&error), "{error:#}");
         assert_eq!(
-            tokio::fs::read(session.history_database()).await?,
+            tokio::fs::read(session.legacy_history_database()).await?,
             b"foreign-target"
         );
         assert!(!session.session_manifest().exists());
@@ -1676,7 +1676,7 @@ mod layout_migration_tests {
         };
         assert!(is_layout_error(&error), "{error:#}");
         assert_eq!(
-            tokio::fs::read(session.history_database()).await?,
+            tokio::fs::read(session.legacy_history_database()).await?,
             b"history-bytes"
         );
         assert!(!session.session_manifest().exists());

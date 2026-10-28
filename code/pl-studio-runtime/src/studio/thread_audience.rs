@@ -5,8 +5,7 @@ use pl_core::thread::ThreadSnapshot;
 use pl_protocol::{Thread, ThreadAudienceUnavailableReason};
 
 use crate::agent::definition::{
-    AgentDefinitionOrigin, AgentDefinitionScope, FEISHU_FRONTEND_REVISION, FEISHU_ROOT_ID,
-    STUDIO_ROOT_ID, VerifiedAgentIdentity,
+    AgentRootEntry, FEISHU_ROOT_ID, ResolvedAgentDefinition, STUDIO_ROOT_ID, VerifiedAgentIdentity,
 };
 
 /// A single frozen bot owner, validated against the Thread's frozen channel/Agent identity.
@@ -47,10 +46,19 @@ pub(crate) fn supports_public_frontend(state: &ThreadSnapshot) -> Result<bool> {
         return Ok(false);
     };
     let frozen = crate::instruction::decode_snapshot(&record.payload)?;
-    Ok(frozen.agent.id == FEISHU_ROOT_ID
-        && frozen.agent.scope == AgentDefinitionScope::Root
-        && frozen.agent.origin == AgentDefinitionOrigin::Builtin
-        && frozen.agent.revision == FEISHU_FRONTEND_REVISION)
+    let supported = ResolvedAgentDefinition::root(AgentRootEntry::Bot)?;
+    let identity = supported.identity();
+    // The catalog revision also covers labels and metadata. Publication eligibility depends on
+    // the trusted root binding and exact frozen role body, not a second numeric revision scheme.
+    // decode_snapshot already checked this digest against the unique frozen Agent source.
+    Ok(frozen.agent.id == identity.id
+        && frozen.agent.scope == identity.scope
+        && frozen.agent.origin == identity.origin
+        && frozen.agent.usage_binding == identity.usage_binding
+        && frozen.agent_shape
+            == crate::instruction::AgentInstructionShape::Present {
+                content_hash: pl_core::context::content_hash(supported.instructions().as_bytes()),
+            })
 }
 
 /// This consumes only already-read local facts. Missing ownership is not proof of a normal Thread,

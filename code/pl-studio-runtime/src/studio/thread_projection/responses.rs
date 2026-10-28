@@ -223,11 +223,9 @@ pub(super) fn project_attempt(
             revision,
             created_at,
             updated_at,
-            ThreadItemState::Raw(pl_protocol::ThreadRawItem {
-                payloads,
-                notice,
-                recorded_at: updated_at,
-            }),
+            ThreadItemState::Raw(pl_protocol::ThreadRawItem::stored(
+                payloads, notice, updated_at,
+            )),
         ));
         return Ok(items);
     }

@@ -244,14 +244,41 @@ pub(super) async fn legacy<C: ConnectionTrait>(
     chat: &str,
     project: &str,
 ) -> Result<TargetProof, FeishuError> {
+    legacy_source(db, thread, creation, chat, project, LegacyCards::Present).await
+}
+
+/// Only the fully classified pre-card file6/file7 migration boundary may use this entry.
+/// Normal runtime reads still require the current card table and never infer its absence.
+pub(super) async fn legacy_file_source<C: ConnectionTrait>(
+    db: &C,
+    creation: &str,
+    chat: &str,
+    project: &str,
+) -> Result<TargetProof, FeishuError> {
+    legacy_source(db, "", creation, chat, project, LegacyCards::Absent).await
+}
+
+enum LegacyCards {
+    Present,
+    Absent,
+}
+
+async fn legacy_source<C: ConnectionTrait>(
+    db: &C,
+    thread: &str,
+    creation: &str,
+    chat: &str,
+    project: &str,
+    cards: LegacyCards,
+) -> Result<TargetProof, FeishuError> {
     if creation.is_empty() || chat.is_empty() {
         return Ok(TargetProof::Unproven);
     }
     let mut known: Option<Fact> = None;
     let mut after = String::new();
     loop {
-        let rows = db
-            .query_all_raw(statement(
+        let (select, values) = match cards {
+            LegacyCards::Present => (
                 "SELECT identity,chat_kind,open_id,project_id FROM inbound_work
              WHERE creation_id=?1 AND identity>?2 AND chat_id=?3
              UNION SELECT w.identity,w.chat_kind,w.open_id,w.project_id FROM bot_card_streams c
@@ -264,7 +291,14 @@ pub(super) async fn legacy<C: ConnectionTrait>(
                     chat.into(),
                     thread.into(),
                 ],
-            ))
+            ),
+            LegacyCards::Absent => (
+                "SELECT identity,chat_kind,open_id,project_id FROM inbound_work WHERE creation_id=?1 AND identity>?2 AND chat_id=?3 ORDER BY identity LIMIT 64",
+                vec![creation.into(), after.clone().into(), chat.into()],
+            ),
+        };
+        let rows = db
+            .query_all_raw(statement(select, values))
             .await
             .map_err(storage)?;
         let done = rows.len() < 64;
@@ -480,6 +514,40 @@ pub(super) async fn check_sources<C: ConnectionTrait>(
     origin: &super::audience::ThreadOrigin,
     bot: &str,
 ) -> Result<(), FeishuError> {
+    check_sources_at(db, origin, bot, SourceIndexes::Prepared).await
+}
+
+/// Nine-format import proves the exact same source before optional secondary indexes exist.
+/// This only removes index hints; it does not omit a selector or relax any identity predicate.
+pub(super) async fn check_sources_for_import<C: ConnectionTrait>(
+    db: &C,
+    origin: &super::audience::ThreadOrigin,
+    bot: &str,
+) -> Result<(), FeishuError> {
+    check_sources_at(db, origin, bot, SourceIndexes::BeforeImport).await
+}
+
+#[derive(Clone, Copy)]
+enum SourceIndexes {
+    Prepared,
+    BeforeImport,
+}
+
+impl SourceIndexes {
+    fn hint(self, declared: &'static str) -> &'static str {
+        match self {
+            Self::Prepared => declared,
+            Self::BeforeImport => "",
+        }
+    }
+}
+
+async fn check_sources_at<C: ConnectionTrait>(
+    db: &C,
+    origin: &super::audience::ThreadOrigin,
+    bot: &str,
+    indexes: SourceIndexes,
+) -> Result<(), FeishuError> {
     let proof = &origin.target;
     matches_origin(
         proof,
@@ -515,9 +583,15 @@ pub(super) async fn check_sources<C: ConnectionTrait>(
             // was written from: they must still carry the identical typed value.
             let row = db
                 .query_one_raw(statement(
-                    "SELECT status,target_json FROM thread_bindings INDEXED BY bot_route_thread_lookup
+                    &format!(
+                        "SELECT status,target_json FROM thread_bindings{}
                      WHERE thread_id=?1 AND chat_id=?2 LIMIT 1",
-                    vec![origin.thread_id.clone().into(), origin.chat_id.clone().into()],
+                        indexes.hint(" INDEXED BY bot_route_thread_lookup")
+                    ),
+                    vec![
+                        origin.thread_id.clone().into(),
+                        origin.chat_id.clone().into(),
+                    ],
                 ))
                 .await
                 .map_err(storage)?
@@ -530,9 +604,12 @@ pub(super) async fn check_sources<C: ConnectionTrait>(
             let source = match &evidence.source {
                 TargetSource::Operation { operation_id } => db
                     .query_one_raw(statement(
-                        "SELECT 1 FROM binding_operations INDEXED BY bot_binding_creation_lookup
+                        &format!(
+                            "SELECT 1 FROM binding_operations{}
                      WHERE creation_id=?1 AND operation_id=?2 AND bot_id=?3 AND chat_id=?4
                      AND expected_revision=?5-1 AND target_json=?6 AND thread_id=?7 LIMIT 1",
+                            indexes.hint(" INDEXED BY bot_binding_creation_lookup")
+                        ),
                         vec![
                             origin.creation_id.clone().into(),
                             operation_id.clone().into(),
@@ -549,10 +626,13 @@ pub(super) async fn check_sources<C: ConnectionTrait>(
                     .map_err(storage)?,
                 TargetSource::Inbound { message_id } => db
                     .query_one_raw(statement(
-                        "SELECT 1 FROM inbound_work INDEXED BY inbound_source_creation
+                        &format!(
+                            "SELECT 1 FROM inbound_work{}
                      WHERE creation_id=?1 AND message_id=?2 AND bot_id=?3 AND chat_id=?4
                      AND project_id=?5 AND app_id=?6 AND binding_revision=?7 AND chat_kind=?8
                      AND (?8<>'direct' OR open_id=?9) LIMIT 1",
+                            indexes.hint(" INDEXED BY inbound_source_creation")
+                        ),
                         vec![
                             origin.creation_id.clone().into(),
                             message_id.clone().into(),
@@ -579,19 +659,25 @@ pub(super) async fn check_sources<C: ConnectionTrait>(
         _ => return Err(super::audience::unreadable()),
     };
     for sql in [
-        "SELECT 1 FROM inbound_work w INDEXED BY inbound_source_creation WHERE w.creation_id=?1 AND w.chat_id=?6 AND
+        format!(
+            "SELECT 1 FROM inbound_work w{} WHERE w.creation_id=?1 AND w.chat_id=?6 AND
          ((w.chat_kind IN ('direct','group') AND w.chat_kind<>?3)
           OR (?3='direct' AND w.open_id<>'' AND w.open_id<>?4)
           OR (?5<>'' AND w.app_id<>?5)) LIMIT 1",
-        "SELECT 1 FROM bot_card_streams c INDEXED BY bot_card_thread_lookup
+            indexes.hint(" INDEXED BY inbound_source_creation")
+        ),
+        format!(
+            "SELECT 1 FROM bot_card_streams c{}
          JOIN inbound_work w ON w.identity=c.identity WHERE c.thread_id=?2 AND w.chat_id=?6 AND
          ((w.chat_kind IN ('direct','group') AND w.chat_kind<>?3)
           OR (?3='direct' AND w.open_id<>'' AND w.open_id<>?4)
           OR (?5<>'' AND w.app_id<>?5)) LIMIT 1",
+            indexes.hint(" INDEXED BY bot_card_thread_lookup")
+        ),
     ] {
         if db
             .query_one_raw(statement(
-                sql,
+                &sql,
                 vec![
                     origin.creation_id.clone().into(),
                     origin.thread_id.clone().into(),

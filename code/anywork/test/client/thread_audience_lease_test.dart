@@ -1,3 +1,4 @@
+import 'package:anywork/src/domain/models/audience_delivery_presentation.dart';
 import 'package:anywork/src/domain/models/timeline_presentation.dart';
 import 'package:anywork/src/presentation/providers/client_provider.dart';
 import 'package:anywork/src/presentation/providers/thread_audience_provider.dart';
@@ -15,13 +16,14 @@ ReadThreadAudienceItemsReply _receiptReply(
   required int deliveryVersion,
   required BotPlatformResult platform,
   required bool accepted,
+  int controlRevision = 1,
 }) => ReadThreadAudienceItemsReply(
   threadId: call.request.threadId,
   authorization: call.request.authorization,
   result: BotAudienceItemsReadItems(
     authorization: BotAuthorizationRef(
       id: call.request.authorization,
-      revision: 1,
+      revision: controlRevision,
     ),
     phase: BotAuthorizationPhase.active,
     summaryVersion: summaryVersion,
@@ -334,5 +336,297 @@ void main() {
     container.read(threadAudienceProvider('thread'));
     container.read(threadSyncProgressProvider('thread'));
     expect(client.budget.used(ResourceKind.observer), 0);
+  });
+
+  test('a control revision change on the same generation stops current Accepted receipts', () async {
+    final transport = AudienceTransport();
+    final client = audienceClient(transport);
+    final scope = client.audienceQueries.openScope('thread', 1);
+    addTearDown(() async {
+      scope.retire();
+      for (final call in transport.reads) {
+        if (!call.result.isCompleted) {
+          call.result.complete(
+            ReadThreadAudienceItemsReply(
+              threadId: call.request.threadId,
+              authorization: call.request.authorization,
+              result: const BotAudienceItemsReadUnavailable(
+                reason: BotAudienceItemsUnavailableReason.scopeChanged,
+              ),
+            ),
+          );
+        }
+      }
+      await scope.close();
+      await client.close();
+    });
+    final session = client.session('thread');
+    session.applySnapshot(audienceWorkspace(knownAudience()));
+    scope.setVisible({'canonical-A': 1});
+    final first = await transport.nextRead();
+    first.result.complete(
+      _receiptReply(
+        first,
+        summaryVersion: 1,
+        deliveryVersion: 10,
+        platform: const BotPlatformResultAccepted(),
+        accepted: true,
+      ),
+    );
+    await scope.source.waitFor((value) => value.deliveryVersion == 10);
+    expect(
+      AudienceItemDeliveryProjection.fromStatus(
+        scope.state.items['canonical-A']!,
+        displayRevision: 1,
+      ).currentRevisionAccepted,
+      isTrue,
+    );
+    // Pause advances only the authorization control revision. The canonical
+    // item revision and the delivery watermark stay identical, so only the
+    // control version can prove the cached receipt is stale.
+    session.applyNotification(
+      ThreadNotificationFrame(
+        threadId: 'thread',
+        revision: 2,
+        epoch: 1,
+        baseRevision: 1,
+        update: ThreadAudienceUpdate(
+          knownAudience(controlRevision: 2, phase: 'paused'),
+        ),
+      ),
+    );
+    expect(scope.state.authorization, authorization(1, 2));
+    expect(scope.state.items, isEmpty);
+    expect(scope.state.loading, isTrue);
+    expect(scope.state.deliveryVersion, isNull);
+    final stale = await transport.nextRead();
+    expect(stale.request.authorization.generation, 1);
+    // A reply that still reports the superseded control revision cannot
+    // restore the old Accepted presentation.
+    stale.result.complete(
+      _receiptReply(
+        stale,
+        summaryVersion: 1,
+        deliveryVersion: 10,
+        platform: const BotPlatformResultAccepted(),
+        accepted: true,
+        controlRevision: 1,
+      ),
+    );
+    await scope.source.waitFor((value) => value.error != null);
+    expect(
+      scope.state.error,
+      isA<StudioFailure>(),
+      reason: 'a superseded control revision is not a fresh receipt',
+    );
+    expect(scope.state.items, isEmpty);
+    expect(scope.state.deliveryVersion, isNull);
+    // Recovery is an explicit bounded read, never a background poll.
+    scope.retry();
+    final retried = await transport.nextRead();
+    retried.result.complete(
+      _receiptReply(
+        retried,
+        summaryVersion: 1,
+        deliveryVersion: 11,
+        platform: const BotPlatformResultAccepted(),
+        accepted: true,
+        controlRevision: 2,
+      ),
+    );
+    await scope.source.waitFor((value) => value.deliveryVersion == 11);
+    expect(scope.state.authorization, authorization(1, 2));
+    final projection = AudienceItemDeliveryProjection.fromStatus(
+      scope.state.items['canonical-A']!,
+      displayRevision: 1,
+    );
+    expect(projection.currentRevisionAccepted, isTrue);
+    expect(
+      (projection.ledger!.platform as BotItemPlatformCard)
+          .latestOperation
+          .result,
+      isA<BotPlatformResultAccepted>(),
+    );
+  });
+
+  test('a historical selection survives replaced bindings but not loss of its target proof', () async {
+    final transport = AudienceTransport();
+    final client = audienceClient(transport);
+    final scope = client.audienceQueries.openScope('thread', 1);
+    addTearDown(() async {
+      scope.retire();
+      for (final call in transport.reads) {
+        if (!call.result.isCompleted) {
+          call.result.complete(
+            ReadThreadAudienceItemsReply(
+              threadId: call.request.threadId,
+              authorization: call.request.authorization,
+              result: const BotAudienceItemsReadUnavailable(
+                reason: BotAudienceItemsUnavailableReason.scopeChanged,
+              ),
+            ),
+          );
+        }
+      }
+      await scope.close();
+      await client.close();
+    });
+    final session = client.session('thread');
+    session.applySnapshot(
+      audienceWorkspace(knownAudience(phase: 'closed', controlRevision: 4)),
+    );
+    final selected = BotAuthorizationRef(
+      id: authorization(1, 4).id,
+      revision: 4,
+    );
+    scope.selectAuthorization(selected);
+    scope.setVisible({'canonical-A': 1});
+    final historical = await transport.nextRead();
+    expect(historical.request.authorization, selected.id);
+    historical.complete(controlRevision: 4);
+    await scope.source.waitFor((value) => value.items.isNotEmpty);
+    expect(scope.isHistoricalSelection, isTrue);
+    // The same bot/chat is still proven after this Thread's binding is
+    // replaced, so its own closed authorization remains explainable.
+    session.applySnapshot(audienceWorkspace(replacedAudience(), revision: 2));
+    expect(scope.state.items, isEmpty);
+    expect(scope.isHistoricalSelection, isTrue);
+    final retained = await transport.nextRead();
+    retained.complete(controlRevision: 4);
+    await scope.source.waitFor((value) => value.items.isNotEmpty);
+    // Ownership can no longer be proven: an old authorization's receipts are
+    // no longer a displayable current context and must not be re-queried.
+    session.applySnapshot(
+      audienceWorkspace(
+        const ThreadAudienceUnavailable(
+          reason: ThreadAudienceUnavailableReason.stateUnreadable,
+        ),
+        revision: 3,
+      ),
+    );
+    expect(scope.isHistoricalSelection, isFalse);
+    expect(scope.state.authorization, isNull);
+    expect(scope.state.items, isEmpty);
+    expect(scope.state.loading, isFalse);
+    expect(
+      transport.reads,
+      hasLength(2),
+      reason: 'an unprovable scope stops reading instead of re-querying',
+    );
+  });
+
+  test('a historical selection never survives a different known bot or chat identity', () async {
+    // A known binding may be replaced by another bot or by another chat of the
+    // same bot. Both identity components must invalidate a closed
+    // authorization that this Thread can no longer attribute.
+    for (final variant in const [
+      (name: 'other bot', botId: 'other-bot', chatId: 'chat'),
+      (name: 'other chat', botId: 'bot', chatId: 'other-chat'),
+    ]) {
+      final transport = AudienceTransport();
+      final client = audienceClient(transport);
+      final scope = client.audienceQueries.openScope('thread', 1);
+      addTearDown(() async {
+        scope.retire();
+        for (final call in transport.reads) {
+          if (!call.result.isCompleted) {
+            call.result.complete(
+              ReadThreadAudienceItemsReply(
+                threadId: call.request.threadId,
+                authorization: call.request.authorization,
+                result: const BotAudienceItemsReadUnavailable(
+                  reason: BotAudienceItemsUnavailableReason.scopeChanged,
+                ),
+              ),
+            );
+          }
+        }
+        await scope.close();
+        await client.close();
+      });
+      final session = client.session('thread');
+      session.applySnapshot(
+        audienceWorkspace(knownAudience(phase: 'closed', controlRevision: 4)),
+      );
+      final selected = BotAuthorizationRef(
+        id: authorization(1, 4).id,
+        revision: 4,
+      );
+      scope.selectAuthorization(selected);
+      scope.setVisible({'canonical-A': 1});
+      final historical = await transport.nextRead();
+      expect(
+        historical.request.authorization,
+        selected.id,
+        reason: '${variant.name}: the explicit history read uses its scope',
+      );
+      historical.result.complete(
+        _receiptReply(
+          historical,
+          summaryVersion: 1,
+          deliveryVersion: 1,
+          platform: const BotPlatformResultAccepted(),
+          accepted: true,
+          controlRevision: 4,
+        ),
+      );
+      await scope.source.waitFor((value) => value.items.isNotEmpty);
+      expect(scope.isHistoricalSelection, isTrue);
+
+      final other = knownAudience(botId: variant.botId, chatId: variant.chatId);
+      session.applySnapshot(audienceWorkspace(other, revision: 2));
+      final current = other.queryAuthorization!;
+      expect(
+        current.id,
+        isNot(selected.id),
+        reason: '${variant.name}: a different target is a different scope',
+      );
+      expect(
+        scope.isHistoricalSelection,
+        isFalse,
+        reason:
+            '${variant.name}: the old closed authorization is no longer '
+            'attributable to this Thread',
+      );
+      expect(
+        scope.state.items,
+        isEmpty,
+        reason: '${variant.name}: old receipts stop being current at once',
+      );
+      expect(
+        scope.state.authorization,
+        current,
+        reason:
+            '${variant.name}: display follows the new current authorization',
+      );
+      expect(
+        () => scope.selectAuthorization(selected),
+        throwsArgumentError,
+        reason: '${variant.name}: a foreign authorization cannot be selected',
+      );
+      // Following the new legitimate current authorization stays allowed;
+      // only the old one may never be read again.
+      final fresh = await transport.nextRead();
+      expect(fresh.request.authorization, current.id);
+      expect(
+        transport.reads.where(
+          (call) => call.request.authorization == selected.id,
+        ),
+        hasLength(1),
+        reason: '${variant.name}: the old authorization is never re-read',
+      );
+      fresh.result.complete(
+        _receiptReply(
+          fresh,
+          summaryVersion: 1,
+          deliveryVersion: 1,
+          platform: const BotPlatformResultAccepted(),
+          accepted: true,
+        ),
+      );
+      await scope.source.waitFor((value) => value.items.isNotEmpty);
+      expect(scope.state.authorization, current);
+      expect(scope.state.items.keys, ['canonical-A']);
+    }
   });
 }

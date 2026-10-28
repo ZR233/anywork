@@ -44,7 +44,12 @@ void main() {
     revision: revision,
     createdAt: DateTime.utc(2026),
     updatedAt: DateTime.utc(2026),
-    state: ThreadRawItemStateView(payloads, notice, DateTime.utc(2026)),
+    state: ThreadRawItemStateView(
+      payloads,
+      notice,
+      DateTime.utc(2026),
+      origin: ThreadRawItemOrigin.stored,
+    ),
   );
 
   Future<DemoStudioTransport> seeded({int count = 150}) async {

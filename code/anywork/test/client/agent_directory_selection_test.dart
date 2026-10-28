@@ -342,6 +342,176 @@ void main() {
     expect(fixture.transport.stateReads, [sibling.id]);
     expect(client.findThread(fixture.child.id), isNull);
   });
+
+  test('the agent directory publishes each row execution and stop qualification, and a stale page cannot replace it', () async {
+    final fixture = await _fixture();
+    final client = fixture.graph.client;
+    final row = fixture.agents.firstWhere(
+      (agent) => agent.threadId == fixture.child.id,
+    );
+    final execution = AgentExecutionView(
+      id: 'child-execution',
+      phase: AgentExecutionPhase.running,
+      turnId: 'child-turn',
+    );
+    expect(
+      client.project.applyAgentDirectory(
+        AgentDirectoryState(
+          revision: 3,
+          values: [
+            for (final agent in fixture.agents)
+              if (agent.threadId == fixture.child.id)
+                StudioAgentView(
+                  id: agent.id,
+                  threadId: agent.threadId,
+                  path: agent.path,
+                  parentPath: agent.parentPath,
+                  rootThreadId: agent.rootThreadId,
+                  depth: agent.depth,
+                  role: agent.role,
+                  task: agent.task,
+                  summary: agent.summary,
+                  delegationMode: agent.delegationMode,
+                  delegationPreference: agent.delegationPreference,
+                  frozenModel: agent.frozenModel,
+                  state: agent.state,
+                  updatedAt: agent.updatedAt,
+                  execution: execution,
+                  canStop: true,
+                  awaitingScheduling: true,
+                )
+              else
+                agent,
+          ],
+        ),
+      ),
+      isTrue,
+    );
+    final published = client.project.state.agents!.values.firstWhere(
+      (agent) => agent.threadId == fixture.child.id,
+    );
+    expect(published.execution, execution);
+    expect(published.canStop, isTrue);
+    expect(
+      published.awaitingScheduling,
+      isTrue,
+      reason: 'A member with an unclaimed continuation waits for its parent',
+    );
+    expect(
+      published.state,
+      row.state,
+      reason: 'The canonical member state is not derived from the execution',
+    );
+    expect(
+      published == row,
+      isFalse,
+      reason: 'Execution, stop qualification and scheduling fact take part in equality',
+    );
+    // A page older than the published revision cannot roll the row back.
+    expect(
+      client.project.applyAgentDirectory(
+        AgentDirectoryState(
+          revision: 2,
+          values: [
+            for (final agent in fixture.agents)
+              if (agent.threadId == fixture.child.id)
+                StudioAgentView(
+                  id: agent.id,
+                  threadId: agent.threadId,
+                  path: agent.path,
+                  parentPath: agent.parentPath,
+                  rootThreadId: agent.rootThreadId,
+                  depth: agent.depth,
+                  role: agent.role,
+                  task: agent.task,
+                  delegationMode: agent.delegationMode,
+                  delegationPreference: agent.delegationPreference,
+                  state: agent.state,
+                  updatedAt: agent.updatedAt,
+                  canStop: false,
+                  awaitingScheduling: false,
+                )
+              else
+                agent,
+          ],
+        ),
+      ),
+      isFalse,
+    );
+    expect(
+      client.project.state.agents!.values
+          .firstWhere((agent) => agent.threadId == fixture.child.id)
+          .execution,
+      execution,
+    );
+    expect(
+      client.project.state.agents!.values
+          .firstWhere((agent) => agent.threadId == fixture.child.id)
+          .canStop,
+      isTrue,
+    );
+    expect(
+      client.project.state.agents!.values
+          .firstWhere((agent) => agent.threadId == fixture.child.id)
+          .awaitingScheduling,
+      isTrue,
+      reason: 'A stale page never clears the newer scheduling fact',
+    );
+    // A newer page reports the member was scheduled: the value change is
+    // published, and it is independent from the stop qualification.
+    expect(
+      client.project.applyAgentDirectory(
+        AgentDirectoryState(
+          revision: 4,
+          values: [
+            for (final agent in fixture.agents)
+              if (agent.threadId == fixture.child.id)
+                StudioAgentView(
+                  id: agent.id,
+                  threadId: agent.threadId,
+                  path: agent.path,
+                  parentPath: agent.parentPath,
+                  rootThreadId: agent.rootThreadId,
+                  depth: agent.depth,
+                  role: agent.role,
+                  task: agent.task,
+                  delegationMode: agent.delegationMode,
+                  delegationPreference: agent.delegationPreference,
+                  state: agent.state,
+                  updatedAt: agent.updatedAt,
+                  execution: execution,
+                  canStop: true,
+                  awaitingScheduling: false,
+                )
+              else
+                agent,
+          ],
+        ),
+      ),
+      isTrue,
+    );
+    final scheduled = client.project.state.agents!.values.firstWhere(
+      (agent) => agent.threadId == fixture.child.id,
+    );
+    expect(scheduled.awaitingScheduling, isFalse);
+    expect(
+      scheduled.canStop,
+      isTrue,
+      reason: 'Scheduling state never derives the stop qualification',
+    );
+    expect(scheduled == published, isFalse);
+    // The stop request itself is a phase transition of the same execution.
+    final stopping = AgentExecutionView(
+      id: 'child-execution',
+      phase: AgentExecutionPhase.stopping,
+      turnId: 'child-turn',
+    );
+    expect(stopping.isStopping, isTrue);
+    expect(stopping == execution, isFalse);
+    // Listing never opens a member: the row facts come from the directory.
+    expect(client.sessionStates, isEmpty);
+    expect(client.selection.state.selectedThreadId, fixture.root.id);
+  });
 }
 
 Future<Object?> _outcome(Future<void> operation) => operation.then<Object?>(

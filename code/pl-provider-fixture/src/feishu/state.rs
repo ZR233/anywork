@@ -247,6 +247,8 @@ pub(crate) struct CardEntity {
     pub streaming_closed: bool,
     pub expired: bool,
     pub updates: usize,
+    /// Whole-card updates that replaced this same entity in place.
+    pub whole_card_updates: usize,
     pub settings_updates: usize,
 }
 
@@ -779,6 +781,7 @@ impl Inner {
                 streaming_closed: entity.streaming_closed,
                 expired: entity.expired,
                 updates: entity.updates,
+                whole_card_updates: entity.whole_card_updates,
                 settings_updates: entity.settings_updates,
             })
             .collect()

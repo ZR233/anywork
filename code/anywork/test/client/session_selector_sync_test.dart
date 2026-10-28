@@ -16,6 +16,7 @@ import 'package:anywork/src/features/interaction/composer_view.dart';
 import 'package:anywork/src/presentation/providers/start_session_controller.dart';
 import 'package:anywork/src/features/status/session_selectors.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
+import 'package:anywork/src/l10n/studio_l10n.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
 
 import 'support/pump_client_future.dart';
@@ -252,7 +253,7 @@ void main() {
     expect(selectedRow(nextKey), findsOneWidget, reason: '模型选中态必须随草稿事实移动');
   });
 
-  testWidgets('未打开项目时输入与会话选择器按同一准入状态禁用', (tester) async {
+  testWidgets('未打开项目时输入禁用，会话选择器仍可先定好草稿路由', (tester) async {
     graph.client.selection.restoreStartup(
       projectId: null,
       threadId: null,
@@ -267,18 +268,98 @@ void main() {
     );
     expect(input.enabled, isFalse, reason: '未打开项目不能提交新会话');
 
-    for (final key in [StudioDriverKeys.sessionMode, StudioDriverKeys.model]) {
-      final trigger = find.descendant(
-        of: find.byKey(key),
-        matching: find.byType(TextButton),
+    final accounts = container.read(settingsStoreProvider).canonical!.accounts;
+    final before = container.read(startPageComposerViewProvider);
+    final routeBefore = before.displayRoute(before.mode)!;
+    // 选一个与当前路由不同、且带有多个强度候选的模型：证明选择真的落到草稿上。
+    final candidates = modelOptions(accounts)
+        .where(
+          (option) =>
+              option.accountId != routeBefore.accountId ||
+              option.modelId != routeBefore.modelId,
+        )
+        .toList();
+    final next = candidates.firstWhere(
+      (option) => option.reasoningEfforts.length > 1,
+      orElse: () => candidates.first,
+    );
+
+    final modelTrigger = find.descendant(
+      of: find.byKey(StudioDriverKeys.model),
+      matching: find.byType(TextButton),
+    );
+    expect(tester.widget<TextButton>(modelTrigger).onPressed, isNotNull);
+    await tester.tap(modelTrigger);
+    await tester.pumpAndSettle();
+    final modelRow = find.byKey(
+      StudioDriverKeys.modelOption(next.accountId, next.modelId),
+    );
+    expect(modelRow, findsOneWidget, reason: '模型与强度可以在选项目之前先定草稿路由');
+    await tester.tap(modelRow);
+    await tester.pumpAndSettle();
+
+    final afterModel = container.read(startPageComposerViewProvider);
+    final modelRoute = afterModel.displayRoute(afterModel.mode)!;
+    expect(modelRoute.accountId, next.accountId, reason: '草稿路由真的换了账号');
+    expect(modelRoute.modelId, next.modelId, reason: '草稿路由真的换了模型');
+    expect(
+      find.byKey(StudioDriverKeys.modelOption(next.accountId, next.modelId)),
+      findsNothing,
+      reason: '菜单必须真正收起，而不是只把标签改成同一个名字',
+    );
+    expect(
+      tester
+          .widget<TextField>(find.byKey(StudioDriverKeys.composerInput))
+          .enabled,
+      isFalse,
+      reason: '选了路由不等于能提交：没有项目仍然不能发送',
+    );
+
+    if (next.reasoningEfforts.length > 1) {
+      final nextEffort = next.reasoningEfforts.firstWhere(
+        (effort) => effort != modelRoute.effort,
+        orElse: () => next.reasoningEfforts.last,
       );
-      expect(trigger, findsOneWidget, reason: '选择器仍应使用官方 TextButton');
+      await tester.tap(find.byKey(StudioDriverKeys.reasoningEffort));
+      await tester.pumpAndSettle();
+      await tester.tap(
+        find.byKey(StudioDriverKeys.reasoningEffortOption(nextEffort)),
+      );
+      await tester.pumpAndSettle();
+      final afterEffort = container.read(startPageComposerViewProvider);
       expect(
-        tester.widget<TextButton>(trigger).onPressed,
-        isNull,
-        reason: '$key 必须反映未打开项目的禁用状态',
+        afterEffort.displayRoute(afterEffort.mode)!.effort,
+        nextEffort,
+        reason: '思考强度同样能在选项目之前定下来',
       );
     }
+
+    // 会话模式按项目保存：没有项目就明确禁用并解释，绝不静默丢掉选择。
+    final modeTrigger = find.descendant(
+      of: find.byKey(StudioDriverKeys.sessionMode),
+      matching: find.byType(TextButton),
+    );
+    expect(
+      tester.widget<TextButton>(modeTrigger).onPressed,
+      isNotNull,
+      reason: '锁定也必须能解释',
+    );
+    await tester.tap(modeTrigger);
+    await tester.pumpAndSettle();
+    expect(
+      find.text(
+        tester
+            .element(find.byKey(StudioDriverKeys.sessionMode))
+            .l10n
+            .statusModeNeedsProject,
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(StudioDriverKeys.sessionModeOption(ThreadModeId.simple.name)),
+      findsNothing,
+      reason: '禁用状态下不展开菜单',
+    );
     expect(
       find.byKey(StudioDriverKeys.sessionWorkspaceMode),
       findsNothing,
@@ -290,6 +371,42 @@ void main() {
       findsNothing,
       reason: 'There is no project-scoped settings menu before a project is selected',
     );
+  });
+
+  testWidgets('选择器被锁定时点击给出可见原因，不静默吞掉点击', (tester) async {
+    final accounts = container.read(settingsStoreProvider).canonical!.accounts;
+    final option = modelOptions(accounts).first;
+
+    await tester.pumpWidget(
+      harness(
+        ModelRoleSelector(
+          accounts: accounts,
+          accountId: option.accountId,
+          modelId: option.modelId,
+          effort: null,
+          enabled: false,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final trigger = find.descendant(
+      of: find.byKey(StudioDriverKeys.model),
+      matching: find.byType(TextButton),
+    );
+    expect(
+      tester.widget<TextButton>(trigger).onPressed,
+      isNotNull,
+      reason: '被锁定也必须能解释，而不是吞掉点击',
+    );
+
+    await tester.tap(trigger);
+    await tester.pumpAndSettle();
+    final reason = tester
+        .element(find.byKey(StudioDriverKeys.model))
+        .l10n
+        .statusSelectorsNotReady;
+    expect(find.text(reason), findsOneWidget);
   });
 
   testWidgets('打开项目后原生输入框与工作区选择都更新新会话草稿', (tester) async {
@@ -521,7 +638,16 @@ void main() {
       );
       expect(
         modeTrigger.onPressed,
-        isNull,
+        isNotNull,
+        reason: '锁定不是静默：点击要给出原因，而不是什么都不发生',
+      );
+      await tester.tap(find.byKey(StudioDriverKeys.sessionMode));
+      await tester.pumpAndSettle();
+      expect(
+        find.byKey(
+          StudioDriverKeys.sessionModeOption(ThreadModeId.simple.name),
+        ),
+        findsNothing,
         reason: 'workflow active 期间 Mode 仍冻结，不得随本次修复放开',
       );
 

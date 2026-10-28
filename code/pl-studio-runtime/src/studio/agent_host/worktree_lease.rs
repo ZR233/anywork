@@ -2,7 +2,9 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
 use crate::studio::StudioStore;
-use crate::studio::store::object::{PersistedStudioObject, load_objects};
+use crate::studio::store::object::PersistedStudioObject;
+
+mod migration;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -61,6 +63,7 @@ pub(in crate::studio) struct WorktreeLease {
 }
 
 impl WorktreeLease {
+    /// Moves the lease to `state` and bumps its revision.
     pub fn transition(&mut self, state: WorktreeLeaseState) {
         self.revision = self.revision.saturating_add(1);
         self.state = state;
@@ -84,6 +87,11 @@ impl WorktreeLease {
         use crate::agent::worktree::WorktreeManager;
         let repository_root = std::path::Path::new(&self.repository_root);
         let ownership = self.ownership();
+        anyhow::ensure!(
+            self.owner_kind != WorktreeLeaseOwnerKind::Session
+                || self.owner_thread_id == self.root_thread_id,
+            "session worktree lease belongs to a different root"
+        );
         let expected =
             WorktreeManager::allocate_path(repository_root, &self.root_thread_id, &ownership);
         if self.ssh_alias.is_some() {
@@ -113,7 +121,7 @@ impl PersistedStudioObject for WorktreeLease {
 
     const OWNER_KIND: &'static str = "agent";
     const OBJECT_KIND: &'static str = "worktreeLease";
-    const SCHEMA_VERSION: i64 = 2;
+    const SCHEMA_VERSION: i64 = 3;
 
     fn revision(&self) -> u64 {
         self.revision
@@ -143,8 +151,15 @@ impl PersistedStudioObject for WorktreeLease {
 }
 
 pub(in crate::studio) async fn load_leases(store: &StudioStore) -> Result<Vec<WorktreeLease>> {
-    load_objects(store.database()).await
+    migration::load(store.database())
+        .await
+        .map_err(|error| error.context(WorktreeLeaseMigrationFailed))
 }
+
+/// A failed lease upgrade must stop startup, never enter backup/reset recovery.
+#[derive(Debug, thiserror::Error)]
+#[error("worktree lease storage upgrade failed")]
+pub(in crate::studio) struct WorktreeLeaseMigrationFailed;
 
 /// Canonical process-local lease owner. Storage never participates in admission.
 #[derive(Clone)]
@@ -244,6 +259,12 @@ impl WorktreeLeaseOwner {
             .values()
             .cloned()
             .collect()
+    }
+
+    /// Waits until all admitted lease facts are durably stored before touching physical resources.
+    pub(in crate::studio) async fn flush(&self) -> Result<()> {
+        self.writer.flush().await?;
+        Ok(())
     }
 
     /// Revision admission and queue order share one short, IO-free critical section.

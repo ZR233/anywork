@@ -7,11 +7,16 @@ mod proof;
 mod read;
 mod schema;
 
+pub(super) use control::note_delivery_change;
 pub(super) use control::{bind_origin, close_chat, close_unavailable_binding, first_pending_start};
+pub(super) use counts::prepare_current_indexes;
 pub(super) use counts::prepare_indexes as prepare_count_indexes;
 pub(in crate::bots) use read::AudienceScope;
-pub(super) use schema::validate_target_structure;
-pub(super) use schema::{migrate, validate};
+pub(super) use read::{head, proven_origin};
+pub(super) use read::{load_auth, read_origin};
+pub(super) use schema::preflight_file_without_cards;
+pub(super) use schema::{ensure_eight_absent, preflight_eight, validate_source_nine};
+pub(super) use schema::{legacy_items_declaration, migrate, validate, validate_current};
 
 use super::{BotStateStore, strict_text, strict_watermark};
 use crate::bots::protocol::error::{FeishuError, FeishuErrorKind};
@@ -57,7 +62,7 @@ impl Authorization {
         }
     }
 
-    fn validate(&self) -> Result<(), FeishuError> {
+    pub(super) fn validate(&self) -> Result<(), FeishuError> {
         self.intent.validate().map_err(|_| unreadable())?;
         if self.revision == 0
             || self.delivery_version == 0
@@ -113,7 +118,7 @@ pub(in crate::bots) struct DeliveryObservation {
 impl BotStateStore {
     /// Queries may use only an already prepared database. This cannot initialize, migrate or create
     /// a missing file as a side effect of displaying a cold Thread.
-    fn audience_db(&self) -> Result<&DatabaseConnection, FeishuError> {
+    pub(super) fn audience_db(&self) -> Result<&DatabaseConnection, FeishuError> {
         self.writer.get().ok_or_else(|| {
             FeishuError::new(
                 FeishuErrorKind::Unavailable,
@@ -123,6 +128,11 @@ impl BotStateStore {
             )
         })
     }
+}
+
+/// 授权行严格解码：迁移与作用域核对共用同一入口，不另写第二套判据。
+pub(super) fn authorization_row(row: &QueryResult) -> Result<Authorization, FeishuError> {
+    authorization(row)
 }
 
 fn origin(row: &QueryResult) -> Result<ThreadOrigin, FeishuError> {

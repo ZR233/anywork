@@ -15,11 +15,13 @@ use std::time::Duration;
 
 pub(super) mod audience;
 pub(super) mod card;
+mod legacy_schema;
+pub(in crate::bots) mod publication;
 pub(super) mod reply;
 mod schema;
 pub(in crate::bots) mod target;
 
-const BOT_STATE_SCHEMA_VERSION: i64 = 9;
+const BOT_STATE_SCHEMA_VERSION: i64 = 10;
 
 #[derive(Clone, Copy)]
 enum LedgerSource {
@@ -39,8 +41,6 @@ const INBOUND_RETRY_BUDGET: i64 = 8;
 const INBOUND_READINESS_WAIT_BUDGET_SECONDS: i64 = 900;
 /// 就绪等待的重派节奏：只推进下一次尝试时间，不计入失败次数。
 const INBOUND_READINESS_POLL_SECONDS: i64 = 5;
-/// 就绪等待在既有 `diagnostic` 文本列里的持久标记（不新增 schema 列）。
-const INBOUND_READINESS_WAIT_MARKER: &str = "readiness-wait:";
 const INBOUND_PENDING_LIMIT: i64 = 64;
 const INBOUND_PENDING_BYTES: i64 = 512 * 1024;
 
@@ -133,6 +133,73 @@ pub struct SendRecord {
     pub source: Option<SendSource>,
 }
 
+/// 自动前端文件的宿主证明；不接受工具参数，也不伪造原入站 SendSource。
+#[derive(Debug, Clone)]
+pub(in crate::bots) struct PublicationFilePermit {
+    pub token: publication::DeliveryClaimToken,
+    pub entity: publication::DeliveryEntityKey,
+    pub expected_ledger_version: u64,
+    pub artifact: publication::SavedArtifact,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::bots) enum PublicationFileStage {
+    Upload,
+    Message,
+}
+
+/// 原网络阶段的真实结果增量；writer 合并到当前行，不用旧整行快照覆盖后继阶段。
+#[derive(Debug, Clone)]
+pub(in crate::bots) enum PublicationFileProgress {
+    Uploaded {
+        file_key: String,
+    },
+    Sent {
+        message_id: String,
+    },
+    Rejected {
+        stage: PublicationFileStage,
+        diagnostic: pl_protocol::studio::BotDiagnostic,
+    },
+    Unknown {
+        stage: PublicationFileStage,
+        diagnostic: Option<pl_protocol::studio::BotDiagnostic>,
+    },
+    /// 仅由尚未轮询 HTTP 的原 owner 提交，不能将已开始请求的取消写成 NotStarted。
+    NotStarted {
+        stage: PublicationFileStage,
+        reason: pl_protocol::studio::BotSendStopReason,
+        diagnostic: String,
+    },
+}
+
+/// 一次已经持久登记的文件阶段。只能由 writer 构造，不能将恢复的旧 InFlight
+/// 冒充为本 owner 尚未启动的阶段；发送 owner 保有它直至结果可靠保存。
+#[derive(Debug)]
+pub(in crate::bots) struct PublicationFileAttempt {
+    permit: PublicationFilePermit,
+    record: SendRecord,
+    stage: PublicationFileStage,
+    request_started: bool,
+    stopped_before_start: bool,
+}
+
+impl PublicationFileAttempt {
+    pub(in crate::bots) fn record(&self) -> &SendRecord {
+        &self.record
+    }
+
+    /// 在原 admission 边界第一次轮询 HTTP 前标记；之后取消只能记录 Unknown。
+    pub(in crate::bots) fn mark_request_started(&mut self) {
+        self.request_started = true;
+    }
+}
+
+enum SendClaimFence<'a> {
+    InboundReply(&'a reply::InboundReply),
+    Publication(&'a PublicationFilePermit),
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SendSegmentFact {
@@ -147,6 +214,9 @@ pub struct SendSegmentFact {
     pub upload: Option<UploadFact>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message_stage: Option<MessageStage>,
+    /// Only newly admitted typed notices carry an attempt fence; old sends gain no authority.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notice_attempt: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub platform_diagnostic: Option<pl_protocol::studio::BotDiagnostic>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -231,6 +301,25 @@ pub(crate) enum MarkOutcome {
     LostClaim,
 }
 
+/// One inbound work identity: the composite key column plus the frozen row identity that
+/// every finish/claim decision must cross-check.
+#[derive(Debug, Clone)]
+struct WorkKeys<'a> {
+    identity: String,
+    bot_id: &'a str,
+    chat_id: &'a str,
+    message_id: &'a str,
+}
+
+/// The fenced facts of the claimed inbound work row, decoded once per finish.
+struct ClaimedWork {
+    attempt_count: i64,
+    content_hash: String,
+    project_id: String,
+    creation_id: String,
+    binding_revision: u64,
+}
+
 /// 入站工作收束语义；由账本在同一认领条件下原子落盘。
 #[derive(Debug, Clone)]
 pub(crate) enum WorkFinish<'a> {
@@ -238,11 +327,21 @@ pub(crate) enum WorkFinish<'a> {
     /// Runtime 停止观察：释放为 pending 且立即可恢复，不计失败预算。
     Interrupted,
     NeedsAttention(&'a str),
+    /// 可证的原创建身份冲突：同事务收束该入站及仍匹配的 creating 路由。
+    CreationConflict(&'a str),
     /// 真实 retryable 失败：计数退避；预算耗尽自动转 needs_attention。
     Retryable(&'a str),
     /// 等待外部就绪（首输入准备）：只推进下一次尝试时间，不计数、不耗失败预算；
     /// 独立等待期限到期后才以“准备未完成”（而非失败次数）收束为 needs_attention。
     Deferred(&'a str),
+}
+
+/// 同一次输入所有者保有附件时的提交退避；耗尽仍由原 finisher 原子收束。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::bots) enum InboundRetryWait {
+    Until { retry_at: i64 },
+    BudgetExhausted,
+    LostClaim,
 }
 
 #[derive(Debug, Clone)]
@@ -453,6 +552,9 @@ impl BotStateStore {
                 None,
             ));
         }
+        // 受理时刻就是本轮唯一可用的就绪等待起点：它与受理行同一事务写入，之后
+        // 所有写入者（中断/可重试失败/就绪等待）只沿用这个最早起点。
+        let admitted_at = unix_seconds();
         tx.execute_raw(statement(
             "INSERT INTO inbound_identities(identity, bot_id, message_id, chat_id, content_hash, admitted_at)
              VALUES(?,?,?,?,?,?)",
@@ -462,7 +564,7 @@ impl BotStateStore {
                 inbound.message_id.clone().into(),
                 inbound.chat_id.clone().into(),
                 inbound.content_hash.clone().into(),
-                unix_seconds().into(),
+                admitted_at.into(),
             ],
         ))
         .await
@@ -490,7 +592,7 @@ impl BotStateStore {
                 "".to_string().into(),
                 "".to_string().into(),
                 0i64.into(),
-                unix_seconds().into(),
+                admitted_at.into(),
             ],
         ))
         .await
@@ -637,50 +739,12 @@ impl BotStateStore {
         }
     }
 
-    /// 持久化 canonical 恢复进度（当前 watch 的输入身份）；失租时不得覆盖后继进度。
-    pub(crate) async fn save_inbound_watch_input(
-        &self,
-        bot_id: &str,
-        chat_id: &str,
-        message_id: &str,
-        worker_id: &str,
-        watch_input: &str,
-    ) -> Result<MarkOutcome, FeishuError> {
-        let identity = inbound_identity(bot_id, chat_id, message_id);
-        let db = self.db().await?;
-        let now = unix_seconds();
-        let lease_cutoff = now.saturating_sub(INBOUND_CLAIM_TTL_SECONDS);
-        let updated = db
-            .execute_raw(statement(
-                "UPDATE inbound_work
-                 SET watch_input=?, updated_at=?
-                 WHERE identity=? AND bot_id=? AND chat_id=? AND message_id=?
-                   AND claimed_by=? AND status='claimed' AND claimed_at>?",
-                vec![
-                    watch_input.to_string().into(),
-                    now.into(),
-                    identity.into(),
-                    bot_id.to_string().into(),
-                    chat_id.to_string().into(),
-                    message_id.to_string().into(),
-                    worker_id.to_string().into(),
-                    lease_cutoff.into(),
-                ],
-            ))
-            .await
-            .map_err(storage)?;
-        if updated.rows_affected() == 1 {
-            Ok(MarkOutcome::Applied)
-        } else {
-            Ok(MarkOutcome::LostClaim)
-        }
-    }
-
-    /// 在同一认领条件下收束入站工作状态；失败按分类退避，预算耗尽转需处理。
+    /// 在同一事务里判定并写入一次入站工作结果。
     ///
-    /// 所有分支（含 Retryable 的事务内 SELECT/UPDATE）都核对同一有效 lease：
-    /// `claimed_by` 为本持有者、状态仍为 claimed 且租约未过期。过期的旧持有者
-    /// 即使尚未被接管也不得收束状态；0 行统一返回 `LostClaim`，不得吞成完成。
+    /// 每个分支先核本持有者的有效 claim，再核受理身份与工作行的逐字段关联；失去认领
+    /// 返回 `LostClaim`，持久身份损坏返回需恢复，两者均不写入。
+    /// 首次准备等待不消耗失败预算，其唯一计时来源是受理身份的不可变 `admitted_at`；
+    /// 退避预算耗尽时，创建中的路由必须仍匹配该工作的原项目/创建身份/绑定修订才收束。
     pub(crate) async fn finish_inbound_work(
         &self,
         bot_id: &str,
@@ -689,145 +753,86 @@ impl BotStateStore {
         worker_id: &str,
         finish: WorkFinish<'_>,
     ) -> Result<MarkOutcome, FeishuError> {
-        let identity = inbound_identity(bot_id, chat_id, message_id);
+        let keys = WorkKeys {
+            identity: inbound_identity(bot_id, chat_id, message_id),
+            bot_id,
+            chat_id,
+            message_id,
+        };
         let db = self.db().await?;
         let now = unix_seconds();
         let lease_cutoff = now.saturating_sub(INBOUND_CLAIM_TTL_SECONDS);
-        match finish {
+        let tx = db.begin().await.map_err(storage)?;
+        let Some(work) = Self::claimed_work(&tx, &keys, worker_id, lease_cutoff).await? else {
+            tx.commit().await.map_err(storage)?;
+            return Ok(MarkOutcome::LostClaim);
+        };
+        let admitted = Self::admitted_at(&tx, &keys, &work).await?;
+        let identity: sea_orm::Value = keys.identity.clone().into();
+        let updated = match finish {
             WorkFinish::Completed => {
-                let updated = db
-                    .execute_raw(statement(
-                        "UPDATE inbound_work
-                         SET status='completed', diagnostic='', claimed_by='', claimed_at=0,
-                             attempt_count=0, next_attempt_at=0, updated_at=?
-                         WHERE identity=? AND bot_id=? AND chat_id=? AND message_id=?
-                           AND claimed_by=? AND status='claimed' AND claimed_at>?",
-                        vec![
-                            now.into(),
-                            identity.into(),
-                            bot_id.to_string().into(),
-                            chat_id.to_string().into(),
-                            message_id.to_string().into(),
-                            worker_id.to_string().into(),
-                            lease_cutoff.into(),
-                        ],
-                    ))
-                    .await
-                    .map_err(storage)?;
-                Ok(mark_outcome(updated.rows_affected()))
+                tx.execute_raw(statement(
+                    "UPDATE inbound_work
+                     SET status='completed', diagnostic='', claimed_by='', claimed_at=0,
+                         attempt_count=0, next_attempt_at=0, updated_at=?
+                     WHERE identity=? AND bot_id=? AND chat_id=? AND message_id=?
+                       AND claimed_by=? AND status='claimed' AND claimed_at>?",
+                    vec![
+                        now.into(),
+                        identity,
+                        bot_id.to_string().into(),
+                        chat_id.to_string().into(),
+                        message_id.to_string().into(),
+                        worker_id.to_string().into(),
+                        lease_cutoff.into(),
+                    ],
+                ))
+                .await
+                .map_err(storage)?
             }
             WorkFinish::Interrupted => {
-                let tx = db.begin().await.map_err(storage)?;
-                let row = tx
-                    .query_one_raw(statement(
-                        "SELECT diagnostic FROM inbound_work
-                         WHERE identity=? AND bot_id=? AND chat_id=? AND message_id=?
-                           AND claimed_by=? AND status='claimed' AND claimed_at>?",
-                        vec![
-                            identity.clone().into(),
-                            bot_id.to_string().into(),
-                            chat_id.to_string().into(),
-                            message_id.to_string().into(),
-                            worker_id.to_string().into(),
-                            lease_cutoff.into(),
-                        ],
-                    ))
-                    .await
-                    .map_err(storage)?;
-                let Some(row) = row else {
-                    tx.commit().await.map_err(storage)?;
-                    return Ok(MarkOutcome::LostClaim);
-                };
-                // 关停中断是“稍后继续”，不是新的起点：既有等待起点必须沿用，否则
-                // 每次重启都会把就绪等待期限重新计时。
-                let diagnostic = carried_readiness_wait(
-                    &stored_text(&row, "diagnostic")?,
-                    "runtime stopped before a local terminal fact",
-                );
-                let updated = tx
-                    .execute_raw(statement(
-                        "UPDATE inbound_work
-                         SET status='pending', diagnostic=?,
-                             claimed_by='', claimed_at=0, next_attempt_at=0, updated_at=?
-                         WHERE identity=? AND bot_id=? AND chat_id=? AND message_id=?
-                           AND claimed_by=? AND status='claimed' AND claimed_at>?",
-                        vec![
-                            diagnostic.into(),
-                            now.into(),
-                            identity.into(),
-                            bot_id.to_string().into(),
-                            chat_id.to_string().into(),
-                            message_id.to_string().into(),
-                            worker_id.to_string().into(),
-                            lease_cutoff.into(),
-                        ],
-                    ))
-                    .await
-                    .map_err(storage)?;
-                let applied = updated.rows_affected() == 1;
-                tx.commit().await.map_err(storage)?;
-                if applied {
-                    Ok(MarkOutcome::Applied)
-                } else {
-                    Ok(MarkOutcome::LostClaim)
-                }
+                tx.execute_raw(statement(
+                    "UPDATE inbound_work
+                     SET status='pending', diagnostic='runtime stopped before a local terminal fact',
+                         claimed_by='', claimed_at=0, next_attempt_at=0, updated_at=?
+                     WHERE identity=? AND bot_id=? AND chat_id=? AND message_id=?
+                       AND claimed_by=? AND status='claimed' AND claimed_at>?",
+                    vec![
+                        now.into(),
+                        identity,
+                        bot_id.to_string().into(),
+                        chat_id.to_string().into(),
+                        message_id.to_string().into(),
+                        worker_id.to_string().into(),
+                        lease_cutoff.into(),
+                    ],
+                ))
+                .await
+                .map_err(storage)?
             }
-            WorkFinish::NeedsAttention(diagnostic) => {
-                let updated = db
-                    .execute_raw(statement(
-                        "UPDATE inbound_work
-                         SET status='needs_attention', diagnostic=?, claimed_by='', claimed_at=0, updated_at=?
-                         WHERE identity=? AND bot_id=? AND chat_id=? AND message_id=?
-                           AND claimed_by=? AND status='claimed' AND claimed_at>?",
-                        vec![
-                            diagnostic.to_string().into(),
-                            now.into(),
-                            identity.into(),
-                            bot_id.to_string().into(),
-                            chat_id.to_string().into(),
-                            message_id.to_string().into(),
-                            worker_id.to_string().into(),
-                            lease_cutoff.into(),
-                        ],
-                    ))
-                    .await
-                    .map_err(storage)?;
-                Ok(mark_outcome(updated.rows_affected()))
+            WorkFinish::NeedsAttention(diagnostic) | WorkFinish::CreationConflict(diagnostic) => {
+                tx.execute_raw(statement(
+                    "UPDATE inbound_work
+                     SET status='needs_attention', diagnostic=?, claimed_by='', claimed_at=0, updated_at=?
+                     WHERE identity=? AND bot_id=? AND chat_id=? AND message_id=?
+                       AND claimed_by=? AND status='claimed' AND claimed_at>?",
+                    vec![
+                        diagnostic.to_string().into(),
+                        now.into(),
+                        identity,
+                        bot_id.to_string().into(),
+                        chat_id.to_string().into(),
+                        message_id.to_string().into(),
+                        worker_id.to_string().into(),
+                        lease_cutoff.into(),
+                    ],
+                ))
+                .await
+                .map_err(storage)?
             }
             WorkFinish::Retryable(diagnostic) => {
-                let tx = db.begin().await.map_err(storage)?;
-                let row = tx
-                    .query_one_raw(statement(
-                        "SELECT attempt_count, diagnostic FROM inbound_work
-                         WHERE identity=? AND bot_id=? AND chat_id=? AND message_id=?
-                           AND claimed_by=? AND status='claimed' AND claimed_at>?",
-                        vec![
-                            identity.clone().into(),
-                            bot_id.to_string().into(),
-                            chat_id.to_string().into(),
-                            message_id.to_string().into(),
-                            worker_id.to_string().into(),
-                            lease_cutoff.into(),
-                        ],
-                    ))
-                    .await
-                    .map_err(storage)?;
-                let (attempt_count, stored_diagnostic) = match row {
-                    Some(row) => (
-                        stored_i64(&row, "attempt_count")?,
-                        stored_text(&row, "diagnostic")?,
-                    ),
-                    None => {
-                        tx.commit().await.map_err(storage)?;
-                        return Ok(MarkOutcome::LostClaim);
-                    }
-                };
-                let next_count = attempt_count.saturating_add(1);
-                let exhausted = next_count >= INBOUND_RETRY_BUDGET;
-                // 可重试失败仍是同一轮等待的后续观测：既有等待起点沿用，最新原因并入
-                // 同一条诊断。终局收束不再等待，因此不携带等待标记。
-                let carried = carried_readiness_wait(&stored_diagnostic, diagnostic);
-                let updated = if exhausted {
+                let next_count = work.attempt_count.saturating_add(1);
+                if next_count >= INBOUND_RETRY_BUDGET {
                     tx.execute_raw(statement(
                         "UPDATE inbound_work
                          SET status='needs_attention',
@@ -841,7 +846,7 @@ impl BotStateStore {
                             )
                             .into(),
                             now.into(),
-                            identity.into(),
+                            identity,
                             bot_id.to_string().into(),
                             chat_id.to_string().into(),
                             message_id.to_string().into(),
@@ -859,11 +864,11 @@ impl BotStateStore {
                          WHERE identity=? AND bot_id=? AND chat_id=? AND message_id=?
                            AND claimed_by=? AND status='claimed' AND claimed_at>?",
                         vec![
-                            carried.into(),
+                            diagnostic.to_string().into(),
                             next_count.into(),
                             now.saturating_add(retry_backoff_seconds(next_count)).into(),
                             now.into(),
-                            identity.into(),
+                            identity,
                             bot_id.to_string().into(),
                             chat_id.to_string().into(),
                             message_id.to_string().into(),
@@ -873,51 +878,14 @@ impl BotStateStore {
                     ))
                     .await
                     .map_err(storage)?
-                };
-                let applied = updated.rows_affected() == 1;
-                // 预算耗尽的终局必须与入站终态原子提交：失 claim 时既不入站终态，也不
-                // 收束创建身份。同一事务内重核活 claim（上面的 SELECT + UPDATE 谓词）
-                // 之后才写路由，任何一步失败整体回滚，不留半态。
-                if applied && exhausted {
-                    Self::close_creating_route_in(&tx, chat_id, diagnostic).await?;
-                }
-                tx.commit().await.map_err(storage)?;
-                if applied {
-                    Ok(MarkOutcome::Applied)
-                } else {
-                    Ok(MarkOutcome::LostClaim)
                 }
             }
             WorkFinish::Deferred(diagnostic) => {
-                let tx = db.begin().await.map_err(storage)?;
-                let row = tx
-                    .query_one_raw(statement(
-                        "SELECT diagnostic FROM inbound_work
-                         WHERE identity=? AND bot_id=? AND chat_id=? AND message_id=?
-                           AND claimed_by=? AND status='claimed' AND claimed_at>?",
-                        vec![
-                            identity.clone().into(),
-                            bot_id.to_string().into(),
-                            chat_id.to_string().into(),
-                            message_id.to_string().into(),
-                            worker_id.to_string().into(),
-                            lease_cutoff.into(),
-                        ],
-                    ))
-                    .await
-                    .map_err(storage)?;
-                let Some(row) = row else {
-                    tx.commit().await.map_err(storage)?;
-                    return Ok(MarkOutcome::LostClaim);
-                };
-                // 等待起点持久在既有 `diagnostic` 列：崩溃/重启后继续用同一起点计时。
-                let waiting_since =
-                    readiness_wait_started(&stored_text(&row, "diagnostic")?).unwrap_or(now);
-                let updated = if now.saturating_sub(waiting_since)
-                    >= INBOUND_READINESS_WAIT_BUDGET_SECONDS
-                {
-                    // 等待上限到期：诊断指向“准备未完成”，与失败次数无关；此时路由是
-                    // bound + PendingStart，不得按 creating 收束。
+                let deadline = admitted
+                    .checked_add(INBOUND_READINESS_WAIT_BUDGET_SECONDS)
+                    .ok_or_else(work_needs_recovery)?;
+                if now >= deadline {
+                    // 等待上限只收束这一条入站工作：仍在准备的授权与 bound 路由保持原样。
                     tx.execute_raw(statement(
                         "UPDATE inbound_work
                          SET status='needs_attention', diagnostic=?, claimed_by='', claimed_at=0, updated_at=?
@@ -929,7 +897,7 @@ impl BotStateStore {
                             )
                             .into(),
                             now.into(),
-                            identity.into(),
+                            identity,
                             bot_id.to_string().into(),
                             chat_id.to_string().into(),
                             message_id.to_string().into(),
@@ -947,13 +915,10 @@ impl BotStateStore {
                          WHERE identity=? AND bot_id=? AND chat_id=? AND message_id=?
                            AND claimed_by=? AND status='claimed' AND claimed_at>?",
                         vec![
-                            // 等待起点后面保留人类可读原因：标记与诊断同列并存，
-                            // 既不新增 schema 列也不丢可观察性。
-                            format!("{INBOUND_READINESS_WAIT_MARKER}{waiting_since}:{diagnostic}")
-                                .into(),
+                            diagnostic.to_string().into(),
                             now.saturating_add(INBOUND_READINESS_POLL_SECONDS).into(),
                             now.into(),
-                            identity.into(),
+                            identity,
                             bot_id.to_string().into(),
                             chat_id.to_string().into(),
                             message_id.to_string().into(),
@@ -963,16 +928,200 @@ impl BotStateStore {
                     ))
                     .await
                     .map_err(storage)?
-                };
-                let applied = updated.rows_affected() == 1;
-                tx.commit().await.map_err(storage)?;
-                if applied {
-                    Ok(MarkOutcome::Applied)
-                } else {
-                    Ok(MarkOutcome::LostClaim)
                 }
             }
+        };
+        let applied = updated.rows_affected() == 1;
+        if applied {
+            // 与入站终态同一事务：失 claim 时两者都不写，路由只按原创建身份收束。
+            let collapse_reason = match &finish {
+                WorkFinish::CreationConflict(diagnostic) => Some((*diagnostic).to_string()),
+                WorkFinish::Retryable(diagnostic)
+                    if work.attempt_count.saturating_add(1) >= INBOUND_RETRY_BUDGET =>
+                {
+                    Some(format!(
+                        "conversation Thread creation did not complete: {diagnostic}"
+                    ))
+                }
+                _ => None,
+            };
+            if let Some(diagnostic) = collapse_reason.as_deref() {
+                Self::collapse_creating_route_in(&tx, &keys, &work, diagnostic).await?;
+            }
         }
+        tx.commit().await.map_err(storage)?;
+        if applied {
+            Ok(MarkOutcome::Applied)
+        } else {
+            Ok(MarkOutcome::LostClaim)
+        }
+    }
+
+    /// 对确定未受理的可重试 submit 记录退避，保留原 claim 与附件所有权。
+    ///
+    /// BudgetExhausted 不先写终态：调用者将原失败交还 finisher，由既有 Retryable
+    /// 分支在同一事务中完成第八次失败及必要的 creating 路由收束。
+    pub(in crate::bots) async fn retain_inbound_retry(
+        &self,
+        inbound: &FrozenInbound,
+        worker_id: &str,
+        diagnostic: &str,
+    ) -> Result<InboundRetryWait, FeishuError> {
+        let keys = WorkKeys {
+            identity: inbound_identity(&inbound.bot_id, &inbound.chat_id, &inbound.message_id),
+            bot_id: &inbound.bot_id,
+            chat_id: &inbound.chat_id,
+            message_id: &inbound.message_id,
+        };
+        let now = unix_seconds();
+        let cutoff = now.saturating_sub(INBOUND_CLAIM_TTL_SECONDS);
+        let tx = self.db().await?.begin().await.map_err(storage)?;
+        let Some(work) = Self::claimed_work(&tx, &keys, worker_id, cutoff).await? else {
+            return Ok(InboundRetryWait::LostClaim);
+        };
+        Self::admitted_at(&tx, &keys, &work).await?;
+        if work.content_hash != inbound.content_hash
+            || work.project_id != inbound.project_id
+            || work.creation_id != inbound.creation_id
+            || work.binding_revision != inbound.binding_revision
+        {
+            return Err(work_needs_recovery());
+        }
+        let next_count = work.attempt_count.saturating_add(1);
+        if next_count >= INBOUND_RETRY_BUDGET {
+            return Ok(InboundRetryWait::BudgetExhausted);
+        }
+        let retry_at = now
+            .checked_add(retry_backoff_seconds(next_count))
+            .ok_or_else(work_needs_recovery)?;
+        let updated = tx.execute_raw(statement(
+            "UPDATE inbound_work SET attempt_count=?,next_attempt_at=?,diagnostic=?,updated_at=?
+             WHERE identity=? AND bot_id=? AND chat_id=? AND message_id=?
+               AND status='claimed' AND claimed_by=? AND claimed_at>?",
+            vec![next_count.into(), retry_at.into(), diagnostic.to_string().into(), now.into(),
+                keys.identity.into(), inbound.bot_id.clone().into(), inbound.chat_id.clone().into(),
+                inbound.message_id.clone().into(), worker_id.to_string().into(), cutoff.into()],
+        )).await.map_err(storage)?;
+        tx.commit().await.map_err(storage)?;
+        Ok(if updated.rows_affected() == 1 {
+            InboundRetryWait::Until { retry_at }
+        } else {
+            InboundRetryWait::LostClaim
+        })
+    }
+
+    /// 读取当前认领的工作行。没有有效认领与持久行解码损坏分别表达，调用方均不得写终态。
+    async fn claimed_work<C: ConnectionTrait>(
+        db: &C,
+        keys: &WorkKeys<'_>,
+        worker_id: &str,
+        lease_cutoff: i64,
+    ) -> Result<Option<ClaimedWork>, FeishuError> {
+        let row = db
+            .query_one_raw(statement(
+                "SELECT attempt_count, bot_id, chat_id, message_id, content_hash, project_id,
+                        creation_id, binding_revision
+                 FROM inbound_work
+                 WHERE identity=? AND bot_id=? AND chat_id=? AND message_id=?
+                   AND claimed_by=? AND status='claimed' AND claimed_at>?",
+                vec![
+                    keys.identity.clone().into(),
+                    keys.bot_id.to_string().into(),
+                    keys.chat_id.to_string().into(),
+                    keys.message_id.to_string().into(),
+                    worker_id.to_string().into(),
+                    lease_cutoff.into(),
+                ],
+            ))
+            .await
+            .map_err(storage)?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        if stored_text(&row, "bot_id")? != keys.bot_id
+            || stored_text(&row, "chat_id")? != keys.chat_id
+            || stored_text(&row, "message_id")? != keys.message_id
+        {
+            return Err(work_needs_recovery());
+        }
+        let attempt_count = stored_i64(&row, "attempt_count")?;
+        if attempt_count < 0 {
+            return Err(work_needs_recovery());
+        }
+        Ok(Some(ClaimedWork {
+            attempt_count,
+            content_hash: stored_text(&row, "content_hash")?,
+            project_id: stored_text(&row, "project_id")?,
+            creation_id: stored_text(&row, "creation_id")?,
+            binding_revision: strict_watermark(&row, "binding_revision")?,
+        }))
+    }
+
+    /// 首次准备等待的唯一计时来源：受理身份行不可变的 `admitted_at`。
+    ///
+    /// 身份行缺失、字段与该工作行不一致、时间缺失或非正都属于持久损坏，返回需恢复；
+    /// 绝不用工作行的更新时间、诊断文本或当前时间补猜。
+    async fn admitted_at<C: ConnectionTrait>(
+        db: &C,
+        keys: &WorkKeys<'_>,
+        work: &ClaimedWork,
+    ) -> Result<i64, FeishuError> {
+        let row = db
+            .query_one_raw(statement(
+                "SELECT admitted_at, bot_id, chat_id, message_id, content_hash
+                 FROM inbound_identities WHERE identity=?",
+                vec![keys.identity.clone().into()],
+            ))
+            .await
+            .map_err(storage)?;
+        let Some(row) = row else {
+            return Err(work_needs_recovery());
+        };
+        if stored_text(&row, "bot_id")? != keys.bot_id
+            || stored_text(&row, "chat_id")? != keys.chat_id
+            || stored_text(&row, "message_id")? != keys.message_id
+            || stored_text(&row, "content_hash")? != work.content_hash
+        {
+            return Err(work_needs_recovery());
+        }
+        let admitted = stored_i64(&row, "admitted_at")?;
+        if admitted <= 0 {
+            return Err(work_needs_recovery());
+        }
+        Ok(admitted)
+    }
+
+    /// 创建冲突或失败预算耗尽时的路由收束：只认仍匹配该工作原聊天、项目、创建身份与绑定修订
+    /// 的 `creating` 路由，不按 chat 关闭后继显式新建替换出来的创建中路由。
+    async fn collapse_creating_route_in<C: ConnectionTrait>(
+        db: &C,
+        keys: &WorkKeys<'_>,
+        work: &ClaimedWork,
+        diagnostic: &str,
+    ) -> Result<bool, FeishuError> {
+        if work.creation_id.is_empty() || work.project_id.is_empty() {
+            return Ok(false);
+        }
+        let result = db
+            .execute_raw(statement(
+                "UPDATE thread_bindings
+                 SET status='needs_attention', diagnostic=?, updated_at=?, revision=revision+1
+                 WHERE chat_id=? AND project_id=? AND creation_id=? AND revision=? AND status='creating'
+                   AND revision<9223372036854775807",
+                vec![
+                    diagnostic.to_string().into(),
+                    unix_seconds().into(),
+                    keys.chat_id.to_string().into(),
+                    work.project_id.clone().into(),
+                    work.creation_id.clone().into(),
+                    i64::try_from(work.binding_revision)
+                        .map_err(|_| corrupt_binding())?
+                        .into(),
+                ],
+            ))
+            .await
+            .map_err(storage)?;
+        Ok(result.rows_affected() == 1)
     }
 
     /// 只取到期工作：pending/failed 退避到期，或 claimed 租约过期（进程崩溃）。
@@ -1318,81 +1467,6 @@ impl BotStateStore {
         }
         tx.commit().await.map_err(storage)?;
         Ok(thread_id.to_string())
-    }
-
-    /// Collapses this chat's still-`creating` route on the caller's connection. The budget
-    /// exhaustion path calls it inside the same transaction that re-checked the live claim,
-    /// so a lost claim can never collapse a route a successor is still creating.
-    async fn close_creating_route_in<C: ConnectionTrait>(
-        db: &C,
-        chat_id: &str,
-        diagnostic: &str,
-    ) -> Result<bool, FeishuError> {
-        let row = db
-            .query_one_raw(statement(
-                "SELECT status, creation_id, project_id FROM thread_bindings WHERE chat_id=?",
-                vec![chat_id.to_string().into()],
-            ))
-            .await
-            .map_err(storage)?;
-        let Some(row) = row else {
-            return Ok(false);
-        };
-        if strict_text(&row, "status")? != "creating" {
-            return Ok(false);
-        }
-        let creation = strict_text(&row, "creation_id")?;
-        let project = strict_text(&row, "project_id")?;
-        if creation.is_empty() || project.is_empty() {
-            return Ok(false);
-        }
-        let reason = format!("conversation Thread creation did not complete: {diagnostic}");
-        Self::collapse_creating_route(db, chat_id, &creation, &project, &reason).await
-    }
-
-    /// Collapses a `creating` route that can never complete into the **existing**
-    /// `needs_attention` state: same status value, same `diagnostic` column and the same
-    /// revision bump as `mark_binding_attention` (which itself requires a bound route and
-    /// therefore cannot express this case). Idempotent: a second call changes nothing.
-    pub(in crate::bots) async fn mark_creating_attention(
-        &self,
-        chat_id: &str,
-        creation_id: &str,
-        project_id: &str,
-        diagnostic: &str,
-    ) -> Result<bool, FeishuError> {
-        let tx = self.db().await?.begin().await.map_err(storage)?;
-        let changed =
-            Self::collapse_creating_route(&tx, chat_id, creation_id, project_id, diagnostic)
-                .await?;
-        tx.commit().await.map_err(storage)?;
-        Ok(changed)
-    }
-
-    /// The single owner of the `creating → needs_attention` write; runs on a caller-provided
-    /// connection so the exhaustion path stays atomic with the inbound terminal state.
-    async fn collapse_creating_route<C: ConnectionTrait>(
-        db: &C,
-        chat_id: &str,
-        creation_id: &str,
-        project_id: &str,
-        diagnostic: &str,
-    ) -> Result<bool, FeishuError> {
-        let result = db
-            .execute_raw(statement(
-                "UPDATE thread_bindings SET status='needs_attention', diagnostic=?, updated_at=?, revision=revision+1
-                 WHERE chat_id=? AND creation_id=? AND project_id=? AND status='creating' AND revision<9223372036854775807",
-                vec![
-                    diagnostic.to_string().into(),
-                    unix_seconds().into(),
-                    chat_id.to_string().into(),
-                    creation_id.to_string().into(),
-                    project_id.to_string().into(),
-                ],
-            ))
-            .await
-            .map_err(storage)?;
-        Ok(result.rows_affected() == 1)
     }
 
     pub(in crate::bots) async fn mark_binding_attention(
@@ -1915,13 +1989,24 @@ impl BotStateStore {
         record: &SendRecord,
         reply: &reply::InboundReply,
     ) -> Result<Option<SendRecord>, FeishuError> {
-        self.claim_send_fenced(record, Some(reply)).await
+        self.claim_send_fenced(record, Some(SendClaimFence::InboundReply(reply)))
+            .await
+    }
+
+    /// 原发送行与精确公开实体绑定原子提交；已有操作只返回原记录，不重放网络。
+    pub(in crate::bots) async fn claim_publication_file_send(
+        &self,
+        record: &SendRecord,
+        permit: &PublicationFilePermit,
+    ) -> Result<Option<SendRecord>, FeishuError> {
+        self.claim_send_fenced(record, Some(SendClaimFence::Publication(permit)))
+            .await
     }
 
     async fn claim_send_fenced(
         &self,
         record: &SendRecord,
-        reply: Option<&reply::InboundReply>,
+        fence: Option<SendClaimFence<'_>>,
     ) -> Result<Option<SendRecord>, FeishuError> {
         let db = self.db().await?;
         let tx = db.begin().await.map_err(storage)?;
@@ -1934,12 +2019,28 @@ impl BotStateStore {
             .await
             .map_err(storage)?;
         if let Some(row) = existing {
+            if let Some(SendClaimFence::Publication(permit)) = &fence {
+                let existing = conflict_or_existing(record, send_record_from_row(row)?)?;
+                if Self::settle_delivery_file_result(
+                    &tx,
+                    &permit.token.scope,
+                    &permit.entity,
+                    &record.operation_id,
+                )
+                .await?
+                    == publication::SettlementOutcome::Superseded
+                {
+                    return Err(publication::conflict());
+                }
+                tx.commit().await.map_err(storage)?;
+                return Ok(Some(existing));
+            }
             // 先提交只读事务再解码：既有结果的长事实不与本次 initial 同时跨提交等待。
             tx.commit().await.map_err(storage)?;
             let existing = send_record_from_row(row)?;
             return conflict_or_existing(record, existing).map(Some);
         }
-        if let Some(reply) = reply {
+        if let Some(SendClaimFence::InboundReply(reply)) = &fence {
             if record.bot_id != reply.source.bot_id || record.chat_id != reply.source.chat_id {
                 return Err(reply::denied());
             }
@@ -1965,6 +2066,28 @@ impl BotStateStore {
             .await
             .map_err(storage)?;
         if inserted.rows_affected() == 1 {
+            if let Some(SendClaimFence::Publication(permit)) = &fence {
+                let [segment] = record.segments.as_slice() else {
+                    return Err(publication::conflict());
+                };
+                if segment.upload != Some(UploadFact::NotStarted)
+                    || segment.message_stage != Some(MessageStage::NotStarted)
+                    || segment.stop_reason.is_some()
+                    || segment.platform_message_id.is_some()
+                    || !record.platform_message_ids.is_empty()
+                {
+                    return Err(publication::conflict());
+                }
+                Self::bind_delivery_file_operation(
+                    &tx,
+                    &permit.token,
+                    &permit.entity,
+                    permit.expected_ledger_version,
+                    &record.operation_id,
+                    &permit.artifact,
+                )
+                .await?;
+            }
             tx.commit().await.map_err(storage)?;
             return Ok(None);
         }
@@ -1985,6 +2108,22 @@ impl BotStateStore {
                 None,
             ));
         };
+        if let Some(SendClaimFence::Publication(permit)) = &fence {
+            let existing = conflict_or_existing(record, send_record_from_row(row)?)?;
+            if Self::settle_delivery_file_result(
+                &tx,
+                &permit.token.scope,
+                &permit.entity,
+                &record.operation_id,
+            )
+            .await?
+                == publication::SettlementOutcome::Superseded
+            {
+                return Err(publication::conflict());
+            }
+            tx.commit().await.map_err(storage)?;
+            return Ok(Some(existing));
+        }
         // 同理：提交完成后再解码已存事实，避免长材料跨提交等待。
         tx.commit().await.map_err(storage)?;
         let existing = send_record_from_row(row)?;
@@ -2020,6 +2159,110 @@ impl BotStateStore {
         .await
         .map_err(storage)?;
         Ok(())
+    }
+
+    /// 自动前端仅能接续可证明尚未开始的原阶段；已接受的上传不会再次上传。
+    pub(in crate::bots) async fn begin_publication_file_stage(
+        &self,
+        operation_id: &str,
+        permit: &PublicationFilePermit,
+        stage: PublicationFileStage,
+    ) -> Result<PublicationFileAttempt, FeishuError> {
+        let tx = self.db().await?.begin().await.map_err(storage)?;
+        Self::fence_delivery_file_write(&tx, &permit.token, &permit.entity, operation_id).await?;
+        let mut record = publication_send_record_in(&tx, operation_id).await?;
+        let fact = record.segments.first_mut().ok_or_else(corrupt_send)?;
+        match stage {
+            PublicationFileStage::Upload
+                if fact.upload == Some(UploadFact::NotStarted)
+                    && fact.message_stage == Some(MessageStage::NotStarted) =>
+            {
+                fact.upload = Some(UploadFact::InFlight);
+            }
+            PublicationFileStage::Message
+                if matches!(fact.upload, Some(UploadFact::Accepted { .. }))
+                    && fact.message_stage == Some(MessageStage::NotStarted) =>
+            {
+                fact.message_stage = Some(MessageStage::InFlight);
+            }
+            _ => return Err(publication::conflict()),
+        }
+        fact.stop_reason = None;
+        fact.diagnostic = None;
+        fact.platform_diagnostic = None;
+        refresh_publication_send_status(&mut record);
+        write_publication_send_in(&tx, &record).await?;
+        sync_publication_send_in(&tx, permit, operation_id).await?;
+        tx.commit().await.map_err(storage)?;
+        Ok(PublicationFileAttempt {
+            permit: permit.clone(),
+            record,
+            stage,
+            request_started: false,
+            stopped_before_start: false,
+        })
+    }
+
+    /// 已有文件操作在请求准备前失败/取消：只可记录真实 NotStarted 阶段，不能清除
+    /// 遗留 InFlight/Unknown。没有网络意图时不为本地失败先制造一个意图再撤销。
+    pub(in crate::bots) async fn stop_publication_file_before_start(
+        &self,
+        operation_id: &str,
+        permit: &PublicationFilePermit,
+        progress: PublicationFileProgress,
+    ) -> Result<SendRecord, FeishuError> {
+        let PublicationFileProgress::NotStarted { stage, .. } = &progress else {
+            return Err(publication::conflict());
+        };
+        let stage = *stage;
+        let tx = self.db().await?.begin().await.map_err(storage)?;
+        require_publication_owner_in(&tx, &permit.token).await?;
+        let mut record = publication_send_record_in(&tx, operation_id).await?;
+        let fact = &record.segments[0];
+        let unstarted = match stage {
+            PublicationFileStage::Upload => fact.upload == Some(UploadFact::NotStarted),
+            PublicationFileStage::Message => fact.message_stage == Some(MessageStage::NotStarted),
+        };
+        if !unstarted {
+            return Err(publication::conflict());
+        }
+        apply_publication_progress(&mut record, stage, progress)?;
+        refresh_publication_send_status(&mut record);
+        write_publication_send_in(&tx, &record).await?;
+        sync_publication_send_in(&tx, permit, operation_id).await?;
+        tx.commit().await.map_err(storage)?;
+        Ok(record)
+    }
+
+    /// 只合并原阶段结果，不以旧整行快照覆盖另一阶段。真实结果不要求当前授权复活。
+    pub(in crate::bots) async fn settle_publication_file_stage(
+        &self,
+        attempt: &mut PublicationFileAttempt,
+        progress: PublicationFileProgress,
+    ) -> Result<SendRecord, FeishuError> {
+        let tx = self.db().await?.begin().await.map_err(storage)?;
+        let mut record = publication_send_record_in(&tx, &attempt.record.operation_id).await?;
+        conflict_or_existing(&attempt.record, record.clone())?;
+        if attempt.stopped_before_start {
+            return Err(publication::conflict());
+        }
+        let stopped_before_start = matches!(&progress, PublicationFileProgress::NotStarted { .. });
+        if let PublicationFileProgress::NotStarted { stage, .. } = &progress {
+            if attempt.request_started || *stage != attempt.stage {
+                return Err(publication::conflict());
+            }
+            require_publication_owner_in(&tx, &attempt.permit.token).await?;
+        } else if !attempt.request_started {
+            return Err(publication::conflict());
+        }
+        apply_publication_progress(&mut record, attempt.stage, progress)?;
+        refresh_publication_send_status(&mut record);
+        write_publication_send_in(&tx, &record).await?;
+        sync_publication_send_in(&tx, &attempt.permit, &record.operation_id).await?;
+        tx.commit().await.map_err(storage)?;
+        attempt.stopped_before_start = stopped_before_start;
+        attempt.record = record.clone();
+        Ok(record)
     }
 
     /// Each auxiliary IM POST has a durable stage intent under the same live
@@ -2175,6 +2418,225 @@ impl BotStateStore {
     }
 }
 
+async fn require_publication_owner_in<C: ConnectionTrait>(
+    db: &C,
+    token: &publication::DeliveryClaimToken,
+) -> Result<(), FeishuError> {
+    // 只是保存原 owner 的未启动结果，不授予新副作用；关闭授权不抹掉事实，但后继
+    // owner 已接管时不能用旧本地停止覆盖其新阶段。
+    let held = db.query_one_raw(statement(
+        "SELECT 1 FROM bot_delivery_claims WHERE scope_key=? AND owner_id=? AND lease_generation=? AND work_version=?",
+        vec![token.scope.storage_key()?.into(), token.owner_id.clone().into(),
+            i64::try_from(token.lease_generation).map_err(|_| corrupt_send())?.into(),
+            i64::try_from(token.work_version).map_err(|_| corrupt_send())?.into()],
+    )).await.map_err(storage)?.is_some();
+    if !held {
+        return Err(publication::conflict());
+    }
+    Ok(())
+}
+
+async fn publication_send_record_in<C: ConnectionTrait>(
+    db: &C,
+    operation_id: &str,
+) -> Result<SendRecord, FeishuError> {
+    let row = db.query_one_raw(statement(
+        "SELECT operation_id,bot_id,chat_id,content_hash,status,platform_message_ids,segment_facts,send_identity,send_source FROM send_operations WHERE operation_id=?",
+        vec![operation_id.to_string().into()],
+    )).await.map_err(storage)?.ok_or_else(corrupt_send)?;
+    let record = send_record_from_row(row)?;
+    if record.source.is_some()
+        || !matches!(record.identity, SendIdentity::File { .. })
+        || !record.facts_complete
+        || record.segments.len() != 1
+        || !matches!(record.segments[0].content, Some(SendContent::File { .. }))
+        || record.segments[0].index != 0
+        || record.segments[0].uuid.is_empty()
+    {
+        return Err(corrupt_send());
+    }
+    Ok(record)
+}
+
+async fn write_publication_send_in<C: ConnectionTrait>(
+    db: &C,
+    record: &SendRecord,
+) -> Result<(), FeishuError> {
+    let changed = db.execute_raw(statement(
+        "UPDATE send_operations SET status=?,platform_message_ids=?,segment_facts=?,updated_at=? WHERE operation_id=?",
+        vec![record.status.as_str().into(), record.platform_message_ids.join(",").into(),
+            encode_segment_facts(&record.segments)?.into(), unix_seconds().into(), record.operation_id.clone().into()],
+    )).await.map_err(storage)?;
+    if changed.rows_affected() != 1 {
+        return Err(corrupt_send());
+    }
+    Ok(())
+}
+
+async fn sync_publication_send_in<C: ConnectionTrait>(
+    db: &C,
+    permit: &PublicationFilePermit,
+    operation_id: &str,
+) -> Result<(), FeishuError> {
+    if BotStateStore::settle_delivery_file_result(
+        db,
+        &permit.token.scope,
+        &permit.entity,
+        operation_id,
+    )
+    .await?
+        == publication::SettlementOutcome::Superseded
+    {
+        return Err(publication::conflict());
+    }
+    Ok(())
+}
+
+fn refresh_publication_send_status(record: &mut SendRecord) {
+    let fact = &mut record.segments[0];
+    let uncertain = matches!(
+        fact.upload,
+        Some(UploadFact::InFlight | UploadFact::Unknown)
+    ) || matches!(
+        fact.message_stage,
+        Some(MessageStage::InFlight | MessageStage::Unknown)
+    );
+    let rejected = matches!(fact.upload, Some(UploadFact::Rejected))
+        || fact.message_stage == Some(MessageStage::Rejected)
+        || fact.stop_reason.is_some();
+    let status = if fact.message_stage == Some(MessageStage::Accepted) {
+        SendRecordStatus::Succeeded
+    } else if uncertain {
+        SendRecordStatus::Unknown
+    } else if rejected {
+        SendRecordStatus::Rejected
+    } else {
+        SendRecordStatus::Unknown
+    };
+    fact.status = status;
+    record.status = status;
+}
+
+fn apply_publication_progress(
+    record: &mut SendRecord,
+    stage: PublicationFileStage,
+    progress: PublicationFileProgress,
+) -> Result<(), FeishuError> {
+    let fact = record.segments.first_mut().ok_or_else(corrupt_send)?;
+    let progress_stage = match &progress {
+        PublicationFileProgress::Uploaded { .. } => PublicationFileStage::Upload,
+        PublicationFileProgress::Sent { .. } => PublicationFileStage::Message,
+        PublicationFileProgress::Rejected { stage, .. }
+        | PublicationFileProgress::Unknown { stage, .. }
+        | PublicationFileProgress::NotStarted { stage, .. } => *stage,
+    };
+    if stage != progress_stage {
+        return Err(publication::conflict());
+    }
+    match progress {
+        PublicationFileProgress::Uploaded { file_key } => {
+            if file_key.is_empty() {
+                return Err(publication::conflict());
+            }
+            match &fact.upload {
+                Some(UploadFact::Accepted { file_key: existing }) if *existing == file_key => {
+                    return Ok(());
+                }
+                Some(UploadFact::InFlight | UploadFact::Unknown) => {}
+                _ => return Err(publication::conflict()),
+            }
+            fact.upload = Some(UploadFact::Accepted { file_key });
+            fact.stop_reason = None;
+            fact.diagnostic = None;
+            fact.platform_diagnostic = None;
+        }
+        PublicationFileProgress::Sent { message_id } => {
+            if message_id.is_empty() || !matches!(fact.upload, Some(UploadFact::Accepted { .. })) {
+                return Err(publication::conflict());
+            }
+            match fact.message_stage {
+                Some(MessageStage::Accepted)
+                    if fact.platform_message_id.as_ref() == Some(&message_id) =>
+                {
+                    return Ok(());
+                }
+                Some(MessageStage::InFlight | MessageStage::Unknown) => {}
+                _ => return Err(publication::conflict()),
+            }
+            fact.message_stage = Some(MessageStage::Accepted);
+            fact.platform_message_id = Some(message_id.clone());
+            record.platform_message_ids = vec![message_id];
+            fact.stop_reason = None;
+            fact.diagnostic = None;
+            fact.platform_diagnostic = None;
+        }
+        PublicationFileProgress::Rejected { diagnostic, .. } => {
+            match stage {
+                PublicationFileStage::Upload => match fact.upload {
+                    Some(UploadFact::Rejected) => return Ok(()),
+                    Some(UploadFact::InFlight | UploadFact::Unknown) => {
+                        fact.upload = Some(UploadFact::Rejected)
+                    }
+                    _ => return Err(publication::conflict()),
+                },
+                PublicationFileStage::Message => match fact.message_stage {
+                    Some(MessageStage::Rejected) => return Ok(()),
+                    Some(MessageStage::InFlight | MessageStage::Unknown) => {
+                        fact.message_stage = Some(MessageStage::Rejected)
+                    }
+                    _ => return Err(publication::conflict()),
+                },
+            }
+            fact.diagnostic = Some(diagnostic.message.clone());
+            fact.platform_diagnostic = Some(diagnostic);
+        }
+        PublicationFileProgress::Unknown { diagnostic, .. } => {
+            match stage {
+                PublicationFileStage::Upload => match fact.upload {
+                    Some(UploadFact::Accepted { .. } | UploadFact::Rejected) => return Ok(()),
+                    Some(UploadFact::InFlight | UploadFact::Unknown) => {
+                        fact.upload = Some(UploadFact::Unknown)
+                    }
+                    _ => return Err(publication::conflict()),
+                },
+                PublicationFileStage::Message => match fact.message_stage {
+                    Some(MessageStage::Accepted | MessageStage::Rejected) => return Ok(()),
+                    Some(MessageStage::InFlight | MessageStage::Unknown) => {
+                        fact.message_stage = Some(MessageStage::Unknown)
+                    }
+                    _ => return Err(publication::conflict()),
+                },
+            }
+            if let Some(diagnostic) = diagnostic {
+                fact.diagnostic = Some(diagnostic.message.clone());
+                fact.platform_diagnostic = Some(diagnostic);
+            }
+        }
+        PublicationFileProgress::NotStarted {
+            reason, diagnostic, ..
+        } => {
+            match stage {
+                PublicationFileStage::Upload => match fact.upload {
+                    Some(UploadFact::NotStarted | UploadFact::InFlight) => {
+                        fact.upload = Some(UploadFact::NotStarted)
+                    }
+                    _ => return Err(publication::conflict()),
+                },
+                PublicationFileStage::Message => match fact.message_stage {
+                    Some(MessageStage::NotStarted | MessageStage::InFlight) => {
+                        fact.message_stage = Some(MessageStage::NotStarted)
+                    }
+                    _ => return Err(publication::conflict()),
+                },
+            }
+            fact.stop_reason = Some(reason);
+            fact.diagnostic = Some(diagnostic);
+            fact.platform_diagnostic = None;
+        }
+    }
+    Ok(())
+}
+
 fn inbound_identity(bot_id: &str, chat_id: &str, message_id: &str) -> String {
     format!("{bot_id}:{chat_id}:{message_id}")
 }
@@ -2200,32 +2662,6 @@ fn retry_backoff_seconds(attempt: i64) -> i64 {
     INBOUND_RETRY_BASE_SECONDS
         .saturating_mul(1i64.checked_shl(shift).unwrap_or(INBOUND_RETRY_MAX_SECONDS))
         .min(INBOUND_RETRY_MAX_SECONDS)
-}
-
-/// 就绪等待的起点只从本模块写下的标记里解码；任何其它诊断文本都不算等待起点，
-/// 因此失败诊断不会被误当成“还在准备”，等待也不会被一次失败清零。
-fn readiness_wait_started(diagnostic: &str) -> Option<i64> {
-    let raw = diagnostic.strip_prefix(INBOUND_READINESS_WAIT_MARKER)?;
-    let (stamp, _) = raw.split_once(':').unwrap_or((raw, ""));
-    let start = stamp.parse::<i64>().ok()?;
-    (start > 0).then_some(start)
-}
-
-/// 失败/中断写入不得丢弃既有等待起点：起点沿用**最早**观测值，最新原因并入同一条
-/// 诊断。没有起点时原样写新原因，所以普通失败诊断不会被误当成等待。
-fn carried_readiness_wait(stored: &str, diagnostic: &str) -> String {
-    match readiness_wait_started(stored) {
-        Some(start) => format!("{INBOUND_READINESS_WAIT_MARKER}{start}:{diagnostic}"),
-        None => diagnostic.to_string(),
-    }
-}
-
-fn mark_outcome(rows_affected: u64) -> MarkOutcome {
-    if rows_affected == 1 {
-        MarkOutcome::Applied
-    } else {
-        MarkOutcome::LostClaim
-    }
 }
 
 fn empty_to_none(value: String) -> Option<String> {
@@ -2305,6 +2741,7 @@ fn legacy_segment_facts(ids: &[String], overall: SendRecordStatus) -> (Vec<SendS
             content: None,
             upload: None,
             message_stage: None,
+            notice_attempt: None,
             platform_diagnostic: None,
             stop_reason: None,
         })
@@ -2397,7 +2834,7 @@ pub(crate) fn verify_send_identity(
 fn storage(error: impl std::fmt::Display) -> FeishuError {
     FeishuError::new(
         FeishuErrorKind::Unavailable,
-        format!("bot state failed: {error}"),
+        format!("bot state failed: {error:#}"),
         true,
         None,
     )
@@ -2594,6 +3031,9 @@ async fn open_bot_state(path: &Path) -> Result<DatabaseConnection, FeishuError> 
         }
     };
     let _initialization = initialization.lock().await;
+    schema::inspect_existing(&path)
+        .await
+        .map_err(state_failure)?;
     // Exclusive file creation, not an empty-schema heuristic, establishes new ownership. An
     // interrupted attempt leaves its file for local recovery; a later open cannot claim it anew.
     let origin = match tokio::fs::OpenOptions::new()
@@ -2624,229 +3064,11 @@ async fn open_bot_state(path: &Path) -> Result<DatabaseConnection, FeishuError> 
         .acquire_timeout(Duration::from_secs(8))
         .sqlx_logging(false);
     let db = Database::connect(options).await.map_err(state_failure)?;
-    initialize(&db, origin).await.map_err(state_failure)?;
+    if let Err(error) = schema::initialize(&db, origin).await {
+        let _ = db.close().await;
+        return Err(state_failure(error));
+    }
     Ok(db)
-}
-
-async fn initialize(db: &DatabaseConnection, origin: DatabaseOrigin) -> anyhow::Result<()> {
-    let tx = db.begin().await?;
-    // A previously committed bot database must not silently rebuild an empty reference ledger.
-    // All established schema versions own both tables. Even an entirely empty existing schema
-    // is not evidence that we created this file; inspect before any CREATE/MIGRATE statement.
-    let version = if matches!(origin, DatabaseOrigin::Existing) {
-        let tables = tx
-        .query_one_raw(statement(
-                "SELECT COUNT(*) AS required FROM sqlite_master WHERE type='table' AND name IN ('bot_meta','send_operations')",
-                vec![],
-            ))
-            .await?
-            .ok_or_else(|| crate::studio::startup::data_error(anyhow::anyhow!("bot schema identity is unreadable")))?;
-        if tables.try_get::<i64>("", "required")? != 2 {
-            return Err(crate::studio::startup::data_error(anyhow::anyhow!(
-                "persisted bot database lacks its established metadata or send ledger; local recovery required"
-            )));
-        }
-        let metadata_columns = table_columns(&tx, "bot_meta").await?;
-        if !["id", "schema_version"]
-            .iter()
-            .all(|column| metadata_columns.contains(*column))
-        {
-            return Err(crate::studio::startup::data_error(anyhow::anyhow!(
-                "persisted bot metadata schema is incomplete; local recovery required"
-            )));
-        }
-        let metadata = tx
-            .query_one_raw(statement(
-                "SELECT schema_version FROM bot_meta WHERE id=1",
-                vec![],
-            ))
-            .await?
-            .ok_or_else(|| {
-                crate::studio::startup::data_error(anyhow::anyhow!(
-                    "persisted bot database lacks its schema version; local recovery required"
-                ))
-            })?;
-        let version = metadata
-            .try_get::<i64>("", "schema_version")
-            .map_err(crate::studio::startup::data_error)?;
-        if !(1..=BOT_STATE_SCHEMA_VERSION).contains(&version) {
-            return Err(crate::studio::startup::data_error(anyhow::anyhow!(
-                "persisted bot schema version is invalid or unsupported; local recovery required"
-            )));
-        }
-        if version >= 6 {
-            let columns = table_columns(&tx, "send_operations").await?;
-            let file_marked = columns.contains("send_identity") || columns.contains("send_source");
-            let source = match version {
-                6 if !file_marked => LedgerSource::MainCard6,
-                6 => LedgerSource::TaskFile6,
-                7 => LedgerSource::TaskFile7,
-                8 | 9 => LedgerSource::Current8,
-                _ => unreachable!("schema version was validated"),
-            };
-            validate_ledger_schema(&tx, source).await?;
-            match source {
-                LedgerSource::MainCard6 => {
-                    // Main's card6 stored only snake_case text sends, not task file6 facts.
-                    ensure_column(
-                        &tx,
-                        "send_operations",
-                        "send_identity",
-                        "TEXT NOT NULL DEFAULT '{\"kind\":\"legacyText\"}'",
-                    )
-                    .await?;
-                    ensure_column(
-                        &tx,
-                        "send_operations",
-                        "send_source",
-                        "TEXT NOT NULL DEFAULT 'null'",
-                    )
-                    .await?;
-                    migrate_text_send_facts(&tx).await?;
-                    migrate_send_stages(&tx).await?;
-                }
-                LedgerSource::TaskFile6 => migrate_send_stages(&tx).await?,
-                LedgerSource::TaskFile7 | LedgerSource::Current8 => {}
-            }
-            if !matches!(source, LedgerSource::Current8) {
-                card::migrate(&tx).await?;
-            }
-            // First prove the complete C1 representation, then establish the distinct v9 boundary.
-            validate_ledger_schema(&tx, LedgerSource::Current8).await?;
-            if version < 9 {
-                audience::migrate(&tx).await?;
-                tx.execute_raw(statement(
-                    "UPDATE bot_meta SET schema_version=? WHERE id=1",
-                    vec![BOT_STATE_SCHEMA_VERSION.into()],
-                ))
-                .await?;
-            } else {
-                audience::validate_target_structure(&tx).await?;
-                audience::prepare_count_indexes(&tx).await?;
-                audience::validate(&tx).await?;
-            }
-            tx.commit().await?;
-            return Ok(());
-        }
-        let columns = table_columns(&tx, "send_operations").await?;
-        if columns.contains("send_identity") || columns.contains("send_source") {
-            return Err(crate::studio::startup::data_error(anyhow::anyhow!(
-                "text ledger declares incompatible file markers; local recovery required"
-            )));
-        }
-        schema::validate(&tx, version).await?;
-        version
-    } else {
-        0 // Only this call's exclusive file creation authorizes a genuinely new schema.
-    };
-    tx.execute_unprepared(&schema::META_TABLE.replacen(
-        "CREATE TABLE",
-        "CREATE TABLE IF NOT EXISTS",
-        1,
-    ))
-    .await?;
-    tx.execute_unprepared(
-        "CREATE TABLE IF NOT EXISTS inbound_identities (
-            identity TEXT PRIMARY KEY,
-            bot_id TEXT NOT NULL DEFAULT '',
-            message_id TEXT NOT NULL,
-            chat_id TEXT NOT NULL,
-            content_hash TEXT NOT NULL,
-            admitted_at INTEGER NOT NULL
-        )",
-    )
-    .await?;
-    tx.execute_unprepared(
-        "CREATE TABLE IF NOT EXISTS inbound_work (
-            identity TEXT PRIMARY KEY,
-            bot_id TEXT NOT NULL DEFAULT '',
-            chat_id TEXT NOT NULL DEFAULT '',
-            message_id TEXT NOT NULL DEFAULT '',
-            content_hash TEXT NOT NULL DEFAULT '',
-            text TEXT NOT NULL DEFAULT '',
-            open_id TEXT NOT NULL DEFAULT '',
-            chat_kind TEXT NOT NULL DEFAULT '',
-            generation INTEGER NOT NULL DEFAULT 0,
-            app_id TEXT NOT NULL DEFAULT '',
-            project_id TEXT NOT NULL DEFAULT '',
-            creation_id TEXT NOT NULL DEFAULT '',
-            binding_revision INTEGER NOT NULL DEFAULT 0,
-            status TEXT NOT NULL,
-            diagnostic TEXT NOT NULL,
-            claimed_by TEXT NOT NULL DEFAULT '',
-            claimed_at INTEGER NOT NULL DEFAULT 0,
-            updated_at INTEGER NOT NULL
-        )",
-    )
-    .await?;
-    tx.execute_unprepared(
-        "CREATE TABLE IF NOT EXISTS thread_bindings (
-            chat_id TEXT PRIMARY KEY,
-            thread_id TEXT NOT NULL,
-            status TEXT NOT NULL DEFAULT 'bound',
-            creation_id TEXT NOT NULL DEFAULT '',
-            project_id TEXT NOT NULL DEFAULT '',
-            revision INTEGER NOT NULL DEFAULT 0,
-            generation INTEGER NOT NULL DEFAULT 0,
-            diagnostic TEXT NOT NULL DEFAULT '',
-            created_at INTEGER NOT NULL,
-            updated_at INTEGER NOT NULL DEFAULT 0
-        )",
-    )
-    .await?;
-    tx.execute_unprepared(
-        "CREATE TABLE IF NOT EXISTS observed_directs (
-            chat_id TEXT PRIMARY KEY,
-            open_id TEXT NOT NULL,
-            name TEXT NOT NULL,
-            last_observed_at INTEGER NOT NULL
-        )",
-    )
-    .await?;
-    tx.execute_unprepared(
-        "CREATE TABLE IF NOT EXISTS pairing_requests (
-            request_id TEXT PRIMARY KEY,
-            open_id TEXT NOT NULL,
-            display_name TEXT NOT NULL,
-            created_at INTEGER NOT NULL
-        )",
-    )
-    .await?;
-    tx.execute_unprepared(
-        "CREATE TABLE IF NOT EXISTS send_operations (
-            operation_id TEXT PRIMARY KEY,
-            bot_id TEXT NOT NULL DEFAULT '',
-            chat_id TEXT NOT NULL,
-            content_hash TEXT NOT NULL,
-            status TEXT NOT NULL,
-            platform_message_ids TEXT NOT NULL,
-            updated_at INTEGER NOT NULL
-        )",
-    )
-    .await?;
-    tx.execute_unprepared(
-        "CREATE TABLE IF NOT EXISTS binding_operations (
-            operation_id TEXT PRIMARY KEY,
-            bot_id TEXT NOT NULL,
-            chat_id TEXT NOT NULL,
-            content_hash TEXT NOT NULL,
-            expected_revision INTEGER NOT NULL,
-            creation_id TEXT NOT NULL,
-            thread_id TEXT NOT NULL DEFAULT '',
-            updated_at INTEGER NOT NULL
-        )",
-    )
-    .await?;
-    migrate(&tx, version).await?;
-    validate_ledger_schema(&tx, LedgerSource::Current8).await?;
-    audience::migrate(&tx).await?;
-    tx.execute_raw(statement(
-        "UPDATE bot_meta SET schema_version=? WHERE id=1",
-        vec![BOT_STATE_SCHEMA_VERSION.into()],
-    ))
-    .await?;
-    tx.commit().await?;
-    Ok(())
 }
 
 /// Version and complete required structures jointly identify the known divergent schemas.
@@ -2855,166 +3077,7 @@ async fn validate_ledger_schema<C: ConnectionTrait>(
     db: &C,
     source: LedgerSource,
 ) -> anyhow::Result<()> {
-    let required: &[(&str, &[&str])] = &[
-        ("bot_meta", &["id", "schema_version"]),
-        (
-            "inbound_identities",
-            &[
-                "identity",
-                "bot_id",
-                "message_id",
-                "chat_id",
-                "content_hash",
-                "admitted_at",
-            ],
-        ),
-        (
-            "inbound_work",
-            &[
-                "identity",
-                "bot_id",
-                "chat_id",
-                "message_id",
-                "content_hash",
-                "text",
-                "open_id",
-                "chat_kind",
-                "generation",
-                "app_id",
-                "project_id",
-                "creation_id",
-                "binding_revision",
-                "status",
-                "diagnostic",
-                "claimed_by",
-                "claimed_at",
-                "updated_at",
-                "attachments",
-                "watch_input",
-                "attempt_count",
-                "next_attempt_at",
-            ],
-        ),
-        (
-            "thread_bindings",
-            &[
-                "chat_id",
-                "thread_id",
-                "status",
-                "creation_id",
-                "project_id",
-                "revision",
-                "generation",
-                "diagnostic",
-                "created_at",
-                "updated_at",
-            ],
-        ),
-        (
-            "observed_directs",
-            &["chat_id", "open_id", "name", "last_observed_at"],
-        ),
-        (
-            "pairing_requests",
-            &["request_id", "open_id", "display_name", "created_at"],
-        ),
-        (
-            "send_operations",
-            &[
-                "operation_id",
-                "bot_id",
-                "chat_id",
-                "content_hash",
-                "status",
-                "platform_message_ids",
-                "updated_at",
-                "segment_facts",
-                "send_identity",
-                "send_source",
-            ],
-        ),
-        (
-            "binding_operations",
-            &[
-                "operation_id",
-                "bot_id",
-                "chat_id",
-                "content_hash",
-                "expected_revision",
-                "creation_id",
-                "thread_id",
-                "updated_at",
-            ],
-        ),
-    ];
-    for (table, required_columns) in required {
-        let present = db
-            .query_one_raw(statement(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
-                vec![(*table).into()],
-            ))
-            .await?
-            .is_some();
-        let columns = table_columns(db, table).await?;
-        if !present
-            || required_columns
-                .iter()
-                .filter(|column| {
-                    !matches!(source, LedgerSource::MainCard6)
-                        || !matches!(**column, "send_identity" | "send_source")
-                })
-                .any(|column| !columns.contains(*column))
-        {
-            return Err(crate::studio::startup::data_error(anyhow::anyhow!(
-                "persisted file-aware bot schema is incomplete in {table}; local recovery required"
-            )));
-        }
-    }
-    let card_present = db
-        .query_one_raw(statement(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='bot_card_streams'",
-            vec![],
-        ))
-        .await?
-        .is_some();
-    if matches!(source, LedgerSource::MainCard6 | LedgerSource::Current8) {
-        let columns = table_columns(db, "bot_card_streams").await?;
-        if !card_present
-            || [
-                "identity",
-                "bot_id",
-                "chat_id",
-                "message_id",
-                "thread_id",
-                "original_input",
-                "watch_input",
-                "turn_id",
-                "version",
-                "state_json",
-                "updated_at",
-            ]
-            .iter()
-            .any(|column| !columns.contains(*column))
-        {
-            return Err(crate::studio::startup::data_error(anyhow::anyhow!(
-                "card ledger schema is incomplete; local recovery required"
-            )));
-        }
-    } else if card_present {
-        return Err(crate::studio::startup::data_error(anyhow::anyhow!(
-            "bot ledger combines incompatible historical schema markers; local recovery required"
-        )));
-    }
-    schema::validate(
-        db,
-        match source {
-            LedgerSource::MainCard6 | LedgerSource::TaskFile6 => 6,
-            LedgerSource::TaskFile7 => 7,
-            LedgerSource::Current8 => 8,
-        },
-    )
-    .await?;
-    Ok(())
+    legacy_schema::validate_source(db, source).await
 }
 
 async fn migrate<C: ConnectionTrait>(db: &C, version: i64) -> anyhow::Result<()> {
@@ -3253,6 +3316,7 @@ async fn migrate_text_send_facts<C: ConnectionTrait>(db: &C) -> anyhow::Result<(
                         content: None,
                         upload: None,
                         message_stage: None,
+                        notice_attempt: None,
                         platform_diagnostic: None,
                         stop_reason: None,
                     })
@@ -3514,6 +3578,7 @@ mod tests {
                 }),
                 upload: Some(UploadFact::NotStarted),
                 message_stage: Some(MessageStage::NotStarted),
+                notice_attempt: None,
                 platform_diagnostic: None,
                 stop_reason: None,
             }],
@@ -4028,6 +4093,8 @@ mod tests {
                 content_hash TEXT NOT NULL, expected_revision INTEGER NOT NULL,
                 creation_id TEXT NOT NULL, thread_id TEXT NOT NULL DEFAULT '',
                 updated_at INTEGER NOT NULL);
+             INSERT INTO inbound_identities(identity, bot_id, message_id, chat_id, content_hash, admitted_at)
+             VALUES('legacy:chat:m1', 'legacy', 'm1', 'chat', 'hash', 1);
              INSERT INTO inbound_work(identity, bot_id, chat_id, message_id, content_hash, text,
                open_id, chat_kind, app_id, project_id, creation_id, binding_revision, status,
                diagnostic, claimed_by, claimed_at, updated_at)
@@ -4268,26 +4335,93 @@ mod tests {
             let directory = tempfile::tempdir()?;
             let path = directory.path().join("bot-state.sqlite");
             let legacy = v3_database(&path).await;
-            // A later text-only ledger stored real per-segment snake_case JSON. Both the oldest
-            // no-facts row and this known partial result must survive the v6 typed-send migration.
+            // Preserve both source shapes: the oldest row has no segment facts, while this
+            // later text result already owns exact snake_case UUID and platform facts.
             legacy.execute_unprepared(
-            "ALTER TABLE send_operations ADD COLUMN segment_facts TEXT NOT NULL DEFAULT '';
-             INSERT INTO send_operations(operation_id, bot_id, chat_id, content_hash, status, platform_message_ids, updated_at, segment_facts)
-             VALUES('op-with-facts', 'legacy', 'chat', 'old-text-hash', 'partial', 'pm-known', 1,
-               '[{\"index\":0,\"uuid\":\"old-uuid\",\"status\":\"succeeded\",\"platform_message_id\":\"pm-known\",\"diagnostic\":null},{\"index\":1,\"uuid\":\"old-uuid-2\",\"status\":\"rejected\",\"platform_message_id\":null,\"diagnostic\":\"known rejection\"}]');"
-        ).await?;
-            if version == 5 {
-                // These are the remaining columns in HEAD's schema5 initialize+migrate result.
-                // Do not invent earlier per-column introduction versions or reject pre6 schemas.
-                legacy.execute_unprepared(
-                "ALTER TABLE inbound_work ADD COLUMN attachments TEXT NOT NULL DEFAULT '[]';
-                 ALTER TABLE inbound_work ADD COLUMN watch_input TEXT NOT NULL DEFAULT '';
-                 ALTER TABLE inbound_work ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 0;
-                 ALTER TABLE inbound_work ADD COLUMN next_attempt_at INTEGER NOT NULL DEFAULT 0;
-                 UPDATE bot_meta SET schema_version=5 WHERE id=1;",
+                "ALTER TABLE send_operations ADD COLUMN segment_facts TEXT NOT NULL DEFAULT '';
+                 INSERT INTO send_operations(operation_id,bot_id,chat_id,content_hash,status,platform_message_ids,updated_at,segment_facts)
+                 VALUES('op-with-facts','legacy','chat','old-text-hash','partial','pm-known',1,
+                 '[{\"index\":0,\"uuid\":\"old-uuid\",\"status\":\"succeeded\",\"platform_message_id\":\"pm-known\",\"diagnostic\":null},{\"index\":1,\"uuid\":\"old-uuid-2\",\"status\":\"rejected\",\"platform_message_id\":null,\"diagnostic\":\"known rejection\"}]');"
             ).await?;
+            if version == 5 {
+                // Keep the injected-failure probe at version three; after rollback the
+                // successful import below uses this complete historical version-five shape.
+                legacy.execute_unprepared(
+                    "ALTER TABLE inbound_work ADD COLUMN attachments TEXT NOT NULL DEFAULT '[]';
+                     ALTER TABLE inbound_work ADD COLUMN watch_input TEXT NOT NULL DEFAULT '';
+                     ALTER TABLE inbound_work ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 0;
+                     ALTER TABLE inbound_work ADD COLUMN next_attempt_at INTEGER NOT NULL DEFAULT 0;"
+                ).await?;
             }
-            drop(legacy);
+            legacy.execute_unprepared("CREATE TRIGGER reject_ledger_migration BEFORE UPDATE ON bot_meta BEGIN SELECT RAISE(ABORT,'injected ledger migration failure'); END").await?;
+            legacy.close().await?;
+
+            let failed = BotStateStore::new(path.clone());
+            let failure = failed
+                .list_due_inbound("legacy")
+                .await
+                .expect_err("ledger migration must fail");
+            // Public diagnostics deliberately redact persistent contents. Assert the retained
+            // typed private cause, not a leak through FeishuError's user-facing Display.
+            let FeishuError::Protocol { source, .. } = &failure;
+            let startup = source
+                .as_deref()
+                .and_then(|cause| {
+                    cause.downcast_ref::<crate::studio::startup::StudioStartupError>()
+                })
+                .expect("migration retained its typed startup cause");
+            assert_eq!(
+                startup.kind,
+                crate::studio::startup::StudioStartupErrorKind::Migration
+            );
+            let failure_chain = format!("{:#}", anyhow::Error::new(failure));
+            assert!(failure_chain.contains("m20261026_000001_bot_ledger_schema"));
+            assert!(failure_chain.contains("injected ledger migration failure"));
+            drop(failed);
+            let probe = Database::connect(
+                sqlite_file_options(&path, SqliteFileMode::ReadWrite, |options| options).await?,
+            )
+            .await?;
+            assert_eq!(
+                probe
+                    .query_one_raw(statement(
+                        "SELECT schema_version FROM bot_meta WHERE id=1",
+                        vec![]
+                    ))
+                    .await?
+                    .unwrap()
+                    .try_get::<i64>("", "schema_version")?,
+                3
+            );
+            assert!(
+                probe
+                    .query_one_raw(statement("SELECT version FROM seaql_migrations", vec![]))
+                    .await?
+                    .is_none()
+            );
+            assert_eq!(
+                probe
+                    .query_one_raw(statement(
+                        "SELECT text FROM inbound_work WHERE identity='legacy:chat:m1'",
+                        vec![]
+                    ))
+                    .await?
+                    .unwrap()
+                    .try_get::<String>("", "text")?,
+                "question"
+            );
+            probe
+                .execute_unprepared("DROP TRIGGER reject_ledger_migration")
+                .await?;
+            // Keep the published failure regression on version three; after that probe, the
+            // successful import still covers each genuine pre-six source in this fixture loop.
+            probe
+                .execute_raw(statement(
+                    "UPDATE bot_meta SET schema_version=? WHERE id=1",
+                    vec![version.into()],
+                ))
+                .await?;
+            probe.close().await?;
 
             let store = BotStateStore::new(path.clone());
             // 旧 claimed 行与绑定、发送事实仍在，schema 升到当前版本。
@@ -4463,6 +4597,7 @@ mod tests {
                     }),
                     upload: Some(UploadFact::InFlight),
                     message_stage: Some(MessageStage::NotStarted),
+                    notice_attempt: None,
                 }],
             };
             assert!(store.claim_send(&file).await?.is_none());
@@ -4501,9 +4636,8 @@ mod tests {
         Ok(())
     }
 
-    /// New card JSON states survive the real v3 -> current ledger migration and
-    /// reopen. Fixtures start from a known preview; this proves storage/lease
-    /// transitions, not platform HTTP acceptance (covered by the observer).
+    /// Frozen pre-publication card rows retain their no-final/continuation materials through the
+    /// official main-card6 migration and reopen. Fixtures do not execute the retired writer.
     #[tokio::test]
     async fn migrated_card_progress_preserves_no_final_and_continuation_targets()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -4520,34 +4654,22 @@ mod tests {
         );
         let binding = card_test_binding("m1");
         let mut no_final = card_test_preview(binding.clone());
-        // Even a previously confirmed content hash cannot turn a remaining
-        // preview into the final answer when canonical Final becomes empty.
-        no_final.final_content_hash = Some(no_final.confirmed_content_hash.clone());
-        no_final.reserve(card::CardAction::Settings {
-            streaming: false,
-            lifecycle: card::CardLifecycle::NoFinalReply,
-            recovery: false,
-        })?;
-        assert!(no_final.final_content_hash.is_none());
-        assert_eq!(
-            store.save_card(&mut no_final, "w1").await?,
-            MarkOutcome::Applied
-        );
-        let mut stale_intent = no_final.clone();
-        assert!(stale_intent.reserve(card::CardAction::Send {}).is_err());
-        confirm_card_test_settings(&mut no_final, card::CardLifecycle::NoFinalReply);
-        assert_eq!(
-            store.save_card(&mut no_final, "w1").await?,
-            MarkOutcome::Applied
-        );
-        assert_eq!(
-            store.save_card(&mut stale_intent, "w1").await?,
-            MarkOutcome::LostClaim
-        );
-        assert_eq!(
-            store.save_card(&mut stale_intent, "crashed-worker").await?,
-            MarkOutcome::LostClaim
-        );
+        // This historical row records a confirmed no-final close, not a new final answer.
+        no_final.version = 2;
+        no_final.sequence = 1;
+        no_final.confirmed_sequence = 1;
+        no_final.lifecycle = card::CardLifecycle::NoFinalReply;
+        no_final.diagnostic = Some(card_test_no_final_diagnostic());
+        no_final.last_operation = Some(card_test_operation(
+            card::CardAction::Settings {
+                streaming: false,
+                lifecycle: card::CardLifecycle::NoFinalReply,
+                recovery: false,
+            },
+            1,
+            card::CardOperationStatus::Confirmed,
+        ));
+        insert_legacy_card_fixture(store.db().await?, &no_final).await?;
         assert_eq!(
             store
                 .finish_inbound_work(
@@ -4597,62 +4719,46 @@ mod tests {
             );
             let binding = card_test_binding(message_id);
             let mut state = card_test_preview(binding.clone());
-            state.reserve(card::CardAction::Settings {
-                streaming: false,
-                lifecycle: card::CardLifecycle::Paused,
-                recovery: false,
-            })?;
-            confirm_card_test_settings(&mut state, card::CardLifecycle::Paused);
-            assert_eq!(
-                store.save_card(&mut state, "w1").await?,
-                MarkOutcome::Applied
-            );
-            let mut previous_target = state.clone();
             let continuation = format!("canonical-input:{message_id}");
-            assert_eq!(
-                store
-                    .save_inbound_watch_input("legacy", "chat", message_id, "w1", &continuation)
-                    .await?,
-                MarkOutcome::Applied
-            );
-            assert!(state.bind_target(&continuation, turn_id)?);
-            assert_eq!(
-                store.save_card(&mut state, "w1").await?,
-                MarkOutcome::Applied
-            );
-            assert_eq!(
-                store.save_card(&mut previous_target, "w1").await?,
-                MarkOutcome::LostClaim
-            );
-            assert_eq!(
-                store
-                    .save_card(&mut previous_target, "crashed-worker")
-                    .await?,
-                MarkOutcome::LostClaim
-            );
-            state.reserve(card::CardAction::Settings {
-                streaming: false,
-                lifecycle,
-                recovery: false,
-            })?;
-            assert_eq!(
-                store.save_card(&mut state, "w1").await?,
-                MarkOutcome::Applied
-            );
-            if unknown {
-                state.last_operation.as_mut().unwrap().status = card::CardOperationStatus::Unknown;
-                state.lifecycle = card::CardLifecycle::NeedsAttention;
+            // Reconstruct the already stored canonical continuation and its original operation.
+            // A fixture INSERT is not a replacement implementation of the old claim/CAS writer.
+            state.version = 4;
+            state.watch_input = continuation.clone();
+            state.turn_id = turn_id.map(str::to_owned);
+            state.sequence = 2;
+            state.confirmed_sequence = if unknown { 1 } else { 2 };
+            state.lifecycle = if unknown {
+                card::CardLifecycle::NeedsAttention
             } else {
-                confirm_card_test_settings(&mut state, lifecycle);
-            }
-            assert_eq!(
-                store.save_card(&mut state, "w1").await?,
-                MarkOutcome::Applied
-            );
+                lifecycle
+            };
+            state.last_operation = Some(card_test_operation(
+                card::CardAction::Settings {
+                    streaming: false,
+                    lifecycle,
+                    recovery: false,
+                },
+                2,
+                if unknown {
+                    card::CardOperationStatus::Unknown
+                } else {
+                    card::CardOperationStatus::Confirmed
+                },
+            ));
+            let db = store.db().await?;
+            db.execute_raw(statement(
+                "UPDATE inbound_work SET watch_input=? WHERE identity=?",
+                vec![
+                    continuation.clone().into(),
+                    inbound_identity("legacy", "chat", message_id).into(),
+                ],
+            ))
+            .await?;
+            insert_legacy_card_fixture(db, &state).await?;
             expected.push((binding, continuation, turn_id, unknown, lifecycle));
         }
-        // Reproduce fixed main's actual card6 shape (snake_case/empty text facts and no file
-        // identity/source columns), then prove the entire card JSON/UUID/sequence is untouched.
+        // Reproduce fixed main's actual card6 shape, then compare every retained card and
+        // operation fact through the current ledger rather than its retired table encoding.
         let db = store.db().await?;
         let before_cards = db
             .query_all_raw(statement(
@@ -4673,26 +4779,22 @@ mod tests {
         drop(store);
 
         let reopened = BotStateStore::new(path);
-        let no_final = reopened.load_card(&binding).await?.unwrap();
-        let after_cards = reopened
-            .db()
-            .await?
-            .query_all_raw(statement(
-                "SELECT state_json FROM bot_card_streams ORDER BY identity",
-                vec![],
-            ))
-            .await?
-            .into_iter()
-            .map(|row| row.try_get::<String>("", "state_json"))
-            .collect::<Result<Vec<_>, _>>()?;
-        assert_eq!(
-            before_cards, after_cards,
-            "main card6 migration must preserve card states byte-for-byte"
+        reopened.db().await?;
+        for original in &before_cards {
+            let original: card::CardStream = serde_json::from_str(original)?;
+            assert_migrated_card_material(&reopened, &original).await?;
+        }
+        assert!(
+            reopened
+                .db()
+                .await?
+                .query_one_raw(statement("SELECT 1 FROM bot_card_streams LIMIT 1", vec![],))
+                .await?
+                .is_none(),
+            "successful migration must retire the old writable card facts"
         );
-        assert!(matches!(
-            no_final.lifecycle,
-            card::CardLifecycle::NoFinalReply
-        ));
+        let no_final = migrated_card_entity(&reopened, &binding).await?.state.card;
+        assert_eq!(no_final.lifecycle, Some(card::CardLifecycle::NoFinalReply));
         assert!(no_final.final_content_hash.is_none());
         assert_eq!(no_final.confirmed_text, "last verified preview");
         assert_eq!(no_final.diagnostic.as_ref().unwrap().code, "noFinalReply");
@@ -4700,47 +4802,74 @@ mod tests {
             no_final.diagnostic.as_ref().unwrap().message,
             "未生成最终答复，所示内容仅为未完成预览"
         );
-        assert!(no_final.lifecycle.terminal());
+        assert!(
+            no_final
+                .lifecycle
+                .is_some_and(card::CardLifecycle::terminal)
+        );
         let (status, _) = work_status(&reopened, "legacy:chat:m1").await;
         assert_eq!(status, "needs_attention");
         for (binding, continuation, turn_id, unknown, lifecycle) in expected {
-            let mut state = reopened.load_card(&binding).await?.unwrap();
-            assert_eq!(state.watch_input, continuation);
-            assert_eq!(state.turn_id.as_deref(), turn_id);
+            let entity = migrated_card_entity(&reopened, &binding).await?;
+            let scope = reopened.delivery_scope(&entity.scope).await?.unwrap();
+            let publication::DeliveryScopeOrigin::LegacyFinal { legacy } = scope.origin else {
+                panic!("old finite reply gained frontend authority");
+            };
+            assert_eq!(legacy.watch_input, continuation);
+            assert_eq!(legacy.original_turn_id.as_deref(), turn_id);
+            assert_eq!(entity.turn_id.as_deref(), turn_id);
+            let state = &entity.state.card;
             assert_eq!(state.confirmed_text, "last verified preview");
             assert!(state.final_content_hash.is_none());
-            assert_eq!(state.uncertain(), unknown);
+            assert_eq!(
+                matches!(
+                    entity.state.settled.as_ref().map(|settled| &settled.result),
+                    Some(publication::DeliveryResult::Unknown { .. })
+                ),
+                unknown,
+            );
             if unknown {
-                assert!(matches!(
-                    state.lifecycle,
-                    card::CardLifecycle::NeedsAttention
-                ));
-                assert!(
-                    state
-                        .reserve(card::CardAction::Settings {
-                            streaming: false,
-                            lifecycle: card::CardLifecycle::NoFinalReply,
-                            recovery: false,
-                        })
-                        .is_err()
-                );
+                assert_eq!(state.lifecycle, Some(card::CardLifecycle::NeedsAttention));
+                if let publication::DeliveryClaimOutcome::Acquired(token) = reopened
+                    .claim_delivery_scope(&entity.scope, "delivery-owner")
+                    .await?
+                {
+                    assert!(
+                        reopened
+                            .register_delivery_card_intent(
+                                &token,
+                                &entity.entity,
+                                entity.ledger_version,
+                                publication::DeliveryAction::UpdateSettings {
+                                    card_id: state.card_id.clone().unwrap(),
+                                    streaming: false,
+                                    lifecycle: card::CardLifecycle::NoFinalReply,
+                                    recovery: false,
+                                },
+                                |_, _| panic!("Unknown must not allocate a replacement request"),
+                            )
+                            .await
+                            .is_err()
+                    );
+                    assert_eq!(migrated_card_entity(&reopened, &binding).await?, entity);
+                }
             } else {
-                assert!(state.lifecycle == lifecycle);
-                assert!(state.lifecycle.terminal());
+                assert_eq!(state.lifecycle, Some(lifecycle));
+                assert!(state.lifecycle.is_some_and(card::CardLifecycle::terminal));
             }
         }
         Ok(())
     }
 
-    /// Strict current-row decoding must not erase unknown durable facts at any
-    /// nesting level. This exercises the real row load/save boundary.
+    /// The official read-only migration preflight rejects unknown historical card fields at every
+    /// nesting level without rewriting their bytes or version. No retired runtime reader is used.
     #[tokio::test]
     async fn current_card_unknown_fields_are_preserved_and_rejected()
     -> Result<(), Box<dyn std::error::Error>> {
         let directory = tempfile::tempdir()?;
         let path = directory.path().join("card-json.sqlite");
         drop(v3_database(&path).await);
-        let store = BotStateStore::new(path);
+        let store = BotStateStore::new(path.clone());
         store.list_due_inbound("legacy").await?;
         assert_eq!(
             store
@@ -4750,12 +4879,18 @@ mod tests {
         );
         let binding = card_test_binding("m1");
         let mut state = card_test_preview(binding.clone());
-        state.reserve(card::CardAction::Settings {
-            streaming: false,
-            lifecycle: card::CardLifecycle::Paused,
-            recovery: false,
-        })?;
-        confirm_card_test_settings(&mut state, card::CardLifecycle::Paused);
+        state.sequence = 1;
+        state.confirmed_sequence = 1;
+        state.lifecycle = card::CardLifecycle::Paused;
+        state.last_operation = Some(card_test_operation(
+            card::CardAction::Settings {
+                streaming: false,
+                lifecycle: card::CardLifecycle::Paused,
+                recovery: false,
+            },
+            1,
+            card::CardOperationStatus::Confirmed,
+        ));
         state.recovery_used = true;
         state.recovery = Some(card::CardRecovery {
             action: card::CardAction::Settings {
@@ -4765,13 +4900,16 @@ mod tests {
             },
             phase: card::CardRecoveryPhase::Close,
         });
-        state.mark_no_final_reply();
+        state.diagnostic = Some(card_test_no_final_diagnostic());
         state.last_operation.as_mut().unwrap().diagnostic = state.diagnostic.clone();
-        assert_eq!(
-            store.save_card(&mut state, "w1").await?,
-            MarkOutcome::Applied
-        );
         let db = store.db().await?;
+        insert_legacy_card_fixture(db, &state).await?;
+        // Genuine schema-eight fixture: remove current structures/official completion records
+        // before checking the historical codec through the normal non-mutating open preflight.
+        remove_schema9_fixture(db).await?;
+        db.execute_unprepared("UPDATE bot_meta SET schema_version=8 WHERE id=1")
+            .await?;
+        schema::inspect_existing(&path).await?;
         let original = serde_json::to_value(&state)?;
         let mut accepted = Vec::new();
         for pointer in [
@@ -4800,7 +4938,7 @@ mod tests {
                 vec![raw.clone().into()],
             ))
             .await?;
-            if store.load_card(&binding).await.is_ok() {
+            if schema::inspect_existing(&path).await.is_ok() {
                 accepted.push(pointer.to_string());
             }
             let row = db
@@ -4834,7 +4972,7 @@ mod tests {
             ))
             .await?;
             assert!(
-                store.load_card(&binding).await.is_ok(),
+                schema::inspect_existing(&path).await.is_ok(),
                 "declared action must remain readable"
             );
             let tag = payload["lastOperation"]["action"]["kind"]
@@ -4851,7 +4989,7 @@ mod tests {
                 vec![raw.clone().into()],
             ))
             .await?;
-            if store.load_card(&binding).await.is_ok() {
+            if schema::inspect_existing(&path).await.is_ok() {
                 accepted.push(tag);
             }
             assert_eq!(
@@ -4901,14 +5039,16 @@ mod tests {
             );
             let binding = card_test_binding("m1");
             let mut state = card_test_preview(binding.clone());
-            state.reserve(card::CardAction::Content {
-                text: "frozen exact pending body".into(),
-                final_content: false,
-            })?;
-            assert_eq!(
-                store.save_card(&mut state, "worker").await?,
-                MarkOutcome::Applied
-            );
+            state.sequence = 1;
+            state.last_operation = Some(card_test_operation(
+                card::CardAction::Content {
+                    text: "frozen exact pending body".into(),
+                    final_content: false,
+                },
+                1,
+                card::CardOperationStatus::Intent,
+            ));
+            insert_legacy_card_fixture(store.db().await?, &state).await?;
             let db = store.db().await?.clone();
             let mut before: String = db
                 .query_one_raw(statement("SELECT state_json FROM bot_card_streams", vec![]))
@@ -4950,7 +5090,7 @@ mod tests {
                     db.execute_unprepared("INSERT INTO binding_operations VALUES('old-origin','legacy','chat','old-hash',0,'old-creation','old-thread',1)").await?;
                 }
                 "commit-boundary" => {
-                    db.execute_unprepared("CREATE TRIGGER stop_schema9 BEFORE UPDATE OF schema_version ON bot_meta WHEN NEW.schema_version=9 BEGIN SELECT RAISE(ABORT,'controlled migration fault'); END").await?;
+                    db.execute_unprepared("CREATE TRIGGER stop_schema9 BEFORE UPDATE OF schema_version ON bot_meta WHEN NEW.schema_version>8 BEGIN SELECT RAISE(ABORT,'controlled migration fault'); END").await?;
                 }
                 "nested-card" => {
                     let mut value: serde_json::Value = serde_json::from_str(&before)?;
@@ -5004,7 +5144,18 @@ mod tests {
                         "historical origin borrowed the current different Thread's project"
                     );
                 }
-                assert!(reopened.load_card(&binding).await?.unwrap().uncertain());
+                let original: card::CardStream = serde_json::from_str(&before)?;
+                let entity = assert_migrated_card_material(&reopened, &original).await?;
+                assert!(matches!(
+                    entity.state.settled.as_ref().map(|settled| &settled.result),
+                    Some(publication::DeliveryResult::Unknown { .. }),
+                ));
+                assert!(
+                    db.query_one_raw(statement("SELECT 1 FROM bot_card_streams LIMIT 1", vec![],))
+                        .await?
+                        .is_none(),
+                    "{fault} kept a second writable card ledger"
+                );
             } else {
                 assert!(result.is_err(), "{fault} failed to reject migration");
                 let version: i64 = db
@@ -5025,16 +5176,16 @@ mod tests {
                     .is_none(),
                     "{fault} left partial audience DDL"
                 );
+                let after: String = db
+                    .query_one_raw(statement("SELECT state_json FROM bot_card_streams", vec![]))
+                    .await?
+                    .unwrap()
+                    .try_get("", "state_json")?;
+                assert_eq!(
+                    after, before,
+                    "{fault} changed UUID/sequence/accepted body or pending operation during rollback"
+                );
             }
-            let after: String = db
-                .query_one_raw(statement("SELECT state_json FROM bot_card_streams", vec![]))
-                .await?
-                .unwrap()
-                .try_get("", "state_json")?;
-            assert_eq!(
-                after, before,
-                "{fault} changed UUID/sequence/accepted body or pending operation"
-            );
         }
         Ok(())
     }
@@ -5809,18 +5960,26 @@ mod tests {
             InboundClaim::NeedsAttention,
             "the inbound must be collapsed with the binding, not silently dropped"
         );
-        // 收束幂等：再次收束不再改变任何东西。
-        assert!(
-            !store
-                .mark_creating_attention(
+        // 收束后原 claim 已释放：再次从唯一收束入口提交不能覆盖原终局或抬高路由版本。
+        assert_eq!(
+            store
+                .finish_inbound_work(
+                    "botfixture",
                     "chat-1",
-                    "botthread:botfixture:chat-1:op1",
-                    "project",
-                    "again",
+                    "m1",
+                    "w1",
+                    WorkFinish::CreationConflict("again"),
                 )
                 .await?,
-            "the collapse must not repeat"
+            MarkOutcome::LostClaim
         );
+        let unchanged = store
+            .binding_for_chat("chat-1", "botfixture", "project")
+            .await?;
+        assert_eq!(unchanged.status, route.status);
+        assert_eq!(unchanged.revision, route.revision);
+        assert_eq!(unchanged.creation_id, route.creation_id);
+        assert_eq!(unchanged.diagnostic, route.diagnostic);
         // 可恢复：既有显式创建按当前 revision 替换该路由。
         let projection = store
             .binding_for_chat("chat-1", "botfixture", "project")
@@ -5856,7 +6015,16 @@ mod tests {
     }
 
     async fn remove_schema9_fixture(db: &DatabaseConnection) -> Result<(), sea_orm::DbErr> {
-        db.execute_unprepared("DROP TABLE bot_delivery_items; DROP TABLE bot_sync_operations; DROP TABLE bot_authorizations; DROP TABLE bot_audience_origins;
+        // Reconstruct the actual pre-audience source shape, not a partially downgraded
+        // current database whose pending rows still reference the replaced item table.
+        // The historical source predates official completion records. Remove the tracking
+        // table only at this fixture boundary; production must reject a contradictory log.
+        db.execute_unprepared("DROP TABLE IF EXISTS seaql_migrations")
+            .await?;
+        db.execute_unprepared("DROP TABLE bot_delivery_pending;
+            DROP TABLE bot_delivery_claims; DROP TABLE bot_delivery_cursors;
+            DROP TABLE bot_delivery_items; DROP TABLE bot_delivery_scopes;
+            DROP TABLE bot_sync_operations; DROP TABLE bot_authorizations; DROP TABLE bot_audience_origins;
             DROP INDEX IF EXISTS bot_legacy_unfinished_count; DROP INDEX IF EXISTS bot_legacy_unknown_count; DROP INDEX IF EXISTS bot_legacy_attention_count;
             DROP INDEX IF EXISTS bot_binding_creation_lookup; DROP INDEX IF EXISTS bot_legacy_work_scope;
             DROP INDEX IF EXISTS bot_legacy_unreadable_work; DROP INDEX IF EXISTS bot_legacy_identity_scope;
@@ -5877,22 +6045,252 @@ mod tests {
         }
     }
 
-    fn card_test_preview(binding: card::CardBinding) -> card::CardStream {
-        let original_input = binding.original_input.clone();
-        let mut state = card::CardStream::new(binding, &original_input, "original-turn");
-        state.card_id = Some("known-card".into());
-        state.platform_message_id = Some("known-message".into());
-        state.confirmed_text = "last verified preview".into();
-        state.confirmed_content_hash = card::hash(state.confirmed_text.as_bytes());
-        state.lifecycle = card::CardLifecycle::Streaming;
-        state
+    async fn migrated_card_entity(
+        store: &BotStateStore,
+        binding: &card::CardBinding,
+    ) -> Result<publication::DeliveryEntity, Box<dyn std::error::Error>> {
+        let scope = publication::DeliveryScopeKey::LegacyFinal {
+            inbound_identity: inbound_identity(
+                &binding.bot_id,
+                &binding.chat_id,
+                &binding.message_id,
+            ),
+        };
+        Ok(store
+            .delivery_entity(
+                &scope,
+                &publication::DeliveryEntityKey::LegacyFinal {
+                    entity_id: binding.reply_operation(),
+                },
+            )
+            .await?
+            .ok_or("migration lost a retained card entity")?)
     }
 
-    fn confirm_card_test_settings(state: &mut card::CardStream, lifecycle: card::CardLifecycle) {
-        state.lifecycle = lifecycle;
-        state.confirmed_sequence = state.sequence;
-        state.last_operation.as_mut().unwrap().status = card::CardOperationStatus::Confirmed;
+    /// The old bytes remain the expected facts; never use the production converter to
+    /// construct this expectation or ask the deleted legacy table for successful migration.
+    async fn assert_migrated_card_material(
+        store: &BotStateStore,
+        original: &card::CardStream,
+    ) -> Result<publication::DeliveryEntity, Box<dyn std::error::Error>> {
+        use publication::{DeliveryAction, DeliveryResult, DeliveryScopeOrigin};
+        use sha2::Digest;
+        let entity = migrated_card_entity(store, &original.binding).await?;
+        let scope = store
+            .delivery_scope(&entity.scope)
+            .await?
+            .ok_or("missing legacy scope")?;
+        assert_eq!(scope.bot_id, original.binding.bot_id);
+        assert_eq!(scope.chat_id, original.binding.chat_id);
+        assert_eq!(scope.thread_id, original.binding.thread_id);
+        let DeliveryScopeOrigin::LegacyFinal { legacy } = &scope.origin else {
+            panic!("migration fabricated frontend authority for an old card");
+        };
+        assert_eq!(legacy.original_input_id, original.binding.original_input);
+        assert_eq!(legacy.watch_input, original.watch_input);
+        assert_eq!(legacy.original_turn_id, original.turn_id);
+        assert_eq!(entity.turn_id, original.turn_id);
+        assert!(
+            entity.item_order.is_none(),
+            "migration fabricated canonical order"
+        );
+        let card = &entity.state.card;
+        assert_eq!(card.card_id, original.card_id);
+        assert_eq!(card.platform_message_id, original.platform_message_id);
+        assert_eq!(card.sequence, original.sequence);
+        assert_eq!(card.confirmed_sequence, original.confirmed_sequence);
+        assert_eq!(card.lifecycle, Some(original.lifecycle));
+        assert_eq!(card.confirmed_text, original.confirmed_text);
+        assert_eq!(card.confirmed_content_hash, original.confirmed_content_hash);
+        assert_eq!(card.final_content_hash, original.final_content_hash);
+        assert_eq!(card.recovery_used, original.recovery_used);
+        assert_eq!(card.diagnostic, original.diagnostic);
+        assert!(
+            original.recovery.is_none(),
+            "fixture must explicitly check any recovery action"
+        );
+        assert!(card.recovery.is_none());
+        assert!(
+            entity.state.in_flight.is_none(),
+            "old Intent must become Unknown, not replayable"
+        );
+        match (&original.last_operation, &entity.state.settled) {
+            (None, None) => {}
+            (Some(old), Some(settled)) => {
+                let intent = &settled.intent;
+                assert_eq!(intent.sequence, old.sequence);
+                assert_eq!(intent.uuid, old.uuid);
+                assert_eq!(
+                    intent.legacy_action_hash.as_deref(),
+                    Some(old.content_hash.as_str())
+                );
+                let body: serde_json::Value = serde_json::from_str(intent.request.body())?;
+                let expected_target = match &old.action {
+                    card::CardAction::Content { .. } => "elementContent",
+                    card::CardAction::Settings { .. } => "settings",
+                    _ => panic!("fixture operation needs an explicit old request target"),
+                };
+                assert_eq!(
+                    serde_json::to_value(intent.request.target())?,
+                    expected_target,
+                    "migration must retain the old endpoint, not replace it with WholeCard"
+                );
+                let request_identity =
+                    serde_json::to_vec(&(expected_target, intent.request.body()))?;
+                assert_eq!(
+                    intent.request_hash,
+                    format!(
+                        "sha256:{}",
+                        hex::encode(sha2::Sha256::digest(&request_identity))
+                    )
+                );
+                match (&old.action, &intent.action) {
+                    (
+                        card::CardAction::Content {
+                            text,
+                            final_content,
+                        },
+                        DeliveryAction::UpdateContent {
+                            card_id,
+                            text: actual,
+                            final_content: actual_final,
+                        },
+                    ) => {
+                        assert_eq!(Some(card_id), original.card_id.as_ref());
+                        assert_eq!(actual, text);
+                        assert_eq!(actual_final, final_content);
+                        assert_eq!(
+                            body,
+                            serde_json::json!({
+                                "content": text, "sequence": old.sequence, "uuid": old.uuid,
+                            })
+                        );
+                    }
+                    (
+                        card::CardAction::Settings {
+                            streaming,
+                            lifecycle,
+                            recovery,
+                        },
+                        DeliveryAction::UpdateSettings {
+                            card_id,
+                            streaming: actual_streaming,
+                            lifecycle: actual_lifecycle,
+                            recovery: actual_recovery,
+                        },
+                    ) => {
+                        assert_eq!(Some(card_id), original.card_id.as_ref());
+                        assert_eq!(actual_streaming, streaming);
+                        assert_eq!(actual_lifecycle, lifecycle);
+                        assert_eq!(actual_recovery, recovery);
+                        assert_eq!(body["sequence"], old.sequence);
+                        assert_eq!(body["uuid"], old.uuid);
+                        let settings: serde_json::Value = serde_json::from_str(
+                            body["settings"].as_str().ok_or("missing frozen settings")?,
+                        )?;
+                        assert_eq!(
+                            settings,
+                            serde_json::json!({"config": {
+                                "streaming_mode": streaming, "summary": {"content": lifecycle.summary()},
+                            }})
+                        );
+                    }
+                    _ => panic!(
+                        "migration changed the fixture operation kind or lost its parameters"
+                    ),
+                }
+                match old.status {
+                    card::CardOperationStatus::Intent | card::CardOperationStatus::Unknown => {
+                        assert!(matches!(settled.result, DeliveryResult::Unknown { .. }));
+                    }
+                    card::CardOperationStatus::Confirmed => {
+                        assert!(matches!(
+                            settled.result,
+                            DeliveryResult::ContentAccepted { .. }
+                                | DeliveryResult::SettingsAccepted { .. }
+                        ));
+                    }
+                    card::CardOperationStatus::Rejected => {
+                        assert!(matches!(settled.result, DeliveryResult::Rejected { .. }));
+                    }
+                }
+            }
+            _ => panic!("migration lost or fabricated the last card operation"),
+        }
+        Ok(entity)
     }
+
+    fn card_test_preview(binding: card::CardBinding) -> card::CardStream {
+        card::CardStream {
+            watch_input: binding.original_input.clone(),
+            binding,
+            turn_id: Some("original-turn".into()),
+            version: 1,
+            lifecycle: card::CardLifecycle::Streaming,
+            card_id: Some("known-card".into()),
+            platform_message_id: Some("known-message".into()),
+            sequence: 0,
+            confirmed_sequence: 0,
+            confirmed_text: "last verified preview".into(),
+            confirmed_content_hash: card::hash(b"last verified preview"),
+            final_content_hash: None,
+            last_operation: None,
+            recovery_used: false,
+            recovery: None,
+            diagnostic: None,
+        }
+    }
+
+    fn card_test_operation(
+        action: card::CardAction,
+        sequence: i32,
+        status: card::CardOperationStatus,
+    ) -> card::CardOperation {
+        card::CardOperation {
+            content_hash: card::hash(&serde_json::to_vec(&action).expect("fixture action encodes")),
+            action,
+            sequence,
+            uuid: "0123456789abcdef0123456789abcdef".into(),
+            status,
+            diagnostic: None,
+        }
+    }
+
+    fn card_test_no_final_diagnostic() -> pl_protocol::studio::BotDiagnostic {
+        pl_protocol::studio::BotDiagnostic {
+            code: "noFinalReply".into(),
+            message: "未生成最终答复，所示内容仅为未完成预览".into(),
+            retryable: false,
+            platform_code: None,
+            guidance: None,
+        }
+    }
+
+    /// Only historical fixture material: no lease/version predicates, state transition, or
+    /// current runtime API. The real official opener/codec is the subject of the assertions.
+    async fn insert_legacy_card_fixture<C: ConnectionTrait>(
+        db: &C,
+        state: &card::CardStream,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let binding = &state.binding;
+        db.execute_raw(statement(
+            "INSERT INTO bot_card_streams(identity,bot_id,chat_id,message_id,thread_id,original_input,watch_input,turn_id,version,state_json,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,1)",
+            vec![
+                inbound_identity(&binding.bot_id, &binding.chat_id, &binding.message_id).into(),
+                binding.bot_id.clone().into(),
+                binding.chat_id.clone().into(),
+                binding.message_id.clone().into(),
+                binding.thread_id.clone().into(),
+                binding.original_input.clone().into(),
+                state.watch_input.clone().into(),
+                state.turn_id.clone().unwrap_or_default().into(),
+                state.version.into(),
+                serde_json::to_string(state)?.into(),
+            ],
+        )).await?;
+        Ok(())
+    }
+
     fn config_with(enabled: bool, trusted_chat: bool, trusted_open: &[&str]) -> BotConfigFile {
         BotConfigFile {
             schema_version: BOT_CONFIG_SCHEMA_VERSION,
@@ -6621,17 +7019,93 @@ mod tests {
             ThreadBindingClaim::Creating { .. }
         ));
 
-        // 身份冲突：一次性收束（幂等）。
+        assert!(matches!(
+            store.admit_inbound(probe_inbound("m-conflict")).await?,
+            InboundAdmit::Fresh(_)
+        ));
+        assert_eq!(
+            store
+                .claim_inbound_work(BOT, CHAT, "m-conflict", "worker")
+                .await?,
+            InboundClaim::Claimed
+        );
+        let identity = inbound_identity(BOT, CHAT, "m-conflict");
+        let before = work_ledger(&store, &identity).await;
+        // 失认领不能先关闭路由；仍有效的 owner 也必须原子提交两行。
+        assert_eq!(
+            store
+                .finish_inbound_work(
+                    BOT,
+                    CHAT,
+                    "m-conflict",
+                    "stale",
+                    WorkFinish::CreationConflict(DIAGNOSTIC)
+                )
+                .await?,
+            MarkOutcome::LostClaim
+        );
+        assert_eq!(
+            store.binding_for_chat(CHAT, BOT, PROJECT).await?.status,
+            "creating"
+        );
+        assert_eq!(work_ledger(&store, &identity).await, before);
+        let db = store.db().await?;
+        db.execute_unprepared("CREATE TRIGGER stop_creation_finish BEFORE UPDATE OF status ON thread_bindings WHEN NEW.status='needs_attention' BEGIN SELECT RAISE(ABORT,'controlled route settlement fault'); END").await?;
         assert!(
             store
-                .mark_creating_attention(CHAT, &creation(), PROJECT, DIAGNOSTIC)
-                .await?
+                .finish_inbound_work(
+                    BOT,
+                    CHAT,
+                    "m-conflict",
+                    "worker",
+                    WorkFinish::CreationConflict(DIAGNOSTIC)
+                )
+                .await
+                .is_err()
         );
-        assert!(
-            !store
-                .mark_creating_attention(CHAT, &creation(), PROJECT, DIAGNOSTIC)
+        assert_eq!(
+            work_ledger(&store, &identity).await,
+            before,
+            "route settlement failure must roll back the inbound terminal write"
+        );
+        assert_eq!(
+            store.binding_for_chat(CHAT, BOT, PROJECT).await?.status,
+            "creating"
+        );
+        db.execute_unprepared("DROP TRIGGER stop_creation_finish")
+            .await?;
+
+        // 身份冲突：工作与路由一次性收束；重复旧认领不再写入。
+        assert_eq!(
+            store
+                .finish_inbound_work(
+                    BOT,
+                    CHAT,
+                    "m-conflict",
+                    "worker",
+                    WorkFinish::CreationConflict(DIAGNOSTIC)
+                )
                 .await?,
+            MarkOutcome::Applied,
+        );
+        assert_eq!(
+            store
+                .finish_inbound_work(
+                    BOT,
+                    CHAT,
+                    "m-conflict",
+                    "worker",
+                    WorkFinish::CreationConflict(DIAGNOSTIC)
+                )
+                .await?,
+            MarkOutcome::LostClaim,
             "the collapse must happen exactly once"
+        );
+        let work = work_ledger(&store, &identity).await;
+        assert_eq!(work.status, "needs_attention");
+        assert_eq!(
+            work.attempt_count, 0,
+            "a proven conflict must not consume retries"
         );
         match store.claim_thread_binding(&claim_target).await? {
             ThreadBindingClaim::NeedsAttention { diagnostic } => {
@@ -6685,7 +7159,297 @@ mod tests {
         Ok(())
     }
 
+    /// 原发送行与公开实体同事务推进，未知结果不重发，迟到结果不覆盖另一阶段。
+    #[tokio::test]
+    async fn publication_file_stages_commit_with_entity_and_preserve_late_results()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use publication::{
+            DeliveryCandidate, DeliveryCandidateContent, DeliveryClaimOutcome, DeliveryInputChain,
+            DeliveryScopeKey, SavedArtifact,
+        };
+        use sha2::Digest;
+        let directory = tempfile::tempdir()?;
+        let store = bind_first(
+            &directory.path().join("file-stages.sqlite"),
+            &config(true, true),
+        )
+        .await?;
+        let pending = head(&store).await;
+        store.activate_sync(&receipt(&pending.intent)).await?;
+        let scope_key = DeliveryScopeKey::Frontend {
+            authorization: pending.intent.authorization.clone(),
+        };
+        let scope = store.delivery_scope(&scope_key).await?.unwrap();
+        let DeliveryClaimOutcome::Acquired(token) =
+            store.claim_delivery_scope(&scope_key, "file-owner").await?
+        else {
+            panic!("active frontend scope must be claimable");
+        };
+        let resources =
+            crate::resource_store::FileResourceStore::new(directory.path().join("send-resources"));
+        let resource = resources
+            .retain_bytes(
+                std::sync::Arc::from(b"exact original".as_slice()),
+                "text/plain",
+            )
+            .await?;
+        let artifact = SavedArtifact::from_metadata(&crate::studio::TimelineItemMetadata {
+            shell: pl_protocol::ThreadItem::new(
+                "artifact-item".into(),
+                THREAD.into(),
+                "gui-turn".into(),
+                2,
+                1,
+                1,
+                1,
+                pl_protocol::ThreadItemState::PublicArtifact(
+                    pl_protocol::ThreadPublicArtifactItem {
+                        publication_id: "publication".into(),
+                        tool_call_id: "publish-call".into(),
+                        display_name: "report.txt".into(),
+                        published_at: 1,
+                        resource: pl_protocol::ThreadArtifactResource {
+                            id: resource.id().into(),
+                            content_digest: resource.content_digest().into(),
+                            byte_len: resource.byte_len(),
+                            media_type: resource.media_type().into(),
+                        },
+                    },
+                ),
+            ),
+            fields: vec![],
+            saved: true,
+            lifecycle: pl_protocol::TimelineLifecycle::Terminal,
+        })?;
+        let key = artifact.entity_key();
+        store
+            .merge_delivery_candidate(
+                &token,
+                &DeliveryCandidate {
+                    entity: key.clone(),
+                    turn_id: artifact.turn_id().into(),
+                    item_order: artifact.item_order(),
+                    input_chain: DeliveryInputChain::Proven {
+                        input_id: "gui-input".into(),
+                        continuation_ancestors: vec![],
+                    },
+                    content: DeliveryCandidateContent::File {
+                        artifact: artifact.clone(),
+                    },
+                },
+            )
+            .await?;
+        let entity = store.delivery_entity(&scope_key, &key).await?.unwrap();
+        let permit = PublicationFilePermit {
+            token,
+            entity: key.clone(),
+            expected_ledger_version: entity.ledger_version,
+            artifact: artifact.clone(),
+        };
+        let operation = "publication-send";
+        let segments = vec![SendContent::File {
+            filename: "report.txt".into(),
+            upload_filename: "report.txt".into(),
+            resource,
+        }];
+        let uuid = hex::encode(sha2::Sha256::digest(serde_json::to_vec(&(
+            operation, BOT, CHAT, 0usize,
+        ))?))[..32]
+            .to_string();
+        let record = crate::bots::send_service::into_record(
+            operation.into(),
+            BOT.into(),
+            CHAT.into(),
+            super::super::send::SendPlan {
+                content_hash: publication::delivery_file_plan_hash(
+                    &scope, &key, &artifact, operation, &segments,
+                )?,
+                identity: SendIdentity::File {
+                    request_hash: publication::delivery_file_request_hash(&scope, &key, &artifact)?,
+                },
+                source: None,
+                segments,
+                uuids: vec![uuid.clone()],
+                retention: None,
+            },
+        );
+        let mut stale = permit.clone();
+        stale.expected_ledger_version += 1;
+        assert!(
+            store
+                .claim_publication_file_send(&record, &stale)
+                .await
+                .is_err()
+        );
+        assert!(
+            store.load_send(operation).await?.is_none(),
+            "failed binding must roll back the send claim"
+        );
+        assert!(
+            store
+                .claim_publication_file_send(&record, &permit)
+                .await?
+                .is_none()
+        );
+        assert!(
+            store
+                .claim_publication_file_send(&record, &permit)
+                .await?
+                .is_some()
+        );
+        assert!(
+            store
+                .begin_publication_file_stage(operation, &permit, PublicationFileStage::Message)
+                .await
+                .is_err()
+        );
+
+        let mut cancelled = store
+            .begin_publication_file_stage(operation, &permit, PublicationFileStage::Upload)
+            .await?;
+        assert!(
+            store
+                .settle_publication_file_stage(
+                    &mut cancelled,
+                    PublicationFileProgress::Uploaded {
+                        file_key: "unstarted".into()
+                    }
+                )
+                .await
+                .is_err()
+        );
+        store
+            .settle_publication_file_stage(
+                &mut cancelled,
+                PublicationFileProgress::NotStarted {
+                    stage: PublicationFileStage::Upload,
+                    reason: pl_protocol::studio::BotSendStopReason::Cancelled,
+                    diagnostic: "before HTTP".into(),
+                },
+            )
+            .await?;
+        let mut upload = store
+            .begin_publication_file_stage(operation, &permit, PublicationFileStage::Upload)
+            .await?;
+        upload.mark_request_started();
+        store
+            .settle_publication_file_stage(
+                &mut upload,
+                PublicationFileProgress::Unknown {
+                    stage: PublicationFileStage::Upload,
+                    diagnostic: None,
+                },
+            )
+            .await?;
+        assert!(
+            store
+                .begin_publication_file_stage(operation, &permit, PublicationFileStage::Upload)
+                .await
+                .is_err(),
+            "Unknown must not replay upload"
+        );
+        let db = store.db().await?;
+        db.execute_unprepared("CREATE TRIGGER stop_file_projection BEFORE UPDATE ON bot_delivery_items BEGIN SELECT RAISE(ABORT,'controlled file projection fault'); END").await?;
+        assert!(
+            store
+                .settle_publication_file_stage(
+                    &mut upload,
+                    PublicationFileProgress::Uploaded {
+                        file_key: "upload-key".into()
+                    }
+                )
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            store.load_send(operation).await?.unwrap().segments[0].upload,
+            Some(UploadFact::Unknown),
+            "projection failure must roll back the send result too"
+        );
+        db.execute_unprepared("DROP TRIGGER stop_file_projection")
+            .await?;
+        store
+            .settle_publication_file_stage(
+                &mut upload,
+                PublicationFileProgress::Uploaded {
+                    file_key: "upload-key".into(),
+                },
+            )
+            .await?;
+        assert!(
+            store
+                .begin_publication_file_stage(operation, &permit, PublicationFileStage::Upload)
+                .await
+                .is_err(),
+            "accepted upload must not repeat"
+        );
+        let mut message = store
+            .begin_publication_file_stage(operation, &permit, PublicationFileStage::Message)
+            .await?;
+        message.mark_request_started();
+        let active = head(&store).await;
+        store
+            .change_sync(
+                &request("close-file", BotThreadSyncAction::Close, &active),
+                &config(true, true),
+            )
+            .await?;
+        let sent = store
+            .settle_publication_file_stage(
+                &mut message,
+                PublicationFileProgress::Sent {
+                    message_id: "message-id".into(),
+                },
+            )
+            .await?;
+        assert_eq!(sent.segments[0].uuid, uuid);
+        assert_eq!(sent.platform_message_ids, ["message-id"]);
+        let late = store
+            .settle_publication_file_stage(
+                &mut upload,
+                PublicationFileProgress::Unknown {
+                    stage: PublicationFileStage::Upload,
+                    diagnostic: None,
+                },
+            )
+            .await?;
+        assert_eq!(
+            late.segments[0].upload,
+            Some(UploadFact::Accepted {
+                file_key: "upload-key".into()
+            })
+        );
+        assert_eq!(
+            late.segments[0].message_stage,
+            Some(MessageStage::Accepted),
+            "late upload result must not overwrite message progress"
+        );
+        assert!(
+            store
+                .settle_publication_file_stage(
+                    &mut cancelled,
+                    PublicationFileProgress::NotStarted {
+                        stage: PublicationFileStage::Upload,
+                        reason: pl_protocol::studio::BotSendStopReason::Cancelled,
+                        diagnostic: "stale stop".into(),
+                    }
+                )
+                .await
+                .is_err()
+        );
+        let delivered = store.delivery_entity(&scope_key, &key).await?.unwrap();
+        assert_eq!(
+            delivered.state.accepted,
+            pl_protocol::studio::BotItemPresentation::File {
+                revision: artifact.revision()
+            }
+        );
+        assert_eq!(head(&store).await.phase, BotAuthorizationPhase::Closed);
+        Ok(())
+    }
+
     /// 入站账本的完整持久行（就绪等待/失败预算探针共用）。
+    #[derive(Debug, PartialEq, Eq)]
     struct WorkLedger {
         status: String,
         diagnostic: String,
@@ -6714,8 +7478,41 @@ mod tests {
         }
     }
 
-    /// 就绪等待（首输入准备）是正常等待而不是失败：反复等待不消耗失败预算、不收束
-    /// `bound + PendingStart` 路由；就绪到达后仍可正常完成。
+    /// 只推进时间与租约到“可再次认领”（真实退避/等待需要分钟级时间，探针不允许 sleep）。
+    async fn make_due(db: &DatabaseConnection) -> Result<(), sea_orm::DbErr> {
+        db.execute_unprepared(
+            "UPDATE inbound_work SET status='pending', claimed_by='', claimed_at=0, next_attempt_at=0",
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// 受理身份行的不可变受理时刻（唯一首次准备计时来源）。
+    async fn admitted_time(store: &BotStateStore, identity: &str) -> i64 {
+        let db = store.db().await.unwrap();
+        db.query_one_raw(statement(
+            "SELECT admitted_at FROM inbound_identities WHERE identity=?",
+            vec![identity.to_string().into()],
+        ))
+        .await
+        .unwrap()
+        .expect("admission identity row")
+        .try_get("", "admitted_at")
+        .unwrap()
+    }
+
+    /// 只把**受理时刻**老化到超期（时间控制；不改任何来源、证明或诊断事实）。
+    async fn age_admission(db: &DatabaseConnection, admitted: i64) -> Result<(), sea_orm::DbErr> {
+        db.execute_unprepared(&format!(
+            "UPDATE inbound_identities SET admitted_at={}",
+            admitted - INBOUND_READINESS_WAIT_BUDGET_SECONDS - 1
+        ))
+        .await?;
+        Ok(())
+    }
+
+    /// 首次准备等待是正常等待：反复等待不消耗失败预算、不写机器前缀、不改受理时刻，
+    /// 也不收束 `bound + PendingStart` 路由。
     #[tokio::test]
     async fn readiness_waiting_never_consumes_the_failure_budget()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -6732,13 +7529,12 @@ mod tests {
             InboundAdmit::Fresh(_)
         ));
         let identity = inbound_identity(BOT, CHAT, "m-ready");
+        let admitted = admitted_time(&store, &identity).await;
+        assert!(admitted > 0, "admission must persist its immutable time");
         let db = store.db().await?.clone();
         // 失败预算只有 8 次：就绪等待 12 轮仍必须可继续，且一次失败都不计。
         for round in 0..12 {
-            db.execute_unprepared(
-                "UPDATE inbound_work SET status='pending', claimed_by='', claimed_at=0, next_attempt_at=0",
-            )
-            .await?;
+            make_due(&db).await?;
             assert_eq!(
                 store.claim_inbound_work(BOT, CHAT, "m-ready", "w1").await?,
                 InboundClaim::Claimed
@@ -6760,31 +7556,31 @@ mod tests {
                 ledger.status, "pending",
                 "round {round} must stay reschedulable"
             );
-            assert_eq!(ledger.claimed_by, "", "the claim must be released");
             assert_eq!(
                 ledger.attempt_count, 0,
                 "round {round}: readiness waiting must never consume the failure budget"
+            );
+            assert_eq!(
+                ledger.diagnostic, "bot conversation is preparing its first input",
+                "round {round}: the reason is display-only, with no machine prefix"
             );
             assert!(
                 ledger.next_attempt_at > 0,
                 "round {round}: the wait must schedule its own next attempt"
             );
-            assert!(
-                ledger.diagnostic.contains("preparing its first input"),
-                "round {round}: the wait must stay visible: {}",
-                ledger.diagnostic
+            assert_eq!(
+                admitted_time(&store, &identity).await,
+                admitted,
+                "round {round}: the admission time is immutable"
             );
             assert_eq!(
                 store.binding_for_chat(CHAT, BOT, PROJECT).await?.status,
                 "bound",
-                "round {round}: readiness waiting must never collapse a bound route"
+                "round {round}: waiting must never collapse a bound route"
             );
         }
-        // 就绪到达后同一入站仍可正常完成。
-        db.execute_unprepared(
-            "UPDATE inbound_work SET status='pending', claimed_by='', claimed_at=0, next_attempt_at=0",
-        )
-        .await?;
+        // 就绪到达后同一入站正常完成。
+        make_due(&db).await?;
         assert_eq!(
             store.claim_inbound_work(BOT, CHAT, "m-ready", "w1").await?,
             InboundClaim::Claimed
@@ -6802,30 +7598,54 @@ mod tests {
         Ok(())
     }
 
-    /// 就绪等待必须有自己明示的上限：到期以“准备未完成”收束，不按失败次数归因，
-    /// 也不触碰 `bound` 路由。
+    /// 首次准备期限只来自受理身份不可变时间：关停中断、可重试失败与重启都不刷新它；
+    /// 到期只收束该入站工作，不关授权、不动 bound 路由。
     #[tokio::test]
-    async fn readiness_waiting_expires_on_its_own_deadline()
+    async fn readiness_deadline_comes_from_admission_and_survives_restarts()
     -> Result<(), Box<dyn std::error::Error>> {
         let directory = tempfile::tempdir()?;
-        let path = directory.path().join("readiness-expired.sqlite");
+        let path = directory.path().join("readiness-deadline.sqlite");
         let store = bind_first(&path, &config(true, true)).await?;
         assert!(matches!(
-            store.admit_inbound(probe_inbound("m-expired")).await?,
+            store.admit_inbound(probe_inbound("m-deadline")).await?,
             InboundAdmit::Fresh(_)
         ));
-        let identity = inbound_identity(BOT, CHAT, "m-expired");
+        let identity = inbound_identity(BOT, CHAT, "m-deadline");
+        let admitted = admitted_time(&store, &identity).await;
         let db = store.db().await?.clone();
-        // 真实时间推进需要 15 分钟：只预置持久等待起点（等待标记，不涉任何来源事实）。
-        db.execute_unprepared(&format!(
-            "UPDATE inbound_work SET status='pending', claimed_by='', claimed_at=0, next_attempt_at=0, \
-             diagnostic='{INBOUND_READINESS_WAIT_MARKER}{}'",
-            unix_seconds() - INBOUND_READINESS_WAIT_BUDGET_SECONDS - 1
-        ))
-        .await?;
+        // 两次关停中断（等价两次重启）：受理时刻与等待期限都不变。
+        for round in 0..2 {
+            assert_eq!(
+                store
+                    .claim_inbound_work(BOT, CHAT, "m-deadline", "w1")
+                    .await?,
+                InboundClaim::Claimed
+            );
+            assert_eq!(
+                store
+                    .finish_inbound_work(BOT, CHAT, "m-deadline", "w1", WorkFinish::Interrupted)
+                    .await?,
+                MarkOutcome::Applied
+            );
+            let ledger = work_ledger(&store, &identity).await;
+            assert_eq!(
+                ledger.status, "pending",
+                "round {round} must stay reschedulable"
+            );
+            assert_eq!(
+                ledger.attempt_count, 0,
+                "an interruption never counts as failure"
+            );
+            assert_eq!(
+                admitted_time(&store, &identity).await,
+                admitted,
+                "round {round}: an interruption must not restart the admission clock"
+            );
+        }
+        // 可重试失败（readiness 读取错误）只计数与更新原因，不改受理时刻。
         assert_eq!(
             store
-                .claim_inbound_work(BOT, CHAT, "m-expired", "w1")
+                .claim_inbound_work(BOT, CHAT, "m-deadline", "w1")
                 .await?,
             InboundClaim::Claimed
         );
@@ -6834,7 +7654,40 @@ mod tests {
                 .finish_inbound_work(
                     BOT,
                     CHAT,
-                    "m-expired",
+                    "m-deadline",
+                    "w1",
+                    WorkFinish::Retryable("bot input readiness is unreadable: fixture"),
+                )
+                .await?,
+            MarkOutcome::Applied
+        );
+        let ledger = work_ledger(&store, &identity).await;
+        assert_eq!(ledger.status, "failed");
+        assert_eq!(ledger.attempt_count, 1);
+        assert_eq!(
+            ledger.diagnostic, "bot input readiness is unreadable: fixture",
+            "the failure reason is written verbatim, without a machine prefix"
+        );
+        assert_eq!(
+            admitted_time(&store, &identity).await,
+            admitted,
+            "a retryable failure must not restart the admission clock"
+        );
+        // 老化受理时刻到超期后进入就绪等待：必须直接收束，且只收束入站工作。
+        age_admission(&db, admitted).await?;
+        make_due(&db).await?;
+        assert_eq!(
+            store
+                .claim_inbound_work(BOT, CHAT, "m-deadline", "w1")
+                .await?,
+            InboundClaim::Claimed
+        );
+        assert_eq!(
+            store
+                .finish_inbound_work(
+                    BOT,
+                    CHAT,
+                    "m-deadline",
                     "w1",
                     WorkFinish::Deferred("bot conversation is preparing its first input"),
                 )
@@ -6847,7 +7700,7 @@ mod tests {
             ledger
                 .diagnostic
                 .contains("first input preparation did not complete"),
-            "the terminal diagnostic must name the unfinished preparation: {}",
+            "the terminal reason must name the unfinished preparation: {}",
             ledger.diagnostic
         );
         assert!(
@@ -6858,11 +7711,16 @@ mod tests {
         assert_eq!(
             store.binding_for_chat(CHAT, BOT, PROJECT).await?.status,
             "bound",
-            "only the inbound work becomes terminal; the routing row stays bound"
+            "only the inbound work becomes terminal; the route stays bound"
+        );
+        assert_eq!(
+            head(&store).await.phase,
+            BotAuthorizationPhase::PendingStart,
+            "the preparation deadline must never close the pending authorization"
         );
         assert_eq!(
             store
-                .claim_inbound_work(BOT, CHAT, "m-expired", "w1")
+                .claim_inbound_work(BOT, CHAT, "m-deadline", "w1")
                 .await?,
             InboundClaim::NeedsAttention
         );
@@ -6898,12 +7756,104 @@ mod tests {
         let identity = inbound_identity(BOT, CHAT, "m-fence");
         let db = store.db().await?.clone();
 
+        // Admission damage must not be mistaken for an old clock or permission to
+        // finish. Exercise every finish outcome at the actual transactional boundary.
+        let admitted = admitted_time(&store, &identity).await;
+        db.execute_unprepared(&format!(
+            "UPDATE inbound_work SET status='claimed', attempt_count=7, claimed_by='w1', claimed_at={}",
+            unix_seconds()
+        ))
+        .await?;
+        let before = work_ledger(&store, &identity).await;
+        for fault in [
+            "DELETE FROM inbound_identities",
+            "UPDATE inbound_identities SET content_hash='other-content'",
+            "UPDATE inbound_identities SET bot_id='other-bot'",
+            "UPDATE inbound_identities SET chat_id='other-chat'",
+            "UPDATE inbound_identities SET message_id='other-message'",
+            "UPDATE inbound_identities SET admitted_at=0",
+            "UPDATE inbound_identities SET admitted_at='invalid-time'",
+        ] {
+            db.execute_unprepared(fault).await?;
+            for finish in [
+                WorkFinish::Completed,
+                WorkFinish::Interrupted,
+                WorkFinish::NeedsAttention(DIAGNOSTIC),
+                WorkFinish::CreationConflict(DIAGNOSTIC),
+                WorkFinish::Retryable(DIAGNOSTIC),
+                WorkFinish::Deferred("preparing"),
+            ] {
+                let error = store
+                    .finish_inbound_work(BOT, CHAT, "m-fence", "w1", finish)
+                    .await
+                    .expect_err("an unproven admission must require recovery");
+                assert_eq!(error.kind(), FeishuErrorKind::Unavailable, "{fault}");
+                assert_eq!(work_ledger(&store, &identity).await, before, "{fault}");
+                let route = store.binding_for_chat(CHAT, BOT, PROJECT).await?;
+                assert_eq!(route.status, "creating", "{fault}");
+                assert_eq!(route.revision, 1, "{fault}");
+                assert_eq!(route.creation_id, creation(), "{fault}");
+            }
+            // Only undo this test's injected damage, using the original admission.
+            db.execute_unprepared("DELETE FROM inbound_identities")
+                .await?;
+            db.execute_raw(statement(
+                "INSERT INTO inbound_identities(identity,bot_id,message_id,chat_id,content_hash,admitted_at) VALUES(?,?,?,?,?,?)",
+                vec![
+                    identity.clone().into(), BOT.into(), "m-fence".into(), CHAT.into(),
+                    "hash-m-fence".into(), admitted.into(),
+                ],
+            )).await?;
+        }
+
+        // 同一 run 的 submit 退避保留 claim；附件无需交回恢复扫描再下载。
+        db.execute_unprepared("UPDATE inbound_work SET attempt_count=0")
+            .await?;
+        for expected_count in 1..=7 {
+            let retry = store
+                .retain_inbound_retry(&probe_inbound("m-fence"), "w1", DIAGNOSTIC)
+                .await?;
+            let InboundRetryWait::Until { retry_at } = retry else {
+                panic!("a bounded pre-acceptance retry must retain its owner: {retry:?}");
+            };
+            let work = work_ledger(&store, &identity).await;
+            assert_eq!(
+                (work.status.as_str(), work.claimed_by.as_str()),
+                ("claimed", "w1")
+            );
+            assert_eq!(work.attempt_count, expected_count);
+            assert_eq!(work.next_attempt_at, retry_at);
+            assert_eq!(admitted_time(&store, &identity).await, admitted);
+        }
+        let before_exhaustion = work_ledger(&store, &identity).await;
+        assert_eq!(
+            store
+                .retain_inbound_retry(&probe_inbound("m-fence"), "w1", DIAGNOSTIC)
+                .await?,
+            InboundRetryWait::BudgetExhausted
+        );
+        assert_eq!(
+            work_ledger(&store, &identity).await,
+            before_exhaustion,
+            "the finisher alone owns the eighth failure and terminal transaction"
+        );
+        assert_eq!(
+            store.binding_for_chat(CHAT, BOT, PROJECT).await?.status,
+            "creating"
+        );
+
         // A. 认领已被另一 worker 接管：旧持有者不得收束任何东西。
         db.execute_unprepared(&format!(
             "UPDATE inbound_work SET status='claimed', attempt_count=7, claimed_by='w2', claimed_at={}",
             unix_seconds()
         ))
         .await?;
+        assert_eq!(
+            store
+                .retain_inbound_retry(&probe_inbound("m-fence"), "w1", DIAGNOSTIC)
+                .await?,
+            InboundRetryWait::LostClaim
+        );
         assert_eq!(
             store
                 .finish_inbound_work(
@@ -7007,186 +7957,39 @@ mod tests {
             watch_input: String::new(),
         }
     }
-
-    /// 关停中断是“稍后继续”而不是新的等待起点：`Interrupted` 必须沿用已存在的
-    /// `readiness-wait:<start>`，否则每次重启都会把 900s 期限重新计时。
     #[tokio::test]
-    async fn interrupted_then_deferred_keeps_the_original_wait_deadline()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let directory = tempfile::tempdir()?;
-        let path = directory.path().join("readiness-interrupted.sqlite");
-        let store = bind_first(&path, &config(true, true)).await?;
-        assert!(matches!(
-            store.admit_inbound(probe_inbound("m-interrupted")).await?,
-            InboundAdmit::Fresh(_)
-        ));
-        let identity = inbound_identity(BOT, CHAT, "m-interrupted");
-        let db = store.db().await?.clone();
-        let start = unix_seconds() - INBOUND_READINESS_WAIT_BUDGET_SECONDS - 1;
-        db.execute_unprepared(&format!(
-            "UPDATE inbound_work SET status='pending', claimed_by='', claimed_at=0, next_attempt_at=0, \
-             diagnostic='{INBOUND_READINESS_WAIT_MARKER}{start}:preparing'"
-        ))
-        .await?;
-        assert_eq!(
-            store
-                .claim_inbound_work(BOT, CHAT, "m-interrupted", "w1")
-                .await?,
-            InboundClaim::Claimed
-        );
-        assert_eq!(
-            store
-                .finish_inbound_work(BOT, CHAT, "m-interrupted", "w1", WorkFinish::Interrupted)
-                .await?,
-            MarkOutcome::Applied
-        );
-        let ledger = work_ledger(&store, &identity).await;
-        assert_eq!(
-            ledger.status, "pending",
-            "an interrupted run must stay reschedulable"
-        );
-        assert_eq!(
-            readiness_wait_started(&ledger.diagnostic),
-            Some(start),
-            "the interruption must not restart the readiness deadline: {}",
-            ledger.diagnostic
-        );
-        // 再认领后到达就绪：等待已超期，必须直接收束而不是回到 pending 重新计时。
-        assert_eq!(
-            store
-                .claim_inbound_work(BOT, CHAT, "m-interrupted", "w1")
-                .await?,
-            InboundClaim::Claimed
-        );
-        assert_eq!(
-            store
-                .finish_inbound_work(
-                    BOT,
-                    CHAT,
-                    "m-interrupted",
-                    "w1",
-                    WorkFinish::Deferred("bot conversation is preparing its first input"),
-                )
-                .await?,
-            MarkOutcome::Applied
-        );
-        let ledger = work_ledger(&store, &identity).await;
-        assert_eq!(
-            ledger.status, "needs_attention",
-            "an expired wait must not be refreshed by a restart"
-        );
-        assert!(
-            ledger
-                .diagnostic
-                .contains("first input preparation did not complete"),
-            "the terminal reason must name the unfinished preparation: {}",
-            ledger.diagnostic
-        );
-        assert!(
-            !ledger.diagnostic.contains("recovery budget exhausted"),
-            "readiness waiting must never be reported as an exhausted budget: {}",
-            ledger.diagnostic
-        );
-        assert_eq!(
-            store.binding_for_chat(CHAT, BOT, PROJECT).await?.status,
-            "bound",
-            "the routing row and its pending authorization stay untouched"
-        );
-        Ok(())
-    }
-
-    /// 可重试失败同样是同一轮等待的后续观测：`Retryable` 不得丢掉等待起点。
-    #[tokio::test]
-    async fn retryable_failure_then_deferred_keeps_the_original_wait_deadline()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let directory = tempfile::tempdir()?;
-        let path = directory.path().join("readiness-retryable.sqlite");
-        let store = bind_first(&path, &config(true, true)).await?;
-        assert!(matches!(
-            store.admit_inbound(probe_inbound("m-retryable")).await?,
-            InboundAdmit::Fresh(_)
-        ));
-        let identity = inbound_identity(BOT, CHAT, "m-retryable");
-        let db = store.db().await?.clone();
-        let start = unix_seconds() - INBOUND_READINESS_WAIT_BUDGET_SECONDS - 1;
-        db.execute_unprepared(&format!(
-            "UPDATE inbound_work SET status='pending', claimed_by='', claimed_at=0, next_attempt_at=0, \
-             diagnostic='{INBOUND_READINESS_WAIT_MARKER}{start}:preparing'"
-        ))
-        .await?;
-        assert_eq!(
-            store
-                .claim_inbound_work(BOT, CHAT, "m-retryable", "w1")
-                .await?,
-            InboundClaim::Claimed
-        );
-        assert_eq!(
-            store
-                .finish_inbound_work(
-                    BOT,
-                    CHAT,
-                    "m-retryable",
-                    "w1",
-                    WorkFinish::Retryable("bot input readiness is unreadable: fixture"),
-                )
-                .await?,
-            MarkOutcome::Applied
-        );
-        let ledger = work_ledger(&store, &identity).await;
-        assert_eq!(ledger.status, "failed");
-        assert_eq!(
-            readiness_wait_started(&ledger.diagnostic),
-            Some(start),
-            "a retryable failure must not restart the readiness deadline: {}",
-            ledger.diagnostic
-        );
-        assert!(
-            ledger
-                .diagnostic
-                .contains("bot input readiness is unreadable"),
-            "the newest reason must stay visible next to the preserved start: {}",
-            ledger.diagnostic
-        );
-        // 失败退避到期后再认领：等待已超期，必须直接收束。
-        db.execute_unprepared(&format!(
-            "UPDATE inbound_work SET status='pending', claimed_by='', claimed_at=0, next_attempt_at=0, \
-             diagnostic='{INBOUND_READINESS_WAIT_MARKER}{start}:preparing'"
-        ))
-        .await?;
-        assert_eq!(
-            store
-                .claim_inbound_work(BOT, CHAT, "m-retryable", "w1")
-                .await?,
-            InboundClaim::Claimed
-        );
-        assert_eq!(
-            store
-                .finish_inbound_work(
-                    BOT,
-                    CHAT,
-                    "m-retryable",
-                    "w1",
-                    WorkFinish::Deferred("bot conversation is preparing its first input"),
-                )
-                .await?,
-            MarkOutcome::Applied
-        );
-        let ledger = work_ledger(&store, &identity).await;
-        assert_eq!(
-            ledger.status, "needs_attention",
-            "a retryable failure must not refresh the readiness deadline"
-        );
-        assert!(
-            ledger
-                .diagnostic
-                .contains("first input preparation did not complete"),
-            "the terminal reason must name the unfinished preparation: {}",
-            ledger.diagnostic
-        );
-        assert_eq!(
-            store.binding_for_chat(CHAT, BOT, PROJECT).await?.status,
-            "bound"
-        );
+    async fn ledger_adopts_current_file_and_refuses_future_writes() -> anyhow::Result<()> {
+        for fault in ["format", "migration", "missing_table"] {
+            let directory = tempfile::tempdir()?;
+            let path = directory.path().join("ledger.sqlite");
+            let original = open_bot_state(&path).await?;
+            original
+                .execute_unprepared("DROP TABLE seaql_migrations")
+                .await?;
+            original.close().await?;
+            let adopted = open_bot_state(&path).await?;
+            assert!(
+                adopted
+                    .query_one_raw(statement("SELECT version FROM seaql_migrations", vec![]))
+                    .await?
+                    .is_some()
+            );
+            if fault == "format" {
+                adopted
+                    .execute_unprepared("UPDATE bot_meta SET schema_version=999")
+                    .await?;
+            } else if fault == "missing_table" {
+                adopted
+                    .execute_unprepared("DROP TABLE seaql_migrations; DROP TABLE inbound_work")
+                    .await?;
+            } else {
+                adopted.execute_unprepared("INSERT INTO seaql_migrations(version,applied_at) VALUES('m99999999_future',1)").await?;
+            }
+            adopted.close().await?;
+            let before = tokio::fs::read(&path).await?;
+            assert!(open_bot_state(&path).await.is_err());
+            assert_eq!(tokio::fs::read(&path).await?, before);
+        }
         Ok(())
     }
 }

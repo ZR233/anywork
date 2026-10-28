@@ -1815,6 +1815,9 @@ class FrbStudioTransport implements StudioTransport, PersistenceQueueReader {
       } catch (error, stackTrace) {
         if (!tracked.cancelRequested) {
           // 尚未取消：向仍活动的 listener 下发 typed 失败。
+          // 创建已确定失败，先释放创建闩；否则 listener 在处理错误时 cancel 会等待
+          // `markCreated`，而这里等待 controller.close，形成互相等待。
+          tracked.markCreated();
           controller.addError(_studioFailure(error), stackTrace);
           await controller.close();
         } else {
@@ -1835,6 +1838,8 @@ class FrbStudioTransport implements StudioTransport, PersistenceQueueReader {
                 : failure,
             stackTrace,
           );
+          // 取消已经 owner 所有；记录故障后发布创建决策，让 owned cancellation 等 release ACK。
+          tracked.markCreated();
         }
       } finally {
         // 无论是否创建成功都完成创建闩：owned cancellation 据此释放已建立或迟到的 native
@@ -1879,7 +1884,9 @@ class FrbStudioTransport implements StudioTransport, PersistenceQueueReader {
 
   @override
   Future<InteractionCommandReply> respondInteraction(
+    String hostThreadId,
     String interactionId,
+    int expectedRevision,
     InteractionResolutionCommand resolution, {
     required OperationId operationId,
   }) async {
@@ -1887,6 +1894,8 @@ class FrbStudioTransport implements StudioTransport, PersistenceQueueReader {
     final response = await _bridgeCall(
       () => frb.respondInteraction(
         operationId: operationId.value,
+        hostThreadId: hostThreadId,
+        expectedRevision: BigInt.from(expectedRevision),
         interactionId: interactionId,
         resolution: _interactionResolutionFromDomain(resolution),
       ),
@@ -1906,25 +1915,96 @@ class FrbStudioTransport implements StudioTransport, PersistenceQueueReader {
   }
 
   @override
-  Future<InterruptTurnCommandReply> interruptTurn(
+  Future<StopThreadCommandReply> stopThread(
     String threadId,
-    String turnId, {
+    String executionId, {
     required OperationId operationId,
   }) async {
     await _ensureReady();
     final response = await _bridgeCall(
-      () => frb.interruptTurn(
+      () => frb.stopThread(
         operationId: operationId.value,
         threadId: threadId,
-        turnId: turnId,
+        expectedExecutionId: executionId,
       ),
     );
-    return InterruptTurnCommandReply(
+    return StopThreadCommandReply(
       threadId: response.threadId,
-      turnId: response.turnId,
-      interrupted: response.interrupted,
+      executionId: response.executionId,
+      stopped: response.stopped,
       receipt: _commandReceiptFromFrb(response.receipt),
     );
+  }
+
+  @override
+  Future<ContinueThreadCommandReply> continueThread(
+    String threadId,
+    String continuationId, {
+    required int expectedModelRouteRevision,
+    required OperationId operationId,
+  }) async {
+    await _ensureReady();
+    final response = await _bridgeCall(
+      () => frb.continueThread(
+        operationId: operationId.value,
+        threadId: threadId,
+        expectedContinuationId: continuationId,
+        expectedModelRouteRevision: BigInt.from(expectedModelRouteRevision),
+      ),
+    );
+    return ContinueThreadCommandReply(
+      threadId: response.threadId,
+      inputId: response.inputId,
+      continuationId: response.continuationId,
+      cursor: response.cursor.toInt(),
+      receipt: _commandReceiptFromFrb(response.receipt),
+    );
+  }
+
+  @override
+  Future<ContinuationOperationView> readContinuationOperation(
+    String threadId,
+    String operationId,
+  ) async {
+    await _ensureReady();
+    final response = await _bridgeCall(
+      () => frb.readContinuationOperation(
+        threadId: threadId,
+        operationId: operationId,
+      ),
+    );
+    return ContinuationOperationView(
+      threadId: response.threadId,
+      operationId: response.operationId,
+      inputId: response.inputId,
+      continuationId: response.continuationId,
+      acceptedSequence: response.acceptedSequence.toInt(),
+      state: _continuationStateFromFrb(response.state),
+      durable: response.durable,
+      receipt: _commandReceiptFromFrb(response.receipt),
+    );
+  }
+
+  @override
+  Future<List<ChildInteractionSummary>> readChildInteractions(
+    String threadId,
+  ) async {
+    await _ensureReady();
+    final response = await _bridgeCall(
+      () => frb.readChildInteractions(threadId: threadId),
+    );
+    return [
+      for (final summary in response)
+        ChildInteractionSummary(
+          childThreadId: summary.childThreadId,
+          interactionId: summary.interactionId,
+          kind:
+              _interactionKindFromLabel(summary.kind) ??
+              _interactionFromFrb(summary.interaction).kind,
+          revision: summary.revision.toInt(),
+          interaction: _interactionFromFrb(summary.interaction),
+        ),
+    ];
   }
 
   @override
@@ -1998,6 +2078,9 @@ class FrbStudioTransport implements StudioTransport, PersistenceQueueReader {
         );
       } catch (error, stackTrace) {
         if (!tracked.cancelRequested) {
+          // create/stream attach 已确定失败；先结束创建决策，避免 controller.close 等待
+          // 的 onCancel 反向等待本 start future 的 finally。
+          tracked.markCreated();
           controller.addError(_studioFailure(error), stackTrace);
           await controller.close();
         }
@@ -2090,6 +2173,9 @@ class FrbStudioTransport implements StudioTransport, PersistenceQueueReader {
         );
       } catch (error, stackTrace) {
         if (!tracked.cancelRequested) {
+          // create/stream attach 已确定失败；先结束创建决策，避免 controller.close 等待
+          // 的 onCancel 反向等待本 start future 的 finally。
+          tracked.markCreated();
           controller.addError(_studioFailure(error), stackTrace);
           await controller.close();
         }
@@ -2178,9 +2264,13 @@ class FrbStudioTransport implements StudioTransport, PersistenceQueueReader {
                 .BridgeAttachmentAdmissionContext.existingThread(
               threadId: threadId,
             ),
-          NewThreadAttachmentAdmissionContext(:final mode) =>
+          NewThreadAttachmentAdmissionContext(:final route) =>
             frb_attachment_types.BridgeAttachmentAdmissionContext.newThread(
-              mode: mode.id,
+              route: frb.BridgeNewThreadModelRoute(
+                accountId: route.accountId,
+                modelId: route.modelId,
+                effort: route.effort.isEmpty ? null : route.effort,
+              ),
             ),
         },
         sources: [

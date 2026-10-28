@@ -16,6 +16,7 @@ import '../../app/theme/studio_tokens.dart';
 import '../../app/app_graph.dart';
 import '../../app/public_artifact_actions.dart';
 import '../../domain/models/audience_delivery_presentation.dart';
+import '../../domain/models/plan_confirmation_ownership.dart';
 import '../../domain/models/studio_models.dart';
 import '../../l10n/studio_l10n.dart';
 import '../../platform/external_url_launcher.dart';

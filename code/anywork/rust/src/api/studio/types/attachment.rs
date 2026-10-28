@@ -17,8 +17,12 @@ impl From<BridgeStudioPromptInput> for pl_protocol::studio::StudioPromptInput {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BridgeAttachmentAdmissionContext {
-    ExistingThread { thread_id: String },
-    NewThread { mode: String },
+    ExistingThread {
+        thread_id: String,
+    },
+    NewThread {
+        route: super::BridgeNewThreadModelRoute,
+    },
 }
 
 impl From<BridgeAttachmentAdmissionContext>
@@ -29,7 +33,13 @@ impl From<BridgeAttachmentAdmissionContext>
             BridgeAttachmentAdmissionContext::ExistingThread { thread_id } => {
                 Self::ExistingThread { thread_id }
             }
-            BridgeAttachmentAdmissionContext::NewThread { mode } => Self::NewThread { mode },
+            BridgeAttachmentAdmissionContext::NewThread { route } => Self::NewThread {
+                route: pl_protocol::studio::NewThreadModelRoute {
+                    account_id: route.account_id,
+                    model_id: route.model_id,
+                    effort: route.effort,
+                },
+            },
         }
     }
 }

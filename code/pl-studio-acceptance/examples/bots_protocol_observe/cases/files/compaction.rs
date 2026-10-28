@@ -20,11 +20,19 @@ pub(super) async fn run(session: &mut Session, evidence: &mut Vec<String>) -> Re
         .http()?
         .open_project(&session.project.to_string_lossy())
         .await?;
+    // One explicit route serves both the draft admission and the Thread
+    // creation, so the admitted originals can never be admitted against a
+    // different model than the one the Thread really runs.
+    let route = NewThreadModelRoute {
+        account_id: env::model_account_id(&session.home)?,
+        model_id: "fixture-model".into(),
+        effort: None,
+    };
     let drafts = session
         .http()?
         .upload_files(
             &StudioAttachmentAdmissionContext::NewThread {
-                mode: pl_protocol::ThreadModeId::SIMPLE.into(),
+                route: route.clone(),
             },
             &[("old-original.noext".into(), ORIGINAL.to_vec())],
         )
@@ -43,11 +51,7 @@ pub(super) async fn run(session: &mut Session, evidence: &mut Vec<String>) -> Re
                 title: Some("D2 real manual compaction".into()),
                 input: first,
                 mode: pl_protocol::ThreadModeId::SIMPLE.into(),
-                route: NewThreadModelRoute {
-                    account_id: env::model_account_id(&session.home)?,
-                    model_id: "fixture-model".into(),
-                    effort: None,
-                },
+                route: route.clone(),
                 delegation_mode: None,
                 delegation_preference: None,
                 workspace_mode: Default::default(),

@@ -63,6 +63,14 @@ const INDEXES: &[(&str, &str)] = &[
 ];
 
 pub(in crate::bots::storage) async fn migrate<C: ConnectionTrait>(db: &C) -> anyhow::Result<()> {
+    ensure_eight_absent(db).await?;
+    migrate_eight(db).await
+}
+
+/// The first read-only boundary also runs before an adoption step can record completion.
+pub(in crate::bots::storage) async fn ensure_eight_absent<C: ConnectionTrait>(
+    db: &C,
+) -> anyhow::Result<()> {
     for table in ["thread_bindings", "binding_operations"] {
         anyhow::ensure!(
             db.query_one_raw(statement(
@@ -91,6 +99,103 @@ pub(in crate::bots::storage) async fn migrate<C: ConnectionTrait>(db: &C) -> any
             "unversioned bot audience structure; original database retained"
         );
     }
+    Ok(())
+}
+
+/// Validate the same immutable origin/target evidence used by the eight-to-nine conversion,
+/// without installing indexes or writing origins. Incomplete evidence stays unproven as before;
+/// contradictory or malformed evidence must fail before any migration step modifies the source.
+pub(in crate::bots::storage) async fn preflight_eight<C: ConnectionTrait>(
+    db: &C,
+) -> anyhow::Result<()> {
+    ensure_eight_absent(db).await?;
+    preflight_origins(db, proof::Boundary::SchemaEight).await
+}
+
+pub(in crate::bots::storage) async fn preflight_file_without_cards<C: ConnectionTrait>(
+    db: &C,
+) -> anyhow::Result<()> {
+    ensure_eight_absent(db).await?;
+    preflight_origins(db, proof::Boundary::FileWithoutCards).await
+}
+
+async fn preflight_origins<C: ConnectionTrait>(
+    db: &C,
+    boundary: proof::Boundary,
+) -> anyhow::Result<()> {
+    let threads = if matches!(boundary, proof::Boundary::FileWithoutCards) {
+        "SELECT thread_id FROM (SELECT thread_id FROM thread_bindings UNION SELECT thread_id FROM binding_operations) WHERE thread_id<>'' AND (?1 IS NULL OR thread_id>?1) ORDER BY thread_id LIMIT 64"
+    } else {
+        "SELECT thread_id FROM (SELECT thread_id FROM thread_bindings UNION SELECT thread_id FROM binding_operations UNION SELECT thread_id FROM bot_card_streams) WHERE thread_id<>'' AND (?1 IS NULL OR thread_id>?1) ORDER BY thread_id LIMIT 64"
+    };
+    let mut after: Option<String> = None;
+    loop {
+        let rows = db
+            .query_all_raw(statement(threads, vec![after.clone().into()]))
+            .await?;
+        if rows.is_empty() {
+            break;
+        }
+        for row in rows {
+            let thread: String = row.try_get("", "thread_id")?;
+            after = Some(thread.clone());
+            let evidence = proof::collect(db, &thread, boundary).await?;
+            if let Some(origin) = evidence.into_legacy_origin(thread) {
+                preflight_target(
+                    db,
+                    boundary,
+                    &origin.thread_id,
+                    &origin.creation_id,
+                    &origin.chat_id,
+                    &origin.project_id,
+                )
+                .await?;
+            }
+        }
+    }
+    let mut after: Option<String> = None;
+    loop {
+        let rows = db.query_all_raw(statement(
+            "SELECT chat_id,creation_id,project_id FROM thread_bindings WHERE status='creating' AND (?1 IS NULL OR chat_id>?1) ORDER BY chat_id LIMIT 64",
+            vec![after.clone().into()],
+        )).await?;
+        if rows.is_empty() {
+            break;
+        }
+        for row in rows {
+            let chat = super::super::strict_text(&row, "chat_id")?;
+            after = Some(chat.clone());
+            preflight_target(
+                db,
+                boundary,
+                "",
+                &super::super::strict_text(&row, "creation_id")?,
+                &chat,
+                &super::super::strict_text(&row, "project_id")?,
+            )
+            .await?;
+        }
+    }
+    Ok(())
+}
+
+async fn preflight_target<C: ConnectionTrait>(
+    db: &C,
+    boundary: proof::Boundary,
+    thread: &str,
+    creation: &str,
+    chat: &str,
+    project: &str,
+) -> anyhow::Result<()> {
+    if matches!(boundary, proof::Boundary::FileWithoutCards) {
+        super::super::target::legacy_file_source(db, creation, chat, project).await?;
+    } else {
+        super::super::target::legacy(db, thread, creation, chat, project).await?;
+    }
+    Ok(())
+}
+
+async fn migrate_eight<C: ConnectionTrait>(db: &C) -> anyhow::Result<()> {
     for table in ["thread_bindings", "binding_operations"] {
         db.execute_unprepared(&format!(
             "ALTER TABLE {table} ADD COLUMN target_json TEXT NOT NULL DEFAULT '{}'",
@@ -200,21 +305,79 @@ pub(in crate::bots::storage) async fn migrate<C: ConnectionTrait>(db: &C) -> any
 }
 
 pub(in crate::bots::storage) async fn validate<C: ConnectionTrait>(db: &C) -> anyhow::Result<()> {
+    validate_boundary(db, Boundary::Nine, false).await
+}
+
+/// Only previously declared performance indexes may be absent at this import boundary. Present
+/// declarations and all source data are still validated; Publication10 installs missing indexes
+/// in its own transaction before performing the formal conversion.
+pub(in crate::bots::storage) async fn validate_source_nine<C: ConnectionTrait>(
+    db: &C,
+) -> anyhow::Result<()> {
+    validate_boundary(db, Boundary::Nine, true).await
+}
+
+/// 十号结构下只校验受众部分：实体账本已由投递模块重整，不再要求九号 items 形状。
+pub(in crate::bots::storage) async fn validate_current<C: ConnectionTrait>(
+    db: &C,
+) -> anyhow::Result<()> {
+    validate_boundary(db, Boundary::Ten, false).await
+}
+
+/// 九号 `bot_delivery_items` 的精确声明，供投递迁移核对来源而不是修补同号结构。
+pub(in crate::bots::storage) fn legacy_items_declaration() -> &'static str {
+    ITEMS
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Boundary {
+    Nine,
+    Ten,
+}
+
+async fn validate_boundary<C: ConnectionTrait>(
+    db: &C,
+    boundary: Boundary,
+    allow_missing_secondary: bool,
+) -> anyhow::Result<()> {
     validate_target_structure(db).await?;
-    for (name, expected) in DECLARATIONS
-        .iter()
-        .chain(INDEXES)
-        .chain(counts::INDEXES)
-        .chain(proof::INDEXES)
-        .chain(proof::INHERITED_INDEXES)
-    {
+    let mut required: Vec<(&str, &str, bool)> = Vec::new();
+    for (name, ddl) in DECLARATIONS.iter().copied() {
+        if boundary == Boundary::Nine || name != "bot_delivery_items" {
+            required.push((name, ddl, false));
+        }
+    }
+    for (name, ddl) in INDEXES.iter().copied() {
+        if boundary == Boundary::Nine || name != "bot_delivery_thread" {
+            required.push((name, ddl, false));
+        }
+    }
+    for (name, ddl) in match boundary {
+        Boundary::Nine => counts::INDEXES
+            .iter()
+            .copied()
+            .chain(proof::INDEXES.iter().copied()),
+        Boundary::Ten => counts::CURRENT_INDEXES
+            .iter()
+            .copied()
+            .chain(proof::CURRENT_INDEXES.iter().copied()),
+    } {
+        required.push((name, ddl, allow_missing_secondary));
+    }
+    for (name, ddl) in proof::INHERITED_INDEXES.iter().copied() {
+        required.push((name, ddl, allow_missing_secondary));
+    }
+    for (name, expected, optional) in required {
         let row = db
             .query_one_raw(statement(
                 "SELECT sql FROM sqlite_schema WHERE name=?",
-                vec![(*name).into()],
+                vec![name.into()],
             ))
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("missing schema-nine audience declaration"))?;
+            .await?;
+        let Some(row) = row else {
+            anyhow::ensure!(optional, "missing schema-nine audience declaration: {name}");
+            continue;
+        };
         let sql: String = row.try_get("", "sql")?;
         // Case-sensitive, including constraint literals. Only formatting whitespace is ignored.
         let normalized = |text: &str| {
@@ -227,14 +390,16 @@ pub(in crate::bots::storage) async fn validate<C: ConnectionTrait>(db: &C) -> an
             "incompatible schema-nine audience declaration"
         );
     }
-    let mut after = String::new();
-    // Old pending operations keep their exact bytes, but malformed nested card identities must
-    // not silently enter a new authorization schema. One row bounds retained historical bodies.
-    loop {
-        let row=db.query_one_raw(statement("SELECT identity,bot_id,chat_id,message_id,thread_id,original_input,watch_input,turn_id,version,state_json FROM bot_card_streams WHERE identity>? ORDER BY identity LIMIT 1",vec![after.clone().into()])).await?;
-        let Some(row) = row else { break };
-        after = row.try_get("", "identity")?;
-        super::super::card::decode_stored(row)?;
+    if boundary == Boundary::Nine {
+        let mut after = String::new();
+        // Old pending operations keep their exact bytes, but malformed nested card identities must
+        // not silently enter a new authorization schema. One row bounds retained historical bodies.
+        loop {
+            let row=db.query_one_raw(statement("SELECT identity,bot_id,chat_id,message_id,thread_id,original_input,watch_input,turn_id,version,state_json FROM bot_card_streams WHERE identity>? ORDER BY identity LIMIT 1",vec![after.clone().into()])).await?;
+            let Some(row) = row else { break };
+            after = row.try_get("", "identity")?;
+            super::super::card::decode_stored(row)?;
+        }
     }
     let mut after = String::new();
     loop {
@@ -248,11 +413,21 @@ pub(in crate::bots::storage) async fn validate<C: ConnectionTrait>(db: &C) -> an
         for row in &rows {
             let origin = origin(row)?;
             if let super::super::target::TargetProof::Created { evidence } = &origin.target {
-                super::super::target::check_sources(db, &origin, &evidence.bot_id).await?;
+                if allow_missing_secondary {
+                    super::super::target::check_sources_for_import(db, &origin, &evidence.bot_id)
+                        .await?;
+                } else {
+                    super::super::target::check_sources(db, &origin, &evidence.bot_id).await?;
+                }
             } else {
                 anyhow::ensure!(origin.requires_upgrade, "unproven current creation target");
             }
-            proof::collect(db, &origin.thread_id, proof::Boundary::Current)
+            let proof_boundary = if allow_missing_secondary {
+                proof::Boundary::ImportNine
+            } else {
+                proof::Boundary::Current
+            };
+            proof::collect(db, &origin.thread_id, proof_boundary)
                 .await?
                 .check(&origin, None)?;
             after = origin.thread_id;
@@ -333,35 +508,37 @@ pub(in crate::bots::storage) async fn validate<C: ConnectionTrait>(db: &C) -> an
             break;
         }
     }
-    let mut after = (String::new(), 0i64, String::new());
-    loop {
-        let rows=db.query_all_raw(statement("SELECT chat_id,generation,item_id,thread_id,state_json FROM bot_delivery_items WHERE (chat_id,generation,item_id)>(?,?,?) ORDER BY chat_id,generation,item_id LIMIT 32",vec![after.0.clone().into(),after.1.into(),after.2.clone().into()])).await?;
-        let done = rows.len() < 32;
-        for row in rows {
-            let observation: DeliveryObservation =
-                serde_json::from_str(&row.try_get::<String>("", "state_json")?)?;
-            after = (
-                row.try_get("", "chat_id")?,
-                row.try_get("", "generation")?,
-                row.try_get("", "item_id")?,
-            );
-            anyhow::ensure!(
-                observation.item_id == after.2
-                    && observation.authorization.chat_id == after.0
-                    && i64::try_from(observation.authorization.generation)? == after.1
-                    && observation.thread_id == row.try_get::<String>("", "thread_id")?,
-                "invalid delivery observation scope"
-            );
-            let auth = super::read::load_auth(db, &observation.authorization)
-                .await?
-                .ok_or_else(|| anyhow::anyhow!("delivery has no authorization"))?;
-            anyhow::ensure!(
-                auth.intent.thread_id == observation.thread_id,
-                "delivery crosses Thread scope"
-            );
-        }
-        if done {
-            break;
+    if boundary == Boundary::Nine {
+        let mut after = (String::new(), 0i64, String::new());
+        loop {
+            let rows=db.query_all_raw(statement("SELECT chat_id,generation,item_id,thread_id,state_json FROM bot_delivery_items WHERE (chat_id,generation,item_id)>(?,?,?) ORDER BY chat_id,generation,item_id LIMIT 32",vec![after.0.clone().into(),after.1.into(),after.2.clone().into()])).await?;
+            let done = rows.len() < 32;
+            for row in rows {
+                let observation: DeliveryObservation =
+                    serde_json::from_str(&row.try_get::<String>("", "state_json")?)?;
+                after = (
+                    row.try_get("", "chat_id")?,
+                    row.try_get("", "generation")?,
+                    row.try_get("", "item_id")?,
+                );
+                anyhow::ensure!(
+                    observation.item_id == after.2
+                        && observation.authorization.chat_id == after.0
+                        && i64::try_from(observation.authorization.generation)? == after.1
+                        && observation.thread_id == row.try_get::<String>("", "thread_id")?,
+                    "invalid delivery observation scope"
+                );
+                let auth = super::read::load_auth(db, &observation.authorization)
+                    .await?
+                    .ok_or_else(|| anyhow::anyhow!("delivery has no authorization"))?;
+                anyhow::ensure!(
+                    auth.intent.thread_id == observation.thread_id,
+                    "delivery crosses Thread scope"
+                );
+            }
+            if done {
+                break;
+            }
         }
     }
     anyhow::ensure!(

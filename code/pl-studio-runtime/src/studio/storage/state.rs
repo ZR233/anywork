@@ -1,5 +1,5 @@
 //! Current SQLite checkpoint loading and the isolated v2 TOML migration boundary.
-//! Legacy files are removed only after the imported transaction can be read and verified.
+//! Legacy files are immutable input to the explicit current-history Migrator, never cleanup work.
 
 use std::{
     collections::BTreeMap,
@@ -55,9 +55,25 @@ pub(crate) fn checkpoint_recovery_snapshot() -> BTreeMap<String, String> {
 pub(crate) struct InputIdentityEntry {
     /// Content digest of the originally accepted body, for future content-equality checks.
     pub(crate) digest: String,
+    /// 该输入是否携带接续来源；控制输入的受理结果据此重建。
+    ///
+    /// 旧版本写入的行没有这个字段，按「没有接续来源」解码，历史身份保持原样。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) continuation: Option<pl_core::thread::input::InputContinuation>,
     /// Delivery routing receipt retained from the original admission.
     pub(crate) delivery: pl_core::thread::input::InputDelivery,
     pub(crate) id: String,
+    /// 原始受理的用途：控制输入在正文离开驻留队列后仍然可识别。
+    ///
+    /// 旧行没有该字段时按普通消息解码。
+    #[serde(default)]
+    pub(crate) purpose: pl_core::thread::input::InputPurpose,
+    /// 控制输入受理时调用方冻结的模型路由版本；首写值即请求身份的一部分。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) expected_model_route_revision: Option<u64>,
+    /// 控制输入首次受理时的输入 revision；重放原回执时用它重建目标戳，不被后续状态推进覆盖。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) continuation_admission_revision: Option<u64>,
     pub(crate) ordinal: u64,
     pub(crate) revision: u64,
     pub(crate) state: pl_core::thread::input::InputState,
@@ -72,8 +88,14 @@ impl InputIdentityEntry {
     ) -> Self {
         Self {
             digest: identity.digest,
+            continuation: identity.continuation,
             delivery: identity.delivery,
             id: identity.id,
+            purpose: identity.purpose,
+            // These two are filled by the control identity write path; a plain message identity
+            // never carries them.
+            expected_model_route_revision: None,
+            continuation_admission_revision: None,
             ordinal: identity.ordinal,
             revision: identity.revision,
             state: identity.state,
@@ -103,17 +125,11 @@ impl StateStore {
         self
     }
 
-    /// Explicit recovery upgrades existing SQLite state before decoding the checkpoint.
-    /// Preparing storage does not create a missing history database.
-    pub(crate) async fn load_after_migration(
-        &self,
-        history: &super::history::HistoryStore,
-    ) -> Result<Option<ThreadCheckpoint>> {
-        history.prepare_activation().await?;
-        self.load(history).await
-    }
-
-    pub(crate) async fn load(
+    /// Strictly read-only checkpoint read for read-only product projections.
+    ///
+    /// This never imports a legacy checkpoint and never touches the state directory: a projection
+    /// only reports facts already durable in the completed current history database.
+    pub(crate) async fn load_read_only(
         &self,
         history: &super::history::HistoryStore,
     ) -> Result<Option<ThreadCheckpoint>> {
@@ -121,15 +137,26 @@ impl StateStore {
             history.thread_id() == self.thread_id,
             "history database belongs to another Thread"
         );
-        if let Some(checkpoint) = history.checkpoint().await? {
-            self.cleanup_legacy(history).await?;
-            return Ok(Some(checkpoint));
-        }
-        let Some(mut checkpoint) = self.load_legacy().await? else {
-            ensure!(
-                history.watermark().await? == 0,
-                "history exists without a recovery checkpoint"
-            );
+        history.checkpoint().await
+    }
+
+    /// Read-only legacy material for the named target migration. It never creates a database,
+    /// writes a checkpoint, deletes a manifest/blob or adds call usage to an existing SQLite state.
+    pub(super) async fn load_legacy_for_import(
+        &self,
+        thread_id: &str,
+    ) -> Result<
+        Option<(
+            ThreadCheckpoint,
+            Vec<super::calls::PurposeUsageProjection>,
+            String,
+        )>,
+    > {
+        ensure!(
+            thread_id == self.thread_id,
+            "legacy state belongs to another Thread"
+        );
+        let Some((mut checkpoint, raw)) = self.load_legacy().await? else {
             return Ok(None);
         };
         // Old compaction receipts used one extension key per request. History owns the old
@@ -185,45 +212,13 @@ impl StateStore {
             summary.cache_incomplete |= auxiliary.cache_incomplete;
             summary.has_unpriced_usage |= auxiliary.has_unpriced_usage;
         }
-        history
-            .import_checkpoint(&checkpoint, &legacy_costs)
-            .await?;
-        let restored = history
-            .checkpoint()
-            .await?
-            .context("imported checkpoint is absent")?;
-        self.cleanup_legacy(history).await?;
-        Ok(Some(restored))
+        Ok(Some((checkpoint, legacy_costs, raw)))
     }
 
-    async fn cleanup_legacy(&self, history: &super::history::HistoryStore) -> Result<()> {
-        if !history.legacy_cleanup_pending().await? {
-            return Ok(());
-        }
-        for path in [self.path(), self.previous_path()] {
-            match tokio::fs::remove_file(&path).await {
-                Ok(()) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => {
-                    return Err(error)
-                        .with_context(|| format!("remove migrated checkpoint {}", path.display()));
-                }
-            }
-        }
-        // This dedicated namespace belongs only to the replaced TOML manifests. Attachment
-        // and command-output blobs are siblings and must never enter this cleanup.
-        match tokio::fs::remove_dir_all(self.checkpoint_blobs_dir()).await {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error).context("remove migrated checkpoint bodies"),
-        }
-        history.finish_legacy_cleanup().await?;
-        Ok(())
-    }
-
-    async fn load_legacy(&self) -> Result<Option<ThreadCheckpoint>> {
+    async fn load_legacy(&self) -> Result<Option<(ThreadCheckpoint, String)>> {
         let mut primary_error = None;
         for path in [self.path(), self.previous_path()] {
+            self.validate_legacy_path(&path).await?;
             let content = match tokio::fs::read_to_string(&path).await {
                 Ok(content) => content,
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
@@ -267,7 +262,8 @@ impl StateStore {
                     "recovered the Thread checkpoint from state.prev.toml"
                 );
             }
-            return Ok(Some(checkpoint));
+            let raw = serde_json::to_string(&toml::from_str::<toml::Value>(&content)?)?;
+            return Ok(Some((checkpoint, raw)));
         }
         match primary_error {
             Some(error) => Err(error),
@@ -292,13 +288,14 @@ impl StateStore {
             let mut legacy = pl_core::thread::LegacyThreadCheckpoint::decode_json(
                 &serde_json::to_string(&value)?,
             )?;
-            // Even bodies discarded by the new layout are checked before deleting the old manifest.
+            // Even bodies retired by the published layout conversion must be verified. The old
+            // manifest and its namespace remain immutable after a successful target import.
             for entry in legacy.dropped_attempt_bodies() {
-                let bytes = tokio::fs::read(self.blob_path(entry.reference.digest())?).await?;
+                let bytes = self.read_legacy_body(entry.reference.digest()).await?;
                 entry.reference.verify(&bytes)?;
             }
             while let Some(entry) = legacy.pending_body().cloned() {
-                let bytes = tokio::fs::read(self.blob_path(entry.reference.digest())?).await?;
+                let bytes = self.read_legacy_body(entry.reference.digest()).await?;
                 legacy.materialize_body(&entry.reference, &bytes)?;
             }
             let route = self.legacy_route(&value).await?;
@@ -328,6 +325,7 @@ impl StateStore {
         let mut checkpoint = parse_checkpoint(content, path)?;
         while let Some(entry) = checkpoint.pending_body().cloned() {
             let blob = self.blob_path(entry.reference.digest())?;
+            self.validate_legacy_path(&blob).await?;
             let bytes = tokio::fs::read(&blob).await.with_context(|| {
                 format!(
                     "checkpoint body {} is missing for Thread {}",
@@ -383,8 +381,7 @@ impl StateStore {
                     >(entry.clone())
                         && matches!(entry.slot, pl_core::thread::LegacyCheckpointBodySlot::AttemptMetadata { attempt_index } if attempt_index == index)
                     {
-                        let bytes =
-                            tokio::fs::read(self.blob_path(entry.reference.digest())?).await?;
+                        let bytes = self.read_legacy_body(entry.reference.digest()).await?;
                         entry.reference.verify(&bytes)?;
                         payload = pl_core::context::OpaquePayload::new(
                             payload.format(),
@@ -413,6 +410,30 @@ impl StateStore {
     /// session directory carries both and every reference stays resolvable without absolute paths.
     fn checkpoint_blobs_dir(&self) -> PathBuf {
         self.directory.join("blobs").join("checkpoint")
+    }
+
+    async fn validate_legacy_path(&self, path: &Path) -> Result<()> {
+        let absolute = std::path::absolute(path)?;
+        let root = absolute
+            .ancestors()
+            .last()
+            .context("legacy checkpoint path has no root")?;
+        pl_tool::workspace::path_safety::validate_path_for_write_async(root, &absolute).await?;
+        match tokio::fs::symlink_metadata(path).await {
+            Ok(metadata) => ensure!(
+                metadata.is_file(),
+                "legacy checkpoint material is not a regular file"
+            ),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+        Ok(())
+    }
+
+    async fn read_legacy_body(&self, digest: &str) -> Result<Vec<u8>> {
+        let path = self.blob_path(digest)?;
+        self.validate_legacy_path(&path).await?;
+        Ok(tokio::fs::read(path).await?)
     }
 
     /// Absolute path of one referenced body, derived from its content address.

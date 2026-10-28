@@ -289,7 +289,9 @@ impl StudioRuntime {
     /// # Errors
     /// 未知 Thread 身份，或 history 落后于 durable checkpoint 栅栏（`Busy`）。
     pub async fn timeline_reader(&self, thread_id: &str) -> Result<TimelineContentReader> {
-        self.ensure_timeline_history(thread_id).await?;
+        // Opening a content handle is a read: it never imports or deletes storage, only verifies that
+        // the durable watermark already covers the saved checkpoint fence.
+        self.read_timeline_history(thread_id).await?;
         Ok(TimelineContentReader {
             thread_id: thread_id.to_owned(),
             session: self.chat_session(thread_id).await?,

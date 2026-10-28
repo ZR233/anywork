@@ -459,13 +459,9 @@ final class _PresentationMember extends ChangeNotifier
   void publish() => notifyListeners();
 }
 
-bool _hasIssue(TimelineMessagePayload payload) => const {
-  'failed',
-  'cancelled',
-  'denied',
-  'interrupted',
-  'budgetLimited',
-}.contains(payload.item.status);
+/// 取消与中断是正常控制结果，不算问题；只有真实失败、拒绝和预算限制计数。
+bool _hasIssue(TimelineMessagePayload payload) =>
+    const {'failed', 'denied', 'budgetLimited'}.contains(payload.item.status);
 
 bool timelinePayloadIsVisible(TimelineMessagePayload payload) =>
     switch (payload.item.kind) {

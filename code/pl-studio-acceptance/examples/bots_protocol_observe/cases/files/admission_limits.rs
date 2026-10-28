@@ -6,7 +6,8 @@ use super::write_json;
 use crate::http::PatternUpload;
 use anyhow::{Context, Result, ensure};
 use pl_protocol::studio::{
-    StudioAttachmentAdmissionContext, StudioAttachmentModality, StudioErrorCode,
+    NewThreadModelRoute, StudioAttachmentAdmissionContext, StudioAttachmentModality,
+    StudioErrorCode,
 };
 use pl_provider_fixture::bots_observe as model;
 use serde::Serialize;
@@ -25,7 +26,11 @@ struct AcceptedOriginal {
 
 pub(super) async fn run(session: &mut Session, evidence: &mut Vec<String>) -> Result<String> {
     let context = StudioAttachmentAdmissionContext::NewThread {
-        mode: pl_protocol::ThreadModeId::SIMPLE.into(),
+        route: NewThreadModelRoute {
+            account_id: crate::env::model_account_id(&session.home)?,
+            model_id: "fixture-model".into(),
+            effort: None,
+        },
     };
     let tiny = (0..32)
         .map(|index| PatternUpload {

@@ -10,7 +10,7 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'package:freezed_annotation/freezed_annotation.dart' hide protected;
 part 'runtime.freezed.dart';
 
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
 
 class BridgeActiveTurn {
   final String threadId;
@@ -44,6 +44,15 @@ class BridgeAgentDirectoryEntryDto {
   final String? summary;
   final int depth;
   final BridgeAgentState state;
+
+  /// 该成员当前执行；未装载或无当前执行时为空。
+  final BridgeAgentExecution? execution;
+
+  /// 用户是否可对这一行发起精确停止。
+  final bool canStop;
+
+  /// 该成员已被停止/中断且尚无操作认领其继续点，等待主智能体调度。
+  final bool awaitingScheduling;
   final PlatformInt64 updatedAt;
 
   const BridgeAgentDirectoryEntryDto({
@@ -60,6 +69,9 @@ class BridgeAgentDirectoryEntryDto {
     this.summary,
     required this.depth,
     required this.state,
+    this.execution,
+    required this.canStop,
+    required this.awaitingScheduling,
     required this.updatedAt,
   });
 
@@ -78,6 +90,9 @@ class BridgeAgentDirectoryEntryDto {
       summary.hashCode ^
       depth.hashCode ^
       state.hashCode ^
+      execution.hashCode ^
+      canStop.hashCode ^
+      awaitingScheduling.hashCode ^
       updatedAt.hashCode;
 
   @override
@@ -98,7 +113,43 @@ class BridgeAgentDirectoryEntryDto {
           summary == other.summary &&
           depth == other.depth &&
           state == other.state &&
+          execution == other.execution &&
+          canStop == other.canStop &&
+          awaitingScheduling == other.awaitingScheduling &&
           updatedAt == other.updatedAt;
+}
+
+/// 目录行的当前执行身份与阶段：停止目标来自它，而不是当前选中会话的轮次。
+class BridgeAgentExecution {
+  final String id;
+  final BridgeAgentExecutionPhase phase;
+  final String? turnId;
+
+  const BridgeAgentExecution({
+    required this.id,
+    required this.phase,
+    this.turnId,
+  });
+
+  @override
+  int get hashCode => id.hashCode ^ phase.hashCode ^ turnId.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeAgentExecution &&
+          runtimeType == other.runtimeType &&
+          id == other.id &&
+          phase == other.phase &&
+          turnId == other.turnId;
+}
+
+enum BridgeAgentExecutionPhase {
+  preparing,
+  awaitingStorage,
+  awaitingAdmission,
+  running,
+  stopping,
 }
 
 @freezed
@@ -871,10 +922,19 @@ class BridgeWaitingToolAgent {
           turnId == other.turnId;
 }
 
+enum BridgeWorktreeInspection {
+  available,
+  missing,
+  identityMismatch,
+  unavailable,
+}
+
 /// Worktree lease 的归属来源；显式清理必须与 durable lease 的归属一致。
 enum BridgeWorktreeOwner { session, child }
 
 class BridgeWorktreeRecoveryPreviewDto {
+  final BridgeWorktreeInspection inspection;
+
   /// Worktree 归属来源：`session` 为会话自身工作区，`child` 为子智能体工作区。
   final BridgeWorktreeOwner ownerKind;
   final String ownerThreadId;
@@ -885,10 +945,11 @@ class BridgeWorktreeRecoveryPreviewDto {
   final String branch;
   final String baseCommit;
   final String? headCommit;
-  final bool dirty;
-  final List<String> changedFiles;
+  final bool? dirty;
+  final List<String>? changedFiles;
 
   const BridgeWorktreeRecoveryPreviewDto({
+    required this.inspection,
     required this.ownerKind,
     required this.ownerThreadId,
     required this.leaseRevision,
@@ -898,12 +959,13 @@ class BridgeWorktreeRecoveryPreviewDto {
     required this.branch,
     required this.baseCommit,
     this.headCommit,
-    required this.dirty,
-    required this.changedFiles,
+    this.dirty,
+    this.changedFiles,
   });
 
   @override
   int get hashCode =>
+      inspection.hashCode ^
       ownerKind.hashCode ^
       ownerThreadId.hashCode ^
       leaseRevision.hashCode ^
@@ -921,6 +983,7 @@ class BridgeWorktreeRecoveryPreviewDto {
       identical(this, other) ||
       other is BridgeWorktreeRecoveryPreviewDto &&
           runtimeType == other.runtimeType &&
+          inspection == other.inspection &&
           ownerKind == other.ownerKind &&
           ownerThreadId == other.ownerThreadId &&
           leaseRevision == other.leaseRevision &&

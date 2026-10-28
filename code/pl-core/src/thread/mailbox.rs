@@ -13,6 +13,12 @@ pub(super) enum MailboxCommand {
         input::InputDriverOptions,
         oneshot::Sender<Result<u64, ThreadError>>,
     ),
+    /// Body-less continuation of the work this Thread already owes.
+    ContinueThread(
+        String,
+        input::InputDriverOptions,
+        oneshot::Sender<Result<input::InputRecord, ThreadError>>,
+    ),
     QueueRuntimeFacts(Vec<RuntimeFact>, oneshot::Sender<Result<(), ThreadError>>),
     /// One accepted increment of a running tool call's live output.
     ///
@@ -57,6 +63,11 @@ pub(super) enum MailboxCommand {
     ),
     InterruptTurn {
         expected: Option<String>,
+        reply: oneshot::Sender<Result<bool, ThreadError>>,
+    },
+    /// Stops exactly the named execution, including one that is still preparing.
+    InterruptExecution {
+        expected: String,
         reply: oneshot::Sender<Result<bool, ThreadError>>,
     },
     CancelRunningTurn {
@@ -164,6 +175,9 @@ impl Owner {
             }
             MailboxCommand::ContinueMessage(message, options, reply) => {
                 let _ = reply.send(self.continue_message(message, options));
+            }
+            MailboxCommand::ContinueThread(input_id, options, reply) => {
+                let _ = reply.send(self.continue_thread(input_id, options));
             }
             MailboxCommand::QueueRuntimeFacts(facts, reply) => {
                 let _ = reply.send(self.queue_runtime_facts(facts));
@@ -322,8 +336,46 @@ impl Owner {
                 let _ = reply.send(result);
             }
 
+            MailboxCommand::InterruptExecution { expected, reply } => {
+                // The named execution is compared with the one this owner really owns. A stop for a
+                // finished or replaced execution is an outdated identity, never "stop whatever runs
+                // now": the caller asked for exactly one generation, and stopping a newer one would
+                // cancel work it never named.
+                let current = self.state.execution.clone();
+                let result = match current {
+                    Some(execution) if execution.id == expected => {
+                        let turn_id = execution.turn_id.clone();
+                        if let Some(execution) = self.state.execution.as_mut() {
+                            execution.phase = ExecutionPhase::Stopping;
+                        }
+                        self.pause_inputs();
+                        // The point is formed before cancellation settles so the owed work is a
+                        // committed fact even if cleanup has to wait for a running tool.
+                        let source = turn_id
+                            .as_ref()
+                            .map_or_else(|| "execution".to_owned(), |id| format!("turn:{id}"));
+                        self.form_continuation(
+                            ContinuationReason::UserStop,
+                            turn_id.clone(),
+                            &source,
+                        );
+                        let tasks = turn_id.as_ref().map_or(Ok(()), |turn_id| {
+                            self.interrupted_turn = Some(turn_id.clone());
+                            self.cancel_turn_tasks(turn_id)
+                        });
+                        let cancelled = self.interrupt.interrupt();
+                        self.publish();
+                        self.publish_snapshot();
+                        tasks.map(|()| cancelled)
+                    }
+                    Some(_) | None => Err(ThreadError::InvalidIdentity),
+                };
+                let _ = reply.send(result);
+            }
+
             MailboxCommand::SubmitInput(submission, reply) => {
-                let result = self.accept_input_with_policy(submission.input, submission.policy);
+                let result =
+                    self.accept_input_with_policy(submission.input, submission.policy, None);
                 if result
                     .as_ref()
                     .is_ok_and(|record| record.state == input::InputState::Pending)
@@ -499,7 +551,7 @@ impl Owner {
                 let result = if self.interrupt.is_closing() {
                     Err(ThreadError::Closed)
                 } else {
-                    self.receive_message(message, drive)
+                    self.receive_message(message, drive, None)
                 };
                 let _ = reply.send(result);
             }

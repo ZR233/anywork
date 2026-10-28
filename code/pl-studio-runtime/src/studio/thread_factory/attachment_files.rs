@@ -222,17 +222,18 @@ enum Files {
 impl Files {
     async fn stat(&self, path: &str) -> Result<Option<WorkspaceFileStat>, UserFileError> {
         match self {
-            Self::Local(backend) => {
-                backend
-                    .stat_optional(WorkspaceFileStatRequest {
-                        path: path.into(),
-                        cwd: None,
-                    })
-                    .await
-            }
-            Self::Remote(backend) => backend.stat_optional(path.into(), None).await,
+            Self::Local(backend) => backend
+                .stat_optional(WorkspaceFileStatRequest {
+                    path: path.into(),
+                    cwd: None,
+                })
+                .await
+                .map_err(unavailable),
+            Self::Remote(backend) => backend
+                .stat_optional(path.into(), None)
+                .await
+                .map_err(unavailable),
         }
-        .map_err(unavailable)
     }
     async fn read(&self, path: &str, max_bytes: usize) -> Result<Vec<u8>, UserFileError> {
         let request = WorkspaceFileReadBytesRequest {

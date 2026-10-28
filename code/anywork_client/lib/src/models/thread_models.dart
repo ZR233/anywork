@@ -1026,11 +1026,26 @@ class RawHistoryPayload {
   final String content;
 }
 
+/// 一条 raw 记录的来源；载荷列表不能区分这两类。
+enum ThreadRawItemOrigin {
+  /// 无法解码成 typed 条目、按原样保留的历史载荷。
+  stored,
+
+  /// 替代无正文控制输入的运行时说明，本身不含可展开内容。
+  runtimeControl,
+}
+
 final class ThreadRawItemStateView extends ThreadItemStateView {
-  const ThreadRawItemStateView(this.payloads, this.notice, this.recordedAt);
+  const ThreadRawItemStateView(
+    this.payloads,
+    this.notice,
+    this.recordedAt, {
+    required this.origin,
+  });
   final List<RawHistoryPayload> payloads;
   final String notice;
   final DateTime recordedAt;
+  final ThreadRawItemOrigin origin;
 }
 
 final class ThreadFileItemStateView extends ThreadItemStateView {
@@ -1681,6 +1696,7 @@ class ThreadItemView {
         :final payloads,
         :final notice,
         :final recordedAt,
+        :final origin,
       ):
         final target = switch (field) {
           ThreadRawPayloadFieldView(:final payloadIndex) => payloadIndex,
@@ -1698,6 +1714,7 @@ class ThreadItemView {
                 : payloads,
             notice,
             recordedAt,
+            origin: origin,
           ),
           omittedUnits: omittedUnits,
         );
@@ -1826,11 +1843,18 @@ ThreadItemStateView? _convergeState(
         wait: b.wait ?? a.wait,
       );
     case (ThreadRawItemStateView a, ThreadRawItemStateView b):
+      // 来源不一致说明两条记录描述的不是同一事实，收敛必须失败而不是挑一个。
+      if (a.origin != b.origin) return null;
       final payloads = _convergeRawPayloads(a.payloads, b.payloads);
       if (payloads == null) return null;
       final notice = _convergeText(a.notice, b.notice);
       if (notice == null) return null;
-      return ThreadRawItemStateView(payloads, notice, b.recordedAt);
+      return ThreadRawItemStateView(
+        payloads,
+        notice,
+        b.recordedAt,
+        origin: b.origin,
+      );
     case (
       ThreadPublicArtifactItemStateView a,
       ThreadPublicArtifactItemStateView b,

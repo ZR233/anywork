@@ -12,16 +12,18 @@ use pl_protocol::studio::{
     ATTACHMENT_MAX_BATCH_BYTES, ATTACHMENT_MAX_BATCH_FILES, ATTACHMENT_MAX_FILE_BYTES,
     AcpAccountCatalog, AcpAuthCommandReply, AcpAuthSnapshot, AcpInstallCommandReply,
     AcpInstallSnapshot, AdmitAttachmentDraftsRequest, AdmitAttachmentDraftsResponse,
-    CancelAcpAuthRequest, CancelAcpInstallRequest, CreateThreadRequest, ExpectedRevisionRequest,
+    CancelAcpAuthRequest, CancelAcpInstallRequest, ContinuationOperationView,
+    ContinueThreadRequest, ContinueThreadResponse, CreateThreadRequest, ExpectedRevisionRequest,
     HealthResponse, LspResetRequest, McpResetRequest, OpenProjectRequest,
     RemoveAccountModelRequest, RemoveAccountRequest, RemoveAcpAccountRequest, RenameThreadRequest,
     ResolveInteractionRequest, SearchSkillsRequest, SetAccountBillingKindRequest,
     SetAccountModelEnabledRequest, SetDefaultAccountRequest, SetThreadModeRequest,
     SetThreadModelRouteRequest, SettingsCommandReply, SettingsStateResponse, StartAcpAuthRequest,
-    StartAcpInstallRequest, StudioAttachmentAdmissionContext, StudioAttachmentDraftSource,
-    StudioCommandRequest, StudioError, SubmitPromptRequest, ThreadModelRouteCommandReply,
-    ThreadPageQuery, UpdateAccountRequest, UpdateAcpAccountRequest,
-    UpdatePermissionSettingsRequest, UpdateSettingsFieldRequest,
+    StartAcpInstallRequest, StopThreadRequest, StopThreadResponse,
+    StudioAttachmentAdmissionContext, StudioAttachmentDraftSource, StudioCommandRequest,
+    StudioError, SubmitPromptRequest, ThreadModelRouteCommandReply, ThreadPageQuery,
+    UpdateAccountRequest, UpdateAcpAccountRequest, UpdatePermissionSettingsRequest,
+    UpdateSettingsFieldRequest,
 };
 use pl_protocol::{
     DelegationModelDetail, DelegationModelList, GetDelegationModelRequest,
@@ -248,12 +250,14 @@ pub(crate) fn api_router() -> OpenApiRouter<AppState> {
         .routes(routes!(list_thread_timeline))
         .routes(routes!(read_thread_timeline_detail))
         .routes(routes!(submit_prompt))
-        .routes(routes!(interrupt_turn))
         .routes(routes!(admit_attachment_drafts))
         .routes(routes!(remove_attachment_draft))
         .routes(routes!(read_attachment_draft))
         .routes(routes!(read_thread_attachment))
         .routes(routes!(resolve_interaction))
+        .routes(routes!(continue_thread))
+        .routes(routes!(stop_thread))
+        .routes(routes!(read_continuation_operation))
         .routes(routes!(account_catalog))
         .routes(routes!(list_delegation_models))
         .routes(routes!(get_delegation_model))
@@ -703,16 +707,48 @@ async fn submit_prompt(
     ))
 }
 
-#[utoipa::path(delete, path = "/api/v1/threads/{thread_id}/turns/{turn_id}", operation_id = "turn.interrupt", params(("thread_id" = String, Path), ("turn_id" = String, Path)), request_body = StudioCommandRequest, responses(StudioApiErrors, (status = 200)))]
-async fn interrupt_turn(
+/// 用户无内容继续主会话。子会话目标由后端拒绝，不依赖客户端隐藏入口。
+#[utoipa::path(post, path = "/api/v1/threads/{thread_id}/continue", operation_id = "thread.continue", params(("thread_id" = String, Path)), request_body = ContinueThreadRequest, responses(StudioApiErrors, (status = 200, body = ContinueThreadResponse)))]
+async fn continue_thread(
     State(state): State<AppState>,
-    Path((thread_id, turn_id)): Path<(String, String)>,
-    ApiJson(request): ApiJson<StudioCommandRequest>,
+    Path(thread_id): Path<String>,
+    ApiJson(request): ApiJson<ContinueThreadRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     Ok(Json(
         state
             .runtime
-            .interrupt_prompt(request.operation_id, thread_id, turn_id)
+            .continue_thread(thread_id, request)
+            .await
+            .map_err(ApiError::from)?,
+    ))
+}
+
+/// 精确停止：目标执行由调用方观察并显式命名，用户可停止主会话或指定子成员。
+#[utoipa::path(post, path = "/api/v1/threads/{thread_id}/stop", operation_id = "thread.stop", params(("thread_id" = String, Path)), request_body = StopThreadRequest, responses(StudioApiErrors, (status = 200, body = StopThreadResponse)))]
+async fn stop_thread(
+    State(state): State<AppState>,
+    Path(thread_id): Path<String>,
+    ApiJson(request): ApiJson<StopThreadRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    Ok(Json(
+        state
+            .runtime
+            .stop_thread(thread_id, request)
+            .await
+            .map_err(ApiError::from)?,
+    ))
+}
+
+/// 只读回查一次继续操作；查询不激活执行，也不解除后来发生的停止。
+#[utoipa::path(get, path = "/api/v1/threads/{thread_id}/continuations/{operation_id}", operation_id = "thread.readContinuation", params(("thread_id" = String, Path), ("operation_id" = String, Path)), responses(StudioApiErrors, (status = 200, body = ContinuationOperationView)))]
+async fn read_continuation_operation(
+    State(state): State<AppState>,
+    Path((thread_id, operation_id)): Path<(String, String)>,
+) -> Result<impl IntoResponse, ApiError> {
+    Ok(Json(
+        state
+            .runtime
+            .read_continuation_operation(thread_id, operation_id)
             .await
             .map_err(ApiError::from)?,
     ))
@@ -928,7 +964,13 @@ async fn resolve_interaction(
     Ok(Json(
         state
             .runtime
-            .resolve_interaction(request.operation_id, interaction_id, request.resolution)
+            .resolve_interaction(
+                request.operation_id,
+                request.host_thread_id,
+                request.expected_revision,
+                interaction_id,
+                request.resolution,
+            )
             .await
             .map_err(ApiError::from)?,
     ))

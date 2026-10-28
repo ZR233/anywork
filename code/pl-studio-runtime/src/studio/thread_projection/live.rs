@@ -694,11 +694,11 @@ impl Fact {
             self.revision,
             self.created_at,
             self.created_at,
-            ThreadItemState::Raw(ThreadRawItem {
-                payloads: Vec::new(),
-                notice: "This item's body is no longer resident in the live window.".to_owned(),
-                recorded_at: self.created_at,
-            }),
+            ThreadItemState::Raw(ThreadRawItem::stored(
+                Vec::new(),
+                "This item's body is no longer resident in the live window.",
+                self.created_at,
+            )),
         )
     }
 }

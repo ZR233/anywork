@@ -87,7 +87,9 @@ impl BotRuntime {
         let drafts = runtime
             .admit_attachment_bytes(files)
             .await
-            .map_err(|error| media_error(error.to_string()))?;
+            .map_err(|error| {
+                FeishuError::history_read("inbound attachment draft admission failed", error)
+            })?;
         Ok(drafts
             .drafts
             .into_iter()

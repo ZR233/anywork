@@ -439,3 +439,130 @@ pub(super) fn ensure_bound_row(row: &crate::sqlite::ThreadBindingRow) -> Result<
     );
     Ok(())
 }
+
+/// Public proof that a Thread really carries a legacy limited-reply source.
+///
+/// The reply cases in this module encode the **frozen legacy limited-reply
+/// policy**: one automatic card per Turn, Commentary staying local. The complete
+/// conversation frontend instead publishes one card per public item, including
+/// Commentary, and its evidence lives in `conversation-frontend*`.
+///
+/// Absence of an active full-frontend authorization is **not** legacy evidence:
+/// a brand new Thread may be `Closed` or `PendingStart` too. Only the product's
+/// own facts qualify a limited-reply source:
+///
+/// - the exact canonical item under test (the one carrying `expected_marker`)
+///   being classified by the product as `NotAuthorized { reason: LegacyOnly }`,
+///   which ties the legacy source to the observed original Final/input.
+///
+/// A never-activated closed authorization is deliberately **not** accepted as a
+/// sufficient condition: a brand new binding can close before its start too, and
+/// treating that as legacy would let a new Thread's policy pass as migrated.
+///
+/// Without migrated-ledger material this proof does not exist. A legacy-policy case then
+/// stays explicitly unverified instead of becoming a same-name pass; the range
+/// remains in `GAP_LEGACY_LIMITED_FINAL` until that fixture exists.
+pub(super) async fn assert_legacy_limited_source(
+    session: &Session,
+    thread_id: &str,
+    expected_marker: &str,
+) -> Result<String> {
+    use pl_protocol::studio::{
+        BotAudienceCanonicalItem, BotAudienceItemsRead, BotItemEligibility, BotItemExclusion,
+        ReadThreadAudienceItemsRequest,
+    };
+    use pl_protocol::{BotCurrentSync, BotThreadBindingPosition, ThreadAudience};
+
+    const UNQUALIFIED: &str = "the frozen legacy limited-reply source is not provable from public facts (the observed item is not classified NotAuthorized(LegacyOnly) by the product); this range stays in GAP_LEGACY_LIMITED_FINAL until the migrated-ledger fixture exists, so a pass here must not be read as legacy-policy evidence";
+
+    let snapshot = session.http()?.read_thread(thread_id).await?;
+    let ThreadAudience::Known { audience } = snapshot.audience else {
+        anyhow::bail!("Thread {thread_id}: {UNQUALIFIED}");
+    };
+    let active = match &audience.binding {
+        BotThreadBindingPosition::Current { sync, .. } => match sync.as_ref() {
+            BotCurrentSync::Active { authorization } | BotCurrentSync::Paused { authorization } => {
+                Some(authorization.authorization.id.clone())
+            }
+            _ => None,
+        },
+        BotThreadBindingPosition::Replaced { .. } => None,
+    };
+    let authorization = active.or_else(|| {
+        audience
+            .latest_closed
+            .as_ref()
+            .map(|closed| closed.authorization.id.clone())
+    });
+    let Some(authorization) = authorization else {
+        anyhow::bail!("Thread {thread_id}: {UNQUALIFIED}");
+    };
+    // Only the tested Final may qualify the source: a different legacy item of
+    // the same Thread would not prove this Final's policy, and a Commentary item
+    // carrying the same marker is not a legacy Final either.
+    let mut ids = Vec::new();
+    for item in session.http()?.timeline(thread_id).await? {
+        if let pl_protocol::ThreadItemState::Text(text) = item.preview.state()
+            && text.channel() == pl_protocol::ThreadTextChannel::Final
+            && text.text().contains(expected_marker)
+        {
+            ids.push(item.preview.id);
+        }
+    }
+    anyhow::ensure!(
+        ids.len() == 1,
+        "Thread {thread_id} must expose exactly one Final item carrying the tested marker for the legacy check, found {}",
+        ids.len()
+    );
+    let expected_item_id = ids.remove(0);
+    let reply = session
+        .http()?
+        .read_thread_audience_items(&ReadThreadAudienceItemsRequest {
+            thread_id: thread_id.to_owned(),
+            authorization: authorization.clone(),
+            item_ids: vec![expected_item_id.clone()],
+        })
+        .await?
+        .map_err(|error| {
+            anyhow::anyhow!(
+                "bots.readThreadAudienceItems was rejected while checking the legacy source: {:?}: {}",
+                error.code,
+                error.message
+            )
+        })?;
+    anyhow::ensure!(
+        reply.thread_id == thread_id,
+        "the per-item response answered for another Thread"
+    );
+    anyhow::ensure!(
+        reply.authorization == authorization,
+        "the per-item response answered for another authorization identity (bot/chat/generation)"
+    );
+    let BotAudienceItemsRead::Items { items, .. } = reply.result else {
+        anyhow::bail!("Thread {thread_id}: the per-item source read is unavailable; {UNQUALIFIED}");
+    };
+    anyhow::ensure!(
+        items.len() == 1 && items[0].item_id == expected_item_id,
+        "the per-item response must return exactly the requested identity {expected_item_id}, got {:?}",
+        items
+            .iter()
+            .map(|status| status.item_id.as_str())
+            .collect::<Vec<_>>()
+    );
+    let status = &items[0];
+    anyhow::ensure!(
+        matches!(
+            &status.canonical,
+            BotAudienceCanonicalItem::Present {
+                eligibility: BotItemEligibility::NotAuthorized {
+                    reason: BotItemExclusion::LegacyOnly,
+                },
+                ..
+            }
+        ),
+        "Thread {thread_id}: the tested item {expected_item_id} is not classified NotAuthorized(LegacyOnly); {UNQUALIFIED}"
+    );
+    Ok(format!(
+        "legacy limited source proven by the tested Final item {expected_item_id} carrying NotAuthorized(LegacyOnly)"
+    ))
+}

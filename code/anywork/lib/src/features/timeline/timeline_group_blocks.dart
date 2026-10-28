@@ -191,10 +191,18 @@ class _TimelineGroupBlockState extends State<_TimelineGroupBlock> {
       final count = item.imageCount > 0
           ? context.l10n.timelineImagesViewed(item.imageCount)
           : '';
+      // 停止判定消费与问题计数同一份 typed item.status（不解析原因文本），
+      // 只看 O(1) 的最新成员：混合组里失败与进行中优先，成功数量保留。
+      final stopped =
+          item.issueCount == 0 &&
+          item.activeCount == 0 &&
+          const {'cancelled', 'interrupted'}.contains(item.latest.item.status);
       final status = item.issueCount > 0
           ? context.l10n.timelineViewImageFailed
           : item.activeCount > 0
           ? context.l10n.timelineViewImageReading
+          : stopped
+          ? context.l10n.timelineViewImageStopped
           : '';
       return [count, status].where((part) => part.isNotEmpty).join(' · ');
     }
@@ -511,11 +519,12 @@ class _TimelineImageReadStatus extends StatelessWidget {
     child: Column(
       mainAxisAlignment: MainAxisAlignment.center,
       children: [
-        Icon(
-          item.error == null
-              ? Icons.image_outlined
-              : Icons.broken_image_outlined,
-        ),
+        Icon(switch (item.status) {
+          'failed' || 'denied' => Icons.broken_image_outlined,
+          // 取消与中断是正常控制结果：中性停止图标，不用失败图形。
+          'cancelled' || 'interrupted' => Icons.stop_circle_outlined,
+          _ => Icons.image_outlined,
+        }),
         const SizedBox(height: 8),
         Text(
           _toolTitle(context, item),

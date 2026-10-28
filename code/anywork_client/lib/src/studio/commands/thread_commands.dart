@@ -9,19 +9,33 @@ import '../../../anywork_client.dart'
         OperationState,
         Observation,
         ResourceKind,
-        ResourcePermit;
+        ResourcePermit,
+        LatestValue;
 import '../anywork_client.dart';
 import '../agent_directory_queries.dart';
+import '../stores/child_interaction_store.dart';
 import '../stores/domain_sync.dart';
+import '../stores/project_store.dart';
 import '../thread_session_state.dart';
 import 'command_lane.dart';
 
+int _wallClockMs() => DateTime.now().millisecondsSinceEpoch;
+
 class ThreadCommands extends ReadModel<ThreadCommandBoard> {
-  ThreadCommands(this._client) : super(const ThreadCommandBoard());
+  ThreadCommands(this._client, {int Function()? nowMs})
+    : _nowMs = nowMs ?? _wallClockMs,
+      super(const ThreadCommandBoard());
   final AnyworkClient _client;
+
+  /// 命令登记时间来源；界面用自己的墙钟比较，因此这里使用 Unix 毫秒。
+  final int Function() _nowMs;
   final CommandLane _lane = CommandLane();
   final CommandLane _stopLane = CommandLane();
   final Set<Observation> _operationObservations = {};
+  final Map<String, _ContinuationIntent> _continuationIntents = {};
+
+  /// 同一 `(threadId, executionId)` 的停止登记：至多一个在途 + 至多一个排队重试。
+  final Map<String, _StopFlight> _stopFlights = {};
   bool _closed = false;
   Future<void>? _closing;
 
@@ -191,6 +205,7 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
         .where((item) => item.id == interactionId)
         .firstOrNull;
     final turnId = displayed?.turnId;
+    final displayedRevision = displayed?.revision ?? 0;
     _begin(key, label: interactionId);
     try {
       _watchIdentity(
@@ -228,7 +243,9 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
       }
       try {
         final response = await _api.respondInteraction(
+          threadId,
           interactionId,
+          displayedRevision,
           resolution,
           operationId: operation.id,
         );
@@ -320,53 +337,445 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
     });
   }
 
-  /// 停止是独立的可取消控制入口：不排在归档/创建/长查询后面，也不按「当前是否选中」
-  /// 过滤目标——调用时冻结的 threadId + turnId 就是命令目标。
-  Future<void> stop(String threadId) {
+  /// 主会话自己的精确停止。
+  ///
+  /// 目标是该会话规范运行时里的执行身份，而不是 `activeTurn`：准备、等待保存、等待准入
+  /// 与清理期同样可寻址。调用瞬间冻结 ThreadId + 执行编号 + OperationId，切换选中会话
+  /// 不会把命令重定向到别的会话。
+  ///
+  /// [expectedExecutionId] 是调用方渲染时捕获的执行编号：传入时它就是唯一目标，命令边界
+  /// 不再从 canonical 重新选择，也不会在本地降级成「没有可停止执行」——若该执行已被替换，
+  /// 由服务端返回 typed `staleExecution`，命令抛该失败。未传时仍取 canonical 当前执行。
+  ///
+  /// 返回值明确回答「这次点击是否真的发出了停止请求」：规范里已无当前执行时返回
+  /// [StopNoExecution]，调用方不应进入进行中状态。
+  Future<ThreadStopOutcome> stop(
+    String threadId, {
+    String? expectedExecutionId,
+  }) {
     _ensureOpen();
-    final turn = _client.session(threadId).state.activeTurn;
-    if (turn == null || !turn.state.isBusy) return Future<void>.value();
-    final turnId = turn.turnId;
+    final frozen = expectedExecutionId;
+    if (frozen != null) {
+      return _stopExecution(
+        threadId: threadId,
+        executionId: frozen,
+        requireCurrentCanonical: false,
+      );
+    }
+    final execution = _client.session(threadId).state.runtime?.execution;
+    if (execution == null) {
+      return Future<ThreadStopOutcome>.value(
+        StopNoExecution(threadId: threadId),
+      );
+    }
+    return _stopExecution(threadId: threadId, executionId: execution.id);
+  }
+
+  /// 智能体列表某一行的精确停止。
+  ///
+  /// 目标来自 AgentDirectory 该行发布的执行身份与停止资格：不要求先选择或打开该会话，
+  /// 不改变当前选择，不创建输入草稿，也不建立完整内容订阅。
+  ///
+  /// [expectedExecutionId] 是界面渲染该行时捕获的执行编号：传入时以它为唯一目标，仍要求
+  /// 该行具备停止资格（`canStop`），但不再要求 canonical 仍发布这个执行——过时由服务端
+  /// 以 typed `staleExecution` 拒绝，而不是本地改写或静默停止别的执行。
+  ///
+  /// 行不具备停止资格时返回 [StopNotQualified] 且不发出请求；有资格但没有发布的执行
+  /// 时同样按无资格处理，不据活动摘要假造目标。
+  Future<ThreadStopOutcome> stopAgent(
+    String threadId, {
+    String? expectedExecutionId,
+  }) {
+    _ensureOpen();
+    final agent = _agentEntry(threadId);
+    final frozen = expectedExecutionId;
+    if (frozen != null) {
+      if (agent == null || !agent.canStop) {
+        return Future<ThreadStopOutcome>.value(
+          StopNotQualified(threadId: threadId),
+        );
+      }
+      return _stopExecution(
+        threadId: threadId,
+        executionId: frozen,
+        fromDirectory: true,
+        requireCurrentCanonical: false,
+      );
+    }
+    final execution = agent?.execution;
+    if (agent == null || !agent.canStop || execution == null) {
+      return Future<ThreadStopOutcome>.value(
+        StopNotQualified(threadId: threadId),
+      );
+    }
+    return _stopExecution(
+      threadId: threadId,
+      executionId: execution.id,
+      fromDirectory: true,
+    );
+  }
+
+  Future<ThreadStopOutcome> _stopExecution({
+    required String threadId,
+    required String executionId,
+    bool fromDirectory = false,
+    bool requireCurrentCanonical = true,
+  }) {
+    // At most one in-flight attempt plus at most one queued retry per
+    // (thread, execution): repeated clicks and timeout retries never accumulate
+    // queued requests, yet an explicit retry still gets its turn once the
+    // current attempt settles.
+    final target = '$threadId:$executionId';
+    final existing = _stopFlights[target];
+    if (existing == null) {
+      final entry = _StopFlight(
+        threadId: threadId,
+        executionId: executionId,
+        fromDirectory: fromDirectory,
+        requireCurrentCanonical: requireCurrentCanonical,
+      );
+      _stopFlights[target] = entry;
+      return _runStopFlight(target, entry);
+    }
+    final queued = existing.queued;
+    if (queued != null) return queued;
+    // The caller learns that this click is queued, not sent: the interface
+    // shows "request in flight" and keeps repeated submissions disabled.
+    final registration = Completer<ThreadStopOutcome>()
+      ..complete(StopQueued(threadId: threadId, executionId: executionId));
+    existing.queued = registration.future;
+    return existing.queued!;
+  }
+
+  /// 发起一次真实尝试，并在结算时把排队的唯一重试交给 lane。
+  Future<ThreadStopOutcome> _runStopFlight(String target, _StopFlight entry) {
+    final flight = _dispatchStop(
+      threadId: entry.threadId,
+      executionId: entry.executionId,
+      fromDirectory: entry.fromDirectory,
+      requireCurrentCanonical: entry.requireCurrentCanonical,
+    );
+    entry.inFlight = flight;
+    unawaited(
+      flight
+          .then<void>((_) {}, onError: (Object _, StackTrace _) {})
+          .whenComplete(() => _settleStopFlight(target, entry)),
+    );
+    return flight;
+  }
+
+  void _settleStopFlight(String target, _StopFlight entry) {
+    final queued = entry.queued;
+    if (queued == null) {
+      _stopFlights.removeWhere(
+        (name, pending) => name == target && identical(pending, entry),
+      );
+      return;
+    }
+    entry.queued = null;
+    try {
+      // The queued retry owns its own settle handler, so this future is only
+      // observed through that handler.
+      unawaited(_runStopFlight(target, entry));
+    } catch (error) {
+      _fail('stop:${entry.threadId}', entry.threadId, error);
+      _stopFlights.removeWhere(
+        (name, pending) => name == target && identical(pending, entry),
+      );
+    }
+  }
+
+  Future<ThreadStopOutcome> _dispatchStop({
+    required String threadId,
+    required String executionId,
+    required bool fromDirectory,
+    required bool requireCurrentCanonical,
+  }) {
     final key = 'stop:$threadId';
     final operation = _client.mutations.begin(target: key);
-    _begin(key, label: turnId);
+    _begin(key, label: executionId);
     try {
-      _watchIdentity(operation, threadId, (state) {
-        if (!state.hasSnapshot) return false;
-        final active = state.activeTurn;
-        if (active != null && active.turnId == turnId)
-          return !active.state.isBusy;
-        // The watched canonical owner previously held this busy Turn. A later
-        // owner frame with no such active identity confirms that it ended.
-        return true;
-      }, () => _clear(key));
+      if (fromDirectory) {
+        _watchPredicate(
+          operation,
+          _client.project.source,
+          (state) => _directoryExecutionEnded(state, threadId, executionId),
+          () => _clear(key),
+        );
+      } else {
+        _watchPredicate(
+          operation,
+          _client.session(threadId).source,
+          (state) =>
+              state.hasSnapshot && state.runtime?.execution?.id != executionId,
+          () => _clear(key),
+        );
+      }
     } catch (error) {
       operation.reject(error);
-      if (_isLatest(operation)) _fail(key, turnId, error);
+      if (_isLatest(operation)) _fail(key, threadId, error);
       rethrow;
     }
-    return _stopLane.enqueue(() async {
-      final latest = _client.session(threadId).state.activeTurn;
-      if (latest == null || latest.turnId != turnId || !latest.state.isBusy) {
-        operation.reject(StateError('The targeted Turn has already ended'));
-        if (_isLatest(operation)) _clear(key);
-        return;
+    return _stopLane.enqueue<ThreadStopOutcome>(() async {
+      // Without a caller-frozen identity the captured one must still be canonical:
+      // a stop may not degrade into "stop whatever runs now". With a frozen
+      // identity the server owns that comparison and answers typed staleExecution.
+      final current = requireCurrentCanonical
+          ? (fromDirectory
+                ? _agentEntry(threadId)?.execution
+                : _client.session(threadId).state.runtime?.execution)
+          : null;
+      if (requireCurrentCanonical &&
+          (current == null || current.id != executionId)) {
+        final stale = StudioFailure(
+          code: StudioFailureCode.conflict,
+          message: 'The observed execution is no longer current',
+          retryable: false,
+          correlationId: 'client-stop-stale-execution',
+          reason: StudioFailureReason.staleExecution,
+        );
+        _failOperation(operation, stale);
+        if (_isLatest(operation)) _fail(key, threadId, stale);
+        throw stale;
       }
       try {
-        final response = await _api.interruptTurn(
+        final response = await _api.stopThread(
           threadId,
-          turnId,
+          executionId,
           operationId: operation.id,
         );
         if (response.threadId != threadId ||
-            response.turnId != turnId ||
+            response.executionId != executionId ||
             !response.receipt.requiresIdentityObservation) {
-          throw StateError('Interrupt receipt did not match the stable target');
+          throw StateError('Stop receipt did not match the stable target');
+        }
+        operation.accept(response.receipt.toCommitReceipt());
+        // The acceptance receipt is a fact the interface must be able to read
+        // after it rebuilds; the canonical convergence is still pending.
+        _markAccepted(key);
+        return StopRequested(
+          threadId: threadId,
+          executionId: executionId,
+          operationId: operation.id,
+          receipt: response.receipt,
+        );
+      } catch (error) {
+        _failOperation(operation, error);
+        if (_isLatest(operation)) _fail(key, threadId, error);
+        rethrow;
+      }
+    });
+  }
+
+  /// 无新内容继续主会话。
+  ///
+  /// 只为主会话提供：子会话的执行由主智能体调度，用户界面没有直达入口。同一
+  /// (会话, 继续点) 意图只允许一个 OperationId；结果未知时按原操作回查，不换编号重发。
+  ///
+  /// [continuation] 必须来自规范运行时投影（`ThreadRuntimeView.continuation`）：
+  /// 已认领的点（`claimed`）表示继续已被受理或仍在准备，不再发送新请求；客户端不
+  /// 本地生成继续点身份，也不从轮次终态推断能否继续。
+  Future<ContinueThreadCommandReply> continueThread(
+    String threadId,
+    ContinuationView continuation, {
+    required int expectedModelRouteRevision,
+  }) {
+    _ensureOpen();
+    if (_isChildThread(threadId)) {
+      return Future<ContinueThreadCommandReply>.error(
+        _childRequiresParentScheduling(threadId),
+      );
+    }
+    final continuationId = continuation.id;
+    final intentKey = '$threadId:$continuationId';
+    final existing = _continuationIntents[intentKey];
+    if (existing?.inFlight case final inFlight?) return inFlight;
+    if (_blocksThread(threadId)) {
+      return Future<ContinueThreadCommandReply>.error(
+        StateError('Thread access is blocked by recovery'),
+      );
+    }
+    if (existing != null && existing.operationId != null) {
+      // A previous explicit intent already owns an identity: read the original
+      // operation instead of dispatching a second one.
+      final reconciling = _lane.run(
+        () => _reconcileContinuation(
+          threadId: threadId,
+          continuation: continuation,
+          intentKey: intentKey,
+          intent: existing,
+          expectedModelRouteRevision: expectedModelRouteRevision,
+        ),
+      );
+      existing.inFlight = reconciling;
+      return reconciling.whenComplete(() {
+        if (identical(existing.inFlight, reconciling)) {
+          existing.inFlight = null;
+        }
+      });
+    }
+    if (continuation.claimed) {
+      // The canonical projection already says this intent was claimed: another
+      // acceptance (or an unresolvable earlier one) owns it, so nothing is sent.
+      final claimed = StudioFailure(
+        code: StudioFailureCode.conflict,
+        message: 'The continuation point is already claimed',
+        retryable: false,
+        correlationId: 'client-continuation-claimed',
+        reason: StudioFailureReason.continuationClaimed,
+      );
+      _fail('continue:$threadId', threadId, claimed);
+      return Future<ContinueThreadCommandReply>.error(claimed);
+    }
+    final intent = existing ?? _ContinuationIntent();
+    _continuationIntents[intentKey] = intent;
+    final key = 'continue:$threadId';
+    final operation = _client.mutations.begin(target: key);
+    intent.operationId = operation.id;
+    _begin(key, label: continuationId);
+    try {
+      _watchPredicate(
+        operation,
+        _client.session(threadId).source,
+        (state) =>
+            state.hasSnapshot &&
+            (state.runtime?.execution != null ||
+                (state.activeTurn?.state.isBusy ?? false)),
+        () => _clear(key),
+      );
+    } catch (error) {
+      operation.reject(error);
+      if (_isLatest(operation)) _fail(key, threadId, error);
+      return Future<ContinueThreadCommandReply>.error(error);
+    }
+    final task = _lane.enqueue(() async {
+      try {
+        final reply = await _api.continueThread(
+          threadId,
+          continuationId,
+          expectedModelRouteRevision: expectedModelRouteRevision,
+          operationId: operation.id,
+        );
+        if (reply.threadId != threadId ||
+            !reply.receipt.requiresIdentityObservation) {
+          throw StateError('Continue receipt did not match the stable target');
+        }
+        operation.accept(reply.receipt.toCommitReceipt());
+        return reply;
+      } catch (error) {
+        _failOperation(operation, error);
+        if (_isLatest(operation)) _fail(key, threadId, error);
+        rethrow;
+      }
+    });
+    late final Future<ContinueThreadCommandReply> tracked;
+    tracked = task.whenComplete(() {
+      if (identical(intent.inFlight, tracked)) intent.inFlight = null;
+    });
+    intent.inFlight = tracked;
+    return tracked;
+  }
+
+  /// 按原操作身份回查一次继续操作；查询不激活执行、不解除后来发生的停止。
+  Future<ContinuationOperationView> readContinuationOperation(
+    String threadId,
+    String operationId,
+  ) {
+    _ensureOpen();
+    return _lane.run(
+      () => _api.readContinuationOperation(threadId, operationId),
+    );
+  }
+
+  /// 该会话当前继续点的规范投影；未打开或没有未完成工作时为空。
+  ///
+  /// 只读访问器：不激活会话、不新建操作，也不在本地推断继续资格。
+  ContinuationView? continuation(String threadId) =>
+      _client.existingSession(threadId)?.state.runtime?.continuation;
+
+  /// 读取主会话可见的子任务待决交互只读投影。
+  ///
+  /// 结果写入 [ChildInteractionStore]，决议命令以同一 canonical 镜像观察原交互事实；
+  /// 列举本身不激活任何子会话，也不建立其完整内容订阅。
+  Future<List<ChildInteractionSummary>> readChildInteractions(
+    String hostThreadId,
+  ) {
+    _ensureOpen();
+    if (_blocksThread(hostThreadId)) {
+      return Future<List<ChildInteractionSummary>>.error(
+        StateError('Thread access is blocked by recovery'),
+      );
+    }
+    return _lane.run(() async {
+      final sequence = _client.childInteractions.beginRead();
+      final items = await _api.readChildInteractions(hostThreadId);
+      _client.childInteractions.apply(hostThreadId, items, sequence: sequence);
+      return items;
+    });
+  }
+
+  /// 主会话代表子任务提交交互决议。
+  ///
+  /// 宿主身份固定为主会话，原交互身份与版本原样透传；决议结果落在原交互所属的子会话。
+  /// 子会话侧没有等价入口，这里也拒绝把子会话当作宿主。
+  Future<void> resolveChildInteraction(
+    String hostThreadId,
+    ChildInteractionSummary summary,
+    InteractionResolutionCommand resolution,
+  ) {
+    _ensureOpen();
+    if (summary.childThreadId == hostThreadId ||
+        summary.interaction.threadId != summary.childThreadId ||
+        _isChildThread(hostThreadId)) {
+      final failure = StudioFailure(
+        code: StudioFailureCode.invalidArgument,
+        message: 'A child decision is submitted through the main session that hosts it',
+        retryable: false,
+        correlationId: 'client-child-interaction-host',
+        reason: StudioFailureReason.interactionNotHosted,
+      );
+      return Future<void>.error(failure);
+    }
+    final key = 'interaction:$hostThreadId';
+    final operation = _client.mutations.begin(target: key);
+    _begin(key, label: summary.interactionId);
+    try {
+      _watchPredicate(
+        operation,
+        _client.childInteractions.source,
+        (state) => state.confirmsDecision(
+          hostThreadId: hostThreadId,
+          childThreadId: summary.childThreadId,
+          interactionId: summary.interactionId,
+          revision: summary.revision,
+        ),
+        () => _clear(key),
+      );
+    } catch (error) {
+      operation.reject(error);
+      if (_isLatest(operation)) _fail(key, summary.interactionId, error);
+      return Future<void>.error(error);
+    }
+    return _lane.enqueue(() async {
+      try {
+        final response = await _api.respondInteraction(
+          hostThreadId,
+          summary.interactionId,
+          summary.revision,
+          resolution,
+          operationId: operation.id,
+        );
+        if (response.interaction.id != summary.interactionId ||
+            response.interaction.threadId != summary.childThreadId ||
+            !response.receipt.requiresIdentityObservation) {
+          throw StateError(
+            'Child interaction receipt did not match the stable target',
+          );
         }
         operation.accept(response.receipt.toCommitReceipt());
       } catch (error) {
         _failOperation(operation, error);
-        if (_isLatest(operation)) _fail(key, turnId, error);
+        if (_isLatest(operation)) _fail(key, summary.interactionId, error);
         rethrow;
       }
     });
@@ -421,7 +830,7 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
     _watchObservation(operation, () => _clear(key));
     return _lane.enqueue(() async {
       final thread = _directoryThread(threadId);
-      if (thread == null || !thread.isRoot || _blocksThread(threadId)) {
+      if (thread == null || !thread.isRoot) {
         operation.reject(StateError('Thread archive is unavailable'));
         if (_isLatest(operation)) _clear(key);
         return;
@@ -560,6 +969,126 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
     return null;
   }
 
+  /// 智能体目录里该成员行的唯一事实；未装载时为空，不据旧摘要假造成员。
+  StudioAgentView? _agentEntry(String threadId) {
+    final agents = _client.project.state.agents?.values;
+    if (agents == null) return null;
+    for (final agent in agents) {
+      if (agent.threadId == threadId) return agent;
+    }
+    return null;
+  }
+
+  /// 子会话身份来自规范目录成员关系与 Thread 父子链接，不从界面选择推导。
+  bool _isChildThread(String threadId) {
+    final thread = _directoryThread(threadId);
+    if (thread != null && !thread.isRoot) return true;
+    return _agentEntry(threadId)?.parentPath != null;
+  }
+
+  StudioFailure _childRequiresParentScheduling(String threadId) =>
+      StudioFailure(
+        code: StudioFailureCode.permissionDenied,
+        message:
+            'A child agent is continued and instructed by the main session',
+        retryable: false,
+        correlationId: 'client-child-requires-parent-scheduling',
+        reason: StudioFailureReason.childThreadRequiresParentScheduling,
+      );
+
+  /// 目录级停止观察：只在同一成员行确认目标执行已结束或被安全替代时成立。
+  ///
+  /// 缺页、未装载或行内没有执行都不能被读成「停止完成」——那只是没有可证明的目标执行。
+  bool _directoryExecutionEnded(
+    ProjectStoreState state,
+    String threadId,
+    String executionId,
+  ) {
+    final agents = state.agents?.values;
+    if (agents == null) return false;
+    for (final agent in agents) {
+      if (agent.threadId != threadId) continue;
+      return agent.execution?.id != executionId;
+    }
+    return false;
+  }
+
+  /// 按原操作身份核对一次继续意图。
+  ///
+  /// 已受理就沿用原回执；只有「没有可证明的受理事实」才允许新的显式操作换编号，
+  /// 读取本身失败时保留未知结果，不盲目重发。
+  Future<ContinueThreadCommandReply> _reconcileContinuation({
+    required String threadId,
+    required ContinuationView continuation,
+    required String intentKey,
+    required _ContinuationIntent intent,
+    required int expectedModelRouteRevision,
+  }) async {
+    final operationId = intent.operationId;
+    if (operationId == null) {
+      throw StateError('A continuation intent has no operation identity');
+    }
+    try {
+      final view = await _api.readContinuationOperation(
+        threadId,
+        operationId.value,
+      );
+      if (view.threadId != threadId || view.operationId != operationId.value) {
+        throw StateError('Continuation read did not match the frozen identity');
+      }
+      final handle = _client.mutations.lookup(operationId);
+      handle?.accept(view.receipt.toCommitReceipt());
+      switch (view.state) {
+        case ConsumedContinuation():
+          // A consumed control input is a canonical fact about the new Turn: the
+          // effect happened even though the original receipt was lost.
+          if (handle != null && handle.state.value.receipt != null) {
+            if (!handle.state.value.effective) handle.markEffective();
+            if (!handle.state.value.observed) handle.markObserved();
+          }
+        case DiscardedContinuation():
+          // A discarded control input never runs; it must not stay pending.
+          handle?.reject(
+            StudioFailure(
+              code: StudioFailureCode.conflict,
+              message: 'The continuation intent was discarded',
+              retryable: false,
+              correlationId: 'client-continuation-discarded',
+              reason: StudioFailureReason.continuationUnavailable,
+            ),
+          );
+        case PendingContinuation():
+          // Still admitted and unconsumed: the identity observer registered at
+          // dispatch settles it when the canonical Turn appears.
+          break;
+      }
+      if (_client.mutations.latest('continue:$threadId')?.id == operationId) {
+        _clear('continue:$threadId');
+      }
+      return ContinueThreadCommandReply(
+        threadId: view.threadId,
+        inputId: view.inputId,
+        continuationId: view.continuationId,
+        cursor: view.acceptedSequence,
+        receipt: view.receipt,
+      );
+    } on StudioFailure catch (error, stackTrace) {
+      if (error.code != StudioFailureCode.notFound) {
+        Error.throwWithStackTrace(error, stackTrace);
+      }
+      // No provable acceptance exists for the original identity: forget it so a
+      // new explicit click may start one operation with its own identity.
+      _continuationIntents.remove(intentKey);
+      _client.mutations.lookup(operationId)?.reject(error);
+      _clear('continue:$threadId');
+      return continueThread(
+        threadId,
+        continuation,
+        expectedModelRouteRevision: expectedModelRouteRevision,
+      );
+    }
+  }
+
   bool _blocksThread(String threadId) =>
       _blocks(scope: RecoveryIssueScope.thread, threadId: threadId);
 
@@ -598,6 +1127,7 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
         key: key,
         phase: CommandPhase.pending,
         target: CommandTarget(label: label),
+        startedAtMs: _nowMs(),
       ),
     );
   }
@@ -615,8 +1145,19 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
         phase: CommandPhase.failed,
         target: existing?.target ?? CommandTarget(label: id),
         error: typedCommandFailure(error, correlationId: 'client-thread'),
+        // An already received acceptance receipt stays a fact even when the
+        // following observation fails.
+        accepted: existing?.accepted ?? false,
+        startedAtMs: existing?.startedAtMs ?? _nowMs(),
       ),
     );
+  }
+
+  /// 记录「已收到受理回执」；已结算或已清除的命令不再重建该条状态。
+  void _markAccepted(String key) {
+    final existing = state.commands[key];
+    if (existing == null || existing.accepted) return;
+    _put(existing.withAccepted());
   }
 
   void _put(CommandStatus status) {
@@ -657,6 +1198,25 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
     bool Function(ThreadSessionState) predicate,
     void Function() onObserved,
   ) {
+    _watchPredicate<ThreadSessionState>(
+      operation,
+      _client.session(threadId).source,
+      predicate,
+      onObserved,
+    );
+  }
+
+  /// 注册一次有预算的 identity 观察。
+  ///
+  /// [source] 是该操作真正的 canonical 镜像：主会话停止与继续看 Thread 状态，
+  /// 成员行停止看智能体目录，子任务交互看主会话的工作区投影。注册与当前值读取
+  /// 是同一同步事务，帧先到和回执先到都不漏确认。
+  void _watchPredicate<S>(
+    OperationHandle operation,
+    LatestValue<S> source,
+    bool Function(S) predicate,
+    void Function() onObserved,
+  ) {
     final permit = _client.budget.acquire(
       ResourceKind.observer,
       owner: 'command:${operation.id.value}',
@@ -674,7 +1234,7 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
       operation.markObserved();
     }
 
-    void mergeOwner(ThreadSessionState next) {
+    void mergeOwner(S next) {
       if (binding.isCancelled) return;
       if (predicate(next)) confirmed = true;
       completeIfAccepted();
@@ -695,7 +1255,7 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
       // Registration and the current value are one synchronous transaction.
       // A matching frame before the receipt is remembered by this binding;
       // the receipt still supplies its own authoritative disposition.
-      final owner = _client.session(threadId).source.watchLatest(mergeOwner);
+      final owner = source.watchLatest(mergeOwner);
       binding.owner = owner.observation;
       final receipt = operation.state.watchLatest(mergeOperation);
       binding.operation = receipt.observation;
@@ -773,6 +1333,39 @@ bool _stringMapsEqual(Map<String, String> left, Map<String, String> right) {
 int _stringMapHash(Map<String, String> values) => Object.hashAll(
   values.entries.map((entry) => Object.hash(entry.key, entry.value)),
 );
+
+/// 一个 `(threadId, executionId)` 的停止登记。
+///
+/// 结构上只有两段：当前在途尝试，以及至多一个排队的重试。任何时刻都不会出现第三个
+/// 请求，因此重复点击与超时重试都不会累积排队请求或 pending permit。
+final class _StopFlight {
+  _StopFlight({
+    required this.threadId,
+    required this.executionId,
+    required this.fromDirectory,
+    required this.requireCurrentCanonical,
+  });
+
+  final String threadId;
+  final String executionId;
+  final bool fromDirectory;
+  final bool requireCurrentCanonical;
+
+  /// 当前在途尝试的 future；结算后由排队重试取代或整条登记被清除。
+  Future<ThreadStopOutcome>? inFlight;
+
+  /// 唯一排队重试的返回结果（立即完成，语义为「已排队、尚未发出」）。
+  Future<ThreadStopOutcome>? queued;
+}
+
+/// 一个 (会话, 继续点) 意图的唯一操作身份与在途结果。
+///
+/// 回执丢失或页面离开后，这个身份仍然可用：再次显式点击先按它回查原操作，
+/// 不自动换编号重发，也不会同时存在两个操作。
+final class _ContinuationIntent {
+  OperationId? operationId;
+  Future<ContinueThreadCommandReply>? inFlight;
+}
 
 /// An identity predicate and its operation retention form one bounded observer.
 final class _IdentityOperationObservation implements Observation {

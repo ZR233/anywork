@@ -104,9 +104,75 @@ impl WorktreeManager {
         self.backend.resolve_head(path).await
     }
 
+    /// The worktrees this repository has registered, as Git itself reports them.
+    ///
+    /// This is how a directory proves it belongs to *this* repository: a directory at an expected
+    /// path may exist, be a Git worktree of another repository, or not be a worktree at all, but only
+    /// the resolved repository's own registration list names it as its worktree on a given branch.
+    ///
+    /// # Errors
+    /// Rejects an unreadable or failed `git worktree list` in the repository.
+    pub(crate) async fn registered_worktrees(
+        &self,
+    ) -> Result<Vec<super::RegisteredWorktree>, WorktreeError> {
+        let stdout = self.backend.worktree_list(&self.repo_root).await?;
+        Ok(super::backend::registered_worktrees(&stdout))
+    }
+
+    /// The Git directory shared by this repository and the given directory, resolved to one form.
+    ///
+    /// Equal answers prove both directories belong to the same repository; `None` means Git's answer
+    /// cannot be normalized, so the caller must treat the identity as unproven.
+    ///
+    /// # Errors
+    /// Rejects an unreadable or failed `git rev-parse --git-common-dir` in that directory.
+    pub(crate) async fn git_common_dir(
+        &self,
+        path: &Path,
+    ) -> Result<Option<String>, WorktreeError> {
+        let raw = self.backend.git_common_dir(path).await?;
+        let base = path.to_string_lossy();
+        Ok(super::backend::resolved_git_path(&raw, &base))
+    }
+
     pub async fn preview(&self, handle: &WorktreeHandle) -> Result<WorktreeStatus, WorktreeError> {
         self.validate_handle(handle)?;
-        self.backend.status(&handle.path).await
+        if !self.backend.path_exists(&handle.path).await? {
+            return Err(WorktreeError::Missing);
+        }
+        let registered = self.registered_worktrees().await?;
+        let target = super::backend::resolved_git_path(
+            &handle.path.to_string_lossy(),
+            &self.repo_root.to_string_lossy(),
+        );
+        if target.is_none()
+            || !registered.iter().any(|entry| {
+                !entry.prunable
+                    && super::backend::resolved_git_path(
+                        &entry.path,
+                        &self.repo_root.to_string_lossy(),
+                    ) == target
+                    && entry.branch.as_deref() == Some(handle.branch.as_str())
+            })
+        {
+            return Err(WorktreeError::IdentityMismatch(
+                "git worktree list does not register the expected path and branch".into(),
+            ));
+        }
+        let site = self.git_common_dir(&handle.path).await?;
+        let owner = self.git_common_dir(&self.repo_root).await?;
+        if site.is_none() || site != owner {
+            return Err(WorktreeError::IdentityMismatch(
+                "git rev-parse --git-common-dir does not match the owning repository".into(),
+            ));
+        }
+        let status = self.backend.status(&handle.path).await?;
+        if status.branch.as_deref() != Some(handle.branch.as_str()) {
+            return Err(WorktreeError::IdentityMismatch(
+                "git rev-parse --abbrev-ref HEAD does not match the lease branch".into(),
+            ));
+        }
+        Ok(status)
     }
 
     /// Previews a remaining owned worktree while allowing cleanup retries after directory removal.
@@ -119,7 +185,7 @@ impl WorktreeManager {
     ) -> Result<Option<WorktreeStatus>, WorktreeError> {
         self.validate_handle(handle)?;
         if self.backend.path_exists(&handle.path).await? {
-            self.backend.status(&handle.path).await.map(Some)
+            self.preview(handle).await.map(Some)
         } else {
             Ok(None)
         }
@@ -254,6 +320,23 @@ impl WorktreeManager {
             context: handle.path.display().to_string(),
             failures,
         })
+    }
+
+    /// Removes only a verified, clean worktree, retaining its branch and refusing missing sites.
+    ///
+    /// # Errors
+    /// Propagates identity/status failures and Git's non-force removal refusal. Never falls back to
+    /// filesystem deletion. The caller must serialize the owner and durably request cleanup first.
+    pub async fn remove_clean(&self, handle: &WorktreeHandle) -> Result<(), WorktreeError> {
+        let status = self.preview(handle).await?;
+        if !status.changed_files.is_empty() {
+            return Err(WorktreeError::InvalidResource(
+                "cleanup refused tracked, untracked or ignored local content".into(),
+            ));
+        }
+        self.backend
+            .remove(&self.repo_root, &handle.path, false)
+            .await
     }
 }
 

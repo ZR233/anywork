@@ -6,12 +6,13 @@ use std::sync::Arc;
 use anyhow::Result;
 
 use crate::agent::worktree::{
-    LocalWorktreeBackend, RemoteWorktreeBackend, WorktreeBackend, WorktreeHandle, WorktreeManager,
+    LocalWorktreeBackend, RemoteWorktreeBackend, WorktreeBackend, WorktreeError, WorktreeHandle,
+    WorktreeManager,
 };
 use crate::studio::agent_host::worktree_lease::{WorktreeLease, WorktreeLeaseState};
 use crate::studio::{
     StudioRecoveryIssue, StudioRecoveryIssueAction, StudioRecoveryIssueCategory,
-    StudioRecoveryIssueScope, StudioRecoveryWorktreeOwner,
+    StudioRecoveryIssueScope, StudioRecoveryWorktreeOwner, StudioWorktreeInspection,
 };
 use pl_tool::workspace::resolve_workspace_root;
 
@@ -132,57 +133,29 @@ impl StudioRuntime {
             return None;
         }
         let facts = self.worktree_issue_facts(lease).await;
-        // A lease without its Thread row is a crash artifact: keep the physical resource
-        // and report it as a diagnostic instead of inferring ownership or deleting it.
-        let orphaned_row = !self.thread_row_exists(&lease.owner_thread_id).await;
-        let live_owner = self.live_thread_owns_lease(&lease.owner_thread_id).await;
-        let resource_unavailable = facts.preview.is_none() && facts.identity_error.is_none();
-        let needs_manual_handling = lease.state == WorktreeLeaseState::Preserved
-            || !live_owner
-            || facts.identity_error.is_some()
-            // A `prepared` lease may legitimately lack its physical root while creation is
-            // still in flight, so only an owning state escalates a missing resource.
-            || (resource_unavailable && lease.state != WorktreeLeaseState::Prepared);
-        if !needs_manual_handling {
+        if lease.state != WorktreeLeaseState::Preserved
+            && matches!(facts.owner, Ok(WorktreeOwnerFacts { live: true, .. }))
+            && facts.inspection() == StudioWorktreeInspection::Available
+        {
             return None;
         }
-        let orphan_suffix = if orphaned_row {
-            "; no published Thread remains for this lease, so it is preserved for diagnosis"
-        } else {
-            ""
-        };
-        // The message must describe the resource as it actually is: a lease can need
-        // review while still `active` because its owner Thread is archived.
-        let message = match &facts.identity_error {
-            Some(diagnostic) => format!("{diagnostic}{orphan_suffix}"),
-            None if resource_unavailable => {
-                format!("worktree preview failed; the resource was preserved{orphan_suffix}")
-            }
-            None => format!("{}{orphan_suffix}", worktree_state_message(lease)),
-        };
-        Some(self.worktree_issue(lease, &facts, message))
+        Some(self.worktree_issue(lease, &facts, worktree_state_message(lease)))
     }
 
-    /// Fresh preview facts of one durable lease, computed from its current record.
+    /// Observation never changes lease state. Existence is established only by backend stat.
     async fn worktree_issue_facts(&self, lease: &WorktreeLease) -> WorktreeIssueFacts {
-        let handle = worktree_handle(lease);
-        let mut identity_error = lease
-            .validate_identity()
-            .err()
-            .map(|error| error.to_string());
-        let preview = match identity_error.as_ref() {
-            Some(_) => None,
-            None => match self.worktree_manager(lease) {
-                Ok(manager) => manager.preview(&handle).await.ok(),
-                Err(error) => {
-                    identity_error = Some(error.to_string());
-                    None
-                }
+        let observation = match lease.validate_identity() {
+            Err(_) => Err(WorktreeError::IdentityMismatch(
+                "the durable lease does not match its owner-derived path and branch".into(),
+            )),
+            Ok(()) => match self.worktree_manager(lease) {
+                Ok(manager) => manager.preview(&worktree_handle(lease)).await,
+                Err(error) => Err(error),
             },
         };
         WorktreeIssueFacts {
-            identity_error,
-            preview,
+            observation,
+            owner: self.worktree_owner_facts(&lease.owner_thread_id).await,
         }
     }
 
@@ -192,20 +165,66 @@ impl StudioRuntime {
         facts: &WorktreeIssueFacts,
         message: String,
     ) -> StudioRecoveryIssue {
-        let changed_files = facts
-            .preview
-            .as_ref()
-            .map(|preview| preview.changed_files.clone())
-            .unwrap_or_default();
+        let preview = facts.observation.as_ref().ok();
+        let changed_files = preview.map(|preview| preview.changed_files.clone());
+        let mut message = message;
+        match &facts.observation {
+            Ok(_) => {}
+            Err(WorktreeError::Missing) => message
+                .push_str("; worktree path is missing; this inspection does not mark it cleaned"),
+            Err(WorktreeError::IdentityMismatch(_)) => {
+                message.push_str(
+                    "; worktree identity conflicts with its lease; cleanup is not authorized by this inspection",
+                );
+            }
+            Err(_) => message.push_str(
+                "; worktree could not be confirmed; cleanup is not authorized by this inspection",
+            ),
+        }
+        if let Err(error) = &facts.observation {
+            message.push_str("; ");
+            message.push_str(&worktree_error_diagnostic(error));
+        }
+        match &facts.owner {
+            Ok(owner) if !owner.exists => {
+                message.push_str("; no published Thread remains for this lease")
+            }
+            Ok(owner) if owner.live => {
+                message.push_str("; an active Thread still owns this workspace")
+            }
+            Ok(_) => {}
+            Err(error) => {
+                message.push_str("; cannot confirm workspace owner: ");
+                message.push_str(&super::shutdown::redacted_chain(error));
+            }
+        }
+        let can_cleanup = matches!(&facts.owner, Ok(WorktreeOwnerFacts { live: false, .. }))
+            && preview.is_some_and(|preview| preview.changed_files.is_empty())
+            && !matches!(
+                lease.state,
+                WorktreeLeaseState::Cleaned | WorktreeLeaseState::CleanupRequested
+            )
+            && !self
+                .agent_facility
+                .worktrees
+                .is_creating(&lease.owner_thread_id);
         StudioRecoveryIssue {
             id: worktree_issue_id(&lease.owner_thread_id),
             scope: StudioRecoveryIssueScope::Thread,
             category: StudioRecoveryIssueCategory::Repository,
-            action: StudioRecoveryIssueAction::CleanupWorktree,
+            action: if can_cleanup {
+                StudioRecoveryIssueAction::CleanupWorktree
+            } else {
+                StudioRecoveryIssueAction::Retry
+            },
             project_id: Some(lease.project_id.clone()),
-            thread_id: Some(lease.root_thread_id.clone()),
-            message,
+            // The issue belongs to the Thread that owns the workspace. A child's site must be resolvable
+            // — and retirable — by that child alone; attributing it to the root made activation unable
+            // to clear its own entry and let a root activation clear a different child's entry.
+            thread_id: Some(lease.owner_thread_id.clone()),
+            message: bounded_diagnostic(&message),
             worktree: Some(crate::StudioWorktreeRecoveryPreview {
+                inspection: facts.inspection(),
                 owner_kind: recovery_owner(lease.owner_kind),
                 owner_thread_id: lease.owner_thread_id.clone(),
                 lease_revision: lease.revision,
@@ -214,8 +233,8 @@ impl StudioRuntime {
                 path: lease.path.clone(),
                 branch: lease.branch.clone(),
                 base_commit: lease.base_commit.clone(),
-                head_commit: facts.preview.as_ref().map(|preview| preview.head.clone()),
-                dirty: !changed_files.is_empty(),
+                head_commit: preview.map(|preview| preview.head.clone()),
+                dirty: preview.map(|preview| !preview.changed_files.is_empty()),
                 changed_files,
             }),
         }
@@ -227,6 +246,37 @@ impl StudioRuntime {
         owner_thread_id: &str,
         expected_lease_revision: u64,
     ) -> Result<()> {
+        let runtime = self.clone();
+        let owner_thread_id = owner_thread_id.to_owned();
+        self.run_thread_lifecycle_operation(async move {
+            runtime
+                .cleanup_preserved_worktree_owned(
+                    owner_kind,
+                    &owner_thread_id,
+                    expected_lease_revision,
+                )
+                .await
+        })
+        .await
+    }
+
+    /// The retained lifecycle worker owns admission and the owner guard through every flush/Git
+    /// await. Dropping the public waiter cannot abandon an admitted cleanupRequested lease.
+    async fn cleanup_preserved_worktree_owned(
+        &self,
+        owner_kind: StudioRecoveryWorktreeOwner,
+        owner_thread_id: &str,
+        expected_lease_revision: u64,
+    ) -> Result<()> {
+        // Physical cleanup is serialized with every other product operation on this owner: a restore or
+        // archive holds the lifecycle admission, and activation, submission and stopping hold the
+        // per-Thread operation guard. Both are taken here in the same order archiving uses (lifecycle
+        // first), so a cleanup can neither race a restore that revives the Thread and reuses the site
+        // nor an activation that is already running in it.
+        let _operation = self.threads.agent_operation(owner_thread_id).await;
+        // Re-read the lease *after* the guards: the facts the card was rendered from may already be
+        // stale, and every check below must run against the state that is true while nothing else can
+        // change it.
         let mut lease = self
             .agent_facility
             .worktrees
@@ -252,28 +302,62 @@ impl StudioRuntime {
             "worktree lease is already cleaned"
         );
         // Server-side precondition: a stale or forged card must never delete a workspace a
-        // live Thread still owns. Only a preserved resource, or one whose owner Thread is
-        // no longer registered, is eligible for explicit cleanup.
-        anyhow::ensure!(
-            lease.state == WorktreeLeaseState::Preserved
-                || !self.live_thread_owns_lease(&lease.owner_thread_id).await,
-            "worktree lease is still owned by a live Thread"
-        );
-        lease.validate_identity()?;
-        let manager = self.worktree_manager(&lease)?;
+        // live Thread still owns. The lease state cannot grant that: a `preserved` site may be a
+        // directory a running child is using, so only a site whose owner Thread is no longer live is
+        // eligible for explicit cleanup.
         let handle = worktree_handle(&lease);
-        manager.preview_existing(&handle).await?;
+        let preflight = async {
+            anyhow::ensure!(
+                !self
+                    .worktree_owner_facts(&lease.owner_thread_id)
+                    .await?
+                    .live,
+                "worktree lease is still owned by a live Thread"
+            );
+            lease.validate_identity()?;
+            let manager = self.worktree_manager(&lease)?;
+            let status = manager.preview(&handle).await?;
+            anyhow::ensure!(
+                status.changed_files.is_empty(),
+                "cleanup refused tracked, untracked or ignored local content"
+            );
+            Ok::<_, anyhow::Error>(manager)
+        }
+        .await;
+        let manager = match preflight {
+            Ok(manager) => manager,
+            Err(error) => {
+                self.publish_worktree_recovery(None, &lease).await;
+                return Err(error);
+            }
+        };
+        // Persist intent before the destructive operation; removal never deletes the branch.
         lease.transition(WorktreeLeaseState::CleanupRequested);
         self.agent_facility.worktrees.record(lease.clone())?;
-        if let Err(error) = manager.discard(&handle).await {
+        if let Err(error) = self.agent_facility.worktrees.flush().await {
+            // No destructive operation was attempted. Keep a retryable owner fact and a fresh CAS
+            // card rather than stranding the process-local lease at cleanupRequested.
+            lease.transition(WorktreeLeaseState::Preserved);
+            self.agent_facility.worktrees.record(lease.clone())?;
+            self.publish_worktree_recovery(
+                Some("cleanup intent could not be saved; no removal was attempted"),
+                &lease,
+            )
+            .await;
+            return Err(error);
+        }
+        if let Err(error) = manager.remove_clean(&handle).await {
             lease.transition(WorktreeLeaseState::Preserved);
             self.agent_facility.worktrees.record(lease.clone())?;
             // 回落改变了 lease revision：必须同步刷新卡片，否则下一次显式重试会被 CAS 拒绝。
-            self.publish_worktree_recovery(None, &lease).await;
+            self.publish_worktree_recovery(Some(&worktree_error_diagnostic(&error)), &lease)
+                .await;
+            self.agent_facility.worktrees.flush().await?;
             return Err(error.into());
         }
         lease.transition(WorktreeLeaseState::Cleaned);
         self.agent_facility.worktrees.record(lease.clone())?;
+        self.agent_facility.worktrees.flush().await?;
         let issues = self.recovery.remove(&worktree_issue_id(owner_thread_id));
         self.agent_facility
             .product_events
@@ -281,7 +365,7 @@ impl StudioRuntime {
         Ok(())
     }
 
-    fn worktree_manager(&self, lease: &WorktreeLease) -> Result<WorktreeManager> {
+    fn worktree_manager(&self, lease: &WorktreeLease) -> Result<WorktreeManager, WorktreeError> {
         let repository_root = PathBuf::from(&lease.repository_root);
         let backend: Arc<dyn WorktreeBackend> = match lease.ssh_alias.as_deref() {
             Some(server_id) => Arc::new(RemoteWorktreeBackend::new(
@@ -294,38 +378,32 @@ impl StudioRuntime {
         Ok(WorktreeManager::new(repository_root, backend))
     }
 
-    /// Whether the product directory still holds a Thread row for a lease owner.
-    ///
-    /// Hot facts precede the cold row because directory commits are write-behind.
-    async fn thread_row_exists(&self, thread_id: &str) -> bool {
-        if self
-            .agent_facility
-            .product_events
-            .thread_snapshot(thread_id)
-            .is_some()
-        {
-            return true;
+    /// Hot facts precede write-behind rows; query failure cannot prove the owner inactive.
+    async fn worktree_owner_facts(&self, thread_id: &str) -> Result<WorktreeOwnerFacts> {
+        // A retained execution/shutdown owner is stronger evidence than a missing or archived
+        // directory row. Never infer inactivity while an in-process incarnation still exists.
+        if self.threads.observed_thread(thread_id).is_some() {
+            return Ok(WorktreeOwnerFacts {
+                exists: true,
+                live: true,
+            });
         }
-        matches!(
-            self.store.read_thread_association(thread_id).await,
-            Ok(Some(_))
-        )
-    }
-
-    /// Whether an active (non-archived) Thread still owns the lease. Archived or missing
-    /// owners cannot use the resource, so it becomes eligible for explicit cleanup.
-    async fn live_thread_owns_lease(&self, thread_id: &str) -> bool {
         if let Some(thread) = self
             .agent_facility
             .product_events
             .thread_snapshot(thread_id)
         {
-            return !thread.archived;
+            return Ok(WorktreeOwnerFacts {
+                exists: true,
+                live: !thread.archived,
+            });
         }
-        matches!(
-            self.store.read_thread_association(thread_id).await,
-            Ok(Some(record)) if record.visibility == crate::studio::ThreadVisibility::Active
-        )
+        let record = self.store.read_thread_association(thread_id).await?;
+        Ok(WorktreeOwnerFacts {
+            exists: record.is_some(),
+            live: record
+                .is_some_and(|record| record.visibility == crate::studio::ThreadVisibility::Active),
+        })
     }
 
     /// Publishes the Recovery a failed `worktree` session activation must leave behind.
@@ -342,9 +420,9 @@ impl StudioRuntime {
             id: issue_id.clone(),
             scope: StudioRecoveryIssueScope::Thread,
             category: StudioRecoveryIssueCategory::Repository,
-            action: StudioRecoveryIssueAction::CleanupWorktree,
+            action: StudioRecoveryIssueAction::Retry,
             project_id: Some(thread.project_id.clone()),
-            thread_id: Some(thread.root_thread_id.clone()),
+            thread_id: Some(thread.id.clone()),
             message: String::new(),
             worktree: None,
         };
@@ -358,11 +436,12 @@ impl StudioRuntime {
             None => without_lease(),
         };
         issue.id = issue_id.clone();
-        issue.thread_id = Some(thread.root_thread_id.clone());
-        issue.message = format!(
-            "Thread {} cannot use its saved workspace and was not moved to the main workspace: {error:#}",
-            thread.id
-        );
+        issue.thread_id = Some(thread.id.clone());
+        let diagnostic = super::shutdown::redacted_chain(error);
+        issue.message = bounded_diagnostic(&format!(
+            "Thread cannot use its saved workspace and was not moved to the main workspace: {diagnostic}; {}",
+            issue.message
+        ));
         self.recovery.update_if_current(
             &issue_id,
             Some(issue),
@@ -467,8 +546,32 @@ fn worktree_issue_id(owner_thread_id: &str) -> String {
 /// Preview facts of one durable lease; the single source for every worktree Recovery
 /// entry so a published preview always matches the recorded lease.
 struct WorktreeIssueFacts {
-    identity_error: Option<String>,
-    preview: Option<crate::agent::worktree::WorktreeStatus>,
+    observation: Result<crate::agent::worktree::WorktreeStatus, WorktreeError>,
+    owner: Result<WorktreeOwnerFacts>,
+}
+
+struct WorktreeOwnerFacts {
+    exists: bool,
+    live: bool,
+}
+
+impl WorktreeIssueFacts {
+    fn inspection(&self) -> StudioWorktreeInspection {
+        match &self.observation {
+            Ok(_) => StudioWorktreeInspection::Available,
+            Err(WorktreeError::Missing) => StudioWorktreeInspection::Missing,
+            Err(WorktreeError::IdentityMismatch(_)) => StudioWorktreeInspection::IdentityMismatch,
+            Err(_) => StudioWorktreeInspection::Unavailable,
+        }
+    }
+}
+
+fn bounded_diagnostic(message: &str) -> String {
+    message.chars().take(2048).collect()
+}
+
+fn worktree_error_diagnostic(error: &WorktreeError) -> String {
+    error.safe_diagnostic()
 }
 
 /// Describes a lease by its actual ownership and state instead of assuming `preserved`.

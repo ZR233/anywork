@@ -62,6 +62,7 @@ pub(crate) struct BotRuntimeInner {
     pub(crate) reply_slots: Arc<Semaphore>,
     pub(crate) reply_cancel: CancellationToken,
     pub(crate) occupancy: OccupancyTasks,
+    pub(in crate::bots) publications: super::publication::PublicationTasks,
     pub(in crate::bots) audience_prepares: super::audience::AudiencePrepareTasks,
     /// One coalescing wakeup for durable prepares; not a per-Thread topic or another work queue.
     pub(in crate::bots) audience_prepare_notify: Notify,
@@ -97,6 +98,8 @@ pub(crate) struct ManagedBot {
     pub(crate) audience_changes:
         tokio::sync::watch::Sender<crate::studio::thread_audience::BotAudienceWatchVersion>,
     pub(crate) audience_recovery_cursor: Mutex<(String, u64)>,
+    /// 公开投递范围轮转位置；只影响调度公平性，持久义务仍由独立投递账本拥有。
+    pub(in crate::bots) publication_recovery_cursor: Mutex<Option<String>>,
 }
 
 impl Clone for BotRuntime {
@@ -138,6 +141,7 @@ impl BotRuntime {
                 reply_slots: Arc::new(Semaphore::new(32)),
                 reply_cancel: CancellationToken::new(),
                 occupancy: OccupancyTasks::new(),
+                publications: super::publication::PublicationTasks::new(),
                 audience_prepares: super::audience::AudiencePrepareTasks::new(),
                 audience_prepare_notify: Notify::new(),
                 send_bytes: Arc::new(Semaphore::new(128 * 1024 * 1024)),
@@ -159,12 +163,66 @@ impl BotRuntime {
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(runtime);
     }
 
+    pub(crate) fn studio_host(&self) -> Option<Arc<StudioRuntime>> {
+        self.inner
+            .host
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_ref()
+            .and_then(std::sync::Weak::upgrade)
+    }
+
     pub(crate) fn clear_host(&self) {
         *self
             .inner
             .host
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+    }
+
+    /// Prepares complete durable ownership before importing old root identities.
+    ///
+    /// Only the retained Studio startup owner calls this, before external services or management
+    /// commands are admitted. Successful completion makes a missing binding meaningful; a partial
+    /// or uncertain directory load is an error, never proof of a generic Studio root.
+    pub(crate) async fn prepare_history_ownership(&self) -> Result<(), FeishuError> {
+        self.reject_if_sealed()?;
+        let io_error = |source| {
+            FeishuError::new(
+                FeishuErrorKind::Unavailable,
+                "historical bot ownership could not be read; original data retained",
+                true,
+                None,
+            )
+            .with_source(source)
+        };
+        let mut entries = match tokio::fs::read_dir(self.inner.paths.bots_dir()).await {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(io_error(error)),
+        };
+        while let Some(entry) = entries.next_entry().await.map_err(io_error)? {
+            let bot_id = entry.file_name().to_string_lossy().into_owned();
+            if validate_bot_id(&bot_id).is_err() {
+                continue;
+            }
+            let kind = entry.file_type().await.map_err(io_error)?;
+            if kind.is_symlink() {
+                return Err(FeishuError::new(
+                    FeishuErrorKind::Unavailable,
+                    "historical bot directory is a symbolic link; original data retained",
+                    false,
+                    None,
+                ));
+            }
+            if !kind.is_dir() {
+                continue;
+            }
+            self.recover_bot_dir(&bot_id, super::operation::DirectoryRecovery::PrepareHistory)
+                .await?;
+        }
+        self.reject_if_sealed()?;
+        Ok(())
     }
 
     pub async fn load(&self) -> Result<(), FeishuError> {
@@ -202,7 +260,10 @@ impl BotRuntime {
                 tracing::warn!("skipping invalid bot directory; entry isolated");
                 continue;
             }
-            match self.recover_bot_dir(&bot_id).await {
+            match self
+                .recover_bot_dir(&bot_id, super::operation::DirectoryRecovery::Activate)
+                .await
+            {
                 Ok(()) => {}
                 Err(_) => {
                     // 不输出底层错误：损坏配置的解析文本可能携带文件正文。保留原目录，
@@ -325,14 +386,23 @@ impl BotRuntime {
             .values()
             .filter_map(|record| record.published.clone())
             .collect();
+        let mut owner = None;
         for bot in bots {
             if bot.store.owns_thread(thread_id).await?
                 || bot.store.has_source_thread(thread_id).await?
             {
-                return Ok(Some(bot.config.lock().await.clone()));
+                if owner.is_some() {
+                    return Err(FeishuError::new(
+                        FeishuErrorKind::Conflict,
+                        "multiple bots claim the same Thread; original ownership records retained",
+                        false,
+                        None,
+                    ));
+                }
+                owner = Some(bot.config.lock().await.clone());
             }
         }
-        Ok(None)
+        Ok(owner)
     }
 
     pub(crate) fn runtime_released(&self) -> bool {

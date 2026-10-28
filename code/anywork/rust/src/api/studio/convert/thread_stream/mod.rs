@@ -2,6 +2,7 @@ mod activity;
 mod interaction;
 
 pub(crate) use activity::activity_detail as bridge_activity_detail;
+pub(crate) use interaction::child_interaction as bridge_child_interaction;
 pub(crate) use interaction::interaction as bridge_interaction;
 
 use anyhow::Result;
@@ -419,6 +420,12 @@ fn item_state(value: &ThreadItemState) -> Result<BridgeThreadItemState> {
             published_at: value.published_at,
         },
         ThreadItemState::Raw(value) => BridgeThreadItemState::Raw {
+            origin: match value.origin {
+                pl_protocol::ThreadRawItemOrigin::Stored => BridgeRawItemOrigin::Stored,
+                pl_protocol::ThreadRawItemOrigin::RuntimeControl => {
+                    BridgeRawItemOrigin::RuntimeControl
+                }
+            },
             payloads: value
                 .payloads
                 .iter()
@@ -654,6 +661,44 @@ pub(crate) fn runtime_snapshot(value: ThreadRuntimeSnapshot) -> BridgeThreadRunt
         mcp_health: value.mcp_health.map(mcp_health),
         workflow: value.workflow.map(workflow_runtime_snapshot),
         plan: value.plan.map(plan_runtime_snapshot),
+        execution: value.execution.map(|execution| BridgeAgentExecution {
+            turn_id: execution.turn_id().map(str::to_owned),
+            phase: match execution.phase() {
+                pl_protocol::AgentExecutionPhase::Preparing => BridgeAgentExecutionPhase::Preparing,
+                pl_protocol::AgentExecutionPhase::AwaitingStorage => {
+                    BridgeAgentExecutionPhase::AwaitingStorage
+                }
+                pl_protocol::AgentExecutionPhase::AwaitingAdmission => {
+                    BridgeAgentExecutionPhase::AwaitingAdmission
+                }
+                pl_protocol::AgentExecutionPhase::Running => BridgeAgentExecutionPhase::Running,
+                pl_protocol::AgentExecutionPhase::Stopping => BridgeAgentExecutionPhase::Stopping,
+            },
+            id: execution.id().to_owned(),
+        }),
+        continuation: value
+            .continuation
+            .map(|continuation| BridgeContinuationView {
+                id: continuation.id().to_owned(),
+                source_turn_id: continuation.source_turn_id().map(str::to_owned),
+                reason: continuation.reason().map(|reason| match reason {
+                    pl_protocol::ContinuationReason::UserStop => BridgeContinuationReason::UserStop,
+                    pl_protocol::ContinuationReason::HostShutdown => {
+                        BridgeContinuationReason::HostShutdown
+                    }
+                    pl_protocol::ContinuationReason::ProcessInterrupted => {
+                        BridgeContinuationReason::ProcessInterrupted
+                    }
+                    pl_protocol::ContinuationReason::StepLimit => {
+                        BridgeContinuationReason::StepLimit
+                    }
+                    pl_protocol::ContinuationReason::ExecutionFailed => {
+                        BridgeContinuationReason::ExecutionFailed
+                    }
+                }),
+                created_at: continuation.created_at(),
+                claimed: continuation.claimed(),
+            }),
         updated_at: value.updated_at,
     }
 }

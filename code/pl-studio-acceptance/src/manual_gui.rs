@@ -69,6 +69,10 @@ pub(crate) struct ManualGuiOptions {
     /// Damage an isolated startup input, then capture recovery and its backup.
     #[arg(long, value_parser = ["config", "database", "log", "cache"])]
     pub(crate) startup_fault: Option<String>,
+    /// Seed the isolated GUI from a closed SQLite-consistent home copy. The source is read-only;
+    /// model endpoints become loopback fixtures, external tools and robot connections are disabled.
+    #[arg(long, value_name = "DIR", conflicts_with_all = ["startup_fault", "bots_fixture", "model_catalog_url", "model_catalog_control", "model_catalog_inventory"])]
+    pub(crate) seed_home_copy: Option<PathBuf>,
     /// Add isolated OpenAI, DeepSeek and MiMo discovery instances against a loopback model-list fixture.
     #[arg(long, value_name = "URL")]
     pub(crate) model_catalog_url: Option<String>,
@@ -782,6 +786,10 @@ fn cleanup_bots_gui_start(
 pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
     delegation::validate(&options)?;
     ensure!(
+        options.seed_home_copy.is_none() || options.scenario == "gui",
+        "--seed-home-copy requires --scenario gui"
+    );
+    ensure!(
         !options.retain_environment
             || matches!(
                 options.scenario.as_str(),
@@ -946,7 +954,11 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
         .tempdir_in(&output)
         .context("failed to create isolated GUI home")?;
     let home = working.path().join("home");
-    fs::create_dir(&home)?;
+    if let Some(source) = &options.seed_home_copy {
+        copy_closed_home(source, &home)?;
+    } else {
+        fs::create_dir(&home)?;
+    }
 
     // The 1.4.1 journey needs no HTTP model step: it drives the fixed distribution
     // peer, the real managed install chain and the real ACP handshake instead, so
@@ -1113,31 +1125,34 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
         ready.scenario == options.scenario,
         "fixture scenario does not match request"
     );
-    if let Err(error) =
-        write_config(&home, &ready, options.web_search_fault.as_deref()).and_then(|()| {
-            if let Some(control) = catalog_control.as_ref() {
-                ensure!(
-                    options.scenario == "gui",
-                    "--model-catalog-inventory/--model-catalog-control require --scenario gui"
-                );
-                model_catalog::configure(&home, &ready.base_url, Some(control))?;
-                model_catalog::write_runbook(
-                    &output,
-                    &home,
-                    &catalog_control_path,
-                    control,
-                    &ready.base_url,
-                )?;
-            } else if let Some(url) = &options.model_catalog_url {
-                ensure!(
-                    options.scenario == "gui",
-                    "--model-catalog-url requires --scenario gui"
-                );
-                model_catalog::configure(&home, url, None)?;
-            }
-            Ok(())
-        })
-    {
+    if let Err(error) = (if options.seed_home_copy.is_some() {
+        write_copy_fixture_config(&home, &ready)
+    } else {
+        write_config(&home, &ready, options.web_search_fault.as_deref())
+    })
+    .and_then(|()| {
+        if let Some(control) = catalog_control.as_ref() {
+            ensure!(
+                options.scenario == "gui",
+                "--model-catalog-inventory/--model-catalog-control require --scenario gui"
+            );
+            model_catalog::configure(&home, &ready.base_url, Some(control))?;
+            model_catalog::write_runbook(
+                &output,
+                &home,
+                &catalog_control_path,
+                control,
+                &ready.base_url,
+            )?;
+        } else if let Some(url) = &options.model_catalog_url {
+            ensure!(
+                options.scenario == "gui",
+                "--model-catalog-url requires --scenario gui"
+            );
+            model_catalog::configure(&home, url, None)?;
+        }
+        Ok(())
+    }) {
         let _ = fixture.stop(&requests_file);
         drop(fixture);
         write_fixture_log(&fixture_log_path, &output.join("fixture.log"))?;
@@ -1525,6 +1540,13 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
         if options.scenario == "gui" {
             gui_command.args(["--log-level", "info"]);
         }
+        if options.seed_home_copy.is_some() {
+            // Observe the real native wait status; Flutter's resident runner reports zero even
+            // when the app exits abnormally during migration/restart review.
+            gui_command
+                .args(["--native-launch", "--native-exit-report"])
+                .arg(output.join("native-exit.json"));
+        }
         if matches!(options.scenario.as_str(), "stress" | "tool-scroll") {
             gui_command.arg("--profile");
         }
@@ -1632,7 +1654,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
                 );
                 thread::sleep(Duration::from_millis(100));
             };
-            capture(&app_dir, &home, &vm_url, &output, &interrupt_rx)?;
+            capture(&app_dir, &home, &vm_url, &output, &interrupt_rx, false)?;
             ensure!(
                 status.success(),
                 "tool expansion observation failed: {status}"
@@ -1763,7 +1785,14 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
                         }
                         ensure!(probe.child.wait()?.success(), "GUI stress probe failed");
                     }
-                    capture(&app_dir, &home, &vm_url, &output, &interrupt_rx)?;
+                    capture(
+                        &app_dir,
+                        &home,
+                        &vm_url,
+                        &output,
+                        &interrupt_rx,
+                        options.seed_home_copy.is_some(),
+                    )?;
                     return Ok(());
                 }
                 Ok(InputEvent::Eof) => bail!("manual GUI input closed before done"),
@@ -1781,6 +1810,17 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
             thread::sleep(Duration::from_millis(200));
         }
     })();
+    let session = session.and_then(|()| {
+        if options.seed_home_copy.is_some() {
+            let status = wait_for_gui_exit(&mut gui, Duration::from_secs(30), "migration review")?;
+            ensure!(
+                status.success(),
+                "migration review GUI exited abnormally: {status}"
+            );
+            require_native_exit(&output.join("native-exit.json"), None)?;
+        }
+        Ok(())
+    });
     let gui_log_result = write_sanitized_log(&gui_log_path, &output.join("gui.log"));
     if stress_stage.exists() {
         fs::copy(&stress_stage, output.join("stress-stage.txt"))?;
@@ -1923,6 +1963,11 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
         println!("Evidence: {} (human verdict pending)", output.display());
         gui_log_result?;
         if fixture_state == "pending" {
+            // A migration review opens saved sessions without sending a model request. Preserve
+            // its database evidence even when the GUI exits before review can complete.
+            if options.seed_home_copy.is_some() && options.retain_environment {
+                keep_isolated_environment(working, &home, &output, None)?;
+            }
             session?;
             println!("Fixture main step was not exercised; review remains pending.");
             return Ok(());
@@ -2363,7 +2408,10 @@ fn run_timeline_history_scenario(
                 &fs::read(output.join(format!("timeline-history-{phase}.json")))
                     .with_context(|| format!("timeline-history {phase} wrote no report"))?,
             )?;
-            require_timeline_native_exit(output, phase, report["pid"].as_u64())?;
+            require_native_exit(
+                &output.join(format!("timeline-history-{phase}-native-exit.json")),
+                report["pid"].as_u64(),
+            )?;
             ensure!(
                 report.get("pass") == Some(&serde_json::Value::Bool(true)),
                 "timeline-history {phase} did not pass: {}",
@@ -2638,7 +2686,10 @@ fn run_timeline_history_scenario(
                 &fs::read(output.join("observations.json"))
                     .context("displacement collector wrote no observations")?,
             )?;
-            require_timeline_native_exit(output, "displacement", observations["pid"].as_u64())?;
+            require_native_exit(
+                &output.join("timeline-history-displacement-native-exit.json"),
+                observations["pid"].as_u64(),
+            )?;
             ensure!(
                 observations.get("checksPassed") == Some(&serde_json::Value::Bool(true)),
                 "displacement matrix recorded failures: {}",
@@ -2859,15 +2910,16 @@ fn start_timeline_history_gui(
     OwnedProcess::start(&mut command, false)
 }
 
-fn require_timeline_native_exit(output: &Path, phase: &str, pid: Option<u64>) -> Result<()> {
-    let path = output.join(format!("timeline-history-{phase}-native-exit.json"));
+fn require_native_exit(path: &Path, pid: Option<u64>) -> Result<()> {
     let report: serde_json::Value = serde_json::from_slice(
-        &fs::read(&path)
+        &fs::read(path)
             .with_context(|| format!("missing native exit report {}", path.display()))?,
     )?;
     ensure!(
         report["schema"] == "anywork-native-exit/1"
-            && pid.is_some_and(|pid| pid > 0 && report["pid"].as_u64() == Some(pid))
+            && report["pid"]
+                .as_u64()
+                .is_some_and(|actual| actual > 0 && pid.is_none_or(|expected| actual == expected))
             && report["exitCode"].as_i64() == Some(0)
             && report["signal"].is_null()
             && report["cancelled"].as_bool() == Some(false)
@@ -2877,7 +2929,7 @@ fn require_timeline_native_exit(output: &Path, phase: &str, pid: Option<u64>) ->
             && report["reclaimedDescendants"]
                 .as_array()
                 .is_some_and(Vec::is_empty),
-        "timeline-history {phase} native host did not exit cleanly: {report}"
+        "native host did not exit cleanly: {report}"
     );
     Ok(())
 }
@@ -3091,9 +3143,78 @@ fn validate_ready(ready: &FixtureReady) -> Result<()> {
     Ok(())
 }
 
-/// Writes the isolated [home]'s config, forwarding the operator-selected
-/// web-search fault to [`web_search::write_config`].
-///
+/// Accept only closed copies: a live WAL cannot be copied with ordinary filesystem operations.
+/// The source remains untouched; every modification happens inside the harness-owned environment.
+fn copy_closed_home(source: &Path, target: &Path) -> Result<()> {
+    ensure!(
+        source.join("config.toml").is_file(),
+        "copy config.toml is missing"
+    );
+    fn validate(path: &Path) -> Result<()> {
+        for entry in fs::read_dir(path)? {
+            let entry = entry?;
+            let kind = entry.file_type()?;
+            ensure!(
+                !kind.is_symlink(),
+                "links are not accepted in a migration copy"
+            );
+            if kind.is_dir() {
+                validate(&entry.path())?;
+            } else {
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                ensure!(
+                    !name.ends_with("-wal") && !name.ends_with("-shm"),
+                    "seed home must be a closed, SQLite-consistent copy"
+                );
+            }
+        }
+        Ok(())
+    }
+    validate(source)?;
+    copy_startup_evidence(source, target)
+}
+
+fn write_copy_fixture_config(home: &Path, ready: &FixtureReady) -> Result<()> {
+    // Parse the desired document directly: never hydrate or rewrite source system credentials.
+    let mut config: StudioConfig = toml::from_str(&fs::read_to_string(home.join("config.toml"))?)?;
+    for account in config.models.accounts.values_mut() {
+        let models = account
+            .effective_models(None)?
+            .into_iter()
+            .map(|mut model| {
+                model
+                    .binding
+                    .set_transport(ModelTransportProfile::responses_http());
+                model.binding.request.api_model = None;
+                model
+            })
+            .collect();
+        *account = AccountConfig::from_explicit_models(
+            ProtocolEndpoint::compatible("Local migration fixture", &ready.base_url),
+            models,
+        );
+    }
+    config.mcp.servers.clear();
+    config.lsp.servers.clear();
+    config.acp = Default::default();
+    config.skills.user_dir = home.join("skills").to_string_lossy().into_owned();
+    // Bots have their own canonical documents. Disable them before runtime startup, including
+    // each original identity, without deleting their ledger or touching its selected credential.
+    let bots = home.join("v2/bots");
+    if bots.is_dir() {
+        for entry in fs::read_dir(bots)? {
+            let path = entry?.path().join("config.toml");
+            if path.is_file() {
+                let mut bot: toml::Table = toml::from_str(&fs::read_to_string(&path)?)?;
+                bot.insert("enabled".into(), toml::Value::Boolean(false));
+                fs::write(path, toml::to_string_pretty(&bot)?)?;
+            }
+        }
+    }
+    persist_config(home, &config)
+}
+
 /// This is the single writer every scenario (including the descendant
 /// `shutdown` module) uses; the `web_search_fault` selector is only meaningful
 /// for the `web-search` scenario, so the other callers pass `None`.
@@ -3359,6 +3480,26 @@ fn fixture_config(
         preset.context_window = Some(64_000);
         preset.max_context_window = Some(64_000);
         preset.auto_compact_token_limit = Some(24_000);
+        preset.capabilities.input.push(ModelInputCapability::media(
+            ModelModality::Image,
+            vec![ModelInputSource::Local],
+        ));
+        preset.binding.request.media.push(ModelMediaInputProfile {
+            modality: ModelModality::Image,
+            wire: MediaWireFormat::ResponsesInputImage,
+            first_send: vec![MediaRepresentation::DataUrl],
+            replay: vec![MediaRepresentation::DataUrl],
+        });
+        let mut file_input =
+            ModelInputCapability::media(ModelModality::File, vec![ModelInputSource::Local]);
+        file_input.limits.media_types = vec!["application/pdf".into()];
+        preset.capabilities.input.push(file_input);
+        preset.binding.request.media.push(ModelMediaInputProfile {
+            modality: ModelModality::File,
+            wire: MediaWireFormat::ResponsesInputFile,
+            first_send: vec![MediaRepresentation::DataUrl],
+            replay: vec![MediaRepresentation::DataUrl],
+        });
         let mut unknown = models[0].clone();
         unknown.model_id = "fixture-unknown".into();
         unknown.display_name = "Fixture with unknown context capacity".into();
@@ -3577,6 +3718,7 @@ fn capture(
     vm_url: &str,
     output: &Path,
     interrupt: &mpsc::Receiver<()>,
+    exit_native: bool,
 ) -> Result<()> {
     let driver_log_path = output.join("capture-driver.log");
     let driver_log = File::create(&driver_log_path)?;
@@ -3587,6 +3729,9 @@ fn capture(
         .env("ANYWORK_HOME", home)
         .stdout(Stdio::from(driver_log.try_clone()?))
         .stderr(Stdio::from(driver_log));
+    if exit_native {
+        command.arg("--exit");
+    }
     let mut capture = OwnedProcess::start(&mut command, false)?;
     let deadline = Instant::now() + Duration::from_secs(120);
     loop {
@@ -4671,7 +4816,7 @@ fn run_stress_body_scenario(
 /// Paused-history-writer acceptance journey driven through Flutter Driver.
 ///
 /// The coordinator holds one exclusive external write transaction on the real
-/// per-session `history.sqlite` while the fixture streams a reply, so the journey
+/// per-session `history-current.sqlite` while the fixture streams a reply, so the journey
 /// proves the live content still grows and the current activity stays visible
 /// while the durable writer cannot commit, the turn reaches its terminal state
 /// while still locked, and the durable history then catches up with the answer
@@ -4739,8 +4884,11 @@ fn run_history_lock_scenario(
             let before = history_lock_watermark(&database)?;
             // 2. Real exclusive write transaction on the actual library. The
             // runtime writer for this exact database cannot commit while held.
-            let mut lock =
-                SqliteWriteLock::acquire(&database, "history.sqlite", Duration::from_secs(90))?;
+            let mut lock = SqliteWriteLock::acquire(
+                &database,
+                "history-current.sqlite",
+                Duration::from_secs(90),
+            )?;
             let locked_at = Instant::now();
             fs::write(&acquired_marker, "acquired")?;
             // 3. Live growth and the terminal state are observed while locked.
@@ -4849,7 +4997,7 @@ fn run_history_lock_scenario(
         serde_json::to_vec_pretty(&serde_json::json!({
             "scenario": "history-lock",
             "coveredNow": [
-                "exclusive external BEGIN IMMEDIATE on the real per-session history.sqlite while one reply streams",
+                "exclusive external BEGIN IMMEDIATE on the real per-session history-current.sqlite while one reply streams",
                 "live content keeps growing and the current activity stays visible while the writer cannot commit",
                 "the turn reaches its terminal state while the writer is still locked, and no tool starts on it",
                 "after release the durable history catches up with the answer exactly once and exactly",
@@ -4973,7 +5121,7 @@ fn run_history_lock_scenario(
 
 /// Typed history-fault retry/resume acceptance journey driven through Flutter Driver.
 ///
-/// The coordinator holds the real per-session `history.sqlite` write lock past the
+/// The coordinator holds the real per-session `history-current.sqlite` write lock past the
 /// runtime's retryable-conflict window, so the durable writer must surface a typed
 /// `writeFailed` fault instead of absorbing ordinary SQLite blocking. While the
 /// lock is held the journey proves the live content still grows, the typed fault
@@ -5049,8 +5197,11 @@ fn run_history_fault_scenario(
             // past the writer's retryable window so it must surface a fault. The
             // hold timeout is generous: the fault appears only after the bounded
             // per-attempt busy waits that precede it.
-            let mut lock =
-                SqliteWriteLock::acquire(&database, "history.sqlite", Duration::from_secs(300))?;
+            let mut lock = SqliteWriteLock::acquire(
+                &database,
+                "history-current.sqlite",
+                Duration::from_secs(300),
+            )?;
             let locked_at = Instant::now();
             fs::write(&acquired_marker, "acquired")?;
             // Record a baseline lock evidence immediately after acquiring, so a
@@ -5837,7 +5988,7 @@ fn history_fault_interface_needs() -> serde_json::Value {
     serde_json::json!({
         "scenario": "history-fault",
         "coveredNow": [
-            "exclusive external BEGIN IMMEDIATE on the real per-session history.sqlite, held past the writer's retryable-conflict window (thread_writer.rs RETRYABLE_BUSY_WINDOW, 30s)",
+            "exclusive external BEGIN IMMEDIATE on the real per-session history-current.sqlite, held past the writer's retryable-conflict window (thread_writer.rs RETRYABLE_BUSY_WINDOW, 30s)",
             "live content still grows while the durable writer cannot commit",
             "a typed HistoryFault (writeFailed) with a stable faultGeneration is observable from the Driver snapshot's storageRecovery entry for the faulted Thread, together with the pause reason the UI renders from the same typed facts",
             "the fault reaches its canonical safe boundary (continuation deferred: resumeRequired with canResume false): the safe exec the fault turn scheduled stays in an explicit pre-execution state (queued/awaitingApproval, no committed marker), this turn has no final answer, and no follow-up model request is issued",
@@ -5863,7 +6014,7 @@ fn history_fault_interface_needs() -> serde_json::Value {
     })
 }
 
-/// Per-session history watermarks read directly from the real `history.sqlite`.
+/// Per-session history watermarks read directly from the real `history-current.sqlite`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 struct HistoryLockWatermark {
     /// Committed `history_turns` rows.
@@ -5894,7 +6045,7 @@ fn history_lock_database(home: &Path) -> Result<std::path::PathBuf> {
                 continue;
             }
             for session in fs::read_dir(&sessions)? {
-                let database = session?.path().join("history.sqlite");
+                let database = session?.path().join("history-current.sqlite");
                 if database.is_file() {
                     candidates.push(database);
                 }
@@ -5903,7 +6054,7 @@ fn history_lock_database(home: &Path) -> Result<std::path::PathBuf> {
     }
     ensure!(
         candidates.len() == 1,
-        "expected exactly one per-session history.sqlite under {}, found {}",
+        "expected exactly one per-session history-current.sqlite under {}, found {}",
         projects.display(),
         candidates.len()
     );

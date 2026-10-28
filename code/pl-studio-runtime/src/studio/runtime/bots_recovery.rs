@@ -16,6 +16,20 @@ use crate::bots::{
 };
 
 impl StudioRuntime {
+    /// 一轮公开观察共用同一有界只读证明；预算耗尽不暴露不完整的成功前缀。
+    pub(crate) async fn bot_turn_input_chains(
+        &self,
+        thread_id: &str,
+        turn_ids: &[String],
+        limits: crate::studio::InputChainReadLimits,
+    ) -> Result<crate::studio::InputChainBatchRead> {
+        self.store
+            .history(thread_id)
+            .await?
+            .input_chains_for_turns(turn_ids, limits)
+            .await
+    }
+
     /// 读取一条输入的持久路由与消费身份；不重新受理、不回放历史。
     pub(crate) async fn bot_input_fact(
         &self,
@@ -116,8 +130,12 @@ impl StudioRuntime {
             .map_err(anyhow::Error::from);
         }
         let thread = self.read_protocol_thread(thread_id).await?;
-        let checkpoint =
-            crate::studio::thread_factory::recovery::load_checkpoint(&self.store, &thread).await?;
+        // Read-only projection: never prepares, migrates or cleans storage.
+        let checkpoint = crate::studio::thread_factory::recovery::load_checkpoint_read_only(
+            &self.store,
+            &thread,
+        )
+        .await?;
         checkpoint
             .and_then(|checkpoint| {
                 crate::thread_assembler::project_thread_interaction(

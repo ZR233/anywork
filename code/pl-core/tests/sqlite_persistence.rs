@@ -52,7 +52,7 @@ async fn sqlite_v10_context_migration_preserves_history_and_marks_unknown_usage_
         .await
         .unwrap();
     db.execute_raw(Statement::from_sql_and_values(DatabaseBackend::Sqlite, "UPDATE thread_checkpoints SET schema_version=3,envelope=?,payload_hash='damaged' WHERE thread_id='v10'", vec![encoded.clone().into()])).await.unwrap();
-    db.execute_unprepared("DROP TABLE thread_tool_task_resources; DROP TABLE thread_tool_tasks; PRAGMA user_version=10")
+    db.execute_unprepared("DROP TABLE thread_tool_task_resources; DROP TABLE thread_tool_tasks; DROP TABLE IF EXISTS seaql_migrations; PRAGMA user_version=10")
         .await
         .unwrap();
     db.close().await.unwrap();
@@ -74,7 +74,13 @@ async fn sqlite_v10_context_migration_preserves_history_and_marks_unknown_usage_
         .unwrap()
         .try_get::<i64>("", "user_version")
         .unwrap();
-    assert_eq!(version, 10, "a failed migration cannot advance its version");
+    assert_eq!(
+        version, 12,
+        "the preceding task-index step committed independently"
+    );
+    assert!(db.query_one_raw(Statement::from_string(DatabaseBackend::Sqlite,
+        "SELECT version FROM seaql_migrations WHERE version='m20261026_000007_core_checkpoint_v5'"))
+        .await.unwrap().is_none(), "a failed checkpoint conversion cannot publish its completion record");
     let row = db
         .query_one_raw(Statement::from_string(
             DatabaseBackend::Sqlite,
@@ -101,7 +107,7 @@ async fn sqlite_v10_context_migration_preserves_history_and_marks_unknown_usage_
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(restored.schema_version, 4);
+    assert_eq!(restored.schema_version, ThreadCheckpoint::SCHEMA_VERSION);
     assert_eq!(
         restored
             .state
@@ -384,7 +390,7 @@ async fn sqlite_v8_migration_backfills_checkpoint_usage_from_saved_effects() {
     ))
     .await
     .unwrap();
-    db.execute_unprepared("DROP TABLE thread_tool_task_resources; DROP TABLE thread_tool_tasks; PRAGMA user_version=8")
+    db.execute_unprepared("DROP TABLE thread_tool_task_resources; DROP TABLE thread_tool_tasks; DROP TABLE IF EXISTS seaql_migrations; PRAGMA user_version=8")
         .await
         .unwrap();
     db.close().await.unwrap();
@@ -1038,7 +1044,7 @@ async fn migrate_v7_adds_checkpoint_table_without_losing_effects() {
 
     // 退回 schema 7：删除新表并复位版本，保留已验证的 effect/entry/history 数据。
     tamper(&options, "DROP TABLE thread_checkpoints").await;
-    tamper(&options, "DROP TABLE thread_tool_task_resources; DROP TABLE thread_tool_tasks; PRAGMA user_version=7").await;
+    tamper(&options, "DROP TABLE thread_tool_task_resources; DROP TABLE thread_tool_tasks; DROP TABLE IF EXISTS seaql_migrations; PRAGMA user_version=7").await;
 
     // 迁移前 open 必须拒绝版本 7，而不是静默重建或迁移。
     assert!(matches!(
@@ -1069,4 +1075,437 @@ async fn migrate_v7_adds_checkpoint_table_without_losing_effects() {
             .is_none()
     );
     reopened.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn sqlite_migration_converts_schema_4_with_old_or_current_tables() {
+    use sea_orm::{ConnectionTrait, DatabaseBackend, Statement};
+
+    for format in [11, 12] {
+        let directory = tempfile::tempdir().unwrap();
+        let options = SqliteSessionOptions {
+            path: directory.path().join("legacy-envelope.sqlite"),
+        };
+        let store = SqliteSessionStore::open(options.clone()).await.unwrap();
+        let (model, _) = ScriptedModel::new(&[]);
+        let thread =
+            ThreadHandle::start("legacy-envelope".into(), DynModelSession::new(model)).unwrap();
+        thread
+            .attach_storage(ColdStoreHandle::new(store.clone()))
+            .await
+            .unwrap();
+        thread
+            .submit_input_and_run(
+                pl_core::thread::input::ThreadInput {
+                    id: "asked".into(),
+                    purpose: pl_core::thread::input::InputPurpose::Message,
+                    payload: OpaquePayload::text("Please handle this request"),
+                    context: vec![support::text("Please handle this request")],
+                },
+                pl_core::thread::input::InputDriverOptions {
+                    max_model_steps: pl_core::thread::ModelStepLimit::Limited(
+                        2.try_into().expect("nonzero limit"),
+                    ),
+                },
+            )
+            .await
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while !thread
+                .snapshot()
+                .terminal_inputs
+                .iter()
+                .any(|identity| identity.id == "asked")
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the turn consumes its input");
+        thread.flush().await.unwrap();
+        thread.close().await.unwrap();
+        store.shutdown().await.unwrap();
+
+        // Rewrite the stored checkpoint into the schema-4 shape: the fields that schema never had are absent.
+        let db = sea_orm::Database::connect(format!("sqlite://{}?mode=rw", options.path.display()))
+            .await
+            .unwrap();
+        let row = db
+            .query_one_raw(Statement::from_string(
+                DatabaseBackend::Sqlite,
+                "SELECT envelope FROM thread_checkpoints WHERE thread_id='legacy-envelope'",
+            ))
+            .await
+            .unwrap()
+            .unwrap();
+        let envelope: String = row.try_get("", "envelope").unwrap();
+        let mut value: serde_json::Value = serde_json::from_str(&envelope).unwrap();
+        value["schemaVersion"] = serde_json::json!(4);
+        {
+            let state = value["state"].as_object_mut().expect("state object");
+            state.remove("continuation");
+            state.remove("execution");
+            state.remove("executionSequence");
+            state.remove("requiredDurableSequence");
+            for key in ["inputs", "terminalInputs"] {
+                if let Some(records) = state.get_mut(key).and_then(serde_json::Value::as_array_mut)
+                {
+                    for record in records {
+                        let record = record.as_object_mut().expect("input object");
+                        record.remove("purpose");
+                        record.remove("continuation");
+                    }
+                }
+            }
+        }
+        let envelope = serde_json::to_string(&value).unwrap();
+        let hash = pl_core::context::content_hash(envelope.as_bytes());
+        db.execute_raw(Statement::from_sql_and_values(
+        DatabaseBackend::Sqlite,
+        "UPDATE thread_checkpoints SET schema_version=4,envelope=?,payload_hash=? WHERE thread_id='legacy-envelope'",
+        vec![envelope.into(), hash.into()],
+    ))
+    .await
+    .unwrap();
+        if format == 11 {
+            db.execute_unprepared(
+                "DROP TABLE thread_tool_task_resources; DROP TABLE thread_tool_tasks",
+            )
+            .await
+            .unwrap();
+        }
+        db.execute_unprepared(&format!(
+            "DROP TABLE seaql_migrations; PRAGMA user_version={format}"
+        ))
+        .await
+        .unwrap();
+        db.close().await.unwrap();
+
+        // The explicit migration converts the envelope, its indexed version and its hash together.
+        migration::migrate_to_current(options.clone(), |_| Ok(()))
+            .await
+            .unwrap();
+        let db = sea_orm::Database::connect(format!("sqlite://{}?mode=rw", options.path.display()))
+            .await
+            .unwrap();
+        let version: i64 = db
+            .query_one_raw(Statement::from_string(
+                DatabaseBackend::Sqlite,
+                "PRAGMA user_version",
+            ))
+            .await
+            .unwrap()
+            .unwrap()
+            .try_get("", "user_version")
+            .unwrap();
+        assert_eq!(version, 12);
+        db.close().await.unwrap();
+
+        let reopened = SqliteSessionStore::open(options).await.unwrap();
+        let restored = reopened
+            .read_thread_checkpoint("legacy-envelope")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(restored.schema_version, ThreadCheckpoint::SCHEMA_VERSION);
+        // Missing fields take their defaults, and no continuation is invented for work that never owed any.
+        assert!(restored.state.continuation.is_none());
+        assert!(restored.state.execution.is_none());
+        assert_eq!(restored.state.execution_sequence, 0);
+        assert_eq!(restored.state.required_durable_sequence, None);
+        assert!(
+            restored
+                .state
+                .terminal_inputs
+                .iter()
+                .all(
+                    |identity| identity.purpose == pl_core::thread::input::InputPurpose::Message
+                        && identity.continuation.is_none()
+                )
+        );
+        assert!(
+            !restored.state.terminal_inputs.is_empty(),
+            "the fixture must really carry the consumed input it strips"
+        );
+
+        // The converted checkpoint is a usable restart state, not just readable bytes.
+        let (model, _) = ScriptedModel::new(&[]);
+        let resumed = ThreadHandle::resume(
+            "legacy-envelope".into(),
+            DynModelSession::new(model),
+            Some(restored),
+        )
+        .unwrap();
+        assert!(resumed.snapshot().continuation.is_none());
+        resumed.close().await.unwrap();
+        reopened.shutdown().await.unwrap();
+    }
+}
+
+/// Current pre-framework databases are adopted once; unknown unversioned sources, invalid formats
+/// or migration records may not cause schema/data writes through ordinary or explicit opening.
+#[tokio::test]
+async fn sqlite_adopts_current_database_and_refuses_future_writes() {
+    use sea_orm::{ConnectionTrait, Database};
+    for fault in [
+        "format",
+        "migration",
+        "missing_table",
+        "checkpoint",
+        "missing_first",
+        "gap",
+    ] {
+        let directory = tempfile::tempdir().unwrap();
+        let options = SqliteSessionOptions {
+            path: directory.path().join("future.sqlite"),
+        };
+        let store = SqliteSessionStore::open(options.clone()).await.unwrap();
+        store
+            .register_resource(
+                "source",
+                "native-body",
+                OpaquePayload::new("vendor.native", 3, "  {\"number\":1e2}\n").unwrap(),
+            )
+            .unwrap();
+        store.flush().await.unwrap();
+        store.shutdown().await.unwrap();
+        let url = format!("sqlite://{}?mode=rw", options.path.display());
+        let db = Database::connect(&url).await.unwrap();
+        db.execute_unprepared("DROP TABLE seaql_migrations")
+            .await
+            .unwrap();
+        db.close().await.unwrap();
+        let adopted = SqliteSessionStore::open(options.clone()).await.unwrap();
+        adopted.shutdown().await.unwrap();
+        let db = Database::connect(&url).await.unwrap();
+        if fault == "format" {
+            db.execute_unprepared("PRAGMA user_version=999")
+                .await
+                .unwrap();
+        } else if fault == "missing_table" {
+            db.execute_unprepared("DROP TABLE seaql_migrations; DROP TABLE session_entries")
+                .await
+                .unwrap();
+        } else if fault == "checkpoint" {
+            let mut checkpoint = ThreadCheckpoint::capture("future".into(), 0, Default::default());
+            checkpoint.schema_version = 6;
+            let envelope = serde_json::to_string(&checkpoint).unwrap();
+            db.execute_raw(sea_orm::Statement::from_sql_and_values(sea_orm::DatabaseBackend::Sqlite,
+                "INSERT INTO thread_checkpoints(thread_id,schema_version,state_revision,history_fence,envelope,payload_hash) VALUES('future',6,0,0,?,?)",
+                vec![envelope.clone().into(), pl_core::context::content_hash(envelope.as_bytes()).into()])).await.unwrap();
+        } else if fault == "missing_first" {
+            db.execute_unprepared(
+                "DELETE FROM seaql_migrations WHERE version<>'m20261026_000002_core_entries_v7'",
+            )
+            .await
+            .unwrap();
+        } else if fault == "gap" {
+            db.execute_unprepared(
+                "DELETE FROM seaql_migrations WHERE version NOT IN ('m20261026_000001_core_schema','m20261026_000003_core_checkpoint_table')",
+            )
+            .await
+            .unwrap();
+        } else {
+            db.execute_unprepared(
+                "INSERT INTO seaql_migrations(version,applied_at) VALUES('m99999999_future',1)",
+            )
+            .await
+            .unwrap();
+        }
+        db.close().await.unwrap();
+        let before = tokio::fs::read(&options.path).await.unwrap();
+        let open_error = match SqliteSessionStore::open(options.clone()).await {
+            Ok(store) => {
+                store.shutdown().await.unwrap();
+                None
+            }
+            Err(error) => Some(error),
+        };
+        let after_open = tokio::fs::read(&options.path).await.unwrap();
+        let migration_error = migration::migrate_to_current(options.clone(), |_| Ok(()))
+            .await
+            .err();
+        for error in [open_error, migration_error] {
+            let error = error.unwrap_or_else(|| panic!("{fault} must be rejected before writes"));
+            if matches!(fault, "missing_first" | "gap") {
+                assert!(
+                    matches!(error, SessionStoreError::Invalid(ref message)
+                        if message.contains("ordered prefix") && message.contains("existing data preserved")),
+                    "{fault}: {error}"
+                );
+            } else if fault == "migration" {
+                assert!(
+                    matches!(error, SessionStoreError::Database(ref source)
+                        if source.downcast_ref::<sea_orm::DbErr>().is_some()
+                            && source.to_string().contains("m99999999_future")),
+                    "unknown steps must retain the official source error: {error}"
+                );
+            }
+        }
+        assert_eq!(after_open, before, "{fault}: open must preserve all bytes");
+        assert_eq!(tokio::fs::read(&options.path).await.unwrap(), before);
+    }
+
+    // The underscore in SQLite's reserved sqlite_ prefix is literal, not a LIKE wildcard.
+    let directory = tempfile::tempdir().unwrap();
+    let options = SqliteSessionOptions {
+        path: directory.path().join("unversioned.sqlite"),
+    };
+    let db = Database::connect(format!("sqlite://{}?mode=rwc", options.path.display()))
+        .await
+        .unwrap();
+    let ddl = "CREATE TABLE sqlitex_unknown_authority(sentinel TEXT NOT NULL)";
+    db.execute_unprepared(ddl).await.unwrap();
+    db.execute_unprepared("INSERT INTO sqlitex_unknown_authority VALUES('keep unowned source')")
+        .await
+        .unwrap();
+    db.close().await.unwrap();
+    let before = tokio::fs::read(&options.path).await.unwrap();
+
+    let error = match SqliteSessionStore::open(options.clone()).await {
+        Ok(store) => {
+            store.shutdown().await.unwrap();
+            panic!("an unversioned sqlitex_ user table must not be treated as an empty database");
+        }
+        Err(error) => error,
+    };
+    assert!(matches!(
+        error,
+        SessionStoreError::UnsupportedSchema { found: 0, .. }
+    ));
+    assert_eq!(tokio::fs::read(&options.path).await.unwrap(), before);
+
+    let db = Database::connect(format!("sqlite://{}?mode=ro", options.path.display()))
+        .await
+        .unwrap();
+    let schema = db
+        .query_all_raw(sea_orm::Statement::from_string(
+            sea_orm::DatabaseBackend::Sqlite,
+            "SELECT name,sql FROM sqlite_schema ORDER BY name",
+        ))
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|row| {
+            (
+                row.try_get::<String>("", "name").unwrap(),
+                row.try_get::<String>("", "sql").unwrap(),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        schema,
+        vec![("sqlitex_unknown_authority".to_owned(), ddl.to_owned())],
+        "rejection must preserve the original DDL without creating seaql_migrations or core tables"
+    );
+    let sentinel = db
+        .query_one_raw(sea_orm::Statement::from_string(
+            sea_orm::DatabaseBackend::Sqlite,
+            "SELECT sentinel FROM sqlitex_unknown_authority",
+        ))
+        .await
+        .unwrap()
+        .unwrap()
+        .try_get::<String>("", "sentinel")
+        .unwrap();
+    assert_eq!(sentinel, "keep unowned source");
+    let format = db
+        .query_one_raw(sea_orm::Statement::from_string(
+            sea_orm::DatabaseBackend::Sqlite,
+            "PRAGMA user_version",
+        ))
+        .await
+        .unwrap()
+        .unwrap()
+        .try_get::<i64>("", "user_version")
+        .unwrap();
+    assert_eq!(format, 0);
+    db.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn sqlite_migration_prefixes_require_their_committed_format_and_resume() {
+    use sea_orm::{ConnectionTrait, Database};
+
+    // InitialSchema preserves an existing format 6, but can also create format 12 directly.
+    // Later committed steps impose lower bounds, not a one-to-one mapping of count to format.
+    for (completed, format) in [
+        (0, 6),
+        (0, 12),
+        (1, 6),
+        (1, 12),
+        (2, 7),
+        (3, 8),
+        (4, 9),
+        (5, 10),
+        (6, 12),
+        (7, 12),
+    ] {
+        let directory = tempfile::tempdir().unwrap();
+        let options = SqliteSessionOptions {
+            path: directory.path().join("prefix.sqlite"),
+        };
+        let store = SqliteSessionStore::open(options.clone()).await.unwrap();
+        store
+            .register_resource(
+                "source",
+                "native-body",
+                OpaquePayload::new("vendor.native", 3, "  {\"number\":1e2}\n").unwrap(),
+            )
+            .unwrap();
+        store.flush().await.unwrap();
+        let entries = store.replay_entries("source", None).await.unwrap();
+        let history = store.read_entry_history("source", None).await.unwrap();
+        store.shutdown().await.unwrap();
+
+        let url = format!("sqlite://{}?mode=rw", options.path.display());
+        let db = Database::connect(&url).await.unwrap();
+        if format < 12 {
+            db.execute_unprepared(
+                "DROP TABLE thread_tool_task_resources; DROP TABLE thread_tool_tasks",
+            )
+            .await
+            .unwrap();
+        }
+        db.execute_unprepared(&format!(
+            "DELETE FROM seaql_migrations WHERE version IN (SELECT version FROM seaql_migrations ORDER BY version LIMIT -1 OFFSET {completed}); PRAGMA user_version={format}"
+        )).await.unwrap();
+        db.close().await.unwrap();
+
+        if completed >= 2 {
+            let too_old = if completed >= 6 { 11 } else { format - 1 };
+            tamper(&options, &format!("PRAGMA user_version={too_old}")).await;
+            let before = tokio::fs::read(&options.path).await.unwrap();
+            let error = migration::migrate_to_current(options.clone(), |_| Ok(()))
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(error, SessionStoreError::Invalid(ref message)
+                    if message.contains("format") && message.contains("existing data preserved")),
+                "prefix {completed}, format {too_old}: {error}"
+            );
+            assert_eq!(tokio::fs::read(&options.path).await.unwrap(), before);
+            tamper(&options, &format!("PRAGMA user_version={format}")).await;
+        }
+
+        if format < 12 {
+            assert!(matches!(
+                SqliteSessionStore::open(options.clone()).await,
+                Err(SessionStoreError::UnsupportedSchema { found, .. }) if found == format
+            ));
+            migration::migrate_to_current(options.clone(), |_| Ok(()))
+                .await
+                .unwrap();
+        }
+        let resumed = SqliteSessionStore::open(options).await.unwrap();
+        assert_eq!(
+            resumed.replay_entries("source", None).await.unwrap(),
+            entries
+        );
+        assert_eq!(
+            resumed.read_entry_history("source", None).await.unwrap(),
+            history
+        );
+        resumed.shutdown().await.unwrap();
+    }
 }

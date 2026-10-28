@@ -20,7 +20,10 @@ mod runtime_lock;
 mod runtime_state;
 pub(crate) mod startup;
 mod storage;
-pub(crate) use storage::history::{HistoryStore, context_resources};
+pub(crate) use storage::history::input_chain::{InputChainProof, InputChainUnavailable};
+pub(crate) use storage::history::{
+    HistoryStore, InputChainBatchRead, InputChainReadLimits, context_resources,
+};
 pub(crate) mod store;
 mod store_support;
 pub(crate) mod thread;

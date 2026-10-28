@@ -65,6 +65,25 @@ impl BotRuntime {
             }
             match next {
                 Some(next) => after = next,
+                None => break,
+            }
+        }
+        // 旧有限回复可能没有任何授权头，不能只遍历 bot_authorizations 后就重新授信。
+        // 每页仍在原短准入边界内收束；真实平台结果不受这些新写围栏影响。
+        let mut after = None;
+        loop {
+            let (changed, next) = {
+                let _admission = managed.admission.lock().await;
+                managed
+                    .store
+                    .prune_legacy_delivery_page(config, after.as_deref())
+                    .await?
+            };
+            if changed {
+                managed.audience_changed();
+            }
+            match next {
+                Some(next) => after = Some(next),
                 None => return Ok(()),
             }
         }

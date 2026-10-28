@@ -24,6 +24,9 @@ DefaultDirName={localappdata}\Programs\anywork
 DefaultGroupName={cm:AppName}
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
+; Keep this non-elevating installer from passing RedirectionGuard to the app
+; and its developer tools after installation or an update restart. See #167.
+RedirectionGuard=no
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 OutputDir={#OutputDir}

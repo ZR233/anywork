@@ -20,6 +20,18 @@ pub struct StudioStartupError {
 }
 
 impl StudioStartupError {
+    /// Cleanup failure remains the outer outcome, without discarding the failure that required it.
+    pub(crate) fn retaining_startup_failure(self, initial: Self) -> Self {
+        Self::new(
+            self.step,
+            self.kind,
+            FailedStartupCleanup {
+                initial,
+                cleanup: self.into(),
+            },
+        )
+    }
+
     pub(crate) fn new(
         step: &'static str,
         kind: StudioStartupErrorKind,
@@ -34,7 +46,9 @@ impl StudioStartupError {
 
     pub(crate) fn input(step: &'static str, source: impl Into<anyhow::Error>) -> Self {
         let source = source.into();
-        let kind = if has_environment_error(&source) {
+        let kind = if is_storage_migration(&source) {
+            StudioStartupErrorKind::Migration
+        } else if has_environment_error(&source) {
             StudioStartupErrorKind::Environment
         } else if is_bundled_agent_error(&source) {
             StudioStartupErrorKind::Internal
@@ -46,8 +60,7 @@ impl StudioStartupError {
                         | crate::ConfigRuntimeError::ModeDefinitions(_)
                 )
             )
-        }) || is_session_layout_migration(&source)
-        {
+        }) {
             StudioStartupErrorKind::Migration
         } else if is_data_error(&source) {
             StudioStartupErrorKind::PersistentData
@@ -59,8 +72,39 @@ impl StudioStartupError {
 }
 
 #[derive(Debug, thiserror::Error)]
+#[error("resource cleanup after failed startup also failed: {cleanup:#}")]
+struct FailedStartupCleanup {
+    #[source]
+    initial: StudioStartupError,
+    cleanup: anyhow::Error,
+}
+
+#[derive(Debug, thiserror::Error)]
 #[error("invalid persistent data: {0}")]
 struct PersistentDataError(String);
+
+/// Domain context around the official migrator error; the original cause remains in the chain.
+#[derive(Debug, thiserror::Error)]
+#[error("{storage} SQLite migration step {step} failed; existing data preserved")]
+struct StorageMigrationFailed {
+    storage: &'static str,
+    step: String,
+    #[source]
+    source: anyhow::Error,
+}
+
+pub(crate) fn migration_error(
+    storage: &'static str,
+    step: impl Into<String>,
+    error: impl Into<anyhow::Error>,
+) -> anyhow::Error {
+    StorageMigrationFailed {
+        storage,
+        step: step.into(),
+        source: error.into(),
+    }
+    .into()
+}
 
 pub(crate) fn data_error(error: impl Into<anyhow::Error>) -> anyhow::Error {
     let error = error.into();
@@ -80,7 +124,7 @@ pub(crate) fn cleanup_error(error: impl Into<anyhow::Error>) -> anyhow::Error {
 pub(crate) fn input_error(error: impl Into<anyhow::Error>) -> anyhow::Error {
     let error = error.into();
     if is_bundled_agent_error(&error)
-        || is_session_layout_migration(&error)
+        || is_storage_migration(&error)
         || has_environment_error(&error)
     {
         error
@@ -99,13 +143,29 @@ fn is_bundled_agent_error(error: &anyhow::Error) -> bool {
 
 fn is_session_layout_migration(error: &anyhow::Error) -> bool {
     error.is::<crate::studio::store::SessionLayoutMigrationFailed>()
+        || error.is::<crate::studio::agent_host::worktree_lease::WorktreeLeaseMigrationFailed>()
         || error
             .chain()
             .any(|cause| cause.is::<crate::studio::store::SessionLayoutMigrationFailed>())
 }
 
+fn is_storage_migration(error: &anyhow::Error) -> bool {
+    error.is::<StorageMigrationFailed>()
+        || is_session_layout_migration(error)
+        || error.chain().any(|cause| {
+            cause.is::<StorageMigrationFailed>()
+                || matches!(
+                    cause.downcast_ref::<crate::StudioDatabaseError>(),
+                    Some(
+                        crate::StudioDatabaseError::UnsupportedSchema { .. }
+                            | crate::StudioDatabaseError::StorageMigrationRequired
+                    )
+                )
+        })
+}
+
 fn is_data_error(error: &anyhow::Error) -> bool {
-    if is_session_layout_migration(error) || has_environment_error(error) {
+    if is_storage_migration(error) || has_environment_error(error) {
         return false;
     }
     error.is::<PersistentDataError>()

@@ -21,7 +21,8 @@ const BOTS_DIR_NAME: &str = "bots";
 const CALLS_DIR_NAME: &str = "calls";
 const MIGRATIONS_DIR_NAME: &str = "migrations";
 const ATTACHMENT_DRAFTS_DIR_NAME: &str = "attachment-drafts";
-const HISTORY_FILE_NAME: &str = "history.sqlite";
+const HISTORY_FILE_NAME: &str = "history-current.sqlite";
+const LEGACY_HISTORY_FILE_NAME: &str = "history.sqlite";
 const ATTACHMENTS_FILE_NAME: &str = "attachments.toml";
 const BLOBS_DIR_NAME: &str = "blobs";
 const RESOURCES_DIR_NAME: &str = "thread-resources";
@@ -247,6 +248,11 @@ impl SessionPaths {
 
     pub fn history_database(&self) -> PathBuf {
         self.root.join(HISTORY_FILE_NAME)
+    }
+
+    /// Preserved v2 source; normal history readers and writers use `history_database`.
+    pub(crate) fn legacy_history_database(&self) -> PathBuf {
+        self.root.join(LEGACY_HISTORY_FILE_NAME)
     }
 
     pub fn attachments_catalog(&self) -> PathBuf {

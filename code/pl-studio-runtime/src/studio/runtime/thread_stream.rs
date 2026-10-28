@@ -677,6 +677,13 @@ impl StudioRuntime {
         let _lifecycle_guard = self.lifecycle_lock.lock().await;
         let residency_pin = self.residency.pin_many([request.thread_id.clone()]);
         let thread = self.read_protocol_thread(&request.thread_id).await?;
+        // Opening is the explicit storage-preparation boundary, including for a retired child.
+        // Prepare before reading its seal: that read itself requires the current checkpoint.
+        self.store
+            .history(&request.thread_id)
+            .await?
+            .prepare_activation()
+            .await?;
         let explicitly_closed = thread.parent_thread_id.is_some()
             && crate::studio::agent_close::is_explicitly_closed(
                 &self.read_thread_state(&request.thread_id).await?,
@@ -694,11 +701,7 @@ impl StudioRuntime {
             && (thread.role == crate::config::ROOT_AGENT_ROUTE_KEY
                 || (explicitly_closed && closing_owner.is_none()))
         {
-            // Explicitly opening retired history still prepares its persisted schema, but never
-            // installs an execution owner. Regular snapshot and paging queries do not prepare
-            // this SQLite upgrade.
-            let history = self.store.history(&request.thread_id).await?;
-            history.prepare_activation().await?;
+            // Storage is prepared above; observation of retired history never installs an owner.
             let snapshot = self.thread_snapshot(&request.thread_id).await?;
             // A retired child has no owner to retain its last Turn and its subscription emits only
             // this snapshot, so the newest finished Turn is read once here — bounded, body-free — and
@@ -958,10 +961,15 @@ impl StudioRuntime {
             return Ok(snapshot);
         }
         let thread = self.read_protocol_thread(thread_id).await?;
-        let checkpoint =
-            crate::studio::thread_factory::recovery::load_checkpoint(&self.store, &thread)
-                .await?
-                .ok_or_else(|| anyhow::anyhow!("Thread has no saved checkpoint"))?;
+        // A read-only projection never prepares storage: it reports only already-durable facts, so a
+        // legacy checkpoint that still needs import stays invisible until an explicit activation
+        // migrates it (design/17).
+        let checkpoint = crate::studio::thread_factory::recovery::load_checkpoint_read_only(
+            &self.store,
+            &thread,
+        )
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("Thread has no saved checkpoint"))?;
         self.store
             .thread_persistence()
             .seed_usage(thread_id, checkpoint.state.usage_summary.clone());

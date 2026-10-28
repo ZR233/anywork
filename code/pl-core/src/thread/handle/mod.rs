@@ -3,6 +3,7 @@ use super::*;
 mod commands;
 mod inputs;
 mod operations;
+mod reads;
 pub(super) use commands::Command;
 
 /// A bounded command handle; mutable Thread state is owned exclusively by its actor.

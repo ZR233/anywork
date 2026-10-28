@@ -3,6 +3,7 @@
 use super::{Authorization, SyncOperation, conflict, phase_name, read, unreadable};
 use crate::bots::config::BotConfigFile;
 use crate::bots::protocol::error::FeishuError;
+use crate::bots::storage::publication::{LegacyScopeClosure, stop_legacy_scopes_in};
 use crate::bots::storage::{BotStateStore, statement, storage};
 use crate::studio::audience_start::{AudienceStartIntent, AudienceStartReceipt};
 use crate::studio::unix_seconds;
@@ -23,6 +24,36 @@ async fn write_auth<C: ConnectionTrait>(db: &C, auth: &Authorization) -> Result<
         vec![auth.intent.authorization.chat_id.clone().into(),i64::try_from(auth.intent.authorization.generation).map_err(|_|unreadable())?.into(),auth.intent.thread_id.clone().into(),
             i64::try_from(auth.revision).map_err(|_|unreadable())?.into(),phase_name(auth.phase).into(),json.into()])).await.map_err(storage)?;
     let updated=db.execute_raw(statement("UPDATE bot_audience_origins SET summary_version=summary_version+1 WHERE thread_id=? AND summary_version<9223372036854775807",vec![auth.intent.thread_id.clone().into()])).await.map_err(storage)?;
+    if updated.rows_affected() != 1 {
+        return Err(unreadable());
+    }
+    Ok(())
+}
+
+/// 投递变更只推进观察版本，不改授权控制 revision、phase 或 Saved cut。
+/// 与实体写入同事务；迟到结果也必须让已关闭授权的只读缓存失效，不能复活授权。
+pub(in crate::bots::storage) async fn note_delivery_change<C: ConnectionTrait>(
+    db: &C,
+    authorization: Option<&BotAuthorizationId>,
+    thread: &str,
+) -> Result<(), FeishuError> {
+    if let Some(id) = authorization {
+        let mut auth = read::load_auth(db, id).await?.ok_or_else(unreadable)?;
+        if auth.intent.thread_id != thread {
+            return Err(unreadable());
+        }
+        auth.delivery_version = auth
+            .delivery_version
+            .checked_add(1)
+            .filter(|version| *version <= i64::MAX as u64)
+            .ok_or_else(unreadable)?;
+        return write_auth(db, &auth).await;
+    }
+    // 原 thread 不可证的材料没有可失效的 Thread 观察；仍保留其原账本版本。
+    if thread.is_empty() {
+        return Ok(());
+    }
+    let updated=db.execute_raw(statement("UPDATE bot_audience_origins SET summary_version=summary_version+1 WHERE thread_id=? AND summary_version<9223372036854775807",vec![thread.into()])).await.map_err(storage)?;
     if updated.rows_affected() != 1 {
         return Err(unreadable());
     }
@@ -102,10 +133,16 @@ impl BotStateStore {
             let authorization = read::load_auth(&tx, &previous.authorization)
                 .await?
                 .ok_or_else(unreadable)?;
+            let changed = if request.action == BotThreadSyncAction::Close {
+                close_legacy_for_auth(&tx, &authorization, BotAudienceCloseReason::LocalClose)
+                    .await?
+            } else {
+                false
+            };
             tx.commit().await.map_err(storage)?;
             return Ok(SyncChange {
                 authorization,
-                changed: false,
+                changed,
             });
         }
         let origin = read::proven_origin(&tx, &request.thread_id, &config.id)
@@ -227,6 +264,14 @@ impl BotStateStore {
         .await
         .map_err(storage)?;
         write_auth(&tx, &auth).await?;
+        // 同事务建立当前投递作用域：PendingStart 只建立范围，不授予任何新平台写入。
+        let scope_origin = read::read_origin(&tx, &auth.intent.thread_id)
+            .await?
+            .ok_or_else(unreadable)?;
+        super::super::publication::ensure_frontend_scope_in(&tx, &auth, &scope_origin).await?;
+        if request.action == BotThreadSyncAction::Close {
+            close_legacy_for_auth(&tx, &auth, BotAudienceCloseReason::LocalClose).await?;
+        }
         tx.commit().await.map_err(storage)?;
         Ok(SyncChange {
             authorization: auth,
@@ -281,6 +326,8 @@ impl BotStateStore {
                 auth.phase = BotAuthorizationPhase::Active;
                 auth.revision = auth.revision.checked_add(1).ok_or_else(unreadable)?;
                 write_auth(&tx, &auth).await?;
+                // 激活后作用域仍从原授权读取起点；不复制 phase/start，也不补写历史。
+                super::super::publication::ensure_frontend_scope_in(&tx, &auth, &origin).await?;
             }
         }
         tx.commit().await.map_err(storage)?;
@@ -362,7 +409,35 @@ pub(in crate::bots::storage) async fn first_pending_start<C: ConnectionTrait>(
     ))
     .await
     .map_err(storage)?;
-    write_auth(db, &auth).await
+    write_auth(db, &auth).await?;
+    let origin = read::read_origin(db, thread)
+        .await?
+        .ok_or_else(unreadable)?;
+    super::super::publication::ensure_frontend_scope_in(db, &auth, &origin).await?;
+    Ok(())
+}
+
+async fn close_legacy_for_auth<C: ConnectionTrait>(
+    db: &C,
+    auth: &Authorization,
+    reason: BotAudienceCloseReason,
+) -> Result<bool, FeishuError> {
+    let expected = crate::bots::storage::BoundThreadExpectation {
+        chat_id: auth.intent.authorization.chat_id.clone(),
+        thread_id: auth.intent.thread_id.clone(),
+        creation_id: auth.creation_id.clone(),
+        project_id: auth.project_id.clone(),
+        revision: auth.intent.binding_revision,
+    };
+    stop_legacy_scopes_in(
+        db,
+        LegacyScopeClosure::Binding {
+            expected: &expected,
+            bot_id: Some(&auth.intent.authorization.bot_id),
+        },
+        &format!("legacy delivery closed: {reason:?}"),
+    )
+    .await
 }
 
 pub(in crate::bots::storage) async fn close_generation<C: ConnectionTrait>(
@@ -373,8 +448,9 @@ pub(in crate::bots::storage) async fn close_generation<C: ConnectionTrait>(
     let Some(mut auth) = read::load_auth(db, id).await? else {
         return Ok(false);
     };
+    let legacy_changed = close_legacy_for_auth(db, &auth, reason).await?;
     if auth.phase == BotAuthorizationPhase::Closed {
-        return Ok(false);
+        return Ok(legacy_changed);
     }
     auth.phase = BotAuthorizationPhase::Closed;
     auth.closed = Some((reason, unix_seconds()));
@@ -388,10 +464,16 @@ pub(in crate::bots::storage) async fn close_chat<C: ConnectionTrait>(
     chat: &str,
     reason: BotAudienceCloseReason,
 ) -> Result<bool, FeishuError> {
+    let legacy_changed = stop_legacy_scopes_in(
+        db,
+        LegacyScopeClosure::Chat(chat),
+        &format!("legacy delivery closed: {reason:?}"),
+    )
+    .await?;
     let Some(auth) = read::head(db, chat).await? else {
-        return Ok(false);
+        return Ok(legacy_changed);
     };
-    close_generation(db, &auth.intent.authorization, reason).await
+    Ok(close_generation(db, &auth.intent.authorization, reason).await? || legacy_changed)
 }
 
 pub(in crate::bots::storage) async fn close_unavailable_binding<C: ConnectionTrait>(
@@ -415,6 +497,15 @@ pub(in crate::bots::storage) async fn close_unavailable_binding<C: ConnectionTra
         )
         .await?;
     }
+    stop_legacy_scopes_in(
+        db,
+        LegacyScopeClosure::Binding {
+            expected,
+            bot_id: None,
+        },
+        "legacy delivery closed: BindingUnavailable",
+    )
+    .await?;
     Ok(())
 }
 

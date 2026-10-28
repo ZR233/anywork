@@ -33,7 +33,7 @@ struct Summary<'a> {
 
 #[derive(Serialize)]
 struct CardBody<'a> {
-    elements: [Markdown<'a>; 1],
+    elements: Vec<Markdown<'a>>,
 }
 
 #[derive(Serialize)]
@@ -51,7 +51,6 @@ struct CreateBody {
 
 #[derive(Deserialize)]
 struct Response<T> {
-    code: i64,
     data: Option<T>,
 }
 
@@ -85,144 +84,9 @@ struct SettingsConfig<'a> {
     summary: Summary<'a>,
 }
 
-/// Validate the whole serialized card, not the content endpoint's larger field limit.
-pub fn validate_card(text: &str, streaming: bool, summary: &str) -> Result<(), FeishuError> {
-    card_json(text, streaming, summary).map(|_| ())
-}
-
-fn card_json(text: &str, streaming: bool, summary: &str) -> Result<String, FeishuError> {
-    if text.trim().is_empty() || text.chars().count() > 100_000 {
-        return Err(size_error(
-            "card Markdown must contain 1..100000 characters",
-        ));
-    }
-    let json = serde_json::to_string(&Card {
-        schema: "2.0",
-        config: Config {
-            streaming_mode: streaming,
-            update_multi: true,
-            summary: Summary { content: summary },
-        },
-        body: CardBody {
-            elements: [Markdown {
-                tag: "markdown",
-                element_id: ELEMENT_ID,
-                content: text,
-            }],
-        },
-    })
-    .expect("card strings serialize");
-    if json.len() > CARD_LIMIT_BYTES {
-        return Err(size_error(
-            "serialized CardKit card exceeds 30000 UTF-8 bytes; full answer retained locally",
-        ));
-    }
-    Ok(json)
-}
-
 impl FeishuCardKit {
     pub fn new(http: FeishuHttp) -> Self {
         Self { http }
-    }
-
-    pub async fn create(&self, token: &str, text: &str) -> Result<String, FeishuError> {
-        let body = CreateBody {
-            r#type: "card_json",
-            data: card_json(text, true, "Generating")?,
-        };
-        let response: Response<Created> = self
-            .http
-            .open_typed(
-                Method::POST,
-                "/open-apis/cardkit/v1/cards",
-                Some(token),
-                &[],
-                Some(&body),
-            )
-            .await
-            .map_err(card_error)?;
-        if response.code != 0 {
-            return Err(card_error(classify_open_api(response.code, None)));
-        }
-        response
-            .data
-            .map(|data| data.card_id)
-            .filter(|id| !id.trim().is_empty() && id.len() <= 256)
-            .ok_or_else(|| {
-                FeishuError::new(
-                    FeishuErrorKind::Protocol,
-                    "CardKit create response missing a valid card_id; acceptance is unknown",
-                    false,
-                    None,
-                )
-            })
-    }
-
-    pub async fn content(
-        &self,
-        token: &str,
-        card_id: &str,
-        text: &str,
-        sequence: i32,
-        uuid: &str,
-    ) -> Result<(), FeishuError> {
-        self.operation(
-            Method::PUT,
-            &self.path(card_id, &["elements", ELEMENT_ID, "content"]),
-            token,
-            &ContentBody {
-                content: text,
-                sequence,
-                uuid,
-            },
-        )
-        .await
-    }
-
-    pub async fn settings(
-        &self,
-        token: &str,
-        card_id: &str,
-        settings: CardSettings<'_>,
-    ) -> Result<(), FeishuError> {
-        let settings_json = serde_json::to_string(&Settings {
-            config: SettingsConfig {
-                streaming_mode: settings.streaming,
-                summary: Summary {
-                    content: settings.summary,
-                },
-            },
-        })
-        .expect("settings strings serialize");
-        self.operation(
-            Method::PATCH,
-            &self.path(card_id, &["settings"]),
-            token,
-            &SettingsBody {
-                settings: settings_json,
-                sequence: settings.sequence,
-                uuid: settings.uuid,
-            },
-        )
-        .await
-    }
-
-    async fn operation<B: Serialize>(
-        &self,
-        method: Method,
-        path: &str,
-        token: &str,
-        body: &B,
-    ) -> Result<(), FeishuError> {
-        let response: Response<serde::de::IgnoredAny> = self
-            .http
-            .open_typed(method, path, Some(token), &[], Some(body))
-            .await
-            .map_err(card_error)?;
-        if response.code != 0 {
-            return Err(card_error(classify_open_api(response.code, None)));
-        }
-        Ok(())
     }
 
     fn path(&self, card_id: &str, suffix: &[&str]) -> String {
@@ -234,13 +98,6 @@ impl FeishuCardKit {
             .extend(suffix.iter().copied());
         url.path().to_string()
     }
-}
-
-pub struct CardSettings<'a> {
-    pub streaming: bool,
-    pub summary: &'a str,
-    pub sequence: i32,
-    pub uuid: &'a str,
 }
 
 fn size_error(message: &str) -> FeishuError {
@@ -257,4 +114,343 @@ fn card_error(error: FeishuError) -> FeishuError {
         );
     }
     error
+}
+
+/// The host region is a separate Markdown element: it must never become part of an
+/// unclosed model code fence. This serializer is also used by the pre-intent budget check.
+pub(in crate::bots) fn publication_card_json(
+    text: &str,
+    host: &str,
+    streaming: bool,
+    summary: &str,
+) -> Result<String, FeishuError> {
+    if text.chars().count() > 100_000 || text.trim().is_empty() && host.trim().is_empty() {
+        return Err(size_error(
+            "CardKit requires bounded public text or a real independent host status",
+        ));
+    }
+    let mut elements = vec![Markdown {
+        tag: "markdown",
+        element_id: ELEMENT_ID,
+        content: text,
+    }];
+    if !host.is_empty() {
+        elements.push(Markdown {
+            tag: "markdown",
+            element_id: "publication_status",
+            content: host,
+        });
+    }
+    let json = serialize(&Card {
+        schema: "2.0",
+        config: Config {
+            streaming_mode: streaming,
+            update_multi: true,
+            summary: Summary { content: summary },
+        },
+        body: CardBody { elements },
+    })?;
+    bounded(json)
+}
+
+pub(in crate::bots) fn publication_create(card: String) -> Result<String, FeishuError> {
+    bounded(serialize(&CreateBody {
+        r#type: "card_json",
+        data: card,
+    })?)
+}
+
+pub(in crate::bots) fn publication_content(
+    text: &str,
+    sequence: i32,
+    uuid: &str,
+) -> Result<String, FeishuError> {
+    bounded(serialize(&ContentBody {
+        content: text,
+        sequence,
+        uuid,
+    })?)
+}
+
+pub(in crate::bots) fn publication_whole(
+    card: String,
+    sequence: i32,
+    uuid: &str,
+) -> Result<String, FeishuError> {
+    #[derive(Serialize)]
+    struct Whole {
+        card: CreateBody,
+        sequence: i32,
+        uuid: String,
+    }
+    bounded(serialize(&Whole {
+        card: CreateBody {
+            r#type: "card_json",
+            data: card,
+        },
+        sequence,
+        uuid: uuid.to_owned(),
+    })?)
+}
+
+pub(in crate::bots) fn publication_settings(
+    streaming: bool,
+    summary: &str,
+    sequence: i32,
+    uuid: &str,
+) -> Result<String, FeishuError> {
+    bounded(serialize(&SettingsBody {
+        settings: serialize(&Settings {
+            config: SettingsConfig {
+                streaming_mode: streaming,
+                summary: Summary { content: summary },
+            },
+        })?,
+        sequence,
+        uuid,
+    })?)
+}
+
+pub(in crate::bots) fn publication_send(
+    chat_id: &str,
+    card_id: &str,
+    uuid: &str,
+) -> Result<String, FeishuError> {
+    #[derive(Serialize)]
+    struct CardReference<'a> {
+        r#type: &'static str,
+        data: CardId<'a>,
+    }
+    #[derive(Serialize)]
+    struct CardId<'a> {
+        card_id: &'a str,
+    }
+    #[derive(Serialize)]
+    struct Send<'a> {
+        receive_id: &'a str,
+        msg_type: &'static str,
+        content: String,
+        uuid: &'a str,
+    }
+    bounded(serialize(&Send {
+        receive_id: chat_id,
+        msg_type: "interactive",
+        uuid,
+        content: serialize(&CardReference {
+            r#type: "card",
+            data: CardId { card_id },
+        })?,
+    })?)
+}
+
+fn serialize(value: &impl Serialize) -> Result<String, FeishuError> {
+    serde_json::to_string(value).map_err(|_| {
+        FeishuError::new(
+            FeishuErrorKind::Protocol,
+            "CardKit request serialization failed",
+            false,
+            None,
+        )
+    })
+}
+
+fn bounded(body: String) -> Result<String, FeishuError> {
+    if body.len() > CARD_LIMIT_BYTES {
+        return Err(size_error(
+            "serialized CardKit card/request exceeds 30000 UTF-8 bytes",
+        ));
+    }
+    Ok(body)
+}
+
+/// A fully prepared request owns exactly the frozen bytes. Preparing performs no HTTP.
+pub(in crate::bots) struct PreparedPublication {
+    request: reqwest::Request,
+    target: crate::bots::storage::publication::DeliveryRequestTarget,
+}
+
+impl PreparedPublication {
+    /// Bind the transaction's exact bytes without changing the already prepared endpoint/method.
+    pub(in crate::bots) fn bind_frozen(
+        &mut self,
+        frozen: &crate::bots::storage::publication::FrozenDeliveryRequest,
+    ) -> Result<(), FeishuError> {
+        frozen.validate()?;
+        if self.target != frozen.target() {
+            return Err(size_error(
+                "frozen CardKit target changed after preparation",
+            ));
+        }
+        *self.request.body_mut() = Some(frozen.body().to_owned().into());
+        Ok(())
+    }
+}
+
+pub(in crate::bots) enum PublicationResponse {
+    Created(String),
+    Sent(String),
+    Updated,
+}
+
+impl FeishuCardKit {
+    pub(in crate::bots) fn prepare_publication(
+        &self,
+        token: &str,
+        chat_id: &str,
+        card_id: Option<&str>,
+        frozen: &crate::bots::storage::publication::FrozenDeliveryRequest,
+    ) -> Result<PreparedPublication, FeishuError> {
+        use crate::bots::storage::publication::DeliveryRequestTarget as Target;
+        frozen.validate()?;
+        let (method, path) = match frozen.target() {
+            Target::CreateCard => (Method::POST, "/open-apis/cardkit/v1/cards".to_owned()),
+            Target::SendCard => (Method::POST, "/open-apis/im/v1/messages".to_owned()),
+            target => {
+                let id = card_id
+                    .filter(|id| !id.is_empty() && id.len() <= 256)
+                    .ok_or_else(|| {
+                        size_error("CardKit mutation lacks its original card identity")
+                    })?;
+                match target {
+                    Target::ElementContent => (
+                        Method::PUT,
+                        self.path(id, &["elements", ELEMENT_ID, "content"]),
+                    ),
+                    Target::WholeCard => (Method::PUT, self.path(id, &[])),
+                    Target::Settings => (Method::PATCH, self.path(id, &["settings"])),
+                    Target::CreateCard | Target::SendCard => unreachable!(),
+                }
+            }
+        };
+        let mut url = self
+            .http
+            .open_api()
+            .join(path.trim_start_matches('/'))
+            .map_err(|_| size_error("invalid CardKit API path"))?;
+        if frozen.target() == Target::SendCard {
+            // chat identity is already frozen in the body; never replace it here.
+            if chat_id.is_empty() {
+                return Err(size_error("empty original publication chat"));
+            }
+            url.query_pairs_mut()
+                .append_pair("receive_id_type", "chat_id");
+        }
+        self.http
+            .client()
+            .request(method, url)
+            .bearer_auth(token)
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .body(frozen.body().to_owned())
+            .build()
+            .map(|request| PreparedPublication {
+                request,
+                target: frozen.target(),
+            })
+            .map_err(|_| {
+                FeishuError::new(
+                    FeishuErrorKind::Protocol,
+                    "cannot prepare frozen CardKit request",
+                    false,
+                    None,
+                )
+            })
+    }
+
+    /// This future is first polled under publication admission, then drained by the same owner.
+    /// Only a typed business rejection or explicit HTTP 4xx proves rejection; malformed replies,
+    /// disconnects and 5xx without a business rejection remain Unknown.
+    pub(in crate::bots) async fn execute_publication(
+        &self,
+        prepared: PreparedPublication,
+        target: crate::bots::storage::publication::DeliveryRequestTarget,
+    ) -> Result<PublicationResponse, super::http::PostFailure> {
+        use super::http::PostFailure;
+        use crate::bots::storage::publication::DeliveryRequestTarget as Target;
+        let unknown = || {
+            FeishuError::new(
+                FeishuErrorKind::Protocol,
+                "started CardKit request has no valid bounded response; acceptance is unknown",
+                false,
+                None,
+            )
+        };
+        let mut response = self
+            .http
+            .client()
+            .execute(prepared.request)
+            .await
+            .map_err(|_| PostFailure::Unknown(unknown()))?;
+        let status = response.status();
+        let mut bytes = Vec::new();
+        while let Some(chunk) = response
+            .chunk()
+            .await
+            .map_err(|_| PostFailure::Unknown(unknown()))?
+        {
+            if bytes.len().saturating_add(chunk.len()) > 64 * 1024 {
+                return Err(PostFailure::Unknown(unknown()));
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        #[derive(Deserialize)]
+        struct Envelope {
+            code: i64,
+        }
+        let envelope = serde_json::from_slice::<Envelope>(&bytes);
+        if let Ok(envelope) = &envelope
+            && envelope.code != 0
+        {
+            return Err(PostFailure::Rejected(card_error(classify_open_api(
+                envelope.code,
+                None,
+            ))));
+        }
+        if !status.is_success() {
+            let error = FeishuError::new(
+                if status.is_client_error() {
+                    FeishuErrorKind::Rejected
+                } else {
+                    FeishuErrorKind::Unavailable
+                },
+                "CardKit HTTP request failed",
+                false,
+                Some(status.as_u16().to_string()),
+            );
+            return Err(if status.is_client_error() {
+                PostFailure::Rejected(error)
+            } else {
+                PostFailure::Unknown(error)
+            });
+        }
+        envelope.map_err(|_| PostFailure::Unknown(unknown()))?;
+        match target {
+            Target::CreateCard => {
+                let created = serde_json::from_slice::<Response<Created>>(&bytes)
+                    .map_err(|_| PostFailure::Unknown(unknown()))?
+                    .data
+                    .ok_or_else(|| PostFailure::Unknown(unknown()))?;
+                if created.card_id.trim().is_empty() || created.card_id.len() > 256 {
+                    return Err(PostFailure::Unknown(unknown()));
+                }
+                Ok(PublicationResponse::Created(created.card_id))
+            }
+            Target::SendCard => {
+                #[derive(Deserialize)]
+                struct Sent {
+                    message_id: String,
+                }
+                let sent = serde_json::from_slice::<Response<Sent>>(&bytes)
+                    .map_err(|_| PostFailure::Unknown(unknown()))?
+                    .data
+                    .ok_or_else(|| PostFailure::Unknown(unknown()))?;
+                if sent.message_id.trim().is_empty() || sent.message_id.len() > 256 {
+                    return Err(PostFailure::Unknown(unknown()));
+                }
+                Ok(PublicationResponse::Sent(sent.message_id))
+            }
+            Target::ElementContent | Target::WholeCard | Target::Settings => {
+                Ok(PublicationResponse::Updated)
+            }
+        }
+    }
 }

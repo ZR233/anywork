@@ -2167,10 +2167,14 @@ return contextCompaction(_that);case _:
 /// }
 /// ```
 
+<<<<<<< HEAD
 @optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( List<BridgeRawPayload> payloads,  String notice,  PlatformInt64 recordedAt)?  raw,TResult Function( BridgeThreadTextChannel channel,  String text,  List<BridgeThreadAttachment> attachments,  BridgeThreadContentLifecycle lifecycle)?  text,TResult Function( List<String> summary,  List<String> content,  BridgeThreadContentLifecycle lifecycle)?  thinking,TResult Function( BridgeThreadToolInvocation invocation,  BridgeThreadToolState state,  BridgeThreadUserInput? userInput,  BridgeThreadWaitPresentation? wait)?  tool,TResult Function( BridgeThreadAgentIdentity identity,  BridgeThreadAgentState state)?  agent,TResult Function( BridgeTurnState state,  String? inputId)?  turn,TResult Function( String inferenceId,  String model,  BridgeThreadInferenceState state)?  inference,TResult Function( String name,  String source,  String providerId,  BridgeSkillResourceBase resourceBase,  BridgeSkillActivationCause cause,  PlatformInt64 activatedAt)?  skill,TResult Function( String path,  String? mediaType,  PlatformInt64 completedAt)?  file,TResult Function( String publicationId,  String toolCallId,  String displayName,  BridgeThreadArtifactResource resource,  PlatformInt64 publishedAt)?  publicArtifact,TResult Function( BigInt? beforeTokens,  BigInt? afterTokens,  PlatformInt64 compactedAt)?  contextCompaction,required TResult orElse(),}) {final _that = this;
+=======
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( BridgeRawItemOrigin origin,  List<BridgeRawPayload> payloads,  String notice,  PlatformInt64 recordedAt)?  raw,TResult Function( BridgeThreadTextChannel channel,  String text,  List<BridgeThreadAttachment> attachments,  BridgeThreadContentLifecycle lifecycle)?  text,TResult Function( List<String> summary,  List<String> content,  BridgeThreadContentLifecycle lifecycle)?  thinking,TResult Function( BridgeThreadToolInvocation invocation,  BridgeThreadToolState state,  BridgeThreadUserInput? userInput,  BridgeThreadWaitPresentation? wait)?  tool,TResult Function( BridgeThreadAgentIdentity identity,  BridgeThreadAgentState state)?  agent,TResult Function( BridgeTurnState state,  String? inputId)?  turn,TResult Function( String inferenceId,  String model,  BridgeThreadInferenceState state)?  inference,TResult Function( String name,  String source,  String providerId,  BridgeSkillResourceBase resourceBase,  BridgeSkillActivationCause cause,  PlatformInt64 activatedAt)?  skill,TResult Function( String path,  String? mediaType,  PlatformInt64 completedAt)?  file,TResult Function( BigInt? beforeTokens,  BigInt? afterTokens,  PlatformInt64 compactedAt)?  contextCompaction,required TResult orElse(),}) {final _that = this;
+>>>>>>> a9e4e807ee6dd891378fc89d60ebd25f846d9b87
 switch (_that) {
 case BridgeThreadItemState_Raw() when raw != null:
-return raw(_that.payloads,_that.notice,_that.recordedAt);case BridgeThreadItemState_Text() when text != null:
+return raw(_that.origin,_that.payloads,_that.notice,_that.recordedAt);case BridgeThreadItemState_Text() when text != null:
 return text(_that.channel,_that.text,_that.attachments,_that.lifecycle);case BridgeThreadItemState_Thinking() when thinking != null:
 return thinking(_that.summary,_that.content,_that.lifecycle);case BridgeThreadItemState_Tool() when tool != null:
 return tool(_that.invocation,_that.state,_that.userInput,_that.wait);case BridgeThreadItemState_Agent() when agent != null:
@@ -2198,10 +2202,14 @@ return contextCompaction(_that.beforeTokens,_that.afterTokens,_that.compactedAt)
 /// }
 /// ```
 
+<<<<<<< HEAD
 @optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( List<BridgeRawPayload> payloads,  String notice,  PlatformInt64 recordedAt)  raw,required TResult Function( BridgeThreadTextChannel channel,  String text,  List<BridgeThreadAttachment> attachments,  BridgeThreadContentLifecycle lifecycle)  text,required TResult Function( List<String> summary,  List<String> content,  BridgeThreadContentLifecycle lifecycle)  thinking,required TResult Function( BridgeThreadToolInvocation invocation,  BridgeThreadToolState state,  BridgeThreadUserInput? userInput,  BridgeThreadWaitPresentation? wait)  tool,required TResult Function( BridgeThreadAgentIdentity identity,  BridgeThreadAgentState state)  agent,required TResult Function( BridgeTurnState state,  String? inputId)  turn,required TResult Function( String inferenceId,  String model,  BridgeThreadInferenceState state)  inference,required TResult Function( String name,  String source,  String providerId,  BridgeSkillResourceBase resourceBase,  BridgeSkillActivationCause cause,  PlatformInt64 activatedAt)  skill,required TResult Function( String path,  String? mediaType,  PlatformInt64 completedAt)  file,required TResult Function( String publicationId,  String toolCallId,  String displayName,  BridgeThreadArtifactResource resource,  PlatformInt64 publishedAt)  publicArtifact,required TResult Function( BigInt? beforeTokens,  BigInt? afterTokens,  PlatformInt64 compactedAt)  contextCompaction,}) {final _that = this;
+=======
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( BridgeRawItemOrigin origin,  List<BridgeRawPayload> payloads,  String notice,  PlatformInt64 recordedAt)  raw,required TResult Function( BridgeThreadTextChannel channel,  String text,  List<BridgeThreadAttachment> attachments,  BridgeThreadContentLifecycle lifecycle)  text,required TResult Function( List<String> summary,  List<String> content,  BridgeThreadContentLifecycle lifecycle)  thinking,required TResult Function( BridgeThreadToolInvocation invocation,  BridgeThreadToolState state,  BridgeThreadUserInput? userInput,  BridgeThreadWaitPresentation? wait)  tool,required TResult Function( BridgeThreadAgentIdentity identity,  BridgeThreadAgentState state)  agent,required TResult Function( BridgeTurnState state,  String? inputId)  turn,required TResult Function( String inferenceId,  String model,  BridgeThreadInferenceState state)  inference,required TResult Function( String name,  String source,  String providerId,  BridgeSkillResourceBase resourceBase,  BridgeSkillActivationCause cause,  PlatformInt64 activatedAt)  skill,required TResult Function( String path,  String? mediaType,  PlatformInt64 completedAt)  file,required TResult Function( BigInt? beforeTokens,  BigInt? afterTokens,  PlatformInt64 compactedAt)  contextCompaction,}) {final _that = this;
+>>>>>>> a9e4e807ee6dd891378fc89d60ebd25f846d9b87
 switch (_that) {
 case BridgeThreadItemState_Raw():
-return raw(_that.payloads,_that.notice,_that.recordedAt);case BridgeThreadItemState_Text():
+return raw(_that.origin,_that.payloads,_that.notice,_that.recordedAt);case BridgeThreadItemState_Text():
 return text(_that.channel,_that.text,_that.attachments,_that.lifecycle);case BridgeThreadItemState_Thinking():
 return thinking(_that.summary,_that.content,_that.lifecycle);case BridgeThreadItemState_Tool():
 return tool(_that.invocation,_that.state,_that.userInput,_that.wait);case BridgeThreadItemState_Agent():
@@ -2225,10 +2233,14 @@ return contextCompaction(_that.beforeTokens,_that.afterTokens,_that.compactedAt)
 /// }
 /// ```
 
+<<<<<<< HEAD
 @optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( List<BridgeRawPayload> payloads,  String notice,  PlatformInt64 recordedAt)?  raw,TResult? Function( BridgeThreadTextChannel channel,  String text,  List<BridgeThreadAttachment> attachments,  BridgeThreadContentLifecycle lifecycle)?  text,TResult? Function( List<String> summary,  List<String> content,  BridgeThreadContentLifecycle lifecycle)?  thinking,TResult? Function( BridgeThreadToolInvocation invocation,  BridgeThreadToolState state,  BridgeThreadUserInput? userInput,  BridgeThreadWaitPresentation? wait)?  tool,TResult? Function( BridgeThreadAgentIdentity identity,  BridgeThreadAgentState state)?  agent,TResult? Function( BridgeTurnState state,  String? inputId)?  turn,TResult? Function( String inferenceId,  String model,  BridgeThreadInferenceState state)?  inference,TResult? Function( String name,  String source,  String providerId,  BridgeSkillResourceBase resourceBase,  BridgeSkillActivationCause cause,  PlatformInt64 activatedAt)?  skill,TResult? Function( String path,  String? mediaType,  PlatformInt64 completedAt)?  file,TResult? Function( String publicationId,  String toolCallId,  String displayName,  BridgeThreadArtifactResource resource,  PlatformInt64 publishedAt)?  publicArtifact,TResult? Function( BigInt? beforeTokens,  BigInt? afterTokens,  PlatformInt64 compactedAt)?  contextCompaction,}) {final _that = this;
+=======
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( BridgeRawItemOrigin origin,  List<BridgeRawPayload> payloads,  String notice,  PlatformInt64 recordedAt)?  raw,TResult? Function( BridgeThreadTextChannel channel,  String text,  List<BridgeThreadAttachment> attachments,  BridgeThreadContentLifecycle lifecycle)?  text,TResult? Function( List<String> summary,  List<String> content,  BridgeThreadContentLifecycle lifecycle)?  thinking,TResult? Function( BridgeThreadToolInvocation invocation,  BridgeThreadToolState state,  BridgeThreadUserInput? userInput,  BridgeThreadWaitPresentation? wait)?  tool,TResult? Function( BridgeThreadAgentIdentity identity,  BridgeThreadAgentState state)?  agent,TResult? Function( BridgeTurnState state,  String? inputId)?  turn,TResult? Function( String inferenceId,  String model,  BridgeThreadInferenceState state)?  inference,TResult? Function( String name,  String source,  String providerId,  BridgeSkillResourceBase resourceBase,  BridgeSkillActivationCause cause,  PlatformInt64 activatedAt)?  skill,TResult? Function( String path,  String? mediaType,  PlatformInt64 completedAt)?  file,TResult? Function( BigInt? beforeTokens,  BigInt? afterTokens,  PlatformInt64 compactedAt)?  contextCompaction,}) {final _that = this;
+>>>>>>> a9e4e807ee6dd891378fc89d60ebd25f846d9b87
 switch (_that) {
 case BridgeThreadItemState_Raw() when raw != null:
-return raw(_that.payloads,_that.notice,_that.recordedAt);case BridgeThreadItemState_Text() when text != null:
+return raw(_that.origin,_that.payloads,_that.notice,_that.recordedAt);case BridgeThreadItemState_Text() when text != null:
 return text(_that.channel,_that.text,_that.attachments,_that.lifecycle);case BridgeThreadItemState_Thinking() when thinking != null:
 return thinking(_that.summary,_that.content,_that.lifecycle);case BridgeThreadItemState_Tool() when tool != null:
 return tool(_that.invocation,_that.state,_that.userInput,_that.wait);case BridgeThreadItemState_Agent() when agent != null:
@@ -2250,9 +2262,10 @@ return contextCompaction(_that.beforeTokens,_that.afterTokens,_that.compactedAt)
 
 
 class BridgeThreadItemState_Raw extends BridgeThreadItemState {
-  const BridgeThreadItemState_Raw({required  List<BridgeRawPayload> payloads, required this.notice, required this.recordedAt}): _payloads = payloads,super._();
+  const BridgeThreadItemState_Raw({required this.origin, required  List<BridgeRawPayload> payloads, required this.notice, required this.recordedAt}): _payloads = payloads,super._();
 
 
+ final  BridgeRawItemOrigin origin;
  final  List<BridgeRawPayload> _payloads;
  List<BridgeRawPayload> get payloads {
   if (_payloads is EqualUnmodifiableListView) return _payloads;
@@ -2273,18 +2286,18 @@ $BridgeThreadItemState_RawCopyWith<BridgeThreadItemState_Raw> get copyWith => _$
 
 @override
 bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeThreadItemState_Raw&&const DeepCollectionEquality().equals(other.payloads, _payloads)&&(identical(other.notice, notice) || other.notice == notice)&&(identical(other.recordedAt, recordedAt) || other.recordedAt == recordedAt));
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeThreadItemState_Raw&&(identical(other.origin, origin) || other.origin == origin)&&const DeepCollectionEquality().equals(other.payloads, _payloads)&&(identical(other.notice, notice) || other.notice == notice)&&(identical(other.recordedAt, recordedAt) || other.recordedAt == recordedAt));
 }
 
 
 @override
 int get hashCode {
-    return Object.hash(runtimeType,const DeepCollectionEquality().hash(_payloads),notice,recordedAt);
+    return Object.hash(runtimeType,origin,const DeepCollectionEquality().hash(_payloads),notice,recordedAt);
 }
 
 @override
 String toString() {
-    return 'BridgeThreadItemState.raw(payloads: $payloads, notice: $notice, recordedAt: $recordedAt)';
+    return 'BridgeThreadItemState.raw(origin: $origin, payloads: $payloads, notice: $notice, recordedAt: $recordedAt)';
 }
 
 
@@ -2295,7 +2308,7 @@ abstract mixin class $BridgeThreadItemState_RawCopyWith<$Res> implements $Bridge
   factory $BridgeThreadItemState_RawCopyWith(BridgeThreadItemState_Raw value, $Res Function(BridgeThreadItemState_Raw) _then) = _$BridgeThreadItemState_RawCopyWithImpl;
 @useResult
 $Res call({
- List<BridgeRawPayload> payloads, String notice, PlatformInt64 recordedAt
+ BridgeRawItemOrigin origin, List<BridgeRawPayload> payloads, String notice, PlatformInt64 recordedAt
 });
 
 
@@ -2312,9 +2325,10 @@ class _$BridgeThreadItemState_RawCopyWithImpl<$Res>
 
 /// Create a copy of BridgeThreadItemState
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') $Res call({Object? payloads = null,Object? notice = null,Object? recordedAt = null,}) {
+@pragma('vm:prefer-inline') $Res call({Object? origin = null,Object? payloads = null,Object? notice = null,Object? recordedAt = null,}) {
   return _then(BridgeThreadItemState_Raw(
-payloads: null == payloads ? _self._payloads : payloads // ignore: cast_nullable_to_non_nullable
+origin: null == origin ? _self.origin : origin // ignore: cast_nullable_to_non_nullable
+as BridgeRawItemOrigin,payloads: null == payloads ? _self._payloads : payloads // ignore: cast_nullable_to_non_nullable
 as List<BridgeRawPayload>,notice: null == notice ? _self.notice : notice // ignore: cast_nullable_to_non_nullable
 as String,recordedAt: null == recordedAt ? _self.recordedAt : recordedAt // ignore: cast_nullable_to_non_nullable
 as PlatformInt64,

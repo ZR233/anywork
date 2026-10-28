@@ -107,6 +107,10 @@ impl FeishuPeer {
             )
             .route("/open-apis/cardkit/v1/cards", post(cardkit::card_create))
             .route(
+                "/open-apis/cardkit/v1/cards/{card_id}",
+                axum::routing::put(cardkit::card_whole_update),
+            )
+            .route(
                 "/open-apis/cardkit/v1/cards/{card_id}/elements/{element_id}/content",
                 axum::routing::put(cardkit::card_element_content),
             )

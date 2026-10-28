@@ -150,6 +150,11 @@ async fn seed(home: &Path) -> Result<StudioPaths> {
         "/tmp/project-cold".into(),
     );
     delta.thread_upserts = thread_delta.thread_upserts;
+    // This fixture is the creation owner. Publish the catalog only after its explicit current
+    // history exists, just like a real new Thread; later startup must not guess New from absence.
+    store
+        .initialize_new_history_for("project-cold", "cold")
+        .await?;
     store.persist_directory_summaries(&delta).await?;
     runtime.shutdown_runtime().await?;
     let paths = StudioPaths::resolve(Some(home.to_owned()))?;
@@ -315,14 +320,29 @@ async fn known_configuration_migration_and_cold_sessions_survive_initialization(
     value["schema_version"] = 18.into();
     std::fs::write(home.join("config.toml"), toml::to_string(&value)?)?;
     let cold = cold_session(&paths)?.history_database();
+    let original_history = std::fs::read(&cold)?;
     std::fs::write(&cold, b"intentionally invalid cold history")?;
+    let failure = match StudioRuntime::initialize(options(home)).await {
+        Ok(runtime) => {
+            runtime.shutdown_runtime().await?;
+            anyhow::bail!("corrupt cold history was accepted as ready");
+        }
+        Err(error) => error,
+    };
+    assert_eq!(failure.kind, StudioStartupErrorKind::Migration);
+    assert_eq!(std::fs::read(&cold)?, b"intentionally invalid cold history");
+    assert!(!home.join("startup-backups").exists());
+    // Repair only this test-owned corruption. A cold execution owner stays inactive even though
+    // all registered histories now participate in the mandatory startup storage preparation.
+    std::fs::write(&cold, &original_history)?;
     let runtime = StudioRuntime::initialize(options(home)).await?;
     assert!(runtime.startup_recovery.is_none());
     assert_eq!(
         runtime.config_runtime.read()?.config.instructions.user,
         config.instructions.user
     );
-    assert_eq!(std::fs::read(cold)?, b"intentionally invalid cold history");
+    assert_eq!(std::fs::read(&cold)?, original_history);
+    assert!(runtime.threads.thread("cold").is_none());
     assert!(!home.join("startup-backups").exists());
     runtime.shutdown_runtime().await?;
     for _ in 0..2 {
@@ -629,7 +649,7 @@ async fn layout_attachment_toml_fault_does_not_reset_home() -> Result<()> {
         original
     );
     assert_eq!(
-        tokio::fs::read(session.history_database()).await?,
+        tokio::fs::read(session.legacy_history_database()).await?,
         b"history-bytes"
     );
     tokio::fs::write(
@@ -641,8 +661,43 @@ async fn layout_attachment_toml_fault_does_not_reset_home() -> Result<()> {
         })?,
     )
     .await?;
-    let runtime = StudioRuntime::initialize(options(paths.home())).await?;
-    runtime.shutdown_runtime().await?;
+    // Repairing the layout must resume that migration, not silently bless the intentionally
+    // non-SQLite source bytes. The next mandatory history step rejects them without a reset.
+    let error = StudioRuntime::initialize(options(paths.home()))
+        .await
+        .err()
+        .expect("invalid legacy history must still fail after layout repair");
+    // The retained failed import also blocks storage close. Keep that outer cleanup outcome,
+    // while retaining the original typed Migration rather than replacing it with a string.
+    assert_eq!(error.kind, StudioStartupErrorKind::Environment);
+    assert_eq!(error.step, "close_storage");
+    let mut cause: Option<&(dyn std::error::Error + 'static)> = Some(&error);
+    let mut found_migration = false;
+    while let Some(current) = cause {
+        found_migration |= current
+            .downcast_ref::<crate::studio::startup::StudioStartupError>()
+            .is_some_and(|failure| {
+                failure.kind == StudioStartupErrorKind::Migration
+                    && failure.step == "history_current"
+            });
+        cause = current.source();
+    }
+    assert!(
+        found_migration,
+        "original migration failure was lost: {error:?}"
+    );
+    assert!(!temp.path().join("startup-backups").exists());
+    assert!(
+        paths
+            .migrations_dir()
+            .join("session-project-layout.complete")
+            .exists()
+    );
+    assert!(!session.history_database().exists());
+    assert_eq!(
+        tokio::fs::read(session.legacy_history_database()).await?,
+        b"history-bytes"
+    );
     Ok(())
 }
 
@@ -682,7 +737,7 @@ async fn layout_target_manifest_fault_does_not_reset_home() -> Result<()> {
     assert!(!temp.path().join("startup-backups").exists());
     assert_eq!(tokio::fs::read(session.session_manifest()).await?, original);
     assert_eq!(
-        tokio::fs::read(session.history_database()).await?,
+        tokio::fs::read(session.legacy_history_database()).await?,
         b"history-bytes"
     );
     Ok(())

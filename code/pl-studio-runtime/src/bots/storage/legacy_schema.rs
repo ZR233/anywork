@@ -1,0 +1,388 @@
+//! Validation of the finite SQLite schemas this bot ledger has actually owned.
+//! PRAGMA metadata supplies columns and conflict targets. SQLite exposes no
+//! CHECK-expression metadata, so the two CHECK-bearing tables must retain their
+//! declared DDL (ignoring whitespace/case, not parsing arbitrary SQL).
+
+use super::{LedgerSource, statement, table_columns};
+use sea_orm::ConnectionTrait;
+use std::collections::BTreeSet;
+
+pub(super) const META_TABLE: &str = "CREATE TABLE bot_meta (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    schema_version INTEGER NOT NULL
+)";
+
+pub(super) const CARD_TABLE: &str = "CREATE TABLE bot_card_streams (
+    identity TEXT PRIMARY KEY,
+    bot_id TEXT NOT NULL, chat_id TEXT NOT NULL, message_id TEXT NOT NULL,
+    thread_id TEXT NOT NULL, original_input TEXT NOT NULL,
+    watch_input TEXT NOT NULL, turn_id TEXT NOT NULL,
+    version INTEGER NOT NULL CHECK(version>0), state_json TEXT NOT NULL,
+    updated_at INTEGER NOT NULL
+)";
+
+/// The complete finite base shapes, not a required subset of arbitrary user columns. File facts
+/// and the schema-nine target proof are the only declared extensions to these shared tables.
+const TABLES: &[(&str, &str, &[&str])] = &[
+    ("bot_meta", "id", &["id", "schema_version"]),
+    (
+        "inbound_identities",
+        "identity",
+        &[
+            "identity",
+            "bot_id",
+            "message_id",
+            "chat_id",
+            "content_hash",
+            "admitted_at",
+        ],
+    ),
+    (
+        "inbound_work",
+        "identity",
+        &[
+            "identity",
+            "bot_id",
+            "chat_id",
+            "message_id",
+            "content_hash",
+            "text",
+            "open_id",
+            "chat_kind",
+            "generation",
+            "app_id",
+            "project_id",
+            "creation_id",
+            "binding_revision",
+            "status",
+            "diagnostic",
+            "claimed_by",
+            "claimed_at",
+            "updated_at",
+            "attachments",
+            "watch_input",
+            "attempt_count",
+            "next_attempt_at",
+        ],
+    ),
+    (
+        "thread_bindings",
+        "chat_id",
+        &[
+            "chat_id",
+            "thread_id",
+            "status",
+            "creation_id",
+            "project_id",
+            "revision",
+            "generation",
+            "diagnostic",
+            "created_at",
+            "updated_at",
+        ],
+    ),
+    (
+        "observed_directs",
+        "chat_id",
+        &["chat_id", "open_id", "name", "last_observed_at"],
+    ),
+    (
+        "pairing_requests",
+        "request_id",
+        &["request_id", "open_id", "display_name", "created_at"],
+    ),
+    (
+        "send_operations",
+        "operation_id",
+        &[
+            "operation_id",
+            "bot_id",
+            "chat_id",
+            "content_hash",
+            "status",
+            "platform_message_ids",
+            "updated_at",
+            "segment_facts",
+        ],
+    ),
+    (
+        "binding_operations",
+        "operation_id",
+        &[
+            "operation_id",
+            "bot_id",
+            "chat_id",
+            "content_hash",
+            "expected_revision",
+            "creation_id",
+            "thread_id",
+            "updated_at",
+        ],
+    ),
+    (
+        "bot_card_streams",
+        "identity",
+        &[
+            "identity",
+            "bot_id",
+            "chat_id",
+            "message_id",
+            "thread_id",
+            "original_input",
+            "watch_input",
+            "turn_id",
+            "version",
+            "state_json",
+            "updated_at",
+        ],
+    ),
+];
+
+pub(super) async fn validate_source<C: ConnectionTrait>(
+    db: &C,
+    source: LedgerSource,
+) -> anyhow::Result<()> {
+    let version = stored_version(db).await?;
+    let columns = table_columns(db, "send_operations").await?;
+    let file = columns.contains("send_identity") && columns.contains("send_source");
+    let matches = match source {
+        LedgerSource::MainCard6 => version == 6 && !file,
+        LedgerSource::TaskFile6 => version == 6 && file,
+        LedgerSource::TaskFile7 => version == 7 && file,
+        LedgerSource::Current8 => (8..=10).contains(&version) && file,
+    };
+    anyhow::ensure!(
+        matches,
+        "bot source format conflicts with its declared schema"
+    );
+    validate(db, version).await
+}
+
+async fn stored_version<C: ConnectionTrait>(db: &C) -> anyhow::Result<i64> {
+    Ok(db
+        .query_one_raw(statement(
+            "SELECT schema_version FROM bot_meta WHERE id=1",
+            vec![],
+        ))
+        .await?
+        .ok_or_else(|| incompatible("bot_meta"))?
+        .try_get("", "schema_version")?)
+}
+
+/// For pre6 only, declared migrations may establish missing tables/columns and
+/// the pairing index. Existing identities/definitions are never repaired.
+pub(super) async fn validate<C: ConnectionTrait>(db: &C, version: i64) -> anyhow::Result<()> {
+    let stored = stored_version(db).await?;
+    anyhow::ensure!(
+        version == stored || version == 8 && (9..=10).contains(&stored),
+        "bot source version conflicts with its validator boundary"
+    );
+    let version = stored;
+    let send = table_columns(db, "send_operations").await?;
+    let marker_count =
+        usize::from(send.contains("send_identity")) + usize::from(send.contains("send_source"));
+    anyhow::ensure!(
+        (version < 6 && marker_count == 0)
+            || (version == 6 && matches!(marker_count, 0 | 2))
+            || ((7..=10).contains(&version) && marker_count == 2),
+        "partial or incompatible bot file schema markers"
+    );
+    let file = marker_count == 2;
+    let card_required = version >= 8 || version == 6 && !file;
+    for &(table, key, base) in TABLES {
+        let columns = db
+            .query_all_raw(statement(
+                "SELECT name,type,\"notnull\",pk,hidden,dflt_value FROM pragma_table_xinfo(?)",
+                vec![table.into()],
+            ))
+            .await?;
+        if columns.is_empty() && version < 6 {
+            continue;
+        }
+        if table == "bot_card_streams" && version >= 6 && !card_required {
+            anyhow::ensure!(
+                columns.is_empty(),
+                "bot ledger combines incompatible card/file schema markers"
+            );
+            continue;
+        }
+        let actual: BTreeSet<String> = columns
+            .iter()
+            .map(|column| column.try_get("", "name"))
+            .collect::<Result<_, _>>()?;
+        let mut expected: BTreeSet<&str> = base.iter().copied().collect();
+        if table == "send_operations" && file {
+            expected.extend(["send_identity", "send_source"]);
+        }
+        if version >= 9 && matches!(table, "thread_bindings" | "binding_operations") {
+            expected.insert("target_json");
+        }
+        if actual
+            .iter()
+            .any(|column| !expected.contains(column.as_str()))
+            || version >= 6 && expected.iter().any(|column| !actual.contains(*column))
+        {
+            return Err(incompatible(table));
+        }
+        let mut primary_key = Vec::new();
+        for column in columns {
+            let name: String = column.try_get("", "name")?;
+            let kind: String = column.try_get("", "type")?;
+            let not_null: i64 = column.try_get("", "notnull")?;
+            let pk: i64 = column.try_get("", "pk")?;
+            let hidden: i64 = column.try_get("", "hidden")?;
+            let default: Option<String> = column.try_get("", "dflt_value")?;
+            let expected_type = if matches!(
+                name.as_str(),
+                "id" | "schema_version"
+                    | "admitted_at"
+                    | "generation"
+                    | "binding_revision"
+                    | "claimed_at"
+                    | "updated_at"
+                    | "revision"
+                    | "created_at"
+                    | "last_observed_at"
+                    | "expected_revision"
+                    | "attempt_count"
+                    | "next_attempt_at"
+                    | "version"
+            ) {
+                "INTEGER"
+            } else {
+                "TEXT"
+            };
+            if !kind.eq_ignore_ascii_case(expected_type)
+                || hidden != 0
+                || name != key && not_null != 1
+                || default.as_deref() != column_default(table, &name)
+            {
+                return Err(incompatible(table));
+            }
+            if pk != 0 {
+                primary_key.push((name, pk));
+            }
+        }
+        if primary_key != [(key.to_string(), 1)] {
+            return Err(incompatible(table));
+        }
+        if table != "bot_meta" && !unique_key(db, table, key, true).await? {
+            return Err(incompatible(table));
+        }
+        if table == "pairing_requests" && !unique_key(db, table, "open_id", false).await? {
+            let declared_index = db
+                .query_one_raw(statement(
+                    "SELECT name FROM pragma_index_list(?) WHERE name='pairing_open_id'",
+                    vec![table.into()],
+                ))
+                .await?
+                .is_some();
+            // Pre6 may legitimately establish the index during migration, but
+            // an incompatible existing declaration must not hide behind IF NOT EXISTS.
+            if version >= 6 || declared_index {
+                return Err(incompatible(table));
+            }
+        }
+        let expected = match table {
+            "bot_meta" => Some(META_TABLE),
+            "bot_card_streams" => Some(CARD_TABLE),
+            _ => None,
+        };
+        if let Some(expected) = expected {
+            let row = db
+                .query_one_raw(statement(
+                    "SELECT sql FROM sqlite_schema WHERE type='table' AND name=?",
+                    vec![table.into()],
+                ))
+                .await?
+                .ok_or_else(|| incompatible(table))?;
+            let ddl: String = row.try_get("", "sql")?;
+            if normalized_ddl(&ddl) != normalized_ddl(expected) {
+                return Err(incompatible(table));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn column_default(table: &str, column: &str) -> Option<&'static str> {
+    match (table, column) {
+        ("thread_bindings" | "binding_operations", "target_json") => {
+            Some("'{\"kind\":\"unproven\"}'")
+        }
+        ("inbound_work", "attachments") => Some("'[]'"),
+        (
+            "inbound_work",
+            "generation" | "binding_revision" | "claimed_at" | "attempt_count" | "next_attempt_at",
+        )
+        | ("thread_bindings", "revision" | "generation" | "updated_at") => Some("0"),
+        ("inbound_identities" | "send_operations", "bot_id")
+        | (
+            "inbound_work",
+            "bot_id" | "chat_id" | "message_id" | "content_hash" | "text" | "open_id" | "chat_kind"
+            | "app_id" | "project_id" | "creation_id" | "claimed_by" | "watch_input",
+        )
+        | ("thread_bindings", "creation_id" | "project_id" | "diagnostic")
+        | ("send_operations", "segment_facts")
+        | ("binding_operations", "thread_id") => Some("''"),
+        ("thread_bindings", "status") => Some("'bound'"),
+        ("send_operations", "send_identity") => Some("'{\"kind\":\"legacyText\"}'"),
+        ("send_operations", "send_source") => Some("'null'"),
+        _ => None,
+    }
+}
+
+async fn unique_key<C: ConnectionTrait>(
+    db: &C,
+    table: &str,
+    column: &str,
+    primary: bool,
+) -> anyhow::Result<bool> {
+    let indexes = db
+        .query_all_raw(statement(
+            "SELECT name,\"unique\",origin,partial FROM pragma_index_list(?)",
+            vec![table.into()],
+        ))
+        .await?;
+    for index in indexes {
+        if index.try_get::<i64>("", "unique")? != 1
+            || index.try_get::<i64>("", "partial")? != 0
+            || primary && index.try_get::<String>("", "origin")? != "pk"
+        {
+            continue;
+        }
+        let name: String = index.try_get("", "name")?;
+        let keys = db
+            .query_all_raw(statement(
+                "SELECT name,coll,cid FROM pragma_index_xinfo(?) WHERE key=1",
+                vec![name.into()],
+            ))
+            .await?;
+        if keys.len() == 1
+            && keys[0].try_get::<i64>("", "cid")? >= 0
+            && keys[0].try_get::<String>("", "name")? == column
+            && keys[0]
+                .try_get::<String>("", "coll")?
+                .eq_ignore_ascii_case("BINARY")
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn normalized_ddl(ddl: &str) -> String {
+    // These two declared statements contain no string literals or comments.
+    // Require the entire declaration, not a CHECK-looking substring that could
+    // appear inside a comment, default string, or a weaker OR expression.
+    ddl.chars()
+        .filter(|c| !c.is_ascii_whitespace())
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+fn incompatible(table: &str) -> anyhow::Error {
+    crate::studio::startup::data_error(anyhow::anyhow!(
+        "persisted bot schema has incompatible definitions or constraints in {table}; local recovery required"
+    ))
+}

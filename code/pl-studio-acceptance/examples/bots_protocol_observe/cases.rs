@@ -25,6 +25,7 @@ use super::topic::{BotsTopicWatch, redact_connection};
 
 mod agent_definitions;
 mod files;
+mod frontend;
 mod owner_binding;
 mod registration;
 mod replies;
@@ -71,6 +72,10 @@ const OPTIONAL_CASES: &[&str] = &[
     files::CASE_COMPACTION,
     files::CASE_COMPACTION_TIMEOUT,
     files::CASE_ADMISSION_LIMITS,
+    frontend::CASE_JOURNEY,
+    frontend::CASE_BUDGET,
+    frontend::CASE_ARTIFACT,
+    frontend::CASE_LIFECYCLE,
 ];
 
 /// Cases that own the whole Session (fresh home, private peer wiring, model
@@ -85,6 +90,7 @@ fn is_session_exclusive(name: &str) -> bool {
         || name == replies::CASE_RUNTIME_STOP
         || name == owner_binding::CASE
         || files::CASES.contains(&name)
+        || frontend::CASES.contains(&name)
 }
 
 pub(crate) fn selected(requested: &[String]) -> Result<Vec<&'static str>> {
@@ -273,6 +279,7 @@ impl Session {
                 }
                 name if registration::is_exclusive(name) => registration::run(self, name).await,
                 name if files::CASES.contains(&name) => files::run(self, name).await,
+                name if frontend::CASES.contains(&name) => frontend::run(self, name).await,
                 other => Ok(report::failed(other, "unknown case")),
             };
             match result {
@@ -1715,6 +1722,29 @@ impl Session {
     }
 
     async fn save_manual_bot(&self, tools_enabled: bool) -> Result<(String, String)> {
+        self.save_manual_bot_inner(tools_enabled, None).await
+    }
+
+    /// Saves the synthetic bot with one explicit identity.
+    ///
+    /// A static model script that must address the bot by id needs that identity
+    /// before the scripted Turn runs. The public `saveBot` request accepts an
+    /// explicit id on a fresh project (`expected_config_revision = 0`); nothing
+    /// else is seeded, and the returned snapshot must keep the requested id.
+    async fn save_manual_bot_with_id(
+        &self,
+        tools_enabled: bool,
+        bot_id: &str,
+    ) -> Result<(String, String)> {
+        self.save_manual_bot_inner(tools_enabled, Some(bot_id))
+            .await
+    }
+
+    async fn save_manual_bot_inner(
+        &self,
+        tools_enabled: bool,
+        bot_id: Option<&str>,
+    ) -> Result<(String, String)> {
         let project = self
             .http()?
             .open_project(&self.project.to_string_lossy())
@@ -1731,7 +1761,7 @@ impl Session {
             .save_bot(&SaveBotRequest {
                 model_route: None,
                 operation_id,
-                bot_id: None,
+                bot_id: bot_id.map(ToOwned::to_owned),
                 expected_config_revision: 0,
                 name: "observe-bot".into(),
                 project_id: project.id.clone(),
@@ -1749,6 +1779,13 @@ impl Session {
             .iter()
             .find(|bot| bot.app_id == DEFAULT_APP_ID)
             .context("saveBot did not publish the synthetic bot")?;
+        if let Some(expected) = bot_id {
+            ensure!(
+                bot.id == expected,
+                "saveBot must keep the explicit bot id {expected}, got {}",
+                bot.id
+            );
+        }
         match bot.credential {
             BotCredentialAvailability::SessionOnly | BotCredentialAvailability::Stored => {}
             BotCredentialAvailability::Missing => bail!("bot secret was not leased or stored"),
@@ -2128,6 +2165,9 @@ fn scan_regular_file(
 fn model_steps(cases: &[&'static str]) -> Vec<Step> {
     if let Some(name) = cases.iter().find(|name| files::CASES.contains(name)) {
         return files::model_steps(name);
+    }
+    if let Some(name) = cases.iter().find(|name| frontend::CASES.contains(name)) {
+        return frontend::model_steps(name);
     }
     if cases.contains(&replies::CASE_INTERACTION_RESTART) {
         return replies::interaction_restart_model_steps();

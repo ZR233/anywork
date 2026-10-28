@@ -148,7 +148,7 @@ gh pr view PR_NUMBER --repo OWNER/REPO --json body --jq .body
 - 不得手工修改生成文件，也不得直接调用单个生成器。
 - 修改生成输入后运行 `cargo xtask check-gui-generated` 检查 canonical 输出，并分开审查生成 diff 与手写 diff。已授权的代码修改或生成一致性验证包含这些命令所需的生成操作，不为常规生成另行确认；用户明确限定只读时，不运行会改写跟踪文件的命令，报告未验证项。
 - 普通 `run-gui` 和 `build-gui` 只消费当前源码，不运行生成器或可写格式化；修改生成输入后必须先显式运行 `cargo xtask generate-gui`。
-- `check-gui-generated`、`verify-gui` 和 `build-gui --check-generated` 会重新生成并检查 canonical 输出，适用于提交前、CI 和发布门禁。
+- `check-gui-generated`、`verify-gui` 和 `build-gui --check-generated` 会重新生成并检查 canonical 输出，适用于提交前及 PR 质量门禁。稳定发布的 `release-gui stage` 与 RC 构建直接消费已提交的生成文件，不重复质量门禁；批准发布前须确认前序验证完成（见 [发布与更新](design/23-release-update.md)）。
 - Git 索引与普通源码统一使用 LF；PowerShell、RC 和 Inno Setup 文件使用 CRLF，`.gitattributes` 与 `.editorconfig` 必须保持一致。不得通过全局 Git 配置、构建后索引刷新或全仓 renormalize 修复行尾。
 
 ### 预置系统技能
@@ -181,7 +181,7 @@ gh pr view PR_NUMBER --repo OWNER/REPO --json body --jq .body
 
 ### Rust 异步接口约定
 
-- 禁止使用 `#[async_trait]` 和 `#[allow(async_fn_in_trait)]`。
+- 禁止使用 `#[async_trait]` 和 `#[allow(async_fn_in_trait)]`；仅实现 `sea_orm_migration` 的 `MigrationTrait`、`MigratorTrait`、`MigratorTraitSelf` 时允许使用其官方 `async_trait` 宏，以遵循第三方接口契约。
 - 异步 trait 使用原生 RPITIT，在返回 future 上显式声明 `Send`；不通过宏隐藏生命周期或线程安全约束。
 
 ### 核心 crate

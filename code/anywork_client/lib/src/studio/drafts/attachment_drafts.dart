@@ -165,9 +165,12 @@ class AttachmentDraftsOwner extends ReadModel<AttachmentDraftBoard> {
     required ThreadModeId mode,
     required Future<void> Function(AttachmentDraftInput input) prepare,
   }) {
+    if (_closed || _admissionsSealed) return Future<void>.value();
+    final context = _newThreadContext(projectId, mode);
+    if (context == null) return Future<void>.value();
     return _prepare(
       targetKey: attachmentLaneKeyForNewThread(projectId),
-      context: AttachmentAdmissionContext.newThread(mode),
+      context: context,
       binding: _newThreadBinding(projectId),
       projectId: projectId,
       threadId: null,
@@ -186,6 +189,20 @@ class AttachmentDraftsOwner extends ReadModel<AttachmentDraftBoard> {
         threadId: null,
       ),
     );
+  }
+
+  AttachmentAdmissionContext? _newThreadContext(
+    String projectId,
+    ThreadModeId mode,
+  ) {
+    try {
+      return AttachmentAdmissionContext.newThread(
+        _client.startDraft.resolveRoute(mode),
+      );
+    } catch (error) {
+      reportNewThreadFailure(projectId, error);
+      return null;
+    }
   }
 
   void reportNewThreadFailure(String projectId, Object error) {

@@ -710,8 +710,18 @@ impl StudioRuntime {
             &args.interaction_id,
         ))?;
         let operation_id = format!("bot-resolve:{}", crate::canonical_content_hash(&identity));
+        // 决议经该交互所属成员的主会话宿主提交；原交互身份与版本不变。
+        let host_thread_id = self
+            .interaction_host_thread(&current.interaction.scope.thread_id)
+            .await?;
         let response = self
-            .resolve_interaction(operation_id, args.interaction_id.clone(), resolution)
+            .resolve_interaction(
+                operation_id,
+                host_thread_id,
+                current.interaction.revision,
+                args.interaction_id.clone(),
+                resolution,
+            )
             .await?;
         output(&ResolutionReceipt {
             session_id: args.session_id,

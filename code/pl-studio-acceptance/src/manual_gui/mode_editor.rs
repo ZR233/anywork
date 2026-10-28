@@ -776,7 +776,7 @@ async fn read_mode_observation_async(home: &Path, thread_id: &str) -> Result<Mod
     let mut matching = Vec::new();
     if sessions.is_dir() {
         for entry in fs::read_dir(&sessions)? {
-            let path = entry?.path().join("history.sqlite");
+            let path = entry?.path().join("history-current.sqlite");
             if !path.is_file() {
                 continue;
             }
@@ -797,7 +797,7 @@ async fn read_mode_observation_async(home: &Path, thread_id: &str) -> Result<Mod
     }
     ensure!(
         matching.len() == 1,
-        "expected one history.sqlite for mode-editor Thread, found {}",
+        "expected one history-current.sqlite for mode-editor Thread, found {}",
         matching.len()
     );
     let path = matching.remove(0);

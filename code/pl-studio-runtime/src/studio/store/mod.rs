@@ -15,6 +15,7 @@ mod error;
 mod interaction;
 pub(in crate::studio) mod object;
 mod project;
+pub(super) mod schema;
 pub(in crate::studio) mod session_layout;
 pub(in crate::studio) mod settings;
 mod thread;
@@ -54,15 +55,14 @@ impl StudioStore {
     /// 打开一个 Thread 的 history 句柄。
     ///
     /// 冷读（分页、按身份读条目、Turn 页）只读打开**已存在**的库并校验 schema、Thread 与
-    /// 数据库身份，绝不创建目录/数据库或执行 schema 变更；只有显式写入（历史 writer 的
-    /// commit/reserve 或迁移 export）才会创建并升级它。打开句柄本身不做 IO，用完即随句柄释放，
-    /// 因此不存在无界连接缓存，也不会在启动时 eager 建库。
+    /// 数据库身份，绝不创建目录/数据库或执行 schema 变更；只有真实创建或导入 owner 显式
+    /// 初始化后，当前库才允许正常写入。打开句柄本身不做 IO，用完即随句柄释放。
     ///
     /// 该 Thread 已有活跃 writer 持有者时返回**同一个**权威句柄：reader 与 writer 复用同一份
-    /// 数据库身份与初始化状态，冷读会等待本句柄 writer 完成建表与 identity meta，而不是在新库
-    /// `connect(mode=rwc)` 刚创建文件后就把它当成损坏库。没有活跃持有者时，新打开的句柄立刻
+    /// 数据库身份与初始化状态，不把尚未可靠发布的目标当成空历史。没有活跃持有者时，新打开的句柄立刻
     /// 登记进弱引用表，让并发 reader 与随后的 writer 共用同一初始化锁；最后一位持有者释放后
-    /// 弱表回收，不会留下永不过期的强缓存。不存在的库继续读成空且不被创建。
+    /// 弱表回收，不会留下永不过期的强缓存；未完成初始化由登记中的 owner 保留至真实收束。
+    /// 当前库不存在或未就绪时明确失败，不创建库、不回退旧源。
     pub(crate) async fn history(&self, thread_id: &str) -> anyhow::Result<HistoryStore> {
         let session = self.registered_session_paths(thread_id)?;
         self.history_for(session.project_id(), thread_id).await
@@ -112,6 +112,34 @@ impl StudioStore {
             .await?
             .resources()
             .ok_or_else(|| anyhow::anyhow!("Thread reliable resource owner is unavailable"))
+    }
+
+    /// Called only by a genuine root/child creation owner, before directory publication.
+    pub(crate) async fn initialize_new_history_for(
+        &self,
+        project_id: &str,
+        thread_id: &str,
+    ) -> anyhow::Result<()> {
+        let paths = self.session_paths(project_id, thread_id)?;
+        // A retry may reuse this creation's completed current store, but it must never adopt an
+        // old v2 source as a new empty conversation. Broken links also count as conflicting facts.
+        for source in [
+            paths.legacy_history_database(),
+            paths.root().join("state.toml"),
+            paths.root().join("state.prev.toml"),
+        ] {
+            match tokio::fs::symlink_metadata(&source).await {
+                Ok(_) => anyhow::bail!(
+                    "new Thread identity already has a legacy history source; original data retained"
+                ),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        self.history_for(project_id, thread_id)
+            .await?
+            .initialize(crate::studio::storage::history::HistoryInitialization::New)
+            .await
     }
 
     pub(crate) async fn thread_resources(

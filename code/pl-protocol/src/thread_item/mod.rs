@@ -372,9 +372,58 @@ pub struct ThreadRawPayload {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ThreadRawItem {
+    #[serde(default, skip_serializing_if = "ThreadRawItemOrigin::is_stored")]
+    pub origin: ThreadRawItemOrigin,
     pub payloads: Vec<ThreadRawPayload>,
     pub notice: String,
     pub recorded_at: i64,
+}
+
+impl ThreadRawItem {
+    /// Producer data this host could not decode into a typed item.
+    pub fn stored(
+        payloads: Vec<ThreadRawPayload>,
+        notice: impl Into<String>,
+        recorded_at: i64,
+    ) -> Self {
+        Self {
+            origin: ThreadRawItemOrigin::Stored,
+            payloads,
+            notice: notice.into(),
+            recorded_at,
+        }
+    }
+
+    /// The runtime sentence a body-less framework control input stands for.
+    ///
+    /// It carries no payload by definition: the control never held user content, so there is nothing
+    /// a reader could expand. Consumers must not infer this shape from an empty payload list,
+    /// because a live-window placeholder is also payload-less.
+    pub fn runtime_control(notice: impl Into<String>, recorded_at: i64) -> Self {
+        Self {
+            origin: ThreadRawItemOrigin::RuntimeControl,
+            payloads: Vec::new(),
+            notice: notice.into(),
+            recorded_at,
+        }
+    }
+}
+
+/// Why one raw record exists.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ThreadRawItemOrigin {
+    /// Producer payloads kept verbatim because no typed item could be built from them.
+    #[default]
+    Stored,
+    /// A runtime sentence that replaced a framework control input with no body of its own.
+    RuntimeControl,
+}
+
+impl ThreadRawItemOrigin {
+    fn is_stored(&self) -> bool {
+        matches!(self, Self::Stored)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

@@ -187,12 +187,20 @@ const GAP_CHAT_ISOLATION: &str =
     "bot+chat identity isolation and complete actual model-request context exclusion";
 const GAP_MEDIA_INGRESS: &str = "raw media/file admission, actual native blocks, execution bytes and native-to-text cold recovery";
 const GAP_FILE_SOURCE: &str = "explicit publish_artifact: saved typed originals including 0B/unknown-extension/no-extension/Chinese-space filenames, exact bytes/digest/MIME/name readback without transcoding or suffix changes; directory creates no artifact/platform POST, Thread/resource ownership denial with toolsEnabled=false";
-const GAP_MARKDOWN: &str = "per-item public Commentary/Final cards, 4000 Unicode scalar and serialized 30000-byte bounds, explicit truncation hint and unmodified full local history (stage two)";
 const GAP_UPLOAD_OUTCOMES: &str = "stage two pending: saved-artifact upload Reject/AcceptThenDrop/Hang-cancel and cold no-replay ledger evidence; obsolete file-tool case cannot close this gap";
 const GAP_FILE_SEND_OUTCOMES: &str = "stage two pending: saved-artifact file-message Reject/AcceptThenDrop/Hang-cancel after accepted upload and cold no-replay evidence; obsolete file-tool case cannot close this gap";
 const GAP_FILE_COMPACTION: &str = "real Studio manual compact of pure text with old-Turn files, replacement/cold rebuild and shutdown cancellation";
 const GAP_COMPACT_OUTER_TIMEOUT: &str = "outer case timeout drops its future while a real public Studio compact is held; Session must close/join before peer cleanup";
-const GAP_FRONTEND_DELIVERY: &str = "stage two: saved PublicArtifact frontend delivery claim/lease/fencing and exact item/revision/saved proof, audience Pause/Close/revocation including card close and aux IM, Unknown/restart, old limited-Final migration and auto-init without seeded bindings or manual Enable";
+const GAP_FRONTEND_AUTO_INIT: &str = "first inbound auto-creates the Thread and saves the first authorization start before any input executes; no seeded binding, manual Enable or old automatic reply stands in for it";
+const GAP_PUBLIC_ITEMS: &str = "one card per real public Commentary/Final item, in-place revision update of the same item, and at least one frame observed before the Turn terminal";
+const GAP_DISPLAY_BUDGET: &str = "4000 Unicode scalar and serialized 30000-byte request bounds, separate host truncation notice outside the body, complete local history, and no automatic transcript, re-split or alternative message shape";
+const GAP_FRONTEND_ARTIFACT: &str = "saved PublicArtifact delivery: upload before the file message, a distinct message-scoped download key, exact bytes/digest, typed per-item platform facts, and zero-byte or over-budget originals kept locally as explicit blocks";
+const GAP_FRONTEND_LIFECYCLE: &str = "audience Pause catch-up on the same generation; Close, disable and trust revocation blocking every new write of the old generation including a late card settings close; one unconfirmed card operation staying Unknown across a restart without replay";
+const GAP_LEGACY_LIMITED_FINAL: &str = "legacy limited-Final migration and its negative commentary policy; frozen old card/text/file ledgers stay exit-only until a migrated-ledger stimulus exists";
+const GAP_FRONTEND_CLAIM_FENCE: &str = "delivery claim/lease/fencing across concurrent owners, backpressure, and recovery that re-checks unfinished item revisions";
+const GAP_BINDING_REPLACEMENT: &str =
+    "binding replacement closing the old authorization range and requiring an explicit new enable";
+const GAP_FIRST_CUT_ARCHIVED: &str = "first-cut and Archived Thread creation recovery boundaries";
 const GAP_UNSUPPORTED_FIRST_INPUT: &str = "unsupported-only first inbound must not create a Thread or model execution; existing post presence checks after binding do not prove this boundary";
 const GAP_PUBLICATION_REPLAY: &str = "same publish_artifact invocation/publication identity with altered original or display name needs independent public-boundary conflict evidence";
 const GAP_REAL_MEDIA_BOUNDARIES: &str = "real Feishu tenant/client rendering, native GUI and remote SSH file boundaries require separate human review";
@@ -215,18 +223,31 @@ fn append_file_gaps(gaps: &mut Vec<&'static str>, passed: &impl Fn(&str) -> bool
             gaps.push(gap);
         }
     }
+    for (case, gap) in [
+        ("conversation-frontend", GAP_FRONTEND_AUTO_INIT),
+        ("conversation-frontend", GAP_PUBLIC_ITEMS),
+        ("conversation-frontend", GAP_UNSUPPORTED_FIRST_INPUT),
+        ("conversation-frontend-budget", GAP_DISPLAY_BUDGET),
+        ("conversation-frontend-artifact", GAP_FRONTEND_ARTIFACT),
+        ("conversation-frontend-artifact", GAP_OUTGOING_CEILINGS),
+        ("conversation-frontend-lifecycle", GAP_FRONTEND_LIFECYCLE),
+        ("conversation-frontend-lifecycle", GAP_BINDING_REPLACEMENT),
+    ] {
+        if !passed(case) {
+            gaps.push(gap);
+        }
+    }
     gaps.extend([
         // Quarantined historical verdicts are never current-policy evidence,
         // even if a caller supplies an old same-name Passed result.
-        GAP_MARKDOWN,
         GAP_UPLOAD_OUTCOMES,
         GAP_FILE_SEND_OUTCOMES,
-        GAP_FRONTEND_DELIVERY,
-        GAP_UNSUPPORTED_FIRST_INPUT,
+        GAP_LEGACY_LIMITED_FINAL,
+        GAP_FRONTEND_CLAIM_FENCE,
+        GAP_FIRST_CUT_ARCHIVED,
         GAP_PUBLICATION_REPLAY,
         GAP_REAL_MEDIA_BOUNDARIES,
         GAP_FILE_SOURCE_CHILD_PROJECT,
-        GAP_OUTGOING_CEILINGS,
         GAP_PRE_MESSAGE_CANCEL,
     ]);
 }

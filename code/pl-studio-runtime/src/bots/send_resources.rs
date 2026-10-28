@@ -4,7 +4,7 @@ use super::BotRuntime;
 use super::commands::{FrozenSendClaim, send_claim_freeze_bytes};
 use super::occupancy::OccupancyBudget;
 use super::protocol::error::{FeishuError, FeishuErrorKind};
-use super::send::{SendPlan, SendSource, plan_file, plan_markdown};
+use super::send::{SendPlan, plan_markdown, plan_public_artifact};
 use super::send_service::{SendAdmission, SendRequest, into_record};
 use super::storage::{BotStateStore, SendRecord, SendResourceReferenceCursor};
 use crate::resource_store::{
@@ -23,17 +23,16 @@ const DELETE_WORK: usize = 512;
 
 pub(super) enum SendInput {
     Markdown(String),
-    File {
-        request_hash: String,
-        source: Box<SendSource>,
-        filename: String,
+    PublicArtifact {
+        scope: Box<super::storage::publication::DeliveryScope>,
+        artifact: Box<super::storage::publication::SavedArtifact>,
         bytes: Arc<[u8]>,
     },
 }
 
 impl SendInput {
     fn needs_archive(&self) -> bool {
-        matches!(self, Self::File { .. })
+        matches!(self, Self::PublicArtifact { .. })
     }
 
     async fn plan(
@@ -45,17 +44,19 @@ impl SendInput {
     ) -> Result<SendPlan, FeishuError> {
         match self {
             Self::Markdown(text) => plan_markdown(operation, bot, chat, text),
-            Self::File {
-                request_hash,
-                source,
-                filename,
+            Self::PublicArtifact {
+                scope,
+                artifact,
                 bytes,
             } => {
+                if scope.bot_id != bot || scope.chat_id != chat {
+                    return Err(super::send_service::conflict());
+                }
                 let resource = store
-                    .retain_bytes_with_receipt(bytes, "application/octet-stream")
+                    .retain_bytes_with_receipt(bytes, &artifact.resource().media_type)
                     .await
                     .map_err(FeishuError::send_resource)?;
-                plan_file(operation, request_hash, *source, filename, resource)
+                plan_public_artifact(operation, &scope, artifact.as_ref(), resource)
             }
         }
     }
@@ -249,6 +250,13 @@ struct ProductionClaim {
 }
 
 impl BotRuntime {
+    pub(super) fn send_resources(&self, bot_id: &str) -> FileResourceStore {
+        FileResourceStore::beneath(
+            self.inner.paths.home().to_owned(),
+            self.inner.paths.bot_dir(bot_id).join("send-resources"),
+        )
+    }
+
     pub(super) async fn maintain_send_resources(&self, bot_id: &str) -> Result<(), FeishuError> {
         let owner = self.ensure_record(bot_id).await?;
         let gate = owner.send_resources.clone();
@@ -266,7 +274,7 @@ impl BotRuntime {
         request: SendRequest,
         preparation: SendAdmission,
         cancel: CancellationToken,
-        mut budget: OccupancyBudget,
+        budget: &mut OccupancyBudget,
     ) -> Result<ClaimedSend, FeishuError> {
         FileResourceStore::preflight_directory_sync().map_err(FeishuError::send_resource)?;
         let owner = self.ensure_record(&request.bot_id).await?;
@@ -296,7 +304,7 @@ impl BotRuntime {
                     &production.chat_id,
                 )
                 .await?;
-            return self.claim_plan_owned(production, plan, &mut budget).await;
+            return self.claim_plan_owned(production, plan, budget).await;
         }
         let mut resources = owner.send_resources.lock().await;
         let mut maintenance_reserved = false;
@@ -331,7 +339,7 @@ impl BotRuntime {
                 )
             })?;
             self.check_send_active(&production.cancel)?;
-            self.claim_plan_owned(production, plan, &mut budget)
+            self.claim_plan_owned(production, plan, budget)
                 .await
                 .map(|claimed| (claimed, retention))
         }
@@ -458,10 +466,83 @@ fn maintenance_pending() -> FeishuError {
 
 #[cfg(all(test, unix))]
 mod persistence_fault_tests {
-    use super::super::send::{SendContent, SendSource};
+    use super::super::send::SendContent;
+    use super::super::storage::UploadFact;
+    use super::super::storage::publication::{
+        DeliveryScope, DeliveryScopeKey, DeliveryScopeOrigin, SavedArtifact,
+    };
     use super::*;
     use crate::resource_store::ResourceStoreError;
-    use pl_core::context::ResourceReader;
+    use pl_core::context::{ResourceReader, ResourceReference};
+
+    const ORIGINAL_MEDIA_TYPE: &str = "application/x-studio-original";
+
+    // These fixtures exercise real PublicArtifact archive/ledger/GC persistence only. The
+    // metadata shape is passed through the existing Saved constructor; no audience authorization,
+    // publication claim or HTTP is established by this resource-lifecycle test.
+    fn public_artifact_scope() -> DeliveryScope {
+        let authorization = pl_protocol::BotAuthorizationId {
+            bot_id: "bot".into(),
+            chat_id: "chat".into(),
+            generation: 1,
+        };
+        DeliveryScope {
+            key: DeliveryScopeKey::Frontend {
+                authorization: authorization.clone(),
+            },
+            bot_id: "bot".into(),
+            chat_id: "chat".into(),
+            thread_id: "thread".into(),
+            app_id: "app".into(),
+            project_id: "project".into(),
+            creation_id: "creation".into(),
+            binding_revision: 1,
+            origin: DeliveryScopeOrigin::Frontend { authorization },
+            needs_recovery: false,
+        }
+    }
+
+    fn public_artifact_input(
+        scope: &DeliveryScope,
+        item_id: &str,
+        ordinal: u64,
+        original: ResourceReference,
+        bytes: Arc<[u8]>,
+    ) -> Result<SendInput, FeishuError> {
+        let metadata = crate::studio::TimelineItemMetadata {
+            shell: pl_protocol::ThreadItem::new(
+                item_id.into(),
+                scope.thread_id.clone(),
+                "turn-original".into(),
+                ordinal,
+                1,
+                1,
+                1,
+                pl_protocol::ThreadItemState::PublicArtifact(
+                    pl_protocol::ThreadPublicArtifactItem {
+                        publication_id: format!("publication-{item_id}"),
+                        tool_call_id: format!("producer-{item_id}"),
+                        display_name: format!("{item_id}.bin"),
+                        published_at: 1,
+                        resource: pl_protocol::ThreadArtifactResource {
+                            id: original.id().into(),
+                            content_digest: original.content_digest().into(),
+                            byte_len: original.byte_len(),
+                            media_type: original.media_type().into(),
+                        },
+                    },
+                ),
+            ),
+            fields: vec![],
+            saved: true,
+            lifecycle: pl_protocol::TimelineLifecycle::Terminal,
+        };
+        Ok(SendInput::PublicArtifact {
+            scope: Box::new(scope.clone()),
+            artifact: Box::new(SavedArtifact::from_metadata(&metadata)?),
+            bytes,
+        })
+    }
 
     /// Crash recovery may span maintenance budgets. Once Clean is proven, an exact new committed
     /// resource must not be stranded by another full-history scan after its claim succeeds.
@@ -472,6 +553,11 @@ mod persistence_fault_tests {
         let root = directory.path().join("send-resources");
         let ledger_path = directory.path().join("state.sqlite");
         let ledger = BotStateStore::new(ledger_path.clone());
+        let originals = FileResourceStore::beneath(
+            directory.path().to_owned(),
+            directory.path().join("thread-originals"),
+        );
+        let scope = public_artifact_scope();
         let mut resources = SendResources::new(FileResourceStore::beneath(
             directory.path().to_owned(),
             root.clone(),
@@ -485,36 +571,16 @@ mod persistence_fault_tests {
             "platform capability is known before the first archive"
         );
         let mut historical = Vec::new();
-        let source = SendSource {
-            bot_id: "bot".into(),
-            chat_id: "chat".into(),
-            app_id: "app".into(),
-            project_id: "project".into(),
-            thread_id: "thread".into(),
-            input_id: "input".into(),
-            original_input_id: "input".into(),
-            message_id: "message".into(),
-            open_id: "open".into(),
-            chat_kind: "direct".into(),
-            creation_id: "thread".into(),
-            binding_revision: 1,
-        };
         for index in 0_u32..513 {
             let operation = format!("persisted-{index:04}");
-            let retained = resources
-                .store
-                .retain_bytes_with_receipt(
-                    Arc::from(index.to_le_bytes().to_vec()),
-                    "application/octet-stream",
-                )
+            let bytes: Arc<[u8]> = Arc::from(index.to_le_bytes());
+            let original = originals
+                .retain_bytes(bytes.clone(), ORIGINAL_MEDIA_TYPE)
                 .await?;
-            let plan = plan_file(
-                &operation,
-                operation.clone(),
-                source.clone(),
-                "file.bin".into(),
-                retained,
-            )?;
+            let plan =
+                public_artifact_input(&scope, &operation, u64::from(index) + 1, original, bytes)?
+                    .plan(&resources.store, &operation, "bot", "chat")
+                    .await?;
             if let SendContent::File { resource, .. } = &plan.segments[0] {
                 historical.push(resource.clone());
             }
@@ -534,16 +600,21 @@ mod persistence_fault_tests {
             recovery_jobs > 1,
             "fixture must exceed both recovery work budgets"
         );
+        let new_bytes: Arc<[u8]> = Arc::from(b"new complete original".as_slice());
+        let new_original = originals
+            .retain_bytes(new_bytes.clone(), ORIGINAL_MEDIA_TYPE)
+            .await?;
         resources.sweep = Some(SweepProgress::default());
         resources
             .store
             .inject_directory_sync_failures_after_unlink(1);
-        let failed_archive = SendInput::File {
-            request_hash: "new-request".into(),
-            source: Box::new(source.clone()),
-            filename: "new.bin".into(),
-            bytes: Arc::from(b"new complete original".as_slice()),
-        }
+        let failed_archive = public_artifact_input(
+            &scope,
+            "new-item",
+            514,
+            new_original.clone(),
+            new_bytes.clone(),
+        )?
         .plan(&resources.store, "new-send", "bot", "chat")
         .await;
         let error = match failed_archive {
@@ -573,22 +644,22 @@ mod persistence_fault_tests {
             513,
             "failed preclaim archive orphan is removed"
         );
-        for original in &historical {
-            assert!(
-                resources
-                    .store
-                    .read(original.clone(), Default::default())
-                    .await
-                    .is_ok()
-            );
+        for (index, original) in historical.iter().enumerate() {
+            assert_eq!(original.media_type(), ORIGINAL_MEDIA_TYPE);
+            let retained = resources
+                .store
+                .read(original.clone(), Default::default())
+                .await?;
+            assert_eq!(retained.as_ref(), (index as u32).to_le_bytes());
         }
         resources.sweep = Some(SweepProgress::default());
-        let plan = SendInput::File {
-            request_hash: "new-request".into(),
-            source: Box::new(source),
-            filename: "new.bin".into(),
-            bytes: Arc::from(b"new complete original".as_slice()),
-        }
+        let plan = public_artifact_input(
+            &scope,
+            "new-item",
+            514,
+            new_original.clone(),
+            new_bytes.clone(),
+        )?
         .plan(&resources.store, "new-send", "bot", "chat")
         .await?;
         let retention = plan.retention.ok_or("preclaim retention receipt missing")?;
@@ -604,18 +675,26 @@ mod persistence_fault_tests {
             !resources.needs_maintenance(),
             "known committed producer must be ready for delivery, not require replay of a NotStarted ledger"
         );
-        assert!(
-            resources
-                .store
-                .read(reference.clone(), Default::default())
-                .await
-                .is_ok()
-        );
+        let archived = resources
+            .store
+            .read(reference.clone(), Default::default())
+            .await?;
+        let original = originals.read(new_original, Default::default()).await?;
+        assert_eq!(archived, original);
+        assert_eq!(archived, new_bytes);
+        assert_eq!(reference.media_type(), ORIGINAL_MEDIA_TYPE);
         let stored = ledger
             .load_send("new-send")
             .await?
             .ok_or("new claim was lost")?;
         assert_eq!(stored.content_hash, record.content_hash);
+        assert_eq!(stored.segments, record.segments);
+
+        // Persist an actual in-flight ledger stage before interruption. This is only a resource
+        // pin/recovery fixture, not evidence that a platform request or authorization occurred.
+        let mut in_flight = stored;
+        in_flight.segments[0].upload = Some(UploadFact::InFlight);
+        ledger.save_send(&in_flight).await?;
 
         // A later process interruption leaves an unclaimed original beside real retained history.
         let before = std::fs::read_dir(&root)?
@@ -692,7 +771,15 @@ mod persistence_fault_tests {
         );
         drop(ledger);
         let ledger = BotStateStore::new(ledger_path);
-        assert!(ledger.load_send("new-send").await?.is_some());
+        assert_eq!(
+            ledger
+                .load_send("new-send")
+                .await?
+                .ok_or("in-flight claim was lost")?
+                .segments[0]
+                .upload,
+            Some(UploadFact::InFlight),
+        );
         for attempt in 0..150 {
             match resources.maintain(&ledger).await {
                 Err(error) if error.kind() == FeishuErrorKind::Busy && attempt < 149 => continue,
@@ -722,12 +809,9 @@ mod persistence_fault_tests {
                 .await
                 .is_err()
         );
-        assert!(
-            resources
-                .store
-                .read(reference, Default::default())
-                .await
-                .is_ok()
+        assert_eq!(
+            resources.store.read(reference, Default::default()).await?,
+            new_bytes
         );
         for original in historical {
             assert!(
