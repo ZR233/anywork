@@ -700,7 +700,14 @@ class ModeEditorJourney {
           workspaceOf(snapshot)?['threadId'] == threadId && settled(snapshot),
       'cold restored Thread',
     );
-    final state = await editor();
+    // Content identity may arrive before the independent status baseline.
+    // Wait for the canonical workflow fact before asserting its saved fields.
+    final state = await waitEditor(
+      (state) =>
+          state['threadId'] == threadId &&
+          (state['run'] as Map?)?['runId'] is String,
+      'cold restored workflow snapshot',
+    );
     require(
       !(state['catalog'] as List).any((mode) => mode['id'] == _modeId),
       'snapshot absent from global catalog',
