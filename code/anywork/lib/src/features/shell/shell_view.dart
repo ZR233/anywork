@@ -207,18 +207,19 @@ HeaderView headerView(Ref ref) {
   );
 }
 
-/// 当前选中会话的输入区事实。草稿仍由 interaction 域覆盖；这里只提供 canonical 会话。
+/// 目的地会话的输入区事实。草稿仍由 interaction 域覆盖；这里只提供 canonical 会话。
 ///
 /// 不在这里持有 shell 租约：pane/预览也会观察它，不能因此拉起真实 Bridge。
 @riverpod
-AgentWorkspaceView? shellComposerWorkspace(Ref ref) {
-  final selection = ref.watch(selectionStoreProvider);
-  final threadId = selection.selectedThreadId;
-  if (threadId == null) return null;
+AgentWorkspaceView? conversationWorkspace(
+  Ref ref,
+  String threadId, {
+  bool needsOpen = false,
+}) {
   final directory = ref.watch(threadDirectoryStoreProvider);
   final threads = [...directory.window.threads, ...directory.overlayThreads];
   ThreadSessionState? session;
-  if (!selection.needsOpen) {
+  if (!needsOpen) {
     session = ref.watch(threadSessionStoreProvider(threadId));
   }
   final thread = threadById(threads, threadId) ?? session?.workspace?.thread;
@@ -290,10 +291,6 @@ class ConversationActivityInput {
 
 @riverpod
 ConversationActivityInput? conversationActivityInput(Ref ref, String threadId) {
-  final selection = ref.watch(selectionStoreProvider);
-  if (selection.needsOpen || selection.selectedThreadId != threadId) {
-    return null;
-  }
   final session = ref.watch(threadSessionStoreProvider(threadId));
   if (session.workspace == null && !session.hasSnapshot) return null;
   return ConversationActivityInput(

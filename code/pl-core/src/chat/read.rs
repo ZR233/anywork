@@ -12,8 +12,8 @@ use crate::chat::{
     ChatPage, ChatPageRequest, ChatTail, ChatTailBaseline, DEFAULT_PAGE_ITEMS, PAGE_PREVIEW_BYTES,
     item::merge_items,
     session::{
-        RECENT_BYTES, RECENT_ITEMS, Session, TimelineState, resident_item,
-        unreadable_preview_boundary, withdrawals_since,
+        RECENT_BYTES, RECENT_ITEMS, Session, TimelineState, reconcile_read, resident_item,
+        unreadable_preview_boundary,
     },
 };
 
@@ -52,8 +52,9 @@ impl Session {
             let mut memory = memory;
             // Reconcile both captured references and the captured unreadable frontier;
             // neither can survive a withdrawal or an unprovable publication window.
-            if !memory.is_empty() || frontier.is_some() {
-                let withdrawn = withdrawals_since(state, since)?;
+            if !memory.is_empty() || frontier.is_some() || !stored.items.is_empty() {
+                let withdrawn =
+                    reconcile_read(state, since, stored.items.iter().chain(memory.iter()))?;
                 if frontier
                     .as_ref()
                     .is_some_and(|boundary| withdrawn.contains(boundary.item_id.as_str()))
@@ -137,8 +138,9 @@ impl Session {
         let proven_older = stored.has_older;
         let (version, candidates, preview_gap) = self.with_timeline(|state| {
             let mut memory = memory;
-            if !memory.is_empty() || frontier.is_some() {
-                let withdrawn = withdrawals_since(state, since)?;
+            if !memory.is_empty() || frontier.is_some() || !stored.items.is_empty() {
+                let withdrawn =
+                    reconcile_read(state, since, stored.items.iter().chain(memory.iter()))?;
                 if frontier
                     .as_ref()
                     .is_some_and(|boundary| withdrawn.contains(boundary.item_id.as_str()))

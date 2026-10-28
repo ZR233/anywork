@@ -514,8 +514,9 @@ class _Footer extends StatelessWidget {
             fit: FlexFit.loose,
             child: _ConversationActivityHost(threadId: threadId),
           ),
-          _ComposerHost(compact: compact),
-          _StatusBarHost(
+          ComposerDockConnector(threadId: threadId, compact: compact),
+          ThreadStatusConnector(
+            threadId: threadId,
             showTodo: showTodo,
             todoExpanded: todoExpanded,
             onToggleTodo: onToggleTodo,
@@ -700,48 +701,5 @@ class _ConversationActivityHostState
       // Driver 可观察的是“实际展开态”，不是 `expandable` 的“可展开能力”。
       onExpandedChanged: StudioDriverState.publishActivityExpanded,
     );
-  }
-}
-
-class _StatusBarHost extends ConsumerWidget {
-  const _StatusBarHost({
-    required this.showTodo,
-    required this.todoExpanded,
-    required this.onToggleTodo,
-    this.showPlanEntry = false,
-    this.onOpenPlan,
-  });
-
-  final bool showTodo;
-  final bool todoExpanded;
-  final VoidCallback? onToggleTodo;
-  final bool showPlanEntry;
-  final VoidCallback? onOpenPlan;
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final threadId = ref.watch(shellSelectionProvider).selectedThreadId;
-    if (threadId == null) return const SizedBox.shrink();
-    return ThreadStatusConnector(
-      threadId: threadId,
-      showTodo: showTodo,
-      todoExpanded: todoExpanded,
-      onToggleTodo: onToggleTodo,
-      showPlanEntry: showPlanEntry,
-      onOpenPlan: onOpenPlan,
-    );
-  }
-}
-
-class _ComposerHost extends ConsumerWidget {
-  const _ComposerHost({required this.compact});
-
-  final bool compact;
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final threadId = ref.watch(shellSelectionProvider).selectedThreadId;
-    if (threadId == null) return const SizedBox.shrink();
-    return ComposerDockConnector(threadId: threadId, compact: compact);
   }
 }

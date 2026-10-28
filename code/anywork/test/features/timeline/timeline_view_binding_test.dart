@@ -1826,7 +1826,7 @@ void main() {
         descriptor: ConversationToolDescriptor(
           invocation: const ConversationToolInvocation(
             toolCallId: 'tool-1',
-            name: 'read_file',
+            name: 'stat_path',
           ),
           state: ConversationToolSucceeded(
             completedAt: timestamp.add(const Duration(seconds: 8)),
@@ -1907,13 +1907,13 @@ void main() {
     },
   );
 
-  testWidgets('读取文件以状态和文件名单行展示，详情只在点击后构建', (tester) async {
+  testWidgets('只读工具 stat_path 以状态和文件名单行展示，详情只在点击后构建', (tester) async {
     final lease = leaseFor(
       tester,
       items: [
         toolItem(
           'read-1',
-          name: 'read_file',
+          name: 'stat_path',
           arguments: '{"path":"/workspace/src/target.dart"}',
         ),
       ],
@@ -3177,7 +3177,7 @@ _openDetailSession(
       ThreadDirectoryPage(threads: [_thread()], revision: 1),
       revision: 1,
     );
-    client.workspace.selectThread('thread', projectId: 'project');
+    client.selection.selectThread(threadId: 'thread', projectId: 'project');
     client.conversations.setVisibleThread('thread');
     owner.select('thread');
     await client.conversations.session('thread').content.ready;

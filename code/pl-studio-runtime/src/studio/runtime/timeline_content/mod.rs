@@ -366,7 +366,7 @@ impl StudioRuntime {
         item_id: &str,
         query: &TimelineDetailQuery,
     ) -> Result<TimelineDetailChunk> {
-        self.timeline_projection_reader(thread_id)
+        self.timeline_reader(thread_id)
             .await?
             .read_detail(item_id, query)
             .await

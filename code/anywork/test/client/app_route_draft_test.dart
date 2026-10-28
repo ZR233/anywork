@@ -1,6 +1,7 @@
 import 'support/test_statistics_feed.dart';
 
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:anywork/src/app/anywork_app.dart';
 import 'package:anywork/src/app/app_graph.dart';
@@ -9,7 +10,9 @@ import 'package:anywork/src/features/settings/statistics/view_models/statistics_
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/platform/host_app_icons.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
-import 'package:anywork/src/shared/studio_routes.dart';
+import 'package:anywork/src/shared/studio_driver_projection.dart';
+import 'package:anywork/src/shared/studio_driver_state.dart';
+import 'package:anywork/src/domain/models/timeline_commands.dart';
 import 'package:anywork_client/studio_client.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -19,6 +22,8 @@ import 'package:go_router/go_router.dart';
 import 'support/recording_demo_transport.dart';
 import 'support/conversation_fixtures.dart';
 import 'support/pump_client_future.dart';
+
+import 'package:anywork/src/app/routing/app_route.dart';
 
 void main() {
   testWidgets(
@@ -342,7 +347,9 @@ void main() {
             'real bot overview',
           );
           await tester.pumpAndSettle();
-          await tester.ensureVisible(find.byKey(StudioDriverKeys.botsRow(botId)));
+          await tester.ensureVisible(
+            find.byKey(StudioDriverKeys.botsRow(botId)),
+          );
           await tester.tap(find.byKey(StudioDriverKeys.botsRow(botId)));
           await pumpClientUntil(
             tester,
@@ -356,46 +363,158 @@ void main() {
           final router = GoRouter.of(
             tester.element(find.byKey(StudioDriverKeys.botsBack)),
           );
-          expect(router.routerDelegate.state.name, StudioRoutes.botDetails);
+          expect(router.routerDelegate.state.name, BotDetailsRoute.name);
           expect(router.routerDelegate.state.pathParameters, {'botId': botId});
           expect(graph.client.conversations.visibleThreadId.value, isNull);
+          // Bound conversations can be outside the currently loaded directory page.
+          final directory = graph.client.threadDirectory.state;
+          graph.client.threadDirectory.state = directory.copyWith(
+            window: const ThreadDirectoryWindow(
+              nextCursor: 'more-threads',
+              hasMore: true,
+            ),
+            overlayThreads: const [],
+          );
+          expect(graph.client.findThread('thread-alt'), isNull);
+          // A bound route owns its target, independently of the hidden studio.
+          final budget = graph.client.budget;
+          final heldReadModels = <ResourcePermit>[
+            for (
+              var slot = budget.used(ResourceKind.readModel);
+              slot < budget.capacities[ResourceKind.readModel]!;
+              slot++
+            )
+              budget.acquire(
+                ResourceKind.readModel,
+                owner: 'route-admission-fixture',
+              ),
+          ];
+          addTearDown(() {
+            for (final permit in heldReadModels) {
+              permit.release();
+            }
+          });
+          final feedsBeforeAdmission = transport.feeds.length;
           await tester.tap(
             find.byKey(StudioDriverKeys.botsConversation('route-chat')),
           );
+          await tester.pumpAndSettle();
+          expect(
+            graph.timeline.source.value?.connection,
+            TimelineConnectionPhase.failed,
+          );
+          expect(
+            graph.timeline.source.value?.connectionError,
+            isA<ResourceBudgetExceeded>(),
+          );
+          expect(graph.client.conversations.visibleThreadId.value, isNull);
+          expect(graph.client.drafts.existingComposer('thread-alt'), isNull);
+          expect(tester.takeException(), isNull);
+          final failedFacts = queryStudioDriverFacts(
+            graph.client,
+            timeline: graph.timeline,
+            accountsRepository: graph.accounts,
+            modelsRepository: graph.models,
+            usageRepository: graph.accountUsage,
+            acpService: graph.acp,
+          );
+          expect(failedFacts.selectedThreadId, 'thread-main');
+          expect(failedFacts.presentationThreadId, 'thread-alt');
+          expect(failedFacts.visibleThreadId, isNull);
+          expect(failedFacts.timeline!.threadId, 'thread-alt');
+          expect(failedFacts.workspace, isNull);
+          // A released permit must not resurrect a route that has already left.
+          await tester.tap(find.byKey(StudioDriverKeys.botsChatBack));
+          await tester.pumpAndSettle();
+          heldReadModels.removeLast().release();
+          await tester.pumpAndSettle();
+          expect(graph.timeline.source.value, isNull);
+          expect(transport.feeds.length, feedsBeforeAdmission);
+          expect(graph.client.drafts.existingComposer('thread-alt'), isNull);
+          graph.client.selection.beginNewThread();
+          heldReadModels.add(
+            budget.acquire(
+              ResourceKind.readModel,
+              owner: 'route-admission-fixture',
+            ),
+          );
+          await tester.tap(
+            find.byKey(StudioDriverKeys.botsConversation('route-chat')),
+          );
+          await tester.pumpAndSettle();
+          expect(
+            graph.timeline.source.value?.connectionError,
+            isA<ResourceBudgetExceeded>(),
+          );
+          final refused = jsonDecode(
+            StudioDriverState.snapshotJson(
+              observed: queryStudioDriverFacts(
+                graph.client,
+                timeline: graph.timeline,
+                accountsRepository: graph.accounts,
+                modelsRepository: graph.models,
+                usageRepository: graph.accountUsage,
+                acpService: graph.acp,
+              ),
+            ),
+          ) as Map;
+          expect(refused['navigation']['selectedThreadId'], isNull);
+          expect(refused['navigation']['presentationThreadId'], 'thread-alt');
+          expect(refused['navigation']['isStartPage'], isFalse);
+          // Real capacity release resumes the current target without route retry state.
+          for (final permit in heldReadModels) {
+            permit.release();
+          }
           await pumpClientUntil(
             tester,
             () =>
                 graph.client.conversations.visibleThreadId.value ==
-                    'thread-main' &&
-                graph.timeline.lease('thread-main') != null &&
-                session.content.lastDeliveredFrame != null,
+                    'thread-alt' &&
+                graph.timeline.lease('thread-alt') != null &&
+                graph.client.conversations
+                        .existingSession('thread-alt')
+                        ?.content
+                        .lastDeliveredFrame !=
+                    null,
             'registered bot chat receives a fresh baseline',
           );
           await tester.pumpAndSettle();
           final botFeed = transport.feeds.last;
-          final botLease = graph.timeline.lease('thread-main')!;
+          final botLease = graph.timeline.lease('thread-alt')!;
           expect(botLease, isNot(same(newLease)));
-          expect(
-            router.routerDelegate.state.name,
-            StudioRoutes.botConversation,
-          );
+          expect(router.routerDelegate.state.name, BotConversationRoute.name);
           expect(router.routerDelegate.state.pathParameters, {
             'botId': botId,
             'chatId': 'route-chat',
-            'threadId': 'thread-main',
+            'threadId': 'thread-alt',
           });
-          expect(_composerText(tester), 'Thread draft entered before Settings');
-          final currentPage = router.routerDelegate.state.pageKey;
-          await StudioRoutes.openBotConversation(
-            tester.element(find.byKey(StudioDriverKeys.botsChatBack)),
-            botId: botId,
-            chatId: 'route-chat',
-            threadId: 'thread-main',
+          expect(_composerText(tester), isEmpty);
+          await tester.enterText(
+            find.byKey(StudioDriverKeys.composerInput),
+            'Bot draft follows route target',
           );
-          await tester.pumpAndSettle();
-          expect(router.routerDelegate.state.pageKey, currentPage);
-          expect(graph.timeline.lease('thread-main'), same(botLease));
-
+          await tester.pump();
+          final facts = queryStudioDriverFacts(
+            graph.client,
+            timeline: graph.timeline,
+            accountsRepository: graph.accounts,
+            modelsRepository: graph.models,
+            usageRepository: graph.accountUsage,
+            acpService: graph.acp,
+          );
+          expect(facts.timeline!.threadId, 'thread-alt');
+          expect(facts.workspace!.threadId, 'thread-alt');
+          expect(facts.workspacesByThread, contains('thread-alt'));
+          expect(facts.threadComposer.draft, 'Bot draft follows route target');
+          final observed = jsonDecode(
+            StudioDriverState.snapshotJson(observed: facts),
+          ) as Map;
+          expect(observed['navigation']['visibleThreadId'], 'thread-alt');
+          expect(observed['navigation']['selectedThreadId'], isNull);
+          expect(observed['navigation']['isStartPage'], isFalse);
+          expect(graph.client.findThread('thread-alt'), isNull);
+          expect(find.byKey(StudioDriverKeys.sessionMode), findsOneWidget);
+          expect(graph.client.selection.state.selectedThreadId, isNull);
           unawaited(
             showDialog<void>(
               context: tester.element(find.byKey(StudioDriverKeys.timeline)),
@@ -403,7 +522,7 @@ void main() {
             ),
           );
           await tester.pumpAndSettle();
-          expect(graph.timeline.lease('thread-main'), same(botLease));
+          expect(graph.timeline.lease('thread-alt'), same(botLease));
           expect(botFeed.requestCloseCalls, 0);
           Navigator.of(tester.element(find.byType(AlertDialog))).pop();
           await tester.pumpAndSettle();
@@ -416,11 +535,8 @@ void main() {
           );
           await tester.pumpAndSettle();
           expect(graph.client.conversations.visibleThreadId.value, isNull);
-          expect(graph.timeline.lease('thread-main'), isNull);
-          expect(
-            router.routerDelegate.state.name,
-            StudioRoutes.botPlatformTools,
-          );
+          expect(graph.timeline.lease('thread-alt'), isNull);
+          expect(router.routerDelegate.state.name, BotPlatformToolsRoute.name);
           expect(router.routerDelegate.state.pathParameters, {
             'botId': botId,
             'chatId': 'route-chat',
@@ -429,13 +545,18 @@ void main() {
           await pumpClientUntil(
             tester,
             () =>
-                graph.timeline.lease('thread-main') != null &&
-                session.content.lastDeliveredFrame != null,
+                graph.timeline.lease('thread-alt') != null &&
+                graph.client.conversations
+                        .existingSession('thread-alt')
+                        ?.content
+                        .lastDeliveredFrame !=
+                    null,
             'returning from platform tools acquires a new bot baseline',
           );
           await tester.pumpAndSettle();
+          expect(_composerText(tester), 'Bot draft follows route target');
           final returnedFeed = transport.feeds.last;
-          expect(graph.timeline.lease('thread-main'), isNot(same(botLease)));
+          expect(graph.timeline.lease('thread-alt'), isNot(same(botLease)));
           await tester.tap(find.byKey(StudioDriverKeys.botsChatBack));
           await pumpClientUntil(
             tester,
@@ -444,32 +565,49 @@ void main() {
           );
           await tester.pumpAndSettle();
           expect(graph.client.conversations.visibleThreadId.value, isNull);
-          expect(graph.timeline.lease('thread-main'), isNull);
+          expect(graph.timeline.lease('thread-alt'), isNull);
           expect(composer.stamp, composerStamp);
-          expect(router.routerDelegate.state.name, StudioRoutes.botDetails);
+          expect(router.routerDelegate.state.name, BotDetailsRoute.name);
           unawaited(
-            StudioRoutes.openBotConversation(
-              tester.element(find.byKey(StudioDriverKeys.botsBack)),
+            BotConversationRoute(
               botId: botId,
               chatId: 'route-chat',
               threadId: 'missing-thread',
-            ),
+            ).push<void>(tester.element(find.byKey(StudioDriverKeys.botsBack))),
           );
+          await tester.pumpAndSettle();
           await pumpClientUntil(
             tester,
             () => find
-                .byKey(const ValueKey('bot-conversation-unavailable'))
+                .byKey(StudioDriverKeys.timelineRetryConnection)
                 .evaluate()
                 .isNotEmpty,
             'unavailable route does not display the previous selection',
           );
-          expect(graph.client.conversations.visibleThreadId.value, isNull);
+          expect(
+            graph.client.conversations.visibleThreadId.value,
+            'missing-thread',
+          );
           expect(find.byKey(StudioDriverKeys.timeline), findsNothing);
+          expect(
+            graph.client.drafts.existingComposer('missing-thread'),
+            isNull,
+          );
           await tester.tap(find.byKey(StudioDriverKeys.botsChatBack));
           await tester.pumpAndSettle();
           await tester.tap(find.byKey(StudioDriverKeys.botsBack));
           await tester.pumpAndSettle();
-          expect(router.routerDelegate.state.name, StudioRoutes.settings);
+          expect(router.routerDelegate.state.name, SettingsRoute.name);
+          expect(
+            graph.client.drafts.existingComposer('missing-thread'),
+            isNull,
+          );
+          graph.client.threadDirectory.state = directory;
+          graph.client.selection.selectThread(
+            threadId: 'thread-main',
+            projectId: projectId,
+          );
+          expect(graph.client.conversations.visibleThreadId.value, isNull);
         },
       );
 
@@ -499,6 +637,7 @@ void main() {
       expect(connection.joined.isCompleted, isTrue);
       expect(newConnection.joined.isCompleted, isTrue);
       expect(transport.feeds.every((feed) => feed.joined.isCompleted), isTrue);
+      expect(graph.client.budget.usage, isEmpty);
       expect(tester.takeException(), isNull);
     },
   );
@@ -553,7 +692,7 @@ final class _RouteTurnTransport extends RecordingDemoTransport {
           botId: request.botId,
           chatId: 'route-chat',
           projectId: botProjectId,
-          threadId: 'thread-main',
+          threadId: 'thread-alt',
           revision: 1,
           state: BotConversationThreadState.bound,
         ),

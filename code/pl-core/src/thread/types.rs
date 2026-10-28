@@ -232,6 +232,10 @@ pub enum ModelExecutionPhase {
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ThreadSnapshot {
+    /// Live publication order within this owner incarnation, including previews.
+    /// Independent of committed effects and never persisted or compared across owners.
+    #[serde(skip)]
+    pub observation_revision: u64,
     /// Live executor retirement owned by this Thread; never part of a checkpoint.
     #[serde(skip)]
     pub tool_cleanup: ToolCleanupState,
@@ -516,6 +520,7 @@ impl ThreadSnapshot {
     /// terminal facts with [`Self::retain_live_facts`], while the effect-matched transfer state
     /// keeps them so a history writer can project its own effect.
     pub(crate) fn clear_ephemeral(&mut self) {
+        self.observation_revision = 0;
         self.model_progress = None;
         self.model_execution = None;
         self.tool_progress.clear();
@@ -1134,8 +1139,15 @@ pub enum ModelOutputViolation {
     AttemptIdentity { expected: String, actual: String },
     #[error("model context revision mismatch: expected {expected}, got {actual}")]
     ContextRevision { expected: u64, actual: u64 },
+    #[error("frozen tool execution authorization was revoked during model execution")]
+    ToolPermissionRevoked,
     #[error("model called unknown tool {tool_id} (call {call_id})")]
     UnknownTool { tool_id: String, call_id: String },
+    #[error("model tool call {call_id} was rejected: {rejection}")]
+    ToolCallRejected {
+        call_id: String,
+        rejection: crate::model::ModelToolCallRejection,
+    },
     #[error("model returned an empty tool call identity")]
     EmptyCallIdentity,
     #[error("model reused tool call identity {call_id}")]
@@ -1144,6 +1156,19 @@ pub enum ModelOutputViolation {
         "tools {tool_ids:?} require an exclusive response; no tools in this batch were executed"
     )]
     SoloBatch { tool_ids: Vec<String> },
+}
+
+impl ModelOutputViolation {
+    /// Whether this rejection can use the Turn's shared, bounded model-output correction budget.
+    pub(super) fn is_correctable(&self) -> bool {
+        matches!(self, Self::ToolCallRejected { .. } | Self::SoloBatch { .. })
+    }
+
+    pub(super) fn correction_feedback(&self) -> String {
+        format!(
+            "No tools in this batch were executed. This batch produced no tool side effects. Rejection: {self}. Generate a corrected response using the committed results. Select tool names exactly from the declarations in this request and follow their function parameter schemas or custom input formats. Do not repeat completed tool calls."
+        )
+    }
 }
 
 /// Whether a call completed inside the delivery window or remains owned by the Thread.

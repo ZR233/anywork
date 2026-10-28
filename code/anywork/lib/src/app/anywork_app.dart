@@ -12,12 +12,12 @@ import '../presentation/providers/studio_update_controller.dart';
 import '../l10n/app_localizations.dart';
 import '../l10n/studio_l10n.dart';
 import '../platform/error_log.dart';
-import 'conversation_route_binding.dart';
 import 'routing/application_router.dart';
 import 'studio_host_lifecycle.dart';
 import 'app_graph.dart';
 import 'studio_shutdown.dart';
 import 'theme/material3_theme.dart';
+import 'routing/app_route.dart';
 
 class AnyworkApp extends ConsumerStatefulWidget {
   const AnyworkApp({super.key, this.enableDesktopTray = false});
@@ -33,24 +33,31 @@ class AnyworkApp extends ConsumerStatefulWidget {
 class _AnyworkAppState extends ConsumerState<AnyworkApp> {
   late final GoRouter _router;
   late final AppGraph _graph;
-  late final ConversationRouteBinding _conversationRoutes;
 
   @override
   void initState() {
     super.initState();
     _graph = ref.read(appGraphProvider);
     unawaited(_graph.initialize());
-    _router = createApplicationRouter(
-      ref,
-      conversationActivation: () => _conversationRoutes.activation,
-      onConversationRetry: () => _conversationRoutes.retry(),
+    _router = createApplicationRouter();
+    _router.routerDelegate.addListener(_syncConversationRoute);
+  }
+
+  void _syncConversationRoute() {
+    if (_router.routerDelegate.currentConfiguration.isEmpty) return;
+    final state = _router.routerDelegate.state;
+    _graph.client.selection.beginNavigation();
+    _graph.setConversationPageVisible(
+      state.name == StudioRoute.name || state.name == BotConversationRoute.name,
+      threadId: state.name == BotConversationRoute.name
+          ? state.pathParameters['threadId']!
+          : null,
     );
-    _conversationRoutes = ConversationRouteBinding(_router, _graph);
   }
 
   @override
   void dispose() {
-    _conversationRoutes.close();
+    _router.routerDelegate.removeListener(_syncConversationRoute);
     _graph.setConversationPageVisible(false);
     _router.dispose();
     super.dispose();

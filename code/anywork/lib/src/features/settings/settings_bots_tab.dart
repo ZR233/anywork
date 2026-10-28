@@ -2,7 +2,6 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:pretty_qr_code/pretty_qr_code.dart';
@@ -14,8 +13,6 @@ import '../../platform/feishu_app_links.dart';
 import '../../presentation/providers/client_provider.dart';
 import '../../presentation/providers/account_domains.dart';
 import '../../shared/studio_driver_keys.dart';
-import '../../shared/studio_routes.dart';
-import '../../presentation/providers/selection_store.dart';
 import '../../shared/model_route_selector.dart';
 import 'settings_agent_routes.dart';
 import '../shell/studio_shell.dart' show AgentWorkspacePane;
@@ -25,6 +22,7 @@ import 'package:anywork_client/studio_client.dart';
 import 'settings_common.dart';
 import 'settings_scope.dart';
 import 'settings_views.dart';
+import '../../app/routing/app_route.dart';
 
 part 'settings_bots_editor.dart';
 part 'settings_bots_detail.dart';
@@ -252,11 +250,10 @@ class _BotsTabState extends ConsumerState<BotsTab> {
                 );
               }
             },
-            onSelectChat: (id) => StudioRoutes.openBotPlatformTools(
-              context,
+            onSelectChat: (id) => BotPlatformToolsRoute(
               botId: selected.id,
               chatId: id,
-            ),
+            ).push(context),
             onEnabled: (enabled) => _run(
               () => _client.botsCommands.setEnabled(
                 botId: selected.id,
@@ -353,7 +350,7 @@ class _BotsTabState extends ConsumerState<BotsTab> {
                 )
                 .toList(),
             selectedId: null,
-            onSelect: (id) => StudioRoutes.openBotDetails(context, id),
+            onSelect: (id) => BotDetailsRoute(botId: id).push(context),
           ),
         ],
       ],
@@ -542,7 +539,7 @@ class _BotsTabState extends ConsumerState<BotsTab> {
           .where((bot) => bot.appId == draft.appId)
           .firstOrNull;
       if (created != null) {
-        await StudioRoutes.openBotDetails(context, created.id);
+        await BotDetailsRoute(botId: created.id).push(context);
       }
     });
   }
@@ -692,14 +689,11 @@ class _BotsTabState extends ConsumerState<BotsTab> {
       );
       return;
     }
-    await _run(() async {
-      await StudioRoutes.openBotConversation(
-        context,
-        botId: bot.id,
-        chatId: conversation.chatId,
-        threadId: threadId,
-      );
-    });
+    await BotConversationRoute(
+      botId: bot.id,
+      chatId: conversation.chatId,
+      threadId: threadId,
+    ).push(context);
   }
 
   Future<void> _editBot(BotSnapshot bot) async {

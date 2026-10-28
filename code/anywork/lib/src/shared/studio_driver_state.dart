@@ -225,6 +225,8 @@ final class StudioDriverFacts {
     this.directoryHasMore = false,
     this.selectedProjectId,
     this.selectedThreadId,
+    this.visibleThreadId,
+    this.presentationThreadId,
     this.newThreadMode = ThreadModeId.simple,
     this.newThreadWorkspaceMode = ThreadWorkspaceMode.local,
     this.newThreadComposer = const ComposerThreadState.idle(),
@@ -278,6 +280,8 @@ final class StudioDriverFacts {
   final bool directoryHasMore;
   final String? selectedProjectId;
   final String? selectedThreadId;
+  final String? visibleThreadId;
+  final String? presentationThreadId;
   final ThreadModeId newThreadMode;
   final ThreadWorkspaceMode newThreadWorkspaceMode;
   final ComposerThreadState newThreadComposer;
@@ -628,7 +632,11 @@ abstract final class StudioDriverState {
       'navigation': {
         'selectedProjectId': facts.selectedProjectId,
         'selectedThreadId': facts.selectedThreadId,
-        'isStartPage': facts.selectedThreadId == null,
+        'visibleThreadId': facts.visibleThreadId,
+        'presentationThreadId': facts.presentationThreadId,
+        'isStartPage':
+            facts.selectedThreadId == null &&
+            facts.presentationThreadId == null,
         'newThreadMode': facts.newThreadMode.name,
         'newThreadWorkspaceMode': facts.newThreadWorkspaceMode.id,
         'newThreadComposer': {

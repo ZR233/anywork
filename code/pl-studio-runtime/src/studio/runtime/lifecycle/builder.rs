@@ -131,6 +131,7 @@ impl StudioRuntime {
         let thread_observations = super::super::thread_observation::ThreadObservations::new(
             super::super::thread_observation::ObservationServices {
                 config: config_runtime.clone(),
+                settings_updates: settings_updates.subscribe(),
                 store: store.clone(),
                 events: product_events.clone(),
                 performance: model_performance.clone(),

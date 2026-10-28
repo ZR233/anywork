@@ -181,17 +181,19 @@ class ComposerDockViewModel extends _$ComposerDockViewModel {
     final attachments = ref.watch(attachmentDraftsProvider);
     final recovery = ref.watch(recoveryStoreProvider).value?.values ?? const [];
     final threads = [...directory.window.threads, ...directory.overlayThreads];
-    final thread = ModelRouteQueries.threadIdentity(
-      threadId: threadId,
-      directory: threads,
-    );
+    // The directory is paginated; the destination's own canonical session also
+    // supplies its identity without selecting or adding a directory entry.
+    final thread =
+        ModelRouteQueries.threadIdentity(
+          threadId: threadId,
+          directory: threads,
+        ) ??
+        session.workspace?.thread;
     final projectId = thread?.projectId;
-    final selection = ref.watch(selectionStoreProvider);
-    // 已有线程目标：Application 与本 thread 的 issue 才约束它；project issue 不沿
-    // 祖先挡健康线程。目录缺项目身份时回退当前选择，不创建冷 owner。
+    // 已有线程只使用自己的项目身份，不借用主工作区选择。
     final recoveryBlocker = recoveryIssueBlockingExecution(
       recovery,
-      projectId: projectId ?? selection.selectedProjectId,
+      projectId: projectId,
       threadId: threadId,
     );
     final routeCommand = settings.commands['thread-route:$threadId'];

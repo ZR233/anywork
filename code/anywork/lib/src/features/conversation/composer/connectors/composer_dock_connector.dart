@@ -17,7 +17,6 @@ import '../../../../presentation/providers/client_provider.dart';
 import '../../../../shared/studio_chrome.dart';
 import '../../../../shared/studio_driver_keys.dart';
 import '../../../status/session_selectors.dart';
-import '../../../../shared/studio_routes.dart';
 import '../view_models/composer_view_model.dart';
 import '../state/composer_view_state.dart';
 import '../../interactions/connectors/child_interaction_connector.dart';
@@ -32,6 +31,7 @@ import '../../interactions/connectors/plan_confirmation_connector.dart';
 import '../../interactions/connectors/tool_approval_connector.dart';
 import '../../interactions/connectors/user_input_connector.dart';
 import '../views/prompt_composer_view.dart';
+import '../../../../app/routing/app_route.dart';
 
 class ComposerDockConnector extends ConsumerWidget {
   const ComposerDockConnector({
@@ -579,7 +579,7 @@ class _PromptComposerState extends ConsumerState<_PromptComposer> {
                           '${route?.modelId ?? ''} · ${context.l10n.botsManagedModel}',
                         ),
                         onPressed: () =>
-                            StudioRoutes.openBotDetails(context, botId),
+                            BotDetailsRoute(botId: botId).push(context),
                       )
                     else
                       ...modelRouteSelectorChildren(

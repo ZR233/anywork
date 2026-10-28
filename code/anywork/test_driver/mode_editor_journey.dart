@@ -255,11 +255,15 @@ class ModeEditorJourney {
   }
 
   Future<void> submit(int index, {bool wait = true}) async {
+    final previousTurnId = turnId(await driver.readSnapshot());
     await text('composer-input', _prompts[index]);
     await tap('composer-submit');
     final snapshot = await waitSnapshot(
-      (snapshot) => workspaceOf(snapshot)?['threadId'] is String,
-      'Thread admitted',
+      (snapshot) =>
+          workspaceOf(snapshot)?['threadId'] is String &&
+          turnId(snapshot) != null &&
+          turnId(snapshot) != previousTurnId,
+      'new Turn admitted',
     );
     threadId = workspaceOf(snapshot)!['threadId'] as String;
     await File('$coord/observed.json')

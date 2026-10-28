@@ -38,7 +38,7 @@ class _SidebarActions extends ConsumerWidget {
             tooltip: context.l10n.sidebarSettings,
             icon: Icons.settings_outlined,
             showIndicator: hasUpdate,
-            onPressed: () => context.pushNamed(StudioRoutes.settings),
+            onPressed: () => const SettingsRoute().push(context),
           ),
         ],
       ),

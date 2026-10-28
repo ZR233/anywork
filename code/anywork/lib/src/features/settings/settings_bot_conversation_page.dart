@@ -7,16 +7,12 @@ class BotChatPage extends ConsumerWidget {
     required this.botId,
     required this.chatId,
     required this.threadId,
-    required this.activation,
-    required this.onRetry,
     super.key,
   });
 
   final String botId;
   final String chatId;
   final String threadId;
-  final ValueListenable<AsyncValue<String?>> activation;
-  final VoidCallback onRetry;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -28,7 +24,6 @@ class BotChatPage extends ConsumerWidget {
               .where((chat) => chat.chatId == chatId)
               .firstOrNull
         : null;
-    final selected = ref.watch(selectionStoreProvider);
     return Scaffold(
       appBar: AppBar(
         leading: BackButton(
@@ -67,45 +62,14 @@ class BotChatPage extends ConsumerWidget {
             key: StudioDriverKeys.botsPlatformTools,
             tooltip: context.l10n.botsPlatformTools,
             icon: const Icon(Icons.more_horiz),
-            onPressed: () => StudioRoutes.openBotPlatformTools(
-              context,
+            onPressed: () => BotPlatformToolsRoute(
               botId: botId,
               chatId: chatId,
-            ),
+            ).push(context),
           ),
         ],
       ),
-      body: ValueListenableBuilder<AsyncValue<String?>>(
-        valueListenable: activation,
-        builder: (context, value, _) => value.when(
-          loading: () => const Center(child: CircularProgressIndicator()),
-          error: (error, _) => _unavailable(context, error),
-          data: (activeThreadId) {
-            if (activeThreadId == null) return const SizedBox.shrink();
-            if (activeThreadId != threadId ||
-                selected.selectedThreadId != threadId ||
-                selected.needsOpen) {
-              return _unavailable(context, null);
-            }
-            return const AgentWorkspacePane();
-          },
-        ),
-      ),
+      body: AgentWorkspacePane(threadId: threadId),
     );
   }
-
-  Widget _unavailable(BuildContext context, Object? error) => Center(
-    child: Column(
-      key: const ValueKey('bot-conversation-unavailable'),
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Text(context.l10n.settingsBotsOperationFailed),
-        if (error is StudioFailure) SelectableText(error.message),
-        TextButton(
-          onPressed: onRetry,
-          child: Text(context.l10n.runtimeFatalRetry),
-        ),
-      ],
-    ),
-  );
 }

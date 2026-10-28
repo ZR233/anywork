@@ -732,6 +732,12 @@ impl Owner {
         {
             snapshot.lifecycle = ThreadLifecycle::Closing;
         }
+        snapshot.observation_revision = self
+            .publish
+            .borrow()
+            .observation_revision
+            .checked_add(1)
+            .expect("Thread observation revision exhausted");
         self.publish.send_replace(snapshot);
     }
 

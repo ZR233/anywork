@@ -169,15 +169,21 @@ fn bump_version(
 /// admission are not withdrawals and never appear here, so released speculation stays separable from
 /// the facts that must survive.
 ///
+/// A concurrent update also invalidates a captured candidate when the newer
+/// authoritative preview has already been evicted: the old storage row cannot
+/// replace a revision whose publication is still proven by this log.
+///
 /// # Errors
 /// [`ChatError::ReadInvalidated`] when the range is no longer covered by the bounded log — trimmed, or
 /// containing a publication whose identity list overflowed. Continuity cannot be proven then, and the
 /// caller retries rather than guessing a deletion or a resurrection.
-pub(crate) fn withdrawals_since(
+pub(crate) fn reconcile_read<'a>(
     state: &TimelineState,
     since: u64,
+    candidates: impl IntoIterator<Item = &'a ChatItem>,
 ) -> Result<BTreeSet<Arc<str>>, ChatError> {
     let mut withdrawn = BTreeSet::new();
+    let mut updated = BTreeSet::new();
     if state.version <= since {
         return Ok(withdrawn);
     }
@@ -204,7 +210,24 @@ pub(crate) fn withdrawals_since(
                 // The identities are shared with the log, so a withdrawal set costs reference counts,
                 // not a copy of the content or of the pending range.
                 withdrawn.insert(identity.item_id.clone());
+            } else {
+                updated.insert(identity.item_id.clone());
             }
+        }
+    }
+    for item in candidates {
+        if updated.contains(item.item_id.as_str())
+            && !withdrawn.contains(item.item_id.as_str())
+            && !state.unsaved_previews.contains_key(&item.item_id)
+            && !state
+                .recent
+                .iter()
+                .any(|current| current.item_id == item.item_id)
+        {
+            // The log proves a newer publication, but its authoritative preview
+            // has already left the cache. A captured/storage predecessor cannot
+            // stand in for it; retry the read instead of resurrecting that body.
+            return Err(ChatError::ReadInvalidated);
         }
     }
     Ok(withdrawn)
@@ -566,8 +589,7 @@ impl Session {
                     && !same_content(previous, &item))
                     || previous.turn_id != item.turn_id)
                     && (reliable || previous.saved || state.unsaved.contains_key(&item.item_id))
-                    && !((item.saved && !previous.saved)
-                        || (item.is_terminal() && previous.is_streaming()))
+                    && !(item.is_terminal() && previous.is_streaming())
                 {
                     return Err(ChatError::Conflict(item.item_id));
                 }
@@ -735,7 +757,7 @@ impl Session {
             return Ok(());
         }
         let mut state = self.lock_timeline();
-        let withdrawn = withdrawals_since(&state, since)?;
+        let withdrawn = reconcile_read(&state, since, items.iter())?;
         for item in items {
             if withdrawn.contains(item.item_id.as_str())
                 || state.unsaved.contains_key(&item.item_id)

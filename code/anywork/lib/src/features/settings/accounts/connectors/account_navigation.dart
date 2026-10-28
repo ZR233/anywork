@@ -8,23 +8,23 @@ import '../views/account_dialogs.dart';
 
 /// All external and internal exits use the same decision. Looking up whether
 /// an editor exists must not create an accounts page or a new draft.
-Future<bool> confirmLeaveAccountsEditor(
-  BuildContext context,
-  WidgetRef ref,
-) async {
+Future<bool> confirmLeaveAccountsEditor(BuildContext context) async {
   final container = ProviderScope.containerOf(context, listen: false);
   if (!container.exists(accountsViewModelProvider)) return true;
-  final navigation = ref.read(accountsViewModelProvider).asData?.value;
+  final navigation = container.read(accountsViewModelProvider).asData?.value;
   final key = navigation?.editor;
   if (key == null || !container.exists(accountEditorViewModelProvider(key))) {
     return true;
   }
-  final editor = ref.read(accountEditorViewModelProvider(key).notifier);
-  final state = ref.read(accountEditorViewModelProvider(key)).asData?.value;
+  final editor = container.read(accountEditorViewModelProvider(key).notifier);
+  final state = container
+      .read(accountEditorViewModelProvider(key))
+      .asData
+      ?.value;
   if (state == null) return false;
   void finish() {
     editor.finish();
-    ref.read(accountsViewModelProvider.notifier).finishEditor(key);
+    container.read(accountsViewModelProvider.notifier).finishEditor(key);
   }
 
   if (!state.dirty && !state.saving) {

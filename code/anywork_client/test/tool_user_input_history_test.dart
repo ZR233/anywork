@@ -376,29 +376,6 @@ void main() {
       ]) {
         expect(item.imageCardCaption, isNull);
       }
-
-      expect(
-        toolItem(
-          'read_file',
-          jsonEncode({'path': '  /workspace/完整.txt  \nignored'}),
-        ).readFilePath,
-        '/workspace/完整.txt',
-      );
-      expect(
-        toolItem(
-          'read_file',
-          jsonEncode({'path': '/workspace/partial.txt'}),
-          omittedBytes: 1,
-        ).readFilePath,
-        isNull,
-      );
-      expect(
-        toolItem(
-          'other_tool',
-          jsonEncode({'path': '/workspace/hidden.txt'}),
-        ).readFilePath,
-        isNull,
-      );
     },
   );
 }

@@ -913,6 +913,456 @@ fn replay_turn(prompt: &str, cancellation: CancellationToken) -> TurnInput {
 }
 
 #[tokio::test]
+async fn unknown_tool_batch_is_corrected_without_replaying_rejected_calls() {
+    use pl_core::model::ModelToolCallRejection;
+    use pl_provider_fixture::RealtimeToolCall;
+    for (protocol, profile) in [
+        (
+            Protocol::ResponsesHttp,
+            ModelTransportProfile::responses_http(),
+        ),
+        (
+            Protocol::ResponsesWebSocket,
+            ModelTransportProfile::responses_websocket(),
+        ),
+        (
+            Protocol::Chat,
+            ModelTransportProfile::chat_completions_http(),
+        ),
+    ] {
+        let calls = |name, call_id| RealtimeToolCall {
+            item_id: if call_id == "good-call" {
+                "good-item"
+            } else {
+                call_id
+            },
+            call_id,
+            name,
+            arguments: pl_provider_fixture::replay_tool_arguments(),
+        };
+        let server = FixtureServer::start(vec![
+        Step::prompt(
+            protocol,
+            "correct unknown tool",
+            0,
+            correction_tool_reply(protocol, "rejected", &[
+                calls("internal-exec", "bad-call"),
+                calls("exec", "unexecuted-call"),
+            ]),
+        ),
+        Step::prompt(
+            protocol,
+            "No tools in this batch were executed. This batch produced no tool side effects. Rejection: model tool call bad-call was rejected: unknown tool name \"internal-exec\". Generate a corrected response using the committed results. Select tool names exactly from the declarations in this request and follow their function parameter schemas or custom input formats. Do not repeat completed tool calls.",
+            1,
+            correction_tool_reply(protocol, "corrected", &[
+                calls("exec", "good-call"),
+            ]),
+        ),
+        Step {
+            protocol,
+            request: RequestMatch::ToolOutput {
+                call_id: "good-call".into(), marker: "replay-tool-marker".into(), step: 2,
+            },
+            reply: correction_text_reply(protocol, "done", "finished"),
+            optional: false,
+        },
+    ]).await.unwrap();
+        let session = ModelFactory::new(pl_model::runtime::ThreadModel::new(
+            ModelRuntime::new_with_account_id(
+                "fixture",
+                ProtocolEndpoint::compatible("fixture", server.base_url()),
+                model("fixture-model", profile),
+            )
+            .unwrap(),
+            None,
+        ))
+        .open_session()
+        .await
+        .unwrap();
+        let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let thread = ThreadHandle::start("unknown-tool".into(), session).unwrap();
+        let spec = ToolSpec::function("exec", "Execute", json!({"type":"object"}));
+        let hidden = ToolSpec::function("hidden-wire", "Hidden", json!({"type":"object"}));
+        thread
+            .register_tools(vec![
+                pl_core::tool::opaque::Registration::new(
+                    "internal-exec".into(),
+                    pl_model::runtime::thread_tool_declaration(&spec).unwrap(),
+                    ReplayTool(count.clone()),
+                )
+                .unwrap()
+                .foreground_coexisting(),
+                pl_core::tool::opaque::Registration::new(
+                    "hidden-internal".into(),
+                    pl_model::runtime::thread_tool_declaration(&hidden).unwrap(),
+                    ReplayTool(count.clone()),
+                )
+                .unwrap()
+                .foreground_coexisting(),
+            ])
+            .await
+            .unwrap();
+        thread
+            .set_context_preparation(Some(
+                pl_core::thread::context_preparation::ContextPreparer::new(HideToolOnCorrection),
+            ))
+            .await
+            .unwrap();
+        let mut input = replay_turn("correct unknown tool", Default::default());
+        input.max_model_steps = ModelStepLimit::Limited(3.try_into().unwrap());
+        let completion = thread.run_turn(input).await.unwrap();
+        assert_eq!(completion.model_steps, 3);
+        assert_eq!(completion.outcome, TurnOutcome::Completed);
+        assert_eq!(count.load(std::sync::atomic::Ordering::Relaxed), 1);
+        assert!(!thread.snapshot().context.records.iter().any(|record| {
+            record
+                .tool_calls
+                .iter()
+                .any(|call| call.call_id == "bad-call" || call.call_id == "unexecuted-call")
+        }));
+        let effects = thread.effects().await.unwrap();
+        let output = effects
+            .iter()
+            .filter_map(|e| e.attempt.as_ref())
+            .find_map(|a| {
+                if let AttemptOutcome::Rejected { output, .. } = &a.outcome {
+                    Some(output)
+                } else {
+                    None
+                }
+            })
+            .unwrap();
+        let rejected_call = output
+            .tool_calls
+            .iter()
+            .find(|call| call.call_id == "bad-call")
+            .unwrap();
+        assert_eq!(
+            rejected_call.rejection,
+            Some(ModelToolCallRejection::UnknownTool {
+                name: "internal-exec".into()
+            })
+        );
+        assert_eq!(rejected_call.tool_id, "");
+        assert_eq!(
+            rejected_call.arguments.content(),
+            pl_provider_fixture::replay_tool_arguments()
+        );
+        let valid_call = output
+            .tool_calls
+            .iter()
+            .find(|call| call.call_id == "unexecuted-call")
+            .unwrap();
+        assert_eq!(valid_call.tool_id, "internal-exec");
+        assert_eq!(valid_call.rejection, None);
+        let receipt = pl_model::runtime::model_response_receipt(output)
+            .unwrap()
+            .unwrap();
+        let raw_call = receipt
+            .response
+            .tool_calls
+            .iter()
+            .find(|call| call.call_id == "bad-call")
+            .unwrap();
+        assert_eq!(raw_call.name, "internal-exec");
+        assert!(output.usage.input_tokens.is_some());
+        let stored: pl_core::model::ModelStepOutput =
+            serde_json::from_str(&serde_json::to_string(output).unwrap()).unwrap();
+        assert_eq!(stored.tool_calls, output.tool_calls);
+        assert_eq!(
+            pl_model::runtime::model_response_receipt(&stored)
+                .unwrap()
+                .unwrap()
+                .response
+                .tool_calls[0]
+                .payload_text(),
+            pl_provider_fixture::replay_tool_arguments()
+        );
+        let accepted = effects
+            .iter()
+            .filter_map(|e| e.attempt.as_ref())
+            .find_map(|a| {
+                if let AttemptOutcome::Committed(output) = &a.outcome
+                    && !output.tool_calls.is_empty()
+                {
+                    return Some(output);
+                }
+                None
+            })
+            .unwrap();
+        let receipt = pl_model::runtime::model_response_receipt(accepted)
+            .unwrap()
+            .unwrap();
+        let accepted_call = &receipt.response.tool_calls[0];
+        assert_eq!(accepted_call.name, "exec");
+        assert_eq!(accepted_call.call_id, "good-call");
+        assert_eq!(
+            accepted_call.id,
+            if protocol == Protocol::Chat {
+                "good-call"
+            } else {
+                "good-item"
+            }
+        );
+        thread.close().await.unwrap();
+        let requests = server.finish().await.unwrap();
+        let correction = requests[1].body.to_string();
+        assert!(!correction.contains("\"previous_response_id\""));
+        assert!(!correction.contains("\"function_call\""));
+        assert!(!correction.contains("uncommitted planning"));
+        assert!(!correction.contains("hidden-wire"));
+        assert_eq!(requests[0].body["tools"].as_array().unwrap().len(), 2);
+        assert_eq!(requests[1].body["tools"].as_array().unwrap().len(), 1);
+        let declaration = if protocol == Protocol::Chat {
+            &requests[1].body["tools"][0]["function"]
+        } else {
+            &requests[1].body["tools"][0]
+        };
+        assert_eq!(declaration["name"], "exec");
+        assert_eq!(declaration["parameters"]["type"], "object");
+        if protocol == Protocol::Chat {
+            let messages = requests[2].body["messages"].as_array().unwrap();
+            assert!(
+                messages
+                    .iter()
+                    .any(|item| item["tool_calls"][0]["id"] == "good-call"
+                        && item["tool_calls"][0]["function"]["name"] == "exec")
+            );
+            assert!(
+                messages
+                    .iter()
+                    .any(|item| item["tool_call_id"] == "good-call")
+            );
+        } else if protocol == Protocol::ResponsesWebSocket {
+            assert_eq!(requests[2].body["previous_response_id"], "corrected");
+            assert_eq!(
+                requests[2].body["input"],
+                json!([{
+                    "type":"function_call_output", "call_id":"good-call", "output":"replay-tool-marker",
+                }])
+            );
+        } else {
+            let paired = requests[2].body["input"].as_array().unwrap();
+            assert!(
+                paired.iter().any(|item| item["id"] == "good-item"
+                    && item["call_id"] == "good-call"
+                    && item["name"] == "exec"),
+                "{protocol:?}: {}",
+                requests[2].body
+            );
+        }
+        assert!(!requests[2].body.to_string().contains("unexecuted-call"));
+    }
+}
+
+#[derive(Debug)]
+struct HideToolOnCorrection;
+impl pl_core::thread::context_preparation::ContextPreparationHook for HideToolOnCorrection {
+    async fn before_step(
+        &self,
+        request: pl_core::thread::context_preparation::ContextPreparationRequest,
+    ) -> pl_core::thread::context_preparation::ContextPreparation {
+        let correcting = request.model.context.records.iter().any(|record| {
+            record.source
+                == ContextSource::Runtime {
+                    source_id: "model-output-correction".into(),
+                }
+        });
+        pl_core::thread::context_preparation::ContextPreparation::Prepared {
+            expected_extension_sequence: request.extension_sequence,
+            rejected_mutations: vec![],
+            replacement: None,
+            facts: vec![],
+            mutations: vec![],
+            excluded_tool_ids: if correcting {
+                vec!["hidden-internal".into()]
+            } else {
+                vec![]
+            },
+        }
+    }
+}
+
+fn correction_tool_reply(
+    protocol: Protocol,
+    id: &str,
+    calls: &[pl_provider_fixture::RealtimeToolCall<'_>],
+) -> Reply {
+    if protocol == Protocol::Chat {
+        let calls = calls
+            .iter()
+            .enumerate()
+            .map(|(index, call)| {
+                json!({
+                    "index": index, "id": call.call_id, "type":"function",
+                    "function":{"name":call.name,"arguments":call.arguments},
+                })
+            })
+            .collect::<Vec<_>>();
+        Reply::Sse(vec![
+            json!({"id":id,"choices":[{"delta":{"content":"uncommitted planning","tool_calls":calls},"finish_reason":null}]}),
+            json!({"id":id,"choices":[{"delta":{},"finish_reason":"tool_calls"}]}),
+            json!({"id":id,"choices":[],"usage":{"prompt_tokens":11,"completion_tokens":3,"total_tokens":14}}),
+        ])
+    } else {
+        let events = pl_provider_fixture::responses_text_and_tool_calls(
+            "uncommitted planning",
+            id,
+            "fixture-model",
+            calls,
+        );
+        if protocol == Protocol::ResponsesWebSocket {
+            Reply::WebSocket(events)
+        } else {
+            Reply::Sse(events)
+        }
+    }
+}
+
+fn correction_text_reply(protocol: Protocol, text: &str, id: &str) -> Reply {
+    match protocol {
+        Protocol::Chat => Reply::Sse(chat_events(text, "fixture-model")),
+        Protocol::ResponsesWebSocket => Reply::WebSocket(responses_text(text, id, "fixture-model")),
+        Protocol::ResponsesHttp => Reply::Sse(responses_text(text, id, "fixture-model")),
+        Protocol::Files => panic!("file uploads are not model completions"),
+    }
+}
+
+#[tokio::test]
+async fn thread_custom_fallback_rejection_keeps_conversion_reason_and_raw_protocol_material() {
+    use pl_core::{
+        model::ModelToolCallRejection,
+        thread::{ModelOutputViolation, StepInput, ThreadError},
+    };
+    for (protocol, profile) in [
+        (
+            Protocol::ResponsesHttp,
+            ModelTransportProfile::responses_http(),
+        ),
+        (
+            Protocol::Chat,
+            ModelTransportProfile::chat_completions_http(),
+        ),
+    ] {
+        let raw = " { \"input\":17, \"precise\":9007199254740993 } ";
+        let server = FixtureServer::start(vec![
+            Step::prompt(
+                protocol,
+                "invalid custom input",
+                0,
+                correction_tool_reply(
+                    protocol,
+                    "rejected",
+                    &[pl_provider_fixture::RealtimeToolCall {
+                        item_id: "custom-item",
+                        call_id: "custom-call",
+                        name: "apply_patch",
+                        arguments: raw.into(),
+                    }],
+                ),
+            ),
+            Step::prompt(
+                protocol,
+                "after rejection",
+                1,
+                correction_text_reply(protocol, "done", "done"),
+            ),
+        ])
+        .await
+        .unwrap();
+        let mut info = model("fixture-model", profile);
+        info.capabilities.tools.custom_tools = false;
+        let session = ModelFactory::new(pl_model::runtime::ThreadModel::new(
+            ModelRuntime::new_with_account_id(
+                "fixture",
+                ProtocolEndpoint::compatible("fixture", server.base_url()),
+                info,
+            )
+            .unwrap(),
+            None,
+        ))
+        .open_session()
+        .await
+        .unwrap();
+        let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let thread = ThreadHandle::start("invalid-custom".into(), session).unwrap();
+        let spec = ToolSpec::custom_grammar("apply_patch", "Patch", "lark", "start: WORD");
+        thread
+            .register_tools(vec![
+                pl_core::tool::opaque::Registration::new(
+                    "stable-patch".into(),
+                    pl_model::runtime::thread_tool_declaration(&spec).unwrap(),
+                    ReplayTool(count.clone()),
+                )
+                .unwrap()
+                .foreground_coexisting(),
+            ])
+            .await
+            .unwrap();
+        assert!(matches!(
+            thread
+                .step(StepInput {
+                    turn_id: "rejection".into(),
+                    attempt_id: "rejected-attempt".into(),
+                    content: vec![ContextContent::Text {
+                        text: Arc::from("invalid custom input")
+                    }],
+                    cancellation: Default::default(),
+                })
+                .await,
+            Err(ThreadError::ModelOutput(
+                ModelOutputViolation::ToolCallRejected {
+                    rejection: ModelToolCallRejection::InvalidArguments { .. },
+                    ..
+                }
+            ))
+        ));
+        let effects = thread.effects().await.unwrap();
+        let output = effects
+            .iter()
+            .filter_map(|e| e.attempt.as_ref())
+            .find_map(|a| {
+                if let AttemptOutcome::Rejected { output, .. } = &a.outcome {
+                    Some(output)
+                } else {
+                    None
+                }
+            })
+            .unwrap();
+        let call = &output.tool_calls[0];
+        assert_eq!(call.call_id, "custom-call");
+        assert_eq!(call.tool_id, "stable-patch");
+        assert_eq!(call.arguments.content(), raw);
+        assert_eq!(call.arguments.format(), "application/json");
+        let Some(ModelToolCallRejection::InvalidArguments { name, reason }) = &call.rejection
+        else {
+            panic!("lost conversion failure")
+        };
+        assert_eq!(name, "apply_patch");
+        assert!(
+            reason.contains("invalid type") && reason.contains("expected a string"),
+            "lost source: {reason}"
+        );
+        let receipt = pl_model::runtime::model_response_receipt(output)
+            .unwrap()
+            .unwrap();
+        assert_eq!(receipt.response.tool_calls[0].payload_text(), raw);
+        assert_eq!(receipt.response.tool_calls[0].call_id, "custom-call");
+        assert!(output.usage.output_tokens.is_some());
+        thread
+            .run_turn(replay_turn("after rejection", Default::default()))
+            .await
+            .unwrap();
+        assert_eq!(count.load(std::sync::atomic::Ordering::Relaxed), 0);
+        thread.close().await.unwrap();
+        let requests = server.finish().await.unwrap();
+        assert_eq!(requests[0].body["tools"][0]["type"], "function");
+        assert!(!requests[1].body.to_string().contains("custom-call"));
+        assert!(requests[1].body.get("previous_response_id").is_none());
+    }
+}
+
+#[tokio::test]
 async fn tool_replay_survives_checkpoint_without_reexecuting_tools_or_failed_output() {
     let fixture = FixtureServer::start(pl_provider_fixture::gui_context_replay_recovery_script())
         .await

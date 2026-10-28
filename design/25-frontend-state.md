@@ -30,7 +30,7 @@ flowchart LR
 | 模型统计汇总、推理强度（`effort`）细分与调用历史 | Rust 统计所有者 | 独立 `StatisticsRepository` 归约器 | 所有者／统计材料来源；绑定页面可见需求与应用关闭（见 [§25.13](#2513-独立统计领域与呈现模块)） |
 | 轮次、活动摘要、交互、运行时、存储状态 | Rust 会话（`Thread`）所有者 | Client 会话状态归约器 | 会话 ID 与 `owner epoch`；选择切换结束观察，不终止轮次 |
 | 时间线正文、落盘确认、终态、省略标记、字段变更 | Rust 会话（`Session`） | 有界尾部归约器、历史分页与详情查询 | 内容订阅戳；逻辑需求（demand）变化或应用退出 |
-| 当前选中项目、会话与设置导航 | Client 本地导航意图 | 工作区与选择控制器（Selection controller） | 选择身份；旧异步命令结果不得覆盖较新的选择意图 |
+| 当前选中项目、会话 | Client 本地选择意图 | 选择控制器（Selection controller） | 选择身份；旧异步命令结果不得覆盖较新的选择意图 |
 | 输入文本、参数、路由与附件引用 | Client 草稿（受理后可靠附件归 Rust） | 草稿所有者与附件所有权账本（ownership ledger） | `DraftStamp + OperationId`；所有权明确转移或显式放弃 |
 | 命令提交、待确认覆盖层（pending overlay）与未知结果 | Rust 变更所有者 / Client 操作所有者 | `MutationBoard` | `OperationId` 与目标资源戳；真实结果按操作独立记录 |
 | 实时/历史模式（Live/History）与已加载消息集合 | 当前展示租约（display lease） | `InMemoryChatController` 展示项及成员 `Listenable` | `ThreadId + 展示代次`；显式回到实时或切换会话时释放旧集合 |
@@ -65,9 +65,11 @@ ACP 账号配置、ACP 认证观察（`acpAuth`，回执资源名 `acp-auth`）�
 
 `AppGraph` 通过逻辑需求（logical demand）管理底层资源生命周期：只有当前激活且实际展示的会话持有 GUI 消息订阅需求。进入设置页或离开会话页面时，由导航所有者释放该需求并收束旧订阅；切换设置标签不重复创建会话连接。返回会话时从新基线建立展示代次，不恢复旧正文流或像素位置。新会话和已有会话草稿、附件及已受理操作不因隐藏或组件销毁而清理；飞书与 HTTP 的独立订阅不受此 GUI 需求影响。
 
-所有应用页面统一由根 `GoRouter` 注册并管理跳转、返回与离页守卫，包括主工作区、设置、机器人详情、绑定会话聊天和平台工具。页面入口使用同一组命名目的地与稳定资源身份，不另建 `MaterialPageRoute`、独立 Navigator 或手写页面栈；相同目的地已经位于栈顶时不重复压栈。页面参数只传资源 ID，不捕获可变业务快照或来源页面的生命周期。返回遵循统一路由栈并保留来源页面的筛选、滚动与编辑状态；设置离页确认继续由该路由的守卫裁决。
+`app/routing/app_route.dart` 通过官方 `GoRouteData`、`TypedGoRoute` 集中定义唯一页面树、名称、路径、参数和离页守卫；`go_router_builder` 生成 `$appRoutes`、地址编解码与类型安全导航，`application_router.dart` 只装配根 GoRouter。调用方使用 `BotConversationRoute(botId: ..., chatId: ..., threadId: ...).push(context)` 等生成式 API，不手写路径参数 Map 或拼接 URL。生成文件统一由 `cargo xtask generate-gui` 产出，不维护手写跳转包装。所有应用页面统一由根 `GoRouter` 注册并管理跳转、返回与离页守卫，包括主工作区、设置、机器人详情、绑定会话聊天和平台工具。页面入口使用同一组类型化目的地与稳定资源身份，不另建 `MaterialPageRoute`、独立 Navigator 或手写页面栈；跳转直接使用官方生成的 `push`、`go`、`pushReplacement` 和 GoRouter 的 `pop`，不在上层比较目的地或包装去重。页面参数只传资源 ID，不捕获可变业务快照或来源页面的生命周期。返回遵循统一路由栈并保留来源页面的筛选、滚动与编辑状态；设置离页确认继续由该路由的守卫裁决。
 
-对话框、菜单、抽屉等短暂浮层仍使用 Flutter 官方机制及其局部关闭，不成为第二套页面导航。主工作区内选择项目、会话或子智能体仍属于 SDK 的 canonical selection，不为统一页面路由另造 URL 业务镜像。机器人聊天目的地携带绑定的会话身份，只有已提交的当前页面可以通过同一 SDK 选择命令激活它；隐藏页面及迟到导航完成不得重新选择目标。目标不存在、选择失败或当前选择与目的地不符时，不展示或订阅别的会话来兜底，错误保留在当前目的地供返回或重试。
+对话框、菜单、抽屉等短暂浮层仍使用 Flutter 官方机制及其局部关闭，不成为第二套页面导航。主工作区内选择项目、会话或子智能体仍属于 SDK 的 canonical selection，不为统一页面路由另造 URL 业务镜像。机器人聊天直接以路由参数中的 threadId 观察工作区和草稿，不修改主工作区的选择。目标不在已加载的目录分页内时，身份取自该目标的 canonical 会话；不补造目录记录，也不借用其他选择。路由不执行 bootstrap、异步选择或维护激活／错误／重试状态；目标加载及失败使用会话领域与时间线已有呈现。不存在的目标不会借用其他会话。SDK 不持有设置页状态或页面导航控制器。Driver 分别报告主工作区选择、当前呈现目标（包含准入失败）与实际可见订阅；当前展示的 workspace、草稿、修订与正文必须使用同一会话身份，隐藏时仍可独立观察主工作区的后台执行。
+
+类型化路由采用 [go_router 官方 Type-safe routes](https://pub.dev/documentation/go_router/latest/topics/Type-safe%20routes-topic.html) 与 [go_router_builder](https://pub.dev/packages/go_router_builder) 契约：仅传稳定 ID 与可选查询参数；跳转及返回由单一 GoRouter 管理，离页守卫集中在对应 RouteData.onExit。模态对话框仍由 Flutter 官方机制处理。
 
 ## 25.5 时间线连接与退役收束
 
@@ -81,9 +83,9 @@ ACP 账号配置、ACP 认证观察（`acpAuth`，回执资源名 `acp-auth`）�
 
 ## 25.6 只读模型（Read Model）与细粒度呈现
 
-应用导航联合页面、宿主窗口可见性与 canonical selection 决定唯一展示目标，同时驱动 Timeline 展示 owner 与会话 Repository。Timeline owner 不另行监听 selection 覆盖导航决定；设置页内发生 selection 变化也不能重新声明隐藏会话正文需求。隐藏或最小化宿主撤销展示需求，单纯失去输入焦点不等于隐藏。撤销目标先同步使旧展示代次失效，再退役正文连接；后台执行与保存不受影响。
+应用导航联合页面、宿主窗口可见性与 canonical selection 决定唯一展示需求，由会话 Repository 取得目标身份，在该目标首次具有 canonical workspace 后取得 SDK 草稿 owner；不存在的路由不会制造空草稿。Timeline 展示 owner 只观察 Repository 的实际 visibleThreadId，不再另存应用层可见目标或手动同步两份展示状态。资源预算拒绝使用既有 Timeline 失败呈现，并通过 ResourceBudget 的可用性观察在真实许可释放后重新受理；离页立即取消该观察，不能重新唤起隐藏会话。Timeline owner 不另行监听 selection 覆盖导航决定；设置页内发生 selection 变化也不能重新声明隐藏会话正文需求。隐藏或最小化宿主撤销展示需求，单纯失去输入焦点不等于隐藏。撤销目标先同步使旧展示代次失效，再退役正文连接；后台执行与保存不受影响。
 
-页面可见性只消费根 `GoRouter` 已提交的最上层页面身份，不解析字符串地址猜测页面类别，也不由 Observer 维护平行页面栈。主工作区与机器人聊天页面声明需求，设置、机器人详情或平台工具页面遮盖会话时撤销需求；机器人聊天的需求还须与目的地指定的 Thread 和 canonical selection 一致。对话框、菜单等非页面浮层不改变所属页面的需求，未通过离页守卫的导航也不撤销当前会话；返回会话页面后仍由同一 AppGraph 建立新基线，不另建机器人专用订阅所有者。
+页面可见性只消费根 `GoRouter` 已提交的最上层页面身份，不解析字符串地址猜测页面类别，也不由 Observer 维护平行页面栈。主工作区与机器人聊天页面声明需求，设置、机器人详情或平台工具页面遮盖会话时撤销需求；机器人聊天的需求直接取目的地指定的 Thread，不依赖主工作区选择。对话框、菜单等非页面浮层不改变所属页面的需求，未通过离页守卫的导航也不撤销当前会话；返回会话页面后仍由同一 AppGraph 建立新基线，不另建机器人专用订阅所有者。
 
 同步观察回调可以引发新的导航或关闭。导航所有者必须先完成已发生离开的旧代次撤权，再按最新有效目标激活，不能因回调后目标字符串相同而复用旧订阅。内容所有者在首次发布打开中状态或调用观察回调之前登记稳定的任务完成责任；回调内同步关闭也须等待该任务及其清理，不以尚未赋值的任务快照提前报告未完成或遗留许可。
 
@@ -278,6 +280,8 @@ Flutter 会话功能按 `ViewModel / ViewState → Connector → View` 组织。
 
 Flutter 侧归 `features/modes/`：`state/` 持有 Freezed 工作区视图状态（内容分区、选中、聚焦模式、校验请求与预演输入），`view_models/` 的生成式 Notifier 是其唯一 owner，`connectors/` 持有画布与详情共用的文档编辑动作，`views/` 为设置目录 tab、全屏工作区路由页与窄屏详情子路由页，`widgets/` 为画布、阶段/转换详情面板与 JSON/设置/预演面板（纯不可变 props + 类型化回调）。文档草稿仍唯一归 `ModeEditorOwner`，视图状态不复制任何业务事实。
 
-页面级导航统一经应用唯一声明式路由表（`app/routing/application_router.dart`）：`mode-workspace`（`/settings/modes/:modeId`，路由 `onExit` 复用未保存草稿三选一守卫）、`mode-detail`（窄屏详情子路由）、`bot-details`、`bot-conversation` 与 `bot-platform-tools`。任何页面不得绕过路由表使用 `Navigator.push(MaterialPageRoute)`；设置页内 tab、master-detail 槽位与模态对话框不属于页面导航，保持既有实现。窄屏详情页返回时经 `PopScope` 清除选中状态，下层工作区保持 mounted 以保留画布视口与缩放。
+页面级导航统一经应用唯一类型化路由表（`app/routing/app_route.dart`，由 `application_router.dart` 装配）：`mode-workspace`（`/settings/modes/:modeId`，路由 `onExit` 复用未保存草稿三选一守卫）、`mode-detail`（窄屏详情子路由）、`bot-details`、`bot-conversation` 与 `bot-platform-tools`。任何页面不得绕过路由表使用 `Navigator.push(MaterialPageRoute)`；设置页内 tab、master-detail 槽位与模态对话框不属于页面导航，保持既有实现。窄屏详情页返回时经 `PopScope` 清除选中状态，下层工作区保持 mounted 以保留画布视口与缩放。
 
-统一路由表同时承载会话展示需求：`ConversationRouteBinding` 根据已提交目的地激活唯一 `AppGraph` 的订阅；模式工作区、详情、设置及平台工具页隐藏会话时撤销展示需求，返回后重新建立基线。机器人会话目标携带明确 threadId，不依赖导航前捕获的全局选中态。
+统一路由表同时承载会话展示需求：应用直接监听 `GoRouter.routerDelegate` 的已提交目的地，将其映射为唯一 `AppGraph` 的展示需求；不另设异步路由绑定器；模式工作区、详情、设置及平台工具页隐藏会话时撤销展示需求，返回后重新建立基线。机器人会话目标携带明确 threadId，不依赖导航前捕获的全局选中态。
+
+Mode 编辑会话保留打开或新建时的身份；可编辑 JSON 中的文档 ID 不决定离页守卫归属。复制创建新编辑会话后，旧路由只退出自己的草稿；正常编辑、保存与放弃不会改变打开身份，也不会因文档改名绕过守卫。

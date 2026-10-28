@@ -7,9 +7,9 @@ use crate::file::path::WorkspacePaths;
 use crate::workspace::ToolWorkspace;
 
 use super::backend::{
-    WorkspaceFileBackend, WorkspaceFileListRequest, WorkspaceFileListResult,
-    WorkspaceFileReadBytesRequest, WorkspaceFileReadRequest, WorkspaceFileRemoveRequest,
-    WorkspaceFileStat, WorkspaceFileStatRequest, WorkspaceFileWriteRequest,
+    WorkspaceFileBackend, WorkspaceFileReadBytesRequest, WorkspaceFileReadRequest,
+    WorkspaceFileRemoveRequest, WorkspaceFileStat, WorkspaceFileStatRequest,
+    WorkspaceFileWriteRequest,
 };
 use crate::tool_error;
 
@@ -18,7 +18,6 @@ pub struct LocalWorkspaceFileBackend {
     paths: WorkspacePaths,
     lsp_runtime: Option<pl_lsp::runtime::LspRuntimeRegistry>,
     workspace: Option<ToolWorkspace>,
-    listings: super::listing::ListingPager,
 }
 
 impl LocalWorkspaceFileBackend {
@@ -27,7 +26,6 @@ impl LocalWorkspaceFileBackend {
             paths: WorkspacePaths::new(root, allow_workspace_escape).await?,
             lsp_runtime: None,
             workspace: None,
-            listings: Default::default(),
         })
     }
 
@@ -96,7 +94,6 @@ impl WorkspaceFileBackend for LocalWorkspaceFileBackend {
         }
         let mut backend = self.clone();
         backend.paths = self.paths.with_host_access();
-        backend.listings = Default::default();
         Some(backend)
     }
 
@@ -136,13 +133,13 @@ impl WorkspaceFileBackend for LocalWorkspaceFileBackend {
         let metadata = tokio::fs::metadata(&path).await?;
         if !metadata.is_file() {
             return Err(tool_error(
-                "read_file",
+                "workspace_file",
                 format!("'{}' is not a regular file", request.path),
             ));
         }
         tokio::fs::read_to_string(&path).await.map_err(|error| {
             tool_error(
-                "read_file",
+                "workspace_file",
                 format!(
                     "failed to read '{}': {error}",
                     self.paths.display_relative(&path)
@@ -251,80 +248,6 @@ impl WorkspaceFileBackend for LocalWorkspaceFileBackend {
             )
         })?;
         self.notify_deleted(&path).await;
-        Ok(())
-    }
-
-    async fn list(&self, request: WorkspaceFileListRequest) -> Result<WorkspaceFileListResult> {
-        let path = request.path.clone();
-        let cwd = request.cwd.clone();
-        let implicit = request.implicit_recovery;
-        self.listings
-            .page(request, async {
-                use futures::StreamExt;
-                let root = self
-                    .resolve_existing_or_parent(cwd.as_deref(), &path)
-                    .await?;
-                if !tokio::fs::try_exists(&root).await? {
-                    return Ok(futures::stream::empty().boxed() as super::listing::Entries);
-                }
-                let paths = self.paths.clone();
-                let mut builder = ignore::WalkBuilder::new(&root);
-                builder
-                    .hidden(false)
-                    .ignore(false)
-                    .git_ignore(false)
-                    .git_global(false)
-                    .git_exclude(false)
-                    .parents(false)
-                    .follow_links(false)
-                    .filter_entry(move |entry| {
-                        !entry.file_type().is_some_and(|kind| kind.is_symlink())
-                            && !super::listing::skip_directory(
-                                &entry.path().to_string_lossy().replace('\\', "/"),
-                                implicit,
-                            )
-                    });
-                let walk = builder.build();
-                let entries = futures::stream::try_unfold(
-                    (walk, paths, root),
-                    |(mut walk, paths, root)| async move {
-                        loop {
-                            let (next, returned) = tokio::task::spawn_blocking(move || {
-                                let next = walk.next();
-                                (next, walk)
-                            })
-                            .await
-                            .map_err(|e| tool_error("list_files", e))?;
-                            walk = returned;
-                            let Some(entry) = next else {
-                                return Ok(None);
-                            };
-                            let entry = entry.map_err(|e| tool_error("list_files", e))?;
-                            if entry.path() == root {
-                                continue;
-                            }
-                            let Some(kind) = entry.file_type() else {
-                                continue;
-                            };
-                            if !kind.is_file() && !kind.is_dir() {
-                                continue;
-                            }
-                            let value = super::WorkspaceFileListEntry {
-                                path: paths.display_relative(entry.path()),
-                                is_dir: kind.is_dir(),
-                            };
-                            return Ok(Some((value, (walk, paths, root))));
-                        }
-                    },
-                )
-                .boxed();
-                Ok(entries as super::listing::Entries)
-            })
-            .await
-    }
-
-    async fn close_listing(&self, cursor: String) -> Result<()> {
-        self.listings.close(&cursor);
         Ok(())
     }
 

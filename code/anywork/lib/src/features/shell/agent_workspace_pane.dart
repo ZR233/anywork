@@ -87,7 +87,14 @@ class _ReadingErrorBanner extends StatelessWidget {
 }
 
 class AgentWorkspacePane extends ConsumerStatefulWidget {
-  const AgentWorkspacePane({super.key});
+  const AgentWorkspacePane({
+    required this.threadId,
+    this.needsOpen = false,
+    super.key,
+  });
+
+  final String? threadId;
+  final bool needsOpen;
 
   @override
   ConsumerState<AgentWorkspacePane> createState() => _AgentWorkspacePaneState();
@@ -148,13 +155,15 @@ class _AgentWorkspacePaneState extends ConsumerState<AgentWorkspacePane> {
 
   @override
   Widget build(BuildContext context) {
-    final selection = ref.watch(shellSelectionProvider);
-    final threadId = selection.selectedThreadId;
-    final workspace = ref.watch(shellComposerWorkspaceProvider);
-    // 无选中会话即起始页；新会话模式由 selection 清除 threadId 表达，不另读旧起始页。
+    final threadId = widget.threadId;
     if (threadId == null) return const _StudioStartPage();
-    if (workspace == null || workspace.threadId != threadId) {
-      return const StudioWorkspaceLoading();
+    final workspaceProvider = conversationWorkspaceProvider(
+      threadId,
+      needsOpen: widget.needsOpen,
+    );
+    final workspace = ref.watch(workspaceProvider);
+    if (workspace == null) {
+      return TimelineConnector(threadId: threadId);
     }
     return LayoutBuilder(
       builder: (context, constraints) {
@@ -192,7 +201,7 @@ class _AgentWorkspacePaneState extends ConsumerState<AgentWorkspacePane> {
           _autoOpenedPlanByThread[threadId] = pendingPlan.interactionId;
           WidgetsBinding.instance.addPostFrameCallback((_) {
             if (!mounted) return;
-            final current = ref.read(shellComposerWorkspaceProvider);
+            final current = ref.read(workspaceProvider);
             if (current?.threadId != threadId ||
                 current?.activeInteraction?.planConfirmation?.interactionId !=
                     pendingPlan.interactionId) {
@@ -238,7 +247,7 @@ class _AgentWorkspacePaneState extends ConsumerState<AgentWorkspacePane> {
             children: [
               // 首帧后自动打开当前选择；打开前仍保留显式入口与输入区，
               // 便于用户直接开始交互或在失败后重试。
-              if (selection.needsOpen) _OpenThreadBanner(threadId: threadId),
+              if (widget.needsOpen) _OpenThreadBanner(threadId: threadId),
               Expanded(
                 child: StudioWorkspaceBody(
                   readingArea: readingArea,

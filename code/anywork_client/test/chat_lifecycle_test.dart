@@ -720,7 +720,7 @@ void main() {
       expect(visibleTargets, [null]);
       expect(fixture.repository.sessionStates, isEmpty);
       expect(fixture.transport.opens, isEmpty);
-      // Workspace selection is navigation, not a business stop command.
+      // Selection and visible demand are independent; neither stops business work.
       fixture.client.threadDirectory.applyBaseline(
         ThreadDirectoryPage(
           threads: [testThread()],
@@ -729,8 +729,11 @@ void main() {
         ),
         revision: 1,
       );
-      fixture.client.workspace.selectThread('thread', projectId: 'project');
-      expect(visibleTargets, [null, 'thread']);
+      fixture.client.selection.selectThread(
+        threadId: 'thread',
+        projectId: 'project',
+      );
+      expect(visibleTargets, [null]);
       fixture.repository.setVisibleThread('thread');
       expect(visibleTargets, [null, 'thread']);
       await fixture.transport.opened(0);
@@ -739,14 +742,14 @@ void main() {
       await first.deliver(ConversationBaselineEvent(baseline: baseline(1)));
       final draft = fixture.client.drafts.composer('thread')
         ..updateDraft('keep');
-      fixture.client.workspace.showSettings();
+      fixture.repository.setVisibleThread(null);
       expect(fixture.repository.visibleThreadId.value, isNull);
       expect(visibleTargets, [null, 'thread', null]);
       expect(fixture.session().isActive, isFalse);
       expect(fixture.client.selection.state.selectedThreadId, 'thread');
       expect(draft.state.draft, 'keep');
       await first.closeCompleted.future;
-      fixture.client.workspace.hideSettings();
+      fixture.repository.setVisibleThread('thread');
       expect(fixture.client.selection.state.selectedThreadId, 'thread');
       expect(visibleTargets, [null, 'thread', null, 'thread']);
       await fixture.transport.opened(1);

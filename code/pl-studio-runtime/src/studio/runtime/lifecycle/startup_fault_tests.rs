@@ -951,3 +951,51 @@ async fn layout_target_manifest_fault_does_not_reset_home() -> Result<()> {
     );
     Ok(())
 }
+
+/// The HTTP detail endpoint can be the first explicit access to an older v2
+/// history. It must prepare the same preserved content as pages and tails.
+#[tokio::test]
+async fn a_detail_first_request_prepares_existing_v2_history_without_activation() -> Result<()> {
+    use crate::studio::storage::history::HistoryStore;
+    use sea_orm::{ConnectionTrait, Database};
+
+    let temp = tempfile::tempdir()?;
+    let paths = seed(temp.path()).await?;
+    let path = cold_session(&paths)?.history_database();
+    let history = HistoryStore::open(&path, "cold").await?;
+    let mut item = pl_protocol::ThreadItem::completed_user_message(
+        "input-detail-first".into(),
+        "cold".into(),
+        "".into(),
+        "preserved detail 中文\n".into(),
+        vec![],
+        17,
+    );
+    item.ordinal = 1;
+    item.revision = 1;
+    history.commit(1, std::slice::from_ref(&item), &[]).await?;
+    drop(history);
+    let db = Database::connect(format!("sqlite://{}?mode=rw", path.display())).await?;
+    db.execute_unprepared("DROP TABLE seaql_migrations; ALTER TABLE history_input_identities DROP COLUMN request_digest; UPDATE history_meta SET schema_version=8").await?;
+    db.close().await?;
+    let runtime = StudioRuntime::initialize(options(temp.path())).await?;
+    let read = runtime
+        .read_timeline_detail(
+            "cold",
+            &item.id,
+            &pl_protocol::TimelineDetailQuery {
+                field: pl_protocol::ThreadContentField::Text,
+                revision: 1,
+                continuation: None,
+                max_bytes: None,
+            },
+        )
+        .await;
+    let shutdown = runtime.shutdown_runtime().await;
+    let detail = read?;
+    shutdown?;
+    assert_eq!(detail.text, "preserved detail 中文\n");
+    assert_eq!(detail.revision, 1);
+    assert!(detail.continuation.is_none());
+    Ok(())
+}

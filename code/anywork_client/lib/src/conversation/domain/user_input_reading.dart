@@ -52,17 +52,6 @@ extension ConversationUserInputReading on ConversationItem {
         : String.fromCharCodes(runes.take(_maxImageCardCaptionRunes));
   }
 
-  /// Complete `read_file` target for compact known-schema presentation.
-  String? get readFilePath {
-    final rawPath = _completeKnownToolStringArgument(
-      this,
-      toolName: 'read_file',
-      argumentName: 'path',
-    );
-    final path = rawPath?.split('\n').first.trim();
-    return path == null || path.isEmpty ? null : path;
-  }
-
   ConversationUserInputDescriptor? get userInput => switch (descriptor) {
     ConversationToolDescriptor(:final userInput) => userInput,
     _ => null,

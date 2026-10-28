@@ -86,6 +86,10 @@ class AppGraph {
     );
     client.updates.attach();
     timeline = TimelineSessionOwner(client: client);
+    _conversationObservation = client.conversations.visibleThreadId.watch(
+      _observeVisibleConversation,
+    );
+    _observeVisibleConversation(client.conversations.visibleThreadId.value);
     final selection = client.selection.source.watchLatest((_) {
       _syncVisibleConversation();
     });
@@ -142,24 +146,21 @@ class AppGraph {
   AccountUsageRepository get accountUsage => accountDomains.usage;
   AcpService get acp => accountDomains.acp;
   Observation? _selectionObservation;
+  Observation? _conversationObservation;
+  Observation? _workspaceObservation;
+  Observation? _admissionObservation;
   bool _conversationPageVisible = false;
-  String? _expectedConversationThreadId;
+  String? _routeThreadId;
   bool _hostVisible = true;
   bool _closed = false;
-  String? _visibleThreadId;
   Future<CloseReport>? _closing;
 
   /// Navigation, not a selected ID or a mounted offstage route, owns demand.
-  /// A resource-bound destination may restrict demand to its expected selection;
-  /// that restriction never supplies a second selection or opens another thread.
-  void setConversationPageVisible(bool visible, {String? expectedThreadId}) {
-    if (_closed ||
-        (_conversationPageVisible == visible &&
-            _expectedConversationThreadId == expectedThreadId)) {
-      return;
-    }
+  /// Bot routes supply their own target; the studio follows canonical selection.
+  void setConversationPageVisible(bool visible, {String? threadId}) {
+    if (_closed) return;
     _conversationPageVisible = visible;
-    _expectedConversationThreadId = expectedThreadId;
+    _routeThreadId = threadId;
     _syncVisibleConversation();
   }
 
@@ -170,24 +171,67 @@ class AppGraph {
     _syncVisibleConversation();
   }
 
+  String? get _conversationTarget {
+    if (_closed || !_conversationPageVisible || !_hostVisible) return null;
+    final selection = client.selection.state;
+    return _routeThreadId ??
+        (selection.needsOpen ? null : selection.selectedThreadId);
+  }
+
+  void _observeVisibleConversation(String? id) {
+    _workspaceObservation?.cancel();
+    _workspaceObservation = null;
+    timeline.select(id);
+    if (_closed ||
+        id == null ||
+        client.conversations.visibleThreadId.value != id) {
+      return;
+    }
+    final session = client.conversations.existingSession(id)!;
+    void admitDraft() {
+      if (_conversationTarget == id &&
+          session.state.workspace != null &&
+          client.drafts.existingComposer(id) == null) {
+        _syncVisibleConversation();
+      }
+    }
+
+    _workspaceObservation = session.source.watch((_) => admitDraft());
+    admitDraft();
+  }
+
   void _syncVisibleConversation() {
     if (_closed) return;
-    final selection = client.selection.state;
-    final target =
-        _conversationPageVisible &&
-            _hostVisible &&
-            !selection.needsOpen &&
-            (_expectedConversationThreadId == null ||
-                selection.selectedThreadId == _expectedConversationThreadId)
-        ? selection.selectedThreadId
-        : null;
-    if (_visibleThreadId == target) return;
-    _visibleThreadId = target;
-    // Revoke the old presentation before retiring the feed. A -> B -> A
-    // never gives a late callback permission to publish into the new lease.
-    timeline.select(null);
-    client.conversations.setVisibleThread(target);
-    if (target != null) timeline.select(target);
+    _admissionObservation?.cancel();
+    _admissionObservation = null;
+    final target = _conversationTarget;
+    final conversations = client.conversations;
+    if (target != conversations.visibleThreadId.value) {
+      conversations.setVisibleThread(null);
+    }
+    if (target == null) {
+      timeline.select(null);
+      return;
+    }
+    if (target != _conversationTarget) return;
+    try {
+      // A valid destination borrows its logical draft across route changes.
+      // An unknown ID first loads canonical identity, without a provisional draft.
+      if (conversations.existingSession(target)?.state.workspace != null) {
+        client.drafts.composer(target);
+      }
+      if (target == _conversationTarget) conversations.setVisibleThread(target);
+    } on ResourceBudgetExceeded catch (error) {
+      if (target != _conversationTarget) return;
+      conversations.setVisibleThread(null);
+      if (target != _conversationTarget) return;
+      // Register before publishing: a reentrant observer can release capacity.
+      _admissionObservation = client.budget.watchAvailability(
+        error.kind,
+        _syncVisibleConversation,
+      );
+      timeline.select(target, admissionFailure: error);
+    }
   }
 
   Future<CloseReport> close({required DateTime deadline}) =>
@@ -202,6 +246,12 @@ class AppGraph {
     _closed = true;
     _selectionObservation?.cancel();
     _selectionObservation = null;
+    _conversationObservation?.cancel();
+    _conversationObservation = null;
+    _workspaceObservation?.cancel();
+    _workspaceObservation = null;
+    _admissionObservation?.cancel();
+    _admissionObservation = null;
     final timelineClose = timeline.close(deadline: deadline);
     final clientClose = client.close(deadline: deadline);
     final statisticsClose = statisticsRepository.close(deadline: deadline);

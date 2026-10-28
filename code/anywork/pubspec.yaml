@@ -55,6 +55,7 @@ dev_dependencies:
   freezed: ^4.0.2
   riverpod_generator: ^4.0.9
   riverpod_lint: ^3.1.9
+  go_router_builder: ^4.5.2
 
 flutter:
   generate: true

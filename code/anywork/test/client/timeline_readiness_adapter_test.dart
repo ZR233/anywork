@@ -34,7 +34,10 @@ void main() {
     expect(transport.feeds, isEmpty, reason: '读取session不隐式声明内容需求');
     final thread = graph.client.threadDirectory.state.window.threads
         .singleWhere((thread) => thread.id == 'thread-main');
-    graph.client.workspace.selectThread(thread.id, projectId: thread.projectId);
+    graph.client.selection.selectThread(
+      threadId: thread.id,
+      projectId: thread.projectId,
+    );
     repository.setVisibleThread('thread-main');
     final held = await opened.future;
     await held.initialEntered.future;

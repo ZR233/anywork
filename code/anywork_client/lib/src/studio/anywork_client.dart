@@ -107,19 +107,6 @@ class AnyworkClient {
       enabled: updatesEnabled,
       budget: this.budget,
     );
-    workspace = WorkspaceController(
-      onVisibleThreadChanged: conversations.setVisibleThread,
-      onThreadChanged: (id) {
-        if (id == null) {
-          selection.beginNewThread();
-        } else {
-          final thread = findThread(id);
-          if (thread == null)
-            throw StateError('Thread is not in the directory');
-          selection.selectThread(projectId: thread.projectId, threadId: id);
-        }
-      },
-    );
     _selectionObservation = selection.source.watch(_selectionChanged);
     _canonicalObservations.addAll([
       settings.source.watch((value) {
@@ -220,7 +207,6 @@ class AnyworkClient {
   }
 
   late final MutationBoard mutations;
-  late final WorkspaceController workspace;
   late final StudioChannels channels;
   late final ModeEditorOwner modeEditor;
   late final DirectoryCommands directoryCommands;

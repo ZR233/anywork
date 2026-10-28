@@ -384,7 +384,7 @@ pub fn gui_tool_scroll_expected_arguments(
     )])
 }
 
-/// Real file listings and a long shell argument for observing tool expansion.
+/// Real shell reads and a long shell argument for observing tool expansion.
 /// Each prompt is followed by enough text to put its tools inside the timeline.
 /// `powershell` selects the workspace's command dialect, independently of this host.
 pub fn gui_tool_scroll_script(powershell: bool, resource_lifecycle: bool) -> Vec<Step> {
@@ -403,15 +403,23 @@ pub fn gui_tool_scroll_script(powershell: bool, resource_lifecycle: bool) -> Vec
         ("scroll-item-c", "scroll-call-c"),
         ("scroll-item-failed", "scroll-call-failed"),
     ];
+    // Counts consume identities in exact order: short/read-second, medium, long,
+    // arguments, a/b/c, failed.
+    let prompts = [
+        ("Tool scroll short", 2),
+        ("Tool scroll medium", 1),
+        ("Tool scroll long", 1),
+        ("Tool scroll arguments", 1),
+        ("Tool scroll multiple", 3),
+        ("Tool scroll failed", 1),
+    ];
+    assert_eq!(
+        prompts.iter().map(|(_, count)| *count).sum::<usize>(),
+        identities.len(),
+        "prompt counts must consume each declared tool identity exactly once"
+    );
     let mut next_identity = 0;
-    for (prompt, lines, count) in [
-        ("Tool scroll short", 1, 2),
-        ("Tool scroll medium", 12, 1),
-        ("Tool scroll long", 200, 1),
-        ("Tool scroll arguments", 0, 1),
-        ("Tool scroll multiple", 80, 3),
-        ("Tool scroll failed", 0, 1),
-    ] {
+    for (prompt, count) in prompts {
         let calls = identities[next_identity..next_identity + count]
             .iter()
             .map(|&(item_id, call_id)| {
@@ -425,16 +433,57 @@ pub fn gui_tool_scroll_script(powershell: bool, resource_lifecycle: bool) -> Vec
                     };
                 }
                 if matches!(item_id, "scroll-item-short" | "scroll-item-read-second") {
-                    return RealtimeToolCall {
-                        item_id,
-                        call_id,
-                        name: "read_file",
-                        arguments: json!({"path": if item_id == "scroll-item-short" {
+                    let path = if item_id == "scroll-item-short" {
                             "scroll-fixture/entry-000.txt"
                         } else {
                             "scroll-fixture/entry-001.txt"
-                        }})
-                        .to_string(),
+                    };
+                    let command = if powershell {
+                        format!("[Console]::Out.Write([IO.File]::ReadAllText('{path}'))")
+                    } else {
+                        format!("cat -- '{path}'")
+                    };
+                    return RealtimeToolCall {
+                        item_id,
+                        call_id,
+                        name: TOOL_EXEC_NAME,
+                        arguments: realtime_exec_arguments(&command, None),
+                    };
+                }
+                if item_id == "scroll-item-medium" {
+                    return RealtimeToolCall {
+                        item_id,
+                        call_id,
+                        name: TOOL_EXEC_NAME,
+                        arguments: realtime_exec_arguments(if powershell {
+                                "[Console]::Out.Write(((Get-Content -LiteralPath 'scroll-fixture/long-read.txt' -TotalCount 12) -join \"`n\") + \"`n\")"
+                        } else {
+                            "head -n 12 -- 'scroll-fixture/long-read.txt'"
+                        }, None),
+                    };
+                }
+                if item_id == "scroll-item-long" {
+                    return RealtimeToolCall {
+                        item_id,
+                        call_id,
+                        name: TOOL_EXEC_NAME,
+                        arguments: json!({"command": if powershell {
+                            "[Console]::Out.Write([IO.File]::ReadAllText('scroll-fixture/long-read.txt'))"
+                        } else {
+                            "cat -- 'scroll-fixture/long-read.txt'"
+                        }, "maxOutputChars": 40000}).to_string(),
+                    };
+                }
+                if item_id == "scroll-item-failed" {
+                    return RealtimeToolCall {
+                        item_id,
+                        call_id,
+                        name: TOOL_EXEC_NAME,
+                        arguments: realtime_exec_arguments(if powershell {
+                            "Get-Content -LiteralPath 'scroll-fixture/missing.txt' -ErrorAction Stop"
+                        } else {
+                            "cat -- 'scroll-fixture/missing.txt'"
+                        }, None),
                     };
                 }
                 if let Some(arguments) = expected_arguments.get(call_id) {
@@ -445,12 +494,7 @@ pub fn gui_tool_scroll_script(powershell: bool, resource_lifecycle: bool) -> Vec
                         arguments: arguments.clone(),
                     };
                 }
-                RealtimeToolCall {
-                    item_id,
-                    call_id,
-                    name: "list_files",
-                    arguments: json!({"path":"scroll-fixture", "limit":lines}).to_string(),
-                }
+                unreachable!("all tool scroll calls are defined above")
             })
             .collect::<Vec<_>>();
         next_identity += count;
@@ -482,11 +526,13 @@ pub fn gui_tool_scroll_script(powershell: bool, resource_lifecycle: bool) -> Vec
                     Reply::Sse(responses_text(&tail, "scroll-tail", "fixture-model")),
                 );
             }
-            Step::prompt(
-                Protocol::ResponsesHttp,
-                prompt,
-                step,
-                Reply::Sse(if prompt == "Tool scroll medium" {
+            Step {
+                protocol: Protocol::ResponsesHttp,
+                request: RequestMatch::ToolScrollCompletion {
+                    call_ids: calls.iter().map(|call| call.call_id.to_owned()).collect(),
+                    step,
+                },
+                reply: Reply::Sse(if prompt == "Tool scroll medium" {
                     responses_reasoning_text(
                         &["Check the tool result before replying."],
                         &[&tail],
@@ -496,7 +542,8 @@ pub fn gui_tool_scroll_script(powershell: bool, resource_lifecycle: bool) -> Vec
                 } else {
                     responses_text(&tail, "scroll-tail", "fixture-model")
                 }),
-            )
+                optional: false,
+            }
         });
         script.optional_title(&title);
     }
@@ -515,8 +562,8 @@ pub fn gui_tool_scroll_script(powershell: bool, resource_lifecycle: bool) -> Vec
         .map(|(item_id, call_id)| RealtimeToolCall {
             item_id,
             call_id,
-            name: "list_files",
-            arguments: json!({"path":"scroll-fixture", "limit":1}).to_string(),
+            name: "stat_path",
+            arguments: json!({"path":"scroll-fixture/entry-000.txt"}).to_string(),
         })
         .collect();
     script.add(|step| {
@@ -1167,6 +1214,11 @@ pub enum RequestMatch {
         call_id: String,
         tool_id: String,
         marker: String,
+        step: usize,
+    },
+    /// Tool-scroll commands must all reach their actual terminal results before the answer.
+    ToolScrollCompletion {
+        call_ids: Vec<String>,
         step: usize,
     },
 }
@@ -4251,6 +4303,12 @@ fn match_step(state: &AppState, method: &str, path: &str, body: &Value) -> Resul
                             && (tool_output_contains(body, call_id, marker)
                                 || tool_delivery_contains(body, call_id, tool_id, marker))
                     }
+                    RequestMatch::ToolScrollCompletion { call_ids, step } => {
+                        *step == index
+                            && tool_scroll_pending(body, call_ids).is_some_and(|pending| {
+                                pending.is_empty() || tool_scroll_wait_count(body, index) < 32
+                            })
+                    }
                 }
         });
     let accepted = selected.is_some();
@@ -4263,6 +4321,23 @@ fn match_step(state: &AppState, method: &str, path: &str, body: &Value) -> Resul
         diagnostic,
     });
     let index = selected.ok_or(())?;
+    if let RequestMatch::ToolScrollCompletion { call_ids, .. } = script.steps[index].request.base()
+        && let Some(pending) = tool_scroll_pending(body, call_ids)
+        && !pending.is_empty()
+    {
+        let wait_id = format!("scroll-wait-{index}-{}", script.requests.len());
+        let borrowed = pending.iter().map(String::as_str).collect::<Vec<_>>();
+        return Ok(Reply::Sse(responses_tool_calls(
+            "scroll-wait",
+            "fixture-model",
+            &[RealtimeToolCall {
+                item_id: &wait_id,
+                call_id: &wait_id,
+                name: TOOL_WAIT_NAME,
+                arguments: realtime_wait_arguments(&borrowed),
+            }],
+        )));
+    }
     let reply = script.steps[index].reply.clone();
     script.cursor = index + 1;
     Ok(reply)
@@ -4295,6 +4370,9 @@ fn reject_diagnostic(
         Some(RequestMatch::ToolCompletion {
             call_id, marker, ..
         }) => ("tool_completion", Some(format!("{call_id}:{marker}"))),
+        Some(RequestMatch::ToolScrollCompletion { call_ids, .. }) => {
+            ("tool_scroll_completion", Some(call_ids.join(",")))
+        }
         Some(RequestMatch::Exact(_) | RequestMatch::Replay { .. }) => ("exact", None),
         None => ("none", None),
     };
@@ -4316,6 +4394,9 @@ fn reject_diagnostic(
         }) => {
             tool_output_contains(body, call_id, marker)
                 || tool_delivery_contains(body, call_id, tool_id, marker)
+        }
+        Some(RequestMatch::ToolScrollCompletion { call_ids, .. }) => {
+            tool_scroll_pending(body, call_ids).is_some()
         }
         Some(RequestMatch::Exact(_) | RequestMatch::Replay { .. }) | None => false,
     };
@@ -4449,6 +4530,96 @@ fn tool_delivery_contains(body: &Value, call_id: &str, tool_id: &str, marker: &s
 
 fn tool_running_receipt(call_id: &str) -> String {
     format!("Task task:{call_id} is running. Its result will be delivered when execution finishes.")
+}
+
+/// The current tool-scroll batch is ready only after every exact command has a
+/// foreground terminal result or its own background terminal delivery. Running
+/// receipts are never treated as completion, even when another task wakes wait.
+fn tool_scroll_pending(body: &Value, call_ids: &[String]) -> Option<Vec<String>> {
+    let items = body
+        .get("input")
+        .or_else(|| body.get("messages"))?
+        .as_array()?;
+    let mut pending = Vec::new();
+    for call_id in call_ids {
+        let output = items.iter().find_map(|item| {
+            if item.get("type").and_then(Value::as_str) == Some("function_call_output")
+                && item.get("call_id").and_then(Value::as_str) == Some(call_id)
+            {
+                item.get("output").and_then(Value::as_str)
+            } else if item.get("role").and_then(Value::as_str) == Some("tool")
+                && item.get("tool_call_id").and_then(Value::as_str) == Some(call_id)
+            {
+                item.get("content").and_then(Value::as_str)
+            } else {
+                None
+            }
+        })?;
+        if exec_result_is_terminal(output) {
+            continue;
+        }
+        if !output.contains(&tool_running_receipt(call_id)) {
+            return None;
+        }
+        let notice_prefix = format!("Task task:{call_id} for tool exec finished: ");
+        let delivered = items.iter().any(|item| {
+            item.get("role").and_then(Value::as_str) == Some("user")
+                && user_text(item).is_some_and(|text| {
+                    ["Succeeded.", "Failed.", "Cancelled.", "TimedOut."]
+                        .iter()
+                        .any(|status| text.starts_with(&format!("{notice_prefix}{status}")))
+                })
+                && match item.get("content") {
+                    Some(Value::String(text)) => exec_result_is_terminal(text),
+                    Some(Value::Array(parts)) => parts.iter().any(|part| {
+                        part.get("text")
+                            .and_then(Value::as_str)
+                            .is_some_and(exec_result_is_terminal)
+                    }),
+                    _ => false,
+                }
+        });
+        if !delivered {
+            pending.push(call_id.clone());
+        }
+    }
+    Some(pending)
+}
+
+fn tool_scroll_wait_count(body: &Value, step: usize) -> usize {
+    let prefix = format!("scroll-wait-{step}-");
+    body.get("input")
+        .or_else(|| body.get("messages"))
+        .and_then(Value::as_array)
+        .map_or(0, |items| {
+            items
+                .iter()
+                .filter(|item| {
+                    item.get("type").and_then(Value::as_str) == Some("function_call")
+                        && item
+                            .get("call_id")
+                            .and_then(Value::as_str)
+                            .is_some_and(|id| id.starts_with(&prefix))
+                })
+                .count()
+        })
+}
+
+fn exec_result_is_terminal(text: &str) -> bool {
+    let Some(start) = text.find('{') else {
+        return false;
+    };
+    let Some(Ok(value)) = serde_json::Deserializer::from_str(&text[start..])
+        .into_iter::<Value>()
+        .next()
+    else {
+        return false;
+    };
+    value["state"]["kind"] == "final"
+        && matches!(
+            value["state"]["data"]["result"]["kind"].as_str(),
+            Some("succeeded" | "failed" | "cancelled" | "timedOut")
+        )
 }
 
 /// Whether the request carries the committed tool output for `call_id`.

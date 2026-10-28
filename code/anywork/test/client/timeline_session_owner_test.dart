@@ -124,7 +124,7 @@ void main() {
     );
     final owner = TimelineSessionOwner(client: client);
     addTearDown(owner.close);
-    client.workspace.selectThread('thread', projectId: 'project');
+    client.selection.selectThread(threadId: 'thread', projectId: 'project');
     client.conversations.setVisibleThread('thread');
     owner.select('thread');
     await _until(() => transport.connections.isNotEmpty);
@@ -948,7 +948,7 @@ void main() {
       revision: 1,
     );
     expect(
-      () => client.workspace.selectThread('thread', projectId: 'project'),
+      () => client.conversations.setVisibleThread('thread'),
       throwsA(
         isA<ResourceBudgetExceeded>()
             .having((error) => error.kind, 'kind', ResourceKind.readModel)
@@ -963,7 +963,7 @@ void main() {
     }
     // 首次准入失败没有创建 Session；清除失败需求后以同一预算重试真实准入。
     client.conversations.setVisibleThread(null);
-    client.workspace.selectThread('thread', projectId: 'project');
+    client.conversations.setVisibleThread('thread');
     owner.select('thread');
     await _until(() => transport.connections.isNotEmpty);
     await transport.connections.single.opened.future;
@@ -2518,7 +2518,7 @@ void main() {
     );
     await owner.source.waitFor((state) => state!.isPreparingLive);
 
-    client.workspace.selectThread('other', projectId: 'project');
+    client.selection.selectThread(threadId: 'other', projectId: 'project');
     owner.select(null);
     client.conversations.setVisibleThread('other');
     owner.select('other');
@@ -2562,7 +2562,10 @@ void main() {
     ready.transport.holdNextOpen = true;
     final switching = ready.owner.returnToLive('thread');
     await ready.owner.source.waitFor((state) => state!.isPreparingLive);
-    ready.client.workspace.selectThread('other', projectId: 'project');
+    ready.client.selection.selectThread(
+      threadId: 'other',
+      projectId: 'project',
+    );
     ready.owner.select(null);
     ready.client.conversations.setVisibleThread('other');
     ready.owner.select('other');

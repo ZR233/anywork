@@ -142,13 +142,13 @@ abstract final class TimelineActivityGroupPreviewFixtures {
     );
     controller.add(
       completedTool(
-        id: 'tool-read-file',
+        id: 'tool-stat-path',
         sequence: 2,
         startOffsetSeconds: 2,
         endOffsetSeconds: 5,
-        toolName: 'read_file',
-        arguments: '{"path":"code/anywork/lib/src/features/timeline/timeline_activity_group_models.dart"}',
-        output: 'Read 320 lines from timeline_activity_group_models.dart',
+        toolName: 'stat_path',
+        arguments: '{"path":"code/anywork/lib/src/features/conversation/timeline/widgets/timeline_activity_group_models.dart"}',
+        output: 'File metadata for timeline_activity_group_models.dart',
       ),
     );
     controller.add(
@@ -171,7 +171,7 @@ abstract final class TimelineActivityGroupPreviewFixtures {
         startOffsetSeconds: 7,
         endOffsetSeconds: 8,
         toolName: 'edit_file',
-        arguments: '{"path":"code/anywork/lib/src/features/timeline/timeline_activity_group_views.dart"}',
+        arguments: '{"path":"code/anywork/lib/src/features/conversation/timeline/widgets/timeline_activity_group_views.dart"}',
         output: 'Updated TimelineActivityGroupBlock to consume TimelineActivityGroupController',
       ),
     );
@@ -284,7 +284,7 @@ class _TimelineActivityGroupInteractivePreviewState
         endOffsetSeconds: end,
         toolName: 'search_code',
         arguments: '{"query":"TimelineActivityGroupMessage","step":$seq}',
-        output: 'Found 4 matches in code/anywork/lib/src/features/timeline/',
+        output: 'Found 4 matches in code/anywork/lib/src/features/conversation/timeline/',
       ),
       '工具调用',
     );

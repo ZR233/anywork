@@ -441,7 +441,7 @@ void main() {
     );
     addTearDown(container.dispose);
     final workspace = container.listen(
-      shellComposerWorkspaceProvider,
+      conversationWorkspaceProvider('thread-main'),
       (_, _) {},
     );
     final status = container.listen(
@@ -609,6 +609,7 @@ void main() {
       expect(directory['titles'], {'thread': 'Updated canonical title'});
       studioDriverTopicDiagnostics(
         client,
+        timeline: timeline,
         accountsRepository: graph.accounts,
         modelsRepository: graph.models,
         usageRepository: graph.accountUsage,
@@ -1010,8 +1011,8 @@ void main() {
       revision: 1,
     );
     final timeline = graph.timeline;
-    (graph..setConversationPageVisible(true)).client.workspace.selectThread(
-      'thread',
+    (graph..setConversationPageVisible(true)).client.selection.selectThread(
+      threadId: 'thread',
       projectId: 'project',
     );
     await timeline.source.waitFor(
@@ -1105,8 +1106,8 @@ void main() {
         revision: 1,
       );
       final timeline = graph.timeline;
-      (graph..setConversationPageVisible(true)).client.workspace.selectThread(
-        'thread',
+      (graph..setConversationPageVisible(true)).client.selection.selectThread(
+        threadId: 'thread',
         projectId: 'project',
       );
       await timeline.source.waitFor(

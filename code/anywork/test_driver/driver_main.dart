@@ -1609,6 +1609,7 @@ Map<String, Object?> _driverDiagnostics({StudioDriverFacts? observed}) {
     'accountsPresentation': _accountsPresentation(),
     'topics': studioDriverTopicDiagnostics(
       _client,
+      timeline: _container.read(appGraphProvider).timeline,
       accountsRepository: _container.read(appGraphProvider).accounts,
       modelsRepository: _container.read(appGraphProvider).models,
       usageRepository: _container.read(appGraphProvider).accountUsage,

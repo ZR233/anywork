@@ -5,7 +5,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter/gestures.dart' show DragStartBehavior;
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:go_router/go_router.dart';
 import 'package:multi_split_view/multi_split_view.dart';
 
 import '../../app/app_graph.dart';
@@ -26,7 +25,6 @@ import '../../platform/vscode_launcher.dart';
 import '../../platform/zed_launcher.dart';
 import '../../shared/studio_chrome.dart';
 import '../../shared/studio_driver_keys.dart';
-import '../../shared/studio_routes.dart';
 import '../../shared/delegation_labels.dart';
 import 'agent_switcher_menu.dart';
 import '../../shared/studio_driver_state.dart';
@@ -45,6 +43,7 @@ import '../conversation/timeline/view_models/timeline_view_model.dart';
 import '../todo/todo_panel.dart';
 import 'shell_view.dart';
 import 'thread_preparation_card.dart';
+import '../../app/routing/app_route.dart';
 
 part 'studio_sidebar.dart';
 part 'add_project_dialog.dart';
@@ -201,6 +200,7 @@ class _StudioShellState extends ConsumerState<StudioShell> {
               ? _StudioFatalError(error: startup.error!)
               : const _StudioStartup();
         }
+        final selection = ref.watch(shellSelectionProvider);
         final chrome = ref.watch(shellChromeViewProvider);
         final sidebar = ref.watch(sidebarViewProvider);
         final header = ref.watch(headerViewProvider);
@@ -391,7 +391,12 @@ class _StudioShellState extends ConsumerState<StudioShell> {
                               ),
                             const RecoveryCheckStatus(showChecking: false),
                             const Divider(height: 1),
-                            const Expanded(child: AgentWorkspacePane()),
+                            Expanded(
+                              child: AgentWorkspacePane(
+                                threadId: selection.selectedThreadId,
+                                needsOpen: selection.needsOpen,
+                              ),
+                            ),
                           ],
                         ),
                       ),

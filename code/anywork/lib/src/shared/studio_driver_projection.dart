@@ -68,22 +68,35 @@ StudioDriverFacts queryStudioDriverFacts(
     selection.selectedProjectId,
   );
   final selectedThreadId = selection.selectedThreadId;
-  final session = selectedThreadId == null || selection.needsOpen
+  final visibleThreadId = client.conversations.visibleThreadId.value;
+  // Hidden pages can still observe the selected background execution; visible
+  // bot pages always use their own destination rather than sidebar selection.
+  final presentationThreadId = timeline.source.value?.threadId;
+  final observedThreadId =
+      presentationThreadId ?? visibleThreadId ?? selectedThreadId;
+  final session =
+      observedThreadId == null ||
+          (presentationThreadId == null &&
+              visibleThreadId == null &&
+              selection.needsOpen)
       ? null
-      : client.conversations.sessionState(selectedThreadId);
-  final thread = client.findThread(selectedThreadId ?? '');
+      : client.conversations.sessionState(observedThreadId);
+  final thread =
+      client.findThread(observedThreadId ?? '') ?? session?.workspace?.thread;
   final agents = projects.agents?.values ?? const <StudioAgentView>[];
   final rootId = AgentDirectoryQueries.rootThreadId(
-    threadId: selectedThreadId,
+    threadId: observedThreadId,
     agents: agents,
     threads: threads,
   );
-  final root = threads
-      .where((thread) => thread.id == rootId && thread.isRoot)
-      .firstOrNull;
-  final threadComposer = selectedThreadId == null
+  final root =
+      threads
+          .where((thread) => thread.id == rootId && thread.isRoot)
+          .firstOrNull ??
+      (thread?.isRoot == true ? thread : null);
+  final threadComposer = observedThreadId == null
       ? const ComposerThreadState.idle()
-      : client.drafts.existingComposer(selectedThreadId)?.state ??
+      : client.drafts.existingComposer(observedThreadId)?.state ??
             const ComposerThreadState.idle();
   final newThreadComposer = _newThreadComposer(client, selection);
   final projectDraft = client.drafts.startDraft.state.forProject(
@@ -121,13 +134,14 @@ StudioDriverFacts queryStudioDriverFacts(
   }
 
   return StudioDriverFacts(
-    timeline: _timelineFacts(timeline, selectedThreadId),
-    timelineScroll: _timelineScrollFacts(timeline, selectedThreadId),
+    timeline: _timelineFacts(timeline, presentationThreadId),
+    timelineScroll: _timelineScrollFacts(timeline, presentationThreadId),
     workspacesByThread: {
       for (final state in client.conversations.sessionStates)
         if (state.workspace case final workspace?)
-          if (client.findThread(state.threadId) case final identity?)
-            state.threadId: workspace.copyWith(thread: identity),
+          state.threadId: workspace.copyWith(
+            thread: client.findThread(state.threadId) ?? workspace.thread,
+          ),
     },
     rootThreads: [
       for (final thread in threads)
@@ -136,6 +150,8 @@ StudioDriverFacts queryStudioDriverFacts(
     directoryHasMore: directory.hasMore,
     selectedProjectId: selection.selectedProjectId,
     selectedThreadId: selectedThreadId,
+    visibleThreadId: visibleThreadId,
+    presentationThreadId: presentationThreadId,
     newThreadMode: projectDraft.mode,
     newThreadWorkspaceMode: projectDraft.workspaceMode,
     newThreadComposer: newThreadComposer,
@@ -175,6 +191,7 @@ StudioDriverFacts queryStudioDriverFacts(
 /// this endpoint never changes topic demand, even if no Widget observes it.
 Map<String, Object?> studioDriverTopicDiagnostics(
   AnyworkClient client, {
+  required TimelineSessionOwner timeline,
   required AccountsRepository accountsRepository,
   required ModelsRepository modelsRepository,
   required AccountUsageRepository usageRepository,
@@ -189,7 +206,10 @@ Map<String, Object?> studioDriverTopicDiagnostics(
       'totalRefs': refs.values.fold(0, (total, value) => total + value),
     },
     'connections': _connectionCounts(client),
-    'projectionRevisions': _projectionRevisions(client),
+    'projectionRevisions': _projectionRevisions(
+      client,
+      timeline.source.value?.threadId,
+    ),
     // Domain observations expose business resource stamps, not transport sync
     // counters. Reading these surfaces acquires no display/network demand.
     'accountDomains': {
@@ -535,11 +555,20 @@ Map<String, int> _connectionCounts(AnyworkClient client) {
   return counts.toJson();
 }
 
-Map<String, Object?> _projectionRevisions(AnyworkClient client) {
+Map<String, Object?> _projectionRevisions(
+  AnyworkClient client,
+  String? presentationThreadId,
+) {
   final settings = client.settings.state;
   final selection = client.selection.state;
-  final selected = selection.selectedThreadId;
-  final session = selected == null || selection.needsOpen
+  final visible = client.conversations.visibleThreadId.value;
+  final selected =
+      presentationThreadId ?? visible ?? selection.selectedThreadId;
+  final session =
+      selected == null ||
+          (presentationThreadId == null &&
+              visible == null &&
+              selection.needsOpen)
       ? null
       : client.conversations.sessionState(selected);
   final skills = [
@@ -561,7 +590,7 @@ Map<String, Object?> _projectionRevisions(AnyworkClient client) {
     'agentProfiles': settings.agentProfiles?.revision,
     'bots': client.bots.state.revision,
     'threadDirectory': client.threadDirectory.state.revision,
-    'selectedThread': session?.workspace?.revision,
+    'presentationThread': session?.workspace?.revision,
     'skills': {
       'scopeCount': skills.length,
       'maxRevision': _maxRevision(skills),

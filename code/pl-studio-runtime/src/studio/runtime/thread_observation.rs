@@ -54,6 +54,8 @@ pub(in crate::studio) enum ThreadLiveEvent {
     Rebase { dropped: u64 },
     /// Current runtime facts, including live model availability (absent from checkpoints).
     Runtime {
+        observation_revision: u64,
+        catalog_revision: u64,
         runtime: Arc<pl_protocol::ThreadRuntimeSnapshot>,
     },
     /// Current execution activity of the Thread; `None` means no activity.
@@ -64,6 +66,7 @@ pub(in crate::studio) enum ThreadLiveEvent {
     /// inline value: the feed is a `broadcast` channel that clones its frame once per subscriber, so
     /// the body must stay cheap to clone and must not bloat the frame every other variant shares.
     Activity {
+        observation_revision: u64,
         activity: Option<Arc<pl_protocol::ThreadActivity>>,
     },
 }
@@ -252,6 +255,7 @@ impl Observation {
 #[derive(Clone)]
 pub(super) struct ObservationServices {
     pub(super) config: crate::config::ConfigRuntime,
+    pub(super) settings_updates: watch::Receiver<crate::config::ConfigRuntimeSnapshot>,
     pub(super) recovery: crate::studio::StudioRecoveryRegistry,
     pub(super) store: StudioStore,
     pub(super) events: ProductEventBus,
@@ -516,6 +520,8 @@ impl ThreadObservations {
             .iter()
             .find(|detail| detail.thread_id == id)
             .map(|detail| storage_state(&thread.snapshot(), detail));
+        // Register the non-replayable catalog source before publishing the feed.
+        let catalogs = self.0.projector.config.subscribe_model_catalogs();
         let feed = Arc::new(ThreadLiveFeed::new(initial_storage));
         self.0
             .live
@@ -534,6 +540,7 @@ impl ThreadObservations {
                 worker_state,
                 recovered_through,
                 feed,
+                catalogs,
             )
             .await;
         });
@@ -903,9 +910,9 @@ impl LiveOwner {
         // installed with, so a subscriber that opened before this first pass sees the authoritative
         // fact instead of an unset placeholder.
         let storage_published = persistence.map(|detail| storage_state(snapshot, detail));
-        // Seed the runtime baseline from the same snapshot and cumulative usage that the first
-        // stream pass will project. This prevents owner activation itself from emitting a duplicate
-        // runtime frame; subsequent frames still advance only when the typed projection changes.
+        // A subscriber may already have an older catalog baseline while this
+        // owner initializes. Publish the initial qualification too; its source
+        // stamps let a current subscriber discard it without manufacturing a gap.
         let mut runtime = crate::studio::thread_projection::project_runtime(
             id,
             snapshot,
@@ -914,6 +921,11 @@ impl LiveOwner {
         )?;
         let (config, catalog) = projector.config.read_with_catalog()?;
         crate::studio::model_route::annotate_availability(&mut runtime, &thread, &config.config)?;
+        feed.publish(|| ThreadLiveEvent::Runtime {
+            observation_revision: snapshot.observation_revision,
+            catalog_revision: catalog.revision,
+            runtime: Arc::new(runtime.clone()),
+        });
         let runtime_published = Some(runtime);
         feed.publish_storage(storage_published.clone());
         let owner = Self {
@@ -1361,6 +1373,8 @@ impl LiveOwner {
         runtime.usage.updated_at = runtime.updated_at;
         let runtime = self.runtime_published.insert(runtime);
         self.feed.publish(|| ThreadLiveEvent::Runtime {
+            observation_revision: snapshot.observation_revision,
+            catalog_revision: self.qualification_revision,
             runtime: Arc::new(runtime.clone()),
         });
         Ok(())
@@ -1380,6 +1394,7 @@ impl LiveOwner {
         self.activity_published = activity;
         // One shared handle per published change: every subscriber clones that handle, never the body.
         self.feed.publish(|| ThreadLiveEvent::Activity {
+            observation_revision: snapshot.observation_revision,
             activity: self.activity_published.clone().map(Arc::new),
         });
     }
@@ -1559,6 +1574,7 @@ async fn run(
     state: Arc<WorkerState>,
     recovered_through: u64,
     feed: Arc<ThreadLiveFeed>,
+    mut catalogs: broadcast::Receiver<crate::config::CatalogChange>,
 ) {
     use futures::FutureExt;
     let mut updates = thread.subscribe();
@@ -1572,6 +1588,9 @@ async fn run(
     // change with no owner frame and no handoff, so without this arm the owner would only publish
     // the fault when something unrelated happened to arrive.
     let mut persistence = projector.store.thread_persistence().subscribe();
+    let mut settings = projector.settings_updates.clone();
+    settings.borrow_and_update();
+    let mut settings_open = true;
     let mut current = thread.snapshot();
     let mut worker = ProjectionWorker {
         services: projector,
@@ -1697,6 +1716,21 @@ async fn run(
             // A typed storage change with no owner frame still has to reach subscribers; re-run the
             // pass so the owner republishes the state it just read.
             _ = persistence.changed() => current = worker.thread.snapshot(),
+            changed = settings.changed(), if settings_open => {
+                settings_open = changed.is_ok();
+                settings.borrow_and_update();
+                current = worker.thread.snapshot();
+            }
+            // Availability may change with no core publication or business
+            // commit. The same owner reprojects against the new catalog.
+            change = catalogs.recv(), if !catalogs.is_closed() => {
+                match change {
+                    Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {
+                        current = worker.thread.snapshot();
+                    }
+                    Err(broadcast::error::RecvError::Closed) => {}
+                }
+            }
             update = updates.next() => match update {
                 Some(snapshot) => current = snapshot,
                 None => {
@@ -2408,8 +2442,10 @@ mod storage_fault_tests {
             config.clone(),
             factory.clone(),
         ))?;
+        let settings_updates = watch::channel(config.read()?).1;
         let services = ObservationServices {
             config,
+            settings_updates,
             recovery,
             store: store.clone(),
             events,

@@ -173,10 +173,6 @@ class TimelineEntryView extends StatelessWidget {
         descriptor.invocation.name == 'show_image') {
       return _imageCard(context, item, descriptor);
     }
-    if (descriptor is ConversationToolDescriptor &&
-        descriptor.invocation.name == 'read_file') {
-      return _readFileRow(context, item, descriptor);
-    }
     if (descriptor is ConversationToolDescriptor && descriptor.wait != null) {
       return TimelineWaitPanel(
         identity: item.id,
@@ -286,51 +282,6 @@ class TimelineEntryView extends StatelessWidget {
         if (entry.kind == TimelineEntryKind.images) mediaBuilder(item),
         if (!runtimeNotice)
           TimelineDetailNotices(item: item, onDetail: onDetail),
-      ],
-    );
-  }
-
-  Widget _readFileRow(
-    BuildContext context,
-    ConversationItem item,
-    ConversationToolDescriptor descriptor,
-  ) {
-    final path = item.readFilePath;
-    final slash = path?.lastIndexOf('/') ?? -1;
-    final backslash = path?.lastIndexOf('\\') ?? -1;
-    final separator = slash > backslash ? slash : backslash;
-    final basename = path == null || separator == path.length - 1
-        ? null
-        : path.substring(separator + 1);
-    final expanded = entry.expandedMembers.contains(item.id);
-    final expandable =
-        item.fields.any((field) => field.text.trim().isNotEmpty) ||
-        item.details.any((detail) => detail.truncated);
-    return Column(
-      key: StudioDriverKeys.timelineBlock(item.id),
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        SelectionContainer.disabled(
-          child: InkWell(
-            onTap: expandable ? () => entry.toggleMember(item.id) : null,
-            child: TimelineActivityRow(
-              icon: Icons.menu_book_outlined,
-              label:
-                  '${basename ?? descriptor.invocation.name} · ${_toolStatus(descriptor.state)}',
-              tooltip: path,
-              expandable: expandable,
-              expanded: expanded,
-              active: !item.terminal,
-              isIssue:
-                  descriptor.state is ConversationToolFailed ||
-                  descriptor.state is ConversationToolDenied,
-            ),
-          ),
-        ),
-        if (expanded) ...[
-          _fields(item),
-          TimelineDetailNotices(item: item, onDetail: onDetail),
-        ],
       ],
     );
   }

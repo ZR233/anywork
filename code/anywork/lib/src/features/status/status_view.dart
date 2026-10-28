@@ -1,4 +1,5 @@
 import 'package:riverpod_annotation/riverpod_annotation.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../presentation/providers/client_provider.dart';
 import '../../presentation/providers/account_domains.dart';
@@ -6,6 +7,7 @@ import '../../presentation/providers/lsp_store.dart';
 import '../../presentation/providers/mode_catalog_store.dart';
 import '../../presentation/providers/observe_client.dart';
 import '../../presentation/providers/thread_directory_store.dart';
+import '../../presentation/providers/thread_session_store.dart';
 import '../../presentation/providers/settings_store.dart';
 
 import 'package:anywork_client/studio_client.dart';
@@ -42,7 +44,7 @@ List<LspServerStateView> statusLspServers(Ref ref) {
 /// part of this value, so response-timing updates cannot rebuild the chrome.
 @riverpod
 StatusBarView? statusBarView(Ref ref, String threadId) {
-  final thread = _directoryThread(ref, threadId);
+  final thread = _threadIdentity(ref, threadId);
   if (thread == null) return null;
   final accounts = ref.watch(modelSelectionAccountsProvider);
   final roles = ref.watch(settingsStoreProvider).canonical?.roles;
@@ -187,13 +189,17 @@ T? _observeSession<T>(
   return current;
 }
 
-StudioThread? _directoryThread(Ref ref, String threadId) {
+StudioThread? _threadIdentity(Ref ref, String threadId) {
   final directory = ref.watch(threadDirectoryStoreProvider);
+  final sessionThread = ref.watch(
+    threadSessionStoreProvider(threadId)
+        .select((state) => state.workspace?.thread),
+  );
   for (final thread in [
     ...directory.window.threads,
     ...directory.overlayThreads,
   ]) {
     if (thread.id == threadId) return thread;
   }
-  return null;
+  return sessionThread;
 }

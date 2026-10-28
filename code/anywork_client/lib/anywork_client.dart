@@ -1,7 +1,6 @@
 /// Application-owned client state. This library has no UI or transport runtime.
 library;
 
-export 'src/application/studio_client.dart';
 export 'src/commands/mutation_board.dart';
 export 'src/contracts/stamps.dart';
 export 'src/lifecycle/resource_budget.dart';

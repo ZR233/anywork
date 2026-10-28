@@ -350,11 +350,11 @@ final class TimelineSessionOwner {
 
   /// Navigation may explicitly detach presentation while retaining selection
   /// (for example, settings). This does not change business subscription demand.
-  void select(String? threadId) {
+  void select(String? threadId, {ResourceBudgetExceeded? admissionFailure}) {
     if (_closed) return;
-    final session = threadId == null
+    final session = threadId == null || admissionFailure != null
         ? null
-        : _client.conversations.session(threadId);
+        : _client.conversations.existingSession(threadId);
     if (_observedThread == threadId &&
         identical(_observedSession, session) &&
         _timelineObservation != null) {
@@ -382,8 +382,10 @@ final class TimelineSessionOwner {
         threadId: threadId,
         generation: 0,
         mode: TimelineDisplayMode.live,
-        connection: TimelineConnectionPhase.idle,
-        connectionError: null,
+        connection: admissionFailure == null
+            ? TimelineConnectionPhase.idle
+            : TimelineConnectionPhase.failed,
+        connectionError: admissionFailure,
         olderCursor: null,
         hasOlder: false,
         isLoadingOlder: false,
@@ -392,16 +394,7 @@ final class TimelineSessionOwner {
         isPreparingLive: false,
       ),
     );
-    if (session == null) {
-      final failure = _client.resourceFailure.value;
-      if (failure?.owner == 'session:$threadId') {
-        _publishState(
-          connection: TimelineConnectionPhase.failed,
-          connectionError: failure!.reason,
-        );
-      }
-      return;
-    }
+    if (session == null) return;
     final watched = session.content.state.watchLatest(
       (state) => _onTimelineState(threadId, state),
     );

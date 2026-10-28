@@ -1797,8 +1797,6 @@ void main() {
       client.mutations.operations.single.phase,
       OperationPhase.unknownOutcome,
     );
-    client.workspace.showSettings();
-    client.workspace.hideSettings();
     await owner.submit();
     expect(transport.promptCalls, 1);
     expect(
