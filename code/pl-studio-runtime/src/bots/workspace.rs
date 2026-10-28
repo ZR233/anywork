@@ -219,7 +219,6 @@ fn migrate_owned_directory(
     pl_tool::workspace::path_safety::validate_path_for_write(target_container, target)
         .map_err(std::io::Error::other)?;
     reject_link(target)?;
-    std::fs::create_dir_all(target)?;
     let marker = target.join(".migration-complete");
     if marker.exists() {
         reject_link(&marker)?;
@@ -230,10 +229,17 @@ fn migrate_owned_directory(
         }
         return Ok(());
     }
+    if !std::fs::metadata(source_container)?.is_dir() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotADirectory,
+            "bot workspace migration source is not a directory",
+        ));
+    }
     pl_tool::workspace::path_safety::validate_path_for_write(source_container, source)
         .map_err(std::io::Error::other)?;
     reject_link(source)?;
-    if source != target && source.is_dir() {
+    std::fs::create_dir_all(target)?;
+    if source != target && source.try_exists()? {
         copy_owned_directory(source, target)?;
     }
     pl_tool::workspace::write_file_atomically(&marker, source.to_string_lossy().as_bytes())?;
@@ -354,5 +360,28 @@ mod migration_tests {
             !source.exists(),
             "a completed migration must not recreate its old source"
         );
+
+        // A refresh can pass admission before its completion marker disappears. The copy boundary
+        // must still reject an unavailable source rather than publish a new completion for no copy.
+        let marker = target.join(".migration-complete");
+        let completion = fs::read(&marker).unwrap();
+        fs::remove_file(&marker).unwrap();
+        let error =
+            migrate_owned_directory(&business, &source, temp.path(), &target, "owned").unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+        assert!(!marker.exists());
+        assert!(!source.exists());
+        assert_eq!(
+            fs::read_to_string(target.join("scratch/new.txt")).unwrap(),
+            "new work"
+        );
+        let nested_target = business.join("studio-home/bot/workspace/owned");
+        let error =
+            migrate_owned_directory(&business, &source, temp.path(), &nested_target, "owned")
+                .unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+        assert!(!business.exists());
+        fs::write(&marker, completion).unwrap();
+        migrate_owned_directory(&business, &source, temp.path(), &target, "owned").unwrap();
     }
 }

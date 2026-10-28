@@ -9,6 +9,96 @@ import 'scrollbar_drag.dart';
 import 'timeline_observation.dart';
 import 'tool_probe.dart';
 
+/// 判定真实 thumb 采样；仅将前一帧已越界、当前精确落回该边界的反向位移
+/// 视为范围夹紧。夹紧不计入用户方向的连续位移次数。
+Map<String, Object?> assessThumbDrag(List<dynamic> samples, bool increasing) {
+  var changes = 0;
+  final clamps = <Map<String, Object?>>[];
+  Map<String, Object?> invalid(String reason, int index) => <String, Object?>{
+    'continuous': false,
+    'directionalChanges': 0,
+    'clamps': clamps,
+    'invalidReason': reason,
+    'invalidIndex': index,
+  };
+  if (samples.isEmpty || samples.first is! Map) {
+    return invalid('missingBaseline', 0);
+  }
+  final baseline = samples.first as Map;
+  final threadId = baseline['threadId'];
+  final generation = baseline['generation'];
+  if (threadId is! String ||
+      threadId.trim().isEmpty ||
+      generation is! int ||
+      generation < 0) {
+    return invalid('invalidIdentity', 0);
+  }
+  for (var index = 0; index < samples.length; index++) {
+    final sample = samples[index];
+    if (sample is! Map) return invalid('invalidSample', index);
+    if (sample['threadId'] != threadId ||
+        sample['generation'] is! int ||
+        sample['generation'] != generation) {
+      return invalid('identityMismatch', index);
+    }
+    final pixels = sample['pixels'];
+    final min = sample['minScrollExtent'];
+    final max = sample['maxScrollExtent'];
+    final viewport = sample['viewportDimension'];
+    if (pixels is! num ||
+        !pixels.isFinite ||
+        min is! num ||
+        !min.isFinite ||
+        max is! num ||
+        !max.isFinite ||
+        min > max ||
+        viewport is! num ||
+        !viewport.isFinite ||
+        viewport <= 0) {
+      return invalid('invalidGeometry', index);
+    }
+  }
+  for (var index = 1; index < samples.length; index++) {
+    final previous = samples[index - 1] as Map;
+    final current = samples[index] as Map;
+    final before = previous['pixels'] as num;
+    final after = current['pixels'] as num;
+    final delta = after - before;
+    if (increasing ? delta < -0.5 : delta > 0.5) {
+      final min = previous['minScrollExtent'] as num;
+      final max = previous['maxScrollExtent'] as num;
+      final currentMin = current['minScrollExtent'] as num;
+      final currentMax = current['maxScrollExtent'] as num;
+      final clamped =
+          currentMin <= after &&
+          after <= currentMax &&
+          (increasing
+              ? before > max && after == max
+              : before < min && after == min);
+      if (!clamped) {
+        return <String, Object?>{
+          'continuous': false,
+          'directionalChanges': changes,
+          'clamps': clamps,
+          'reverseIndex': index,
+        };
+      }
+      clamps.add(<String, Object?>{
+        'index': index,
+        'previous': previous,
+        'current': current,
+      });
+    } else if (increasing ? delta > 0.5 : delta < -0.5) {
+      changes++;
+    }
+  }
+  return <String, Object?>{
+    'continuous': changes >= 12,
+    'directionalChanges': changes,
+    'clamps': clamps,
+  };
+}
+
 /// Opt-in native observation of the standard timeline scroll behaviour.
 ///
 /// 全部依据只读事实：`timeline`（展示代次/模式/身份）与 `timelineScroll`（当前标准
@@ -130,23 +220,14 @@ Future<Map<String, Object?>> observeTimelineScrolling(
         .writeAsBytes(await driver.screenshot());
     final down = await driver.sendCommand(ScrollbarDrag(timelineFinder, 80));
     observations['thumbDown'] = down;
-    bool monotonic(Map<String, dynamic> result, bool increasing) {
-      final samples = result['samples'] as List;
-      var changes = 0;
-      for (var index = 1; index < samples.length; index++) {
-        final delta =
-            (samples[index]['pixels'] as num) -
-            (samples[index - 1]['pixels'] as num);
-        if (increasing ? delta < -0.5 : delta > 0.5) return false;
-        if (delta.abs() > 0.5) changes++;
-      }
-      return changes >= 12;
-    }
-
     // 视觉上把 thumb 向上拖（负 dy）让 offset 增长（内容向更早方向移动）；向下拖
     // 让 offset 减少。方向写反会把正确滚动判成错误，因此按真实反向坐标断言。
-    observations['thumbUpContinuous'] = monotonic(up, true);
-    observations['thumbDownContinuous'] = monotonic(down, false);
+    final upAssessment = assessThumbDrag(up['samples'] as List, true);
+    final downAssessment = assessThumbDrag(down['samples'] as List, false);
+    observations['thumbUpAssessment'] = upAssessment;
+    observations['thumbDownAssessment'] = downAssessment;
+    observations['thumbUpContinuous'] = upAssessment['continuous'];
+    observations['thumbDownContinuous'] = downAssessment['continuous'];
 
     // 显式回到实时：新代次、最新小页、offset 0。滚动条/滚轮到本地底端不会自行换代。
     final beforeReturn = TimelineObservation.parse(await snapshot());

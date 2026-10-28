@@ -39,9 +39,9 @@ use pl_tool::command::{
 };
 use pl_tool::exec::{CommandAccess, CommandOutputArchive, ExecFailure, ExecInput, ThreadExecTool};
 use pl_tool::workspace_file::{
-    WorkspaceFileBackend, WorkspaceFileListRequest, WorkspaceFileListResult,
-    WorkspaceFileReadBytesRequest, WorkspaceFileReadRequest, WorkspaceFileRemoveRequest,
-    WorkspaceFileStat, WorkspaceFileStatRequest, WorkspaceFileWriteRequest,
+    WorkspaceFileBackend, WorkspaceFileReadBytesRequest, WorkspaceFileReadRequest,
+    WorkspaceFileRemoveRequest, WorkspaceFileStat, WorkspaceFileStatRequest,
+    WorkspaceFileWriteRequest,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -547,17 +547,6 @@ where
 
     async fn remove_file(&self, request: WorkspaceFileRemoveRequest) -> pl_protocol::Result<()> {
         self.inner.remove_file(request).await
-    }
-
-    async fn list(
-        &self,
-        request: WorkspaceFileListRequest,
-    ) -> pl_protocol::Result<WorkspaceFileListResult> {
-        self.inner.list(request).await
-    }
-
-    async fn close_listing(&self, cursor: String) -> pl_protocol::Result<()> {
-        self.inner.close_listing(cursor).await
     }
 
     async fn create_directory(&self, path: String, cwd: Option<String>) -> pl_protocol::Result<()> {
