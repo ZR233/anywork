@@ -142,13 +142,13 @@ abstract final class TimelineActivityGroupPreviewFixtures {
     );
     controller.add(
       completedTool(
-        id: 'tool-read-file',
+        id: 'tool-stat-path',
         sequence: 2,
         startOffsetSeconds: 2,
         endOffsetSeconds: 5,
-        toolName: 'read_file',
+        toolName: 'stat_path',
         arguments: '{"path":"code/anywork/lib/src/features/timeline/timeline_activity_group_models.dart"}',
-        output: 'Read 320 lines from timeline_activity_group_models.dart',
+        output: 'File metadata for timeline_activity_group_models.dart',
       ),
     );
     controller.add(

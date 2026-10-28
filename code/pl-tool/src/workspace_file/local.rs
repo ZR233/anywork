@@ -133,13 +133,13 @@ impl WorkspaceFileBackend for LocalWorkspaceFileBackend {
         let metadata = tokio::fs::metadata(&path).await?;
         if !metadata.is_file() {
             return Err(tool_error(
-                "read_file",
+                "workspace_file",
                 format!("'{}' is not a regular file", request.path),
             ));
         }
         tokio::fs::read_to_string(&path).await.map_err(|error| {
             tool_error(
-                "read_file",
+                "workspace_file",
                 format!(
                     "failed to read '{}': {error}",
                     self.paths.display_relative(&path)

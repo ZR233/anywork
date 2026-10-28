@@ -361,8 +361,8 @@ impl WorkspaceFileBackend for RemoteWorkspaceFileBackend {
             .map_err(remote_file_error)?;
         self.copy_capture_bounded(&path, &mut bytes, self.client.content_budget() as u64)
             .await
-            .map_err(|e| tool_error("read_file", e))?;
-        String::from_utf8(bytes.into_bytes()).map_err(|e| tool_error("read_file", e))
+            .map_err(|e| tool_error("workspace_file", e))?;
+        String::from_utf8(bytes.into_bytes()).map_err(|e| tool_error("workspace_file", e))
     }
     async fn read_bytes(&self, request: WorkspaceFileReadBytesRequest) -> Result<Vec<u8>> {
         let path = resolve_remote_path(request.path, request.cwd).map_err(remote_file_error)?;

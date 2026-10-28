@@ -29,15 +29,15 @@ const _maxImageRecycleSteps = 12;
 /// 每个 canonical 工具调用都是独立条目：按 callId 精确判定 name/status，既不放过
 /// 漏项，也不接受陌生项；判定不依赖时间线顺序或任何活动分组。
 const _expectedToolCalls = <({String callId, String name, String status})>[
-  (callId: 'scroll-call-short', name: 'read_file', status: 'succeeded'),
-  (callId: 'scroll-call-read-second', name: 'read_file', status: 'succeeded'),
-  (callId: 'scroll-call-medium', name: 'read_file', status: 'succeeded'),
-  (callId: 'scroll-call-long', name: 'read_file', status: 'succeeded'),
+  (callId: 'scroll-call-short', name: 'exec', status: 'succeeded'),
+  (callId: 'scroll-call-read-second', name: 'exec', status: 'succeeded'),
+  (callId: 'scroll-call-medium', name: 'exec', status: 'succeeded'),
+  (callId: 'scroll-call-long', name: 'exec', status: 'succeeded'),
   (callId: 'scroll-call-arguments', name: 'exec', status: 'succeeded'),
   (callId: 'scroll-call-a', name: 'view_image', status: 'succeeded'),
   (callId: 'scroll-call-b', name: 'view_image', status: 'succeeded'),
   (callId: 'scroll-call-c', name: 'view_image', status: 'succeeded'),
-  (callId: 'scroll-call-failed', name: 'read_file', status: 'failed'),
+  (callId: 'scroll-call-failed', name: 'exec', status: 'failed'),
 ];
 
 /// 连续三次图片读取共用一条展示摘要，仍按 a/b/c 的原始调用身份验收。
@@ -65,7 +65,7 @@ int _fnv1a64(String text) {
   return hash;
 }
 
-/// 校验长 read_file 的正文、1-based 范围、分页边界和 UTF-8 字节数。
+/// 校验完整 exec 结果的 stdout、退出状态和复制的 UTF-8 字节数。
 Map<String, Object?> _validateLongResult(
   String text,
   int expectedBytes,
@@ -73,25 +73,29 @@ Map<String, Object?> _validateLongResult(
 ) {
   Object? decoded;
   try {
-    decoded = jsonDecode(text);
+    final jsonStart = text.indexOf('{');
+    decoded = jsonDecode(jsonStart < 0 ? text : text.substring(jsonStart));
   } on FormatException catch (error) {
     return <String, Object?>{'valid': false, 'reason': 'invalidJson: $error'};
   }
   if (decoded is! Map) {
     return <String, Object?>{'valid': false, 'reason': 'resultIsNotAnObject'};
   }
-  final content = decoded['text'];
-  final contentHash = decoded['contentHash'];
+  final content = decoded['stdout'];
+  final state = decoded['state'];
+  final stateData = state is Map ? state['data'] : null;
+  final result = stateData is Map ? stateData['result'] : null;
+  final resultData = result is Map ? result['data'] : null;
   final deliveredBytes = utf8.encode(text).length;
   final checks = <String, Object?>{
-    'pathMatchesFixture': decoded['path'] == 'scroll-fixture/long-read.txt',
-    'startLineIsOne': decoded['startLine'] == 1,
-    'endLineIsFiveHundred': decoded['endLine'] == 500,
-    'noNextPage': decoded['nextStartLine'] == null,
+    'terminalSuccess':
+        state is Map &&
+        state['kind'] == 'final' &&
+        result is Map &&
+        result['kind'] == 'succeeded',
+    'exitCodeZero': resultData is Map && resultData['exit_code'] == 0,
+    'stderrEmpty': decoded['stderr'] == '',
     'fullContentMatchesFixture': content == expectedContent,
-    'contentHashWellFormed':
-        contentHash is String &&
-        RegExp(r'^sha256:[0-9a-f]{64}$').hasMatch(contentHash),
     'lengthMatchesDetail': deliveredBytes == expectedBytes,
     'fixtureExceedsCaptureChunk': expectedBytes > 6144,
     'deliveredExceedsCaptureChunk': deliveredBytes > 6144,
@@ -101,9 +105,6 @@ Map<String, Object?> _validateLongResult(
     'valid': valid,
     'expectedBytes': expectedBytes,
     'deliveredBytes': deliveredBytes,
-    'startLine': decoded['startLine'],
-    'endLine': decoded['endLine'],
-    'nextStartLine': decoded['nextStartLine'],
     'checks': checks,
   };
 }
@@ -1022,6 +1023,22 @@ Future<void> main(List<String> args) async {
           'Unexpected tool identity in case $index: '
           '${tool.name}/${tool.status} for $callId',
         );
+      }
+      if (callId == 'scroll-call-short' ||
+          callId == 'scroll-call-read-second' ||
+          callId == 'scroll-call-medium') {
+        final raw = tool.result;
+        final start = raw?.indexOf('{') ?? -1;
+        if (raw == null || start < 0) {
+          throw StateError('Missing exec result for $callId');
+        }
+        final decoded = jsonDecode(raw.substring(start));
+        final expectedText = callId == 'scroll-call-medium'
+            ? '${_longReadFixtureText().split('\n').take(12).join('\n')}\n'
+            : 'Tool scrolling fixture\n';
+        if (decoded is! Map || decoded['stdout'] != expectedText) {
+          throw StateError('Unexpected exec stdout for $callId: $decoded');
+        }
       }
       // F2：每个字段的预览都必须落在真实预算内（参数/结果各 4 KiB，正文共享 32 KiB）。
       for (final detail in toolItem.details) {

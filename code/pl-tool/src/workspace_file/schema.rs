@@ -4,25 +4,22 @@ use serde_json::Value;
 use crate::approval::ToolEffect;
 use crate::typed_tool_input_schema;
 
-use super::ops::{ApplyPatchInput, ReadFileInput};
+use super::ops::ApplyPatchInput;
 
-pub const TOOL_READ_FILE: &str = "read_file";
 pub const TOOL_APPLY_PATCH: &str = "apply_patch";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkspaceFileToolKind {
-    ReadFile,
     ApplyPatch,
 }
 
 impl WorkspaceFileToolKind {
     pub fn all() -> &'static [Self] {
-        &[Self::ReadFile, Self::ApplyPatch]
+        &[Self::ApplyPatch]
     }
 
     pub fn from_name(name: &str) -> Option<Self> {
         match name {
-            TOOL_READ_FILE => Some(Self::ReadFile),
             TOOL_APPLY_PATCH => Some(Self::ApplyPatch),
             _ => None,
         }
@@ -31,23 +28,18 @@ impl WorkspaceFileToolKind {
     /// 该类别工具的副作用声明。
     pub fn effect(self) -> ToolEffect {
         match self {
-            Self::ReadFile => ToolEffect::Read,
             Self::ApplyPatch => ToolEffect::WorkspaceWrite,
         }
     }
 
     pub fn name(self) -> &'static str {
         match self {
-            Self::ReadFile => TOOL_READ_FILE,
             Self::ApplyPatch => TOOL_APPLY_PATCH,
         }
     }
 
     pub fn description(self) -> &'static str {
         match self {
-            Self::ReadFile => {
-                "Read a UTF-8 text file by 1-based source lines. Use startLine and nextStartLine for deterministic paging; each call returns at most 500 lines."
-            }
             Self::ApplyPatch => {
                 "Apply a Codex-style patch to workspace files. The input field must contain a complete patch beginning with *** Begin Patch and ending with *** End Patch. Every Update hunk line starts with a control prefix: space for context, `-` for deletion, or `+` for addition. Preserve a leading `-` or `+` in the file content after that prefix; for example, replace Markdown `- old` with `-- old` and `+- new`."
             }
@@ -56,7 +48,6 @@ impl WorkspaceFileToolKind {
 
     pub fn input_schema(self) -> Value {
         match self {
-            Self::ReadFile => typed_tool_input_schema::<ReadFileInput>(),
             Self::ApplyPatch => typed_tool_input_schema::<ApplyPatchInput>(),
         }
     }

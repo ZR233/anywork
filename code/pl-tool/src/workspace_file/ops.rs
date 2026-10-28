@@ -2,18 +2,14 @@ use crate::tool_error;
 use pl_protocol::Result;
 use schemars::JsonSchema;
 use serde::Deserialize;
-use serde_json::{Value, json};
+use serde_json::Value;
 
 use crate::deserialize_tool_input;
 use pl_output::OutputTruncation;
-use pl_output::text::{line_end_byte_offset, line_start_byte_offset, logical_line_count};
 
 use super::backend::*;
 use super::patch::apply_patch_to_backend;
 use super::schema::*;
-
-const DEFAULT_READ_FILE_LINES: usize = 200;
-const MAX_READ_FILE_LINES: usize = 500;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct WorkspaceFileToolExecution {
@@ -54,79 +50,9 @@ where
         return Ok(None);
     };
     let value = match kind {
-        WorkspaceFileToolKind::ReadFile => read_file(backend, arguments).await?,
         WorkspaceFileToolKind::ApplyPatch => apply_patch(backend, arguments).await?,
     };
     Ok(Some(WorkspaceFileToolExecution::json(value)?))
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub(super) struct ReadFileInput {
-    /// UTF-8 file path to read.
-    path: String,
-    #[serde(flatten)]
-    working_directory: WorkingDirectoryInput,
-    /// 1-based first source line; defaults to 1.
-    #[schemars(range(min = 1))]
-    start_line: Option<usize>,
-    /// Maximum source lines; defaults to 200.
-    #[schemars(range(min = 1, max = 500))]
-    max_lines: Option<usize>,
-}
-
-async fn read_file<B>(backend: &B, arguments: Value) -> Result<Value>
-where
-    B: WorkspaceFileBackend,
-{
-    let input: ReadFileInput = deserialize_tool_input(TOOL_READ_FILE, arguments)?;
-    let start_line = input.start_line.unwrap_or(1);
-    if start_line == 0 {
-        return Err(tool_error(TOOL_READ_FILE, "startLine is 1-based"));
-    }
-    let max_lines = input.max_lines.unwrap_or(DEFAULT_READ_FILE_LINES);
-    if !(1..=MAX_READ_FILE_LINES).contains(&max_lines) {
-        return Err(tool_error(
-            TOOL_READ_FILE,
-            format!("maxLines must be between 1 and {MAX_READ_FILE_LINES}"),
-        ));
-    }
-    let stat_request = WorkspaceFileStatRequest {
-        path: input.path.clone(),
-        cwd: input.working_directory.cwd.clone(),
-    };
-    let stat = backend.stat(stat_request).await?;
-    if !stat.is_file {
-        return Err(tool_error(
-            TOOL_READ_FILE,
-            format!("'{}' is not a regular file", input.path),
-        ));
-    }
-    let content = backend
-        .read_text(WorkspaceFileReadRequest {
-            path: input.path.clone(),
-            cwd: input.working_directory.cwd.clone(),
-        })
-        .await?;
-    let start = line_start_byte_offset(&content, start_line)
-        .map_err(|error| tool_error(TOOL_READ_FILE, error))?;
-    let end = line_end_byte_offset(&content, start, Some(max_lines));
-    let text = content[start..end].to_string();
-    let returned_lines = logical_line_count(&text);
-    let end_line = if returned_lines == 0 {
-        start_line.saturating_sub(1)
-    } else {
-        start_line.saturating_add(returned_lines.saturating_sub(1))
-    };
-    let next_start_line = (end < content.len()).then_some(end_line.saturating_add(1));
-    Ok(json!({
-        "path": input.path,
-        "startLine": start_line,
-        "endLine": end_line,
-        "nextStartLine": next_start_line,
-        "contentHash": pl_core::context::content_hash(content.as_bytes()),
-        "text": text,
-    }))
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]

@@ -124,13 +124,13 @@ where
             .await
             .map_err(|error| {
                 tool_error(
-                    "read_file",
+                    "workspace_file",
                     format!("failed to read `{}`: {error}", request.path),
                 )
             })?;
         String::from_utf8(bytes).map_err(|error| {
             tool_error(
-                "read_file",
+                "workspace_file",
                 format!("failed to decode `{}` as UTF-8: {error}", request.path),
             )
         })

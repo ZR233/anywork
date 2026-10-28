@@ -666,7 +666,7 @@ const timelineIssueStatuses = {'failed', 'denied', 'budgetLimited'};
 /// 只读的计划/工作流查询保留语义图标但沿用“名称＋真实状态”文案，避免把查询说成
 /// 变更；删除、复制、移动与新建各自独立，不笼统归入“已修改”。
 _ToolCategory _toolCategory(String name) => switch (name) {
-  'read_file' || 'read_session_note' || 'stat_path' => _ToolCategory.read,
+  'read_session_note' || 'stat_path' => _ToolCategory.read,
   'apply_patch' ||
   'apply_session_note_patch' ||
   'write_file' ||
@@ -728,10 +728,10 @@ String? _toolVerb(BuildContext context, _ToolCategory category, String status) {
   return switch (category) {
     _ToolCategory.read =>
       running
-          ? l10n.timelineReadFileReading
+          ? l10n.timelineToolReadReading
           : failed
-          ? l10n.timelineReadFileFailed
-          : l10n.timelineReadFileCompleted,
+          ? l10n.timelineToolReadFailed
+          : l10n.timelineToolReadCompleted,
     _ToolCategory.edit =>
       running
           ? l10n.timelineToolEditRunning

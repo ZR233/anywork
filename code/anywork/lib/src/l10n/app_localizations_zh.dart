@@ -1729,13 +1729,13 @@ class AppLocalizationsZh extends AppLocalizations {
   String get timelineViewImageStopped => '已停止读取图片';
 
   @override
-  String get timelineReadFileCompleted => '已读取';
+  String get timelineToolReadCompleted => '已读取';
 
   @override
-  String get timelineReadFileReading => '正在读取';
+  String get timelineToolReadReading => '正在读取';
 
   @override
-  String get timelineReadFileFailed => '读取失败';
+  String get timelineToolReadFailed => '读取失败';
 
   @override
   String get timelineToolEditSucceeded => '已修改';
