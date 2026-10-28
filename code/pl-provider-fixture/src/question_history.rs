@@ -48,6 +48,21 @@ pub fn gui_question_history_answers_json() -> String {
     json!({ "answers": encoded }).to_string()
 }
 
+/// The decision identity is assigned by the client, not by the fixture. Reject
+/// missing identities, extra fields and any difference in the accepted answers.
+pub(super) fn matches_answers(actual: Option<&str>, expected: &str) -> bool {
+    let Some(Value::Object(mut actual)) = actual.and_then(|value| serde_json::from_str(value).ok())
+    else {
+        return false;
+    };
+    let Some(Value::String(operation_id)) = actual.remove("operationId") else {
+        return false;
+    };
+    !operation_id.trim().is_empty()
+        && serde_json::from_str::<Value>(expected)
+            .is_ok_and(|expected| Value::Object(actual) == expected)
+}
+
 fn question_history_arguments() -> String {
     json!({
         "questions": [
@@ -112,17 +127,18 @@ pub fn gui_question_history_script() -> Vec<Step> {
         )
     });
     script.optional_title(&title);
-    script.add(|step| {
-        Step::prompt(
-            Protocol::ResponsesHttp,
-            gui_question_history_answers_json(),
+    script.add(|step| Step {
+        protocol: Protocol::ResponsesHttp,
+        request: RequestMatch::InteractionAnswers {
+            text: gui_question_history_answers_json(),
             step,
-            Reply::Sse(responses_text(
-                "收到：按轻量回执整理发布说明，风险提示单独成句。",
-                "question-history-close",
-                "fixture-model",
-            )),
-        )
+        },
+        reply: Reply::Sse(responses_text(
+            "收到：按轻量回执整理发布说明，风险提示单独成句。",
+            "question-history-close",
+            "fixture-model",
+        )),
+        optional: false,
     });
     script.optional_title(&title);
     script.finish()

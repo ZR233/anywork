@@ -1174,6 +1174,11 @@ pub enum RequestMatch {
         text: String,
         step: usize,
     },
+    /// Exact answers plus the real client's opaque, nonempty decision identity.
+    InteractionAnswers {
+        text: String,
+        step: usize,
+    },
     /// Native compaction is preparation of old context, before the next input.
     Compaction {
         marker: String,
@@ -4277,6 +4282,9 @@ fn match_step(state: &AppState, method: &str, path: &str, body: &Value) -> Resul
                                     request.accepted && prompt(&request.body) == Some(text.as_str())
                                 }))
                     }
+                    RequestMatch::InteractionAnswers { text, step } => {
+                        *step == index && question_history::matches_answers(prompt(body), text)
+                    }
                     RequestMatch::Compaction { marker, step } => {
                         *step == index
                             && body["input"]
@@ -4362,6 +4370,9 @@ fn reject_diagnostic(
     let actual = prompt(body);
     let (expected_kind, expected_prompt) = match expected.map(|step| step.request.base()) {
         Some(RequestMatch::Prompt { text, .. }) => ("prompt", Some(text.clone())),
+        Some(RequestMatch::InteractionAnswers { text, .. }) => {
+            ("interaction_answers", Some(text.clone()))
+        }
         Some(RequestMatch::Compaction { marker, .. }) => ("compaction", Some(marker.clone())),
         Some(RequestMatch::Delivery { marker, .. }) => ("delivery", Some(marker.clone())),
         Some(RequestMatch::ToolOutput {
@@ -4379,6 +4390,9 @@ fn reject_diagnostic(
     let actual_prompt_present = actual.is_some();
     let prompt_matches_expected = match expected.map(|step| step.request.base()) {
         Some(RequestMatch::Prompt { text, .. }) => actual == Some(text.as_str()),
+        Some(RequestMatch::InteractionAnswers { text, .. }) => {
+            question_history::matches_answers(actual, text)
+        }
         Some(RequestMatch::Compaction { marker, .. }) => body["input"].to_string().contains(marker),
         Some(RequestMatch::Delivery { marker, .. }) => {
             actual.is_some_and(|value| value.contains(marker.as_str()))
