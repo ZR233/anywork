@@ -148,7 +148,7 @@ catalog = "deepseek"
 
 `models.accounts` 支持保存多个账号实例，同一账号模板可重复创建多个实例（唯一性仅约束映射表键名）。每个账号实例持久化以下内容：
 - **协议与模板身份**：明确的厂商协议适配选择 `protocol`、可选的 `template` 模板身份（完全自定义账号可不保存 `template`）。
-- **实例连接字段**：显示名称 `name`、服务端点 `base_url`、环境变量引用 `bearer_token_env`、自定义请求头 `http_headers`、工具协议策略 `tool_wire_policy` 与补丁工具类型 `apply_patch_tool_type`。
+- **实例连接字段**：显示名称 `name`、服务端点 `base_url`、环境变量引用 `bearer_token_env`、自定义请求头 `http_headers`、工具协议策略 `tool_wire_policy` 与补丁工具类型 `apply_patch_tool_type`。`apply_patch_tool_type = "freeform"` 表示该实例允许把内置补丁工具下发为 freeform（custom）工具；缺省值或非原生 custom 线协议时使用函数回退声明（形态与判定条件见 [09](./09-tool-runtime.md) §9.8）。
 - **模型目录（`catalog`）**：分为 `Bundled { catalog, additional_models, connection_overrides }` 或 `Explicit { models, connection_overrides }`。
 - **端点服务能力（`capabilities`）**：分为 `TemplateDefaults`（判别值为 `capabilities.source = "template_defaults"`，默认继承权威模板声明的服务能力）或显式声明的服务能力（自定义账号默认无附加服务能力）。
 

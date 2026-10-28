@@ -61,9 +61,7 @@ impl ThreadBuiltin {
                 "write_file",
                 "Write exact UTF-8 text to a workspace file using create, overwrite, or append mode.",
             ),
-            Self::File(kind) => {
-                ToolSpec::function(kind.name(), kind.description(), kind.input_schema())
-            }
+            Self::File(kind) => kind.to_spec(),
             Self::WriteStdin => schema::<crate::exec::WriteStdinInput>(
                 "write_stdin",
                 "Write text to the original exec receipt taskId. closeStdin=true sends EOF after text; empty chars is valid only for EOF. A blocked write returns its own task receipt: cancel that input task to stop writing without stopping exec, then query its result. Accepted bytes and remote ACKs are distinct: never resend accepted input after cancellation. Wait for the input task before actions that require completed delivery.",

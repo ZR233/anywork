@@ -201,7 +201,7 @@ crate 职责、依赖方向与禁止依赖的唯一权威源是 [Crate 边界](d
 
 - 验证按实际影响选择。纯文档、技能或协作规则修改（包括提交前）只检查内容、引用、规则一致性及适用格式，不运行 Rust、Flutter、GUI 或 live 全量验收；若同时改变构建／生成输入、运行配置或测试执行语义，则按这些实际影响验证。代码修改先运行定向检查，跨 crate、协议、构建或依赖变更扩展到相关消费者；提交前执行下述代码门禁，生成输入、GUI 行为与 live 验收另遵守对应要求。
 - 适用检查通过且需求已满足后直接交付；只有新修改、失败或尚未解决的具体风险才扩展或重复验证。只读分析以结论与出处为完成条件；修改任务以范围内修改完成、适用验证通过和差异可审查为完成条件；提 PR 任务还须交付 PR 链接及实际 CI 状态，排队或运行中不算通过。环境或权限阻塞时报告已完成项、原始失败和剩余工作，不声称全部完成。
-- Rust 常规自动化用例位于 `pl-model/tests/` 与 `pl-core/tests/`，只通过被测 crate 的公开 API 验证完整能力；纯 Dart Client 的公开行为测试位于 `code/anywork_client/test/`，Riverpod/路由适配契约测试位于 `code/anywork/test/client/` 并纳入 `verify-client` 门禁。`pl-studio-runtime` 允许历史保存与数据迁移专项故障注入，以及 `tests/` 中通过公开 API、真实临时 Git/SQLite 验证工作树和归档生命周期的专项集成测试；不为测试扩展生产公共接口。其他 Rust crate 不新增测试；除上述 Client 适配契约外，Flutter widget/integration 与发布脚本测试仍不进入门禁。两库测试通过本地模拟供应商或脚本化模型运行；`pl-core` 不依赖 `pl-model`。上游预置技能自带的测试源码保持原样，但不进入本项目门禁。测试设计与失败传播遵循 [test-quality](.agents/skills/test-quality/SKILL.md)，具体边界见 [测试设计](design/24-testing.md)。
+- Rust 常规自动化用例位于 `pl-patch/tests/`、`pl-model/tests/` 与 `pl-core/tests/`，只通过被测 crate 的公开 API 验证完整能力；`pl-patch` 仅限补丁语义一致性专项（与 Codex `apply-patch` 语义对齐，有意差异须显式断言），见 [测试设计](design/24-testing.md)。纯 Dart Client 的公开行为测试位于 `code/anywork_client/test/`，Riverpod/路由适配契约测试位于 `code/anywork/test/client/` 并纳入 `verify-client` 门禁。`pl-studio-runtime` 允许历史保存与数据迁移专项故障注入，以及 `tests/` 中通过公开 API、真实临时 Git/SQLite 验证工作树和归档生命周期的专项集成测试；不为测试扩展生产公共接口。除上述专项外其他 Rust crate 不新增测试；除上述 Client 适配契约外，Flutter widget/integration 与发布脚本测试仍不进入门禁。上述 Rust 测试通过本地模拟供应商或脚本化模型运行；`pl-core` 不依赖 `pl-model`。上游预置技能自带的测试源码保持原样，但不进入本项目门禁。测试设计与失败传播遵循 [test-quality](.agents/skills/test-quality/SKILL.md)，具体边界见 [测试设计](design/24-testing.md)。
 - `code/anywork/pubspec.lock` 是必须纳入 Git 的 canonical 应用依赖快照，不得加入 ignore；
   Flutter 直接依赖升级后必须同步提交重新解析的 lockfile。
 - 代码、构建、依赖或生成输入变更提交前，在本地执行与 CI 一致的检查清单（纯说明性变更按本节首条豁免；只需保证当前环境通过；
@@ -211,6 +211,7 @@ crate 职责、依赖方向与禁止依赖的唯一权威源是 [Crate 边界](d
   ```powershell
   cargo fmt --all --check
   cargo clippy --workspace --all-targets -- -D warnings
+  cargo test -p pl-patch
   cargo test -p pl-model
   cargo test -p pl-core --features sqlite
   cargo test -p pl-studio-runtime
@@ -226,7 +227,7 @@ crate 职责、依赖方向与禁止依赖的唯一权威源是 [Crate 边界](d
   API key，需要时以 `cargo run -p pl-studio-runtime --features live-tests --example model_observe -- <provider> <model> <task-file> <artifact-dir>` 等显式
   opt-in 执行，CI 与本地默认检查都不包含。
 - 真实模型和 GUI 任务使用人工观察入口；本地模拟验收记录执行结果和证据，不把模拟通过等同于真实供应商兼容。人工结论独立记录，默认为待评审。
-- CI（PR Quality Gate）运行两库的确定性公开 API 集成测试与 Studio 历史保存、迁移及工作树/归档专项测试，并保留格式、静态分析、编译和 GUI 生成一致性检查，另执行 Conventional PR 标题、工作流静态检查及发布配置检查；GUI 人工验收与 live 模型观察不在 CI 中运行。GUI 行为改动交付前运行 `cargo xtask manual-gui`，核对截图、快照、日志和进程回收。
+- CI（PR Quality Gate）运行 `pl-patch` 补丁语义专项、两库的确定性公开 API 集成测试与 Studio 历史保存、迁移及工作树/归档专项测试，并保留格式、静态分析、编译和 GUI 生成一致性检查，另执行 Conventional PR 标题、工作流静态检查及发布配置检查；GUI 人工验收与 live 模型观察不在 CI 中运行。GUI 行为改动交付前运行 `cargo xtask manual-gui`，核对截图、快照、日志和进程回收。
 - `cargo doc --workspace --all-features --no-deps` 为按需检查项，CI 不执行。
 
 - Flutter、Dart、GUI 和生成文件检查统一使用前文定义的项目命令入口；验收时结合 widget tree、窗口截图和日志判断结果。

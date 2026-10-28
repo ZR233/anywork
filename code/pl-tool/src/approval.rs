@@ -70,37 +70,33 @@ fn exec_assessment(
 }
 
 /// Interprets built-in tool parameters for the Studio approval policy.
-/// Invalid JSON requests conservative external access; typed execution still validates parameters.
+/// 无法识别的 JSON 参数或补丁原文按保守策略请求外部访问；执行阶段仍会验证输入。
 pub fn assess(name: &str, raw: &str, root: &Path) -> ToolAccessAssessment {
-    let Ok(arguments) = serde_json::from_str::<serde_json::Value>(raw) else {
+    let Some((paths, working_directory)) = requested_paths_for_input(name, raw) else {
         return ToolAccessAssessment {
             requested_access: WorkspaceAccess::ExternalAllowed,
             working_directory: None,
         };
     };
     ToolAccessAssessment {
-        requested_access: requested_workspace_access(name, &arguments, root),
-        working_directory: get_working_directory(&arguments),
+        requested_access: access_for_paths(&paths, root),
+        working_directory,
     }
 }
 
 /// Classifies remote POSIX paths without touching the host filesystem.
 /// Worker-side confinement remains authoritative for symlinks and actual resources.
 pub fn assess_remote(name: &str, raw: &str, root: &Path) -> ToolAccessAssessment {
-    let Ok(arguments) = serde_json::from_str::<serde_json::Value>(raw) else {
+    let Some((paths, working_directory)) = requested_paths_for_input(name, raw) else {
         return ToolAccessAssessment {
             requested_access: WorkspaceAccess::ExternalAllowed,
             working_directory: None,
         };
     };
-    let working_directory = get_working_directory(&arguments);
-    let external = requested_paths_for_tool(name, &arguments)
-        .into_iter()
-        .chain(working_directory.clone())
-        .any(|path| {
-            crate::remote::path::relative_workspace_path(&root.to_string_lossy(), Path::new(&path))
-                .is_err()
-        });
+    let external = paths.iter().any(|path| {
+        crate::remote::path::relative_workspace_path(&root.to_string_lossy(), Path::new(path))
+            .is_err()
+    });
     ToolAccessAssessment {
         requested_access: if external {
             WorkspaceAccess::ExternalAllowed
@@ -108,6 +104,24 @@ pub fn assess_remote(name: &str, raw: &str, root: &Path) -> ToolAccessAssessment
             WorkspaceAccess::WorkspaceOnly
         },
         working_directory,
+    }
+}
+
+fn requested_paths_for_input(name: &str, raw: &str) -> Option<(Vec<String>, Option<String>)> {
+    match serde_json::from_str::<serde_json::Value>(raw) {
+        Ok(arguments) => {
+            let working_directory = get_working_directory(&arguments);
+            let paths = requested_paths_for_tool(name, &arguments)
+                .into_iter()
+                .chain(working_directory.clone())
+                .collect();
+            Some((paths, working_directory))
+        }
+        Err(_) if name == "apply_patch" => {
+            let paths = paths_from_patch_text(raw);
+            (!paths.is_empty()).then_some((paths, None))
+        }
+        Err(_) => None,
     }
 }
 
@@ -120,15 +134,7 @@ fn get_working_directory(arguments: &serde_json::Value) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
-fn requested_workspace_access(
-    name: &str,
-    arguments: &serde_json::Value,
-    workspace_root: &Path,
-) -> WorkspaceAccess {
-    let paths = requested_paths_for_tool(name, arguments)
-        .into_iter()
-        .chain(get_working_directory(arguments))
-        .collect::<Vec<_>>();
+fn access_for_paths(paths: &[String], workspace_root: &Path) -> WorkspaceAccess {
     let Ok(policy) = ToolPathPolicy::new(workspace_root.to_path_buf(), false, "permission") else {
         return WorkspaceAccess::ExternalAllowed;
     };
