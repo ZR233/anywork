@@ -4072,6 +4072,26 @@ class AppLocalizationsZh extends AppLocalizations {
   String get modeEditorCollapse => '收起';
 
   @override
+  String get modeEditorDetailStage => '阶段详情';
+
+  @override
+  String get modeEditorDetailTransition => '转换详情';
+
+  @override
+  String get modeEditorFocusAll => '全部';
+
+  @override
+  String get modeEditorFocusSelected => '聚焦所选';
+
+  @override
+  String modeEditorDimmedEdges(int count) {
+    return '已淡化 $count 条无关连线';
+  }
+
+  @override
+  String get modeEditorViewStage => '查看阶段';
+
+  @override
   String get modeEditorNoWorkflowPeriod => '当前模式没有工作流。';
 
   @override

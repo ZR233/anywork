@@ -1,53 +1,63 @@
 import 'package:anywork_client/studio_client.dart'
-    show ModeDocument, WorkflowDefinition, WorkflowState, WorkflowStateKind;
+    show
+        ModeDocument,
+        WorkflowDefinition,
+        WorkflowState,
+        WorkflowStateKind,
+        connectionId,
+        documentSignature,
+        resolvedNodePositions,
+        setNodePosition;
 import 'package:flutter/material.dart';
 import 'package:vyuh_node_flow/vyuh_node_flow.dart';
 
 import '../../../app/theme/studio_tokens.dart';
 import '../../../l10n/app_localizations.dart';
-import 'mode_editor_support.dart';
+import '../mode_editor_support.dart';
 
-/// Native workflow canvas backed by the vyuh node flow free core.
+/// 全屏工作区的流程画布（vyuh node flow）。
 ///
-/// The Client-owned [ModeDocument] stays the single business fact. The
-/// controller is only a projection: document edits rebuild the graph while
-/// retaining viewport and single selection.
+/// Client 持有的 [ModeDocument] 仍是唯一业务事实；controller 只是投影，
+/// 文档编辑重建图并保留视口。节点卡片只保留名称、类型图标与起点徽标，
+/// 技术标识与长文案进入详情面板；连线不常驻完整条件文本。
 class ModeWorkflowCanvas extends StatefulWidget {
   const ModeWorkflowCanvas({
     super.key,
     required this.document,
     required this.readOnly,
     required this.l10n,
+    required this.dimmedStateIds,
     required this.onDocumentChanged,
-    required this.onSelectNode,
-    required this.onSelectEdge,
-    required this.onAddState,
-    required this.onAddFinalState,
+    required this.onSelectStage,
+    required this.onSelectTransition,
+    required this.onAddStage,
+    required this.onAddFinalStage,
     required this.onAddTransition,
-    required this.onConfirmRemoveState,
-    required this.onRemoveState,
+    required this.onConfirmRemoveStage,
+    required this.onRemoveStage,
     required this.onRemoveTransition,
     required this.onCreateTransition,
     required this.onAutoLayout,
     required this.onValidate,
     required this.onEnableWorkflow,
-    required this.inspectorOpen,
-    required this.onToggleInspector,
-    this.selectedNodeId,
-    this.selectedConnectionId,
+    this.selectedStateId,
+    this.selectedEdgeId,
   });
 
   final ModeDocument document;
   final bool readOnly;
   final AppLocalizations l10n;
+
+  /// 聚焦模式下被淡化的节点（不含所选节点及其相邻路径）。
+  final Set<String> dimmedStateIds;
   final ValueChanged<ModeDocument> onDocumentChanged;
-  final ValueChanged<String?> onSelectNode;
-  final ValueChanged<String?> onSelectEdge;
-  final VoidCallback onAddState;
-  final VoidCallback onAddFinalState;
+  final ValueChanged<String?> onSelectStage;
+  final ValueChanged<String?> onSelectTransition;
+  final VoidCallback onAddStage;
+  final VoidCallback onAddFinalStage;
   final VoidCallback onAddTransition;
-  final Future<bool> Function(String stateId) onConfirmRemoveState;
-  final ValueChanged<String> onRemoveState;
+  final Future<bool> Function(String stateId) onConfirmRemoveStage;
+  final ValueChanged<String> onRemoveStage;
   final void Function(String sourceStateId, String targetStateId)
   onRemoveTransition;
   final void Function(String sourceStateId, String targetStateId)
@@ -55,10 +65,8 @@ class ModeWorkflowCanvas extends StatefulWidget {
   final VoidCallback onAutoLayout;
   final VoidCallback onValidate;
   final VoidCallback onEnableWorkflow;
-  final bool inspectorOpen;
-  final VoidCallback onToggleInspector;
-  final String? selectedNodeId;
-  final String? selectedConnectionId;
+  final String? selectedStateId;
+  final String? selectedEdgeId;
 
   @override
   State<ModeWorkflowCanvas> createState() => _ModeWorkflowCanvasState();
@@ -67,7 +75,7 @@ class ModeWorkflowCanvas extends StatefulWidget {
 class _ModeWorkflowCanvasState extends State<ModeWorkflowCanvas> {
   // PortWidget creates an untyped, empty connection before the Client adds its
   // guard. Object? matches that component contract; execution data stays typed
-  // in ModeDocument and the canvas stores only a display string here.
+  // in ModeDocument and the canvas stores only a display value here.
   late final NodeFlowController<_WorkflowNodeData, Object?> _controller;
   String? _signature;
   bool _syncingSelection = false;
@@ -84,9 +92,6 @@ class _ModeWorkflowCanvasState extends State<ModeWorkflowCanvas> {
         showAttribution: false,
       ),
     );
-    _controller.setBehavior(
-      widget.readOnly ? NodeFlowBehavior.inspect : NodeFlowBehavior.design,
-    );
     _syncGraph(force: true, modeChanged: true);
   }
 
@@ -98,9 +103,15 @@ class _ModeWorkflowCanvasState extends State<ModeWorkflowCanvas> {
     final workflowPresenceChanged =
         (oldWidget.document.definition.workflow == null) !=
         (widget.document.definition.workflow == null);
-    _syncGraph(force: workflowPresenceChanged, modeChanged: modeChanged);
-    if (oldWidget.selectedNodeId != widget.selectedNodeId ||
-        oldWidget.selectedConnectionId != widget.selectedConnectionId) {
+    final focusChanged =
+        oldWidget.dimmedStateIds.length != widget.dimmedStateIds.length ||
+        !oldWidget.dimmedStateIds.containsAll(widget.dimmedStateIds);
+    _syncGraph(
+      force: workflowPresenceChanged || focusChanged,
+      modeChanged: modeChanged,
+    );
+    if (oldWidget.selectedStateId != widget.selectedStateId ||
+        oldWidget.selectedEdgeId != widget.selectedEdgeId) {
       WidgetsBinding.instance.addPostFrameCallback((_) => _syncSelection());
     }
     if (oldWidget.readOnly != widget.readOnly) {
@@ -162,8 +173,8 @@ class _ModeWorkflowCanvasState extends State<ModeWorkflowCanvas> {
     var changedSelection = false;
     _syncingSelection = true;
     try {
-      final nodeId = widget.selectedNodeId;
-      final edgeId = widget.selectedConnectionId;
+      final nodeId = widget.selectedStateId;
+      final edgeId = widget.selectedEdgeId;
       if (nodeId != null && _controller.getNode(nodeId) != null) {
         if (!_controller.selectedNodeIds.contains(nodeId)) {
           changedSelection = true;
@@ -199,7 +210,8 @@ class _ModeWorkflowCanvasState extends State<ModeWorkflowCanvas> {
     final nodes = <Node<_WorkflowNodeData>>[];
     for (final state in workflow.states) {
       if (!seen.add(state.id)) continue;
-      final position = positions[state.id] ?? const Offset(48, 48);
+      final point = positions[state.id] ?? const (x: 48, y: 48);
+      final position = Offset(point.x, point.y);
       nodes.add(_buildNode(state, position, workflow));
     }
     return nodes;
@@ -213,12 +225,13 @@ class _ModeWorkflowCanvasState extends State<ModeWorkflowCanvas> {
     final atomic = state.kind == WorkflowStateKind.atomic;
     return Node<_WorkflowNodeData>(
       id: state.id,
-      type: 'workflow-state',
+      type: 'workflow-stage',
       position: position,
-      size: const Size(208, 92),
+      size: const Size(172, 64),
       data: _WorkflowNodeData(
         state: state,
         initial: workflow.initialStateId == state.id,
+        dimmed: widget.dimmedStateIds.contains(state.id),
       ),
       locked: widget.readOnly,
       ports: [
@@ -226,7 +239,7 @@ class _ModeWorkflowCanvasState extends State<ModeWorkflowCanvas> {
           id: 'in',
           name: widget.l10n.modeEditorPortIn,
           position: PortPosition.left,
-          offset: const Offset(0, 46),
+          offset: const Offset(0, 32),
           type: PortType.input,
           multiConnections: true,
         ),
@@ -235,7 +248,7 @@ class _ModeWorkflowCanvasState extends State<ModeWorkflowCanvas> {
             id: 'out',
             name: widget.l10n.modeEditorPortOut,
             position: PortPosition.right,
-            offset: const Offset(0, 46),
+            offset: const Offset(0, 32),
             type: PortType.output,
             multiConnections: true,
           ),
@@ -261,6 +274,9 @@ class _ModeWorkflowCanvasState extends State<ModeWorkflowCanvas> {
       }
       final id = connectionId(transition);
       if (!seen.add(id)) continue;
+      final dimmed =
+          widget.dimmedStateIds.contains(transition.sourceStateId) ||
+          widget.dimmedStateIds.contains(transition.targetStateId);
       connections.add(
         Connection<Object?>(
           id: id,
@@ -268,11 +284,11 @@ class _ModeWorkflowCanvasState extends State<ModeWorkflowCanvas> {
           sourcePortId: 'out',
           targetNodeId: transition.targetStateId,
           targetPortId: 'in',
-          data: transition.guard,
+          data: _EdgeData(guard: transition.guard, dimmed: dimmed),
           label: ConnectionLabel(
             text: _edgeLabel(transition.guard),
             id: 'label:$id',
-            offset: -24,
+            offset: -22,
           ),
         ),
       );
@@ -283,8 +299,8 @@ class _ModeWorkflowCanvasState extends State<ModeWorkflowCanvas> {
   String _edgeLabel(String guard) {
     final trimmed = guard.trim();
     if (trimmed.isEmpty) return widget.l10n.modeEditorGuardRequiredShort;
-    if (trimmed.length <= 34) return trimmed;
-    return '${trimmed.substring(0, 34)}…';
+    if (trimmed.length <= 12) return trimmed;
+    return '${trimmed.substring(0, 12)}…';
   }
 
   void _onNodeMoved(Node<_WorkflowNodeData> node) {
@@ -301,7 +317,10 @@ class _ModeWorkflowCanvasState extends State<ModeWorkflowCanvas> {
     }
     if (existing != null && (existing - position).distance < 0.5) return;
     widget.onDocumentChanged(
-      setNodePosition(widget.document, node.id, position),
+      setNodePosition(widget.document, node.id, (
+        x: position.dx,
+        y: position.dy,
+      )),
     );
   }
 
@@ -348,9 +367,7 @@ class _ModeWorkflowCanvasState extends State<ModeWorkflowCanvas> {
   }
 
   NodeFlowTheme _theme(BuildContext context) {
-    final base = Theme.of(context).brightness == Brightness.dark
-        ? NodeFlowTheme.dark
-        : NodeFlowTheme.light;
+    final base = NodeFlowTheme.light;
     return base.copyWith(
       backgroundColor: Colors.transparent,
       nodeTheme: base.nodeTheme.copyWith(
@@ -386,77 +403,53 @@ class _ModeWorkflowCanvasState extends State<ModeWorkflowCanvas> {
 
   Widget _buildNodeContent(BuildContext context, Node<_WorkflowNodeData> node) {
     final data = node.data;
-    final finalState = data.state.kind == WorkflowStateKind.finalState;
-    return Container(
+    final finalStage = data.state.kind == WorkflowStateKind.finalState;
+    final content = Container(
       key: ModeEditorKeys.node(data.state.id),
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
       color: Colors.transparent,
       child: Row(
         children: [
           Icon(
-            finalState ? Icons.flag_outlined : Icons.account_tree_outlined,
-            size: 17,
-            color: finalState
+            finalStage ? Icons.flag_outlined : Icons.account_tree_outlined,
+            size: 16,
+            color: finalStage
                 ? context.colors.onSurfaceVariant
                 : context.colors.primary,
           ),
-          const SizedBox(width: 9),
+          const SizedBox(width: 8),
           Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Row(
-                  children: [
-                    Expanded(
-                      child: Text(
-                        data.state.title.isEmpty
-                            ? data.state.id
-                            : data.state.title,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: context.text.titleSmall?.copyWith(
-                          color: context.colors.onSurface,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                    ),
-                    if (data.initial)
-                      Container(
-                        margin: const EdgeInsets.only(left: 6),
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 6,
-                          vertical: 1,
-                        ),
-                        decoration: BoxDecoration(
-                          color: context.colors.primaryContainer,
-                          borderRadius: BorderRadius.circular(StudioRadii.pill),
-                        ),
-                        child: Text(
-                          widget.l10n.modeEditorInitialBadge,
-                          style: context.text.labelSmall?.copyWith(
-                            color: context.colors.onPrimaryContainer,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                      ),
-                  ],
-                ),
-                const SizedBox(height: 2),
-                Text(
-                  data.state.id,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: context.text.bodySmall?.copyWith(
-                    color: context.colors.onSurfaceVariant,
-                  ),
-                ),
-              ],
+            child: Text(
+              data.state.title.isEmpty ? data.state.id : data.state.title,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: context.text.titleSmall?.copyWith(
+                color: context.colors.onSurface,
+                fontWeight: FontWeight.w600,
+              ),
             ),
           ),
+          if (data.initial)
+            Container(
+              margin: const EdgeInsets.only(left: 6),
+              padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+              decoration: BoxDecoration(
+                color: context.colors.primaryContainer,
+                borderRadius: BorderRadius.circular(StudioRadii.pill),
+              ),
+              child: Text(
+                widget.l10n.modeEditorInitialBadge,
+                style: context.text.labelSmall?.copyWith(
+                  color: context.colors.onPrimaryContainer,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
         ],
       ),
     );
+    if (!data.dimmed) return content;
+    return Opacity(opacity: 0.28, child: content);
   }
 
   Widget _buildLabel(
@@ -466,32 +459,64 @@ class _ModeWorkflowCanvasState extends State<ModeWorkflowCanvas> {
     Rect position,
     VoidCallback? onTap,
   ) {
+    final edge = connection.data is _EdgeData
+        ? connection.data as _EdgeData
+        : null;
+    final selected = connection.id == widget.selectedEdgeId;
+    final dimmed = edge?.dimmed ?? false;
     // The library owns label placement. Returning another Positioned here
     // breaks its UnboundedStack parent-data contract.
-    return Tooltip(
-      message: connection.data as String? ?? label.text,
+    final chip = Tooltip(
+      message: edge?.guard ?? label.text,
       child: GestureDetector(
         key: ModeEditorKeys.edge(connection.id),
         onTap: onTap,
         child: Container(
-          constraints: const BoxConstraints(maxWidth: 220),
+          constraints: const BoxConstraints(maxWidth: 160),
           padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
           decoration: BoxDecoration(
-            color: context.colors.surfaceContainerHigh,
-            border: Border.all(color: context.colors.outlineVariant),
+            color: selected
+                ? context.colors.primaryContainer
+                : context.colors.surfaceContainerHigh,
+            border: Border.all(
+              color: selected
+                  ? context.colors.primary
+                  : context.colors.outlineVariant,
+              width: selected ? 2 : 1,
+            ),
             borderRadius: BorderRadius.circular(StudioRadii.xs),
           ),
-          child: Text(
-            label.text,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: context.text.labelSmall?.copyWith(
-              color: context.colors.onSurfaceVariant,
-            ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                Icons.arrow_forward,
+                size: 11,
+                color: selected
+                    ? context.colors.onPrimaryContainer
+                    : context.colors.onSurfaceVariant,
+              ),
+              const SizedBox(width: 4),
+              Flexible(
+                child: Text(
+                  label.text,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: context.text.labelSmall?.copyWith(
+                    color: selected
+                        ? context.colors.onPrimaryContainer
+                        : context.colors.onSurfaceVariant,
+                    fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+                  ),
+                ),
+              ),
+            ],
           ),
         ),
       ),
     );
+    if (!dimmed) return chip;
+    return Opacity(opacity: 0.28, child: chip);
   }
 
   Widget _toolbar(BuildContext context) {
@@ -506,13 +531,13 @@ class _ModeWorkflowCanvasState extends State<ModeWorkflowCanvas> {
         children: [
           OutlinedButton.icon(
             key: ModeEditorKeys.addState,
-            onPressed: editable ? widget.onAddState : null,
+            onPressed: editable ? widget.onAddStage : null,
             icon: const Icon(Icons.add, size: 16),
             label: Text(l10n.modeEditorStageAction),
           ),
           OutlinedButton.icon(
             key: ModeEditorKeys.addFinalState,
-            onPressed: editable ? widget.onAddFinalState : null,
+            onPressed: editable ? widget.onAddFinalStage : null,
             icon: const Icon(Icons.flag_outlined, size: 16),
             label: Text(l10n.modeEditorFinalLabel),
           ),
@@ -552,13 +577,6 @@ class _ModeWorkflowCanvasState extends State<ModeWorkflowCanvas> {
             tooltip: l10n.modeEditorFitView,
             onPressed: () => _controller.fitToView(),
             icon: const Icon(Icons.fit_screen_outlined, size: 18),
-          ),
-          IconButton(
-            key: ModeEditorKeys.toggleInspector,
-            tooltip: l10n.modeEditorFlowInspector,
-            isSelected: widget.inspectorOpen,
-            onPressed: widget.onToggleInspector,
-            icon: const Icon(Icons.tune, size: 18),
           ),
         ],
       ),
@@ -673,8 +691,8 @@ class _ModeWorkflowCanvasState extends State<ModeWorkflowCanvas> {
                             },
                             onDragStop: _onNodeMoved,
                             onBeforeDelete: (node) =>
-                                widget.onConfirmRemoveState(node.id),
-                            onDeleted: (node) => widget.onRemoveState(node.id),
+                                widget.onConfirmRemoveStage(node.id),
+                            onDeleted: (node) => widget.onRemoveStage(node.id),
                           ),
                           connection:
                               ConnectionEvents<_WorkflowNodeData, Object?>(
@@ -686,15 +704,15 @@ class _ModeWorkflowCanvasState extends State<ModeWorkflowCanvas> {
                           onSelectionChange: (selection) {
                             if (_syncingSelection) return;
                             if (selection.nodes.isNotEmpty) {
-                              widget.onSelectEdge(null);
-                              widget.onSelectNode(selection.nodes.first.id);
+                              widget.onSelectTransition(null);
+                              widget.onSelectStage(selection.nodes.first.id);
                             } else if (selection.connections.isNotEmpty) {
-                              widget.onSelectNode(null);
-                              widget.onSelectEdge(
+                              widget.onSelectStage(null);
+                              widget.onSelectTransition(
                                 selection.connections.first.id,
                               );
                             } else {
-                              widget.onSelectNode(null);
+                              widget.onSelectStage(null);
                             }
                           },
                         ),
@@ -709,15 +727,21 @@ class _ModeWorkflowCanvasState extends State<ModeWorkflowCanvas> {
 }
 
 final class _WorkflowNodeData {
-  const _WorkflowNodeData({required this.state, required this.initial});
+  const _WorkflowNodeData({
+    required this.state,
+    required this.initial,
+    this.dimmed = false,
+  });
 
   final WorkflowState state;
   final bool initial;
+  final bool dimmed;
 
   @override
   bool operator ==(Object other) =>
       other is _WorkflowNodeData &&
       other.initial == initial &&
+      other.dimmed == dimmed &&
       other.state.id == state.id &&
       other.state.title == state.title &&
       other.state.instructions == state.instructions &&
@@ -732,6 +756,7 @@ final class _WorkflowNodeData {
     state.kind,
     Object.hashAll(state.completionCriteria),
     initial,
+    dimmed,
   );
 
   static bool _sameCriteria(List<String> a, List<String> b) {
@@ -741,4 +766,11 @@ final class _WorkflowNodeData {
     }
     return true;
   }
+}
+
+final class _EdgeData {
+  const _EdgeData({required this.guard, this.dimmed = false});
+
+  final String guard;
+  final bool dimmed;
 }

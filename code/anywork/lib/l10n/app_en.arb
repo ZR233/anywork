@@ -2082,6 +2082,17 @@
   "modeEditorTransitionGuardHint": "For example: after the user confirms scope",
   "modeEditorGuardRequiredField": "Enter a guard.",
   "modeEditorCollapse": "Collapse",
+  "modeEditorDetailStage": "Stage details",
+  "modeEditorDetailTransition": "Transition details",
+  "modeEditorFocusAll": "All",
+  "modeEditorFocusSelected": "Focused",
+  "modeEditorDimmedEdges": "{count, plural, other{Dimmed {count} unrelated transitions}}",
+  "@modeEditorDimmedEdges": {
+    "placeholders": {
+      "count": { "type": "int" }
+    }
+  },
+  "modeEditorViewStage": "View stage",
   "modeEditorNoWorkflowPeriod": "This mode has no workflow.",
   "modeEditorInspectorSelectHint": "Select a stage or transition on the canvas to edit its fields.",
   "modeEditorRenameId": "Rename id",

@@ -1630,6 +1630,17 @@
   "modeEditorTransitionGuardHint": "例如：用户确认范围后",
   "modeEditorGuardRequiredField": "请填写转换条件。",
   "modeEditorCollapse": "收起",
+  "modeEditorDetailStage": "阶段详情",
+  "modeEditorDetailTransition": "转换详情",
+  "modeEditorFocusAll": "全部",
+  "modeEditorFocusSelected": "聚焦所选",
+  "modeEditorDimmedEdges": "已淡化 {count} 条无关连线",
+  "@modeEditorDimmedEdges": {
+    "placeholders": {
+      "count": { "type": "int" }
+    }
+  },
+  "modeEditorViewStage": "查看阶段",
   "modeEditorNoWorkflowPeriod": "当前模式没有工作流。",
   "modeEditorInspectorSelectHint": "选择画布中的阶段或转换以编辑完整字段。",
   "modeEditorRenameId": "修改标识",

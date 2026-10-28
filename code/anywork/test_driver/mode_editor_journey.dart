@@ -180,11 +180,53 @@ class ModeEditorJourney {
   }
 
   Future<void> openEditor() async {
-    await tap('settings-open');
+    // settings-open is hidden while settings is on the navigator; only push
+    // when we really are back on the studio shell.
+    try {
+      await driver.waitFor(
+        find.byValueKey('mode-workspace-back'),
+        timeout: const Duration(seconds: 2),
+      );
+      // Still inside the workspace; leave it first without any dirty draft.
+      await tap('mode-workspace-back');
+    } catch (_) {
+      try {
+        await driver.waitFor(
+          find.byValueKey('settings-back'),
+          timeout: const Duration(seconds: 2),
+        );
+      } catch (_) {
+        await tap('settings-open');
+      }
+    }
     await tap('settings-tab-workModes');
+    await driver.waitFor(
+      find.byValueKey('mode-editor-search'),
+      timeout: const Duration(seconds: 45),
+    );
+  }
+
+  /// 从工作区一路返回 studio 壳层。
+  Future<void> leaveToStudio() async {
+    try {
+      await driver.waitFor(
+        find.byValueKey('mode-workspace-back'),
+        timeout: const Duration(seconds: 3),
+      );
+      await tap('mode-workspace-back');
+    } catch (_) {
+      /* already left the workspace */
+    }
+    await leaveToStudio();
+  }
+
+  /// 目录条目进入全屏工作区并等待文档就绪。
+  Future<void> openMode(String id, String label) async {
+    await tap('mode-editor-catalog-$id');
     await waitEditor(
-      (state) => state['document'] != null && state['busy'] == false,
-      'editor ready',
+      (state) =>
+          (state['document'] as Map?)?['id'] == id && state['busy'] == false,
+      label,
     );
   }
 
@@ -275,7 +317,7 @@ class ModeEditorJourney {
           ),
       'connection $source -> $target',
     );
-    await tap('mode-editor-close-inspector');
+    await tap('mode-editor-close-detail');
     await tap('mode-editor-fit-view');
   }
 
@@ -286,13 +328,9 @@ class ModeEditorJourney {
     await text('project-path-input', project);
     await tap('project-path-submit');
     await openEditor();
-    await tap('mode-editor-catalog-mode.task');
-    final builtin = await waitEditor(
-      (state) =>
-          state['readOnly'] == true &&
-          (state['document'] as Map?)?['id'] == 'mode.task',
-      'builtin',
-    );
+    await openMode('mode.task', 'builtin');
+    final builtin = await editor();
+    require(builtin['readOnly'] == true, 'builtin is read only');
     await tap('mode-editor-fit-view');
     await capture('builtin-read-only');
     final original = jsonEncode(builtin['document']);
@@ -300,6 +338,7 @@ class ModeEditorJourney {
       find.byValueKey('mode-editor-node-planning'),
       dx: 35,
       dy: 20,
+      pointerKind: PointerDragKind.mouse,
     );
     require(
       jsonEncode((await editor())['document']) == original,
@@ -365,13 +404,14 @@ class ModeEditorJourney {
       },
     };
     await jsonDraft(document);
-    await tap('mode-editor-tab-graph');
+    await tap('mode-editor-tab-flow');
     await tap('mode-editor-fit-view');
     final before = jsonEncode((await editor())['document']);
     await driver.dragBy(
       find.byValueKey('mode-editor-node-working'),
       dx: 16,
       dy: 40,
+      pointerKind: PointerDragKind.mouse,
     );
     await waitEditor(
       (state) => jsonEncode(state['document']) != before,
@@ -410,7 +450,7 @@ class ModeEditorJourney {
           4,
       'stage created',
     );
-    await text('mode-editor-inspector-state-title', '临时验证阶段 A');
+    await text('mode-editor-detail-state-title', '临时验证阶段 A');
     await driver.waitUntilNoTransientCallbacks(
       timeout: const Duration(seconds: 10),
     );
@@ -426,7 +466,7 @@ class ModeEditorJourney {
     // Scroll the inspector itself. ensureVisible also scrolls the surrounding
     // settings PageView and can move this retained tab out of view.
     await driver.scrollBy(
-      find.byValueKey('mode-editor-inspector-scroll'),
+      find.byValueKey('mode-editor-detail-scroll'),
       -320,
       mouseWheel: true,
       timeout: const Duration(seconds: 15),
@@ -446,14 +486,17 @@ class ModeEditorJourney {
           ),
       'stage deleted',
     );
-    await tap('mode-editor-close-inspector');
+    await tap('mode-editor-close-detail');
     await save();
-    await tap('mode-editor-tab-graph');
+    await tap('mode-editor-tab-flow');
     await tap('mode-editor-node-working');
-    await tap('mode-editor-toggle-inspector');
+    await driver.waitFor(
+      find.byValueKey('mode-editor-detail-state-title'),
+      timeout: const Duration(seconds: 30),
+    );
     await tap('mode-editor-fit-view');
     await capture('custom-graph-editor');
-    await tap('mode-editor-close-inspector');
+    await tap('mode-editor-close-detail');
     // A malformed graph is rejected without publishing or losing the authored JSON.
     final valid = documentOf(await editor());
     final invalid = jsonDecode(jsonEncode(valid)) as Map<String, dynamic>;
@@ -475,23 +518,16 @@ class ModeEditorJourney {
       'invalid graph retains authored JSON',
     );
     await capture('json-validation');
-    await tap('settings-back');
+    await tap('mode-workspace-back');
     await tap('mode-editor-unsaved-cancel');
     require(
       (await editor())['jsonText'] == raw,
       'cancel navigation retains draft',
     );
-    await tap('settings-back');
+    await tap('mode-workspace-back');
     await tap('mode-editor-unsaved-discard');
     await openEditor();
-    await tap('mode-editor-catalog-$_modeId');
-    await waitEditor(
-      (state) =>
-          state['busy'] == false &&
-          state['dirty'] == false &&
-          (state['document'] as Map?)?['id'] == _modeId,
-      'discard restored canonical',
-    );
+    await openMode(_modeId, 'discard restored canonical');
     checks['unsaved discard restored canonical'] = true;
     await tap('mode-editor-tab-preview');
     await tap('mode-editor-preview-start');
@@ -516,30 +552,34 @@ class ModeEditorJourney {
       (await driver.readSnapshot())['workspace'] == null,
       'preview creates no Thread',
     );
-    // Native resize: retain the draft through the catalog/inspector fallback and return.
+    // Native resize: narrow screens enter the detail as a routed page.
     final pidReply = jsonDecode(await driver.requestData('pid')) as Map;
     final pid = pidReply['pid'] as int;
     final resized = resizeOwnedWindow(guiPid: pid, width: 760, height: 860);
     require(resized.resized, 'native resize applied');
-    await tap('mode-editor-tab-graph');
+    await tap('mode-editor-tab-flow');
     await tap('mode-editor-node-working');
-    await tap('mode-editor-toggle-inspector');
-    final property = find.byValueKey('mode-editor-close-inspector');
+    final property = find.byValueKey('mode-editor-detail-scroll');
+    await driver.waitFor(property, timeout: const Duration(seconds: 30));
     final beforeScroll = await driver.getTopLeft(property);
     await driver.scrollBy(
-      find.byValueKey('mode-editor-close-inspector'),
+      find.byValueKey('mode-editor-detail-scroll'),
       -180,
       mouseWheel: true,
     );
     final afterScroll = await driver.getTopLeft(property);
     require(
       afterScroll.dy < beforeScroll.dy - 20,
-      'native wheel scrolls narrow properties',
+      'native wheel scrolls narrow details',
     );
-    await capture('narrow-inspector');
+    await capture('narrow-detail');
+    await tap('mode-detail-back');
+    await driver.waitFor(
+      find.byValueKey('mode-editor-fit-view'),
+      timeout: const Duration(seconds: 30),
+    );
     final restored = resizeOwnedWindow(guiPid: pid, width: 1440, height: 1000);
     require(restored.resized, 'native resize restored');
-    await tap('mode-editor-toggle-inspector');
     // Explicit external reload must retain the last valid published catalog on failure.
     final file = File('$home/modes/$_modeId.json');
     final bytes = await file.readAsBytes();
@@ -560,12 +600,12 @@ class ModeEditorJourney {
       (state) => state['busy'] == false && state['error'] == null,
       'valid reload',
     );
-    await tap('settings-back');
+    await leaveToStudio();
     await tap('session-mode-selector');
     await tap('session-mode-mode.editor-evidence');
     await submit(0, wait: false);
     await openEditor();
-    await tap('mode-editor-catalog-$_modeId');
+    await openMode(_modeId, 'reopen custom mode');
     var update = documentOf(await editor());
     update['prompt'] = 'mode-editor-graph-updated\n使用更新后的工作流与提示。';
     (update['workflow']['states'] as List).firstWhere(
@@ -574,7 +614,7 @@ class ModeEditorJourney {
     await jsonDraft(update);
     await save();
     await checkpointStage('first-updated-during-turn');
-    await tap('settings-back');
+    await leaveToStudio();
     await waitSnapshot(
       (snapshot) => settled(snapshot) && turnStatus(snapshot) == 'completed',
       'original Turn completed',
@@ -586,7 +626,7 @@ class ModeEditorJourney {
     update['prompt'] = 'mode-editor-prompt-only\n仅更新提示词，保留工作流进度。';
     await jsonDraft(update);
     await save();
-    await tap('settings-back');
+    await leaveToStudio();
     await submit(2);
     await checkpointStage('prompt-updated');
     await submit(3, wait: false);
@@ -604,7 +644,7 @@ class ModeEditorJourney {
       'deleted Mode removed from catalog',
     );
     await checkpointStage('deleted-running');
-    await tap('settings-back');
+    await leaveToStudio();
     await waitSnapshot(
       (snapshot) => settled(snapshot) && turnStatus(snapshot) == 'completed',
       'deleted in flight Turn completed',

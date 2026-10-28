@@ -1,9 +1,10 @@
 import 'dart:convert';
 
-import '../../anywork_client.dart' show ReadModel, ResourceKind, ResourcePermit;
-import '../../models.dart';
-import 'anywork_client.dart';
-import 'commands/command_lane.dart';
+import '../../../anywork_client.dart'
+    show ReadModel, ResourceKind, ResourcePermit;
+import '../../../models.dart';
+import '../../studio/anywork_client.dart';
+import '../../studio/commands/command_lane.dart';
 
 const Object _modeEditorUnset = Object();
 const int _modeEditorHistoryLimit = 64;
@@ -484,10 +485,11 @@ class ModeEditorOwner extends ReadModel<ModeEditorState> {
     }
   }
 
+  /// [reason] 由宿主按用户语言提供；Client 不携带界面文案。
   Future<void> preview({
     String? targetStateId,
     bool reset = false,
-    String reason = '手动确认阶段完成和转换条件',
+    required String reason,
   }) async {
     _ensureOpen();
     if (state.busy) return;
