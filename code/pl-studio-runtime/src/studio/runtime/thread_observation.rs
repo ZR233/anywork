@@ -836,13 +836,16 @@ struct PendingPhaseHook {
 }
 
 #[cfg(test)]
+type PendingPhaseControl = (
+    Arc<PendingPhaseHook>,
+    tokio::sync::mpsc::UnboundedReceiver<u64>,
+    watch::Sender<Option<Result<(), String>>>,
+);
+
+#[cfg(test)]
 impl PendingPhaseHook {
     /// Returns the hook plus the test-owned entry stream and release control.
-    fn new() -> (
-        Arc<Self>,
-        tokio::sync::mpsc::UnboundedReceiver<u64>,
-        watch::Sender<Option<Result<(), String>>>,
-    ) {
+    fn new() -> PendingPhaseControl {
         let (entered, entered_rx) = tokio::sync::mpsc::unbounded_channel();
         // The sender is the release control: cloning it back to the test keeps
         // one authoritative channel, so a parked owner and its test observe the
@@ -859,17 +862,28 @@ impl PendingPhaseHook {
     }
 }
 
+struct LiveOwnerChannels {
+    feed: Arc<ThreadLiveFeed>,
+    channel: Arc<HistoryChannel>,
+    #[cfg(test)]
+    pending_hook: PendingHookSlot,
+}
+
 impl LiveOwner {
     async fn open(
         projector: &ObservationServices,
         handle: &ThreadHandle,
         snapshot: &ThreadSnapshot,
         thread: pl_protocol::Thread,
-        feed: Arc<ThreadLiveFeed>,
-        channel: Arc<HistoryChannel>,
+        channels: LiveOwnerChannels,
         persistence: Option<&pl_protocol::ThreadPersistenceSnapshot>,
-        #[cfg(test)] pending_hook: PendingHookSlot,
     ) -> Result<Self> {
+        let LiveOwnerChannels {
+            feed,
+            channel,
+            #[cfg(test)]
+            pending_hook,
+        } = channels;
         let id = thread.id.as_str();
         let chat = projector.store.chat_session(id).await?;
         let usage = live_usage(projector, id, snapshot);
@@ -1904,11 +1918,13 @@ impl ProjectionWorker {
                     thread,
                     snapshot,
                     product,
-                    Arc::clone(feed),
-                    Arc::clone(&state.channel),
+                    LiveOwnerChannels {
+                        feed: Arc::clone(feed),
+                        channel: Arc::clone(&state.channel),
+                        #[cfg(test)]
+                        pending_hook: state.pending_hook_slot(),
+                    },
                     persistence,
-                    #[cfg(test)]
-                    state.pending_hook_slot(),
                 )
                 .await?,
             );
@@ -2527,6 +2543,11 @@ mod storage_fault_tests {
             .items
             .into_iter()
             .filter(|item| item.turn_id == turn_id)
+            // Durable saving is a separate watermark, not part of this content comparison.
+            .map(|mut item| {
+                item.saved = false;
+                item
+            })
             .collect())
     }
 
@@ -2723,15 +2744,26 @@ mod storage_fault_tests {
         assert_eq!(retained_turn.id, "child-terminal-turn");
         // The pending share left the Thread budget with the handoff.
         assert!(channel_gauge(&channel) < gauge_parked);
-        // The report reached the real parent receiver; a skipped delivery is never claimed here.
-        assert!(
-            parent_handle
-                .snapshot()
-                .inbox
-                .iter()
-                .any(|record| record.message.id == report.id),
-            "the original parent delivery reached the real parent receiver"
-        );
+        // The receiver may already have consumed the original message. Both its pending
+        // queue and its consumed identity ledger prove delivery, including the exact digest.
+        let mut parent_state = parent_handle.subscribe();
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let state = parent_state
+                    .next()
+                    .await
+                    .context("parent closed before original report delivery")?;
+                let delivered = state.inbox.iter().any(|record| record.message == report)
+                    || state.consumed_message_identities.iter().any(|identity| {
+                        identity.id == report.id && identity.digest == report.digest()
+                    });
+                if delivered {
+                    break;
+                }
+            }
+            Ok::<_, anyhow::Error>(())
+        })
+        .await??;
 
         // Real close: the close commits pass the boundary, the worker retires, and the
         // observation, channel and writer all reach their real terminal states.
@@ -2789,10 +2821,12 @@ mod storage_fault_tests {
             &handle,
             &snapshot,
             child.clone(),
-            feed,
-            channel.clone(),
+            LiveOwnerChannels {
+                feed,
+                channel: channel.clone(),
+                pending_hook: Some(hook),
+            },
             None,
-            Some(hook),
         )
         .await?;
         // Earlier batches pass the boundary; each pre-armed release covers exactly one entry.
@@ -2802,6 +2836,7 @@ mod storage_fault_tests {
             }
             control.send_replace(Some(Ok(())));
             live.advance(&fixture.services, child_id, &write).await?;
+            assert_eq!(entered_rx.try_recv()?, write.effect.sequence);
         }
         let write = channel
             .next_unprojected()

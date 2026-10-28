@@ -1,6 +1,6 @@
-import 'collection_equality.dart';
-import 'command_receipts.dart';
-import 'studio_state_snapshots.dart';
+import '../../models/collection_equality.dart';
+import '../../models/command_receipts.dart';
+import 'mode_catalog_models.dart';
 
 const Object _unsetModeEditorValue = Object();
 

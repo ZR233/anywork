@@ -284,7 +284,6 @@ void main() {
       addTearDown(() async {
         observation.cancel();
       });
-      client.workspace.selectThread('thread', projectId: 'project');
       expect(
         () => client.conversations.setVisibleThread('thread'),
         returnsNormally,

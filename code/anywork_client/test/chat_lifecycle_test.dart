@@ -697,7 +697,7 @@ void main() {
       TestConversationFeed(threadId: 'A', subscriptionId: 'a-2'),
     );
     expect((await fixture.close()).complete, isTrue);
-      expect(budget.usage, isEmpty);
+    expect(budget.usage, isEmpty);
   });
 
   test(

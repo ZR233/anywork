@@ -301,9 +301,10 @@ async fn factory_missing_error_stays_typed_and_recovery_never_calls_missing_deta
             original_page.thread_id == root.thread.id
                 && !original_page.has_older
                 && original_page.items.iter().any(|item| {
-                    item.preview
-                        .text()
-                        .is_some_and(|text| text.text() == "saved missing-site history")
+                    item.fields.iter().any(|field| {
+                        field.field == pl_protocol::ThreadContentField::Text
+                            && field.text == "saved missing-site history"
+                    })
                 }),
             "original complete history did not contain the saved reply"
         );

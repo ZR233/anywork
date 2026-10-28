@@ -16,14 +16,7 @@ import '../types/thread_stream/item.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-<<<<<<< HEAD
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `drop`
-=======
-// These functions are ignored because they are not marked as `pub`: `begin_call`, `begin_next`, `content`, `ensure_first_frame_delivered`, `initial_required`, `lock_tail`, `next_busy`, `timeline_closed`
-// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `NextGuard`, `TimelineActivity`, `TimelineCall`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `drop`, `drop`, `drop`
-// These functions are ignored (category: IgnoreBecauseOwnerTyShouldIgnore): `default`
->>>>>>> 92e47e5d6ba49bb2b7f9336c1e94f8e7f51df458
 
 /// Opens exactly one native combined feed, without a second tail or a separately rebuilt baseline.
 /// Cancellation before publication drops the native feed through its own RAII boundary.

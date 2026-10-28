@@ -9,6 +9,8 @@ import '../../../../shared/studio_driver_keys.dart';
 import '../../../../shared/studio_driver_key_values.dart';
 import '../state/timeline_entry.dart';
 import 'timeline_activity_row.dart';
+import 'timeline_activity_group_adapter.dart';
+import 'timeline_activity_group_views.dart';
 import 'timeline_wait_blocks.dart';
 
 typedef TimelineDetailAction = void Function(
@@ -45,33 +47,29 @@ class TimelineEntryView extends StatelessWidget {
       if (entry.kind == TimelineEntryKind.single) {
         return _observedMember(entry.first.id);
       }
-      if (entry.visibleLength == 1) {
-        final row = entry.member(entry.visibleIdAt(0));
-        if (row.item.descriptor is ConversationThinkingDescriptor) {
-          return ListenableBuilder(
-            listenable: row,
-            builder: (context, _) => _group(context),
-          );
-        }
-      }
       return _group(context);
     },
   );
 
   Widget _group(BuildContext context) {
-    final soleItem = entry.visibleLength == 1
-        ? entry.item(entry.visibleIdAt(0))
-        : null;
-    final groupExpandable =
-        soleItem?.descriptor is! ConversationThinkingDescriptor ||
-        _thinkingHasContent(soleItem!);
+    final groupExpandable = entry.visibleLength > 0;
     final summary = switch (entry.kind) {
       TimelineEntryKind.images => '读取图片 · ${entry.length}',
       TimelineEntryKind.recovery => entry.recoveryText,
       _ => [
-        if (entry.toolCount > 0) '${entry.toolCount} 个工具',
-        if (entry.skillCount > 0) '${entry.skillCount} 个技能',
-        if (entry.hasThinking) '思考过程',
+        if (entry.elapsedDuration case final duration?)
+          groupWorkedLabel(context, duration),
+        if (entry.toolCount > 0)
+          entry.issueCount > 0
+              ? context.l10n.timelineToolGroupSummaryIssues(
+                  entry.toolCount,
+                  entry.issueCount,
+                )
+              : context.l10n.timelineToolGroupSummary(entry.toolCount),
+        if (entry.skillCount > 0)
+          context.l10n.statusSkillsCount(entry.skillCount),
+        if (entry.activeCount > 0 && entry.hasThinking)
+          context.l10n.timelineReasoningActive,
       ].join(' · '),
     };
     return Padding(
@@ -81,10 +79,12 @@ class TimelineEntryView extends StatelessWidget {
         children: [
           SelectionContainer.disabled(
             child: InkWell(
-              key: StudioDriverKeys.timelineActivitySummary(entry.id),
               onTap: groupExpandable ? entry.toggle : null,
               child: TimelineActivityRow(
-                icon: Icons.account_tree_outlined,
+                key: StudioDriverKeys.timelineActivitySummary(entry.id),
+                icon: entry.kind == TimelineEntryKind.activity
+                    ? null
+                    : Icons.account_tree_outlined,
                 label: summary,
                 expandable: groupExpandable,
                 expanded: entry.expanded,
@@ -110,11 +110,7 @@ class TimelineEntryView extends StatelessWidget {
                   itemCount: entry.visibleLength,
                   itemBuilder: (context, index) {
                     final id = entry.visibleIdAt(index);
-                    final item = entry.item(id)!;
-                    return entry.visibleLength == 1 &&
-                            item.descriptor is ConversationThinkingDescriptor
-                        ? _singleThinking(item)
-                        : _observedMember(id);
+                    return _observedMember(id);
                   },
                 ),
               ),
@@ -123,12 +119,6 @@ class TimelineEntryView extends StatelessWidget {
       ),
     );
   }
-
-  bool _thinkingHasContent(ConversationItem item) =>
-      (item.descriptor as ConversationThinkingDescriptor).lifecycle.failure !=
-          null ||
-      item.fields.any((field) => field.text.trim().isNotEmpty) ||
-      item.details.any((detail) => detail.truncated);
 
   Widget _observedMember(String id) {
     final row = entry.member(id);
@@ -140,6 +130,28 @@ class TimelineEntryView extends StatelessWidget {
   }
 
   Widget _member(BuildContext context, ConversationItem item) {
+    if (entry.kind == TimelineEntryKind.activity && item.terminal) {
+      final conversion = TimelineActivityGroupAdapter.convertItem(item);
+      if (conversion is TimelineActivityConverted) {
+        final pairedId = entry.pairedToolId(item.id);
+        final paired = pairedId == null
+            ? null
+            : TimelineActivityGroupAdapter.convertItem(entry.item(pairedId)!);
+        return KeyedSubtree(
+          key: StudioDriverKeys.timelineBlock(item.id),
+          child: TimelineActivityMemberView(
+            message: conversion.message,
+            pairedTool:
+                paired is TimelineActivityConverted &&
+                    paired.message is TimelineToolGroupMessage
+                ? paired.message as TimelineToolGroupMessage
+                : null,
+            onOpenDetail: onDetail,
+            bodyBuilder: (id, text) => bodyBuilder(entry.item(id)!, text),
+          ),
+        );
+      }
+    }
     final descriptor = item.descriptor;
     if (descriptor is ConversationToolDescriptor &&
         descriptor.userInput != null) {
@@ -275,31 +287,6 @@ class TimelineEntryView extends StatelessWidget {
         if (!runtimeNotice)
           TimelineDetailNotices(item: item, onDetail: onDetail),
       ],
-    );
-  }
-
-  Widget _singleThinking(ConversationItem item) {
-    final row = entry.member(item.id);
-    return ListenableBuilder(
-      key: ValueKey('timeline-thinking:${item.id}'),
-      listenable: row,
-      builder: (context, _) => Column(
-        key: StudioDriverKeys.timelineBlock(item.id),
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          if (row.item.descriptor
-              case ConversationThinkingDescriptor(:final lifecycle)
-              when lifecycle.failure != null)
-            SelectionContainer.disabled(
-              child: Text(
-                lifecycle.failure!,
-                style: TextStyle(color: context.colors.error),
-              ),
-            ),
-          _fields(row.item),
-          TimelineDetailNotices(item: row.item, onDetail: onDetail),
-        ],
-      ),
     );
   }
 

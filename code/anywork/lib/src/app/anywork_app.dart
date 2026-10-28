@@ -7,18 +7,13 @@ import 'package:go_router/go_router.dart';
 
 import 'package:anywork_client/studio_client.dart';
 
-import '../features/settings/settings.dart';
-import '../features/settings/settings_bots_tab.dart';
-import '../features/settings/mode_editor/mode_editor_dialogs.dart';
-import '../features/settings/accounts/connectors/account_navigation.dart';
-import '../features/shell/studio_shell.dart';
 import '../platform/desktop_tray_host.dart';
 import '../presentation/providers/studio_update_controller.dart';
 import '../l10n/app_localizations.dart';
 import '../l10n/studio_l10n.dart';
 import '../platform/error_log.dart';
-import '../shared/studio_routes.dart';
 import 'conversation_route_binding.dart';
+import 'routing/application_router.dart';
 import 'studio_host_lifecycle.dart';
 import 'app_graph.dart';
 import 'studio_shutdown.dart';
@@ -45,61 +40,10 @@ class _AnyworkAppState extends ConsumerState<AnyworkApp> {
     super.initState();
     _graph = ref.read(appGraphProvider);
     unawaited(_graph.initialize());
-    _router = GoRouter(
-      restorationScopeId: 'anywork-router',
-      routes: [
-        GoRoute(
-          path: '/',
-          name: StudioRoutes.studio,
-          builder: (context, state) => const StudioShell(),
-          routes: [
-            GoRoute(
-              path: 'settings',
-              name: StudioRoutes.settings,
-              onExit: (context, state) async {
-                if (!await confirmLeaveModeEditor(context, ref)) return false;
-                return context.mounted &&
-                    await confirmLeaveAccountsEditor(context, ref);
-              },
-              pageBuilder: (context, state) => const MaterialPage<void>(
-                restorationId: 'settings-page',
-                child: SettingsPage(),
-              ),
-            ),
-            GoRoute(
-              path: 'bots/:botId',
-              name: StudioRoutes.botDetails,
-              builder: (context, state) => BotDetailsPage(
-                key: ValueKey((state.pathParameters['botId'], null)),
-                botId: state.pathParameters['botId']!,
-              ),
-            ),
-            GoRoute(
-              path: 'bots/:botId/chats/:chatId/platform',
-              name: StudioRoutes.botPlatformTools,
-              builder: (context, state) => BotDetailsPage(
-                key: ValueKey((
-                  state.pathParameters['botId'],
-                  state.pathParameters['chatId'],
-                )),
-                botId: state.pathParameters['botId']!,
-                chatId: state.pathParameters['chatId']!,
-              ),
-            ),
-            GoRoute(
-              path: 'bots/:botId/chats/:chatId/threads/:threadId',
-              name: StudioRoutes.botConversation,
-              builder: (context, state) => BotChatPage(
-                botId: state.pathParameters['botId']!,
-                chatId: state.pathParameters['chatId']!,
-                threadId: state.pathParameters['threadId']!,
-                activation: _conversationRoutes.activation,
-                onRetry: _conversationRoutes.retry,
-              ),
-            ),
-          ],
-        ),
-      ],
+    _router = createApplicationRouter(
+      ref,
+      conversationActivation: () => _conversationRoutes.activation,
+      onConversationRetry: () => _conversationRoutes.retry(),
     );
     _conversationRoutes = ConversationRouteBinding(_router, _graph);
   }

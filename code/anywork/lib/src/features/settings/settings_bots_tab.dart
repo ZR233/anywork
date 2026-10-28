@@ -17,8 +17,8 @@ import '../../shared/studio_driver_keys.dart';
 import '../../shared/studio_routes.dart';
 import '../../presentation/providers/selection_store.dart';
 import '../../shared/model_route_selector.dart';
-import '../shell/studio_shell.dart';
 import 'settings_agent_routes.dart';
+import '../shell/studio_shell.dart' show AgentWorkspacePane;
 
 import 'package:anywork_client/studio_client.dart';
 

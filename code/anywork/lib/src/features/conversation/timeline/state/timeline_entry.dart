@@ -64,6 +64,22 @@ final class TimelineEntry extends ChangeNotifier {
     ConversationRawDescriptor(:final notice) => notice,
     _ => latestRecovery == null ? '' : timelineText(latestRecovery!),
   };
+  Duration? get elapsedDuration {
+    if (_ids.isEmpty || activeCount != 0) return null;
+    DateTime? start;
+    DateTime? end;
+    for (final item in members) {
+      final completed = timelineCompletedAt(item);
+      if (completed == null) return null;
+      if (start == null || item.header.createdAt.isBefore(start)) {
+        start = item.header.createdAt;
+      }
+      if (end == null || completed.isAfter(end)) end = completed;
+    }
+    if (start == null || end == null || end.isBefore(start)) return null;
+    return end.difference(start);
+  }
+
   bool expanded = false;
   final Set<String> expandedMembers = {};
   int version = 0;
@@ -279,6 +295,9 @@ final class TimelineEntry extends ChangeNotifier {
       }
     }
     final changed =
+        (kind == TimelineEntryKind.activity &&
+            (previous.header.createdAt != next.header.createdAt ||
+                timelineCompletedAt(previous) != timelineCompletedAt(next))) ||
         pairChanged ||
         before !=
             (
@@ -376,4 +395,19 @@ List<ThreadAttachmentView> timelineAttachments(ConversationItem item) =>
         _ => const [],
       },
       _ => const [],
+    };
+
+DateTime? timelineCompletedAt(ConversationItem item) =>
+    switch (item.descriptor) {
+      ConversationThinkingDescriptor(:final lifecycle) => lifecycle.terminalAt,
+      ConversationToolDescriptor(:final state) => switch (state) {
+        ConversationToolSucceeded(:final completedAt) => completedAt,
+        ConversationToolFailed(:final failedAt) => failedAt,
+        ConversationToolCancelled(:final cancelledAt) => cancelledAt,
+        ConversationToolDenied(:final deniedAt) => deniedAt,
+        ConversationToolInterrupted(:final interruptedAt) => interruptedAt,
+        _ => null,
+      },
+      ConversationSkillDescriptor(:final value) => value.activatedAt,
+      _ => null,
     };

@@ -1551,6 +1551,7 @@ void main() {
 
   testWidgets('同一 Recovery 事实跨来源只渲一次，独特诊断与普通文案不去重', (tester) async {
     final composer = await _composer(tester);
+    await _pump(tester, composer);
     final projectId = composer.workspace.thread.projectId;
     final issue = StudioRecoveryIssue(
       id: 'shared-recovery-diagnostic',

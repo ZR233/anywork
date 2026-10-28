@@ -39,7 +39,7 @@ final class StartPageComposerViewModelProvider
 }
 
 String _$startPageComposerViewModelHash() =>
-    r'fdb13bdae60b686b0ea5525ba32881aeb84b6633';
+    r'cffe53cfae5b59287e8c8f4d023e378e4d7c4b73';
 
 abstract class _$StartPageComposerViewModel
     extends $AsyncNotifier<StartPageComposerViewState> {
@@ -111,7 +111,7 @@ final class ComposerDockViewModelProvider
 }
 
 String _$composerDockViewModelHash() =>
-    r'4ea1923a3c83763e06bdc95b795ef86e86936551';
+    r'e77577f801b164097e359c1ec104f7df64faa9d8';
 
 final class ComposerDockViewModelFamily extends $Family
     with

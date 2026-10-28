@@ -1983,4 +1983,58 @@ void main() {
       reason: 'interrupted turn 不产生问题指示',
     );
   });
+
+  test('activity duration uses canonical completion across members', () {
+    final base = DateTime.utc(2026, 10, 28, 4);
+    final display = lease();
+    addTearDown(display.retire);
+    display.adoptBaseline(
+      ConversationBaseline(
+        subscriptionId: 'sub',
+        version: 1,
+        before: null,
+        hasOlder: false,
+        items: [
+          conversationFixture(
+            id: 'think-1',
+            threadId: 'thread',
+            turnId: 'turn',
+            ordinal: 1,
+            createdAt: base,
+            updatedAt: base.add(const Duration(seconds: 3)),
+            descriptor: ConversationThinkingDescriptor(
+              lifecycle: CompletedThreadContentView(
+                base.add(const Duration(seconds: 3)),
+              ),
+            ),
+            fields: {const ThreadThinkingSummaryFieldView(0): 'Designing'},
+          ),
+          conversationFixture(
+            id: 'tool-1',
+            threadId: 'thread',
+            turnId: 'turn',
+            ordinal: 2,
+            createdAt: base.add(const Duration(seconds: 2)),
+            updatedAt: base.add(const Duration(seconds: 8)),
+            descriptor: ConversationToolDescriptor(
+              invocation: const ConversationToolInvocation(
+                toolCallId: 'tool-1',
+                name: 'read_file',
+              ),
+              state: ConversationToolSucceeded(
+                completedAt: base.add(const Duration(seconds: 8)),
+                output: const ConversationToolOutputDescriptor(attachments: []),
+              ),
+            ),
+            fields: {
+              const ThreadToolArgumentsFieldView(): '{"path":"README.md"}',
+              const ThreadToolResultFieldView(): 'ok',
+            },
+          ),
+        ],
+      ),
+    );
+    final group = timelineEntryOf(display.controller.messages.single)!;
+    expect(group.elapsedDuration, const Duration(seconds: 8));
+  });
 }

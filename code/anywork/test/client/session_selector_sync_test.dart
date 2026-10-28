@@ -544,7 +544,7 @@ void main() {
       ),
     );
 
-    await tester.pumpWidget(harness(const StartPageComposerDock()));
+    await tester.pumpWidget(harness(const StartPageComposerDockConnector()));
     await tester.pumpAndSettle();
 
     final blocker = tester.widget<Text>(
@@ -570,7 +570,7 @@ void main() {
     await tester.pumpAndSettle();
     expect(scrollPosition.pixels, greaterThan(0));
 
-    graph.client.attachments.reportNewThreadFailure(
+    graph.client.drafts.attachments.reportNewThreadFailure(
       projectId,
       StateError('Clipboard image could not be read during recovery'),
     );

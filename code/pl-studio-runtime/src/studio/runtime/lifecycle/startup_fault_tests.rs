@@ -17,6 +17,20 @@ fn options(home: &Path) -> StudioRuntimeOptions {
     }
 }
 
+// Startup assertions need a durable fence while the runtime remains writable.
+// The production shutdown stage also stops the writer and cannot serve this role.
+async fn flush_current_writes(runtime: &StudioRuntime) -> Result<()> {
+    runtime.store.thread_persistence().wait_for_drain().await?;
+    let repository = runtime.agent_facility.persistence.lock().await.clone();
+    if let Some(repository) = repository {
+        repository
+            .flush()
+            .await
+            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    }
+    Ok(())
+}
+
 fn cold_session(paths: &StudioPaths) -> Result<crate::studio::paths::SessionPaths> {
     paths.session_paths("project-cold", "cold")
 }
@@ -94,7 +108,7 @@ async fn canonical_project_without_sqlite_mirror_accepts_and_restores_new_thread
     let thread = runtime
         .create_thread("project-published", "incoming message")
         .await?;
-    let flushed = runtime.flush_persistence().await;
+    let flushed = flush_current_writes(&runtime).await;
     let shutdown = runtime.shutdown_runtime().await;
     flushed?;
     shutdown?;
@@ -190,7 +204,7 @@ async fn recovery_scope_and_execution_dependencies_survive_bot_materialization_a
     let bot_root = runtime
         .create_thread_with_id(bot_root_id, &project.id, "bot owner")
         .await?;
-    runtime.flush_persistence().await?;
+    flush_current_writes(&runtime).await?;
     let managed = runtime
         .store
         .workspace_identity(bot_root_id)

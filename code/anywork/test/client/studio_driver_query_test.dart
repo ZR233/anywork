@@ -853,7 +853,7 @@ void main() {
         retryable: false,
         correlationId: 'driver-recovery-failure',
       );
-      client.attachments.reportNewThreadFailure(project.id, failure);
+      client.drafts.attachments.reportNewThreadFailure(project.id, failure);
 
       final facts = queryStudioDriverFacts(
         client,

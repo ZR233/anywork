@@ -2,9 +2,11 @@ import 'dart:async';
 import 'dart:typed_data';
 
 import 'models.dart';
+import 'src/modes/modes_ports.dart';
 import 'transport_ports.dart';
 import 'src/studio/bootstrap.dart';
 
+export 'src/modes/modes_ports.dart';
 export 'src/studio/thread_frames.dart';
 export 'src/conversation/domain/conversation_models.dart';
 export 'src/studio/bootstrap.dart';
@@ -61,39 +63,6 @@ abstract interface class CommandTransport {
 
   /// 主会话可见的子任务待决交互；列举不激活任何子会话。
   Future<List<ChildInteractionSummary>> readChildInteractions(String threadId);
-}
-
-/// Typed Mode authoring commands and read-only validation helpers.
-///
-/// The schema is the only string-based authoring surface; runtime snapshots,
-/// documents and preview results stay typed.
-abstract interface class ModeEditorTransport {
-  Future<ModeDefinitionSnapshot> readThreadModeDefinition(String modeId);
-
-  Future<ModeDefinitionCommandReply> saveThreadModeDefinition(
-    ModeDocument document, {
-    required int expectedRevision,
-    required OperationId operationId,
-  });
-
-  Future<ModeDefinitionCommandReply> deleteThreadModeDefinition(
-    String modeId, {
-    required int expectedRevision,
-    required OperationId operationId,
-  });
-
-  Future<ModeDefinitionCommandReply> reloadThreadModeDefinitions({
-    required int expectedRevision,
-    required OperationId operationId,
-  });
-
-  Future<ModeValidationResult> validateThreadModeDefinition(String json);
-
-  Future<String> threadModeDefinitionSchema();
-
-  Future<WorkflowPreviewSnapshot> previewThreadModeWorkflow(
-    WorkflowPreviewRequest request,
-  );
 }
 
 /// 按需读取进程级持久化队列压力的可选能力。

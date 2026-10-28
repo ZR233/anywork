@@ -757,6 +757,34 @@
       }
     }
   },
+  "timelineGroupWorkedUnderSecond": "Worked for less than 1s",
+  "timelineGroupWorkedSeconds": "Worked for {seconds}s",
+  "@timelineGroupWorkedSeconds": {
+    "placeholders": {
+      "seconds": {
+        "type": "int"
+      }
+    }
+  },
+  "timelineGroupWorkedMinutes": "Worked for {minutes}m",
+  "@timelineGroupWorkedMinutes": {
+    "placeholders": {
+      "minutes": {
+        "type": "int"
+      }
+    }
+  },
+  "timelineGroupWorkedMinutesSeconds": "Worked for {minutes}m {seconds}s",
+  "@timelineGroupWorkedMinutesSeconds": {
+    "placeholders": {
+      "minutes": {
+        "type": "int"
+      },
+      "seconds": {
+        "type": "int"
+      }
+    }
+  },
   "timelineReasoningSummary": "Summary",
   "timelineReasoningContent": "Content",
   "timelineReasoningBudgetLimited": "Reasoning budget reached",
@@ -2082,6 +2110,17 @@
   "modeEditorTransitionGuardHint": "For example: after the user confirms scope",
   "modeEditorGuardRequiredField": "Enter a guard.",
   "modeEditorCollapse": "Collapse",
+  "modeEditorDetailStage": "Stage details",
+  "modeEditorDetailTransition": "Transition details",
+  "modeEditorFocusAll": "All",
+  "modeEditorFocusSelected": "Focused",
+  "modeEditorDimmedEdges": "{count, plural, other{Dimmed {count} unrelated transitions}}",
+  "@modeEditorDimmedEdges": {
+    "placeholders": {
+      "count": { "type": "int" }
+    }
+  },
+  "modeEditorViewStage": "View stage",
   "modeEditorNoWorkflowPeriod": "This mode has no workflow.",
   "modeEditorInspectorSelectHint": "Select a stage or transition on the canvas to edit its fields.",
   "modeEditorRenameId": "Rename id",
@@ -2093,6 +2132,7 @@
   "modeEditorInitialStateLockedHint": "The workflow always keeps one initial state; enable another stage instead.",
   "modeEditorInitialStateHint": "A run starts from this stage.",
   "modeEditorStageInstructions": "Stage instructions",
+  "modeEditorCompletionCriteriaTitle": "Completion criteria",
   "modeEditorCompletionCriteria": "Completion criteria (one per line)",
   "modeEditorAtomicCriteriaRequired": "An atomic stage needs at least one completion criterion; Rust validates on save.",
   "modeEditorOutgoingTransitions": "Outgoing transitions",

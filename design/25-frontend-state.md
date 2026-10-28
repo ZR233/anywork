@@ -249,7 +249,7 @@ provider 销毁仅解绑自身观察、计时器和 UI helper，不关闭业务�
 
 生产列表、详情、编辑和关键组件必须能通过独立的纯视图入口直接用于官方 Widget Previewer；该入口不连带依赖 Connector、Provider、AppGraph、FRB 或平台业务服务。薄预览包装复用生产主题、本地化与品牌资源，仅注入合成不可变展示值及本地动作，不装配 Client/Repository，不依赖 ProviderScope，不复制 UI 或加入生产业务假分支。
 
-官方预览按项目发现全部注册入口，任一入口引入原生应用聚合库都会污染整个 Web 编译。仅将满足独立纯视图边界的组件注册为官方预览；原生工作区与时间线的完整装配继续通过既有 demo/Driver 观察，不保留依赖原生壳却无法独立编译的预览注册及无消费者的合成壳。
+官方预览按项目发现全部注册入口，任一入口引入原生应用聚合库都会污染整个 Web 编译。仅将满足独立纯视图边界的组件（如账号模块视图与时间线思考／工具活动组独立组件 `TimelineActivityGroupBlock`）注册为官方预览；原生工作区与完整时间线列表的装配继续通过既有 demo/Driver 观察，不保留依赖原生壳却无法独立编译的预览注册及无消费者的合成壳。
 
 预览交互仅改变本地展示状态或记录动作，不访问真实凭据、文件、账号或网络。Web 预览的编译、热更新与截图用于证明呈现解耦和布局；原生插件、真实数据与关闭行为仍须独立验收（见 [24](./24-testing.md)）。官方组件可满足时不增设预览框架或平行应用；常规操作入口归工程文档维护。
 
@@ -268,3 +268,16 @@ provider 销毁仅解绑自身观察、计时器和 UI helper，不关闭业务�
 Flutter 会话功能按 `ViewModel / ViewState → Connector → View` 组织。生成式 AsyncNotifier 消费领域公共 API，Freezed 状态只保存不可变呈现值；控制器、流、句柄、Future、查询作用域和 permit 不进入 ViewState。Connector 绑定稳定回调与平台动作，纯 View 只接收展示值、类型化动作及 UI-only 控制器，不读取 Repository、Provider 或 FRB。功能模块只保留生成器拥有的 `part`，不以跨文件私有聚合隐藏业务与视图依赖。
 
 `TimelineSessionOwner` 是应用表现层资源所有者，持有 Flyer 展示租约而不承担业务字段归约；活动流状态按稳定消息身份定向通知，只保存当前活动流必要内容并在正文结束后释放。状态栏按执行、创作、配置、计量、上下文派生细粒度不可变投影，不为拆分视图另建五套可写业务状态。上层只借用所属代次的资源，卸载与真实关闭的次序继续遵循 §25.5 和 [26](./26-timeline-content.md)。
+## 25.16 工作模式分域与全屏工作区
+
+### 领域分域
+
+工作模式（Mode）遵循 [§25.13](#2513-独立统计领域与呈现模块)/[§25.14](#2514-账号分域与可预览呈现) 的分域先例，Dart Client 侧归 `anywork_client/src/modes/` 领域：`domain/` 持有目录与编辑模型、`ModeEditorOwner`（草稿、64 步 undo/redo、CAS 保存与内置只读防护，契约见 [§25.12](#2512-工作模式编辑草稿与远端目录游标)）、目录 store 与文档不可变变换纯函数；`modes_ports.dart` 持有 `ModeEditorTransport` 类型化端口。文档变换以纯坐标 record 表达节点位置，SDK 不依赖 Flutter 类型。`AnyworkClient` 继续以 `modeEditor`/`modeCatalog` 字段作为唯一装配门面；旧 `models/mode_editor_models.dart`、`studio/mode_editor_owner.dart` 路径不保留转发。
+
+### 呈现分层与路由
+
+Flutter 侧归 `features/modes/`：`state/` 持有 Freezed 工作区视图状态（内容分区、选中、聚焦模式、校验请求与预演输入），`view_models/` 的生成式 Notifier 是其唯一 owner，`connectors/` 持有画布与详情共用的文档编辑动作，`views/` 为设置目录 tab、全屏工作区路由页与窄屏详情子路由页，`widgets/` 为画布、阶段/转换详情面板与 JSON/设置/预演面板（纯不可变 props + 类型化回调）。文档草稿仍唯一归 `ModeEditorOwner`，视图状态不复制任何业务事实。
+
+页面级导航统一经应用唯一声明式路由表（`app/routing/application_router.dart`）：`mode-workspace`（`/settings/modes/:modeId`，路由 `onExit` 复用未保存草稿三选一守卫）、`mode-detail`（窄屏详情子路由）、`bot-details`、`bot-conversation` 与 `bot-platform-tools`。任何页面不得绕过路由表使用 `Navigator.push(MaterialPageRoute)`；设置页内 tab、master-detail 槽位与模态对话框不属于页面导航，保持既有实现。窄屏详情页返回时经 `PopScope` 清除选中状态，下层工作区保持 mounted 以保留画布视口与缩放。
+
+统一路由表同时承载会话展示需求：`ConversationRouteBinding` 根据已提交目的地激活唯一 `AppGraph` 的订阅；模式工作区、详情、设置及平台工具页隐藏会话时撤销展示需求，返回后重新建立基线。机器人会话目标携带明确 threadId，不依赖导航前捕获的全局选中态。

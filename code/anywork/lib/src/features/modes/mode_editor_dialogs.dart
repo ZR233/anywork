@@ -3,13 +3,16 @@ import 'package:anywork_client/studio_client.dart'
         WorkflowDefinition,
         WorkflowState,
         WorkflowStateKind,
-        WorkflowTransition;
+        WorkflowTransition,
+        isValidModeId,
+        isValidStateId,
+        suggestedModeId;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../../app/theme/studio_tokens.dart';
-import '../../../l10n/studio_l10n.dart';
-import '../../../presentation/providers/client_provider.dart';
+import '../../app/theme/studio_tokens.dart';
+import '../../l10n/studio_l10n.dart';
+import '../../presentation/providers/client_provider.dart';
 import 'mode_editor_support.dart';
 
 enum _UnsavedChoice { save, discard, cancel }
@@ -460,7 +463,7 @@ class _RenameStateDialogState extends State<_RenameStateDialog> {
       key: const ValueKey<String>('mode-editor-rename-state-dialog'),
       title: Text(l10n.modeEditorRenameStateTitle),
       content: TextField(
-        key: ModeEditorKeys.inspectorField('state-id'),
+        key: ModeEditorKeys.detailField('state-id'),
         controller: _controller,
         autofocus: true,
         onSubmitted: (_) => _submit(),
@@ -584,7 +587,7 @@ class _TransitionDialogState extends State<_TransitionDialog> {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               DropdownButtonFormField<String>(
-                key: ModeEditorKeys.inspectorField('new-source'),
+                key: ModeEditorKeys.detailField('new-source'),
                 initialValue: _source,
                 decoration: InputDecoration(
                   labelText: l10n.modeEditorSourceState,
@@ -599,7 +602,7 @@ class _TransitionDialogState extends State<_TransitionDialog> {
               ),
               const SizedBox(height: 12),
               DropdownButtonFormField<String>(
-                key: ModeEditorKeys.inspectorField('new-target'),
+                key: ModeEditorKeys.detailField('new-target'),
                 initialValue: _target,
                 decoration: InputDecoration(
                   labelText: l10n.modeEditorTargetState,
@@ -614,7 +617,7 @@ class _TransitionDialogState extends State<_TransitionDialog> {
               ),
               const SizedBox(height: 12),
               TextFormField(
-                key: ModeEditorKeys.inspectorField('new-guard'),
+                key: ModeEditorKeys.detailField('new-guard'),
                 controller: _guard,
                 minLines: 3,
                 maxLines: 5,

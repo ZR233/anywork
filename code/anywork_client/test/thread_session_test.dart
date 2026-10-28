@@ -3,7 +3,6 @@ import 'dart:async';
 import 'package:anywork_client/studio_client.dart';
 import 'package:test/test.dart';
 
-import 'support/conversation_delivery.dart';
 import 'support/timeline_transport.dart';
 
 ThreadWorkspace _workspace({
