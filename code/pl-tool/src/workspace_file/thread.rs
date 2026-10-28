@@ -1,4 +1,5 @@
 //! Opaque Thread tools over the existing workspace file and patch implementations.
+use super::ops::execute_workspace_patch_tool;
 use super::*;
 use pl_core::{
     context::{ContextContent, OpaquePayload},
@@ -34,15 +35,10 @@ impl<B: WorkspaceFileBackend + 'static> ThreadWorkspaceFileTool<B> {
         self,
         declaration: OpaquePayload,
     ) -> std::result::Result<Registration, RegistryError> {
-        let mutation = self.kind == WorkspaceFileToolKind::ApplyPatch;
         let authorization = self.workspace.authorization();
         let registration = Registration::new(self.kind.name().into(), declaration, self)?
             .with_authorization(authorization);
-        Ok(if mutation {
-            registration.foreground_coexisting()
-        } else {
-            registration
-        })
+        Ok(registration.foreground_coexisting())
     }
 }
 
@@ -55,29 +51,24 @@ impl<B: WorkspaceFileBackend + 'static> Tool for ThreadWorkspaceFileTool<B> {
         if context.cancellation.is_cancelled() {
             return Err(ToolError::new(pl_core::thread::ThreadError::Cancelled));
         }
-        let input = serde_json::from_str(input.content()).map_err(ToolError::new)?;
-        let _write_guard = if self.kind == WorkspaceFileToolKind::ApplyPatch {
-            self.workspace
-                .ensure_workspace_writable()
-                .map_err(ToolError::new)?;
-            Some(self.workspace.write_lock().await)
-        } else {
-            None
-        };
+        if input.format() != "text/plain" {
+            return Err(ToolError::new(tool_error(
+                self.kind.name(),
+                "apply_patch only accepts raw patch text",
+            )));
+        }
+        self.workspace
+            .ensure_workspace_writable()
+            .map_err(ToolError::new)?;
+        let _write_guard = self.workspace.write_lock().await;
         if context.cancellation.is_cancelled() {
             return Err(ToolError::new(pl_core::thread::ThreadError::Cancelled));
         }
         let granted = self.backend.for_grant(&context.grant);
         let backend = granted.as_ref().unwrap_or(self.backend.as_ref());
-        let result = execute_workspace_file_tool(backend, self.kind.name(), input)
+        let result = execute_workspace_patch_tool(backend, input.content())
             .await
-            .map_err(ToolError::new)?
-            .ok_or_else(|| {
-                ToolError::new(tool_error(
-                    self.kind.name(),
-                    "unsupported workspace operation",
-                ))
-            })?;
+            .map_err(ToolError::new)?;
         // Projection was produced at execution time. Historical readers never rerun it.
         let output = ToolOutput::new(
             OpaquePayload::new("pl.tool.workspace-file", 1, result.output)
