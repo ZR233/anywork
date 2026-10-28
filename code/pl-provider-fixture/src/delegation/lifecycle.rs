@@ -46,7 +46,7 @@ pub(super) fn run(flow: &Flow<'_>, prompt: &str, environment: &Environment) -> P
         "[[delegation:child:review]]",
         Some(&executor.agent_id),
     )?;
-    let changes = flow.report(
+    let changes = flow.legacy_report(
         "review",
         &initial_reviewer,
         "delegation independent review: changes requested",
@@ -97,7 +97,7 @@ pub(super) fn run(flow: &Flow<'_>, prompt: &str, environment: &Environment) -> P
         &repair_review_message,
         Some(&executor.agent_id),
     )?;
-    let approved = flow.report(
+    let approved = flow.legacy_report(
         "rereview",
         &repair_reviewer,
         "delegation independent review: approved",
@@ -201,7 +201,7 @@ pub(super) fn run(flow: &Flow<'_>, prompt: &str, environment: &Environment) -> P
         &late_review_message,
         Some(&executor.agent_id),
     )?;
-    let late_approved = flow.report(
+    let late_approved = flow.legacy_report(
         "late-rereview",
         &late_reviewer,
         "delegation independent review: approved",
@@ -356,7 +356,7 @@ fn historical<T: serde::de::DeserializeOwned>(
     flow: &Flow<'_>,
     label: &str,
     tool: &str,
-) -> anyhow::Result<T> {
+) -> Progress<T> {
     let suffix = format!("-{label}");
     let call = flow
         .request
@@ -371,15 +371,17 @@ fn historical<T: serde::de::DeserializeOwned>(
                     .is_some_and(|id| id.ends_with(&suffix))
         })
         .context("cold root did not restore original tool history")?;
-    let output = flow
-        .request
-        .output(
-            call.call_id
-                .as_deref()
-                .context("historical call has no identity")?,
-        )?
-        .context("cold root lost committed tool result")?;
-    decode(&output)
+    let call_id = call
+        .call_id
+        .as_deref()
+        .context("historical call has no identity")?;
+    let arguments: serde_json::Value = serde_json::from_str(
+        call.arguments
+            .as_deref()
+            .context("historical call has no arguments")?,
+    )
+    .context("decode historical call arguments")?;
+    flow.read_call(call_id, tool, arguments, &format!("cold-history-{label}"))
 }
 
 fn cold(flow: &Flow<'_>) -> Progress<Decision> {

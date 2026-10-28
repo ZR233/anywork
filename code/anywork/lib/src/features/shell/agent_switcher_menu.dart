@@ -22,6 +22,7 @@ class AgentSwitcherMenu extends ConsumerStatefulWidget {
   const AgentSwitcherMenu({
     required this.agents,
     required this.workspaceThreads,
+    this.recoveryIssues = const [],
     required this.selectedThreadId,
     this.pendingInteractionThreadIds = const {},
     super.key,
@@ -29,6 +30,7 @@ class AgentSwitcherMenu extends ConsumerStatefulWidget {
 
   final List<StudioAgentView> agents;
   final List<StudioThread> workspaceThreads;
+  final List<StudioRecoveryIssue> recoveryIssues;
   final String? selectedThreadId;
 
   /// 有本会话待决交互的成员；只影响状态色，不改变停止资格。
@@ -358,15 +360,25 @@ class _AgentSwitcherMenuState extends ConsumerState<AgentSwitcherMenu> {
     final thread = widget.workspaceThreads
         .where((thread) => thread.id == agent.threadId)
         .firstOrNull;
+    final rootProjectId = widget.workspaceThreads
+        .where((candidate) => candidate.isRoot)
+        .firstOrNull
+        ?.projectId;
+    final recoveryIssue = recoveryIssuesForTarget(
+      widget.recoveryIssues,
+      projectId: thread?.projectId ?? rootProjectId,
+      threadId: agent.threadId,
+    ).firstOrNull;
     final error = agent.error;
-    final hasError = error != null;
+    final hasError = error != null || recoveryIssue != null;
     final summary = thread?.title.trim().isNotEmpty == true
         ? thread!.title
         : agent.task.trim().isNotEmpty
         ? agent.task
         : context.roleLabel(agent.role);
-    final status =
-        error ?? context.threadStatusLabel(_agentThreadStatus(agent.state));
+    final status = recoveryIssue == null
+        ? error ?? context.threadStatusLabel(_agentThreadStatus(agent.state))
+        : context.recoveryIssueLabel(recoveryIssue);
     final secondaryStyle = Theme.of(context).textTheme.labelSmall
         ?.copyWith(color: context.colors.onSurfaceVariant);
     final role = agent.role.trim();
@@ -405,19 +417,26 @@ class _AgentSwitcherMenuState extends ConsumerState<AgentSwitcherMenu> {
     final stopFailure = _stopFailureFor(agent);
     return MenuItemButton(
       key: StudioDriverKeys.agentRow(agent.threadId),
-      onPressed: () {
-        unawaited(
-          ref
-              .read(anyworkClientProvider)
-              .directoryCommands
-              .selectAgentThread(agent.threadId)
-              .catchError((Object error) {
-                if (!mounted) return;
-                ScaffoldMessenger.of(context)
-                    .showSnackBar(SnackBar(content: Text(error.toString())));
-              }),
-        );
-      },
+      onPressed: recoveryIssue?.blocksAccess == true
+          ? null
+          : () {
+              unawaited(
+                ref
+                    .read(anyworkClientProvider)
+                    .directoryCommands
+                    .selectAgentThread(agent.threadId)
+                    .catchError((Object error) {
+                      if (!mounted) return;
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text(
+                            context.recoveryIssueFailureLabel(error),
+                          ),
+                        ),
+                      );
+                    }),
+              );
+            },
       // 选中背景走官方样式工厂；内边距、行高、悬浮与墨迹效果沿用
       // MenuItemButton 的官方默认值。
       style: MenuItemButton.styleFrom(
@@ -440,6 +459,26 @@ class _AgentSwitcherMenuState extends ConsumerState<AgentSwitcherMenu> {
       trailingIcon: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
+          if (recoveryIssue?.canRetry == true)
+            IconButton(
+              key: StudioDriverKeys.retryRecoveryIssue(recoveryIssue!.id),
+              tooltip: context.l10n.runtimeFatalRetry,
+              visualDensity: VisualDensity.compact,
+              iconSize: 18,
+              onPressed: () async {
+                try {
+                  await ref
+                      .read(anyworkClientProvider)
+                      .directoryCommands
+                      .retryRecovery();
+                } on Object catch (error) {
+                  if (!mounted) return;
+                  ScaffoldMessenger.of(context)
+                      .showSnackBar(SnackBar(content: Text(error.toString())));
+                }
+              },
+              icon: const Icon(Icons.refresh),
+            ),
           _stopControl(agent, stop, summary: summary),
           Visibility(
             visible: selected,

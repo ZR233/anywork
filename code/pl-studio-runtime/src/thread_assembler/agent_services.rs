@@ -27,6 +27,7 @@ pub(super) struct AgentServices {
     pub(super) store: crate::studio::StudioStore,
     pub(super) events: crate::studio::ProductEventBus,
     pub(super) performance: crate::studio::ModelPerformanceOwner,
+    pub(super) recovery: crate::studio::StudioRecoveryRegistry,
     pub(super) operations: super::agent_operations::AgentOperations,
     pub(super) workspace_recovery: Option<WorkspaceRecoveryPublisher>,
 }
@@ -239,7 +240,26 @@ impl AgentServices {
         target: &str,
     ) -> Result<()> {
         self.authorize(caller, target).await?;
+        self.store.ensure_agent_execution_allowed(target).await?;
         let record = self.record(target).await?;
+        self.recovery.ensure_thread_read_access(&record)?;
+        let live = owner
+            .observed_thread(target)
+            .map(|thread| thread.snapshot());
+        let resources = self
+            .factory
+            .verify_execution_workspace(
+                &record,
+                live.as_ref(),
+                crate::studio::thread_factory::ExecutionWorkspaceCheck::Prepare,
+            )
+            .await;
+        self.events.emit_recovery_state(
+            self.recovery
+                .apply_execution_workspace_check(&record, resources.as_ref().err()),
+        );
+        resources?;
+        self.recovery.ensure_thread_execution_access(&record)?;
         anyhow::ensure!(
             record.parent_thread_id.as_deref() == Some(caller) && !record.archived,
             "only an active direct child can be resumed"
@@ -268,6 +288,45 @@ impl AgentServices {
             }
             return Err(error.into());
         }
+        Ok(())
+    }
+
+    pub(super) async fn activate_verified_review_child(
+        &self,
+        owner: &StudioThreadAssembler,
+        caller: &str,
+        target: &str,
+        proof: crate::studio::thread_factory::VerifiedLocalResume,
+        operation: tokio::sync::OwnedMutexGuard<()>,
+    ) -> Result<(), super::ThreadAssemblyError> {
+        let checked = async {
+            self.authorize(caller, target).await?;
+            self.store.ensure_agent_execution_allowed(target).await?;
+            let record = self.record(target).await?;
+            self.recovery.ensure_thread_read_access(&record)?;
+            self.recovery.ensure_thread_execution_access(&record)?;
+            anyhow::ensure!(
+                record.parent_thread_id.as_deref() == Some(caller) && !record.archived,
+                "only the original direct child can consume a local review proof"
+            );
+            Ok::<_, anyhow::Error>(record)
+        }
+        .await
+        .map_err(|source| super::ThreadAssemblyError::Resource {
+            operation: "admit verified local review restore",
+            source: source.into(),
+        })?;
+        owner
+            .activate_verified_review(
+                super::ThreadActivation {
+                    id: checked.id,
+                    parent_id: checked.parent_thread_id,
+                },
+                self.factory.clone(),
+                proof,
+                operation,
+            )
+            .await?;
         Ok(())
     }
 
@@ -314,6 +373,8 @@ impl AgentServices {
         input: SessionInput,
         path: Vec<pl_protocol::ThreadId>,
     ) -> Result<AgentSessionPage> {
+        self.recovery
+            .ensure_thread_read_access(&self.record(&input.target).await?)?;
         if !(1..=50).contains(&input.limit) {
             bail!("session limit must be between 1 and 50");
         }
@@ -403,6 +464,7 @@ impl StudioThreadAssembler {
         events: crate::studio::ProductEventBus,
         factory: crate::studio::StudioThreadFactory,
         performance: crate::studio::ModelPerformanceOwner,
+        recovery: crate::studio::StudioRecoveryRegistry,
     ) -> Result<(), ThreadAssemblyError> {
         let mut state = self.0.state();
         if state.closing
@@ -418,6 +480,7 @@ impl StudioThreadAssembler {
             store,
             events,
             performance,
+            recovery,
             operations: Default::default(),
             workspace_recovery: None,
         });

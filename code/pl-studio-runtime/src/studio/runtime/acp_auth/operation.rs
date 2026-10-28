@@ -138,7 +138,9 @@ pub(super) async fn run(inner: Arc<AcpAuthInner>, operation: Arc<Operation>, pla
     let (progress_sender, mut progress_receiver) =
         watch::channel(pl_acp::auth::AuthProgress::Initializing);
     let request = pl_acp::auth::AuthRequest {
-        probe_cwd: probe_dir.to_string_lossy().into_owned(),
+        // Windows 内部规范路径可能带设备前缀；官方 server 会将 cwd 转为 URI，不能直接
+        // 编码该前缀。复用 dunce 仅转换可安全简化的路径，文件系统操作仍持有原始路径。
+        probe_cwd: dunce::simplified(&probe_dir).to_string_lossy().into_owned(),
         action: protocol_action(&plan.action),
         cancellation: operation.cancel.clone(),
         progress: progress_sender,

@@ -2,7 +2,7 @@
 //! They never activate children or write product state.
 
 use anyhow::{Context, Result, ensure};
-use pl_provider_fixture::delegation::{CLOSED_SEND_ACTIVATION_ERROR, LiveState, Observation};
+use pl_provider_fixture::delegation::{LiveState, Observation, is_permanently_closed_send_error};
 use serde::{Deserialize, de::DeserializeOwned};
 
 #[derive(Debug, Deserialize, PartialEq, Eq)]
@@ -48,8 +48,63 @@ struct Child {
 #[serde(rename_all = "camelCase")]
 struct Close {
     target: String,
-    lifecycle: Lifecycle,
-    workspace_disposition: String,
+    agents: Vec<CloseAgent>,
+    error: Option<CloseFailure>,
+}
+
+impl Close {
+    fn succeeded_for(&self, target: &str) -> bool {
+        self.target == target
+            && self.error.is_none()
+            && self.agents.iter().any(|agent| agent.agent_id == target)
+            && self.agents.iter().all(|agent| {
+                agent.execution_closed
+                    && matches!(
+                        &agent.worktree_cleanup,
+                        WorktreeCleanup::NotApplicable
+                            | WorktreeCleanup::NotPresent { .. }
+                            | WorktreeCleanup::Removed { .. }
+                    )
+            })
+    }
+}
+
+#[derive(Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct CloseAgent {
+    agent_id: String,
+    execution_closed: bool,
+    worktree_cleanup: WorktreeCleanup,
+}
+
+#[derive(Debug, Deserialize, PartialEq, Eq)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+enum WorktreeCleanup {
+    Pending,
+    NotApplicable,
+    NotPresent {
+        path: String,
+        registration_present: bool,
+    },
+    Removed {
+        path: String,
+    },
+    Failed {
+        path: Option<String>,
+        error: CloseFailure,
+    },
+}
+
+#[derive(Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct CloseFailure {
+    code: String,
+    message: String,
+    retryable: bool,
 }
 
 #[derive(Debug, Deserialize, PartialEq, Eq)]
@@ -82,10 +137,17 @@ struct ClosedSend {
     tool: String,
     target: String,
     tool_error: String,
+    task_status: BackgroundTaskStatus,
     provider_requests_before: usize,
     provider_requests_after: usize,
     before: ClosedState,
     after: ClosedState,
+}
+
+#[derive(Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+enum BackgroundTaskStatus {
+    Failed,
 }
 
 #[derive(Deserialize, PartialEq, Eq)]
@@ -211,15 +273,18 @@ pub(super) fn check_first(state: &LiveState) -> Result<()> {
     )?;
     ensure!(
         first.executor.agent_id != first.reviewer.agent_id
-            && first.executor.profile_id == "executor"
+            && first.executor.profile_id == "worktree_executor"
             && first.reviewer.profile_id == "reviewer"
             && first.executor.evaluation.revision == 1
             && first.reviewer.evaluation.revision == 1,
         "recovery first did not finish two independent revision-one tasks"
     );
     ensure!(
-        first.reviewer_close.target == first.reviewer.agent_id
-            && first.reviewer_close.workspace_disposition == "preserve",
+        first.reviewer_close.succeeded_for(&first.reviewer.agent_id)
+            && first.reviewer_close.agents.iter().any(|agent| {
+                agent.agent_id == first.reviewer.agent_id
+                    && agent.worktree_cleanup == WorktreeCleanup::NotApplicable
+            }),
         "recovery first reviewer was not explicitly closed"
     );
     ensure!(
@@ -312,9 +377,10 @@ pub(super) fn check_reopened(first_state: &LiveState, state: &LiveState) -> Resu
             && closed.provider_requests_before == 0
             && closed.provider_requests_after == 0
             && targeted_requests(state, &first.reviewer.agent_id) == 0
+            && closed.task_status == BackgroundTaskStatus::Failed
             && serde_json::from_str::<Sent>(&closed.tool_error).is_err()
             && serde_json::from_str::<serde_json::Value>(&closed.tool_error).is_err()
-            && closed.tool_error == CLOSED_SEND_ACTIVATION_ERROR
+            && is_permanently_closed_send_error(&closed.tool_error)
             && closed.before == closed.after
             && closed.before.target == first.reviewer.agent_id
             && closed.before.parent_agent_id == first.root_agent_id
@@ -338,11 +404,39 @@ pub(super) fn check_reopened(first_state: &LiveState, state: &LiveState) -> Resu
             reopened
                 .close_receipts
                 .iter()
-                .filter(|receipt| receipt.target == *target
-                    && receipt.workspace_disposition == "preserve")
+                .filter(|receipt| receipt.target == *target && receipt.succeeded_for(target))
                 .count()
                 == 1,
             "recovery final close receipts do not cover each real child exactly once"
+        );
+    }
+    let executor_close = reopened
+        .close_receipts
+        .iter()
+        .find(|receipt| receipt.target == first.executor.agent_id)
+        .context("recovery executor close receipt is missing")?;
+    ensure!(
+        executor_close.agents.iter().any(|agent| {
+            agent.agent_id == first.executor.agent_id
+                && matches!(
+                    &agent.worktree_cleanup,
+                    WorktreeCleanup::Removed { path } if !path.trim().is_empty()
+                )
+        }),
+        "recovery executor close did not report removal of its worktree"
+    );
+    for reviewer_target in [&first.reviewer.agent_id, &reopened.reviewer.agent_id] {
+        let close = reopened
+            .close_receipts
+            .iter()
+            .find(|receipt| receipt.target == *reviewer_target)
+            .context("recovery reviewer close receipt is missing")?;
+        ensure!(
+            close.agents.iter().any(|agent| {
+                agent.agent_id == *reviewer_target
+                    && agent.worktree_cleanup == WorktreeCleanup::NotApplicable
+            }),
+            "recovery reviewer close did not report notApplicable worktree cleanup"
         );
     }
     ensure!(

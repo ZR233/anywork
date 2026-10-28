@@ -68,13 +68,32 @@ pub(super) fn run(
             project.join("work/review-surface.txt"),
             "Controlled review surface v1. No user data.\n",
         )?;
+        run_fixture_git(&project, &["init", "-q"])?;
+        fs::write(project.join(".gitignore"), ".anywork/\n")?;
+        fs::write(
+            project.join("fixture-base.txt"),
+            "Synthetic delegation acceptance project base.\n",
+        )?;
+        run_fixture_git(
+            &project,
+            &[
+                "add",
+                "--",
+                ".gitignore",
+                "fixture-base.txt",
+                "work/review-surface.txt",
+            ],
+        )?;
+        run_fixture_git(&project, &["commit", "-q", "-m", "fixture base"])?;
+        let head = run_fixture_git(&project, &["rev-parse", "--verify", "HEAD"])?;
         ensure!(
-            Command::new("git")
-                .current_dir(&project)
-                .args(["init", "-q"])
-                .status()?
-                .success(),
-            "failed to initialize isolated delegation project"
+            !String::from_utf8_lossy(&head.stdout).trim().is_empty(),
+            "isolated delegation project has no initial commit"
+        );
+        let status = run_fixture_git(&project, &["status", "--porcelain"])?;
+        ensure!(
+            status.stdout.is_empty(),
+            "isolated delegation project is not clean after its initial commit"
         );
         fs::write(
             context.output.join("delegation-runbook.md"),
@@ -92,7 +111,11 @@ pub(super) fn run(
         )?;
         let phases: &[&str] = if matches!(
             context.scenario,
-            Scenario::Lifecycle | Scenario::Window | Scenario::Recovery | Scenario::ReviewFeedback
+            Scenario::Lifecycle
+                | Scenario::Window
+                | Scenario::Recovery
+                | Scenario::ReviewFeedback
+                | Scenario::Worktree
         ) {
             &["first", "reopen"]
         } else {
@@ -206,7 +229,7 @@ pub(super) fn run(
             "error":journey.as_ref().err().map(|error| format!("{error:#}")),
             "fixtureError":stopped.as_ref().err().map(|error| format!("{error:#}")),
             "unprovedConcurrency":["evaluate/send/close lock ordering","spawn/archive interleaving","cancelled write waiter commit/cleanup failure"],
-            "reviewEvidenceBoundary":"accepted forward receipt + exact target model wrapper/hash + new committed Turn; no inferred inputId or complete inbox ledger",
+            "reviewEvidenceBoundary":"immutable v3 submitted conclusion + separate v1 bound delivery exception + exact target model wrapper/hash and new committed Turn; public original-root rechecks compare exact model-visible bytes; no inferred inbox ledger or success receipt",
             "unprovedReviewRecovery":["observer crash before handoff","same-identity report replay without a public injection entry","all-crash-windows exactly-once"],
         }))?,
     )?;
@@ -217,6 +240,33 @@ pub(super) fn run(
     let result = bots_fixture::with_cleanup(journey, final_state);
     let result = bots_fixture::with_cleanup(result, stopped);
     bots_fixture::with_cleanup(bots_fixture::with_cleanup(result, logs), requests)
+}
+
+fn run_fixture_git(project: &Path, args: &[&str]) -> Result<std::process::Output> {
+    let output = Command::new("git")
+        .current_dir(project)
+        .args([
+            "-c",
+            "core.hooksPath=/dev/null",
+            "-c",
+            "credential.helper=",
+            "-c",
+            "commit.gpgsign=false",
+            "-c",
+            "user.name=Anywork Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+        ])
+        .args(args)
+        .output()
+        .context("run isolated delegation project Git command")?;
+    ensure!(
+        output.status.success(),
+        "isolated delegation project Git command {:?} failed: {}",
+        args,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Ok(output)
 }
 
 fn run_phase(

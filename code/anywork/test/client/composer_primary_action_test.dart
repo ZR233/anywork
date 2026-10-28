@@ -14,6 +14,19 @@ const _stopping = AgentExecutionView(
   turnId: 'turn-1',
 );
 
+const _recoveryBlocker = ComposerRecoveryBlocker(
+  StudioRecoveryIssue(
+    id: 'thread-recovery',
+    scope: RecoveryIssueScope.thread,
+    category: RecoveryIssueCategory.repository,
+    impact: RecoveryIssueImpact.executionBlocked,
+    availableActions: [RecoveryIssueAction.retry],
+    projectId: 'project',
+    threadId: 'thread',
+    detail: 'Workspace unavailable',
+  ),
+);
+
 final _continuation = ContinuationView(
   id: 'continuation-1',
   sourceTurnId: 'turn-1',
@@ -202,15 +215,28 @@ void main() {
       expect(action.blocker, isA<ComposerStorageBlocker>());
     });
 
-    test('模型与工作区阻塞同样禁用继续', () {
-      for (final blocker in const <ComposerBlocker>[
-        ComposerModelBlocker(),
-        ComposerWorkspaceBlocker(),
-      ]) {
-        final action = _resolve(continuation: _continuation, blocker: blocker);
-        expect(action.enabled, isFalse, reason: '$blocker');
-        expect(action.blocker, blocker);
-      }
+    test('模型阻塞禁用继续', () {
+      const blocker = ComposerModelBlocker();
+      final action = _resolve(continuation: _continuation, blocker: blocker);
+      expect(action.enabled, isFalse);
+      expect(action.blocker, blocker);
+    });
+
+    test('Recovery阻塞禁用继续但不隐藏运行中的停止入口', () {
+      final continuing = _resolve(
+        continuation: _continuation,
+        blocker: _recoveryBlocker,
+      );
+      expect(continuing.enabled, isFalse);
+      expect(continuing.blocker, _recoveryBlocker);
+
+      final running = _resolve(
+        execution: _execution,
+        blocker: _recoveryBlocker,
+      );
+      expect(running.kind, ComposerPrimaryActionKind.stop);
+      expect(running.enabled, isTrue);
+      expect(running.blocker, _recoveryBlocker);
     });
 
     test('阻塞不隐藏运行中的停止入口', () {

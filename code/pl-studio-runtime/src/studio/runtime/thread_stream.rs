@@ -42,6 +42,7 @@ const OBSERVATION_DELIVERY_INTERVAL: Duration = Duration::from_millis(16);
 pub struct StudioThreadSubscription {
     runtime: StudioRuntime,
     source: SubscriptionSource,
+    thread_id: String,
     _residency_pin: super::residency::ThreadResidencyPins,
 }
 
@@ -576,6 +577,8 @@ impl StudioThreadSubscription {
     /// Returns malformed historical content or missing committed facts; no partial snapshot is emitted.
     pub async fn recv(&mut self) -> Result<Option<ThreadSubscriptionUpdate>> {
         let runtime = self.runtime.clone();
+        let thread = runtime.read_protocol_thread(&self.thread_id).await?;
+        runtime.check_thread_read_access(&thread)?;
         let live = match &mut self.source {
             SubscriptionSource::Live(live) => live,
             SubscriptionSource::Retired(retired) => {
@@ -682,96 +685,121 @@ impl StudioRuntime {
         let _lifecycle_guard = self.lifecycle_lock.lock().await;
         let residency_pin = self.residency.pin_many([request.thread_id.clone()]);
         let thread = self.read_protocol_thread(&request.thread_id).await?;
-        // Opening is the explicit storage-preparation boundary, including for a retired child.
-        // Prepare before reading its seal: that read itself requires the current checkpoint.
-        self.store
-            .history(&request.thread_id)
-            .await?
-            .prepare_activation()
-            .await?;
-        let explicitly_closed = thread.parent_thread_id.is_some()
-            && crate::studio::agent_close::is_explicitly_closed(
-                &self.read_thread_state(&request.thread_id).await?,
-            )?;
-        // A committed seal forbids activation, not observation of an owner still closing. Keep
-        // its live feed until it stops; a cold/ended owner needs only the saved readonly facts.
-        let closing_owner = self
-            .threads
-            .observed_thread(&request.thread_id)
-            .filter(|handle| {
-                explicitly_closed
-                    && handle.snapshot().lifecycle != pl_core::thread::ThreadLifecycle::Closed
-            });
-        let source = if thread.parent_thread_id.is_some()
-            && (thread.role == crate::config::ROOT_AGENT_ROUTE_KEY
-                || (explicitly_closed && closing_owner.is_none()))
-        {
-            // Storage is prepared above; observation of retired history never installs an owner.
-            let snapshot = self.thread_snapshot(&request.thread_id).await?;
-            // A retired child has no owner to retain its last Turn and its subscription emits only
-            // this snapshot, so the newest finished Turn is read once here — bounded, body-free — and
-            // delivered as the same one-shot `turnCompleted` the live contract replays. A child whose
-            // snapshot still names an active Turn keeps that fact authoritative, exactly like a live
-            // subscription, and no finished Turn is replayed over it.
-            let terminal_turn = if snapshot.active_turn.is_none() {
-                self.store
-                    .history(&request.thread_id)
-                    .await?
-                    .newest_terminal_turn()
-                    .await?
+        self.check_thread_read_access(&thread)?;
+        // Cold parent recovery nests history preparation under this operation. Keep its candidate
+        // on the heap so composing subscriptions does not duplicate the large future on the stack.
+        let candidate = Box::pin(async {
+            self.store
+                .history(&request.thread_id)
+                .await?
+                .prepare_history_access()
+                .await?;
+            let explicitly_closed = thread.parent_thread_id.is_some()
+                && (self.store.agent_close(&request.thread_id).await?.is_some()
+                    || crate::studio::agent_close::is_explicitly_closed(
+                        &self.read_thread_state(&request.thread_id).await?,
+                    )?);
+            // A committed seal forbids activation, not observation of an owner still closing. Keep
+            // its live feed until it stops; a cold/ended owner needs only the saved readonly facts.
+            if !explicitly_closed && self.threads.observed_thread(&request.thread_id).is_none() {
+                let check = self
+                    .thread_factory
+                    .verify_execution_workspace(
+                        &thread,
+                        None,
+                        crate::studio::thread_factory::ExecutionWorkspaceCheck::Audit,
+                    )
+                    .await;
+                self.agent_facility.product_events.emit_recovery_state(
+                    self.recovery
+                        .apply_execution_workspace_check(&thread, check.as_ref().err()),
+                );
+            }
+            let closing_owner = self
+                .threads
+                .observed_thread(&request.thread_id)
+                .filter(|handle| {
+                    explicitly_closed
+                        && handle.snapshot().lifecycle != pl_core::thread::ThreadLifecycle::Closed
+                });
+            let source = if thread.parent_thread_id.is_some()
+                && (thread.role == crate::config::ROOT_AGENT_ROUTE_KEY
+                    || (explicitly_closed && closing_owner.is_none()))
+                || (self.check_thread_execution_access(&thread).is_err()
+                    && self.threads.observed_thread(&request.thread_id).is_none())
+            {
+                // Content was prepared above; safe observation never activates an execution workspace.
+                let snapshot = self.thread_snapshot(&request.thread_id).await?;
+                // A retired child has no owner to retain its last Turn and its subscription emits only
+                // this snapshot, so the newest finished Turn is read once here — bounded, body-free — and
+                // delivered as the same one-shot `turnCompleted` the live contract replays. A child whose
+                // snapshot still names an active Turn keeps that fact authoritative, exactly like a live
+                // subscription, and no finished Turn is replayed over it.
+                let terminal_turn = if snapshot.active_turn.is_none() {
+                    self.store
+                        .history(&request.thread_id)
+                        .await?
+                        .newest_terminal_turn()
+                        .await?
+                } else {
+                    None
+                };
+                SubscriptionSource::Retired(Box::new(RetiredSubscription {
+                    snapshot: Some(Box::new(snapshot)),
+                    terminal_turn,
+                    thread_id: request.thread_id.clone(),
+                    revision: 0,
+                }))
             } else {
-                None
+                let handle = if let Some(handle) = closing_owner {
+                    handle
+                } else {
+                    self.ensure_thread_owner(&request.thread_id).await?
+                };
+                // 先注册投影帧接收端，再捕获基线：观测任务在建线程时就接管了唯一投影，订阅的
+                // 首个快照就是注册后可见的状态，注册与快照之间提交的效果仍然会被投递（其中已被
+                // 快照覆盖的帧按 effect 序号丢弃）。反过来（先快照再订阅）会留下一个很窄的窗口，
+                // 该窗口里提交的效果既不在基线里也不会被投递，只能靠有界 effect 窗口兜底。
+                let live_feed = self.thread_observations.live_feed(&request.thread_id);
+                let feed = live_feed.as_ref().map(|feed| feed.subscribe());
+                // The owner publishes the typed storage state; this subscriber only mirrors it.
+                let storage_feed = live_feed.as_ref().map(|feed| feed.storage());
+                // The owner also retains its newest terminal Turn, so a subscription that opens after
+                // that commit restores the last-turn fact instead of reporting none.
+                let last_turn = live_feed.as_ref().map(|feed| feed.last_turn());
+                let baseline = handle.snapshot();
+                let applied = baseline.commit_sequence;
+                SubscriptionSource::Live(Box::new(LiveSubscription {
+                    handle,
+                    thread: thread.clone(),
+                    feed,
+                    baseline: Some(baseline.clone()),
+                    pending: VecDeque::new(),
+                    observation_due: None,
+                    ready_frames: 0,
+                    applied,
+                    revision: applied,
+                    epoch: 1,
+                    started: false,
+                    thread_id: request.thread_id.clone(),
+                    activity: None,
+                    runtime: None,
+                    storage_feed,
+                    storage: None,
+                    last_turn,
+                    active_turn: None,
+                    delivered_terminal: None,
+                }))
             };
-            SubscriptionSource::Retired(Box::new(RetiredSubscription {
-                snapshot: Some(Box::new(snapshot)),
-                terminal_turn,
-                thread_id: request.thread_id.clone(),
-                revision: 0,
-            }))
-        } else {
-            let handle = if let Some(handle) = closing_owner {
-                handle
-            } else {
-                self.ensure_thread_owner(&request.thread_id).await?
-            };
-            // 先注册投影帧接收端，再捕获基线：观测任务在建线程时就接管了唯一投影，订阅的
-            // 首个快照就是注册后可见的状态，注册与快照之间提交的效果仍然会被投递（其中已被
-            // 快照覆盖的帧按 effect 序号丢弃）。反过来（先快照再订阅）会留下一个很窄的窗口，
-            // 该窗口里提交的效果既不在基线里也不会被投递，只能靠有界 effect 窗口兜底。
-            let live_feed = self.thread_observations.live_feed(&request.thread_id);
-            let feed = live_feed.as_ref().map(|feed| feed.subscribe());
-            // The owner publishes the typed storage state; this subscriber only mirrors it.
-            let storage_feed = live_feed.as_ref().map(|feed| feed.storage());
-            // The owner also retains its newest terminal Turn, so a subscription that opens after
-            // that commit restores the last-turn fact instead of reporting none.
-            let last_turn = live_feed.as_ref().map(|feed| feed.last_turn());
-            let baseline = handle.snapshot();
-            let applied = baseline.commit_sequence;
-            SubscriptionSource::Live(Box::new(LiveSubscription {
-                handle,
-                thread,
-                feed,
-                baseline: Some(baseline.clone()),
-                pending: VecDeque::new(),
-                observation_due: None,
-                ready_frames: 0,
-                applied,
-                revision: applied,
-                epoch: 1,
-                started: false,
-                thread_id: request.thread_id.clone(),
-                activity: None,
-                runtime: None,
-                storage_feed,
-                storage: None,
-                last_turn,
-                active_turn: None,
-                delivered_terminal: None,
-            }))
-        };
+            Ok::<_, anyhow::Error>(source)
+        })
+        .await;
+        self.check_thread_read_access(&thread)?;
+        let source = candidate?;
         Ok(StudioThreadSubscription {
             source,
             runtime: self.clone(),
+            thread_id: request.thread_id,
             _residency_pin: residency_pin,
         })
     }
@@ -779,6 +807,7 @@ impl StudioRuntime {
     /// Reads live or cold facts without executing a model, tool or recovery continuation.
     pub async fn thread_snapshot(&self, thread_id: &str) -> Result<pl_protocol::ThreadSnapshot> {
         let thread = self.read_protocol_thread(thread_id).await?;
+        self.check_thread_read_access(&thread)?;
         let state = self.read_thread_state(thread_id).await?;
         let handle = self
             .threads
@@ -797,6 +826,13 @@ impl StudioRuntime {
             &usage,
             persistence.as_ref(),
         )?;
+        if let Some(close) = self.store.agent_close(thread_id).await? {
+            snapshot.thread.status = if close.execution_closed {
+                pl_protocol::ThreadStatus::Closed
+            } else {
+                pl_protocol::ThreadStatus::Closing
+            };
+        }
         self.annotate_model_route(&mut snapshot)?;
         self.annotate_mode_availability(&mut snapshot);
         Ok(snapshot)
@@ -851,6 +887,13 @@ impl StudioRuntime {
         thread_id: &str,
         activity_id: &str,
     ) -> Result<ThreadActivityDetail> {
+        if let Some(thread) = self
+            .agent_facility
+            .product_events
+            .thread_snapshot(thread_id)
+        {
+            self.check_thread_read_access(&thread)?;
+        }
         let Some(handle) = self
             .threads
             .observed_threads()
@@ -861,10 +904,13 @@ impl StudioRuntime {
             // 没有驻留 owner 就没有“当前活动”：不激活执行，也不读 durable 正文。存在性只按
             // canonical 目录确认（内存优先），未知身份明确 NotFound。
             return match self.read_protocol_thread(thread_id).await {
-                Ok(_) => Ok(ThreadActivityDetail::Ended {
-                    thread_id: thread_id.to_owned(),
-                    activity_id: activity_id.to_owned(),
-                }),
+                Ok(thread) => {
+                    self.check_thread_read_access(&thread)?;
+                    Ok(ThreadActivityDetail::Ended {
+                        thread_id: thread_id.to_owned(),
+                        activity_id: activity_id.to_owned(),
+                    })
+                }
                 Err(_) => Err(anyhow::Error::new(
                     pl_protocol::studio::StudioError::not_found("Thread"),
                 )),

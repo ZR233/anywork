@@ -1,6 +1,7 @@
 //! Frozen review relationships and restricted host feedback; ordinary send permissions are unchanged.
 pub(crate) use super::agent_evaluation::validate_idle;
 use super::{StudioThreadAssembler, observation::DurableMessageIdentity};
+use crate::studio::agent_close::terminal_report_id;
 use anyhow::{Context, Result, ensure};
 use pl_core::thread::ThreadSnapshot;
 use pl_protocol::{
@@ -106,10 +107,8 @@ pub(crate) struct ReviewFeedbackDelivery<'a> {
     /// Exact immutable body saved by the successful finish producer.
     pub body: &'a str,
     pub source: ReviewDeliverySource,
-}
-
-pub(crate) fn terminal_report_id(agent: &str, sequence: u64) -> String {
-    format!("studio.child.{}:{agent}:{sequence}", agent.len())
+    /// Observer discontinuity permanently revokes first-send authority through this watermark.
+    pub revocation: Option<&'a std::sync::atomic::AtomicU64>,
 }
 
 pub(crate) fn review_message_id(agent: &str, turn: &str, sequence: u64) -> String {
@@ -155,31 +154,6 @@ impl StudioThreadAssembler {
         }
         Ok(DeliveryDisposition::New)
     }
-    /// Parent report acceptance owns its original report body, including its original delivery state.
-    pub(crate) async fn terminal_report_accepted(
-        &self,
-        parent: &str,
-        reviewer: &str,
-        sequence: u64,
-    ) -> Result<bool> {
-        let id = terminal_report_id(reviewer, sequence);
-        if self.durable_message_identity(parent, &id).await?.is_some() {
-            return Ok(true);
-        }
-        Ok(self.thread(parent).is_some_and(|thread| {
-            thread
-                .snapshot()
-                .inbox
-                .iter()
-                .any(|record| record.message.id == id)
-                || thread
-                    .snapshot()
-                    .consumed_message_identities
-                    .iter()
-                    .any(|record| record.id == id)
-        }))
-    }
-
     /// Restricted host send. The only recipient and parent come from the frozen review relationship.
     pub(crate) async fn forward_review(
         &self,
@@ -240,7 +214,11 @@ impl StudioThreadAssembler {
             }
             Ok(DeliveryDisposition::New) => {}
         }
-        if request.source != ReviewDeliverySource::LiveTerminal {
+        if request.source != ReviewDeliverySource::LiveTerminal
+            || request.revocation.is_some_and(|fence| {
+                fence.load(std::sync::atomic::Ordering::Acquire) >= request.terminal_sequence
+            })
+        {
             return unknown(ReviewForwardReason::RecoveryRequiresScheduling);
         }
         let Some(services) = self.0.state().agent_services.clone() else {
@@ -289,17 +267,69 @@ impl StudioThreadAssembler {
                 )));
             }
         };
-        if self.thread(target_id).is_none()
-            && let Err(error) = services.activate_child(self, &parent, target_id).await
-        {
-            return reject(ReviewForwardReason::AdmissionRejected(Arc::new(
-                super::ThreadAssemblyError::Resource {
-                    operation: "activate original reviewed child",
-                    source: error.into(),
-                },
-            )));
+        let mut operation = self.agent_operation(target_id).await;
+        if self.thread(target_id).is_none() {
+            match self.adjudicate_review_message(target_id, &delivery).await {
+                Ok(DeliveryDisposition::Receipt(sequence)) => {
+                    return ReviewForward::Accepted {
+                        message_id: id,
+                        sequence,
+                    };
+                }
+                Ok(DeliveryDisposition::Conflict) => {
+                    return reject(ReviewForwardReason::IdentityConflict);
+                }
+                Ok(DeliveryDisposition::Unverifiable) => {
+                    return unknown(ReviewForwardReason::IdentityUnverifiable);
+                }
+                Err(error) => {
+                    return unknown(ReviewForwardReason::StorageUnavailable(Arc::new(error)));
+                }
+                Ok(DeliveryDisposition::New) => {}
+            }
+            let (snapshot, turn) = match self.review_target_state(target_id).await {
+                Ok(state) => state,
+                Err(error) => {
+                    return reject(ReviewForwardReason::AdmissionRejected(Arc::new(
+                        super::ThreadAssemblyError::Resource {
+                            operation: "read frozen cold target",
+                            source: error.into(),
+                        },
+                    )));
+                }
+            };
+            if !turn.as_ref().is_some_and(|turn| {
+                turn.state.is_terminal() && same_delivery(&baseline(&snapshot, turn), expected)
+            }) {
+                return reject(ReviewForwardReason::TargetChanged);
+            }
+            let workspace = match crate::studio::workspace_receipt::from_snapshot(&snapshot) {
+                Ok(Some(workspace)) if same_workspace(&workspace, request.assignment) => workspace,
+                _ => return reject(ReviewForwardReason::TargetChanged),
+            };
+            let proof = match services
+                .factory
+                .verify_local_review_resume(target_id, &workspace)
+                .await
+            {
+                Ok(proof) => proof,
+                Err(error) => {
+                    return reject(ReviewForwardReason::WorkspaceCheckRejected(Arc::new(error)));
+                }
+            };
+            // The existing activation worker consumes this very permit; it must not acquire it
+            // again while its caller waits. Only verified local resources can enter this branch.
+            if let Err(error) = services
+                .activate_verified_review_child(self, &parent, target_id, proof, operation)
+                .await
+            {
+                return reject(ReviewForwardReason::WorkspaceCheckRejected(Arc::new(
+                    crate::studio::thread_factory::ReviewWorkspaceError::Assembly(error),
+                )));
+            }
+            operation = self.agent_operation(target_id).await;
         }
-        let _operation = self.agent_operation(target_id).await;
+        let _operation = operation;
         // Another incarnation's notification may have won while this sender waited for the gate.
         // Its original receipt wins before a busy/changed target can reject a replay.
         match self.adjudicate_review_message(target_id, &delivery).await {
@@ -360,10 +390,8 @@ impl StudioThreadAssembler {
                 };
                 entry.execution
             };
-        if let Err(error) = self.prepare_input_admission(target_id, &target).await {
-            return reject(ReviewForwardReason::AdmissionRejected(Arc::new(error)));
-        }
-        // Config preparation may await. Recheck all work/stop identities at the last host boundary.
+        // Prove the original capability before logical/model preparation. The restricted branch
+        // never invokes ordinary Execute/Prepare resolvers or refreshes a missing tool binding.
         let workspace_check = match services
             .factory
             .verify_review_workspace(target_id, &workspace)
@@ -375,6 +403,15 @@ impl StudioThreadAssembler {
             }
         };
         if let Err(error) = workspace_check.recheck() {
+            return reject(ReviewForwardReason::WorkspaceCheckRejected(Arc::new(error)));
+        }
+        if let Err(error) = self
+            .prepare_verified_review_admission(target_id, &target, &workspace_check)
+            .await
+        {
+            return reject(ReviewForwardReason::AdmissionRejected(Arc::new(error)));
+        }
+        if let Err(error) = workspace_check.confirm().await {
             return reject(ReviewForwardReason::WorkspaceCheckRejected(Arc::new(error)));
         }
         let current = target.snapshot();
@@ -389,6 +426,11 @@ impl StudioThreadAssembler {
             || !same_delivery(&baseline(&current, &turn), expected)
         {
             return reject(ReviewForwardReason::TargetChanged);
+        }
+        if request.revocation.is_some_and(|fence| {
+            fence.load(std::sync::atomic::Ordering::Acquire) >= request.terminal_sequence
+        }) {
+            return unknown(ReviewForwardReason::RecoveryRequiresScheduling);
         }
         match target.send_message_and_continue(delivery, options).await {
             Ok(sequence) => ReviewForward::Accepted {
@@ -478,6 +520,13 @@ impl StudioThreadAssembler {
             .clone()
             .context("review services unavailable")?;
         let history = services.store.history(target).await?;
+        services
+            .store
+            .ensure_agent_execution_allowed(target)
+            .await?;
+        services
+            .recovery
+            .ensure_thread_read_access(&services.record(target).await?)?;
         let (snapshot, turn) = if let Some(thread) = self.thread(target) {
             self.ensure_agent_admission_open(target)?;
             let before = thread.snapshot();

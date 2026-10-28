@@ -5,15 +5,15 @@ use serde::{Deserialize, Deserializer, Serialize};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub(super) enum Disposition {
+pub enum Disposition {
     Approved,
     NeedsChanges,
     Inconclusive,
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub(super) struct Review {
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct Review {
     #[serde(deserialize_with = "required_option")]
     pub target: Option<Target>,
     pub disposition: Disposition,
@@ -22,13 +22,12 @@ pub(super) struct Review {
     pub reviewed_version: Option<String>,
     #[serde(deserialize_with = "required_option")]
     pub reason: Option<ConclusionReason>,
-    pub forward: Forward,
     pub full_report: Location,
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub(super) struct Target {
+pub(crate) struct Target {
     pub agent_id: String,
     pub feedback: Option<Feedback>,
     pub baseline: Option<Baseline>,
@@ -36,13 +35,13 @@ pub(super) struct Target {
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub(super) enum Feedback {
+pub(crate) enum Feedback {
     ToExecutor,
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub(super) struct Baseline {
+pub(crate) struct Baseline {
     pub turn_id: String,
     #[serde(deserialize_with = "required_option")]
     pub input_id: Option<String>,
@@ -52,73 +51,18 @@ pub(super) struct Baseline {
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub(super) struct Location {
+pub(crate) struct Location {
     pub agent_id: String,
     pub turn_id: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub(super) enum ConclusionReason {
+pub(crate) enum ConclusionReason {
     MissingConclusion,
     AbnormalTerminal,
     UnsettledWork,
     InvalidFrozenBinding,
-    TargetChangedOrUnavailable,
-    TargetVerificationFailed(WorkspaceFailure),
-}
-
-#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(
-    tag = "state",
-    rename_all = "camelCase",
-    rename_all_fields = "camelCase"
-)]
-pub(super) enum Forward {
-    NotRequested,
-    NotRequired,
-    Accepted {
-        message_id: String,
-        sequence: u64,
-    },
-    Rejected {
-        message_id: String,
-        reason: ForwardReason,
-    },
-    Unconfirmed {
-        message_id: String,
-        reason: ForwardReason,
-    },
-}
-
-#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(tag = "kind", content = "detail", rename_all = "camelCase")]
-pub(super) enum ForwardReason {
-    RecoveryRequiresScheduling,
-    MissingFrozenBaseline,
-    TargetChanged,
-    TargetUnavailable,
-    AdmissionRejected(#[serde(deserialize_with = "error_chain")] Vec<String>),
-    IdentityConflict,
-    IdentityUnverifiable,
-    StorageUnavailable(#[serde(deserialize_with = "error_chain")] Vec<String>),
-    SendUnconfirmed(#[serde(deserialize_with = "error_chain")] Vec<String>),
-    WorkspaceCheckRejected(WorkspaceFailure),
-}
-
-#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub(super) struct WorkspaceFailure {
-    certainty: WorkspaceCertainty,
-    #[serde(deserialize_with = "error_chain")]
-    source: Vec<String>,
-}
-
-#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-enum WorkspaceCertainty {
-    Invalid,
-    Unconfirmed,
 }
 
 // Required nullable fields must be present. Serde's ordinary Option handling
@@ -131,32 +75,28 @@ where
     Option::<T>::deserialize(deserializer)
 }
 
-fn error_chain<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<String>, D::Error> {
-    let chain = Vec::<String>::deserialize(deserializer)?;
-    if !(1..=8).contains(&chain.len()) || chain.iter().any(|text| text.chars().count() > 512) {
-        return Err(serde::de::Error::custom(
-            "error source chain must contain 1..=8 strings of at most 512 Unicode characters",
-        ));
-    }
-    Ok(chain)
-}
-
 impl Review {
-    pub fn require_binding(&self, report: &Report, target: &Spawn) -> Result<&Baseline> {
-        require(
-            !matches!(
-                self.reason,
-                Some(ConclusionReason::TargetVerificationFailed(_))
-            ) || self.disposition == Disposition::Inconclusive,
-            "failed physical verification must not become an approval",
-        )?;
+    pub fn require_valid(&self, report: &Report) -> Result<()> {
         require(
             self.full_report.agent_id == report.child_id
                 && self.full_report.turn_id == report.turn_id
+                && report.message == self.summary
+                && report.last_tool.is_none()
                 && !self.summary.trim().is_empty()
-                && self.summary.chars().count() <= 512,
+                && self.summary.chars().count() <= 512
+                && if self.reason.is_some() {
+                    self.disposition == Disposition::Inconclusive
+                } else {
+                    self.reviewed_version.as_ref().is_some_and(|version| {
+                        !version.trim().is_empty() && version.chars().count() <= 2048
+                    })
+                },
             "compact review lost its identity/summary/full-history location",
-        )?;
+        )
+    }
+
+    pub fn require_binding(&self, report: &Report, target: &Spawn) -> Result<&Baseline> {
+        self.require_valid(report)?;
         let binding = self
             .target
             .as_ref()
@@ -177,6 +117,7 @@ impl Review {
     }
 
     pub fn require_legacy(&self, summary: &str, report: &Report) -> Result<()> {
+        self.require_valid(report)?;
         let expected = match summary {
             "delegation independent review: changes requested" => Disposition::NeedsChanges,
             "delegation independent review: approved"
@@ -188,7 +129,8 @@ impl Review {
             .as_ref()
             .context("legacy review lost its frozen target")?;
         require(
-            self.disposition == expected
+            self.summary == summary
+                && self.disposition == expected
                 && self.reason.is_none()
                 && self
                     .reviewed_version
@@ -198,8 +140,7 @@ impl Review {
                 && self.full_report.turn_id == report.turn_id
                 && !target.agent_id.is_empty()
                 && target.baseline.is_some()
-                && target.feedback.is_none()
-                && matches!(self.forward, Forward::NotRequested | Forward::NotRequired),
+                && target.feedback.is_none(),
             "legacy journey did not receive its real typed review conclusion/version/identity",
         )
     }

@@ -177,16 +177,14 @@ async fn cleanup_spawn_failure(
     }
 }
 
-impl AgentControlHost for AgentHost {
-    async fn spawn(
+impl AgentHost {
+    async fn spawn_owned(
         &self,
+        owner: StudioThreadAssembler,
         context: pl_core::tool::opaque::CallContext,
         request: AgentSpawn,
+        _parent_operation: tokio::sync::OwnedMutexGuard<()>,
     ) -> Result<ToolOutput, ToolError> {
-        let owner = self.owner()?;
-        // Root preparation and directory enumeration share the root→child lock order. A tree
-        // archive cannot miss a child whose workspace was still being prepared at enumeration.
-        let _parent_operation = owner.agent_operation(&context.thread_id).await;
         owner
             .ensure_agent_admission_open(&context.thread_id)
             .map_err(ToolError::new)?;
@@ -225,8 +223,19 @@ impl AgentControlHost for AgentHost {
                     ToolError::new(ControlError::Missing("saved delegation selection".into()))
                 })?
         };
+        let workspace_owner = {
+            owner
+                .0
+                .state()
+                .unpublished_children
+                .get(&reservation.id)
+                .ok_or_else(|| ToolError::new(ControlError::Missing(reservation.id.clone())))?
+                .workspace
+                .clone()
+        };
         let spec = factory
             .prepare(super::ChildThreadRequest {
+                workspace_owner,
                 id: reservation.id.clone(),
                 cancellation: reservation.cancellation.clone(),
                 caller: context.thread_id.clone(),
@@ -255,6 +264,7 @@ impl AgentControlHost for AgentHost {
             }
         };
         if reservation.cancellation.is_cancelled() {
+            drop(spec);
             return Err(cleanup_spawn_failure(
                 &owner,
                 &reservation.id,
@@ -263,10 +273,12 @@ impl AgentControlHost for AgentHost {
             .await);
         }
         if spec.id != reservation.id {
+            let invalid = spec.id.clone();
+            drop(spec);
             return Err(cleanup_spawn_failure(
                 &owner,
                 &reservation.id,
-                ThreadAssemblyError::Identity(spec.id),
+                ThreadAssemblyError::Identity(invalid),
             )
             .await);
         }
@@ -405,9 +417,59 @@ impl AgentControlHost for AgentHost {
             })?)),
         }
     }
+}
+
+impl AgentControlHost for AgentHost {
+    async fn spawn(
+        &self,
+        context: pl_core::tool::opaque::CallContext,
+        request: AgentSpawn,
+    ) -> Result<ToolOutput, ToolError> {
+        let owner = self.owner()?;
+        let parent_operation = owner.agent_operation(&context.thread_id).await;
+        let services = owner.0.state().agent_services.clone();
+        if let Some(services) = services {
+            let admission = owner.clone();
+            let caller = context.thread_id.clone();
+            let admitted_caller = caller.clone();
+            let host = AgentHost(self.0.clone());
+            services
+                .operations
+                .run(
+                    caller,
+                    format!("spawn:{}", context.call_id),
+                    move || {
+                        admission.ensure_agent_admission_open(&admitted_caller)?;
+                        Ok(())
+                    },
+                    async move {
+                        Ok(host
+                            .spawn_owned(owner, context, request, parent_operation)
+                            .await)
+                    },
+                )
+                .await
+                .map_err(|error| ToolError::new(super::agent_services::ServiceError(error)))?
+        } else {
+            self.spawn_owned(owner, context, request, parent_operation)
+                .await
+        }
+    }
 
     async fn send(&self, caller: &str, message: AgentMessage) -> Result<ToolOutput, ToolError> {
         let owner = self.owner()?;
+        let services = owner.0.state().agent_services.clone();
+        if let Some(services) = &services {
+            services
+                .authorize(caller, &message.target)
+                .await
+                .map_err(|error| ToolError::new(super::agent_services::ServiceError(error)))?;
+            services
+                .store
+                .ensure_agent_execution_allowed(&message.target)
+                .await
+                .map_err(|error| ToolError::new(super::agent_services::ServiceError(error)))?;
+        }
         if owner.thread(&message.target).is_none() {
             let services = owner.0.state().agent_services.clone();
             if let Some(services) = services {
@@ -590,7 +652,7 @@ impl AgentControlHost for AgentHost {
         &self,
         caller: &str,
         target: &str,
-        disposition: pl_tool::collaboration::thread::AgentWorkspaceDisposition,
+        options: pl_tool::collaboration::thread::AgentCloseOptions,
     ) -> Result<ToolOutput, ToolError> {
         let owner = self.owner()?;
         let root_operation = owner.agent_operation(caller).await;
@@ -600,11 +662,12 @@ impl AgentControlHost for AgentHost {
             let root = caller.to_owned();
             let caller = caller.to_owned();
             let target_id = target.to_owned();
-            services
+            let outcome = services
                 .operations
                 .clone()
                 .run(
                     caller.clone(),
+                    format!("close:{}:{target}:{}", target.len(), options.force),
                     move || {
                         admission.ensure_agent_admission_open(&root)?;
                         anyhow::ensure!(
@@ -620,47 +683,24 @@ impl AgentControlHost for AgentHost {
                     },
                     async move {
                         services
-                            .close_child_tree(owner, caller, target_id, disposition, root_operation)
+                            .close_child_tree(owner, caller, target_id, options, root_operation)
                             .await
                     },
                 )
                 .await
                 .map_err(|error| ToolError::new(super::agent_services::ServiceError(error)))?;
-            return output(
-                serde_json::json!({"target":target,"lifecycle":ThreadLifecycle::Closed,"workspaceDisposition":disposition}),
-            );
+            let receipt = output(&outcome)?;
+            return match outcome.error {
+                Some(error) => Err(ToolError::new(super::agent_services::ServiceError(
+                    anyhow::anyhow!(error.message),
+                ))
+                .with_output(receipt)),
+                None => Ok(receipt),
+            };
         }
-        let mut targets = {
-            let state = owner.0.state();
-            if state.closing {
-                return Err(ToolError::new(ControlError::Closed));
-            }
-            descendant(&state, caller, target)?;
-            let mut targets = Vec::new();
-            for id in state.entries.keys() {
-                let path = ancestry(&state, id)?;
-                if path.iter().any(|ancestor| ancestor == target) {
-                    targets.push((path.len(), id.clone()));
-                }
-            }
-            targets
-        };
-        targets.sort_by(|left, right| right.0.cmp(&left.0).then_with(|| left.1.cmp(&right.1)));
-        let _seals = owner
-            .seal_agent_close(&targets, disposition)
-            .await
-            .map_err(ToolError::new)?;
-        drop(root_operation);
-        for (_, id) in targets {
-            let _operation = owner.agent_operation(&id).await;
-            owner
-                .close_with_permit(&id, super::PublishedWorkspaceRetirement::ApplyExplicitClose)
-                .await
-                .map_err(ToolError::new)?;
-        }
-        output(
-            serde_json::json!({"target":target,"lifecycle":ThreadLifecycle::Closed,"workspaceDisposition":disposition}),
-        )
+        Err(ToolError::new(super::agent_services::ServiceError(
+            anyhow::anyhow!("final child retirement requires the Studio durable resource owner"),
+        )))
     }
 }
 

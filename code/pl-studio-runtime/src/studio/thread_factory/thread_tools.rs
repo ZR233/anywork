@@ -11,6 +11,9 @@ use pl_tool::workspace::ToolWorkspace;
 use std::sync::Arc;
 
 pub(super) struct ThreadToolAssembly<'a> {
+    pub verified_local: Option<&'a super::VerifiedLocalResume>,
+    pub workspace_usage: crate::studio::agent_host::worktree_lease::WorkspaceUsageLease,
+    pub assignment: Option<&'a pl_protocol::AgentWorkspaceAssignmentSnapshot>,
     pub thread_id: &'a str,
     pub cancellation: &'a tokio_util::sync::CancellationToken,
     pub config: &'a crate::config::StudioConfig,
@@ -74,7 +77,21 @@ impl StudioThreadFactory {
     ) -> Result<PreparedThreadTools, ThreadAssemblyError> {
         assembly.workspace =
             super::session_files::bind_thread_session_files(assembly.workspace, assembly.thread_id);
+        if let Some(proof) = assembly.verified_local {
+            proof
+                .check_inputs(
+                    assembly.project,
+                    assembly.assignment.ok_or_else(|| {
+                        ThreadAssemblyError::Identity(
+                            "restricted restoration has no assignment".into(),
+                        )
+                    })?,
+                )
+                .map_err(|error| resource_error("check original local preparation proof", error))?;
+        }
         let binding = super::tool_bindings::ToolBinding {
+            assignment: assembly.assignment.cloned(),
+            workspace_usage: assembly.workspace_usage.clone(),
             lifetime: Default::default(),
             incarnation: std::sync::Arc::new(()),
             target_invalidated: false,
@@ -140,6 +157,9 @@ impl StudioThreadFactory {
         preparation: CatalogPreparation,
     ) -> Result<PreparedThreadTools, ThreadAssemblyError> {
         let ThreadToolAssembly {
+            verified_local,
+            assignment: _,
+            workspace_usage,
             thread_id,
             cancellation,
             config,
@@ -175,23 +195,62 @@ impl StudioThreadFactory {
             .is_some()
             .then(|| Arc::new(crate::thread_assembler::media::MediaHost(store.clone())));
         let root = workspace.root().to_owned();
-        let remote = match &preparation {
-            CatalogPreparation::Refresh { remote, .. } => remote.as_deref().cloned(),
-            CatalogPreparation::Initial => match &project.ssh_alias {
-                Some(server) => Some(
-                    self.services
-                        .ssh_manager
-                        .open_workspace_host(server, root.to_string_lossy().into_owned())
-                        .await
-                        .map_err(|error| resource_error("open child remote workspace", error))?,
-                ),
-                None => None,
-            },
+        let remote = if verified_local.is_some() {
+            if project.ssh_alias.is_some() {
+                return Err(ThreadAssemblyError::Identity(
+                    "local proof cannot prepare SSH tools".into(),
+                ));
+            }
+            None
+        } else {
+            match &preparation {
+                CatalogPreparation::Refresh { remote, .. } => remote.as_deref().cloned(),
+                CatalogPreparation::Initial => match &project.ssh_alias {
+                    Some(server) => Some(
+                        self.services
+                            .ssh_manager
+                            .open_workspace_host(server, root.to_string_lossy().into_owned())
+                            .await
+                            .map_err(|error| {
+                                resource_error("open child remote workspace", error)
+                            })?,
+                    ),
+                    None => None,
+                },
+            }
         };
         if cancellation.is_cancelled() {
             return Err(pl_core::thread::ThreadError::Cancelled.into());
         }
-        super::session_files::prepare_bound_session_files(&workspace, remote.as_ref()).await?;
+        let identity = match &remote {
+            Some(host) => crate::studio::agent_host::worktree_lease::WorkspaceIdentity::canonical(
+                crate::studio::agent_host::worktree_lease::WorkspaceEndpoint::from_profile(Some(
+                    &host.profile,
+                )),
+                host.files.canonical_path().into(),
+            ),
+            None => match verified_local {
+                Some(proof) => Ok(proof.identity()),
+                None => {
+                    self.resolve_workspace_identity(project, workspace.root())
+                        .await
+                }
+            },
+        }
+        .map_err(Self::workspace_usage_error)?;
+        self.services
+            .worktrees
+            .assign_workspace(&workspace_usage, identity.clone())
+            .map_err(Self::workspace_usage_error)?;
+        self.services
+            .worktrees
+            .preserve_workspace_resources(thread_id, identity);
+        if verified_local.is_some() {
+            super::session_files::verify_existing_session_files(workspace.root(), thread_id)
+                .await?;
+        } else {
+            super::session_files::prepare_bound_session_files(&workspace, remote.as_ref()).await?;
+        }
         let environment = remote
             .as_ref()
             .map(|host| host.execution_environment.clone())

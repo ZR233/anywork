@@ -12,6 +12,7 @@ pub use backend::{
 };
 pub use manager::{
     WorktreeCleanupPolicy, WorktreeCreateSpec, WorktreeHandle, WorktreeManager, WorktreeOwnership,
+    WorktreeRetirementRequest,
 };
 pub use pl_tool::remote::{RemoteClientError, RemoteDownloadError, RemoteExecutionError};
 pub use remote::RemoteWorktreeBackend;

@@ -6,6 +6,7 @@ use crate::studio::storage::coordinator::ThreadPersistenceCoordinator;
 use crate::studio::storage::history::HistoryStore;
 use crate::studio::storage::{calls::CallsStore, state::StateStore};
 
+pub(crate) mod agent_close;
 pub(crate) mod agent_evaluations;
 mod agent_framework;
 pub(crate) mod attachment;

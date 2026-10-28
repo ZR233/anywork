@@ -298,6 +298,7 @@ impl SshManager {
         }
         Ok((
             SshConnection {
+                profile: Arc::new(profile.clone()),
                 client,
                 process: Arc::new(Mutex::new(child)),
                 heartbeat: CancellationToken::new(),

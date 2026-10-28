@@ -6,11 +6,13 @@ use std::time::Duration;
 use futures::FutureExt;
 use futures::future::BoxFuture;
 use pl_tool::execution::{ExecutionBackend, ExecutionOutput, ExecutionRequest};
-use pl_tool::remote::{SshManager, normalize_remote_absolute_path};
+use pl_tool::remote::normalize_remote_absolute_path;
+use pl_tool::remote::{SshManager, SshServerProfile};
 
 use super::backend::{
     MAX_ADMIN_BACKLINK_BYTES, branch_args, changed_files, checked_admin_dir, checked_output,
-    current_branch, decode_backlink, git_common_dir_args, non_empty_head, worktree_list_args,
+    current_branch, decode_backlink, git_common_dir_args, head_args, head_result, ignored_files,
+    non_empty_head, worktree_list_args,
 };
 use super::{WorktreeBackend, WorktreeCreateFailure, WorktreeError, WorktreeStatus};
 
@@ -52,11 +54,39 @@ struct SshRemoteWorktreeTransport {
     server_id: String,
     repo_root: String,
     frozen: Option<pl_tool::remote::RemoteWorkspaceFileBackend>,
+    profile: SshServerProfile,
+    require_canonical_root: bool,
 }
 
 impl SshRemoteWorktreeTransport {
+    fn validate_endpoint(
+        &self,
+        host: &pl_tool::remote::RemoteWorkspaceHost,
+    ) -> Result<(), WorktreeError> {
+        if (
+            host.profile.host_name.as_str(),
+            host.profile.port,
+            host.profile.username.as_str(),
+        ) != (
+            self.profile.host_name.as_str(),
+            self.profile.port,
+            self.profile.username.as_str(),
+        ) {
+            return Err(WorktreeError::IdentityMismatch(
+                "SSH worktree endpoint changed".into(),
+            ));
+        }
+        Ok(())
+    }
+
     async fn host(&self) -> Result<pl_tool::remote::RemoteWorkspaceHost, WorktreeError> {
-        self.open_host(self.repo_root.clone()).await
+        let host = self.open_host(self.repo_root.clone()).await?;
+        if self.require_canonical_root && host.files.canonical_path() != self.repo_root {
+            return Err(WorktreeError::IdentityMismatch(
+                "SSH repository canonical identity changed".into(),
+            ));
+        }
+        Ok(host)
     }
 
     async fn open_host(
@@ -75,10 +105,12 @@ impl SshRemoteWorktreeTransport {
                     .await
             }
         };
-        result.map_err(|source| WorktreeError::Remote {
+        let host = result.map_err(|source| WorktreeError::Remote {
             operation: "SSH open workspace host",
             source,
-        })
+        })?;
+        self.validate_endpoint(&host)?;
+        Ok(host)
     }
 }
 
@@ -91,7 +123,12 @@ impl RemoteWorktreeTransport for SshRemoteWorktreeTransport {
         async move {
             // The shared Git directory can be outside a linked checkout's execution root. Open
             // only this Git-confirmed metadata root; do not widen the execution workspace.
-            let host = self.open_host(common_dir).await?;
+            let host = self.open_host(common_dir.clone()).await?;
+            if host.files.canonical_path() != common_dir {
+                return Err(WorktreeError::IdentityMismatch(
+                    "SSH Git common-dir canonical identity changed".into(),
+                ));
+            }
             let mut bytes = Vec::new();
             host.files
                 .copy_capture_bounded(&relative_path, &mut bytes, MAX_ADMIN_BACKLINK_BYTES as u64)
@@ -162,10 +199,27 @@ impl RemoteWorktreeTransport for SshRemoteWorktreeTransport {
 impl RemoteWorktreeBackend {
     pub fn new(
         ssh_manager: Arc<SshManager>,
-        server_id: impl Into<String>,
+        profile: SshServerProfile,
         repo_root: PathBuf,
     ) -> Result<Self, WorktreeError> {
-        let server_id = server_id.into();
+        Self::connect(ssh_manager, profile, repo_root, false)
+    }
+
+    pub(crate) fn canonical_repository(
+        ssh_manager: Arc<SshManager>,
+        profile: SshServerProfile,
+        repo_root: PathBuf,
+    ) -> Result<Self, WorktreeError> {
+        Self::connect(ssh_manager, profile, repo_root, true)
+    }
+
+    fn connect(
+        ssh_manager: Arc<SshManager>,
+        profile: SshServerProfile,
+        repo_root: PathBuf,
+        require_canonical_root: bool,
+    ) -> Result<Self, WorktreeError> {
+        let server_id = profile.alias.clone();
         let repo_root = remote_path(&repo_root)?;
         Ok(Self {
             transport: Arc::new(SshRemoteWorktreeTransport {
@@ -173,6 +227,8 @@ impl RemoteWorktreeBackend {
                 server_id,
                 repo_root: repo_root.clone(),
                 frozen: None,
+                profile,
+                require_canonical_root,
             }),
             repo_root,
         })
@@ -181,17 +237,20 @@ impl RemoteWorktreeBackend {
     /// Read-only Studio ownership checks retain the exact live execution connection.
     pub(crate) fn from_frozen_connection(
         ssh_manager: Arc<SshManager>,
-        server_id: String,
+        profile: SshServerProfile,
         repo_root: PathBuf,
         frozen: pl_tool::remote::RemoteWorkspaceFileBackend,
+        require_canonical_root: bool,
     ) -> Result<Self, WorktreeError> {
         let repo_root = remote_path(&repo_root)?;
         Ok(Self {
             transport: Arc::new(SshRemoteWorktreeTransport {
                 ssh_manager,
-                server_id,
+                server_id: profile.alias.clone(),
                 repo_root: repo_root.clone(),
                 frozen: Some(frozen),
+                profile,
+                require_canonical_root,
             }),
             repo_root,
         })
@@ -263,6 +322,19 @@ fn remote_path(path: &Path) -> Result<String, WorktreeError> {
 }
 
 impl WorktreeBackend for RemoteWorktreeBackend {
+    fn is_ancestor<'a>(
+        &'a self,
+        repo_root: &'a Path,
+        ancestor: &'a str,
+        descendant: &'a str,
+    ) -> BoxFuture<'a, Result<bool, WorktreeError>> {
+        async move {
+            let args = super::backend::ancestor_args(ancestor, descendant);
+            super::backend::ancestor_result(&args, self.run_git(repo_root, &args).await?)
+        }
+        .boxed()
+    }
+
     fn worktree_backlink<'a>(
         &'a self,
         path: &'a Path,
@@ -364,9 +436,8 @@ impl WorktreeBackend for RemoteWorktreeBackend {
         worktree_path: &'a Path,
     ) -> BoxFuture<'a, Result<String, WorktreeError>> {
         async move {
-            let args = vec!["rev-parse".to_string(), "HEAD".to_string()];
-            let output = checked_output(&args, self.run_git(worktree_path, &args).await?)?;
-            non_empty_head(&args, &output.stdout)
+            let args = head_args();
+            head_result(&args, self.run_git(worktree_path, &args).await?)
         }
         .boxed()
     }
@@ -391,6 +462,7 @@ impl WorktreeBackend for RemoteWorktreeBackend {
                     self.run_git(worktree_path, &branch_args()).await?,
                 )?),
                 changed_files: changed_files(&output.stdout),
+                ignored_files: ignored_files(&output.stdout),
             })
         }
         .boxed()

@@ -15,6 +15,12 @@ use pl_core::context::{OpaquePayload, ResourceAccess};
 use pl_tool::workspace::{AgentWorkspace, ToolWorkspace};
 use std::collections::BTreeMap;
 
+#[derive(Clone, Copy)]
+pub(super) enum BotWorkspacePreparation {
+    New,
+    Existing,
+}
+
 impl StudioThreadFactory {
     pub(super) async fn resolve_root_delegation(
         &self,
@@ -24,6 +30,8 @@ impl StudioThreadFactory {
         if identity.parent_id.is_some() || thread.parent_thread_id.is_some() {
             return Err(ThreadAssemblyError::Identity(identity.id.clone()));
         }
+        self.ensure_bot_execution_workspace(&thread.clone().into(), None)
+            .await?;
         let checkpoint = super::recovery::load_checkpoint_for_recovery(
             &self.services.store,
             &thread.clone().into(),
@@ -41,6 +49,8 @@ impl StudioThreadFactory {
         thread_id: &str,
         root_id: &str,
         project: &mut crate::studio::ProjectRecord,
+        execution: &crate::studio::WorkspaceUsageLease,
+        preparation: BotWorkspacePreparation,
     ) -> Result<Option<std::path::PathBuf>, ThreadAssemblyError> {
         if let Some(bot) = self
             .services
@@ -49,15 +59,128 @@ impl StudioThreadFactory {
             .await
             .map_err(|error| resource_error("resolve bot workspace", error))?
         {
-            project.path = self
-                .services
-                .bots
-                .prepare_workspace(&bot, thread_id, &project.path)
+            // Migration reads the previous execution root as well as writing the bot-owned root.
+            // Both admissions precede the copy; a resolver alone is not permission to prepare.
+            let complete = matches!(preparation, BotWorkspacePreparation::New)
+                || self
+                    .services
+                    .bots
+                    .workspace_migration_complete(&bot, thread_id, &project.path)
+                    .await
+                    .map_err(|error| resource_error("verify bot workspace migration", error))?;
+            let source = if complete {
+                None
+            } else {
+                let source = self
+                    .services
+                    .worktrees
+                    .reserve_project_workspace(thread_id, &self.services.ssh_manager, project)
+                    .await
+                    .map_err(Self::workspace_usage_error)?;
+                let original = self
+                    .resolve_workspace_identity(project, std::path::Path::new(&project.path))
+                    .await
+                    .map_err(Self::workspace_usage_error)?;
+                self.services
+                    .worktrees
+                    .assign_workspace(&source, original)
+                    .map_err(Self::workspace_usage_error)?;
+                Some(source)
+            };
+            let root = self.services.bots.workspace_root(&bot);
+            let mut assigned = project.clone();
+            assigned.path = root.to_string_lossy().into_owned();
+            assigned.ssh_alias = None;
+            // Migration uses its own source/target reservations. Strict bot Profile admission has
+            // already established that the final execution root is this managed root, never a WT.
+            let target = self
+                .reserve_workspace_use(thread_id, &assigned)
                 .await
-                .map_err(|error| resource_error("prepare bot workspace", error))?
-                .to_string_lossy()
-                .into_owned();
+                .map_err(Self::workspace_usage_error)?;
+            let parent = root
+                .parent()
+                .ok_or_else(|| {
+                    ThreadAssemblyError::Identity("bot workspace has no managed parent".into())
+                })?
+                .to_owned();
+            let canonical_parent = tokio::task::spawn_blocking(move || dunce::canonicalize(parent))
+                .await?
+                .map_err(|error| resource_error("resolve managed bot directory", error))?;
+            let planned = canonical_parent.join("workspace");
+            let identity = crate::studio::agent_host::worktree_lease::WorkspaceIdentity::canonical(
+                crate::studio::agent_host::worktree_lease::WorkspaceEndpoint::Local,
+                planned.to_string_lossy().into_owned(),
+            )
+            .map_err(Self::workspace_usage_error)?;
+            if let Some(frozen) = self
+                .services
+                .store
+                .workspace_identity(thread_id)
+                .await
+                .map_err(|error| resource_error("read frozen bot migration target", error))?
+                && frozen != identity
+            {
+                return Err(ThreadAssemblyError::Workspace {
+                    thread_id: thread_id.into(),
+                    reason: "bot migration cannot rebind an existing physical execution identity"
+                        .into(),
+                });
+            }
+            self.services
+                .worktrees
+                .assign_workspace(&target, identity.clone())
+                .map_err(Self::workspace_usage_error)?;
+            pl_tool::workspace::path_safety::validate_path_for_write_async(
+                &canonical_parent,
+                &planned,
+            )
+            .await
+            .map_err(|error| resource_error("validate managed bot workspace preparation", error))?;
+            tokio::fs::create_dir_all(&planned)
+                .await
+                .map_err(|error| resource_error("materialize managed bot workspace", error))?;
+            let actual = self
+                .resolve_workspace_identity(&assigned, &planned)
+                .await
+                .map_err(Self::workspace_usage_error)?;
+            self.services
+                .worktrees
+                .assign_workspace(&target, actual.clone())
+                .map_err(Self::workspace_usage_error)?;
+            // The canonical final assignment is known before any SessionFiles copy starts. The
+            // real preparer/Entry owns `execution`, and the same lease owner retains failed files
+            // across ordinary errors and restart. No auxiliary migration registry is needed.
+            self.services
+                .worktrees
+                .assign_workspace(execution, actual.clone())
+                .map_err(Self::workspace_usage_error)?;
+            self.services
+                .store
+                .bind_workspace_identity(thread_id, &actual)
+                .await
+                .map_err(|error| resource_error("freeze final bot execution identity", error))?;
+            self.services
+                .worktrees
+                .preserve_workspace_resources(thread_id, actual);
+            project.path = match preparation {
+                BotWorkspacePreparation::New => {
+                    self.services
+                        .bots
+                        .prepare_new_workspace(&bot, thread_id)
+                        .await
+                }
+                BotWorkspacePreparation::Existing => {
+                    self.services
+                        .bots
+                        .prepare_workspace(&bot, thread_id, &project.path)
+                        .await
+                }
+            }
+            .map_err(|error| resource_error("prepare bot workspace", error))?
+            .to_string_lossy()
+            .into_owned();
             project.ssh_alias = None;
+            drop(source);
             return Ok(Some(std::path::PathBuf::from(&project.path)));
         }
         Ok(None)
@@ -68,6 +191,7 @@ impl StudioThreadFactory {
         request: ThreadPreparation,
     ) -> Result<StudioThreadSpec, ThreadAssemblyError> {
         let ThreadPreparation {
+            workspace_owner,
             identity,
             cancellation,
             agent_controls,
@@ -78,7 +202,14 @@ impl StudioThreadFactory {
         if identity.parent_id.is_some() || thread.parent_thread_id.is_some() {
             return Err(ThreadAssemblyError::Identity(id.into()));
         }
+        self.ensure_bot_execution_workspace(&thread.clone().into(), None)
+            .await?;
         let mut project = self.project_record(&thread.project_id).await?;
+        let workspace_usage = self
+            .reserve_thread_workspace_use(id, id, &project)
+            .await
+            .map_err(Self::workspace_usage_error)?;
+        workspace_owner.retain(&workspace_usage);
         let bot = self
             .services
             .bots
@@ -150,15 +281,19 @@ impl StudioThreadFactory {
                 "root delegation differs from its preflight".into(),
             ));
         }
-        if let Some(bot) = &bot {
-            let root = self
-                .services
-                .bots
-                .prepare_workspace(bot, id, &project.path)
-                .await
-                .map_err(|error| resource_error("prepare bot workspace", error))?;
-            project.path = root.to_string_lossy().into_owned();
-            project.ssh_alias = None;
+        if bot.is_some() {
+            self.bind_bot_project(
+                id,
+                id,
+                &mut project,
+                &workspace_usage,
+                if is_new {
+                    BotWorkspacePreparation::New
+                } else {
+                    BotWorkspacePreparation::Existing
+                },
+            )
+            .await?;
         }
         let selected_mode = crate::studio::thread_projection::saved_mode(&saved)
             .map_err(|error| resource_error("read saved Mode", error))?
@@ -210,40 +345,34 @@ impl StudioThreadFactory {
         // 会话工作区只能由 canonical workspace_mode 与 durable lease 解析；
         // `worktree` 缺失、身份不符或已清理都显式失败，绝不回落到主工作区。
         let workspace_mode = thread.workspace_mode;
-        let workspace_root_id = thread.root_thread_id.clone();
         let project_copy = project.clone();
         let bot_root = bot
             .as_ref()
             .map(|_| std::path::PathBuf::from(&project.path));
-        let worktrees = self.services.worktrees.clone();
-        let (root, canonical_project_root) = tokio::task::spawn_blocking(move || {
+        let local_root = bot_root
+            .clone()
+            .unwrap_or_else(|| std::path::PathBuf::from(&thread.workspace_path));
+        let canonical_project_root = tokio::task::spawn_blocking(move || {
             let project_root = match bot_root {
                 Some(root) => root,
                 None => crate::studio::agent_host::workspace_preparation::resolved_project_root(
                     &project_copy,
                 )?,
             };
-            let session_root =
-                crate::studio::agent_host::workspace_preparation::root_session_workspace_root(
-                    &worktrees,
-                    workspace_mode,
-                    &workspace_root_id,
-                    project_root.clone(),
-                )?;
-            Ok::<_, anyhow::Error>((session_root, project_root))
+            Ok::<_, anyhow::Error>(project_root)
         })
         .await?
         .map_err(|error| resource_error("resolve root workspace", error))?;
-        if workspace_mode == pl_protocol::ThreadWorkspaceMode::Worktree {
-            crate::studio::agent_host::workspace_preparation::verify_root_session_worktree(
-                &self.services.worktrees,
-                &self.services.ssh_manager,
-                &project,
-                &thread.root_thread_id,
-            )
-            .await
-            .map_err(|error| resource_error("verify root workspace", error))?;
-        }
+        let root = crate::studio::agent_host::workspace_preparation::root_session_workspace_root(
+            &self.services.store,
+            &self.services.worktrees,
+            &self.services.ssh_manager,
+            &thread,
+            &project,
+            local_root,
+        )
+        .await
+        .map_err(|error| resource_error("resolve root workspace", error))?;
         let workspace = ToolWorkspace::new(match workspace_mode {
             pl_protocol::ThreadWorkspaceMode::Local => AgentWorkspace::local(&root),
             pl_protocol::ThreadWorkspaceMode::Worktree => {
@@ -251,6 +380,9 @@ impl StudioThreadFactory {
             }
         })
         .with_lsp_runtime(Some(self.services.lsp_runtime.clone()));
+        self.assign_workspace_use(&workspace_usage, &project, workspace.root())
+            .await
+            .map_err(Self::workspace_usage_error)?;
         let store = FileResourceStore::new(
             self.services
                 .store
@@ -259,6 +391,9 @@ impl StudioThreadFactory {
         );
         let mut prepared = self
             .prepare_thread_tools(ThreadToolAssembly {
+                verified_local: None,
+                assignment: None,
+                workspace_usage: workspace_usage.clone(),
                 thread_id: id,
                 cancellation: &cancellation,
                 config: &config,
@@ -371,6 +506,7 @@ impl StudioThreadFactory {
         )
         .with_hosted_tools(prepared.hosted);
         let spec = StudioThreadSpec {
+            workspace_usage: Some(workspace_usage),
             preparation_guard: prepared.binding_guard.take(),
             context_preparation: crate::compaction::preparer(
                 &route,

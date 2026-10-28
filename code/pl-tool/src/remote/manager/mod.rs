@@ -75,6 +75,7 @@ pub enum SshConnectionState {
 }
 
 struct SshConnection {
+    profile: Arc<SshServerProfile>,
     client: RemoteClient,
     process: Arc<Mutex<Box<dyn ChildWrapper>>>,
     heartbeat: CancellationToken,
@@ -763,6 +764,7 @@ impl SshManager {
             return Err(RemoteClientError::Disconnected);
         }
         Ok(RemoteWorkspaceHost {
+            profile: connection.profile.clone(),
             files: RemoteWorkspaceFileBackend::new(client.clone(), lease.clone()),
             commands: RemoteCommandBackend::new(client.clone(), lease.clone()),
             git: RemoteExecutionBackend::new(client, lease),

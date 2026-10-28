@@ -95,7 +95,7 @@ sealed class ComposerThreadState {
     List<String> cleanupFailureDraftIds,
   }) = IdleComposerThreadState;
   const factory ComposerThreadState.failure({
-    required String error,
+    required Object error,
     String draft,
     List<AttachmentDraftView> attachments,
     int submissionRevision,
@@ -114,9 +114,13 @@ sealed class ComposerThreadState {
     FailedComposerThreadState(:final inputId) => inputId,
     IdleComposerThreadState() => null,
   };
+  Object? get failure => switch (this) {
+    FailedComposerThreadState(:final failure) => failure,
+    IdleComposerThreadState() || SubmittingComposerThreadState() => null,
+  };
   String? get error => switch (this) {
-    FailedComposerThreadState(:final error, :final cleanupFailureDraftIds) =>
-      _composerError(error, cleanupFailureDraftIds),
+    FailedComposerThreadState(:final failure, :final cleanupFailureDraftIds) =>
+      _composerError(failure.toString(), cleanupFailureDraftIds),
     IdleComposerThreadState(:final cleanupFailureDraftIds) =>
       _cleanupFailureMessage(cleanupFailureDraftIds),
     SubmittingComposerThreadState(:final cleanupFailureDraftIds) =>
@@ -219,8 +223,8 @@ sealed class ComposerThreadState {
         attachmentGeneration: attachmentGeneration,
         cleanupFailureDraftIds: cleanupFailureDraftIds,
       ),
-      FailedComposerThreadState(:final error) => FailedComposerThreadState(
-        error: error,
+      FailedComposerThreadState(:final failure) => FailedComposerThreadState(
+        error: failure,
         draft: draft,
         attachments: next,
         submissionRevision: submissionRevision,
@@ -246,7 +250,7 @@ sealed class ComposerThreadState {
     return FailedComposerThreadState(
       draft: draft,
       attachments: attachments,
-      error: error.toString(),
+      error: error,
       submissionRevision: submissionRevision,
       attachmentGeneration: attachmentGeneration,
       inputId: inputId,
@@ -262,7 +266,6 @@ sealed class ComposerThreadState {
   ) {
     final ids = {...cleanupFailureDraftIds, ...draftIds}.toList()..sort();
     if (ids.isEmpty) return this;
-    final message = _cleanupFailureMessage(ids)!;
     return switch (this) {
       IdleComposerThreadState() => IdleComposerThreadState(
         draft: draft,
@@ -279,8 +282,8 @@ sealed class ComposerThreadState {
         inputId: inputId!,
         cleanupFailureDraftIds: ids,
       ),
-      FailedComposerThreadState() => FailedComposerThreadState(
-        error: error ?? message,
+      FailedComposerThreadState(:final failure) => FailedComposerThreadState(
+        error: failure,
         draft: draft,
         attachments: attachments,
         submissionRevision: submissionRevision,
@@ -301,7 +304,7 @@ sealed class ComposerThreadState {
             submissionRevision == other.submissionRevision &&
             attachmentGeneration == other.attachmentGeneration &&
             inputId == other.inputId &&
-            error == other.error &&
+            failure == other.failure &&
             listEquals(cleanupFailureDraftIds, other.cleanupFailureDraftIds);
   }
 
@@ -313,7 +316,7 @@ sealed class ComposerThreadState {
     submissionRevision,
     attachmentGeneration,
     inputId,
-    error,
+    failure,
     Object.hashAll(cleanupFailureDraftIds),
   );
 
@@ -322,7 +325,7 @@ sealed class ComposerThreadState {
     return FailedComposerThreadState(
       draft: draft,
       attachments: attachments,
-      error: error.toString(),
+      error: error,
       submissionRevision: submissionRevision,
       attachmentGeneration: attachmentGeneration,
       inputId: inputId,
@@ -369,7 +372,7 @@ sealed class ComposerThreadState {
     return FailedComposerThreadState(
       draft: draft,
       attachments: attachments,
-      error: error.toString(),
+      error: error,
       submissionRevision: this.submissionRevision,
       attachmentGeneration: attachmentGeneration,
       inputId: inputId,
@@ -438,16 +441,19 @@ final class SubmittingComposerThreadState extends ComposerThreadState {
 
 final class FailedComposerThreadState extends ComposerThreadState {
   const FailedComposerThreadState({
-    required this.error,
+    required Object error,
     this.draft = '',
     this.attachments = const [],
     this.submissionRevision = 0,
     this.attachmentGeneration = 0,
     this.inputId,
     this.cleanupFailureDraftIds = const [],
-  });
+  }) : failure = error;
   @override
-  final String error;
+  final Object failure;
+  @override
+  String get error =>
+      _composerError(failure.toString(), cleanupFailureDraftIds)!;
   @override
   final String draft;
   @override

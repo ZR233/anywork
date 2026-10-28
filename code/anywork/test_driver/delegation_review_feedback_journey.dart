@@ -73,6 +73,9 @@ class _Journey {
   File get baseline =>
       File('${environment.path}/review-feedback-baseline.json');
 
+  File get firstEvidence =>
+      File('${environment.path}/review-feedback-first-evidence.json');
+
   Future<void> tap(String key) async {
     await driver.waitFor(
       find.byValueKey(key),
@@ -257,6 +260,51 @@ class _Journey {
 
   Future<void> run() async {
     if (phase == 'reopen') {
+      final saved = jsonDecode(await firstEvidence.readAsString());
+      if (saved is! Map ||
+          saved['exceptions'] is! Map ||
+          saved['childRequests'] is! Map) {
+        throw StateError(
+          'persisted first report/exception evidence is missing',
+        );
+      }
+      final cases = saved['exceptions'] as Map;
+      for (final caseName in ['busy', 'changed', 'closed']) {
+        final original = cases[caseName];
+        if (original is! Map ||
+            original['navigation'] is! Map ||
+            original['first'] is! Map) {
+          throw StateError('original $caseName root evidence is missing');
+        }
+        final identity = ColdStartIdentity.fromBaseline(
+          (original['navigation'] as Map).cast<String, Object?>(),
+        );
+        await restoreOriginal(identity, 'reopen-$caseName');
+        await submit(
+          '[[delegation:review-feedback:reopen-$caseName]]',
+          'rf-reopen-$caseName-checked',
+        );
+        final checked = checkpoint(
+          await fixture(),
+          'rf-reopen-$caseName-checked',
+        )?['receipt'];
+        final first = original['first'] as Map;
+        if (checked is! Map ||
+            jsonEncode(checked['first']) != jsonEncode(first) ||
+            checked['submissionAfter'] != first['submission'] ||
+            jsonEncode(checked['exceptionAfter']) !=
+                jsonEncode(first['exception']) ||
+            jsonEncode(checked['latestAfter']) != jsonEncode(first['latest'])) {
+          throw StateError(
+            'public reopened $caseName evidence differs from persisted first bytes/identity',
+          );
+        }
+        requireCounts(
+          saved['childRequests'] as Map,
+          childCounts(await fixture()),
+        );
+        evidence['reopen-$caseName'] = checked;
+      }
       final raw = jsonDecode(await baseline.readAsString());
       if (raw is! Map) throw StateError('first identity baseline missing');
       final identity = ColdStartIdentity.fromBaseline(
@@ -278,8 +326,19 @@ class _Journey {
         '[[delegation:review-feedback:reopen]]',
         'rf-reopen-complete',
       );
+      final state = await fixture();
+      final aggregate = checkpoint(state, 'rf-reopen-complete')?['receipt'];
+      if (aggregate is! Map ||
+          jsonEncode(aggregate['first']) != jsonEncode(saved['normal']) ||
+          aggregate['exceptionReopens'] is! List ||
+          (aggregate['exceptionReopens'] as List).length != 3) {
+        throw StateError(
+          'aggregate reopen lacks original normal and all three public exception queries',
+        );
+      }
+      requireCounts(saved['childRequests'] as Map, childCounts(state));
       evidence['identity'] = identity.toJson();
-      evidence['providerState'] = await fixture();
+      evidence['providerState'] = state;
       stage = 'complete';
       return;
     }
@@ -320,6 +379,7 @@ class _Journey {
     final approvalId = _requiredString(approval, 'childId');
     final root = opened.threadId!;
     evidence['normalReceipt'] = receipt;
+    final exceptionRoots = <String, Object?>{};
     await captureAgents([executorId, reviewerId, approvalId]);
     // Explicitly authorize a public full-history read only after compact evidence.
     await submit(
@@ -341,11 +401,48 @@ class _Journey {
     ]) {
       await tap(StudioDriverKeyValues.newSession);
       await configureDraft();
-      await submit(
+      final snapshot = await submit(
         '[[delegation:review-feedback:$caseName]]',
         'rf-$caseName-complete',
       );
+      if (['busy', 'changed', 'closed'].contains(caseName)) {
+        final identity = readOpenedTimelineIdentity(snapshot);
+        final caseReceipt = checkpoint(
+          await fixture(),
+          'rf-$caseName-complete',
+        )?['receipt'];
+        final caseFirst = caseReceipt is Map ? caseReceipt['first'] : null;
+        if (!identity.consistent ||
+            identity.projectId != opened.projectId ||
+            caseFirst is! Map ||
+            caseFirst['root'] != identity.threadId ||
+            caseFirst['case'] != caseName ||
+            caseFirst['submission'] is! String ||
+            caseFirst['exception'] is! Map ||
+            (caseFirst['exception'] as Map)['raw'] is! String ||
+            (caseFirst['exception'] as Map)['exceptionId'] is! String) {
+          throw StateError(
+            'first $caseName lacks actual navigation and model-visible report/exception bytes',
+          );
+        }
+        exceptionRoots[caseName] = {
+          'navigation': identity.toJson(),
+          'first': caseFirst,
+        };
+      }
     }
+    final state = await fixture();
+    final persisted = {
+      'normal': first,
+      'exceptions': exceptionRoots,
+      'childRequests': childCounts(state),
+    };
+    // This is required evidence, not a best-effort cache. Write failures propagate.
+    await firstEvidence.writeAsString(
+      '${jsonEncode(persisted)}\n',
+      flush: true,
+    );
+    await saveJson('review-feedback-first-evidence', persisted);
     // Leave the real original root visible for the harness-owned manual capture.
     final original = ColdStartIdentity(
       projectId: opened.projectId!,
@@ -365,6 +462,47 @@ class _Journey {
     );
     evidence['providerState'] = await fixture();
     stage = 'complete';
+  }
+
+  Future<void> restoreOriginal(ColdStartIdentity identity, String label) =>
+      restoreColdStartTarget(
+        ColdStartDriverSurface(
+          readSnapshot: driver.readSnapshot,
+          tap: (finder, timeout) =>
+              revealNavigationTarget(finder, timeout, identity),
+        ),
+        identity: identity,
+        phase: label,
+        onStage: (value) async {
+          stage = value;
+        },
+      );
+
+  Map<String, int> childCounts(Map<String, dynamic> state) {
+    final rows = state['observations'];
+    if (rows is! List) throw StateError('provider observations absent');
+    final counts = <String, int>{};
+    for (final row in rows) {
+      if (row is! Map || row['marker'] is! String) {
+        throw StateError('invalid actual provider request observation');
+      }
+      final marker = row['marker'] as String;
+      if (marker.startsWith('[[delegation:child:')) {
+        counts[marker] = (counts[marker] ?? 0) + 1;
+      }
+    }
+    return counts;
+  }
+
+  void requireCounts(Map first, Map<String, int> after) {
+    if (first.length != after.length ||
+        first.entries.any(
+          (entry) => entry.value is! int || after[entry.key] != entry.value,
+        )) {
+      throw StateError(
+        'reopen added a child provider request; root query requests are separate',
+      );
+    }
   }
 
   Future<void> revealNavigationTarget(

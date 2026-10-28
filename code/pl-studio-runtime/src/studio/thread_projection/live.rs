@@ -240,12 +240,42 @@ fn revision_bytes(id: &str) -> u64 {
 /// Every item carries its own **content version** (never the effect sequence that happens to
 /// commit it). The writer stores that exact version and confirms it back by identity/version, so a
 /// save receipt can never acknowledge a payload it did not write.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(in crate::studio) struct PreparedEffect {
     /// Effect sequence this batch belongs to; the writer matches it against its admission queue.
     pub(in crate::studio) sequence: u64,
     /// The canonical items the effect committed, in the order the durable rows are written.
     pub(in crate::studio) items: Vec<ThreadItem>,
+    /// Exact terminal handoff, committed in the same history transaction as its terminal effect.
+    pub(in crate::studio) parent_report: Option<Arc<pl_core::thread::inbox::ThreadMessage>>,
+    pub(in crate::studio) terminal_retention:
+        Option<std::sync::Arc<crate::thread_assembler::review_dispatch::TerminalMaterialRetention>>,
+    /// Immutable diagnostics produced by application CAS changes in this very effect.
+    pub(in crate::studio) review_delivery:
+        Vec<crate::thread_assembler::review_delivery::ReviewDeliveryFact>,
+}
+
+fn review_delivery_facts(
+    thread_id: &str,
+    effect: &ThreadEffectBatch,
+) -> anyhow::Result<Vec<crate::thread_assembler::review_delivery::ReviewDeliveryFact>> {
+    use crate::thread_assembler::review_delivery::{EXTENSION_PREFIX, ReviewDeliveryFact};
+    let mut facts = Vec::new();
+    for change in effect.extensions.iter() {
+        if let pl_core::thread::extensions::ExtensionChange::Put { id, record } = change
+            && id.starts_with(EXTENSION_PREFIX)
+        {
+            let fact = ReviewDeliveryFact::decode(&record.payload)?;
+            anyhow::ensure!(
+                fact.extension_id() == *id
+                    && fact.message.source_id == format!("studio.review:{thread_id}")
+                    && fact.terminal_sequence < effect.sequence,
+                "review delivery carrier provenance mismatch"
+            );
+            facts.push(fact);
+        }
+    }
+    Ok(facts)
 }
 
 /// Cheap retained-memory estimate of one prepared batch.
@@ -982,6 +1012,8 @@ impl LiveProjection {
         effect: &ThreadEffectBatch,
         state: &ThreadSnapshot,
     ) -> Result<Arc<PreparedEffect>, ProjectionError> {
+        let review_delivery =
+            review_delivery_facts(&thread.id, effect).map_err(ProjectionError::ReviewDelivery)?;
         self.turn_failures
             .retain(|turn, _| state.turns.iter().any(|record| &record.turn_id == turn));
         if let Some(attempt) = &effect.attempt {
@@ -1144,6 +1176,9 @@ impl LiveProjection {
         Ok(Arc::new(PreparedEffect {
             sequence: effect.sequence,
             items,
+            parent_report: None,
+            terminal_retention: None,
+            review_delivery,
         }))
     }
 

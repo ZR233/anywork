@@ -1,10 +1,16 @@
 mod support;
 
 use anyhow::{Context, Result, ensure};
-use pl_protocol::{ObservedResourceKind, ThreadSubscriptionRequest, ThreadWorkspaceMode};
+use pl_protocol::{
+    ObservedResourceKind, ThreadSubscriptionRequest, ThreadSubscriptionUpdate, ThreadWorkspaceMode,
+    TimelinePageQuery,
+    studio::{StudioErrorCode, StudioPromptInput, SubmitPromptRequest},
+};
 use pl_provider_fixture::{Protocol, ReplyStage, Step};
 use pl_studio_runtime::{
-    StudioRecoveryWorktreeOwner, StudioWorktreeInspection, StudioWorktreeRecoveryPreview,
+    StudioRecoveryImpact, StudioRecoveryIssueAction, StudioRecoveryIssueCategory,
+    StudioRecoveryIssueScope, StudioRecoveryWorktreeOwner, StudioWorktreeInspection,
+    StudioWorktreeRecoveryPreview,
 };
 use std::{path::Path, time::Duration};
 use support::{Environment, completed_prompt, git, held_reply, prompt_step, reached};
@@ -288,21 +294,121 @@ async fn factory_missing_error_stays_typed_and_recovery_never_calls_missing_deta
         completed_prompt(&env.runtime, &root.thread.id, "missing-identity").await?;
         env.restart().await?;
         let history = support::saved(&env.home, &root.thread.id).await?;
+        let original_snapshot = env.runtime.thread_snapshot(&root.thread.id).await?;
+        let query = TimelinePageQuery::default();
+        let original_page = env.runtime.timeline_page(&root.thread.id, &query).await?;
+        ensure!(
+            original_page.thread_id == root.thread.id
+                && !original_page.has_older
+                && original_page.items.iter().any(|item| {
+                    item.preview
+                        .text()
+                        .is_some_and(|text| text.text() == "saved missing-site history")
+                }),
+            "original complete history did not contain the saved reply"
+        );
         std::fs::remove_dir_all(&root.thread.workspace_path)?;
-        let failure = env
+        let mut subscription = env
             .runtime
             .subscribe_thread(ThreadSubscriptionRequest {
                 thread_id: root.thread.id.clone(),
             })
+            .await?;
+        let Some(ThreadSubscriptionUpdate::Snapshot { snapshot }) =
+            tokio::time::timeout(Duration::from_secs(20), subscription.recv())
+                .await
+                .context("missing-worktree history initial frame was not delivered")??
+        else {
+            anyhow::bail!("history subscription did not begin with a complete Snapshot");
+        };
+        ensure!(
+            snapshot.as_ref() == &original_snapshot,
+            "missing-worktree subscription changed the complete saved snapshot"
+        );
+        ensure!(
+            snapshot.schema_version == pl_protocol::THREAD_SCHEMA_VERSION
+                && snapshot.revision == history.checkpoint.state.commit_sequence
+                && snapshot.thread.id == root.thread.id
+                && snapshot.thread.project_id == env.project.id
+                && snapshot.thread.root_thread_id == root.thread.root_thread_id
+                && snapshot.thread.workspace_mode == ThreadWorkspaceMode::Worktree
+                && snapshot.thread.workspace_path == root.thread.workspace_path,
+            "history subscription lost the original Thread/workspace identity"
+        );
+        ensure!(
+            env.runtime.timeline_page(&root.thread.id, &query).await? == original_page,
+            "missing-worktree subscription lost original history content"
+        );
+        ensure!(
+            snapshot.active_turn.is_none()
+                && snapshot.activity.is_none()
+                && snapshot.storage.is_none()
+                && snapshot.runtime.as_ref().is_some_and(|runtime| {
+                    runtime.thread_id == root.thread.id
+                        && runtime.execution.is_none()
+                        && runtime.live_usage.is_none()
+                })
+                && !env
+                    .runtime
+                    .persistence_queue_snapshot()
+                    .threads
+                    .iter()
+                    .any(|thread| thread.thread_id == root.thread.id)
+                && env.root_provider.recorded().len() == 1,
+            "read-only history subscription activated execution or a persistence writer"
+        );
+
+        let failure = env
+            .runtime
+            .submit_prompt_command(
+                root.thread.id.clone(),
+                SubmitPromptRequest {
+                    input: StudioPromptInput {
+                        input_id: "input-missing-identity-rejected".into(),
+                        text: "must not execute in the missing workspace".into(),
+                        attachment_draft_ids: vec![],
+                    },
+                    expected_model_route_revision: snapshot
+                        .runtime
+                        .as_ref()
+                        .and_then(|runtime| runtime.model_route.as_ref())
+                        .context("original saved model route is missing")?
+                        .revision,
+                },
+            )
             .await
             .err()
-            .context("missing checkout unexpectedly activated")?;
+            .context("new input unexpectedly activated the missing checkout")?;
+        // Public submission canonicalizes the execution root before reaching Git's typed Missing
+        // check. Its retained IO NotFound source therefore maps to Storage, not Unavailable.
+        let source = failure
+            .chain()
+            .find_map(|cause| cause.downcast_ref::<std::io::Error>())
+            .context("missing workspace rejection lost its typed IO source")?;
+        ensure!(
+            source.kind() == std::io::ErrorKind::NotFound,
+            "input was refused for an unrelated IO failure: {failure:#}"
+        );
+        let execution_issue = env
+            .runtime
+            .recovery_issues()
+            .into_iter()
+            .find(|issue| issue.id == format!("execution-workspace:{}", root.thread.id))
+            .context("execution rejection did not publish this Thread's Recovery issue")?;
+        ensure!(
+            execution_issue.scope == StudioRecoveryIssueScope::Thread
+                && execution_issue.category == StudioRecoveryIssueCategory::Repository
+                && execution_issue.impact == StudioRecoveryImpact::ExecutionBlocked
+                && execution_issue.action == StudioRecoveryIssueAction::Retry
+                && execution_issue.thread_id.as_deref() == Some(root.thread.id.as_str())
+                && execution_issue.project_id.as_deref() == Some(env.project.id.as_str())
+                && execution_issue.message.contains(&source.to_string()),
+            "execution rejection has the wrong Recovery owner, impact or cause: {execution_issue:?}"
+        );
         let error = pl_studio_runtime::studio_error_from_anyhow(failure);
         ensure!(
-            error.code == pl_protocol::studio::StudioErrorCode::Unavailable
-                && error.message.contains("stat")
-                && error.message.contains("not found"),
-            "real factory lost the typed Missing cause: {:?}: {}",
+            error.code == StudioErrorCode::Storage && error.retryable,
+            "public execution rejection lost the formal NotFound mapping: {:?}: {}",
             error.code,
             error.message
         );
@@ -318,6 +424,43 @@ async fn factory_missing_error_stays_typed_and_recovery_never_calls_missing_deta
                 && missing.dirty.is_none()
                 && missing.changed_files.is_none(),
             "missing inspection invented mutable Git state"
+        );
+        let missing_issue = env
+            .runtime
+            .recovery_issues()
+            .into_iter()
+            .find(|issue| issue.worktree.as_ref() == Some(&missing))
+            .context("typed Missing worktree diagnostic disappeared")?;
+        ensure!(
+            missing.owner_kind == StudioRecoveryWorktreeOwner::Session
+                && missing.owner_thread_id == root.thread.id
+                && missing.path == root.thread.workspace_path
+                && missing_issue.scope == StudioRecoveryIssueScope::Thread
+                && missing_issue.category == StudioRecoveryIssueCategory::Repository
+                && missing_issue.impact == StudioRecoveryImpact::ExecutionBlocked
+                && missing_issue.action == StudioRecoveryIssueAction::Retry
+                && missing_issue.thread_id.as_deref() == Some(root.thread.id.as_str())
+                && missing_issue.project_id.as_deref() == Some(env.project.id.as_str())
+                && missing_issue.message.contains("stat")
+                && missing_issue.message.contains("not found"),
+            "Recovery lost the original typed Missing owner or safe cause: {missing_issue:?}"
+        );
+        ensure!(
+            env.runtime.thread_snapshot(&root.thread.id).await? == original_snapshot
+                && env.runtime.timeline_page(&root.thread.id, &query).await? == original_page
+                && env
+                    .runtime
+                    .runtime_snapshot()
+                    .await?
+                    .active_turns
+                    .is_empty()
+                && !env
+                    .runtime
+                    .persistence_queue_snapshot()
+                    .threads
+                    .iter()
+                    .any(|thread| thread.thread_id == root.thread.id),
+            "rejected input changed original history or activated execution"
         );
         // Existing archive remains available for a missing worktree, but visibility restoration
         // must never recreate it or change the original path to the main project.
@@ -430,10 +573,15 @@ async fn safe_recovery_reports_git_lock_without_deleting_or_expanding_authorizat
             error.code,
             error.message
         );
+        let root_path = Path::new(&root.thread.workspace_path);
+        ensure!(root_path.exists(), "failed cleanup removed the checkout");
+        let worktrees = git(&env.repo, &["worktree", "list", "--porcelain", "-z"])?;
         ensure!(
-            Path::new(&root.thread.workspace_path).exists()
-                && git(&env.repo, &["worktree", "list", "--porcelain"])?
-                    .contains(&root.thread.workspace_path)
+            worktrees
+                .split('\0')
+                .filter_map(|record| record.strip_prefix("worktree "))
+                .any(|path| Path::new(path) == root_path),
+            "failed cleanup removed the worktree registration"
         );
         git(
             &env.repo,

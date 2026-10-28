@@ -15,15 +15,6 @@ pub enum AgentWorkspaceMode {
     Review,
 }
 
-/// 关闭 worktree Agent 时对物理 workspace 的显式处置。
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum AgentWorkspaceDisposition {
-    #[default]
-    Preserve,
-    Cleanup,
-}
-
 impl AgentWorkspaceMode {
     pub const fn label(self) -> &'static str {
         match self {

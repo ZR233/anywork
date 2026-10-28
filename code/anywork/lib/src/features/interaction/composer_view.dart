@@ -34,14 +34,16 @@ StartPageComposerProjection startPageComposerView(Ref ref) {
       .firstOrNull;
   final recovery = ref.watch(recoveryStoreProvider).value?.values ?? const [];
   final projectId = project?.id;
-  final blocked =
-      projectId != null &&
-      recovery.any(
-        (issue) =>
-            issue.blocksAccess &&
-            issue.scope == RecoveryIssueScope.project &&
-            issue.projectId == projectId,
-      );
+  final recoveryIssue = projectId == null
+      ? null
+      : recoveryIssueBlockingExecution(recovery, projectId: projectId);
+  final accessIssue = projectId == null
+      ? null
+      : recoveryIssueBlockingAccess(recovery, projectId: projectId);
+  final canEdit =
+      project != null &&
+      selection.selectedThreadId == null &&
+      accessIssue == null;
   final canonical = settings.canonical;
   final catalog = ref.watch(modeCatalogStoreProvider).value;
   final attachments = ref.watch(attachmentDraftsProvider);
@@ -50,8 +52,9 @@ StartPageComposerProjection startPageComposerView(Ref ref) {
     accounts: accounts,
     modeModelRoutes: canonical?.modeModelRoutes ?? const [],
     settingsLoaded: settings.configLoaded,
-    canSubmit:
-        project != null && selection.selectedThreadId == null && !blocked,
+    canEdit: canEdit,
+    canSubmit: canEdit && recoveryIssue == null,
+    recoveryIssue: recoveryIssue,
     commands: settings.commands,
     diagnostics: attachments.forProject(projectId),
     modeCatalog: catalog,
@@ -108,6 +111,12 @@ ComposerDockView composerDockView(Ref ref, String threadId) {
     ...directory.window.threads,
     ...directory.overlayThreads,
   ];
+  final selection = ref.watch(selectionStoreProvider);
+  final recoveryBlocker = recoveryIssueBlockingExecution(
+    recovery,
+    projectId: projectId ?? selection.selectedProjectId,
+    threadId: threadId,
+  );
   return ComposerDockView(
     thread: thread,
     hasSnapshot: session.hasSnapshot,
@@ -120,12 +129,7 @@ ComposerDockView composerDockView(Ref ref, String threadId) {
     stopCommand: stopCommand,
     saveBlocked:
         storage != null && (storage.hasFault || storage.resumeRequired),
-    workspaceBlocked: recovery.any(
-      (issue) =>
-          issue.blocksAccess &&
-          issue.scope == RecoveryIssueScope.thread &&
-          issue.threadId == threadId,
-    ),
+    recoveryIssue: recoveryBlocker,
     childInteractions: childInteractions.hostThreadId == threadId
         ? childInteractions.items
         : const [],
@@ -178,7 +182,9 @@ class StartPageComposerProjection {
     required this.accounts,
     required this.modeModelRoutes,
     required this.settingsLoaded,
+    required this.canEdit,
     required this.canSubmit,
+    required this.recoveryIssue,
     required this.commands,
     required this.diagnostics,
     required this.modeCatalog,
@@ -191,7 +197,9 @@ class StartPageComposerProjection {
   final List<ModelSelectionAccount> accounts;
   final List<ModeModelRouteView> modeModelRoutes;
   final bool settingsLoaded;
+  final bool canEdit;
   final bool canSubmit;
+  final StudioRecoveryIssue? recoveryIssue;
   final Map<String, CommandStatus> commands;
   final List<ComposerTargetDiagnostic> diagnostics;
   final ThreadModeCatalogView? modeCatalog;
@@ -237,7 +245,18 @@ class StartPageComposerProjection {
       other is StartPageComposerProjection &&
           project?.id == other.project?.id &&
           settingsLoaded == other.settingsLoaded &&
+          canEdit == other.canEdit &&
           canSubmit == other.canSubmit &&
+          recoveryIssue?.id == other.recoveryIssue?.id &&
+          recoveryIssue?.scope == other.recoveryIssue?.scope &&
+          recoveryIssue?.impact == other.recoveryIssue?.impact &&
+          recoveryIssue?.projectId == other.recoveryIssue?.projectId &&
+          recoveryIssue?.threadId == other.recoveryIssue?.threadId &&
+          recoveryIssue?.detail == other.recoveryIssue?.detail &&
+          listEquals(
+            recoveryIssue?.availableActions,
+            other.recoveryIssue?.availableActions,
+          ) &&
           identical(accounts, other.accounts) &&
           identical(modeModelRoutes, other.modeModelRoutes) &&
           identical(commands, other.commands) &&
@@ -251,7 +270,17 @@ class StartPageComposerProjection {
   int get hashCode => Object.hash(
     project?.id,
     settingsLoaded,
+    canEdit,
     canSubmit,
+    Object.hash(
+      recoveryIssue?.id,
+      recoveryIssue?.scope,
+      recoveryIssue?.impact,
+      recoveryIssue?.projectId,
+      recoveryIssue?.threadId,
+      recoveryIssue?.detail,
+      Object.hashAll(recoveryIssue?.availableActions ?? const []),
+    ),
     identityHashCode(accounts),
     identityHashCode(modeModelRoutes),
     identityHashCode(commands),
@@ -275,7 +304,7 @@ class ComposerDockView {
     required this.continuation,
     required this.stopCommand,
     required this.saveBlocked,
-    required this.workspaceBlocked,
+    required this.recoveryIssue,
     required this.childInteractions,
     required this.childInteractionSources,
     required this.modelRoute,
@@ -311,8 +340,8 @@ class ComposerDockView {
   /// 保存被硬故障阻塞（`resumeRequired` 或 `hasFault`）；短暂压力不算阻塞。
   final bool saveBlocked;
 
-  /// 会话工作区被恢复问题判为不可访问。
-  final bool workspaceBlocked;
+  /// 同一 Client 目标规则选出的最高优先级执行恢复阻塞。
+  final StudioRecoveryIssue? recoveryIssue;
 
   /// 主会话可见的直接 child 待决交互（只读投影，不激活 child）。
   final List<ChildInteractionSummary> childInteractions;
@@ -342,7 +371,7 @@ class ComposerDockView {
   /// 拒绝的原因由调用方另行传入，不在这里猜测。
   ComposerBlocker? get canonicalBlocker {
     if (saveBlocked) return const ComposerStorageBlocker();
-    if (workspaceBlocked) return const ComposerWorkspaceBlocker();
+    if (recoveryIssue case final issue?) return ComposerRecoveryBlocker(issue);
     if (modelUnavailable) return const ComposerModelBlocker();
     return null;
   }
@@ -372,7 +401,16 @@ class ComposerDockView {
           execution == other.execution &&
           continuation == other.continuation &&
           saveBlocked == other.saveBlocked &&
-          workspaceBlocked == other.workspaceBlocked &&
+          recoveryIssue?.id == other.recoveryIssue?.id &&
+          recoveryIssue?.scope == other.recoveryIssue?.scope &&
+          recoveryIssue?.impact == other.recoveryIssue?.impact &&
+          recoveryIssue?.projectId == other.recoveryIssue?.projectId &&
+          recoveryIssue?.threadId == other.recoveryIssue?.threadId &&
+          recoveryIssue?.detail == other.recoveryIssue?.detail &&
+          listEquals(
+            recoveryIssue?.availableActions,
+            other.recoveryIssue?.availableActions,
+          ) &&
           listEquals(childInteractions, other.childInteractions) &&
           mapEquals(childInteractionSources, other.childInteractionSources) &&
           modelRoute == other.modelRoute &&
@@ -402,7 +440,15 @@ class ComposerDockView {
       execution,
       continuation,
       saveBlocked,
-      workspaceBlocked,
+      Object.hash(
+        recoveryIssue?.id,
+        recoveryIssue?.scope,
+        recoveryIssue?.impact,
+        recoveryIssue?.projectId,
+        recoveryIssue?.threadId,
+        recoveryIssue?.detail,
+        Object.hashAll(recoveryIssue?.availableActions ?? const []),
+      ),
       Object.hashAll(childInteractions),
       Object.hashAll(childInteractionSources.entries),
       modelRoute,

@@ -68,6 +68,7 @@ pub(super) fn decide(request: &Request, environment: &Environment) -> Result<Dec
             Scenario::Enablement => enablement(&flow, &prompt, environment),
             Scenario::Recovery => super::recovery::run(&flow, &prompt, environment),
             Scenario::ReviewFeedback => super::review_feedback::run(&flow, &prompt, environment),
+            Scenario::Worktree => super::worktree::run(&flow, &prompt, environment),
         }
     };
     match result {
@@ -110,6 +111,9 @@ fn child(request: &Request, prompt: &str, environment: &Environment) -> Progress
         )?;
     }
     if let Some(decision) = super::review_child::child(&flow, prompt, environment)? {
+        return Ok(decision);
+    }
+    if let Some(decision) = super::worktree::child_reply(&flow, prompt)? {
         return Ok(decision);
     }
     let (note, text) = if let Some(reply) = super::recovery::child_reply(request, prompt)? {
@@ -210,16 +214,22 @@ fn enablement(flow: &Flow<'_>, prompt: &str, environment: &Environment) -> Progr
                         .is_some_and(|id| id.ends_with("-models-0"))
             })
             .context("capture [[delegation:before-disable]] in this observer root first")?;
-        let old_page: ModelList = decode(
-            &flow
-                .request
-                .output(
-                    old_call
-                        .call_id
-                        .as_deref()
-                        .context("old query missing call id")?,
-                )?
-                .context("old query missing committed output")?,
+        let old_call_id = old_call
+            .call_id
+            .as_deref()
+            .context("old query missing call id")?;
+        let old_arguments: Value = serde_json::from_str(
+            old_call
+                .arguments
+                .as_deref()
+                .context("old query missing arguments")?,
+        )
+        .context("decode old query arguments")?;
+        let old_page: ModelList = flow.read_call(
+            old_call_id,
+            "list_delegation_models",
+            old_arguments,
+            "disabled-old-query",
         )?;
         flow.rejected("stale-after-disable", "list_delegation_models", json!({"cursor":old_page.next_cursor.context("before-disable query did not return a cursor")?}), "stale or belongs to another query")?;
         let models = flow.models()?;
@@ -377,7 +387,7 @@ fn original_enablement<T: DeserializeOwned>(
     flow: &Flow<'_>,
     label: &str,
     tool: &str,
-) -> Result<(T, Value)> {
+) -> Progress<(T, Value)> {
     let (start, _) = flow.request.prompt()?;
     let suffix = format!("-{label}");
     let call = flow.request.input[..start]
@@ -391,21 +401,23 @@ fn original_enablement<T: DeserializeOwned>(
                     .is_some_and(|id| id.ends_with(&suffix))
         })
         .context("enablement observer lost its real before-disable tool history")?;
-    let output = flow
-        .request
-        .output(
-            call.call_id
-                .as_deref()
-                .context("original query has no callId")?,
-        )?
-        .context("before-disable query lost its committed output")?;
-    let arguments = serde_json::from_str(
+    let arguments: Value = serde_json::from_str(
         call.arguments
             .as_deref()
             .context("original query has no arguments")?,
     )
     .context("decode original before-disable arguments")?;
-    Ok((decode(&output)?, arguments))
+    let call_id = call
+        .call_id
+        .as_deref()
+        .context("original query has no callId")?;
+    let result = flow.read_call(
+        call_id,
+        tool,
+        arguments.clone(),
+        &format!("enablement-history-{label}"),
+    )?;
+    Ok((result, arguments))
 }
 
 fn disabled_spawn(flow: &Flow<'_>, environment: &Environment) -> Progress<Decision> {

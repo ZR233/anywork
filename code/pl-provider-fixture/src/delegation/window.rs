@@ -40,7 +40,7 @@ pub(super) fn run(flow: &Flow<'_>, prompt: &str) -> Progress<Decision> {
             "[[delegation:child:review-pass]]",
             Some(&child.agent_id),
         )?;
-        let approval = flow.report(
+        let approval = flow.legacy_report(
             &format!("sample-review-{index}"),
             &reviewer,
             "delegation independent review: approved",
@@ -199,15 +199,22 @@ fn reopened(flow: &Flow<'_>) -> Progress<Decision> {
                         .is_some_and(|id| id.ends_with(&suffix))
             })
             .context("restored window root lost original evaluation calls")?;
-        let text = flow
-            .request
-            .output(
-                call.call_id
-                    .as_deref()
-                    .context("evaluation has no call id")?,
-            )?
-            .context("restored window root lost committed evaluation receipt")?;
-        let receipt: EvaluationReceipt = decode(&text)?;
+        let call_id = call
+            .call_id
+            .as_deref()
+            .context("evaluation has no call id")?;
+        let arguments: serde_json::Value = serde_json::from_str(
+            call.arguments
+                .as_deref()
+                .context("evaluation call has no arguments")?,
+        )
+        .context("decode original evaluation arguments")?;
+        let receipt: EvaluationReceipt = flow.read_call(
+            call_id,
+            "evaluate_agent",
+            arguments,
+            &format!("window-history-evaluation-{index}"),
+        )?;
         records.push(receipt.evaluation);
     }
     require(

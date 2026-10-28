@@ -6,7 +6,7 @@ mod activity;
 pub(in crate::studio) use activity::{ActivityDetailRead, ActivityProjection, project_activity};
 mod compactions;
 mod completions;
-pub(in crate::studio) use completions::committed_finish;
+pub(crate) use completions::committed_finish;
 mod content;
 pub(in crate::studio) use content::{
     continuation_request_digest, input_presentation, prompt_request_digest,
@@ -77,6 +77,8 @@ pub(in crate::studio) fn presentation_preview_prefix(attempt_id: &str) -> String
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum ProjectionError {
+    #[error("review delivery application fact cannot be projected")]
+    ReviewDelivery(#[source] anyhow::Error),
     #[error("saved product state cannot be projected")]
     Product(#[from] pl_protocol::PureError),
     #[error("saved workflow state cannot be projected")]

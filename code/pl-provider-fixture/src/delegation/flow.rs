@@ -18,6 +18,14 @@ impl From<anyhow::Error> for Stop {
 
 pub(super) type Progress<T> = std::result::Result<T, Stop>;
 
+enum ToolProjection {
+    Immediate(String),
+    BackgroundSucceeded(String),
+    BackgroundFailed(String),
+    BackgroundCancelled(String),
+    BackgroundInterrupted(String),
+}
+
 pub(super) struct Flow<'a> {
     pub request: &'a Request,
     pub prefix: String,
@@ -88,10 +96,16 @@ pub(super) struct ClosedSendEvidence {
     tool: String,
     target: String,
     tool_error: String,
+    task_status: &'static str,
     pub provider_requests_before: usize,
     pub provider_requests_after: usize,
     before: ClosedChildState,
     after: ClosedChildState,
+}
+
+struct FailedToolOutput {
+    text: String,
+    task_status: &'static str,
 }
 
 pub(super) fn require(condition: bool, message: &str) -> Result<()> {
@@ -117,18 +131,13 @@ impl<'a> Flow<'a> {
 
     pub fn raw(&self, label: &str, tool: &str, arguments: Value) -> Progress<String> {
         let id = format!("{}-{label}", self.prefix);
-        if let Some(output) = self.request.output(&id)? {
-            let declaration = self
-                .request
-                .input
-                .iter()
-                .find(|item| item.kind == "function_call" && item.call_id.as_deref() == Some(&id))
-                .context("missing tool call declaration")?;
-            require(
-                declaration.name.as_deref() == Some(tool),
-                "tool result belongs to the wrong tool",
-            )?;
-            return Ok(output);
+        if let Some((_, output)) = self.request.tool_call_output(&id, tool, &arguments)? {
+            return Ok(match output {
+                ToolCallOutput::Immediate(text) => text,
+                ToolCallOutput::Pending {
+                    acknowledgement, ..
+                } => acknowledgement,
+            });
         }
         require(
             self.request.declared(tool),
@@ -139,13 +148,129 @@ impl<'a> Flow<'a> {
         ))))
     }
 
+    fn result_projection(
+        &self,
+        label: &str,
+        tool: &str,
+        arguments: Value,
+    ) -> Progress<ToolProjection> {
+        let id = format!("{}-{label}", self.prefix);
+        let Some((call_index, output)) = self.request.tool_call_output(&id, tool, &arguments)?
+        else {
+            return self
+                .raw(label, tool, arguments)
+                .map(ToolProjection::Immediate);
+        };
+        self.resolve_output(call_index, output, label, tool)
+    }
+
+    fn resolve_output(
+        &self,
+        call_index: usize,
+        output: ToolCallOutput,
+        wait_label: &str,
+        tool: &str,
+    ) -> Progress<ToolProjection> {
+        let task_id = match output {
+            ToolCallOutput::Immediate(text) => return Ok(ToolProjection::Immediate(text)),
+            ToolCallOutput::Pending { task_id, .. } => task_id,
+        };
+
+        for retry in 0..8 {
+            if let Some(completion) = self
+                .request
+                .task_completion_after(call_index, &task_id, tool)?
+            {
+                return match completion.status {
+                    TaskCompletionStatus::Succeeded => {
+                        Ok(ToolProjection::BackgroundSucceeded(completion.projection))
+                    }
+                    TaskCompletionStatus::Failed => {
+                        Ok(ToolProjection::BackgroundFailed(completion.projection))
+                    }
+                    TaskCompletionStatus::Cancelled => {
+                        Ok(ToolProjection::BackgroundCancelled(completion.projection))
+                    }
+                    TaskCompletionStatus::Interrupted => {
+                        Ok(ToolProjection::BackgroundInterrupted(completion.projection))
+                    }
+                };
+            }
+            let wait = self.raw(
+                &format!("{wait_label}-wait-{retry}"),
+                "wait",
+                json!({"taskIds":[task_id],"timeoutMs":300000}),
+            )?;
+            require(
+                !wait.contains("Framework recorded tool failure:"),
+                "waiting for background tool result failed",
+            )?;
+            // A wait completion or ACK is only a wake signal. The next request
+            // must still contain the original task's exact terminal report.
+        }
+        Err(anyhow::anyhow!(
+            "background tool task {task_id} did not report a terminal result after eight waits"
+        )
+        .into())
+    }
+
+    pub fn read_call<T: DeserializeOwned>(
+        &self,
+        call_id: &str,
+        tool: &str,
+        expected_arguments: Value,
+        wait_label: &str,
+    ) -> Progress<T> {
+        let Some((call_index, output)) =
+            self.request
+                .tool_call_output(call_id, tool, &expected_arguments)?
+        else {
+            return Err(anyhow::anyhow!("historical tool call {call_id} is missing").into());
+        };
+        let text = match self.resolve_output(call_index, output, wait_label, tool)? {
+            ToolProjection::Immediate(text) | ToolProjection::BackgroundSucceeded(text) => text,
+            ToolProjection::BackgroundFailed(error) => {
+                return Err(
+                    anyhow::anyhow!("historical background tool task failed: {error}").into(),
+                );
+            }
+            ToolProjection::BackgroundCancelled(reason) => {
+                return Err(anyhow::anyhow!(
+                    "historical background tool task was cancelled: {reason}"
+                )
+                .into());
+            }
+            ToolProjection::BackgroundInterrupted(reason) => {
+                return Err(anyhow::anyhow!(
+                    "historical background tool task was interrupted: {reason}"
+                )
+                .into());
+            }
+        };
+        Ok(decode(&text)?)
+    }
+
     pub fn read<T: DeserializeOwned>(
         &self,
         label: &str,
         tool: &str,
         arguments: Value,
     ) -> Progress<T> {
-        Ok(decode(&self.raw(label, tool, arguments)?)?)
+        let text = match self.result_projection(label, tool, arguments)? {
+            ToolProjection::Immediate(text) | ToolProjection::BackgroundSucceeded(text) => text,
+            ToolProjection::BackgroundFailed(error) => {
+                return Err(anyhow::anyhow!("background tool task failed: {error}").into());
+            }
+            ToolProjection::BackgroundCancelled(reason) => {
+                return Err(anyhow::anyhow!("background tool task was cancelled: {reason}").into());
+            }
+            ToolProjection::BackgroundInterrupted(reason) => {
+                return Err(
+                    anyhow::anyhow!("background tool task was interrupted: {reason}").into(),
+                );
+            }
+        };
+        Ok(decode(&text)?)
     }
 
     pub fn rejected(
@@ -155,17 +280,77 @@ impl<'a> Flow<'a> {
         arguments: Value,
         reason: &str,
     ) -> Progress<()> {
-        let text = self.raw(label, tool, arguments)?;
+        let failed = self.failed_tool_output(label, tool, arguments)?;
+        self.require_rejection(&failed.text, tool, reason)
+    }
+
+    fn failed_tool_output(
+        &self,
+        label: &str,
+        tool: &str,
+        arguments: Value,
+    ) -> Progress<FailedToolOutput> {
+        let text = match self.result_projection(label, tool, arguments)? {
+            ToolProjection::Immediate(text) => {
+                self.require_failed_task_status(label, tool)?;
+                text
+            }
+            ToolProjection::BackgroundFailed(error) => error,
+            ToolProjection::BackgroundSucceeded(_) => {
+                return Err(anyhow::anyhow!("negative {tool} call completed successfully").into());
+            }
+            ToolProjection::BackgroundCancelled(reason) => {
+                return Err(anyhow::anyhow!(
+                    "negative {tool} call was cancelled, not rejected: {reason}"
+                )
+                .into());
+            }
+            ToolProjection::BackgroundInterrupted(reason) => {
+                return Err(anyhow::anyhow!(
+                    "negative {tool} call was interrupted, not rejected: {reason}"
+                )
+                .into());
+            }
+        };
+        Ok(FailedToolOutput {
+            text,
+            task_status: "failed",
+        })
+    }
+
+    fn require_failed_task_status(&self, label: &str, tool: &str) -> Progress<()> {
+        let call_id = format!("{}-{label}", self.prefix);
+        let task_id = format!("task:{call_id}");
+        let query: ToolTaskQuery = self.read(
+            &format!("{label}-rejection-task-status"),
+            "get_tool_task",
+            json!({"taskId":task_id}),
+        )?;
+        require(
+            query.task.task_id == task_id
+                && query.task.tool_id == tool
+                && query.task.status == ToolTaskStatus::Failed
+                && !query.task.cancel_requested,
+            "immediate rejection lacks the exact failed task terminal status",
+        )?;
+        Ok(())
+    }
+
+    fn require_rejection(&self, text: &str, tool: &str, reason: &str) -> Progress<()> {
+        require(!text.trim().is_empty(), "tool rejection has no error body")?;
+        require(
+            serde_json::Deserializer::from_str(text.trim())
+                .into_iter::<Value>()
+                .next()
+                .is_none_or(|value| value.is_err()),
+            "tool rejection returned structured JSON instead of an error body",
+        )?;
         require(
             text.contains(reason),
             &format!("expected real {tool} rejection containing {reason:?}; got {text}"),
         )?;
         // A response carrying successful evaluation/agent state is never an
         // authorization or validation rejection, even if its comment echoes it.
-        require(
-            serde_json::from_str::<Value>(&text).is_err(),
-            "negative tool call returned structured success instead of a failure",
-        )?;
         Ok(())
     }
 
@@ -369,7 +554,7 @@ impl<'a> Flow<'a> {
                         report.last_tool.is_none(),
                         "review compact report leaked last tool",
                     )?;
-                    review.require_legacy(message, &report)?;
+                    review.require_valid(&report)?;
                 } else {
                     require(
                         report.review.is_none(),
@@ -389,6 +574,22 @@ impl<'a> Flow<'a> {
             child.agent_id
         )
         .into())
+    }
+
+    pub fn legacy_report(
+        &self,
+        label: &str,
+        child: &Spawn,
+        summary: &str,
+        after: u64,
+    ) -> Progress<Report> {
+        let report = self.report(label, child, summary, after)?;
+        report
+            .review
+            .as_ref()
+            .context("legacy review lacks conclusion")?
+            .require_legacy(summary, &report)?;
+        Ok(report)
     }
 
     pub fn evaluate(
@@ -516,27 +717,36 @@ impl<'a> Flow<'a> {
     }
 
     pub fn close(&self, label: &str, child: &Spawn) -> Progress<Closed> {
-        let receipt: Closed = self.read(
-            label,
-            "close_agent",
-            json!({"target":child.agent_id,"workspaceDisposition":"preserve"}),
-        )?;
+        let receipt: Closed = self.read(label, "close_agent", json!({"target":child.agent_id}))?;
+        if let Some(error) = &receipt.error {
+            return Err(anyhow::anyhow!(
+                "close returned partial failure {} (retryable={}): {}",
+                error.code,
+                error.retryable,
+                error.message
+            )
+            .into());
+        }
         require(
-            receipt.target == child.agent_id
-                && receipt.lifecycle == Lifecycle::Closed
-                && receipt.workspace_disposition == "preserve",
-            "close did not return the real Closed/preserve receipt",
+            receipt.succeeded_for(&child.agent_id),
+            "close did not return a successful close receipt",
         )?;
+        if child.profile_id == "reviewer" {
+            require(
+                receipt.agents.iter().any(|agent| {
+                    agent.agent_id == child.agent_id
+                        && agent.worktree_cleanup == WorktreeCleanup::NotApplicable
+                }),
+                "reviewer close did not report notApplicable worktree cleanup",
+            )?;
+        }
         Ok(receipt)
     }
 
-    /// The public activation wrapper is not a typed closed cause. Accept it
-    /// only for a successfully closed, unchanged direct child and exact call.
+    /// Confirm the persisted permanent-close rejection without activating the child.
     pub fn refused_closed_send(&self, check: ClosedSendCheck<'_>) -> Progress<ClosedSendEvidence> {
         require(
-            check.close.target == check.child.agent_id
-                && check.close.lifecycle == Lifecycle::Closed
-                && check.close.workspace_disposition == "preserve",
+            check.close.succeeded_for(&check.child.agent_id),
             "closed-send probe lacks the real explicit close receipt",
         )?;
         let route: Detail = self.read(
@@ -575,10 +785,10 @@ impl<'a> Flow<'a> {
         );
         let arguments = json!({"target":check.child.agent_id,"message":message});
         let call_id = format!("{}-{}", self.prefix, check.label);
-        let error = match self.raw(check.label, "send_message", arguments.clone()) {
+        match self.raw(check.label, "send_message", arguments.clone()) {
             Err(Stop::Call(mut decision)) => {
-                // Capture the external counter before dispatch, not when a
-                // later model step replays this immutable tool result.
+                // Capture the external counter before the original send dispatch,
+                // never when a later wait/status query is pending.
                 decision.receipt = Some(json!(ClosedSendAttempt {
                     call_id,
                     tool: "send_message".into(),
@@ -590,8 +800,12 @@ impl<'a> Flow<'a> {
                 }));
                 return Err(Stop::Call(decision));
             }
-            result => result?,
-        };
+            Err(Stop::Failed(error)) => return Err(Stop::Failed(error)),
+            Ok(_) => {}
+        }
+        let failed_output =
+            self.failed_tool_output(check.label, "send_message", arguments.clone())?;
+        let error = failed_output.text;
         let declaration = self
             .request
             .input
@@ -610,10 +824,11 @@ impl<'a> Flow<'a> {
             "closed-send callId/name/target/message association changed",
         )?;
         require(
-            serde_json::from_str::<Sent>(&error).is_err()
+            failed_output.task_status == "failed"
+                && serde_json::from_str::<Sent>(&error).is_err()
                 && serde_json::from_str::<Value>(&error).is_err()
-                && error == super::CLOSED_SEND_ACTIVATION_ERROR,
-            "closed-send did not return the exact observed activation failure (ACK/other errors are not proof)",
+                && super::is_permanently_closed_send_error(&error),
+            "closed-send did not return the exact permanently-closed failure (ACK/other errors are not proof)",
         )?;
         let attempt = {
             let observations = self
@@ -673,6 +888,7 @@ impl<'a> Flow<'a> {
             tool: "send_message".into(),
             target: check.child.agent_id.clone(),
             tool_error: error,
+            task_status: failed_output.task_status,
             provider_requests_before: attempt.provider_requests_before,
             provider_requests_after,
             before,

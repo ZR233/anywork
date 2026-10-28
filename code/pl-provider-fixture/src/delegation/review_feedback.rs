@@ -1,7 +1,8 @@
 //! Controlled product-chain observation; the loopback model supplies conclusions,
 //! while all admission, forwarding, completion and history facts come from tools.
 use super::{
-    Environment, SHARED_MODEL, flow::*, journeys::Decision, review_child, review_wire::*, wire::*,
+    Environment, SHARED_MODEL, flow::*, journeys::Decision, review_child, review_delivery,
+    review_reopen, review_wire::*, wire::*,
 };
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -38,6 +39,9 @@ pub(super) struct FirstEvidence {
     pub reviewer: Identity,
     pub approval: Identity,
     pub compact: String,
+    pub submission: String,
+    pub approval_report: String,
+    pub executor_report: String,
     pub arrival: review_child::Arrival,
     pub child_requests: BTreeMap<String, usize>,
 }
@@ -58,6 +62,15 @@ pub(super) fn run(flow: &Flow<'_>, prompt: &str, environment: &Environment) -> P
     match marker {
         "[[delegation:review-feedback:normal-full]]" => full(flow, environment),
         "[[delegation:review-feedback:reopen]]" => reopen(flow, environment),
+        "[[delegation:review-feedback:reopen-busy]]" => {
+            review_reopen::exception(flow, environment, "busy")
+        }
+        "[[delegation:review-feedback:reopen-changed]]" => {
+            review_reopen::exception(flow, environment, "changed")
+        }
+        "[[delegation:review-feedback:reopen-closed]]" => {
+            review_reopen::exception(flow, environment, "closed")
+        }
         "[[delegation:review-feedback:illegal]]" => illegal(flow, environment),
         "[[delegation:review-feedback:normal]]" => normal(flow, environment),
         "[[delegation:review-feedback:approved]]" => no_wake(flow, environment, "approved"),
@@ -290,26 +303,12 @@ fn normal(flow: &Flow<'_>, environment: &Environment) -> Progress<Decision> {
     require(
         baseline.turn_id == initial.turn_id
             && baseline.input_id == initial.input_id
+            && baseline.terminal_sequence == initial.commit_sequence
             && review.disposition == Disposition::NeedsChanges
             && review.reason.is_none()
             && review.summary == review_child::summary("normal"),
         "normal review lost its original target delivery or typed conclusion",
     )?;
-    let (message_id, sequence) = match &review.forward {
-        Forward::Accepted {
-            message_id,
-            sequence,
-        } if !message_id.is_empty() && *sequence > baseline.message_sequence => {
-            (message_id, sequence)
-        }
-        _ => {
-            return Err(anyhow::anyhow!(
-                "normal feedback was not really accepted: {:?}",
-                review.forward
-            )
-            .into());
-        }
-    };
     let repaired = processed(flow, &executor, &initial)?;
     let arrival: review_child::Arrival = decode(&repaired.message)?;
     let version = review
@@ -374,12 +373,21 @@ fn normal(flow: &Flow<'_>, environment: &Environment) -> Progress<Decision> {
                 .target
                 .as_ref()
                 .and_then(|target| target.baseline.as_ref())
-                .is_some_and(|baseline| baseline.turn_id == repaired.turn_id)
-            && matches!(approved.forward, Forward::NotRequired),
+                .is_some_and(|baseline| {
+                    baseline.turn_id == repaired.turn_id
+                        && baseline.input_id == repaired.input_id
+                        && baseline.terminal_sequence == repaired.commit_sequence
+                })
+            && approved
+                .target
+                .as_ref()
+                .is_some_and(|target| target.feedback == Some(Feedback::ToExecutor)),
         "fresh approved review forwarded or lost repaired target",
     )?;
     idle(flow, "rf-after-approval-idle", &executor, &repaired)?;
     unchanged_provider_count(flow, environment, "rf-approval", &executor)?;
+    review_delivery::require_none(flow.request, &reviewer)?;
+    review_delivery::require_none(flow.request, &approval_child)?;
     flow.close("rf-close-approved-reviewer", &approval_child)?;
     let first = FirstEvidence {
         root,
@@ -387,6 +395,9 @@ fn normal(flow: &Flow<'_>, environment: &Environment) -> Progress<Decision> {
         reviewer: Identity::new(&report),
         approval: Identity::new(&approval),
         compact: serde_json::to_string(review).context("encode original compact review")?,
+        submission: report.raw.clone(),
+        approval_report: approval.raw.clone(),
+        executor_report: repaired.raw.clone(),
         arrival,
         child_requests: normal_counts(environment)?,
     };
@@ -404,7 +415,7 @@ fn normal(flow: &Flow<'_>, environment: &Environment) -> Progress<Decision> {
         "review feedback normal compact complete; explicitly request [[delegation:review-feedback:normal-full]] next",
     );
     decision.receipt = Some(
-        json!({"first":first,"accepted":{"messageId":message_id,"sequence":sequence},"executorMessagesExposed":repaired.messages.len(),"executorInputId":repaired.input_id,"compactLeakCount":0,"targetInputHistory":"not a public inbox ledger"}),
+        json!({"first":first,"deliveryProof":"actual exact target wrapper/hash and new committed executor Turn","executorMessagesExposed":repaired.messages.len(),"executorInputId":repaired.input_id,"compactLeakCount":0,"targetInputHistory":"not a public inbox ledger"}),
     );
     Ok(decision)
 }
@@ -448,7 +459,9 @@ fn no_wake(flow: &Flow<'_>, environment: &Environment, case: &str) -> Progress<D
     let review = report.review.as_ref().context("no-wake review missing")?;
     let baseline = review.require_binding(&report, &executor)?;
     require(
-        baseline.turn_id == initial.turn_id && baseline.input_id == initial.input_id,
+        baseline.turn_id == initial.turn_id
+            && baseline.input_id == initial.input_id
+            && baseline.terminal_sequence == initial.commit_sequence,
         "no-wake reviewer lost its original target delivery",
     )?;
     require(
@@ -487,14 +500,7 @@ fn no_wake(flow: &Flow<'_>, environment: &Environment, case: &str) -> Progress<D
             "no-wake typed review did not retain the actual read version",
         )?;
     }
-    require(
-        if case == "omitted" {
-            matches!(review.forward, Forward::NotRequested)
-        } else {
-            matches!(review.forward, Forward::NotRequired)
-        },
-        "no-wake review attempted automatic feedback",
-    )?;
+    review_delivery::require_none(flow.request, &reviewer)?;
     idle(flow, "rf-no-wake-idle", &executor, &initial)?;
     let target_requests = unchanged_provider_count(flow, environment, "rf-reviewer", &executor)?;
     let reports = flow.request.reports()?;
@@ -576,7 +582,11 @@ fn illegal(flow: &Flow<'_>, environment: &Environment) -> Progress<Decision> {
     ))
 }
 
-pub(super) fn original<T: DeserializeOwned>(flow: &Flow<'_>, label: &str, tool: &str) -> Result<T> {
+pub(super) fn original<T: DeserializeOwned>(
+    flow: &Flow<'_>,
+    label: &str,
+    tool: &str,
+) -> Progress<T> {
     let (start, _) = flow.request.prompt()?;
     let suffix = format!("-{label}");
     let call = flow.request.input[..start]
@@ -590,12 +600,14 @@ pub(super) fn original<T: DeserializeOwned>(flow: &Flow<'_>, label: &str, tool: 
                     .is_some_and(|id| id.ends_with(&suffix))
         })
         .context("original public tool history is missing")?;
-    decode(
-        &flow
-            .request
-            .output(call.call_id.as_deref().context("original callId missing")?)?
-            .context("original receipt missing")?,
+    let call_id = call.call_id.as_deref().context("original callId missing")?;
+    let arguments: serde_json::Value = serde_json::from_str(
+        call.arguments
+            .as_deref()
+            .context("original call arguments missing")?,
     )
+    .context("decode original public tool arguments")?;
+    flow.read_call(call_id, tool, arguments, &format!("rf-history-{label}"))
 }
 
 fn first(environment: &Environment) -> Result<FirstEvidence> {
@@ -617,9 +629,16 @@ fn full(flow: &Flow<'_>, environment: &Environment) -> Progress<Decision> {
         .find(|report| Identity::new(report) == first.reviewer)
         .context("original reviewer report missing")?;
     let expected = review_child::body("normal");
-    // The first request issuing this public full read must still be leak-free.
+    // Before the explicit public read is issued, the parent must be leak-free.
+    // A committed tool ACK proves issuance, not a complete page: Flow::read
+    // below still requires the exact successful terminal result and arguments.
     let first_id = format!("{}-rf-full-0", flow.prefix);
-    if flow.request.output(&first_id)?.is_none() {
+    let first_arguments = json!({"target":reviewer.agent_id,"order":"descending","detail":"full","limit":50,"cursor":null});
+    if flow
+        .request
+        .tool_call_output(&first_id, "read_agent_session", &first_arguments)?
+        .is_none()
+    {
         review_child::require_no_leak(flow.request)?;
     }
     let mut cursor = None;
@@ -682,6 +701,7 @@ fn full(flow: &Flow<'_>, environment: &Environment) -> Progress<Decision> {
 }
 
 fn reopen(flow: &Flow<'_>, environment: &Environment) -> Progress<Decision> {
+    let exception_reopens = review_reopen::require_all(environment)?;
     let first = first(environment)?;
     let child: Spawn = original(flow, "rf-executor", "spawn_agent")?;
     let reports = flow.request.reports()?;
@@ -697,7 +717,27 @@ fn reopen(flow: &Flow<'_>, environment: &Environment) -> Progress<Decision> {
         serde_json::to_string(review.review.as_ref().context("reopened review missing")?)
             .context("encode reopened review")?
             == first.compact,
-        "reopened compact report or accepted feedback receipt changed",
+        "reopened compact submitted conclusion changed",
+    )?;
+    let approval = reports
+        .iter()
+        .find(|report| Identity::new(report) == first.approval)
+        .context("reopened root lost fresh approval report")?;
+    for report in [review, executor, approval] {
+        report.completed()?;
+    }
+    require(
+        !flow.request.review_exceptions()?.iter().any(|notice| {
+            notice.payload.reviewer_id == first.reviewer.child_id
+                || notice.payload.reviewer_id == first.approval.child_id
+        }),
+        "successful normal chain gained an exception on reopen",
+    )?;
+    require(
+        review.raw == first.submission
+            && executor.raw == first.executor_report
+            && approval.raw == first.approval_report,
+        "reopened original report bytes changed",
     )?;
     let rows: Vec<AgentRow> = flow.read("rf-reopen-directory", "list_agents", json!({}))?;
     let row = rows
@@ -705,7 +745,9 @@ fn reopen(flow: &Flow<'_>, environment: &Environment) -> Progress<Decision> {
         .find(|row| row.id == child.agent_id)
         .context("reopened target absent")?;
     require(
-        row.frozen_model.as_ref() == Some(&child.model)
+        row.parent_id.as_deref() == Some(first.root.as_str())
+            && row.lifecycle == Lifecycle::Open
+            && row.frozen_model.as_ref() == Some(&child.model)
             && row.pending_inputs == 0
             && row.running_tasks == 0,
         "reopened target changed route or has pending work",
@@ -736,10 +778,10 @@ fn reopen(flow: &Flow<'_>, environment: &Environment) -> Progress<Decision> {
     )?;
     let mut decision = Decision::answer(
         "rf-reopen-complete",
-        "review feedback reopen complete; no duplicate accepted feedback or child work",
+        "review feedback reopen complete; original submissions/exceptions unchanged and no duplicate child work",
     );
     decision.receipt = Some(
-        json!({"first":first,"childRequestsAfter":normal_counts(environment)?,"inboxLedger":"not publicly exposed","observerCrash":"not injected or proved"}),
+        json!({"first":first,"exceptionReopens":exception_reopens,"childRequestsAfter":child_counts(environment)?,"inboxLedger":"not publicly exposed","observerCrash":"not injected or proved"}),
     );
     Ok(decision)
 }

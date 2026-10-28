@@ -1,6 +1,12 @@
 //! Three fixed external response gates, not a scheduler or a product injection API.
 use super::{
-    Environment, flow::*, journeys::Decision, review_feedback as feedback, review_wire::*, wire::*,
+    Environment,
+    flow::*,
+    journeys::Decision,
+    review_delivery::{self, Outcome, Reason},
+    review_feedback as feedback, review_reopen,
+    review_wire::*,
+    wire::*,
 };
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
@@ -316,50 +322,55 @@ pub(super) fn run(flow: &Flow<'_>, environment: &Environment, case: &str) -> Pro
         .context("held review missing")?;
     let baseline = review.require_binding(&review_report, &executor)?;
     require(
-        baseline.turn_id == initial.turn_id && baseline.input_id == initial.input_id,
+        baseline.turn_id == initial.turn_id
+            && baseline.input_id == initial.input_id
+            && baseline.terminal_sequence == initial.commit_sequence
+            && review.disposition == Disposition::NeedsChanges
+            && review.reason.is_none()
+            && review.summary == super::review_child::summary(case)
+            && review
+                .target
+                .as_ref()
+                .is_some_and(|target| target.feedback == Some(Feedback::ToExecutor)),
         "held reviewer did not retain original frozen delivery",
     )?;
-    match (&review.forward, case) {
+    let notice = review_delivery::wait_exception(flow, &review_report, &executor)?;
+    match (&notice.payload.outcome, case) {
         (
-            Forward::Rejected {
-                message_id,
-                reason: ForwardReason::TargetChanged,
+            Outcome::Rejected {
+                reason: Reason::TargetChanged,
             },
             "busy" | "changed",
-        ) if !message_id.is_empty() => {}
+        ) => {}
         // The original Running target can fail validate_idle before the later
         // comparison. Consume its frozen release-time proof, not current gate
         // state: subsequent Flow replay may already have completed its own input.
         (
-            Forward::Rejected {
-                message_id,
-                reason: ForwardReason::AdmissionRejected(reason),
+            Outcome::Rejected {
+                reason: Reason::AdmissionRejected(reason),
             },
             "busy",
-        ) if !message_id.is_empty()
-            && attempt.target_gate_held_at_review_release
+        ) if attempt.target_gate_held_at_review_release
             && matches!(reason.as_slice(), [operation, source]
                 if operation == "Studio resource operation failed: validate original reviewed delivery"
                     && source == "child still has running work, pending input, interaction or permission") =>
             {}
         (
-            Forward::Rejected {
-                message_id,
-                reason: ForwardReason::TargetUnavailable,
+            Outcome::Rejected {
+                reason: Reason::TargetUnavailable,
             },
             "closed",
-        ) if !message_id.is_empty() => {}
+        ) => {}
         (
-            Forward::Rejected {
-                message_id,
-                reason: ForwardReason::AdmissionRejected(reason),
+            Outcome::Rejected {
+                reason: Reason::AdmissionRejected(reason),
             },
             "closed",
-        ) if !message_id.is_empty() && !reason.is_empty() => {}
+        ) if closed_admission(reason) => {}
         _ => {
             return Err(anyhow::anyhow!(
                 "interleaved feedback did not clearly reject the changed/busy/closed target: {:?}",
-                review.forward
+                notice.payload.outcome
             )
             .into());
         }
@@ -442,14 +453,36 @@ pub(super) fn run(flow: &Flow<'_>, environment: &Environment, case: &str) -> Pro
     if case != "closed" {
         flow.close("rf-close-executor", &executor)?;
     }
+    let first = review_reopen::ExceptionFirst {
+        case: case.into(),
+        root: attempt.parent.clone(),
+        target: executor.clone(),
+        latest: feedback::Identity::new(expected),
+        reviewer: feedback::Identity::new(&review_report),
+        submission: review_report.raw.clone(),
+        exception: notice,
+        all_child_requests: feedback::child_counts(environment)?,
+    };
     let mut decision = Decision::answer(
         &format!("rf-{case}-complete"),
         &format!("review feedback {case} complete"),
     );
     decision.receipt = Some(
-        json!({"before":attempt,"afterTarget":feedback::Identity::new(expected),"reviewer":feedback::Identity::new(&review_report),"review":review,"providerRequestsAfter":target_requests(environment, case)?,"ownInput":own_input.as_ref().map(|input| &input.receipt),"feedbackAddedProviderRequests":0}),
+        json!({"first":first,"before":attempt,"afterTarget":feedback::Identity::new(expected),"reviewer":feedback::Identity::new(&review_report),"review":review,"providerRequestsAfter":target_requests(environment, case)?,"ownInput":own_input.as_ref().map(|input| &input.receipt),"feedbackAddedProviderRequests":0}),
     );
     Ok(decision)
+}
+
+fn closed_admission(reason: &[String]) -> bool {
+    // Exact current production paths: a resident closed checkpoint, or cold
+    // activation refused by the permanent-close store fact. Neither accepts an
+    // arbitrary admission/storage error or an unknown send outcome.
+    matches!(reason, [operation, source]
+        if (operation == "Studio resource operation failed: validate original reviewed delivery"
+            && source == "review target is explicitly closed")
+        || (operation == "Studio resource operation failed: activate original reviewed child"
+            && source.strip_prefix("Permanently closed agent cannot execute or receive a new evaluation (correlation id: ")
+                .and_then(|id| id.strip_suffix(')')).is_some_and(|id| !id.is_empty() && !id.contains('\n'))))
 }
 
 fn target_requests(environment: &Environment, case: &str) -> Result<usize> {

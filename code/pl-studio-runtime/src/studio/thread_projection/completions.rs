@@ -34,7 +34,7 @@ fn completion_summary(delivery: &pl_core::thread::ToolDelivery) -> Option<String
     committed_finish(delivery).map(|report| report.message)
 }
 
-pub(in crate::studio) fn committed_finish(
+pub(crate) fn committed_finish(
     delivery: &pl_core::thread::ToolDelivery,
 ) -> Option<pl_tool::finish_turn::SavedFinishTurn> {
     if delivery.tool_id != pl_tool::finish_turn::TOOL_FINISH_TURN

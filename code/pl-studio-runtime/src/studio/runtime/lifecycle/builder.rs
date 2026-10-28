@@ -99,6 +99,7 @@ impl StudioRuntime {
         let mcp = McpRuntime::new(McpConnector::default()).handle();
         let lsp = pl_lsp::runtime::LspRuntimeRegistry::new();
         let skills = SkillCatalogRuntime::new(product_events.clone(), system_skills_dir);
+        let recovery = crate::studio::StudioRecoveryRegistry::new();
         let thread_factory = crate::studio::thread_factory::StudioThreadFactory::new(
             crate::studio::thread_factory::StudioThreadServices {
                 store: store.clone(),
@@ -121,12 +122,12 @@ impl StudioRuntime {
             product_events.clone(),
             thread_factory.clone(),
             model_performance.clone(),
+            recovery.clone(),
         )?;
         threads.set_child_factory(crate::thread_assembler::ConfiguredChildFactory::new(
             config_runtime.clone(),
             thread_factory.clone(),
         ))?;
-        let recovery = crate::studio::StudioRecoveryRegistry::new();
         let thread_observations = super::super::thread_observation::ThreadObservations::new(
             super::super::thread_observation::ObservationServices {
                 config: config_runtime.clone(),

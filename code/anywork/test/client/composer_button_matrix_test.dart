@@ -1447,6 +1447,95 @@ void main() {
     await _close(tester, composer);
   });
 
+  testWidgets('root Recovery诊断完整滚动展示且不遮挡后续异类错误', (tester) async {
+    final composer = await _composer(tester);
+    final projectId = composer.workspace.thread.projectId;
+    final current = composer.graph.client.recovery.state.value;
+    final issue = StudioRecoveryIssue(
+      id: 'root-recovery-diagnostic',
+      scope: RecoveryIssueScope.thread,
+      category: RecoveryIssueCategory.repository,
+      impact: RecoveryIssueImpact.executionBlocked,
+      availableActions: const [RecoveryIssueAction.retry],
+      projectId: projectId,
+      threadId: _threadId,
+      detail: List.filled(12, 'The root worktree needs attention').join(' '),
+    );
+    composer.graph.client.recovery.apply(
+      RecoveryStateSnapshot(
+        revision: (current?.revision ?? 0) + 1,
+        values: [issue],
+      ),
+    );
+    final owner = composer.graph.client.composer(_threadId);
+    owner.reportFailure(issue.blockedFailure());
+    await _pump(tester, composer);
+
+    final blockerFinder = find.byKey(StudioDriverKeys.composerBlocker);
+    final blocker = tester.widget<Text>(blockerFinder);
+    expect(blocker.data, contains(issue.id));
+    expect(blocker.data, contains(issue.detail));
+    expect(blocker.data, contains('Available recovery actions: Retry'));
+    expect(blocker.maxLines, isNull);
+    expect(blocker.overflow, isNull);
+    expect(find.byKey(StudioDriverKeys.composerError), findsNothing);
+    final reasons = find.byKey(const ValueKey('composer-reasons'));
+    expect(tester.getSize(reasons).height, lessThanOrEqualTo(84));
+    final scrollable = find.descendant(
+      of: reasons,
+      matching: find.byType(Scrollable),
+    );
+    final scrollPosition = tester.state<ScrollableState>(scrollable).position;
+    expect(scrollPosition.maxScrollExtent, greaterThan(0));
+    await tester.drag(scrollable, const Offset(0, -240));
+    await tester.pumpAndSettle();
+    expect(scrollPosition.pixels, greaterThan(0));
+
+    owner.reportFailure(StateError('Attachment preview failed after recovery'));
+    await tester.pump();
+    expect(find.byKey(StudioDriverKeys.composerError), findsOneWidget);
+    expect(
+      tester.widget<Text>(find.byKey(StudioDriverKeys.composerError)).data,
+      contains('Attachment preview failed after recovery'),
+      reason: 'An unrelated new diagnostic remains visible beside the blocker',
+    );
+    owner.reportFailure(
+      const StudioFailure(
+        code: StudioFailureCode.permissionDenied,
+        message: 'Unstructured permission diagnostic',
+        retryable: false,
+        correlationId: 'unstructured-permission',
+      ),
+    );
+    await tester.pump();
+    expect(find.byKey(StudioDriverKeys.composerError), findsOneWidget);
+    expect(
+      tester.widget<Text>(find.byKey(StudioDriverKeys.composerError)).data,
+      contains('Unstructured permission diagnostic'),
+      reason: 'An untyped permission failure is not converted to Recovery UI',
+    );
+    owner.reportFailure(
+      const StudioFailure(
+        code: StudioFailureCode.permissionDenied,
+        message: 'original diagnostic must remain',
+        retryable: false,
+        correlationId: 'incomplete-recovery-owner',
+        detailsJson:
+            '{"kind":"recovery","issueId":"incomplete","scope":"thread",'
+            '"category":"repository","impact":"executionBlocked",'
+            '"detail":"partial diagnostic","availableActions":[]}',
+      ),
+    );
+    await tester.pump();
+    expect(find.byKey(StudioDriverKeys.composerError), findsOneWidget);
+    expect(
+      tester.widget<Text>(find.byKey(StudioDriverKeys.composerError)).data,
+      contains('original diagnostic must remain'),
+      reason: 'Incomplete owner details do not replace the original message',
+    );
+    await _close(tester, composer);
+  });
+
   testWidgets('受限尺寸下三类原因同时存在不溢出且可读', (tester) async {
     tester.view.physicalSize = const Size(320, 480);
     tester.view.devicePixelRatio = 1;

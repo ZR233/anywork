@@ -16,6 +16,8 @@ pub(super) const MAX_ADMIN_BACKLINK_BYTES: usize = 128 * 1024;
 pub enum WorktreeError {
     #[error("worktree path is missing; no cleanup was performed")]
     Missing,
+    #[error("工作区没有有效的 HEAD commit；请先完成初始 commit 后重试")]
+    MissingHead,
     #[error("worktree identity mismatch: {0}")]
     IdentityMismatch(String),
     #[error("invalid worktree resource: {0}")]
@@ -78,6 +80,8 @@ pub struct WorktreeStatus {
     /// This is mutable state, not resource identity.
     pub branch: Option<String>,
     pub changed_files: Vec<String>,
+    /// Ignored content belongs to Recovery Safe protection, not the spawn dirty gate.
+    pub ignored_files: Vec<String>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -113,6 +117,14 @@ impl WorktreeCreateFailure {
 }
 
 pub trait WorktreeBackend: fmt::Debug + Send + Sync {
+    /// Proves commit delivery without rewriting or deleting any reference.
+    fn is_ancestor<'a>(
+        &'a self,
+        repo_root: &'a Path,
+        ancestor: &'a str,
+        descendant: &'a str,
+    ) -> BoxFuture<'a, Result<bool, WorktreeError>>;
+
     fn resolve_repo_root<'a>(
         &'a self,
         path: &'a Path,
@@ -223,6 +235,19 @@ impl LocalWorktreeBackend {
 }
 
 impl WorktreeBackend for LocalWorktreeBackend {
+    fn is_ancestor<'a>(
+        &'a self,
+        repo_root: &'a Path,
+        ancestor: &'a str,
+        descendant: &'a str,
+    ) -> BoxFuture<'a, Result<bool, WorktreeError>> {
+        async move {
+            let args = ancestor_args(ancestor, descendant);
+            ancestor_result(&args, self.run_git_output(repo_root, &args).await?)
+        }
+        .boxed()
+    }
+
     fn worktree_backlink<'a>(
         &'a self,
         path: &'a Path,
@@ -370,9 +395,8 @@ impl WorktreeBackend for LocalWorktreeBackend {
         worktree_path: &'a Path,
     ) -> BoxFuture<'a, Result<String, WorktreeError>> {
         async move {
-            let args = vec!["rev-parse".to_string(), "HEAD".to_string()];
-            let output = self.run_git(worktree_path, &args).await?;
-            non_empty_head(&args, &output.stdout)
+            let args = head_args();
+            head_result(&args, self.run_git_output(worktree_path, &args).await?)
         }
         .boxed()
     }
@@ -394,6 +418,7 @@ impl WorktreeBackend for LocalWorktreeBackend {
                 head,
                 branch: current_branch(&self.run_git(worktree_path, &branch_args()).await?),
                 changed_files: changed_files(&output.stdout),
+                ignored_files: ignored_files(&output.stdout),
             })
         }
         .boxed()
@@ -441,6 +466,25 @@ impl WorktreeBackend for LocalWorktreeBackend {
     }
 }
 
+pub(super) fn ancestor_args(ancestor: &str, descendant: &str) -> Vec<String> {
+    vec![
+        "merge-base".into(),
+        "--is-ancestor".into(),
+        ancestor.into(),
+        descendant.into(),
+    ]
+}
+
+pub(super) fn ancestor_result(
+    args: &[String],
+    output: ExecutionOutput,
+) -> Result<bool, WorktreeError> {
+    if output.status == 1 {
+        return Ok(false);
+    }
+    checked_output(args, output).map(|_| true)
+}
+
 pub(super) fn git_request(cwd: &Path, args: &[String]) -> ExecutionRequest {
     let cwd = dunce::simplified(cwd);
     let mut full_args = vec![
@@ -482,6 +526,27 @@ pub(super) fn checked_output(
     }
 }
 
+pub(super) fn head_args() -> Vec<String> {
+    vec![
+        "rev-parse".into(),
+        "--verify".into(),
+        "--quiet".into(),
+        "HEAD^{commit}".into(),
+    ]
+}
+
+pub(super) fn head_result(
+    args: &[String],
+    output: ExecutionOutput,
+) -> Result<String, WorktreeError> {
+    // --verify --quiet uses 1 for a missing valid commit. Other failures retain their typed Git
+    // cause instead of being mislabeled as an unborn repository.
+    if output.status == 1 {
+        return Err(WorktreeError::MissingHead);
+    }
+    non_empty_head(args, &checked_output(args, output)?.stdout)
+}
+
 pub(super) fn non_empty_head(args: &[String], stdout: &str) -> Result<String, WorktreeError> {
     let head = stdout.trim();
     if head.is_empty() {
@@ -495,8 +560,17 @@ pub(super) fn non_empty_head(args: &[String], stdout: &str) -> Result<String, Wo
 }
 
 pub(super) fn changed_files(stdout: &str) -> Vec<String> {
+    status_files(stdout, false)
+}
+
+pub(super) fn ignored_files(stdout: &str) -> Vec<String> {
+    status_files(stdout, true)
+}
+
+fn status_files(stdout: &str, ignored: bool) -> Vec<String> {
     let mut files = stdout
         .lines()
+        .filter(|line| line.starts_with("!! ") == ignored)
         .filter_map(|line| line.get(3..))
         .map(|path| path.rsplit_once(" -> ").map_or(path, |(_, path)| path))
         .map(str::to_string)

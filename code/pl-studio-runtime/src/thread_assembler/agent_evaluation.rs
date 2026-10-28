@@ -53,6 +53,23 @@ impl AgentServices {
             record.parent_thread_id.as_deref() == Some(caller) && record.root_thread_id == caller,
             "evaluate_agent target must be the caller's direct child"
         );
+        // A close seal denies writes, not the receipt of an already committed identical write.
+        // Read this canonical fact under the same target permit, including the interval before
+        // its older checkpoint extension has been committed.
+        let close = self.store.agent_close(&request.target).await?;
+        if let Some(close) = &close {
+            ensure!(
+                close.parent_id == caller
+                    && close.root_id == record.root_thread_id
+                    && close.project_id == record.project_id,
+                "closed evaluation target identity conflicts with its directory"
+            );
+        }
+        ensure!(
+            !self.store.has_legacy_retirement(&request.target).await?,
+            "unreconciled legacy close facts cannot authorize an evaluation"
+        );
+        self.recovery.ensure_thread_read_access(&record)?;
         let history = self.store.history(&request.target).await?;
         let (snapshot, turn) = if let Some((thread, _)) = &resident {
             let before = thread.snapshot();
@@ -124,7 +141,10 @@ impl AgentServices {
             }
         };
         let model = crate::studio::delegation::profile_model(&profile);
-        if sealed || record.archived || crate::studio::agent_close::is_explicitly_closed(&snapshot)?
+        if close.is_some()
+            || sealed
+            || record.archived
+            || crate::studio::agent_close::is_explicitly_closed(&snapshot)?
         {
             let previous = self
                 .store
@@ -132,8 +152,12 @@ impl AgentServices {
                 .await?
                 .context("closed child cannot receive a new evaluation")?;
             ensure!(
-                previous.parent_agent_id == caller
+                previous.agent_id == request.target
+                    && previous.parent_agent_id == caller
                     && previous.model == model
+                    && previous.profile_id == profile.profile_id
+                    && previous.mode == delegation.mode
+                    && previous.preference == delegation.preference
                     && crate::studio::store::agent_evaluations::same_content(&previous, &request),
                 "closed child accepts only an already committed identical evaluation"
             );
@@ -148,6 +172,9 @@ impl AgentServices {
                 evaluation: previous,
             });
         }
+        self.store
+            .ensure_agent_execution_allowed(&request.target)
+            .await?;
         let now = crate::studio::unix_seconds();
         let candidate = AgentEvaluation {
             agent_id: request.target.clone(),
@@ -230,6 +257,10 @@ impl StudioThreadAssembler {
             .clone()
             .run(
                 caller.clone(),
+                format!(
+                    "evaluate:{}",
+                    pl_core::context::content_hash(serde_json::to_string(&request)?.as_bytes())
+                ),
                 move || {
                     owner.ensure_agent_admission_open(&root)?;
                     ensure!(

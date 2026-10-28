@@ -4,8 +4,6 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ClosingAgentState {
-    #[serde(default)]
-    workspace_disposition: crate::AgentWorkspaceDisposition,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     turn_id: Option<crate::TurnId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -16,10 +14,6 @@ impl ClosingAgentState {
     pub fn new() -> Self {
         Self::default()
     }
-    pub fn with_disposition(mut self, disposition: crate::AgentWorkspaceDisposition) -> Self {
-        self.workspace_disposition = disposition;
-        self
-    }
     pub fn with_turn(mut self, turn_id: Option<crate::TurnId>) -> Self {
         self.turn_id = turn_id;
         self
@@ -27,9 +21,6 @@ impl ClosingAgentState {
     pub fn with_error(mut self, error: crate::StateError) -> Self {
         self.error = Some(error);
         self
-    }
-    pub fn workspace_disposition(&self) -> crate::AgentWorkspaceDisposition {
-        self.workspace_disposition
     }
     pub fn turn_id(&self) -> Option<&crate::TurnId> {
         self.turn_id.as_ref()

@@ -286,9 +286,6 @@ pub(super) fn extract(
             if !exists {
                 let created = staging.join(&parent);
                 create_private_directory(&created, EXTRACT_DIRECTORY_MODE, stage)?;
-                // 新建目录在写子资产前核验：Windows 读真实 owner+DACL；Unix 由回执 mode 规则约束。
-                #[cfg(windows)]
-                super::private_acl::verify_private_object(&created, true, stage)?;
             }
             directories
                 .entry(parent.clone())
@@ -304,8 +301,6 @@ pub(super) fn extract(
                 Ok(_) => return Err(invalid()),
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                     create_private_directory(&destination, EXTRACT_DIRECTORY_MODE, stage)?;
-                    #[cfg(windows)]
-                    super::private_acl::verify_private_object(&destination, true, stage)?;
                 }
                 Err(_) => return Err(io(stage)),
             }
@@ -364,8 +359,8 @@ pub(super) fn extract(
             options.mode(member_mode);
         }
         let mut output = options.open(&destination).map_err(|_| io(stage))?;
-        // 新建成员文件在写入数据之前核验私有性（Unix：无宽写/特殊位；Windows：真实 owner+DACL）。
-        super::private_acl::verify_private_object(&destination, false, stage)?;
+        #[cfg(unix)]
+        super::permissions::verify(&destination, false, stage)?;
         let mut writer = MemberWriter {
             output: &mut output,
             hasher: Sha256::new(),
@@ -594,8 +589,8 @@ pub(super) fn write_receipt(
         options.mode(0o600);
     }
     let mut file = options.open(&path).map_err(|_| io(stage))?;
-    // 新建回执在写入之前同样核验（Unix：无宽写/特殊位；Windows：真实 owner+DACL）。
-    super::private_acl::verify_private_object(&path, false, stage)?;
+    #[cfg(unix)]
+    super::permissions::verify(&path, false, stage)?;
     file.write_all(&bytes)
         .and_then(|()| file.sync_all())
         .map_err(|_| io(stage))?;
@@ -619,8 +614,7 @@ pub(super) fn read_receipt(
     let path = installed.join(RECEIPT_NAME);
     root.validate_existing(&path, stage)
         .map_err(|_| corrupt())?;
-    root.require_private_file(&path, stage)
-        .map_err(|_| corrupt())?;
+    root.require_file(&path, stage).map_err(|_| corrupt())?;
     let length = std::fs::symlink_metadata(&path)
         .map_err(|_| corrupt())?
         .len();
@@ -646,7 +640,7 @@ pub(super) fn verify_installed(
     let stage = AcpInstallStage::Verify;
     let corrupt = || failure(AcpInstallFailureCode::CacheCorrupt, stage, false);
     // 已发布安装目录同样必须在受管树内、是真实目录，且（Unix）保持产品私有权限。
-    root.require_private_directory(installed, stage)?;
+    root.require_directory(installed, stage)?;
     let receipt = read_receipt(root, installed)?;
     // 回执内容必须与本次冻结描述符完全一致：ID 只是由这些字段重算出的摘要，不构成认证。
     if receipt.installation_id != expected.installation_id
@@ -769,9 +763,8 @@ pub(super) fn verify_installed(
         if !metadata.is_file() || metadata.len() != member.size {
             return Err(corrupt());
         }
-        // 每个既有成员在读取/哈希之前都要满足私有性（Windows：真实 owner+DACL）。
-        root.require_private_file(&path, stage)
-            .map_err(|_| corrupt())?;
+        // 每个既有成员在读取/哈希之前都核对路径、类型及平台适用的权限位。
+        root.require_file(&path, stage).map_err(|_| corrupt())?;
         // 原始权限位：先拒真实禁用位（group/other 写、setid/sticky），再比期望值。
         if let Some(actual_mode) = raw_mode(&metadata)
             && (forbidden_bits(actual_mode)

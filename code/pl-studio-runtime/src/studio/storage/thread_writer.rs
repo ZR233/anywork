@@ -59,27 +59,6 @@ const NO_PROGRESS_WINDOW: Duration = Duration::from_secs(60);
 /// only its own state, and a replacement incarnation is never mistaken for the writer it replaced.
 static NEXT_WRITER_INCARNATION: AtomicUsize = AtomicUsize::new(1);
 
-/// Releases one writer incarnation's coordinator watermarks when its task ends, however it ends.
-///
-/// The writer loop owns the only strong reference to `Inner`, so it returns exactly when the sink
-/// is gone; nothing it failed to report after that can ever be reported again. Leaving the queue
-/// behind would make the process-wide drain barrier wait for a writer that can no longer run, so a
-/// drained queue is removed and a queue that still owed unsaved facts becomes an explicit terminal
-/// diagnostic instead of an un-drainable barrier.
-struct DetachGuard {
-    store: StudioStore,
-    thread_id: String,
-    owner: usize,
-}
-
-impl Drop for DetachGuard {
-    fn drop(&mut self) {
-        self.store
-            .thread_persistence()
-            .detach(&self.thread_id, self.owner);
-    }
-}
-
 /// One admitted effect waiting for its ordered durable write.
 #[derive(Debug)]
 struct QueuedEffect {
@@ -99,6 +78,7 @@ struct QueuedEffect {
 
 #[derive(Debug, Default)]
 struct Progress {
+    stopped: bool,
     /// Highest effect sequence whose history/checkpoint transaction completed.
     durable: u64,
     /// Highest checkpoint revision already committed with its effect.
@@ -218,9 +198,25 @@ fn classified(
 
 /// Reliable admission state owned by the session manager, not by a writer incarnation.
 pub(crate) struct HistoryChannel {
+    #[cfg(test)]
+    pub(crate) effects_released: tokio::sync::watch::Sender<u64>,
+    #[cfg(test)]
+    pub(crate) terminal_parked: tokio::sync::watch::Sender<u64>,
+    #[cfg(test)]
+    initialization_gate: Mutex<
+        Option<(
+            tokio::sync::oneshot::Sender<()>,
+            tokio::sync::oneshot::Receiver<()>,
+        )>,
+    >,
     progress: Mutex<Progress>,
     changed: Arc<tokio::sync::Notify>,
     step_lock: tokio::sync::Mutex<()>,
+    /// Every writer incarnation's physical workers remain registered until actually joined.
+    /// Registration and explicit stop share this gate, including cancellation during startup.
+    workers: tokio::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>,
+    worker_failure: Mutex<Option<Arc<tokio::task::JoinError>>>,
+    stopping: tokio_util::sync::CancellationToken,
     /// The process-wide reliable budget, shared by every Thread's channel.
     ///
     /// It charges exactly two things, each byte once: the effects the channels hold, each at the
@@ -235,21 +231,237 @@ pub(crate) struct HistoryChannel {
     /// process limit fire at half the memory it names. They are charged to the owning Thread's
     /// budget instead, which is the enforced per-Thread gate (`StoragePressure::thread_bytes`).
     process_bytes: Arc<AtomicU64>,
+    /// Logical-source budget shared across joined storage-only writer replacements.
+    delivery_bytes: Arc<AtomicU64>,
     status: tokio::sync::watch::Sender<HistoryStatus>,
     pressure_changed: tokio::sync::watch::Sender<()>,
+    capacity_changed: Option<tokio::sync::watch::Sender<u64>>,
+}
+
+/// A managed producer releases its additional resident copy on success, error or cancellation.
+pub(crate) struct ReviewDeliveryRetention {
+    channel: Arc<HistoryChannel>,
+    bytes: u64,
+    coordinator: crate::studio::storage::coordinator::ThreadPersistenceCoordinator,
+    thread_id: String,
+}
+
+impl Drop for ReviewDeliveryRetention {
+    fn drop(&mut self) {
+        let progress = self
+            .channel
+            .progress
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.channel
+            .delivery_bytes
+            .fetch_sub(self.bytes, Ordering::AcqRel);
+        self.channel.release_process_bytes(self.bytes);
+        self.channel.report(&progress);
+        drop(progress);
+        self.coordinator
+            .release_delivery_channel(&self.thread_id, &self.channel);
+    }
 }
 
 impl HistoryChannel {
+    /// Actual retained capacity was returned, independently from whether the per-Thread status
+    /// also shrank (projection/delivery bytes may have changed concurrently). Atomic failed-claim
+    /// rollback stays local. A charged guard's teardown can also finish a refused resident check;
+    /// consumers must compare pre-attempt watermarks, never treat a notification alone as progress.
+    fn release_process_bytes(&self, bytes: u64) {
+        if bytes == 0 {
+            return;
+        }
+        self.process_bytes.fetch_sub(bytes, Ordering::AcqRel);
+        self.pressure_changed.send_replace(());
+        if let Some(capacity) = &self.capacity_changed {
+            capacity.send_modify(|revision| *revision = revision.wrapping_add(1));
+        }
+    }
+    #[cfg(test)]
+    pub(crate) fn retained_delivery_bytes(&self) -> u64 {
+        self.delivery_bytes.load(Ordering::Acquire)
+    }
+    pub(crate) fn with_capacity(
+        process_bytes: Arc<AtomicU64>,
+        capacity: tokio::sync::watch::Sender<u64>,
+    ) -> Self {
+        let mut channel = Self::new(process_bytes);
+        channel.capacity_changed = Some(capacity);
+        channel
+    }
+    pub(super) fn retain_terminal_bytes(&self, bytes: u64) -> Arc<AtomicU64> {
+        // These are already-existing immutable producer materials, not a fallible new copy.
+        // Keep their process charge until the last queue/transfer/operation reference is gone.
+        self.process_bytes.fetch_add(bytes, Ordering::AcqRel);
+        self.delivery_bytes.fetch_add(bytes, Ordering::AcqRel);
+        let progress = self
+            .progress
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.report(&progress);
+        self.delivery_bytes.clone()
+    }
+    pub(super) fn refresh_terminal_bytes(&self) {
+        let progress = self
+            .progress
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.report(&progress);
+    }
+    pub(crate) fn delivery_retry_mark(&self) -> (u64, u64, bool, u64, u64) {
+        let status = self.status.borrow();
+        (
+            status.committed_sequence,
+            status.fault_generation,
+            status.error.is_some(),
+            status.queued_bytes,
+            self.process_bytes.load(Ordering::Acquire),
+        )
+    }
+    pub(in crate::studio) fn terminal_material_bytes(
+        &self,
+        authority: &crate::thread_assembler::review_dispatch::TerminalAuthority,
+        original: &pl_core::thread::inbox::ThreadMessage,
+    ) -> u64 {
+        // The producer retains these materials only, not an effect, prepared items or checkpoint.
+        // The queue's normal prepared/effect accounting owns those until its durable ACK.
+        (original.payload.content().len() as u64)
+            .saturating_mul(2)
+            .saturating_add(original.id.len() as u64)
+            .saturating_add(original.source_id.len() as u64)
+            .saturating_add(authority.retained_bytes())
+            .saturating_add(4096)
+    }
+    /// Called under the coordinator registry boundary, with no channel lock. Reserving before
+    /// publishing the guard prevents an idle-row cleanup from orphaning a just-created producer.
+    pub(crate) fn charge_review_delivery(&self, bytes: u64) -> Result<()> {
+        anyhow::ensure!(
+            bytes <= MAX_HISTORY_THREAD_BYTES.min(MAX_HISTORY_PROCESS_BYTES),
+            crate::thread_assembler::review_dispatch::TerminalIntegrityError(
+                "terminal material exceeds the reliable byte ceiling"
+            )
+        );
+        anyhow::ensure!(
+            self.reserve(bytes),
+            crate::thread_assembler::review_dispatch::TerminalBudgetBlocked
+        );
+        if self
+            .delivery_bytes
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+                current
+                    .checked_add(bytes)
+                    .filter(|total| *total <= MAX_HISTORY_THREAD_BYTES)
+            })
+            .is_err()
+        {
+            // This undoes only this failed speculative claim; no retained capacity was freed.
+            self.process_bytes.fetch_sub(bytes, Ordering::AcqRel);
+            anyhow::bail!(crate::thread_assembler::review_dispatch::TerminalBudgetBlocked);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn retain_charged_review_delivery(
+        self: &Arc<Self>,
+        bytes: u64,
+        coordinator: crate::studio::storage::coordinator::ThreadPersistenceCoordinator,
+        thread_id: String,
+    ) -> Result<ReviewDeliveryRetention> {
+        let retained = ReviewDeliveryRetention {
+            channel: self.clone(),
+            bytes,
+            coordinator,
+            thread_id,
+        };
+        let progress = self
+            .progress
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let resident = progress
+            .effects
+            .iter()
+            .fold(progress.prepared_bytes, |total, effect| {
+                total.saturating_add(effect.bytes)
+            })
+            .saturating_add(progress.projection_bytes)
+            .saturating_add(self.delivery_bytes.load(Ordering::Acquire));
+        self.report(&progress);
+        drop(progress);
+        anyhow::ensure!(
+            resident <= MAX_HISTORY_THREAD_BYTES,
+            crate::thread_assembler::review_dispatch::TerminalBudgetBlocked
+        );
+        Ok(retained)
+    }
+
+    pub(crate) fn has_delivery_bytes(&self) -> bool {
+        self.delivery_bytes.load(Ordering::Acquire) > 0
+    }
+    pub(crate) fn shares_delivery_budget(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.delivery_bytes, &other.delivery_bytes)
+    }
+
+    /// The old physical workers were joined by the storage-only owner. Carry only the logical
+    /// producer budget/wakeup, never an old queue, core sequence or writer incarnation.
+    pub(crate) fn next_storage_channel(&self) -> Self {
+        let mut channel = Self::new(self.process_bytes.clone());
+        channel.delivery_bytes = self.delivery_bytes.clone();
+        channel.pressure_changed = self.pressure_changed.clone();
+        channel.capacity_changed = self.capacity_changed.clone();
+        channel
+    }
+    /// Wait only for an already handed-over effect, never for a producer's future projection.
+    pub(crate) async fn await_handoff_durable(&self, id: &str, sequence: u64) -> Result<()> {
+        ensure!(
+            sequence <= self.handoff_ticket(),
+            "history wait precedes reliable handoff"
+        );
+        let mut status = self.subscribe();
+        loop {
+            {
+                let status = status.borrow_and_update();
+                if status.committed_sequence >= sequence {
+                    return Ok(());
+                }
+                if let Some(error) = &status.error {
+                    anyhow::bail!(
+                        "Thread {id} history did not become durable through {sequence}: {error}"
+                    );
+                }
+            }
+            status
+                .changed()
+                .await
+                .context("Thread history progress channel closed")?;
+        }
+    }
+    pub(crate) fn is_stopping(&self) -> bool {
+        self.stopping.is_cancelled()
+    }
+
     pub(crate) fn new(process_bytes: Arc<AtomicU64>) -> Self {
         let (status, _) = tokio::sync::watch::channel(HistoryStatus::default());
         let (pressure_changed, _) = tokio::sync::watch::channel(());
         Self {
+            #[cfg(test)]
+            effects_released: tokio::sync::watch::channel(0).0,
+            #[cfg(test)]
+            terminal_parked: tokio::sync::watch::channel(0).0,
+            #[cfg(test)]
+            initialization_gate: Mutex::new(None),
             progress: Mutex::new(Progress::default()),
             changed: Arc::new(tokio::sync::Notify::new()),
             step_lock: tokio::sync::Mutex::new(()),
+            workers: tokio::sync::Mutex::new(Vec::new()),
+            worker_failure: Mutex::new(None),
+            stopping: tokio_util::sync::CancellationToken::new(),
             process_bytes,
+            delivery_bytes: Arc::new(AtomicU64::new(0)),
             status,
             pressure_changed,
+            capacity_changed: None,
         }
     }
 
@@ -326,9 +538,8 @@ impl HistoryChannel {
                 .remove(operation_id)
                 .map_or(0, |output| output.retained())
         };
-        if retained > 0 {
-            self.process_bytes.fetch_sub(retained, Ordering::AcqRel);
-        }
+        // OutputBudget::release can be the only remaining producer event, even cross-Thread.
+        self.release_process_bytes(retained);
     }
 
     pub(crate) fn subscribe(&self) -> tokio::sync::watch::Receiver<HistoryStatus> {
@@ -376,7 +587,23 @@ impl HistoryChannel {
     pub(in crate::studio) fn prepare(&self, prepared: Arc<PreparedEffect>) -> bool {
         // Measure before taking the lock: the batch is immutable, and sizing it walks text lengths
         // instead of encoding a payload inside the critical section.
-        let bytes = crate::studio::thread_projection::retained_bytes(&prepared.items);
+        let bytes = crate::studio::thread_projection::retained_bytes(&prepared.items)
+            .saturating_add(prepared.parent_report.as_ref().map_or(0, |message| {
+                if prepared.terminal_retention.is_some() {
+                    0
+                } else {
+                    (message.payload.content().len() as u64)
+                        .saturating_mul(2)
+                        .saturating_add(message.id.len() as u64)
+                        .saturating_add(256)
+                }
+            }))
+            .saturating_add(prepared.review_delivery.iter().fold(0_u64, |bytes, fact| {
+                bytes
+                    .saturating_add(fact.message.payload.content().len() as u64 * 2)
+                    .saturating_add(fact.message.id.len() as u64)
+                    .saturating_add(256)
+            }));
         let sequence = prepared.sequence;
         let mut progress = self
             .progress
@@ -475,6 +702,7 @@ impl HistoryChannel {
     }
 
     fn report(&self, progress: &Progress) {
+        let previous_bytes = self.status.borrow().queued_bytes;
         self.status.send_replace(HistoryStatus {
             fault_generation: progress.fault_generation,
             fault: progress.fault,
@@ -491,9 +719,15 @@ impl HistoryChannel {
                 .map(|queued| queued.bytes)
                 .sum::<u64>()
                 .saturating_add(progress.prepared_bytes)
+                .saturating_add(self.delivery_bytes.load(Ordering::Acquire))
                 .saturating_add(progress.projection_bytes),
         });
         self.pressure_changed.send_replace(());
+        if self.status.borrow().queued_bytes < previous_bytes
+            && let Some(capacity) = &self.capacity_changed
+        {
+            capacity.send_modify(|revision| *revision = revision.wrapping_add(1));
+        }
     }
 
     pub(crate) fn retry(&self, generation: u64) -> Result<()> {
@@ -512,12 +746,14 @@ impl HistoryChannel {
         Ok(())
     }
 
-    pub(crate) fn mark_unavailable(&self) {
+    /// Recheck the owning registry while holding progress, before publishing its terminal fault.
+    /// The callback only inspects that registry and follows the report's progress -> registry order.
+    pub(crate) fn mark_unavailable(&self, still_unowned: impl FnOnce() -> bool) {
         let mut progress = self
             .progress
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if progress.effects.is_empty() {
+        if progress.effects.is_empty() || !still_unowned() {
             return;
         }
         if progress.error.is_none() {
@@ -540,6 +776,48 @@ impl HistoryChannel {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         progress.effects.is_empty() && progress.error.is_none()
+    }
+
+    /// Called only after the producer stopped and the observation's handoff became durable.
+    /// Cancelling the waiter leaves the workers in this owner for a subsequent join.
+    pub(crate) async fn stop_and_join(&self) -> Result<()> {
+        let mut workers = self.workers.lock().await;
+        {
+            let mut progress = self
+                .progress
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            ensure!(
+                progress.effects.is_empty() && progress.error.is_none(),
+                "cannot stop a history writer with undurable facts"
+            );
+            progress.stopped = true;
+        }
+        self.stopping.cancel();
+        self.changed.notify_waiters();
+        while let Some(worker) = workers.last_mut() {
+            let joined = worker.await;
+            workers.pop();
+            if let Err(error) = joined {
+                self.worker_failure
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .get_or_insert_with(|| Arc::new(error));
+            }
+        }
+        let failure = self
+            .worker_failure
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        if let Some(error) = failure {
+            return Err(error).context("history worker failed while stopping");
+        }
+        ensure!(
+            self.is_clean(),
+            "history writer stopped with undurable facts"
+        );
+        Ok(())
     }
 
     fn detect_stall(&self) {
@@ -602,6 +880,13 @@ impl Drop for Inner {
 /// Cloneable sink attached to one core owner incarnation.
 #[derive(Clone)]
 pub(crate) struct ThreadStorageSink(Arc<Inner>);
+
+/// One actual writer incarnation, retained through attachment and all close joins.
+#[derive(Debug, Clone)]
+pub(crate) struct ThreadStorageBinding {
+    pub(crate) storage: pl_core::thread::cold::ColdStoreHandle,
+    pub(crate) channel: Arc<HistoryChannel>,
+}
 
 impl std::fmt::Debug for ThreadStorageSink {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -770,9 +1055,24 @@ impl ThreadStorageSink {
             "Thread {} Project identity is not registered in workspaces",
             thread.id
         );
+        let owner = NEXT_WRITER_INCARNATION.fetch_add(1, Ordering::Relaxed);
+        let registration = store.thread_persistence().claim(&thread.id, owner)?;
+        let channel = registration.channel.clone();
+        #[cfg(test)]
+        {
+            let gate = channel.initialization_gate.lock().unwrap().take();
+            if let Some((entered, release)) = gate {
+                let _ = entered.send(());
+                let _ = release.await;
+            }
+        }
         let chat = store.chat_session(&thread.id).await?;
         chat.initialize_order_allocator().await?;
-        let channel = store.thread_persistence().history_channel(&thread.id);
+        let mut workers = channel.workers.lock().await;
+        ensure!(
+            !channel.stopping.is_cancelled(),
+            "history writer is stopping"
+        );
         // A preceding incarnation may still be finishing one write. Observe its committed
         // watermark and seed this incarnation while holding the channel's single-writer lease.
         let writer_lease = channel.step_lock.lock().await;
@@ -784,7 +1084,6 @@ impl ThreadStorageSink {
             thread.id
         );
         let (call_observer_stop, mut stop_observer) = tokio::sync::watch::channel(false);
-        let owner = NEXT_WRITER_INCARNATION.fetch_add(1, Ordering::Relaxed);
         let inner = Arc::new(Inner {
             store,
             thread,
@@ -795,13 +1094,9 @@ impl ThreadStorageSink {
             channel: channel.clone(),
             call_observer_stop,
         });
-        // Bind this incarnation before it reports anything: a superseded writer must never clear or
-        // fail the watermarks of the writer that replaced it, and this one must be freed from the
-        // queue its predecessor left behind.
-        inner
-            .store
-            .thread_persistence()
-            .claim(&inner.thread.id, owner);
+        // Report the shared queue only after this incarnation has initialized its durable fence.
+        // Registration alone cannot discharge a predecessor's obligations: this report proves
+        // which retained facts are adopted and which have already become durable.
         {
             let mut progress = lock_progress(&inner);
             progress.durable = progress.durable.max(durable);
@@ -816,12 +1111,14 @@ impl ThreadStorageSink {
         drop(writer_lease);
         let observer = Arc::downgrade(&inner);
         let calls = inner.store.calls().clone();
-        tokio::spawn(async move {
+        let observer_stop = channel.stopping.clone();
+        workers.push(tokio::spawn(async move {
             let mut durable_tickets = calls.subscribe_durable_ticket();
             loop {
                 tokio::select! {
                     () = refresh_call_watermark(&calls, &observer) => {},
                     _ = stop_observer.changed() => break,
+                    () = observer_stop.cancelled() => break,
                 }
                 tokio::select! {
                     Ok(()) = durable_tickets.changed() => {},
@@ -832,32 +1129,32 @@ impl ThreadStorageSink {
                         }
                     },
                     _ = stop_observer.changed() => break,
+                    () = observer_stop.cancelled() => break,
                 }
             }
-        });
-        let detach = DetachGuard {
-            store: inner.store.clone(),
-            thread_id: inner.thread.id.clone(),
-            owner,
-        };
+        }));
         let worker = inner.clone();
         let watchdog = Arc::downgrade(&inner);
-        tokio::spawn(async move {
+        let watchdog_stop = channel.stopping.clone();
+        workers.push(tokio::spawn(async move {
             while let Some(inner) = watchdog.upgrade() {
                 inner.channel.detect_stall();
                 drop(inner);
-                tokio::time::sleep(Duration::from_secs(10)).await;
+                tokio::select! {
+                        () = tokio::time::sleep(Duration::from_secs(10)) => {},
+                        () = watchdog_stop.cancelled() => break,
+                }
             }
-        });
-        tokio::spawn(async move {
+        }));
+        workers.push(tokio::spawn(async move {
             let inner = worker;
-            let _detach = detach;
+            let _registration = registration;
             // 连续可重试失败的起点；任何一次成功的推进都清零。只有持续超过窗口才升级上报。
             let mut retrying_since: Option<Instant> = None;
             loop {
                 // The task keeps the persistence owner alive while it owes facts, even when the
                 // last Thread or GUI handle is dropped. Once clean it may release the connection.
-                if Arc::strong_count(&inner) == 1 {
+                if inner.channel.stopping.is_cancelled() || Arc::strong_count(&inner) == 1 {
                     let progress = lock_progress(&inner);
                     if progress.effects.is_empty() && progress.error.is_none() {
                         return;
@@ -878,7 +1175,10 @@ impl ThreadStorageSink {
                         let progress = lock_progress(&inner);
                         report(&inner, &progress);
                     }
-                    inner.changed.notified().await;
+                    tokio::select! {
+                        () = inner.changed.notified() => {},
+                        () = inner.channel.stopping.cancelled() => {},
+                    }
                     continue;
                 }
                 match step(&inner).await {
@@ -891,6 +1191,7 @@ impl ThreadStorageSink {
                         tokio::select! {
                             () = tokio::time::sleep(Duration::from_secs(1)) => {}
                             () = inner.changed.notified() => {}
+                            () = inner.channel.stopping.cancelled() => {}
                         }
                     }
                     Err(error) => {
@@ -912,13 +1213,22 @@ impl ThreadStorageSink {
                             tokio::select! {
                                 () = tokio::time::sleep(Duration::from_secs(1)) => {},
                                 () = inner.store.thread_persistence().retry_notified() => {},
+                                () = inner.channel.stopping.cancelled() => {},
                             }
                         }
                     }
                 }
             }
-        });
+        }));
+        drop(workers);
         Ok(Self(inner))
+    }
+
+    pub(crate) fn binding(&self) -> ThreadStorageBinding {
+        ThreadStorageBinding {
+            storage: pl_core::thread::cold::ColdStoreHandle::new(self.clone()),
+            channel: self.0.channel.clone(),
+        }
     }
 }
 
@@ -955,6 +1265,17 @@ async fn refresh_call_watermark(
 /// Performs one unit of durable work.
 async fn step(inner: &Inner) -> Result<Step> {
     let _single_writer = inner.channel.step_lock.lock().await;
+    {
+        let progress = lock_progress(inner);
+        // Another attached writer may have failed while this worker waited for step_lock.
+        // The pre-lock loop check is not permission to retry that newly published generation.
+        if progress.error.is_some()
+            && !progress.retry_requested
+            && progress.fault != Some(pl_protocol::studio::HistoryFault::QueueFull)
+        {
+            return Ok(Step::Idle);
+        }
+    }
     // 每个 effect 与它自己的候选 checkpoint 在同一次事务落盘：队列顺序即提交顺序，不再有单独的
     // checkpoint 选择、合并窗口或发布步骤。
     let next_effect = lock_progress(inner).effects.front().map(|queued| {
@@ -984,10 +1305,7 @@ async fn step(inner: &Inner) -> Result<Step> {
             "history queue head changed before acknowledgement"
         );
         progress.prepared_bytes = progress.prepared_bytes.saturating_sub(prepared_bytes);
-        inner
-            .channel
-            .process_bytes
-            .fetch_sub(bytes, Ordering::AcqRel);
+        inner.channel.release_process_bytes(bytes);
         progress.durable = progress.durable.max(sequence);
         progress.last_progress_at = (!progress.effects.is_empty()).then(Instant::now);
     }
@@ -995,6 +1313,14 @@ async fn step(inner: &Inner) -> Result<Step> {
     report(inner, &progress);
     drop(progress);
     inner.changed.notify_one();
+    #[cfg(test)]
+    {
+        // Publish only after the writer's own local and queued handles were both released.
+        // A terminal producer may still pin them; the history test distinguishes that owner.
+        drop(write);
+        drop(prepared);
+        inner.channel.effects_released.send_replace(sequence);
+    }
     Ok(Step::Progressed)
 }
 
@@ -1087,7 +1413,7 @@ async fn persist_effect(
                 rolled_back_turns: &rolled_back_turns(&write.checkpoint.state),
                 identities: &durable_input_identities(&inner.thread.id, &write.checkpoint.state),
                 messages: &admitted_message_identities(&write.effect),
-                receipts: &fact_receipts(&write.effect)?,
+                receipts: &fact_receipts(&write.effect, projected)?,
                 tasks: &write.effect.tasks,
                 deliveries: &write.effect.deliveries,
                 delivery_repairs: &write.effect.delivery_repairs,
@@ -1358,6 +1684,7 @@ impl ColdStore for ThreadStorageSink {
                 total.saturating_add(queued.bytes)
             })
             .saturating_add(progress.projection_bytes)
+            .saturating_add(self.0.channel.delivery_bytes.load(Ordering::Acquire))
             .saturating_add(reserved);
         StoragePressure {
             thread_bytes: bytes,
@@ -1381,6 +1708,9 @@ impl ColdStore for ThreadStorageSink {
     }
 
     fn admit(&self, thread_id: &str, write: ThreadWrite) -> Result<(), ColdStoreError> {
+        if self.0.channel.stopping.is_cancelled() {
+            return Err(cold_error("history writer is stopped"));
+        }
         if thread_id != self.0.thread.id
             || write.effect.thread_id != thread_id
             || write.checkpoint.thread_id != thread_id
@@ -1402,6 +1732,9 @@ impl ColdStore for ThreadStorageSink {
         let sequence = write.effect.sequence;
         let bytes = encoded_bytes(&write.effect);
         let mut progress = lock_progress(&self.0);
+        if progress.stopped {
+            return Err(cold_error("history writer is stopped"));
+        }
         if sequence > progress.durable
             && !progress
                 .effects
@@ -1545,8 +1878,25 @@ impl ColdStore for ThreadStorageSink {
 /// fails the effect transaction instead of overwriting the accepted fact.
 fn fact_receipts(
     effect: &pl_core::thread::ThreadEffectBatch,
+    prepared: &PreparedEffect,
 ) -> Result<Vec<crate::studio::storage::history::FactReceiptWrite>> {
     let mut receipts = Vec::new();
+    for fact in &prepared.review_delivery {
+        receipts.push(crate::studio::storage::history::FactReceiptWrite {
+            item_id: fact.message.id.clone(),
+            revision: 1,
+            kind: "reviewDeliveryException",
+            payload: serde_json::to_string(fact)?,
+        });
+    }
+    if let Some(message) = &prepared.parent_report {
+        receipts.push(crate::studio::storage::history::FactReceiptWrite {
+            item_id: message.id.clone(),
+            revision: 1,
+            kind: "parentReport",
+            payload: serde_json::to_string(message)?,
+        });
+    }
     for record in effect.interactions.iter() {
         receipts.push(crate::studio::storage::history::FactReceiptWrite {
             item_id: crate::studio::thread_projection::order::receipt_id(
@@ -1625,7 +1975,7 @@ fn cold_error(message: &str) -> ColdStoreError {
 }
 
 #[cfg(test)]
-mod storage_fault_tests {
+pub(crate) mod storage_fault_tests {
     use super::*;
     use crate::studio::storage::history::chat_item;
     use pl_core::{
@@ -1713,7 +2063,7 @@ mod storage_fault_tests {
         }
     }
 
-    fn ticket(thread_id: &str, sequence: u64) -> ThreadWrite {
+    pub(crate) fn ticket(thread_id: &str, sequence: u64) -> ThreadWrite {
         let state = ThreadSnapshot {
             commit_sequence: sequence,
             ..Default::default()
@@ -1771,7 +2121,10 @@ mod storage_fault_tests {
         thread
     }
 
-    async fn register_test_thread(store: &StudioStore, thread: &pl_protocol::Thread) -> Result<()> {
+    pub(crate) async fn register_test_thread(
+        store: &StudioStore,
+        thread: &pl_protocol::Thread,
+    ) -> Result<()> {
         let mut delta = crate::studio::store::directory::DirectoryDelta::upsert_project(
             crate::studio::store::directory::ProjectDirectoryRecord {
                 id: thread.project_id.clone(),
@@ -1796,6 +2149,1337 @@ mod storage_fault_tests {
         let sink = ThreadStorageSink::new(store.clone(), thread, None).await?;
         spawn_live_projection(&sink);
         Ok((temp, store, sink))
+    }
+
+    pub(crate) struct CloseFactoryFixture {
+        pub(crate) factory: crate::studio::StudioThreadFactory,
+        pub(in crate::studio) writer: crate::studio::agent_host::ThreadWriteBehindWriter,
+        pub(crate) config: crate::config::ConfigRuntime,
+        pub(crate) events: crate::studio::ProductEventBus,
+        store: StudioStore,
+        worktrees: crate::studio::agent_host::worktree_lease::WorktreeLeaseOwner,
+    }
+    impl CloseFactoryFixture {
+        pub(crate) async fn unpublished_workspace(
+            &self,
+            id: &str,
+            root: &std::path::Path,
+        ) -> Result<crate::thread_assembler::WorkspacePreparationOwner> {
+            use crate::studio::agent_host::worktree_lease::{WorkspaceEndpoint, WorkspaceIdentity};
+            let usage = self
+                .worktrees
+                .reserve_workspace(id, WorkspaceEndpoint::Local)?;
+            let identity = WorkspaceIdentity::canonical(
+                WorkspaceEndpoint::Local,
+                dunce::canonicalize(root)?.to_string_lossy().into_owned(),
+            )?;
+            self.worktrees.assign_workspace(&usage, identity.clone())?;
+            self.store.bind_workspace_identity(id, &identity).await?;
+            self.worktrees.preserve_workspace_resources(id, identity);
+            let files = root.join(pl_tool::workspace::SessionFiles::new(id).root());
+            tokio::fs::create_dir_all(files.join("scratch")).await?;
+            tokio::fs::write(files.join("scratch/prepared"), b"unpublished owned file").await?;
+            let preparation = crate::thread_assembler::WorkspacePreparationOwner::default();
+            preparation.retain(&usage);
+            Ok(preparation)
+        }
+        pub(crate) fn workspace_is_busy(&self, id: &str) -> bool {
+            self.worktrees.ensure_thread_workspace_idle(id).is_err()
+        }
+        pub(crate) fn install(
+            &self,
+            owner: &crate::thread_assembler::StudioThreadAssembler,
+        ) -> Result<()> {
+            let performance = crate::studio::ModelPerformanceOwner::new(
+                self.store.clone(),
+                self.events.clone(),
+                "close-fault-fixture".into(),
+            );
+            owner.set_agent_services(
+                self.config.clone(),
+                self.store.clone(),
+                self.events.clone(),
+                self.factory.clone(),
+                performance,
+                crate::studio::StudioRecoveryRegistry::new(),
+            )?;
+            Ok(())
+        }
+        pub(crate) async fn shutdown(&self) -> Result<()> {
+            self.writer.shutdown().await?;
+            Ok(())
+        }
+    }
+
+    pub(crate) fn close_factory(store: &StudioStore) -> Result<CloseFactoryFixture> {
+        use crate::studio::thread_factory::{StudioThreadFactory, StudioThreadServices};
+        let writer = crate::studio::agent_host::ThreadWriteBehindWriter::new(store.clone());
+        let events = crate::studio::ProductEventBus::new(store.clone(), writer.clone());
+        let config = crate::config::ConfigRuntime::initialize(crate::config::ConfigStore::new(
+            crate::config::ConfigPaths::from_config_dir(
+                store.paths().home().join("isolated-test-config"),
+            ),
+        ))?;
+        let source = crate::worker_assets::RemoteHelperSource::External;
+        let bots =
+            crate::bots::BotRuntime::new(store.paths().clone(), config.clone(), events.clone())?;
+        let worktrees =
+            crate::studio::agent_host::worktree_lease::WorktreeLeaseOwner::new(writer.clone());
+        let factory = StudioThreadFactory::new(StudioThreadServices {
+            store: store.clone(),
+            worktrees: worktrees.clone(),
+            product_events: events.clone(),
+            config_runtime: config.clone(),
+            mcp_runtime: pl_tool::mcp::McpRuntime::new(pl_tool::mcp::McpConnector::default())
+                .handle(),
+            lsp_runtime: pl_lsp::runtime::LspRuntimeRegistry::new(),
+            skills: crate::studio::runtime::SkillCatalogRuntime::new(
+                events.clone(),
+                store.paths().home().join("isolated-test-skills"),
+            ),
+            thread_modes: config.thread_mode_manager(),
+            ssh_manager: Arc::new(crate::worker_assets::ssh_manager(&source)),
+            helper_source: source,
+            bots,
+        });
+        Ok(CloseFactoryFixture {
+            factory,
+            writer,
+            config,
+            events,
+            store: store.clone(),
+            worktrees,
+        })
+    }
+
+    #[tokio::test]
+    async fn close_intent_preserves_inherited_and_actual_assignment_for_subdirectory_projects()
+    -> Result<()> {
+        use crate::agent::worktree::{WorktreeManager, WorktreeOwnership};
+        use crate::studio::agent_host::worktree_lease::{
+            WorkspaceEndpoint, WorkspaceIdentity, WorktreeLease, WorktreeLeaseOwnerKind,
+            WorktreeLeaseState,
+        };
+        use pl_protocol::{
+            AgentWorkspaceAssignmentSnapshot, AgentWorkspaceMode, AgentWorktreeSnapshot,
+        };
+        async fn register(
+            store: &StudioStore,
+            thread: &pl_protocol::Thread,
+            project_root: &std::path::Path,
+        ) -> Result<()> {
+            let mut delta = crate::studio::store::directory::DirectoryDelta::upsert_project(
+                crate::studio::store::directory::ProjectDirectoryRecord {
+                    id: thread.project_id.clone(),
+                    name: "Subdirectory Project".into(),
+                    path: project_root.to_string_lossy().into_owned(),
+                    ssh_alias: None,
+                    created_at: 1,
+                    updated_at: 1,
+                    last_opened_at: None,
+                    closed: false,
+                },
+            );
+            delta.thread_upserts.push(thread.clone());
+            store.persist_directory_summaries(&delta).await
+        }
+        let temp = tempfile::tempdir()?;
+        let repository = temp.path().join("repository");
+        let project_root = repository.join("subdirectory");
+        tokio::fs::create_dir_all(&project_root).await?;
+        let store = StudioStore::open(temp.path().join("studio/v2/studio.sqlite")).await?;
+        let mut root = test_thread("root-local");
+        root.workspace_path = project_root.to_string_lossy().into_owned();
+        register(&store, &root, &project_root).await?;
+        let mut root_worktree = test_thread("root-worktree");
+        root_worktree.workspace_mode = pl_protocol::ThreadWorkspaceMode::Worktree;
+        let root_site = WorktreeManager::allocate_path(
+            &repository,
+            &root_worktree.id,
+            &WorktreeOwnership::Session {
+                thread_id: root_worktree.id.clone(),
+            },
+        );
+        root_worktree.workspace_path = root_site.to_string_lossy().into_owned();
+        register(&store, &root_worktree, &project_root).await?;
+        let child_site = WorktreeManager::allocate_path(
+            &repository,
+            &root.id,
+            &WorktreeOwnership::Child {
+                child_id: "worktree-owner".into(),
+            },
+        );
+        let child_receipt = AgentWorktreeSnapshot {
+            repository_root: repository.to_string_lossy().into_owned(),
+            path: child_site.to_string_lossy().into_owned(),
+            base_commit: "a".repeat(40),
+        };
+        let mut cases = Vec::new();
+        for (id, parent, mode, assigned, receipt, reviewed) in [
+            (
+                "worktree-owner",
+                &root,
+                AgentWorkspaceMode::Worktree,
+                &child_site,
+                Some(child_receipt.clone()),
+                None,
+            ),
+            (
+                "review-owner",
+                &root,
+                AgentWorkspaceMode::Review,
+                &child_site,
+                Some(child_receipt.clone()),
+                Some(pl_protocol::AgentReviewTargetSnapshot {
+                    baseline: None,
+                    feedback: None,
+                    agent_id: "worktree-owner".into(),
+                }),
+            ),
+            (
+                "directory-owner",
+                &root,
+                AgentWorkspaceMode::Directory,
+                &project_root,
+                None,
+                None,
+            ),
+            (
+                "session-directory-owner",
+                &root_worktree,
+                AgentWorkspaceMode::Directory,
+                &root_site,
+                None,
+                None,
+            ),
+        ] {
+            tokio::fs::create_dir_all(assigned).await?;
+            let mut thread = test_thread(id);
+            thread.parent_thread_id = Some(parent.id.clone());
+            thread.root_thread_id = parent.id.clone();
+            thread.workspace_path = parent.workspace_path.clone();
+            thread.workspace_mode = parent.workspace_mode;
+            register(&store, &thread, &project_root).await?;
+            let assignment = AgentWorkspaceAssignmentSnapshot {
+                mode,
+                project_root: project_root.to_string_lossy().into_owned(),
+                root: assigned.to_string_lossy().into_owned(),
+                writable_paths: None,
+                worktree: receipt,
+                review_target: reviewed,
+            };
+            cases.push((thread, assignment));
+        }
+        store
+            .persist_directory_summaries(
+                &crate::studio::store::directory::DirectoryDelta::upsert_project(
+                    crate::studio::store::directory::ProjectDirectoryRecord {
+                        id: "project-test".into(),
+                        name: "Subdirectory Project".into(),
+                        path: project_root.to_string_lossy().into_owned(),
+                        ssh_alias: None,
+                        created_at: 1,
+                        updated_at: 1,
+                        last_opened_at: None,
+                        closed: false,
+                    },
+                ),
+            )
+            .await?;
+        let project = store.read_project("project-test").await?.unwrap();
+        let fixture = close_factory(&store)?;
+        for (owner, kind, root_id, path) in [
+            (
+                "worktree-owner",
+                WorktreeLeaseOwnerKind::Child,
+                root.id.as_str(),
+                child_site.clone(),
+            ),
+            (
+                root_worktree.id.as_str(),
+                WorktreeLeaseOwnerKind::Session,
+                root_worktree.id.as_str(),
+                root_site.clone(),
+            ),
+        ] {
+            let mut lease = WorktreeLease {
+                revision: 1,
+                state: WorktreeLeaseState::Prepared,
+                owner_kind: kind,
+                owner_thread_id: owner.into(),
+                root_thread_id: root_id.into(),
+                project_id: "project-test".into(),
+                ssh_alias: None,
+                repository_root: repository.to_string_lossy().into_owned(),
+                path: path.to_string_lossy().into_owned(),
+                base_commit: "a".repeat(40),
+            };
+            fixture.worktrees.record_durable(lease.clone()).await?;
+            lease.transition(WorktreeLeaseState::Active);
+            fixture.worktrees.record_durable(lease).await?;
+        }
+        for (thread, assignment) in cases {
+            store.prepare_session_manifest(&thread).await?;
+            let execution = std::path::Path::new(&assignment.root)
+                .join(pl_tool::workspace::SessionFiles::new(&thread.id).root());
+            tokio::fs::create_dir_all(&execution).await?;
+            tokio::fs::write(execution.join("owned"), b"exact owner").await?;
+            let identity =
+                WorkspaceIdentity::canonical(WorkspaceEndpoint::Local, assignment.root.clone())?;
+            store.bind_workspace_identity(&thread.id, &identity).await?;
+            let core =
+                pl_core::thread::ThreadHandle::resume_without_model(thread.id.clone(), None)?;
+            core.mutate_extensions(vec![
+                pl_core::thread::extensions::ExtensionMutation::Put {
+                    id: crate::studio::workspace_receipt::EXTENSION.into(),
+                    expected_revision: None,
+                    payload: crate::studio::workspace_receipt::to_payload(&assignment)
+                        .map_err(anyhow::Error::msg)?,
+                },
+                pl_core::thread::extensions::ExtensionMutation::Put {
+                    id: "studio.project".into(),
+                    expected_revision: None,
+                    payload: pl_core::context::OpaquePayload::new(
+                        "pl.studio.project",
+                        1,
+                        serde_json::to_string(&project)?,
+                    )?,
+                },
+            ])
+            .await?;
+            let close = fixture
+                .factory
+                .begin_child_close(&thread, Some(&core.snapshot()), false)
+                .await?;
+            if assignment.mode == AgentWorkspaceMode::Worktree {
+                let owned = close.worktree.as_ref().context("actual owned worktree")?;
+                assert_eq!(owned.lease.path, assignment.root);
+                assert_eq!(owned.identity, identity);
+                assert_ne!(thread.workspace_path, owned.lease.path);
+            } else {
+                assert!(
+                    close.worktree.is_none(),
+                    "directory/review must not acquire deletion ownership"
+                );
+            }
+            assert_eq!(
+                tokio::fs::read(execution.join("owned")).await?,
+                b"exact owner"
+            );
+            let repeated = fixture
+                .factory
+                .begin_child_close(&thread, None, false)
+                .await?;
+            assert_eq!(close, repeated);
+            core.close().await?;
+        }
+        fixture.shutdown().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn unknown_old_close_candidates_preserve_source_and_refuse_new_delete_authority()
+    -> Result<()> {
+        use sea_orm::{ConnectionTrait, DatabaseBackend, Statement};
+        let temp = tempfile::tempdir()?;
+        let store = StudioStore::open(temp.path().join("studio/v2/studio.sqlite")).await?;
+        let parent = test_thread("legacy-parent");
+        register_test_thread(&store, &parent).await?;
+        let mut child = test_thread("legacy-child");
+        child.parent_thread_id = Some(parent.id.clone());
+        child.root_thread_id = parent.id.clone();
+        child.workspace_path = parent.workspace_path.clone();
+        register_test_thread(&store, &child).await?;
+        let source = store
+            .registered_session_paths(&child.id)?
+            .root()
+            .join("retained-evidence");
+        tokio::fs::create_dir_all(source.parent().unwrap()).await?;
+        tokio::fs::write(&source, b"original history and attachments").await?;
+        let payload = r#"{"unknownOriginalCloseFacts":true}"#;
+        let hash = pl_core::context::content_hash(payload.as_bytes());
+        store.database().execute_raw(Statement::from_sql_and_values(DatabaseBackend::Sqlite,
+            "INSERT INTO studio_objects(owner_kind,owner_id,object_kind,schema_version,revision,payload_json,payload_hash,updated_at) VALUES ('thread',?,'agentRetirement',99,1,?,?,1)",
+            [child.id.clone().into(), payload.to_owned().into(), hash.clone().into()])).await?;
+        let fixture = close_factory(&store)?;
+        assert!(
+            store
+                .ensure_agent_execution_allowed(&child.id)
+                .await
+                .is_err()
+        );
+        assert!(
+            fixture
+                .factory
+                .begin_child_close(&child, None, true)
+                .await
+                .is_err()
+        );
+        assert!(store.agent_close(&child.id).await?.is_none());
+        let row = store.database().query_one_raw(Statement::from_sql_and_values(DatabaseBackend::Sqlite,
+            "SELECT schema_version,payload_json,payload_hash FROM studio_objects WHERE owner_id=? AND object_kind='agentRetirement'",
+            [child.id.into()])).await?.context("preserved unknown object")?;
+        assert_eq!(row.try_get::<i64>("", "schema_version")?, 99);
+        assert_eq!(row.try_get::<String>("", "payload_json")?, payload);
+        assert_eq!(row.try_get::<String>("", "payload_hash")?, hash);
+        assert_eq!(
+            tokio::fs::read(source).await?,
+            b"original history and attachments"
+        );
+        fixture.shutdown().await?;
+        Ok(())
+    }
+
+    /// Replaces the former whole-resource retirement case with the actual close/storage contract:
+    /// save ACKs, live borrowers, content protection, retained history/refs and replacement safety.
+    #[tokio::test]
+    async fn close_worktree_preserves_original_history_refs_and_terminal_replacements() -> Result<()>
+    {
+        use crate::agent::worktree::{
+            LocalWorktreeBackend, WorktreeCreateSpec, WorktreeManager, WorktreeOwnership,
+        };
+        use crate::studio::agent_close::AgentWorktreeCleanup;
+        use crate::studio::agent_host::worktree_lease::{
+            WorkspaceEndpoint, WorkspaceIdentity, WorktreeLease, WorktreeLeaseOwnerKind,
+            WorktreeLeaseState,
+        };
+        use pl_core::context::ResourceReader;
+        use pl_core::thread::{ThreadHandle, cold::ColdStoreHandle, extensions::ExtensionMutation};
+
+        async fn git(root: &std::path::Path, args: &[&str]) -> Result<String> {
+            let output = tokio::process::Command::new("git")
+                .args(args)
+                .current_dir(root)
+                .output()
+                .await?;
+            anyhow::ensure!(
+                output.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            Ok(String::from_utf8(output.stdout)?.trim().to_owned())
+        }
+        let temp = tempfile::tempdir()?;
+        let repository = temp.path().join("repository");
+        tokio::fs::create_dir_all(&repository).await?;
+        git(&repository, &["init", "--quiet"]).await?;
+        git(&repository, &["config", "user.name", "Close fixture"]).await?;
+        git(
+            &repository,
+            &["config", "user.email", "close@example.invalid"],
+        )
+        .await?;
+        tokio::fs::write(repository.join(".gitignore"), b".anywork/\n").await?;
+        tokio::fs::write(repository.join("tracked"), b"committed").await?;
+        git(&repository, &["add", ".gitignore", "tracked"]).await?;
+        git(
+            &repository,
+            &["commit", "--quiet", "-m", "fixture baseline"],
+        )
+        .await?;
+        let repository = dunce::canonicalize(repository)?;
+        let store = StudioStore::open(temp.path().join("studio/v2/studio.sqlite")).await?;
+        let mut parent = test_thread("close-parent");
+        parent.workspace_path = repository.to_string_lossy().into_owned();
+        register_test_thread(&store, &parent).await?;
+        let mut child = test_thread("close-owned-child");
+        child.parent_thread_id = Some(parent.id.clone());
+        child.root_thread_id = parent.id.clone();
+        child.workspace_path = parent.workspace_path.clone();
+        register_test_thread(&store, &child).await?;
+        let fixture = close_factory(&store)?;
+        let manager = WorktreeManager::new(
+            repository.clone(),
+            Arc::new(LocalWorktreeBackend::default()),
+        );
+        let ownership = WorktreeOwnership::Child {
+            child_id: child.id.clone(),
+        };
+        let head = manager.resolve_head(&repository).await?;
+        let mut lease = WorktreeLease {
+            revision: 1,
+            state: WorktreeLeaseState::Prepared,
+            owner_kind: WorktreeLeaseOwnerKind::Child,
+            owner_thread_id: child.id.clone(),
+            root_thread_id: parent.id.clone(),
+            project_id: child.project_id.clone(),
+            ssh_alias: None,
+            repository_root: parent.workspace_path.clone(),
+            path: WorktreeManager::allocate_path(&repository, &parent.id, &ownership)
+                .to_string_lossy()
+                .into_owned(),
+            base_commit: head.clone(),
+        };
+        fixture.worktrees.record_durable(lease.clone()).await?;
+        let handle = manager
+            .create(WorktreeCreateSpec {
+                repo_root: repository.clone(),
+                root_thread_id: parent.id.clone(),
+                ownership,
+                base_commit: head,
+            })
+            .await?;
+        lease.transition(WorktreeLeaseState::Active);
+        fixture.worktrees.record_durable(lease.clone()).await?;
+        let identity = WorkspaceIdentity::canonical(WorkspaceEndpoint::Local, lease.path.clone())?;
+        store.bind_workspace_identity(&child.id, &identity).await?;
+        store
+            .bind_workspace_identity(
+                &parent.id,
+                &WorkspaceIdentity::canonical(
+                    WorkspaceEndpoint::Local,
+                    parent.workspace_path.clone(),
+                )?,
+            )
+            .await?;
+        let assignment = pl_protocol::AgentWorkspaceAssignmentSnapshot {
+            mode: pl_protocol::AgentWorkspaceMode::Worktree,
+            project_root: parent.workspace_path.clone(),
+            root: lease.path.clone(),
+            writable_paths: None,
+            review_target: None,
+            worktree: Some(pl_protocol::AgentWorktreeSnapshot {
+                repository_root: lease.repository_root.clone(),
+                path: lease.path.clone(),
+                base_commit: lease.base_commit.clone(),
+            }),
+        };
+        let core = ThreadHandle::resume_without_model(child.id.clone(), None)?;
+        let sink = ThreadStorageSink::new(store.clone(), child.clone(), None).await?;
+        spawn_live_projection(&sink);
+        core.attach_storage(ColdStoreHandle::new(sink)).await?;
+        core.mutate_extensions(vec![ExtensionMutation::Put {
+            id: crate::studio::workspace_receipt::EXTENSION.into(),
+            expected_revision: None,
+            payload: crate::studio::workspace_receipt::to_payload(&assignment)
+                .map_err(anyhow::Error::msg)?,
+        }])
+        .await?;
+        let resources =
+            crate::resource_store::FileResourceStore::new(store.session_resources_dir(&child.id)?);
+        let reference = resources
+            .retain_bytes(
+                Arc::from(&b"reliable original attachment"[..]),
+                "text/plain",
+            )
+            .await?;
+        let independent_files =
+            repository.join(pl_tool::workspace::SessionFiles::new(&parent.id).root());
+        tokio::fs::create_dir_all(&independent_files).await?;
+        tokio::fs::write(
+            independent_files.join("retained"),
+            b"independent session files",
+        )
+        .await?;
+        let borrower = fixture
+            .worktrees
+            .reserve_workspace("active-reviewer", WorkspaceEndpoint::Local)?;
+        fixture
+            .worktrees
+            .assign_workspace(&borrower, identity.clone())?;
+        fixture
+            .factory
+            .begin_child_close(&child, Some(&core.snapshot()), false)
+            .await?;
+        crate::studio::agent_close::commit(&core).await?;
+        core.close().await?;
+        store
+            .thread_persistence()
+            .history_channel(&child.id)
+            .stop_and_join()
+            .await?;
+        let history = store.history(&child.id).await?;
+        let saved = serde_json::to_vec(&history.checkpoint().await?)?;
+        fixture.factory.finish_child_execution(&child).await?;
+        let (blocked, error) = fixture
+            .factory
+            .finish_child_worktree_cleanup(&child)
+            .await?;
+        assert!(blocked.execution_closed);
+        assert!(
+            error
+                .context("active borrower must block")?
+                .message
+                .contains("active-reviewer")
+        );
+        assert!(matches!(
+            blocked.worktree_cleanup,
+            AgentWorktreeCleanup::Failed { .. }
+        ));
+        drop(borrower);
+        tokio::fs::write(handle.path.join("tracked"), b"uncommitted child work").await?;
+        let (dirty, error) = fixture
+            .factory
+            .finish_child_worktree_cleanup(&child)
+            .await?;
+        assert!(error.is_some());
+        assert!(matches!(
+            dirty.worktree_cleanup,
+            AgentWorktreeCleanup::Failed { .. }
+        ));
+        assert!(tokio::fs::try_exists(&handle.path).await?);
+        git(&handle.path, &["add", "tracked"]).await?;
+        git(
+            &handle.path,
+            &["commit", "--quiet", "-m", "undelivered child work"],
+        )
+        .await?;
+        let before_refusal_head = git(&handle.path, &["rev-parse", "HEAD"]).await?;
+        // Detached creation owns no branch. An independently created business ref must survive
+        // close even when the child checks it out after its ownership was frozen.
+        let retained_branch = "retained-business";
+        git(&handle.path, &["switch", "-c", retained_branch]).await?;
+        let (_, error) = fixture
+            .factory
+            .finish_child_worktree_cleanup(&child)
+            .await?;
+        assert!(
+            error
+                .context("undelivered HEAD must block default close")?
+                .message
+                .contains("not contained")
+        );
+        assert!(
+            store.agent_close(&child.id).await?.unwrap().git.is_none(),
+            "content refusal must precede the destructive grant, preserving a force retry"
+        );
+        fixture
+            .factory
+            .begin_child_close(&child, None, true)
+            .await?;
+        git(&repository, &["worktree", "lock", &lease.path]).await?;
+        let (_, error) = fixture
+            .factory
+            .finish_child_worktree_cleanup(&child)
+            .await?;
+        assert!(
+            error
+                .context("Git lock must still block force")?
+                .message
+                .contains("locked")
+        );
+        assert!(
+            !store
+                .agent_close(&child.id)
+                .await?
+                .unwrap()
+                .git
+                .unwrap()
+                .removal_started,
+            "a confirmed Git refusal plus the original remaining site permits a fresh attempt"
+        );
+        // A previous attempt's expected HEAD is content authorization, not permanent identity.
+        tokio::fs::write(
+            handle.path.join("tracked"),
+            b"advanced after confirmed refusal",
+        )
+        .await?;
+        git(&handle.path, &["add", "tracked"]).await?;
+        git(
+            &handle.path,
+            &["commit", "--quiet", "-m", "advance after refused removal"],
+        )
+        .await?;
+        let retained_head = git(&handle.path, &["rev-parse", "HEAD"]).await?;
+        assert_ne!(retained_head, before_refusal_head);
+        git(&repository, &["worktree", "unlock", &lease.path]).await?;
+        let (removed, error) = fixture
+            .factory
+            .finish_child_worktree_cleanup(&child)
+            .await?;
+        assert!(error.is_none(), "{error:?}");
+        assert_eq!(
+            removed.worktree_cleanup,
+            AgentWorktreeCleanup::Removed {
+                path: lease.path.clone()
+            }
+        );
+        assert!(!tokio::fs::try_exists(&handle.path).await?);
+        assert_eq!(
+            git(&repository, &["rev-parse", retained_branch]).await?,
+            retained_head
+        );
+        assert_eq!(serde_json::to_vec(&history.checkpoint().await?)?, saved);
+        assert_eq!(
+            &*resources.read(reference, Default::default()).await?,
+            b"reliable original attachment"
+        );
+        assert_eq!(
+            tokio::fs::read(independent_files.join("retained")).await?,
+            b"independent session files"
+        );
+        git(
+            &repository,
+            &["worktree", "add", &lease.path, retained_branch],
+        )
+        .await?;
+        let (repeated, error) = fixture
+            .factory
+            .finish_child_worktree_cleanup(&child)
+            .await?;
+        assert!(
+            error.is_some(),
+            "a terminal grant must not delete a replacement"
+        );
+        assert_eq!(repeated.worktree_cleanup, removed.worktree_cleanup);
+        assert!(tokio::fs::try_exists(&handle.path).await?);
+        fixture
+            .factory
+            .restore_workspace_admission(
+                crate::studio::agent_host::worktree_lease::load_leases(&store).await?,
+            )
+            .await?;
+        assert!(tokio::fs::try_exists(&handle.path).await?);
+        assert!(
+            store
+                .ensure_agent_execution_allowed(&child.id)
+                .await
+                .is_err()
+        );
+        assert!(history.checkpoint().await?.is_some());
+        // A fresh process hydrates the top-level lease after it reads the close record. The old
+        // preserved ownership must not resurrect a physical borrow once this result is terminal.
+        let restarted = close_factory(&store)?;
+        restarted
+            .factory
+            .restore_workspace_admission(
+                crate::studio::agent_host::worktree_lease::load_leases(&store).await?,
+            )
+            .await?;
+        let container = WorkspaceIdentity::canonical(
+            WorkspaceEndpoint::Local,
+            repository.to_string_lossy().into_owned(),
+        )?;
+        let seal = restarted.worktrees.try_seal_workspace(
+            "new-container-owner",
+            container.clone(),
+            &std::collections::BTreeSet::new(),
+        )?;
+        restarted
+            .worktrees
+            .release_workspace_seal("new-container-owner", &container)?;
+        drop(seal);
+        assert!(
+            store
+                .ensure_agent_execution_allowed(&child.id)
+                .await
+                .is_err()
+        );
+        restarted.shutdown().await?;
+        fixture.shutdown().await?;
+        Ok(())
+    }
+
+    /// Physical binding persistence and live admission share exact identities. The domain seal's
+    /// producer still owns the grant ACK proof; this component does not execute a full close/Git.
+    #[tokio::test]
+    async fn saved_workspace_identity_keeps_preparers_and_pending_cleanup_until_release()
+    -> Result<()> {
+        use crate::studio::agent_host::{
+            ThreadWriteBehindWriter,
+            worktree_lease::{WorkspaceEndpoint, WorkspaceIdentity, WorktreeLeaseOwner},
+        };
+        use std::collections::BTreeSet;
+        let temp = tempfile::tempdir()?;
+        let store = StudioStore::open(temp.path().join("studio/v2/studio.sqlite")).await?;
+        let root = temp.path().join("repository");
+        let workspace = root.join(".anywork/worktrees/root-a/child-w");
+        tokio::fs::create_dir_all(&workspace).await?;
+        let canonical = dunce::canonicalize(&workspace)?;
+        let identity = WorkspaceIdentity::canonical(
+            WorkspaceEndpoint::Local,
+            canonical.to_string_lossy().into_owned(),
+        )?;
+        store.bind_workspace_identity("child-w", &identity).await?;
+        let writer = ThreadWriteBehindWriter::new(store.clone());
+        let owner = WorktreeLeaseOwner::new(writer.clone());
+        let preparing = owner.reserve_workspace("root-b-preparer", WorkspaceEndpoint::Local)?;
+        let foreign_owner = WorktreeLeaseOwner::new(writer.clone());
+        let foreign =
+            foreign_owner.reserve_workspace("foreign-preparer", WorkspaceEndpoint::Local)?;
+        assert!(
+            owner.assign_workspace(&foreign, identity.clone()).is_err(),
+            "equal serials from different runtime owners must not alias"
+        );
+        drop(foreign);
+        let closing = BTreeSet::from(["child-w".into(), "review-r".into()]);
+        assert!(
+            owner
+                .try_seal_workspace("child-w", identity.clone(), &closing)
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("root-b-preparer")
+        );
+        // An assigned ancestor root does not borrow every worktree below its pool forever.
+        owner.assign_workspace(
+            &preparing,
+            WorkspaceIdentity::canonical(
+                WorkspaceEndpoint::Local,
+                dunce::canonicalize(&root)?.to_string_lossy().into_owned(),
+            )?,
+        )?;
+        let external = owner.reserve_workspace("other-project-root", WorkspaceEndpoint::Local)?;
+        owner.assign_workspace(&external, identity.clone())?;
+        assert!(
+            owner
+                .try_seal_workspace("child-w", identity.clone(), &closing)
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("other-project-root")
+        );
+        drop(external);
+        let binding = owner.reserve_workspace("review-r", WorkspaceEndpoint::Local)?;
+        owner.assign_workspace(&binding, identity.clone())?;
+        let observer_owner = binding.clone();
+        owner.preserve_workspace_resources("review-r", identity.clone());
+        let seal = owner.try_seal_workspace("child-w", identity.clone(), &closing)?;
+        seal.durable()?;
+        drop(binding); // Forgetting the binding does not join the actual observer owner.
+        assert!(owner.ensure_thread_workspace_idle("review-r").is_err());
+        assert!(owner.begin_workspace_removal("child-w", &identity).is_err());
+        drop(observer_owner);
+        owner.ensure_thread_workspace_idle("review-r")?;
+        // A real failed cleanup obligation still blocks independently of active runtime tokens.
+        assert!(
+            owner
+                .begin_workspace_removal("child-w", &identity)
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("review-r")
+        );
+        owner.release_workspace_resources("review-r", &identity)?;
+        // The physical seal is distinct from the agent execution seal and ends at a reliable
+        // terminal result; retained SessionFiles alone must not keep a stopped review active.
+        let removal = owner.begin_workspace_removal("child-w", &identity)?;
+        assert!(
+            owner
+                .reserve_workspace("new-preparer", WorkspaceEndpoint::Local)
+                .is_err()
+        );
+        drop(removal);
+        drop(seal);
+        let rejected = owner.reserve_workspace("late-borrower", WorkspaceEndpoint::Local)?;
+        assert!(owner.assign_workspace(&rejected, identity.clone()).is_err());
+        drop(rejected);
+        let reopened = StudioStore::open(store.paths().database()).await?;
+        let frozen = reopened.workspace_identity("child-w").await?.unwrap();
+        assert_eq!(frozen, identity);
+        assert!(
+            reopened
+                .bind_workspace_identity(
+                    "child-w",
+                    &WorkspaceIdentity::canonical(
+                        WorkspaceEndpoint::Local,
+                        dunce::canonicalize(&root)?.to_string_lossy().into_owned()
+                    )?
+                )
+                .await
+                .is_err()
+        );
+        // Alias and credential spelling do not split one endpoint/path into two physical sites.
+        let first = pl_tool::remote::SshServerProfile {
+            alias: "one".into(),
+            host_name: "host.example".into(),
+            port: 22,
+            username: "user".into(),
+            identity_file: Some("key-one".into()),
+        };
+        let second = pl_tool::remote::SshServerProfile {
+            alias: "two".into(),
+            identity_file: Some("key-two".into()),
+            ..first.clone()
+        };
+        let ssh_a = WorkspaceIdentity::canonical(
+            WorkspaceEndpoint::from_profile(Some(&first)),
+            "/repo/.anywork/worktrees/root-a/remote-w".into(),
+        )?;
+        let ssh_b = WorkspaceIdentity::canonical(
+            WorkspaceEndpoint::from_profile(Some(&second)),
+            ssh_a.root.clone(),
+        )?;
+        let remote_borrower = owner.reserve_workspace("remote-root-b", ssh_b.endpoint.clone())?;
+        owner.assign_workspace(&remote_borrower, ssh_b.clone())?;
+        assert!(
+            owner
+                .try_seal_workspace("remote-w", ssh_a.clone(), &BTreeSet::new())
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("remote-root-b")
+        );
+        drop(remote_borrower);
+        let pending = owner.try_seal_workspace("remote-w", ssh_a.clone(), &BTreeSet::new())?;
+        drop(pending); // Losing the waiting handle cannot adjudicate an unconfirmed product write.
+        let late = owner.reserve_workspace("remote-late", ssh_b.endpoint.clone())?;
+        assert!(owner.assign_workspace(&late, ssh_b.clone()).is_err());
+        // This fixture sent no grant and started no removal, so explicitly release its known seal.
+        owner.release_workspace_seal("remote-w", &ssh_a)?;
+        owner.assign_workspace(&late, ssh_b)?;
+        // Ordinary archive/failed preparation holds a reversible removal, not a permanent seal.
+        let independent = WorkspaceIdentity::canonical(
+            WorkspaceEndpoint::Local,
+            root.join("independent").to_string_lossy().into_owned(),
+        )?;
+        let temporary = owner.reserve_workspace("ordinary-preparer", WorkspaceEndpoint::Local)?;
+        owner.assign_workspace(&temporary, independent.clone())?;
+        let still_owned = temporary.clone();
+        assert!(
+            owner
+                .begin_workspace_cleanup("ordinary-preparer", &independent, Some(&temporary))
+                .is_err()
+        );
+        drop(still_owned);
+        let cleanup =
+            owner.begin_workspace_cleanup("ordinary-preparer", &independent, Some(&temporary))?;
+        assert!(
+            owner
+                .reserve_workspace("during-cleanup", WorkspaceEndpoint::Local)
+                .is_err()
+        );
+        drop(cleanup);
+        owner.assign_workspace(&temporary, independent.clone())?;
+        let cleanup =
+            owner.begin_workspace_cleanup("ordinary-preparer", &independent, Some(&temporary))?;
+        cleanup.complete();
+        drop(temporary);
+        let restored = owner.reserve_workspace("ordinary-restored", WorkspaceEndpoint::Local)?;
+        owner.assign_workspace(&restored, independent)?;
+        writer.shutdown().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn cancelled_sink_initialization_releases_its_claim_before_worker_registration()
+    -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let store = StudioStore::open(temp.path().join("studio/v2/studio.sqlite")).await?;
+        let thread = test_thread("cancelled-sink-initialization");
+        register_test_thread(&store, &thread).await?;
+        let channel = store.thread_persistence().history_channel(&thread.id);
+        let (entered, waiting) = tokio::sync::oneshot::channel();
+        let (_release, released) = tokio::sync::oneshot::channel();
+        *channel.initialization_gate.lock().unwrap() = Some((entered, released));
+        let opening_store = store.clone();
+        let opening_thread = thread.clone();
+        let opening = tokio::spawn(async move {
+            ThreadStorageSink::new(opening_store, opening_thread, None).await
+        });
+        waiting.await?;
+        opening.abort();
+        assert!(opening.await.unwrap_err().is_cancelled());
+        channel.stop_and_join().await?;
+        let replacement = ThreadStorageSink::new(store.clone(), thread.clone(), None).await?;
+        assert!(!Arc::ptr_eq(&channel, &replacement.0.channel));
+        assert!(Arc::ptr_eq(
+            &replacement.0.channel,
+            &store.thread_persistence().history_channel(&thread.id)
+        ));
+        replacement.0.channel.stop_and_join().await?;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_replacement_claim_cannot_lose_its_channel_to_predecessor_release() -> Result<()> {
+        for retain_pending in [false, true] {
+            let temp = tempfile::tempdir()?;
+            let store = StudioStore::open(temp.path().join("studio/v2/studio.sqlite")).await?;
+            let thread = test_thread("overlapping-channel-release");
+            register_test_thread(&store, &thread).await?;
+            let previous = ThreadStorageSink::new(store.clone(), thread.clone(), None).await?;
+            let previous_channel = previous.0.channel.clone();
+            let write_gate = if retain_pending {
+                Some(previous_channel.step_lock.lock().await)
+            } else {
+                None
+            };
+            if retain_pending {
+                previous.admit(&thread.id, ticket(&thread.id, 1))?;
+            }
+            let wake = previous.0.changed.clone();
+            let (waiting, release) = store.thread_persistence().arm_release_gate();
+            let stopped_writer = if retain_pending {
+                let writer = previous_channel
+                    .workers
+                    .lock()
+                    .await
+                    .pop()
+                    .context("registered predecessor writer")?;
+                writer.abort();
+                Some(writer)
+            } else {
+                None
+            };
+            drop(previous);
+            wake.notify_one();
+            waiting.recv_timeout(Duration::from_secs(5))?;
+            drop(write_gate);
+            let replacement = tokio::time::timeout(
+                Duration::from_secs(5),
+                ThreadStorageSink::new(store.clone(), thread.clone(), None),
+            )
+            .await;
+            release.send(())?;
+            if let Some(writer) = stopped_writer {
+                assert!(writer.await.unwrap_err().is_cancelled());
+            }
+            let replacement = replacement??;
+            if !retain_pending {
+                previous_channel.stop_and_join().await?;
+            }
+            assert!(
+                Arc::ptr_eq(
+                    &replacement.0.channel,
+                    &store.thread_persistence().history_channel(&thread.id)
+                ),
+                "predecessor release must not remove the new incarnation's channel"
+            );
+            assert!(
+                replacement.0.channel.subscribe().borrow().fault.is_none(),
+                "a predecessor cannot publish WriterUnavailable after its successor initialized"
+            );
+            spawn_live_projection(&replacement);
+            if !retain_pending {
+                replacement.admit(&thread.id, ticket(&thread.id, 1))?;
+            }
+            tokio::time::timeout(Duration::from_secs(5), replacement.flush(&thread.id, 1))
+                .await??;
+            assert_eq!(store.history(&thread.id).await?.watermark().await?, 1);
+            replacement.0.channel.stop_and_join().await?;
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_replacement_cannot_acknowledge_its_predecessors_pending_facts()
+    -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let store = StudioStore::open(temp.path().join("studio/v2/studio.sqlite")).await?;
+        let thread = test_thread("cancelled-queue-adoption");
+        register_test_thread(&store, &thread).await?;
+        let previous = ThreadStorageSink::new(store.clone(), thread.clone(), None).await?;
+        let channel = previous.0.channel.clone();
+        let write_gate = channel.step_lock.lock().await;
+        previous.admit(&thread.id, ticket(&thread.id, 1))?;
+        let mut previous_flush = Box::pin(previous.flush(&thread.id, 1));
+        assert!(futures::poll!(previous_flush.as_mut()).is_pending());
+        let (entered, waiting) = tokio::sync::oneshot::channel();
+        let (_release, released) = tokio::sync::oneshot::channel();
+        *channel.initialization_gate.lock().unwrap() = Some((entered, released));
+        let opening_store = store.clone();
+        let opening_thread = thread.clone();
+        let opening = tokio::spawn(async move {
+            ThreadStorageSink::new(opening_store, opening_thread, None).await
+        });
+        waiting.await?;
+        let writer = channel
+            .workers
+            .lock()
+            .await
+            .pop()
+            .context("registered writer")?;
+        writer.abort();
+        assert!(writer.await.unwrap_err().is_cancelled());
+        opening.abort();
+        assert!(opening.await.unwrap_err().is_cancelled());
+        assert!(
+            store.thread_persistence().snapshot().pending_commits > 0,
+            "an initializer cannot acknowledge queue adoption merely by claiming its identity"
+        );
+        assert!(store.thread_persistence().wait_for_drain().await.is_err());
+        assert_eq!(store.history(&thread.id).await?.watermark().await?, 0);
+        assert!(
+            matches!(
+                futures::poll!(previous_flush.as_mut()),
+                std::task::Poll::Ready(Err(_))
+            ),
+            "the old sink's pending flush must receive the unavailable-writer failure"
+        );
+        drop(previous_flush);
+        let unavailable = channel.subscribe().borrow().clone();
+        assert_eq!(
+            unavailable.fault,
+            Some(pl_protocol::studio::HistoryFault::WriterUnavailable)
+        );
+        assert!(unavailable.error.is_some());
+        assert_eq!(unavailable.committed_sequence, 0);
+        assert_eq!(unavailable.queued_records, 1);
+        drop(write_gate);
+        drop(previous);
+
+        let replacement = ThreadStorageSink::new(store.clone(), thread.clone(), None).await?;
+        assert!(Arc::ptr_eq(&channel, &replacement.0.channel));
+        spawn_live_projection(&replacement);
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            store
+                .thread_persistence()
+                .retry_history(&thread.id, unavailable.fault_generation),
+        )
+        .await??;
+        tokio::time::timeout(Duration::from_secs(5), replacement.flush(&thread.id, 1)).await??;
+        assert_eq!(store.history(&thread.id).await?.watermark().await?, 1);
+        let recovered = channel.subscribe().borrow().clone();
+        assert_eq!(recovered.committed_sequence, 1);
+        assert_eq!(recovered.queued_records, 0);
+        assert!(recovered.fault.is_none());
+        assert!(recovered.error.is_none());
+        assert_eq!(
+            replacement.pressure(&thread.id).recovered_generation,
+            Some(unavailable.fault_generation)
+        );
+        store.thread_persistence().wait_for_drain().await?;
+        replacement.0.channel.stop_and_join().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn stopped_writer_joins_survive_cancelled_waiters_and_history_reopens() -> Result<()> {
+        let id = "retirement-writer-join";
+        let (_temp, store, sink) = sink(id).await?;
+        let channel = sink.0.channel.clone();
+        let write_gate = channel.step_lock.lock().await;
+        sink.admit(id, ticket(id, 1))?;
+        assert!(channel.stop_and_join().await.is_err());
+        assert!(
+            !channel.stopping.is_cancelled(),
+            "pending facts must keep their writer"
+        );
+        drop(write_gate);
+        tokio::time::timeout(Duration::from_secs(5), sink.flush(id, 1)).await??;
+        let history = store.history(id).await?;
+        let saved = history.checkpoint().await?.context("durable checkpoint")?;
+        let (release, released) = tokio::sync::oneshot::channel();
+        channel.workers.lock().await.push(tokio::spawn(async move {
+            let _ = released.await;
+        }));
+        let waiter_channel = channel.clone();
+        let waiter = tokio::spawn(async move { waiter_channel.stop_and_join().await });
+        channel.stopping.cancelled().await;
+        waiter.abort();
+        assert!(waiter.await.unwrap_err().is_cancelled());
+        assert!(
+            !channel.workers.lock().await.is_empty(),
+            "cancelled waits cannot lose join ownership"
+        );
+        release
+            .send(())
+            .map_err(|_| anyhow::anyhow!("controlled worker lost its owner"))?;
+        tokio::time::timeout(Duration::from_secs(5), channel.stop_and_join()).await??;
+        assert!(channel.workers.lock().await.is_empty());
+        channel.stop_and_join().await?;
+        assert!(
+            sink.admit(id, ticket(id, 2)).is_err(),
+            "old sinks cannot resume writing"
+        );
+        assert_eq!(history.watermark().await?, saved.history_fence);
+        let reopened = ThreadStorageSink::new(store.clone(), test_thread(id), Some(&saved)).await?;
+        spawn_live_projection(&reopened);
+        assert!(!Arc::ptr_eq(&channel, &reopened.0.channel));
+        reopened.admit(id, ticket(id, 2))?;
+        tokio::time::timeout(Duration::from_secs(5), reopened.flush(id, 2)).await??;
+        assert_eq!(history.watermark().await?, 2);
+        reopened.0.channel.stop_and_join().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn review_exception_cas_is_atomic_and_budget_survives_writer_replacement() -> Result<()> {
+        use crate::thread_assembler::{
+            agent_review::{ReviewDeliverySource, ReviewForward, ReviewForwardReason},
+            review_delivery::ReviewDeliveryException,
+        };
+        use pl_core::thread::extensions::ExtensionMutation;
+        let id = "review-cas-history";
+        let (_temp, store, sink) = sink(id).await?;
+        let thread = ThreadHandle::resume_without_model(id.into(), None)?;
+        thread
+            .attach_storage(ColdStoreHandle::new(sink.clone()))
+            .await?;
+        thread
+            .mutate_extensions(vec![ExtensionMutation::Put {
+                id: "fixture-original-source".into(),
+                expected_revision: None,
+                payload: OpaquePayload::text("original durable source"),
+            }])
+            .await?;
+        tokio::time::timeout(Duration::from_secs(5), thread.flush()).await??;
+        let history = store.history(id).await?;
+        let terminal = history.watermark().await?;
+        let body_budget = 256 * 1024;
+        let retained = store
+            .thread_persistence()
+            .retain_review_delivery(id, body_budget)?;
+        let fact = ReviewDeliveryException::from_forward(
+            id,
+            "saved-turn",
+            None,
+            terminal,
+            "executor",
+            ReviewDeliverySource::Reconciliation,
+            &ReviewForward::Unconfirmed {
+                message_id: crate::thread_assembler::agent_review::review_message_id(
+                    id,
+                    "saved-turn",
+                    terminal,
+                ),
+                reason: ReviewForwardReason::RecoveryRequiresScheduling,
+            },
+        )
+        .context("exception fixture")?
+        .into_fact()?;
+        let path = store
+            .session_paths("project-test", id)?
+            .root()
+            .join("history.sqlite");
+        let db = Database::connect(
+            crate::studio::paths::sqlite_file_options(
+                &path,
+                crate::studio::paths::SqliteFileMode::Create,
+                |options| options,
+            )
+            .await?,
+        )
+        .await?;
+        db.execute_unprepared("CREATE TRIGGER reject_review_cas BEFORE INSERT ON history_fact_receipts WHEN NEW.kind='reviewDeliveryException' BEGIN SELECT RAISE(ABORT,'controlled review CAS failure'); END").await?;
+        let mut status = sink.0.channel.subscribe();
+        let records = thread
+            .mutate_extensions(vec![ExtensionMutation::Put {
+                id: fact.extension_id(),
+                expected_revision: None,
+                payload: fact.encode()?,
+            }])
+            .await?;
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while status.borrow_and_update().fault.is_none() {
+                status.changed().await?;
+            }
+            Ok::<_, tokio::sync::watch::error::RecvError>(())
+        })
+        .await??;
+        assert!(
+            history
+                .review_delivery_exception(&fact.message.id)
+                .await?
+                .is_none()
+        );
+        assert_eq!(history.watermark().await?, terminal);
+        assert!(
+            !history
+                .checkpoint()
+                .await?
+                .unwrap()
+                .state
+                .extensions
+                .contains_key(&fact.extension_id())
+        );
+        assert!(thread.flush().await.is_err());
+        let failed = status.borrow().clone();
+        db.execute_unprepared("DROP TRIGGER reject_review_cas")
+            .await?;
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            store
+                .thread_persistence()
+                .retry_history(id, failed.fault_generation),
+        )
+        .await??;
+        tokio::time::timeout(Duration::from_secs(5), thread.flush()).await??;
+        assert_eq!(
+            history
+                .review_delivery_exception(&fact.message.id)
+                .await?
+                .unwrap()
+                .message
+                .digest(),
+            fact.message.digest()
+        );
+        assert!(
+            history
+                .checkpoint()
+                .await?
+                .unwrap()
+                .state
+                .extensions
+                .contains_key(&fact.extension_id())
+        );
+        thread
+            .mutate_extensions(vec![ExtensionMutation::Delete {
+                id: fact.extension_id(),
+                expected_revision: records[&fact.extension_id()].revision,
+            }])
+            .await?;
+        thread.close().await?;
+        sink.0.channel.stop_and_join().await?;
+        let checkpoint = history
+            .checkpoint()
+            .await?
+            .context("closed CAS source checkpoint")?;
+        assert!(
+            !checkpoint
+                .state
+                .extensions
+                .contains_key(&fact.extension_id())
+        );
+        let reopened =
+            ThreadStorageSink::new(store.clone(), test_thread(id), Some(&checkpoint)).await?;
+        spawn_live_projection(&reopened);
+        assert!(!Arc::ptr_eq(&sink.0.channel, &reopened.0.channel));
+        assert!(sink.0.channel.shares_delivery_budget(&reopened.0.channel));
+        assert!(reopened.pressure(id).thread_bytes >= body_budget);
+        let before = reopened.0.channel.process_bytes.load(Ordering::Acquire);
+        assert!(
+            store
+                .thread_persistence()
+                .retain_review_delivery(id, MAX_HISTORY_THREAD_BYTES)
+                .is_err()
+        );
+        assert_eq!(
+            reopened.0.channel.process_bytes.load(Ordering::Acquire),
+            before
+        );
+        drop(retained);
+        assert!(!reopened.0.channel.has_delivery_bytes());
+        let resumed = ThreadHandle::resume_without_model(id.into(), Some(checkpoint))?;
+        resumed
+            .attach_storage(ColdStoreHandle::new(reopened.clone()))
+            .await?;
+        resumed.close().await?;
+        reopened.0.channel.stop_and_join().await?;
+        assert_eq!(
+            history
+                .review_delivery_exception(&fact.message.id)
+                .await?
+                .unwrap()
+                .message
+                .digest(),
+            fact.message.digest()
+        );
+        assert!(
+            store
+                .thread_persistence()
+                .retained_history_channel(id)
+                .is_none()
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn worker_join_failure_remains_a_failure_after_retry() -> Result<()> {
+        let (_temp, _store, sink) = sink("retirement-worker-failure").await?;
+        let channel = sink.0.channel.clone();
+        channel.workers.lock().await.push(tokio::spawn(async {
+            panic!("controlled storage worker failure");
+        }));
+        assert!(channel.stop_and_join().await.is_err());
+        assert!(channel.workers.lock().await.is_empty());
+        assert!(
+            channel.stop_and_join().await.is_err(),
+            "retry cannot erase an observed worker failure"
+        );
+        Ok(())
     }
 
     #[tokio::test]
@@ -1986,17 +3670,48 @@ mod storage_fault_tests {
     /// to save a fact no projection holds. These tests exercise the writer on its own, so they drive
     /// the same production projection against the same reliable admission channel: one projection per
     /// commit, published shape unchanged, only the caller differs.
-    fn spawn_live_projection(sink: &ThreadStorageSink) {
-        let inner = sink.0.clone();
+    pub(crate) fn spawn_live_projection(sink: &ThreadStorageSink) {
+        drop(spawn_projection(
+            sink.0.store.clone(),
+            sink.0.thread.clone(),
+        ));
+    }
+
+    /// Drives the real projection for an assembler-installed sink without downcasting its erased
+    /// ColdStoreHandle or retaining that writer incarnation after its core/observer have ended.
+    pub(crate) fn spawn_live_projection_for_thread(
+        store: StudioStore,
+        id: &str,
+    ) -> tokio::task::JoinHandle<()> {
+        let thread = store
+            .catalog()
+            .get(id)
+            .expect("registered projection Thread")
+            .to_thread();
+        spawn_projection(store, thread)
+    }
+
+    fn spawn_projection(
+        store: StudioStore,
+        thread: pl_protocol::Thread,
+    ) -> tokio::task::JoinHandle<()> {
+        let channel = store.thread_persistence().history_channel(&thread.id);
+        let chat = store
+            .thread_persistence()
+            .chat_session(&thread.id)
+            .expect("initialized writer Session");
         tokio::spawn(async move {
             let mut projection = live_projection();
             let mut failed = std::collections::BTreeSet::new();
             // Wake on the channel's own status watch, never on the channel's `Notify`: the history
             // writer is the one task that waits on that `Notify`, and a second waiter would consume
             // the single wakeup permit a recovery notification hands out.
-            let mut updates = inner.channel.subscribe();
+            let mut updates = channel.subscribe();
             loop {
-                if let Some(write) = inner.channel.next_unprojected() {
+                if channel.stopping.is_cancelled() {
+                    return;
+                }
+                if let Some(write) = channel.next_unprojected() {
                     let sequence = write.effect.sequence;
                     if failed.contains(&sequence) {
                         tokio::time::sleep(Duration::from_millis(5)).await;
@@ -2006,7 +3721,7 @@ mod storage_fault_tests {
                     // production observation owner reads that committed body back and folds it in, so
                     // the harness drives the same step instead of skipping a fact the writer must save.
                     if !write.effect.delivery_repairs.is_empty() {
-                        let seeded = match inner.store.history(&inner.thread.id).await {
+                        let seeded = match store.history(&thread.id).await {
                             Ok(history) => crate::studio::thread_projection::seed_repaired_targets(
                                 &mut projection,
                                 &history,
@@ -2018,34 +3733,78 @@ mod storage_fault_tests {
                         };
                         if let Err(error) = seeded {
                             failed.insert(sequence);
-                            inner.channel.fail_projection(sequence, error);
+                            channel.fail_projection(sequence, error);
                             continue;
                         }
                     }
                     match projection.project_committed(
-                        &inner.chat,
-                        &inner.thread,
+                        &chat,
+                        &thread,
                         &write.effect,
                         &write.checkpoint.state,
                     ) {
                         Ok(prepared) => {
-                            inner.channel.prepare(prepared);
+                            channel.prepare(prepared);
                         }
                         // The writer never projects, so failing here is what the running Studio sees
                         // from its observation worker: the fact is reported and the barrier fails
                         // closed with the projection's own reason.
                         Err(error) => {
                             failed.insert(sequence);
-                            inner.channel.fail_projection(sequence, error.to_string());
+                            channel.fail_projection(sequence, error.to_string());
                         }
                     }
                     continue;
                 }
-                if updates.changed().await.is_err() {
-                    return;
+                tokio::select! {
+                    changed = updates.changed() => if changed.is_err() { return; },
+                    () = channel.stopping.cancelled() => return,
                 }
             }
-        });
+        })
+    }
+
+    /// Save the original terminal report in the same real effect/checkpoint transaction as Studio.
+    /// No parent owner is needed; recovery must later prove its independently missing receipt.
+    pub(crate) async fn save_terminal_report(
+        store: &StudioStore,
+        thread: &pl_protocol::Thread,
+        message: pl_core::thread::inbox::ThreadMessage,
+    ) -> Result<()> {
+        let checkpoint = store.history(&thread.id).await?.checkpoint().await?;
+        let sink =
+            ThreadStorageSink::new(store.clone(), thread.clone(), checkpoint.as_ref()).await?;
+        let sequence = checkpoint
+            .as_ref()
+            .map_or(1, |checkpoint| checkpoint.history_fence + 1);
+        let mut terminal = ticket(&thread.id, sequence);
+        if let Some(checkpoint) = checkpoint {
+            terminal.checkpoint.state = checkpoint.state;
+            terminal.checkpoint.state.commit_sequence = sequence;
+        }
+        let turn = TurnRecord {
+            turn_id: "original-terminal-turn".into(),
+            input_id: None,
+            state: TurnState::Finished(TurnOutcome::Completed),
+            model_steps: 0,
+            elapsed_ms: None,
+        };
+        terminal.checkpoint.state.lifecycle = pl_core::thread::ThreadLifecycle::Closed;
+        terminal.checkpoint.state.turns = Arc::from([turn.clone()]);
+        Arc::make_mut(&mut terminal.effect).turn = Some(turn);
+        let mut prepared = live_projection().project_committed(
+            &sink.0.chat,
+            thread,
+            &terminal.effect,
+            &terminal.checkpoint.state,
+        )?;
+        Arc::get_mut(&mut prepared)
+            .context("new prepared effect unexpectedly shared")?
+            .parent_report = Some(Arc::new(message));
+        sink.admit(&thread.id, terminal)?;
+        sink.0.channel.prepare(prepared);
+        sink.flush(&thread.id, sequence).await?;
+        sink.0.channel.stop_and_join().await
     }
 
     /// One ticket whose effect commits a visible prompt item, i.e. the shortest effect that projects
@@ -2557,6 +4316,21 @@ mod storage_fault_tests {
         pl_core::thread::RequestAttempt,
         pl_core::thread::journal::AttemptUpdate,
     )> {
+        committed_presentation_attempt(
+            turn_id,
+            attempt_id,
+            (0..parts).map(provider_presentation_part).collect(),
+        )
+    }
+
+    fn committed_presentation_attempt(
+        turn_id: &str,
+        attempt_id: &str,
+        presentation_items: Vec<pl_model::completion::CompletionPresentationItem>,
+    ) -> Result<(
+        pl_core::thread::RequestAttempt,
+        pl_core::thread::journal::AttemptUpdate,
+    )> {
         let receipt = pl_model::runtime::ModelResponseReceipt {
             binding: pl_model::runtime::ModelCallBinding {
                 account_id: "fixture".into(),
@@ -2576,7 +4350,7 @@ mod storage_fault_tests {
                 reasoning_content: None,
                 tool_calls: Vec::new(),
                 responses_context_items: Vec::new(),
-                presentation_items: (0..parts).map(provider_presentation_part).collect(),
+                presentation_items,
                 orchestration: Default::default(),
                 timing: None,
                 accounting: Default::default(),
@@ -3687,7 +5461,7 @@ mod storage_fault_tests {
         persist_effect(&sink.0, 1, &write, &prepared).await?;
         assert_eq!(store.history("lost-ack").await?.watermark().await?, 1);
         assert_eq!(sink.0.channel.subscribe().borrow().queued_records, 1);
-        sink.0.channel.mark_unavailable();
+        sink.0.channel.mark_unavailable(|| true);
         let unavailable = sink.0.channel.subscribe().borrow().clone();
         assert_eq!(
             unavailable.fault,

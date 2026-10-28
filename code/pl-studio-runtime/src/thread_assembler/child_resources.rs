@@ -5,6 +5,49 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
+/// The actual preparation/unpublished owner retains its physical use independently of a caller
+/// waiting for preparation. A published Entry takes over before this owner is released.
+#[derive(Debug, Default)]
+struct PreparationResources {
+    usage: Option<super::WorkspaceUsageLease>,
+    review: Option<crate::studio::thread_factory::VerifiedLocalResume>,
+}
+#[derive(Debug, Clone, Default)]
+pub struct WorkspacePreparationOwner(Arc<std::sync::Mutex<PreparationResources>>);
+impl WorkspacePreparationOwner {
+    pub(crate) fn verified_review(
+        proof: crate::studio::thread_factory::VerifiedLocalResume,
+    ) -> Self {
+        Self(Arc::new(std::sync::Mutex::new(PreparationResources {
+            usage: Some(proof.usage()),
+            review: Some(proof),
+        })))
+    }
+    pub(crate) fn take_review(&self) -> Option<crate::studio::thread_factory::VerifiedLocalResume> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .review
+            .take()
+    }
+    pub(crate) fn retain(&self, usage: &super::WorkspaceUsageLease) {
+        let previous = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .usage
+            .replace(usage.clone());
+        drop(previous);
+    }
+    pub(super) fn take(&self) -> Option<super::WorkspaceUsageLease> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .usage
+            .take()
+    }
+}
+
 #[derive(Debug, Default)]
 pub(super) struct CleanupGate {
     busy: AtomicBool,
@@ -36,11 +79,16 @@ impl CleanupGate {
     }
 }
 
+type DisposalTask =
+    Arc<tokio::sync::Mutex<Option<tokio::task::JoinHandle<Result<(), ThreadAssemblyError>>>>>;
+
 #[derive(Debug, Clone)]
 pub(super) struct UnpublishedChild {
+    pub(super) workspace: WorkspacePreparationOwner,
     pub(super) parent: String,
     pub(super) factory: ChildFactory,
     pub(super) cleanup: Arc<CleanupGate>,
+    pub(super) disposal: DisposalTask,
 }
 
 impl super::StudioThreadAssembler {
@@ -65,7 +113,9 @@ impl super::StudioThreadAssembler {
             return Err(ThreadAssemblyError::Closed);
         }
         entry.ready = true;
-        state.unpublished_children.remove(id);
+        let unpublished = state.unpublished_children.remove(id);
+        drop(state);
+        drop(unpublished);
         Ok(())
     }
 
@@ -89,13 +139,48 @@ impl super::StudioThreadAssembler {
             return Ok(());
         };
         let _cleanup = pending.cleanup.acquire().await;
+        let mut disposal = pending.disposal.lock().await;
+        if disposal.is_none() {
+            let owner = self.clone();
+            let id = id.to_owned();
+            let resources = pending.clone();
+            *disposal = Some(tokio::spawn(async move {
+                owner.dispose_unpublished(&id, resources).await
+            }));
+        }
+        let result = disposal.as_mut().unwrap().await;
+        disposal.take();
+        result.map_err(|source| ThreadAssemblyError::Resource {
+            operation: "join unpublished workspace cleanup",
+            source: Box::new(source),
+        })?
+    }
+
+    async fn dispose_unpublished(
+        &self,
+        id: &str,
+        pending: UnpublishedChild,
+    ) -> Result<(), ThreadAssemblyError> {
         if !self.0.state().unpublished_children.contains_key(id) {
             return Ok(());
         }
-        self.close_thread(id, super::PublishedWorkspaceRetirement::Retain)
-            .await?;
-        pending.factory.discard_unpublished(id).await?;
-        self.0.state().unpublished_children.remove(id);
+        // This retained disposal task owns only its cleanup gate, not the identity operation
+        // permit. close_thread consumes that permit and may release it while joining producers.
+        let operation = self.agent_operation(id).await;
+        self.close_thread(id, operation).await?;
+        let usage = pending.workspace.take();
+        if let Err(error) = pending
+            .factory
+            .discard_unpublished(id, usage.as_ref())
+            .await
+        {
+            if let Some(usage) = &usage {
+                pending.workspace.retain(usage);
+            }
+            return Err(error);
+        }
+        let removed = { self.0.state().unpublished_children.remove(id) };
+        drop(removed);
         Ok(())
     }
 }
