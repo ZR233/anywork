@@ -832,9 +832,277 @@ as String,
 }
 
 /// @nodoc
+mixin _$AccountTemplateContent {
+
+
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is AccountTemplateContent);
+}
+
+
+@override
+int get hashCode => runtimeType.hashCode;
+
+@override
+String toString() {
+    return 'AccountTemplateContent()';
+}
+
+
+}
+
+/// @nodoc
+class $AccountTemplateContentCopyWith<$Res>  {
+$AccountTemplateContentCopyWith(AccountTemplateContent _, $Res Function(AccountTemplateContent) __);
+}
+
+
+/// Adds pattern-matching-related methods to [AccountTemplateContent].
+extension AccountTemplateContentPatterns on AccountTemplateContent {
+/// A variant of `map` that fallback to returning `orElse`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( NativeAccountTemplateContent value)?  native,TResult Function( AcpAccountTemplateContent value)?  acp,required TResult orElse(),}){
+final _that = this;
+switch (_that) {
+case NativeAccountTemplateContent() when native != null:
+return native(_that);case AcpAccountTemplateContent() when acp != null:
+return acp(_that);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// Callbacks receives the raw object, upcasted.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case final Subclass2 value:
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( NativeAccountTemplateContent value)  native,required TResult Function( AcpAccountTemplateContent value)  acp,}){
+final _that = this;
+switch (_that) {
+case NativeAccountTemplateContent():
+return native(_that);case AcpAccountTemplateContent():
+return acp(_that);}
+}
+/// A variant of `map` that fallback to returning `null`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( NativeAccountTemplateContent value)?  native,TResult? Function( AcpAccountTemplateContent value)?  acp,}){
+final _that = this;
+switch (_that) {
+case NativeAccountTemplateContent() when native != null:
+return native(_that);case AcpAccountTemplateContent() when acp != null:
+return acp(_that);case _:
+  return null;
+
+}
+}
+/// A variant of `when` that fallback to an `orElse` callback.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( AccountBilling defaultBilling,  String protocolLabel,  String defaultEndpoint,  bool supportsModelDiscovery,  bool? supportsUsageQuery)?  native,TResult Function()?  acp,required TResult orElse(),}) {final _that = this;
+switch (_that) {
+case NativeAccountTemplateContent() when native != null:
+return native(_that.defaultBilling,_that.protocolLabel,_that.defaultEndpoint,_that.supportsModelDiscovery,_that.supportsUsageQuery);case AcpAccountTemplateContent() when acp != null:
+return acp();case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// As opposed to `map`, this offers destructuring.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case Subclass2(:final field2):
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( AccountBilling defaultBilling,  String protocolLabel,  String defaultEndpoint,  bool supportsModelDiscovery,  bool? supportsUsageQuery)  native,required TResult Function()  acp,}) {final _that = this;
+switch (_that) {
+case NativeAccountTemplateContent():
+return native(_that.defaultBilling,_that.protocolLabel,_that.defaultEndpoint,_that.supportsModelDiscovery,_that.supportsUsageQuery);case AcpAccountTemplateContent():
+return acp();}
+}
+/// A variant of `when` that fallback to returning `null`
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( AccountBilling defaultBilling,  String protocolLabel,  String defaultEndpoint,  bool supportsModelDiscovery,  bool? supportsUsageQuery)?  native,TResult? Function()?  acp,}) {final _that = this;
+switch (_that) {
+case NativeAccountTemplateContent() when native != null:
+return native(_that.defaultBilling,_that.protocolLabel,_that.defaultEndpoint,_that.supportsModelDiscovery,_that.supportsUsageQuery);case AcpAccountTemplateContent() when acp != null:
+return acp();case _:
+  return null;
+
+}
+}
+
+}
+
+/// @nodoc
+
+
+class NativeAccountTemplateContent implements AccountTemplateContent {
+  const NativeAccountTemplateContent({required this.defaultBilling, required this.protocolLabel, required this.defaultEndpoint, required this.supportsModelDiscovery, required this.supportsUsageQuery});
+
+
+ final  AccountBilling defaultBilling;
+ final  String protocolLabel;
+ final  String defaultEndpoint;
+ final  bool supportsModelDiscovery;
+ final  bool? supportsUsageQuery;
+
+/// Create a copy of AccountTemplateContent
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$NativeAccountTemplateContentCopyWith<NativeAccountTemplateContent> get copyWith => _$NativeAccountTemplateContentCopyWithImpl<NativeAccountTemplateContent>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is NativeAccountTemplateContent&&(identical(other.defaultBilling, defaultBilling) || other.defaultBilling == defaultBilling)&&(identical(other.protocolLabel, protocolLabel) || other.protocolLabel == protocolLabel)&&(identical(other.defaultEndpoint, defaultEndpoint) || other.defaultEndpoint == defaultEndpoint)&&(identical(other.supportsModelDiscovery, supportsModelDiscovery) || other.supportsModelDiscovery == supportsModelDiscovery)&&(identical(other.supportsUsageQuery, supportsUsageQuery) || other.supportsUsageQuery == supportsUsageQuery));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,defaultBilling,protocolLabel,defaultEndpoint,supportsModelDiscovery,supportsUsageQuery);
+}
+
+@override
+String toString() {
+    return 'AccountTemplateContent.native(defaultBilling: $defaultBilling, protocolLabel: $protocolLabel, defaultEndpoint: $defaultEndpoint, supportsModelDiscovery: $supportsModelDiscovery, supportsUsageQuery: $supportsUsageQuery)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $NativeAccountTemplateContentCopyWith<$Res> implements $AccountTemplateContentCopyWith<$Res> {
+  factory $NativeAccountTemplateContentCopyWith(NativeAccountTemplateContent value, $Res Function(NativeAccountTemplateContent) _then) = _$NativeAccountTemplateContentCopyWithImpl;
+@useResult
+$Res call({
+ AccountBilling defaultBilling, String protocolLabel, String defaultEndpoint, bool supportsModelDiscovery, bool? supportsUsageQuery
+});
+
+
+
+
+}
+/// @nodoc
+class _$NativeAccountTemplateContentCopyWithImpl<$Res>
+    implements $NativeAccountTemplateContentCopyWith<$Res> {
+  _$NativeAccountTemplateContentCopyWithImpl(this._self, this._then);
+
+  final NativeAccountTemplateContent _self;
+  final $Res Function(NativeAccountTemplateContent) _then;
+
+/// Create a copy of AccountTemplateContent
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? defaultBilling = null,Object? protocolLabel = null,Object? defaultEndpoint = null,Object? supportsModelDiscovery = null,Object? supportsUsageQuery = freezed,}) {
+  return _then(NativeAccountTemplateContent(
+defaultBilling: null == defaultBilling ? _self.defaultBilling : defaultBilling // ignore: cast_nullable_to_non_nullable
+as AccountBilling,protocolLabel: null == protocolLabel ? _self.protocolLabel : protocolLabel // ignore: cast_nullable_to_non_nullable
+as String,defaultEndpoint: null == defaultEndpoint ? _self.defaultEndpoint : defaultEndpoint // ignore: cast_nullable_to_non_nullable
+as String,supportsModelDiscovery: null == supportsModelDiscovery ? _self.supportsModelDiscovery : supportsModelDiscovery // ignore: cast_nullable_to_non_nullable
+as bool,supportsUsageQuery: freezed == supportsUsageQuery ? _self.supportsUsageQuery : supportsUsageQuery // ignore: cast_nullable_to_non_nullable
+as bool?,
+  ));
+}
+
+
+}
+
+/// @nodoc
+
+
+class AcpAccountTemplateContent implements AccountTemplateContent {
+  const AcpAccountTemplateContent();
+
+
+
+
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is AcpAccountTemplateContent);
+}
+
+
+@override
+int get hashCode => runtimeType.hashCode;
+
+@override
+String toString() {
+    return 'AccountTemplateContent.acp()';
+}
+
+
+}
+
+
+
+
+/// @nodoc
 mixin _$AccountTemplatePresentation {
 
- AccountTemplateKey get key; String get name; String? get iconKey; String? get description;
+ AccountTemplateKey get key; String get name; AccountTemplateContent get content; String? get iconKey; String? get description;
 /// Create a copy of AccountTemplatePresentation
 /// with the given fields replaced by the non-null parameter values.
 @JsonKey(includeFromJson: false, includeToJson: false)
@@ -846,20 +1114,20 @@ $AccountTemplatePresentationCopyWith<AccountTemplatePresentation> get copyWith =
 @override
 bool operator ==(Object other) {
   final _this = this as AccountTemplatePresentation;
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is AccountTemplatePresentation&&(identical(other.key, _this.key) || other.key == _this.key)&&(identical(other.name, _this.name) || other.name == _this.name)&&(identical(other.iconKey, _this.iconKey) || other.iconKey == _this.iconKey)&&(identical(other.description, _this.description) || other.description == _this.description));
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is AccountTemplatePresentation&&(identical(other.key, _this.key) || other.key == _this.key)&&(identical(other.name, _this.name) || other.name == _this.name)&&(identical(other.content, _this.content) || other.content == _this.content)&&(identical(other.iconKey, _this.iconKey) || other.iconKey == _this.iconKey)&&(identical(other.description, _this.description) || other.description == _this.description));
 }
 
 
 @override
 int get hashCode {
   final _this = this as AccountTemplatePresentation;
-  return Object.hash(runtimeType,_this.key,_this.name,_this.iconKey,_this.description);
+  return Object.hash(runtimeType,_this.key,_this.name,_this.content,_this.iconKey,_this.description);
 }
 
 @override
 String toString() {
   final _this = this as AccountTemplatePresentation;
-  return 'AccountTemplatePresentation(key: ${_this.key}, name: ${_this.name}, iconKey: ${_this.iconKey}, description: ${_this.description})';
+  return 'AccountTemplatePresentation(key: ${_this.key}, name: ${_this.name}, content: ${_this.content}, iconKey: ${_this.iconKey}, description: ${_this.description})';
 }
 
 
@@ -870,11 +1138,11 @@ abstract mixin class $AccountTemplatePresentationCopyWith<$Res>  {
   factory $AccountTemplatePresentationCopyWith(AccountTemplatePresentation value, $Res Function(AccountTemplatePresentation) _then) = _$AccountTemplatePresentationCopyWithImpl;
 @useResult
 $Res call({
- AccountTemplateKey key, String name, String? iconKey, String? description
+ AccountTemplateKey key, String name, AccountTemplateContent content, String? iconKey, String? description
 });
 
 
-$AccountTemplateKeyCopyWith<$Res> get key;
+$AccountTemplateKeyCopyWith<$Res> get key;$AccountTemplateContentCopyWith<$Res> get content;
 
 }
 /// @nodoc
@@ -887,11 +1155,12 @@ class _$AccountTemplatePresentationCopyWithImpl<$Res>
 
 /// Create a copy of AccountTemplatePresentation
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') @override $Res call({Object? key = null,Object? name = null,Object? iconKey = freezed,Object? description = freezed,}) {
+@pragma('vm:prefer-inline') @override $Res call({Object? key = null,Object? name = null,Object? content = null,Object? iconKey = freezed,Object? description = freezed,}) {
   return _then(AccountTemplatePresentation(
 key: null == key ? _self.key : key // ignore: cast_nullable_to_non_nullable
 as AccountTemplateKey,name: null == name ? _self.name : name // ignore: cast_nullable_to_non_nullable
-as String,iconKey: freezed == iconKey ? _self.iconKey : iconKey // ignore: cast_nullable_to_non_nullable
+as String,content: null == content ? _self.content : content // ignore: cast_nullable_to_non_nullable
+as AccountTemplateContent,iconKey: freezed == iconKey ? _self.iconKey : iconKey // ignore: cast_nullable_to_non_nullable
 as String?,description: freezed == description ? _self.description : description // ignore: cast_nullable_to_non_nullable
 as String?,
   ));
@@ -904,6 +1173,15 @@ $AccountTemplateKeyCopyWith<$Res> get key {
 
   return $AccountTemplateKeyCopyWith<$Res>(_self.key, (value) {
     return _then(_self.copyWith(key: value));
+  });
+}/// Create a copy of AccountTemplatePresentation
+/// with the given fields replaced by the non-null parameter values.
+@override
+@pragma('vm:prefer-inline')
+$AccountTemplateContentCopyWith<$Res> get content {
+
+  return $AccountTemplateContentCopyWith<$Res>(_self.content, (value) {
+    return _then(_self.copyWith(content: value));
   });
 }
 }
@@ -987,10 +1265,10 @@ return $default(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( AccountTemplateKey key,  String name,  String? iconKey,  String? description)?  $default,{required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( AccountTemplateKey key,  String name,  AccountTemplateContent content,  String? iconKey,  String? description)?  $default,{required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case _AccountTemplatePresentation() when $default != null:
-return $default(_that.key,_that.name,_that.iconKey,_that.description);case _:
+return $default(_that.key,_that.name,_that.content,_that.iconKey,_that.description);case _:
   return orElse();
 
 }
@@ -1008,10 +1286,10 @@ return $default(_that.key,_that.name,_that.iconKey,_that.description);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( AccountTemplateKey key,  String name,  String? iconKey,  String? description)  $default,) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( AccountTemplateKey key,  String name,  AccountTemplateContent content,  String? iconKey,  String? description)  $default,) {final _that = this;
 switch (_that) {
 case _AccountTemplatePresentation():
-return $default(_that.key,_that.name,_that.iconKey,_that.description);case _:
+return $default(_that.key,_that.name,_that.content,_that.iconKey,_that.description);case _:
   throw StateError('Unexpected subclass');
 
 }
@@ -1028,10 +1306,10 @@ return $default(_that.key,_that.name,_that.iconKey,_that.description);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( AccountTemplateKey key,  String name,  String? iconKey,  String? description)?  $default,) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( AccountTemplateKey key,  String name,  AccountTemplateContent content,  String? iconKey,  String? description)?  $default,) {final _that = this;
 switch (_that) {
 case _AccountTemplatePresentation() when $default != null:
-return $default(_that.key,_that.name,_that.iconKey,_that.description);case _:
+return $default(_that.key,_that.name,_that.content,_that.iconKey,_that.description);case _:
   return null;
 
 }
@@ -1043,11 +1321,12 @@ return $default(_that.key,_that.name,_that.iconKey,_that.description);case _:
 
 
 class _AccountTemplatePresentation implements AccountTemplatePresentation {
-  const _AccountTemplatePresentation({required this.key, required this.name, this.iconKey, this.description});
+  const _AccountTemplatePresentation({required this.key, required this.name, required this.content, this.iconKey, this.description});
 
 
 @override final  AccountTemplateKey key;
 @override final  String name;
+@override final  AccountTemplateContent content;
 @override final  String? iconKey;
 @override final  String? description;
 
@@ -1061,18 +1340,18 @@ _$AccountTemplatePresentationCopyWith<_AccountTemplatePresentation> get copyWith
 
 @override
 bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is _AccountTemplatePresentation&&(identical(other.key, key) || other.key == key)&&(identical(other.name, name) || other.name == name)&&(identical(other.iconKey, iconKey) || other.iconKey == iconKey)&&(identical(other.description, description) || other.description == description));
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is _AccountTemplatePresentation&&(identical(other.key, key) || other.key == key)&&(identical(other.name, name) || other.name == name)&&(identical(other.content, content) || other.content == content)&&(identical(other.iconKey, iconKey) || other.iconKey == iconKey)&&(identical(other.description, description) || other.description == description));
 }
 
 
 @override
 int get hashCode {
-    return Object.hash(runtimeType,key,name,iconKey,description);
+    return Object.hash(runtimeType,key,name,content,iconKey,description);
 }
 
 @override
 String toString() {
-    return 'AccountTemplatePresentation(key: $key, name: $name, iconKey: $iconKey, description: $description)';
+    return 'AccountTemplatePresentation(key: $key, name: $name, content: $content, iconKey: $iconKey, description: $description)';
 }
 
 
@@ -1083,11 +1362,11 @@ abstract mixin class _$AccountTemplatePresentationCopyWith<$Res> implements $Acc
   factory _$AccountTemplatePresentationCopyWith(_AccountTemplatePresentation value, $Res Function(_AccountTemplatePresentation) _then) = __$AccountTemplatePresentationCopyWithImpl;
 @override @useResult
 $Res call({
- AccountTemplateKey key, String name, String? iconKey, String? description
+ AccountTemplateKey key, String name, AccountTemplateContent content, String? iconKey, String? description
 });
 
 
-@override $AccountTemplateKeyCopyWith<$Res> get key;
+@override $AccountTemplateKeyCopyWith<$Res> get key;@override $AccountTemplateContentCopyWith<$Res> get content;
 
 }
 /// @nodoc
@@ -1100,11 +1379,12 @@ class __$AccountTemplatePresentationCopyWithImpl<$Res>
 
 /// Create a copy of AccountTemplatePresentation
 /// with the given fields replaced by the non-null parameter values.
-@override @pragma('vm:prefer-inline') $Res call({Object? key = null,Object? name = null,Object? iconKey = freezed,Object? description = freezed,}) {
+@override @pragma('vm:prefer-inline') $Res call({Object? key = null,Object? name = null,Object? content = null,Object? iconKey = freezed,Object? description = freezed,}) {
   return _then(_AccountTemplatePresentation(
 key: null == key ? _self.key : key // ignore: cast_nullable_to_non_nullable
 as AccountTemplateKey,name: null == name ? _self.name : name // ignore: cast_nullable_to_non_nullable
-as String,iconKey: freezed == iconKey ? _self.iconKey : iconKey // ignore: cast_nullable_to_non_nullable
+as String,content: null == content ? _self.content : content // ignore: cast_nullable_to_non_nullable
+as AccountTemplateContent,iconKey: freezed == iconKey ? _self.iconKey : iconKey // ignore: cast_nullable_to_non_nullable
 as String?,description: freezed == description ? _self.description : description // ignore: cast_nullable_to_non_nullable
 as String?,
   ));
@@ -1118,6 +1398,15 @@ $AccountTemplateKeyCopyWith<$Res> get key {
 
   return $AccountTemplateKeyCopyWith<$Res>(_self.key, (value) {
     return _then(_self.copyWith(key: value));
+  });
+}/// Create a copy of AccountTemplatePresentation
+/// with the given fields replaced by the non-null parameter values.
+@override
+@pragma('vm:prefer-inline')
+$AccountTemplateContentCopyWith<$Res> get content {
+
+  return $AccountTemplateContentCopyWith<$Res>(_self.content, (value) {
+    return _then(_self.copyWith(content: value));
   });
 }
 }
@@ -1974,9 +2263,318 @@ as bool,
 }
 
 /// @nodoc
+mixin _$AccountRowContent {
+
+
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is AccountRowContent);
+}
+
+
+@override
+int get hashCode => runtimeType.hashCode;
+
+@override
+String toString() {
+    return 'AccountRowContent()';
+}
+
+
+}
+
+/// @nodoc
+class $AccountRowContentCopyWith<$Res>  {
+$AccountRowContentCopyWith(AccountRowContent _, $Res Function(AccountRowContent) __);
+}
+
+
+/// Adds pattern-matching-related methods to [AccountRowContent].
+extension AccountRowContentPatterns on AccountRowContent {
+/// A variant of `map` that fallback to returning `orElse`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( NativeAccountRowContent value)?  native,TResult Function( AcpAccountRowContent value)?  acp,required TResult orElse(),}){
+final _that = this;
+switch (_that) {
+case NativeAccountRowContent() when native != null:
+return native(_that);case AcpAccountRowContent() when acp != null:
+return acp(_that);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// Callbacks receives the raw object, upcasted.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case final Subclass2 value:
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( NativeAccountRowContent value)  native,required TResult Function( AcpAccountRowContent value)  acp,}){
+final _that = this;
+switch (_that) {
+case NativeAccountRowContent():
+return native(_that);case AcpAccountRowContent():
+return acp(_that);}
+}
+/// A variant of `map` that fallback to returning `null`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( NativeAccountRowContent value)?  native,TResult? Function( AcpAccountRowContent value)?  acp,}){
+final _that = this;
+switch (_that) {
+case NativeAccountRowContent() when native != null:
+return native(_that);case AcpAccountRowContent() when acp != null:
+return acp(_that);case _:
+  return null;
+
+}
+}
+/// A variant of `when` that fallback to an `orElse` callback.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( AccountBilling billing,  AccountUsagePresentation usage,  String? displayEndpoint)?  native,TResult Function( String status)?  acp,required TResult orElse(),}) {final _that = this;
+switch (_that) {
+case NativeAccountRowContent() when native != null:
+return native(_that.billing,_that.usage,_that.displayEndpoint);case AcpAccountRowContent() when acp != null:
+return acp(_that.status);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// As opposed to `map`, this offers destructuring.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case Subclass2(:final field2):
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( AccountBilling billing,  AccountUsagePresentation usage,  String? displayEndpoint)  native,required TResult Function( String status)  acp,}) {final _that = this;
+switch (_that) {
+case NativeAccountRowContent():
+return native(_that.billing,_that.usage,_that.displayEndpoint);case AcpAccountRowContent():
+return acp(_that.status);}
+}
+/// A variant of `when` that fallback to returning `null`
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( AccountBilling billing,  AccountUsagePresentation usage,  String? displayEndpoint)?  native,TResult? Function( String status)?  acp,}) {final _that = this;
+switch (_that) {
+case NativeAccountRowContent() when native != null:
+return native(_that.billing,_that.usage,_that.displayEndpoint);case AcpAccountRowContent() when acp != null:
+return acp(_that.status);case _:
+  return null;
+
+}
+}
+
+}
+
+/// @nodoc
+
+
+class NativeAccountRowContent implements AccountRowContent {
+  const NativeAccountRowContent({required this.billing, required this.usage, this.displayEndpoint});
+
+
+ final  AccountBilling billing;
+ final  AccountUsagePresentation usage;
+ final  String? displayEndpoint;
+
+/// Create a copy of AccountRowContent
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$NativeAccountRowContentCopyWith<NativeAccountRowContent> get copyWith => _$NativeAccountRowContentCopyWithImpl<NativeAccountRowContent>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is NativeAccountRowContent&&(identical(other.billing, billing) || other.billing == billing)&&(identical(other.usage, usage) || other.usage == usage)&&(identical(other.displayEndpoint, displayEndpoint) || other.displayEndpoint == displayEndpoint));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,billing,usage,displayEndpoint);
+}
+
+@override
+String toString() {
+    return 'AccountRowContent.native(billing: $billing, usage: $usage, displayEndpoint: $displayEndpoint)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $NativeAccountRowContentCopyWith<$Res> implements $AccountRowContentCopyWith<$Res> {
+  factory $NativeAccountRowContentCopyWith(NativeAccountRowContent value, $Res Function(NativeAccountRowContent) _then) = _$NativeAccountRowContentCopyWithImpl;
+@useResult
+$Res call({
+ AccountBilling billing, AccountUsagePresentation usage, String? displayEndpoint
+});
+
+
+$AccountUsagePresentationCopyWith<$Res> get usage;
+
+}
+/// @nodoc
+class _$NativeAccountRowContentCopyWithImpl<$Res>
+    implements $NativeAccountRowContentCopyWith<$Res> {
+  _$NativeAccountRowContentCopyWithImpl(this._self, this._then);
+
+  final NativeAccountRowContent _self;
+  final $Res Function(NativeAccountRowContent) _then;
+
+/// Create a copy of AccountRowContent
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? billing = null,Object? usage = null,Object? displayEndpoint = freezed,}) {
+  return _then(NativeAccountRowContent(
+billing: null == billing ? _self.billing : billing // ignore: cast_nullable_to_non_nullable
+as AccountBilling,usage: null == usage ? _self.usage : usage // ignore: cast_nullable_to_non_nullable
+as AccountUsagePresentation,displayEndpoint: freezed == displayEndpoint ? _self.displayEndpoint : displayEndpoint // ignore: cast_nullable_to_non_nullable
+as String?,
+  ));
+}
+
+/// Create a copy of AccountRowContent
+/// with the given fields replaced by the non-null parameter values.
+@override
+@pragma('vm:prefer-inline')
+$AccountUsagePresentationCopyWith<$Res> get usage {
+
+  return $AccountUsagePresentationCopyWith<$Res>(_self.usage, (value) {
+    return _then(_self.copyWith(usage: value));
+  });
+}
+}
+
+/// @nodoc
+
+
+class AcpAccountRowContent implements AccountRowContent {
+  const AcpAccountRowContent({required this.status});
+
+
+ final  String status;
+
+/// Create a copy of AccountRowContent
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$AcpAccountRowContentCopyWith<AcpAccountRowContent> get copyWith => _$AcpAccountRowContentCopyWithImpl<AcpAccountRowContent>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is AcpAccountRowContent&&(identical(other.status, status) || other.status == status));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,status);
+}
+
+@override
+String toString() {
+    return 'AccountRowContent.acp(status: $status)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $AcpAccountRowContentCopyWith<$Res> implements $AccountRowContentCopyWith<$Res> {
+  factory $AcpAccountRowContentCopyWith(AcpAccountRowContent value, $Res Function(AcpAccountRowContent) _then) = _$AcpAccountRowContentCopyWithImpl;
+@useResult
+$Res call({
+ String status
+});
+
+
+
+
+}
+/// @nodoc
+class _$AcpAccountRowContentCopyWithImpl<$Res>
+    implements $AcpAccountRowContentCopyWith<$Res> {
+  _$AcpAccountRowContentCopyWithImpl(this._self, this._then);
+
+  final AcpAccountRowContent _self;
+  final $Res Function(AcpAccountRowContent) _then;
+
+/// Create a copy of AccountRowContent
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? status = null,}) {
+  return _then(AcpAccountRowContent(
+status: null == status ? _self.status : status // ignore: cast_nullable_to_non_nullable
+as String,
+  ));
+}
+
+
+}
+
+/// @nodoc
 mixin _$AccountRowPresentation {
 
- AccountDisplayKey get key; String get name; String? get iconKey; bool get isDefault; AccountBilling? get billing; AccountUsagePresentation? get usage; String? get acpStatus; String? get operationError; List<AccountRowAction> get actions;
+ AccountDisplayKey get key; String get name; AccountRowContent get content; String? get iconKey; bool get isDefault; String? get operationError; List<AccountRowAction> get actions;
 /// Create a copy of AccountRowPresentation
 /// with the given fields replaced by the non-null parameter values.
 @JsonKey(includeFromJson: false, includeToJson: false)
@@ -1988,20 +2586,20 @@ $AccountRowPresentationCopyWith<AccountRowPresentation> get copyWith => _$Accoun
 @override
 bool operator ==(Object other) {
   final _this = this as AccountRowPresentation;
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is AccountRowPresentation&&(identical(other.key, _this.key) || other.key == _this.key)&&(identical(other.name, _this.name) || other.name == _this.name)&&(identical(other.iconKey, _this.iconKey) || other.iconKey == _this.iconKey)&&(identical(other.isDefault, _this.isDefault) || other.isDefault == _this.isDefault)&&(identical(other.billing, _this.billing) || other.billing == _this.billing)&&(identical(other.usage, _this.usage) || other.usage == _this.usage)&&(identical(other.acpStatus, _this.acpStatus) || other.acpStatus == _this.acpStatus)&&(identical(other.operationError, _this.operationError) || other.operationError == _this.operationError)&&const DeepCollectionEquality().equals(other.actions, _this.actions));
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is AccountRowPresentation&&(identical(other.key, _this.key) || other.key == _this.key)&&(identical(other.name, _this.name) || other.name == _this.name)&&(identical(other.content, _this.content) || other.content == _this.content)&&(identical(other.iconKey, _this.iconKey) || other.iconKey == _this.iconKey)&&(identical(other.isDefault, _this.isDefault) || other.isDefault == _this.isDefault)&&(identical(other.operationError, _this.operationError) || other.operationError == _this.operationError)&&const DeepCollectionEquality().equals(other.actions, _this.actions));
 }
 
 
 @override
 int get hashCode {
   final _this = this as AccountRowPresentation;
-  return Object.hash(runtimeType,_this.key,_this.name,_this.iconKey,_this.isDefault,_this.billing,_this.usage,_this.acpStatus,_this.operationError,const DeepCollectionEquality().hash(_this.actions));
+  return Object.hash(runtimeType,_this.key,_this.name,_this.content,_this.iconKey,_this.isDefault,_this.operationError,const DeepCollectionEquality().hash(_this.actions));
 }
 
 @override
 String toString() {
   final _this = this as AccountRowPresentation;
-  return 'AccountRowPresentation(key: ${_this.key}, name: ${_this.name}, iconKey: ${_this.iconKey}, isDefault: ${_this.isDefault}, billing: ${_this.billing}, usage: ${_this.usage}, acpStatus: ${_this.acpStatus}, operationError: ${_this.operationError}, actions: ${_this.actions})';
+  return 'AccountRowPresentation(key: ${_this.key}, name: ${_this.name}, content: ${_this.content}, iconKey: ${_this.iconKey}, isDefault: ${_this.isDefault}, operationError: ${_this.operationError}, actions: ${_this.actions})';
 }
 
 
@@ -2012,11 +2610,11 @@ abstract mixin class $AccountRowPresentationCopyWith<$Res>  {
   factory $AccountRowPresentationCopyWith(AccountRowPresentation value, $Res Function(AccountRowPresentation) _then) = _$AccountRowPresentationCopyWithImpl;
 @useResult
 $Res call({
- AccountDisplayKey key, String name, String? iconKey, bool isDefault, AccountBilling? billing, AccountUsagePresentation? usage, String? acpStatus, String? operationError, List<AccountRowAction> actions
+ AccountDisplayKey key, String name, AccountRowContent content, String? iconKey, bool isDefault, String? operationError, List<AccountRowAction> actions
 });
 
 
-$AccountDisplayKeyCopyWith<$Res> get key;$AccountUsagePresentationCopyWith<$Res>? get usage;
+$AccountDisplayKeyCopyWith<$Res> get key;$AccountRowContentCopyWith<$Res> get content;
 
 }
 /// @nodoc
@@ -2029,16 +2627,14 @@ class _$AccountRowPresentationCopyWithImpl<$Res>
 
 /// Create a copy of AccountRowPresentation
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') @override $Res call({Object? key = null,Object? name = null,Object? iconKey = freezed,Object? isDefault = null,Object? billing = freezed,Object? usage = freezed,Object? acpStatus = freezed,Object? operationError = freezed,Object? actions = null,}) {
+@pragma('vm:prefer-inline') @override $Res call({Object? key = null,Object? name = null,Object? content = null,Object? iconKey = freezed,Object? isDefault = null,Object? operationError = freezed,Object? actions = null,}) {
   return _then(AccountRowPresentation(
 key: null == key ? _self.key : key // ignore: cast_nullable_to_non_nullable
 as AccountDisplayKey,name: null == name ? _self.name : name // ignore: cast_nullable_to_non_nullable
-as String,iconKey: freezed == iconKey ? _self.iconKey : iconKey // ignore: cast_nullable_to_non_nullable
+as String,content: null == content ? _self.content : content // ignore: cast_nullable_to_non_nullable
+as AccountRowContent,iconKey: freezed == iconKey ? _self.iconKey : iconKey // ignore: cast_nullable_to_non_nullable
 as String?,isDefault: null == isDefault ? _self.isDefault : isDefault // ignore: cast_nullable_to_non_nullable
-as bool,billing: freezed == billing ? _self.billing : billing // ignore: cast_nullable_to_non_nullable
-as AccountBilling?,usage: freezed == usage ? _self.usage : usage // ignore: cast_nullable_to_non_nullable
-as AccountUsagePresentation?,acpStatus: freezed == acpStatus ? _self.acpStatus : acpStatus // ignore: cast_nullable_to_non_nullable
-as String?,operationError: freezed == operationError ? _self.operationError : operationError // ignore: cast_nullable_to_non_nullable
+as bool,operationError: freezed == operationError ? _self.operationError : operationError // ignore: cast_nullable_to_non_nullable
 as String?,actions: null == actions ? _self.actions : actions // ignore: cast_nullable_to_non_nullable
 as List<AccountRowAction>,
   ));
@@ -2056,13 +2652,10 @@ $AccountDisplayKeyCopyWith<$Res> get key {
 /// with the given fields replaced by the non-null parameter values.
 @override
 @pragma('vm:prefer-inline')
-$AccountUsagePresentationCopyWith<$Res>? get usage {
-    if (_self.usage == null) {
-    return null;
-  }
+$AccountRowContentCopyWith<$Res> get content {
 
-  return $AccountUsagePresentationCopyWith<$Res>(_self.usage!, (value) {
-    return _then(_self.copyWith(usage: value));
+  return $AccountRowContentCopyWith<$Res>(_self.content, (value) {
+    return _then(_self.copyWith(content: value));
   });
 }
 }
@@ -2146,10 +2739,10 @@ return $default(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( AccountDisplayKey key,  String name,  String? iconKey,  bool isDefault,  AccountBilling? billing,  AccountUsagePresentation? usage,  String? acpStatus,  String? operationError,  List<AccountRowAction> actions)?  $default,{required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( AccountDisplayKey key,  String name,  AccountRowContent content,  String? iconKey,  bool isDefault,  String? operationError,  List<AccountRowAction> actions)?  $default,{required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case _AccountRowPresentation() when $default != null:
-return $default(_that.key,_that.name,_that.iconKey,_that.isDefault,_that.billing,_that.usage,_that.acpStatus,_that.operationError,_that.actions);case _:
+return $default(_that.key,_that.name,_that.content,_that.iconKey,_that.isDefault,_that.operationError,_that.actions);case _:
   return orElse();
 
 }
@@ -2167,10 +2760,10 @@ return $default(_that.key,_that.name,_that.iconKey,_that.isDefault,_that.billing
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( AccountDisplayKey key,  String name,  String? iconKey,  bool isDefault,  AccountBilling? billing,  AccountUsagePresentation? usage,  String? acpStatus,  String? operationError,  List<AccountRowAction> actions)  $default,) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( AccountDisplayKey key,  String name,  AccountRowContent content,  String? iconKey,  bool isDefault,  String? operationError,  List<AccountRowAction> actions)  $default,) {final _that = this;
 switch (_that) {
 case _AccountRowPresentation():
-return $default(_that.key,_that.name,_that.iconKey,_that.isDefault,_that.billing,_that.usage,_that.acpStatus,_that.operationError,_that.actions);case _:
+return $default(_that.key,_that.name,_that.content,_that.iconKey,_that.isDefault,_that.operationError,_that.actions);case _:
   throw StateError('Unexpected subclass');
 
 }
@@ -2187,10 +2780,10 @@ return $default(_that.key,_that.name,_that.iconKey,_that.isDefault,_that.billing
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( AccountDisplayKey key,  String name,  String? iconKey,  bool isDefault,  AccountBilling? billing,  AccountUsagePresentation? usage,  String? acpStatus,  String? operationError,  List<AccountRowAction> actions)?  $default,) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( AccountDisplayKey key,  String name,  AccountRowContent content,  String? iconKey,  bool isDefault,  String? operationError,  List<AccountRowAction> actions)?  $default,) {final _that = this;
 switch (_that) {
 case _AccountRowPresentation() when $default != null:
-return $default(_that.key,_that.name,_that.iconKey,_that.isDefault,_that.billing,_that.usage,_that.acpStatus,_that.operationError,_that.actions);case _:
+return $default(_that.key,_that.name,_that.content,_that.iconKey,_that.isDefault,_that.operationError,_that.actions);case _:
   return null;
 
 }
@@ -2202,16 +2795,14 @@ return $default(_that.key,_that.name,_that.iconKey,_that.isDefault,_that.billing
 
 
 class _AccountRowPresentation implements AccountRowPresentation {
-  const _AccountRowPresentation({required this.key, required this.name, this.iconKey, this.isDefault = false, this.billing, this.usage, this.acpStatus, this.operationError,  List<AccountRowAction> actions = const <AccountRowAction>[]}): _actions = actions;
+  const _AccountRowPresentation({required this.key, required this.name, required this.content, this.iconKey, this.isDefault = false, this.operationError,  List<AccountRowAction> actions = const <AccountRowAction>[]}): _actions = actions;
 
 
 @override final  AccountDisplayKey key;
 @override final  String name;
+@override final  AccountRowContent content;
 @override final  String? iconKey;
 @override@JsonKey() final  bool isDefault;
-@override final  AccountBilling? billing;
-@override final  AccountUsagePresentation? usage;
-@override final  String? acpStatus;
 @override final  String? operationError;
  final  List<AccountRowAction> _actions;
 @override@JsonKey() List<AccountRowAction> get actions {
@@ -2231,18 +2822,18 @@ _$AccountRowPresentationCopyWith<_AccountRowPresentation> get copyWith => __$Acc
 
 @override
 bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is _AccountRowPresentation&&(identical(other.key, key) || other.key == key)&&(identical(other.name, name) || other.name == name)&&(identical(other.iconKey, iconKey) || other.iconKey == iconKey)&&(identical(other.isDefault, isDefault) || other.isDefault == isDefault)&&(identical(other.billing, billing) || other.billing == billing)&&(identical(other.usage, usage) || other.usage == usage)&&(identical(other.acpStatus, acpStatus) || other.acpStatus == acpStatus)&&(identical(other.operationError, operationError) || other.operationError == operationError)&&const DeepCollectionEquality().equals(other.actions, _actions));
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is _AccountRowPresentation&&(identical(other.key, key) || other.key == key)&&(identical(other.name, name) || other.name == name)&&(identical(other.content, content) || other.content == content)&&(identical(other.iconKey, iconKey) || other.iconKey == iconKey)&&(identical(other.isDefault, isDefault) || other.isDefault == isDefault)&&(identical(other.operationError, operationError) || other.operationError == operationError)&&const DeepCollectionEquality().equals(other.actions, _actions));
 }
 
 
 @override
 int get hashCode {
-    return Object.hash(runtimeType,key,name,iconKey,isDefault,billing,usage,acpStatus,operationError,const DeepCollectionEquality().hash(_actions));
+    return Object.hash(runtimeType,key,name,content,iconKey,isDefault,operationError,const DeepCollectionEquality().hash(_actions));
 }
 
 @override
 String toString() {
-    return 'AccountRowPresentation(key: $key, name: $name, iconKey: $iconKey, isDefault: $isDefault, billing: $billing, usage: $usage, acpStatus: $acpStatus, operationError: $operationError, actions: $actions)';
+    return 'AccountRowPresentation(key: $key, name: $name, content: $content, iconKey: $iconKey, isDefault: $isDefault, operationError: $operationError, actions: $actions)';
 }
 
 
@@ -2253,11 +2844,11 @@ abstract mixin class _$AccountRowPresentationCopyWith<$Res> implements $AccountR
   factory _$AccountRowPresentationCopyWith(_AccountRowPresentation value, $Res Function(_AccountRowPresentation) _then) = __$AccountRowPresentationCopyWithImpl;
 @override @useResult
 $Res call({
- AccountDisplayKey key, String name, String? iconKey, bool isDefault, AccountBilling? billing, AccountUsagePresentation? usage, String? acpStatus, String? operationError, List<AccountRowAction> actions
+ AccountDisplayKey key, String name, AccountRowContent content, String? iconKey, bool isDefault, String? operationError, List<AccountRowAction> actions
 });
 
 
-@override $AccountDisplayKeyCopyWith<$Res> get key;@override $AccountUsagePresentationCopyWith<$Res>? get usage;
+@override $AccountDisplayKeyCopyWith<$Res> get key;@override $AccountRowContentCopyWith<$Res> get content;
 
 }
 /// @nodoc
@@ -2270,16 +2861,14 @@ class __$AccountRowPresentationCopyWithImpl<$Res>
 
 /// Create a copy of AccountRowPresentation
 /// with the given fields replaced by the non-null parameter values.
-@override @pragma('vm:prefer-inline') $Res call({Object? key = null,Object? name = null,Object? iconKey = freezed,Object? isDefault = null,Object? billing = freezed,Object? usage = freezed,Object? acpStatus = freezed,Object? operationError = freezed,Object? actions = null,}) {
+@override @pragma('vm:prefer-inline') $Res call({Object? key = null,Object? name = null,Object? content = null,Object? iconKey = freezed,Object? isDefault = null,Object? operationError = freezed,Object? actions = null,}) {
   return _then(_AccountRowPresentation(
 key: null == key ? _self.key : key // ignore: cast_nullable_to_non_nullable
 as AccountDisplayKey,name: null == name ? _self.name : name // ignore: cast_nullable_to_non_nullable
-as String,iconKey: freezed == iconKey ? _self.iconKey : iconKey // ignore: cast_nullable_to_non_nullable
+as String,content: null == content ? _self.content : content // ignore: cast_nullable_to_non_nullable
+as AccountRowContent,iconKey: freezed == iconKey ? _self.iconKey : iconKey // ignore: cast_nullable_to_non_nullable
 as String?,isDefault: null == isDefault ? _self.isDefault : isDefault // ignore: cast_nullable_to_non_nullable
-as bool,billing: freezed == billing ? _self.billing : billing // ignore: cast_nullable_to_non_nullable
-as AccountBilling?,usage: freezed == usage ? _self.usage : usage // ignore: cast_nullable_to_non_nullable
-as AccountUsagePresentation?,acpStatus: freezed == acpStatus ? _self.acpStatus : acpStatus // ignore: cast_nullable_to_non_nullable
-as String?,operationError: freezed == operationError ? _self.operationError : operationError // ignore: cast_nullable_to_non_nullable
+as bool,operationError: freezed == operationError ? _self.operationError : operationError // ignore: cast_nullable_to_non_nullable
 as String?,actions: null == actions ? _self._actions : actions // ignore: cast_nullable_to_non_nullable
 as List<AccountRowAction>,
   ));
@@ -2298,13 +2887,10 @@ $AccountDisplayKeyCopyWith<$Res> get key {
 /// with the given fields replaced by the non-null parameter values.
 @override
 @pragma('vm:prefer-inline')
-$AccountUsagePresentationCopyWith<$Res>? get usage {
-    if (_self.usage == null) {
-    return null;
-  }
+$AccountRowContentCopyWith<$Res> get content {
 
-  return $AccountUsagePresentationCopyWith<$Res>(_self.usage!, (value) {
-    return _then(_self.copyWith(usage: value));
+  return $AccountRowContentCopyWith<$Res>(_self.content, (value) {
+    return _then(_self.copyWith(content: value));
   });
 }
 }
@@ -2312,7 +2898,7 @@ $AccountUsagePresentationCopyWith<$Res>? get usage {
 /// @nodoc
 mixin _$AccountsListPresentation {
 
- AccountListPhase get phase; List<AccountRowPresentation> get rows; String get search; bool get searchHasNoResults; bool get refreshing; bool get canAdd; bool get canRefresh; String? get error; AccountDisplayKey? get selectedKey; AccountDisplayKey? get editingKey;
+ AccountListPhase get phase; List<AccountRowPresentation> get rows; String get search; bool get searchHasNoResults; bool get refreshing; bool get canAdd; bool get canRefresh; String? get error;
 /// Create a copy of AccountsListPresentation
 /// with the given fields replaced by the non-null parameter values.
 @JsonKey(includeFromJson: false, includeToJson: false)
@@ -2324,20 +2910,20 @@ $AccountsListPresentationCopyWith<AccountsListPresentation> get copyWith => _$Ac
 @override
 bool operator ==(Object other) {
   final _this = this as AccountsListPresentation;
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is AccountsListPresentation&&(identical(other.phase, _this.phase) || other.phase == _this.phase)&&const DeepCollectionEquality().equals(other.rows, _this.rows)&&(identical(other.search, _this.search) || other.search == _this.search)&&(identical(other.searchHasNoResults, _this.searchHasNoResults) || other.searchHasNoResults == _this.searchHasNoResults)&&(identical(other.refreshing, _this.refreshing) || other.refreshing == _this.refreshing)&&(identical(other.canAdd, _this.canAdd) || other.canAdd == _this.canAdd)&&(identical(other.canRefresh, _this.canRefresh) || other.canRefresh == _this.canRefresh)&&(identical(other.error, _this.error) || other.error == _this.error)&&(identical(other.selectedKey, _this.selectedKey) || other.selectedKey == _this.selectedKey)&&(identical(other.editingKey, _this.editingKey) || other.editingKey == _this.editingKey));
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is AccountsListPresentation&&(identical(other.phase, _this.phase) || other.phase == _this.phase)&&const DeepCollectionEquality().equals(other.rows, _this.rows)&&(identical(other.search, _this.search) || other.search == _this.search)&&(identical(other.searchHasNoResults, _this.searchHasNoResults) || other.searchHasNoResults == _this.searchHasNoResults)&&(identical(other.refreshing, _this.refreshing) || other.refreshing == _this.refreshing)&&(identical(other.canAdd, _this.canAdd) || other.canAdd == _this.canAdd)&&(identical(other.canRefresh, _this.canRefresh) || other.canRefresh == _this.canRefresh)&&(identical(other.error, _this.error) || other.error == _this.error));
 }
 
 
 @override
 int get hashCode {
   final _this = this as AccountsListPresentation;
-  return Object.hash(runtimeType,_this.phase,const DeepCollectionEquality().hash(_this.rows),_this.search,_this.searchHasNoResults,_this.refreshing,_this.canAdd,_this.canRefresh,_this.error,_this.selectedKey,_this.editingKey);
+  return Object.hash(runtimeType,_this.phase,const DeepCollectionEquality().hash(_this.rows),_this.search,_this.searchHasNoResults,_this.refreshing,_this.canAdd,_this.canRefresh,_this.error);
 }
 
 @override
 String toString() {
   final _this = this as AccountsListPresentation;
-  return 'AccountsListPresentation(phase: ${_this.phase}, rows: ${_this.rows}, search: ${_this.search}, searchHasNoResults: ${_this.searchHasNoResults}, refreshing: ${_this.refreshing}, canAdd: ${_this.canAdd}, canRefresh: ${_this.canRefresh}, error: ${_this.error}, selectedKey: ${_this.selectedKey}, editingKey: ${_this.editingKey})';
+  return 'AccountsListPresentation(phase: ${_this.phase}, rows: ${_this.rows}, search: ${_this.search}, searchHasNoResults: ${_this.searchHasNoResults}, refreshing: ${_this.refreshing}, canAdd: ${_this.canAdd}, canRefresh: ${_this.canRefresh}, error: ${_this.error})';
 }
 
 
@@ -2348,11 +2934,11 @@ abstract mixin class $AccountsListPresentationCopyWith<$Res>  {
   factory $AccountsListPresentationCopyWith(AccountsListPresentation value, $Res Function(AccountsListPresentation) _then) = _$AccountsListPresentationCopyWithImpl;
 @useResult
 $Res call({
- AccountListPhase phase, List<AccountRowPresentation> rows, String search, bool searchHasNoResults, bool refreshing, bool canAdd, bool canRefresh, String? error, AccountDisplayKey? selectedKey, AccountDisplayKey? editingKey
+ AccountListPhase phase, List<AccountRowPresentation> rows, String search, bool searchHasNoResults, bool refreshing, bool canAdd, bool canRefresh, String? error
 });
 
 
-$AccountDisplayKeyCopyWith<$Res>? get selectedKey;$AccountDisplayKeyCopyWith<$Res>? get editingKey;
+
 
 }
 /// @nodoc
@@ -2365,7 +2951,7 @@ class _$AccountsListPresentationCopyWithImpl<$Res>
 
 /// Create a copy of AccountsListPresentation
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') @override $Res call({Object? phase = null,Object? rows = null,Object? search = null,Object? searchHasNoResults = null,Object? refreshing = null,Object? canAdd = null,Object? canRefresh = null,Object? error = freezed,Object? selectedKey = freezed,Object? editingKey = freezed,}) {
+@pragma('vm:prefer-inline') @override $Res call({Object? phase = null,Object? rows = null,Object? search = null,Object? searchHasNoResults = null,Object? refreshing = null,Object? canAdd = null,Object? canRefresh = null,Object? error = freezed,}) {
   return _then(AccountsListPresentation(
 phase: null == phase ? _self.phase : phase // ignore: cast_nullable_to_non_nullable
 as AccountListPhase,rows: null == rows ? _self.rows : rows // ignore: cast_nullable_to_non_nullable
@@ -2375,36 +2961,10 @@ as bool,refreshing: null == refreshing ? _self.refreshing : refreshing // ignore
 as bool,canAdd: null == canAdd ? _self.canAdd : canAdd // ignore: cast_nullable_to_non_nullable
 as bool,canRefresh: null == canRefresh ? _self.canRefresh : canRefresh // ignore: cast_nullable_to_non_nullable
 as bool,error: freezed == error ? _self.error : error // ignore: cast_nullable_to_non_nullable
-as String?,selectedKey: freezed == selectedKey ? _self.selectedKey : selectedKey // ignore: cast_nullable_to_non_nullable
-as AccountDisplayKey?,editingKey: freezed == editingKey ? _self.editingKey : editingKey // ignore: cast_nullable_to_non_nullable
-as AccountDisplayKey?,
+as String?,
   ));
 }
-/// Create a copy of AccountsListPresentation
-/// with the given fields replaced by the non-null parameter values.
-@override
-@pragma('vm:prefer-inline')
-$AccountDisplayKeyCopyWith<$Res>? get selectedKey {
-    if (_self.selectedKey == null) {
-    return null;
-  }
 
-  return $AccountDisplayKeyCopyWith<$Res>(_self.selectedKey!, (value) {
-    return _then(_self.copyWith(selectedKey: value));
-  });
-}/// Create a copy of AccountsListPresentation
-/// with the given fields replaced by the non-null parameter values.
-@override
-@pragma('vm:prefer-inline')
-$AccountDisplayKeyCopyWith<$Res>? get editingKey {
-    if (_self.editingKey == null) {
-    return null;
-  }
-
-  return $AccountDisplayKeyCopyWith<$Res>(_self.editingKey!, (value) {
-    return _then(_self.copyWith(editingKey: value));
-  });
-}
 }
 
 
@@ -2486,10 +3046,10 @@ return $default(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( AccountListPhase phase,  List<AccountRowPresentation> rows,  String search,  bool searchHasNoResults,  bool refreshing,  bool canAdd,  bool canRefresh,  String? error,  AccountDisplayKey? selectedKey,  AccountDisplayKey? editingKey)?  $default,{required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( AccountListPhase phase,  List<AccountRowPresentation> rows,  String search,  bool searchHasNoResults,  bool refreshing,  bool canAdd,  bool canRefresh,  String? error)?  $default,{required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case _AccountsListPresentation() when $default != null:
-return $default(_that.phase,_that.rows,_that.search,_that.searchHasNoResults,_that.refreshing,_that.canAdd,_that.canRefresh,_that.error,_that.selectedKey,_that.editingKey);case _:
+return $default(_that.phase,_that.rows,_that.search,_that.searchHasNoResults,_that.refreshing,_that.canAdd,_that.canRefresh,_that.error);case _:
   return orElse();
 
 }
@@ -2507,10 +3067,10 @@ return $default(_that.phase,_that.rows,_that.search,_that.searchHasNoResults,_th
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( AccountListPhase phase,  List<AccountRowPresentation> rows,  String search,  bool searchHasNoResults,  bool refreshing,  bool canAdd,  bool canRefresh,  String? error,  AccountDisplayKey? selectedKey,  AccountDisplayKey? editingKey)  $default,) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( AccountListPhase phase,  List<AccountRowPresentation> rows,  String search,  bool searchHasNoResults,  bool refreshing,  bool canAdd,  bool canRefresh,  String? error)  $default,) {final _that = this;
 switch (_that) {
 case _AccountsListPresentation():
-return $default(_that.phase,_that.rows,_that.search,_that.searchHasNoResults,_that.refreshing,_that.canAdd,_that.canRefresh,_that.error,_that.selectedKey,_that.editingKey);case _:
+return $default(_that.phase,_that.rows,_that.search,_that.searchHasNoResults,_that.refreshing,_that.canAdd,_that.canRefresh,_that.error);case _:
   throw StateError('Unexpected subclass');
 
 }
@@ -2527,10 +3087,10 @@ return $default(_that.phase,_that.rows,_that.search,_that.searchHasNoResults,_th
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( AccountListPhase phase,  List<AccountRowPresentation> rows,  String search,  bool searchHasNoResults,  bool refreshing,  bool canAdd,  bool canRefresh,  String? error,  AccountDisplayKey? selectedKey,  AccountDisplayKey? editingKey)?  $default,) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( AccountListPhase phase,  List<AccountRowPresentation> rows,  String search,  bool searchHasNoResults,  bool refreshing,  bool canAdd,  bool canRefresh,  String? error)?  $default,) {final _that = this;
 switch (_that) {
 case _AccountsListPresentation() when $default != null:
-return $default(_that.phase,_that.rows,_that.search,_that.searchHasNoResults,_that.refreshing,_that.canAdd,_that.canRefresh,_that.error,_that.selectedKey,_that.editingKey);case _:
+return $default(_that.phase,_that.rows,_that.search,_that.searchHasNoResults,_that.refreshing,_that.canAdd,_that.canRefresh,_that.error);case _:
   return null;
 
 }
@@ -2542,7 +3102,7 @@ return $default(_that.phase,_that.rows,_that.search,_that.searchHasNoResults,_th
 
 
 class _AccountsListPresentation implements AccountsListPresentation {
-  const _AccountsListPresentation({this.phase = AccountListPhase.ready,  List<AccountRowPresentation> rows = const <AccountRowPresentation>[], this.search = '', this.searchHasNoResults = false, this.refreshing = false, this.canAdd = true, this.canRefresh = false, this.error, this.selectedKey, this.editingKey}): _rows = rows;
+  const _AccountsListPresentation({this.phase = AccountListPhase.ready,  List<AccountRowPresentation> rows = const <AccountRowPresentation>[], this.search = '', this.searchHasNoResults = false, this.refreshing = false, this.canAdd = true, this.canRefresh = false, this.error}): _rows = rows;
 
 
 @override@JsonKey() final  AccountListPhase phase;
@@ -2559,8 +3119,6 @@ class _AccountsListPresentation implements AccountsListPresentation {
 @override@JsonKey() final  bool canAdd;
 @override@JsonKey() final  bool canRefresh;
 @override final  String? error;
-@override final  AccountDisplayKey? selectedKey;
-@override final  AccountDisplayKey? editingKey;
 
 /// Create a copy of AccountsListPresentation
 /// with the given fields replaced by the non-null parameter values.
@@ -2572,18 +3130,18 @@ _$AccountsListPresentationCopyWith<_AccountsListPresentation> get copyWith => __
 
 @override
 bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is _AccountsListPresentation&&(identical(other.phase, phase) || other.phase == phase)&&const DeepCollectionEquality().equals(other.rows, _rows)&&(identical(other.search, search) || other.search == search)&&(identical(other.searchHasNoResults, searchHasNoResults) || other.searchHasNoResults == searchHasNoResults)&&(identical(other.refreshing, refreshing) || other.refreshing == refreshing)&&(identical(other.canAdd, canAdd) || other.canAdd == canAdd)&&(identical(other.canRefresh, canRefresh) || other.canRefresh == canRefresh)&&(identical(other.error, error) || other.error == error)&&(identical(other.selectedKey, selectedKey) || other.selectedKey == selectedKey)&&(identical(other.editingKey, editingKey) || other.editingKey == editingKey));
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is _AccountsListPresentation&&(identical(other.phase, phase) || other.phase == phase)&&const DeepCollectionEquality().equals(other.rows, _rows)&&(identical(other.search, search) || other.search == search)&&(identical(other.searchHasNoResults, searchHasNoResults) || other.searchHasNoResults == searchHasNoResults)&&(identical(other.refreshing, refreshing) || other.refreshing == refreshing)&&(identical(other.canAdd, canAdd) || other.canAdd == canAdd)&&(identical(other.canRefresh, canRefresh) || other.canRefresh == canRefresh)&&(identical(other.error, error) || other.error == error));
 }
 
 
 @override
 int get hashCode {
-    return Object.hash(runtimeType,phase,const DeepCollectionEquality().hash(_rows),search,searchHasNoResults,refreshing,canAdd,canRefresh,error,selectedKey,editingKey);
+    return Object.hash(runtimeType,phase,const DeepCollectionEquality().hash(_rows),search,searchHasNoResults,refreshing,canAdd,canRefresh,error);
 }
 
 @override
 String toString() {
-    return 'AccountsListPresentation(phase: $phase, rows: $rows, search: $search, searchHasNoResults: $searchHasNoResults, refreshing: $refreshing, canAdd: $canAdd, canRefresh: $canRefresh, error: $error, selectedKey: $selectedKey, editingKey: $editingKey)';
+    return 'AccountsListPresentation(phase: $phase, rows: $rows, search: $search, searchHasNoResults: $searchHasNoResults, refreshing: $refreshing, canAdd: $canAdd, canRefresh: $canRefresh, error: $error)';
 }
 
 
@@ -2594,11 +3152,11 @@ abstract mixin class _$AccountsListPresentationCopyWith<$Res> implements $Accoun
   factory _$AccountsListPresentationCopyWith(_AccountsListPresentation value, $Res Function(_AccountsListPresentation) _then) = __$AccountsListPresentationCopyWithImpl;
 @override @useResult
 $Res call({
- AccountListPhase phase, List<AccountRowPresentation> rows, String search, bool searchHasNoResults, bool refreshing, bool canAdd, bool canRefresh, String? error, AccountDisplayKey? selectedKey, AccountDisplayKey? editingKey
+ AccountListPhase phase, List<AccountRowPresentation> rows, String search, bool searchHasNoResults, bool refreshing, bool canAdd, bool canRefresh, String? error
 });
 
 
-@override $AccountDisplayKeyCopyWith<$Res>? get selectedKey;@override $AccountDisplayKeyCopyWith<$Res>? get editingKey;
+
 
 }
 /// @nodoc
@@ -2611,7 +3169,7 @@ class __$AccountsListPresentationCopyWithImpl<$Res>
 
 /// Create a copy of AccountsListPresentation
 /// with the given fields replaced by the non-null parameter values.
-@override @pragma('vm:prefer-inline') $Res call({Object? phase = null,Object? rows = null,Object? search = null,Object? searchHasNoResults = null,Object? refreshing = null,Object? canAdd = null,Object? canRefresh = null,Object? error = freezed,Object? selectedKey = freezed,Object? editingKey = freezed,}) {
+@override @pragma('vm:prefer-inline') $Res call({Object? phase = null,Object? rows = null,Object? search = null,Object? searchHasNoResults = null,Object? refreshing = null,Object? canAdd = null,Object? canRefresh = null,Object? error = freezed,}) {
   return _then(_AccountsListPresentation(
 phase: null == phase ? _self.phase : phase // ignore: cast_nullable_to_non_nullable
 as AccountListPhase,rows: null == rows ? _self._rows : rows // ignore: cast_nullable_to_non_nullable
@@ -2621,37 +3179,11 @@ as bool,refreshing: null == refreshing ? _self.refreshing : refreshing // ignore
 as bool,canAdd: null == canAdd ? _self.canAdd : canAdd // ignore: cast_nullable_to_non_nullable
 as bool,canRefresh: null == canRefresh ? _self.canRefresh : canRefresh // ignore: cast_nullable_to_non_nullable
 as bool,error: freezed == error ? _self.error : error // ignore: cast_nullable_to_non_nullable
-as String?,selectedKey: freezed == selectedKey ? _self.selectedKey : selectedKey // ignore: cast_nullable_to_non_nullable
-as AccountDisplayKey?,editingKey: freezed == editingKey ? _self.editingKey : editingKey // ignore: cast_nullable_to_non_nullable
-as AccountDisplayKey?,
+as String?,
   ));
 }
 
-/// Create a copy of AccountsListPresentation
-/// with the given fields replaced by the non-null parameter values.
-@override
-@pragma('vm:prefer-inline')
-$AccountDisplayKeyCopyWith<$Res>? get selectedKey {
-    if (_self.selectedKey == null) {
-    return null;
-  }
 
-  return $AccountDisplayKeyCopyWith<$Res>(_self.selectedKey!, (value) {
-    return _then(_self.copyWith(selectedKey: value));
-  });
-}/// Create a copy of AccountsListPresentation
-/// with the given fields replaced by the non-null parameter values.
-@override
-@pragma('vm:prefer-inline')
-$AccountDisplayKeyCopyWith<$Res>? get editingKey {
-    if (_self.editingKey == null) {
-    return null;
-  }
-
-  return $AccountDisplayKeyCopyWith<$Res>(_self.editingKey!, (value) {
-    return _then(_self.copyWith(editingKey: value));
-  });
-}
 }
 
 /// @nodoc
@@ -2915,6 +3447,294 @@ class __$AccountDisplayFactCopyWithImpl<$Res>
 label: null == label ? _self.label : label // ignore: cast_nullable_to_non_nullable
 as String,value: null == value ? _self.value : value // ignore: cast_nullable_to_non_nullable
 as String,
+  ));
+}
+
+
+}
+
+/// @nodoc
+mixin _$AccountModelSpecificationFacts {
+
+ List<AccountDisplayFact> get modalityCapabilities; List<AccountDisplayFact> get context; List<AccountDisplayFact> get connection;
+/// Create a copy of AccountModelSpecificationFacts
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$AccountModelSpecificationFactsCopyWith<AccountModelSpecificationFacts> get copyWith => _$AccountModelSpecificationFactsCopyWithImpl<AccountModelSpecificationFacts>(this as AccountModelSpecificationFacts, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+  final _this = this as AccountModelSpecificationFacts;
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is AccountModelSpecificationFacts&&const DeepCollectionEquality().equals(other.modalityCapabilities, _this.modalityCapabilities)&&const DeepCollectionEquality().equals(other.context, _this.context)&&const DeepCollectionEquality().equals(other.connection, _this.connection));
+}
+
+
+@override
+int get hashCode {
+  final _this = this as AccountModelSpecificationFacts;
+  return Object.hash(runtimeType,const DeepCollectionEquality().hash(_this.modalityCapabilities),const DeepCollectionEquality().hash(_this.context),const DeepCollectionEquality().hash(_this.connection));
+}
+
+@override
+String toString() {
+  final _this = this as AccountModelSpecificationFacts;
+  return 'AccountModelSpecificationFacts(modalityCapabilities: ${_this.modalityCapabilities}, context: ${_this.context}, connection: ${_this.connection})';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $AccountModelSpecificationFactsCopyWith<$Res>  {
+  factory $AccountModelSpecificationFactsCopyWith(AccountModelSpecificationFacts value, $Res Function(AccountModelSpecificationFacts) _then) = _$AccountModelSpecificationFactsCopyWithImpl;
+@useResult
+$Res call({
+ List<AccountDisplayFact> modalityCapabilities, List<AccountDisplayFact> context, List<AccountDisplayFact> connection
+});
+
+
+
+
+}
+/// @nodoc
+class _$AccountModelSpecificationFactsCopyWithImpl<$Res>
+    implements $AccountModelSpecificationFactsCopyWith<$Res> {
+  _$AccountModelSpecificationFactsCopyWithImpl(this._self, this._then);
+
+  final AccountModelSpecificationFacts _self;
+  final $Res Function(AccountModelSpecificationFacts) _then;
+
+/// Create a copy of AccountModelSpecificationFacts
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') @override $Res call({Object? modalityCapabilities = null,Object? context = null,Object? connection = null,}) {
+  return _then(AccountModelSpecificationFacts(
+modalityCapabilities: null == modalityCapabilities ? _self.modalityCapabilities : modalityCapabilities // ignore: cast_nullable_to_non_nullable
+as List<AccountDisplayFact>,context: null == context ? _self.context : context // ignore: cast_nullable_to_non_nullable
+as List<AccountDisplayFact>,connection: null == connection ? _self.connection : connection // ignore: cast_nullable_to_non_nullable
+as List<AccountDisplayFact>,
+  ));
+}
+
+}
+
+
+/// Adds pattern-matching-related methods to [AccountModelSpecificationFacts].
+extension AccountModelSpecificationFactsPatterns on AccountModelSpecificationFacts {
+/// A variant of `map` that fallback to returning `orElse`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeMap<TResult extends Object?>(TResult Function( _AccountModelSpecificationFacts value)?  $default,{required TResult orElse(),}){
+final _that = this;
+switch (_that) {
+case _AccountModelSpecificationFacts() when $default != null:
+return $default(_that);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// Callbacks receives the raw object, upcasted.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case final Subclass2 value:
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult map<TResult extends Object?>(TResult Function( _AccountModelSpecificationFacts value)  $default,){
+final _that = this;
+switch (_that) {
+case _AccountModelSpecificationFacts():
+return $default(_that);case _:
+  throw StateError('Unexpected subclass');
+
+}
+}
+/// A variant of `map` that fallback to returning `null`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>(TResult? Function( _AccountModelSpecificationFacts value)?  $default,){
+final _that = this;
+switch (_that) {
+case _AccountModelSpecificationFacts() when $default != null:
+return $default(_that);case _:
+  return null;
+
+}
+}
+/// A variant of `when` that fallback to an `orElse` callback.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( List<AccountDisplayFact> modalityCapabilities,  List<AccountDisplayFact> context,  List<AccountDisplayFact> connection)?  $default,{required TResult orElse(),}) {final _that = this;
+switch (_that) {
+case _AccountModelSpecificationFacts() when $default != null:
+return $default(_that.modalityCapabilities,_that.context,_that.connection);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// As opposed to `map`, this offers destructuring.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case Subclass2(:final field2):
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( List<AccountDisplayFact> modalityCapabilities,  List<AccountDisplayFact> context,  List<AccountDisplayFact> connection)  $default,) {final _that = this;
+switch (_that) {
+case _AccountModelSpecificationFacts():
+return $default(_that.modalityCapabilities,_that.context,_that.connection);case _:
+  throw StateError('Unexpected subclass');
+
+}
+}
+/// A variant of `when` that fallback to returning `null`
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( List<AccountDisplayFact> modalityCapabilities,  List<AccountDisplayFact> context,  List<AccountDisplayFact> connection)?  $default,) {final _that = this;
+switch (_that) {
+case _AccountModelSpecificationFacts() when $default != null:
+return $default(_that.modalityCapabilities,_that.context,_that.connection);case _:
+  return null;
+
+}
+}
+
+}
+
+/// @nodoc
+
+
+class _AccountModelSpecificationFacts implements AccountModelSpecificationFacts {
+  const _AccountModelSpecificationFacts({ List<AccountDisplayFact> modalityCapabilities = const <AccountDisplayFact>[],  List<AccountDisplayFact> context = const <AccountDisplayFact>[],  List<AccountDisplayFact> connection = const <AccountDisplayFact>[]}): _modalityCapabilities = modalityCapabilities,_context = context,_connection = connection;
+
+
+ final  List<AccountDisplayFact> _modalityCapabilities;
+@override@JsonKey() List<AccountDisplayFact> get modalityCapabilities {
+  if (_modalityCapabilities is EqualUnmodifiableListView) return _modalityCapabilities;
+  // ignore: implicit_dynamic_type
+  return EqualUnmodifiableListView(_modalityCapabilities);
+}
+
+ final  List<AccountDisplayFact> _context;
+@override@JsonKey() List<AccountDisplayFact> get context {
+  if (_context is EqualUnmodifiableListView) return _context;
+  // ignore: implicit_dynamic_type
+  return EqualUnmodifiableListView(_context);
+}
+
+ final  List<AccountDisplayFact> _connection;
+@override@JsonKey() List<AccountDisplayFact> get connection {
+  if (_connection is EqualUnmodifiableListView) return _connection;
+  // ignore: implicit_dynamic_type
+  return EqualUnmodifiableListView(_connection);
+}
+
+
+/// Create a copy of AccountModelSpecificationFacts
+/// with the given fields replaced by the non-null parameter values.
+@override @JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+_$AccountModelSpecificationFactsCopyWith<_AccountModelSpecificationFacts> get copyWith => __$AccountModelSpecificationFactsCopyWithImpl<_AccountModelSpecificationFacts>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is _AccountModelSpecificationFacts&&const DeepCollectionEquality().equals(other.modalityCapabilities, _modalityCapabilities)&&const DeepCollectionEquality().equals(other.context, _context)&&const DeepCollectionEquality().equals(other.connection, _connection));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,const DeepCollectionEquality().hash(_modalityCapabilities),const DeepCollectionEquality().hash(_context),const DeepCollectionEquality().hash(_connection));
+}
+
+@override
+String toString() {
+    return 'AccountModelSpecificationFacts(modalityCapabilities: $modalityCapabilities, context: $context, connection: $connection)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class _$AccountModelSpecificationFactsCopyWith<$Res> implements $AccountModelSpecificationFactsCopyWith<$Res> {
+  factory _$AccountModelSpecificationFactsCopyWith(_AccountModelSpecificationFacts value, $Res Function(_AccountModelSpecificationFacts) _then) = __$AccountModelSpecificationFactsCopyWithImpl;
+@override @useResult
+$Res call({
+ List<AccountDisplayFact> modalityCapabilities, List<AccountDisplayFact> context, List<AccountDisplayFact> connection
+});
+
+
+
+
+}
+/// @nodoc
+class __$AccountModelSpecificationFactsCopyWithImpl<$Res>
+    implements _$AccountModelSpecificationFactsCopyWith<$Res> {
+  __$AccountModelSpecificationFactsCopyWithImpl(this._self, this._then);
+
+  final _AccountModelSpecificationFacts _self;
+  final $Res Function(_AccountModelSpecificationFacts) _then;
+
+/// Create a copy of AccountModelSpecificationFacts
+/// with the given fields replaced by the non-null parameter values.
+@override @pragma('vm:prefer-inline') $Res call({Object? modalityCapabilities = null,Object? context = null,Object? connection = null,}) {
+  return _then(_AccountModelSpecificationFacts(
+modalityCapabilities: null == modalityCapabilities ? _self._modalityCapabilities : modalityCapabilities // ignore: cast_nullable_to_non_nullable
+as List<AccountDisplayFact>,context: null == context ? _self._context : context // ignore: cast_nullable_to_non_nullable
+as List<AccountDisplayFact>,connection: null == connection ? _self._connection : connection // ignore: cast_nullable_to_non_nullable
+as List<AccountDisplayFact>,
   ));
 }
 
@@ -3206,7 +4026,7 @@ as String?,
 /// @nodoc
 mixin _$AccountCompactPresentation {
 
- String get raw; bool get overridden; String? get effective; String? get automatic; String? get error; bool get saving; bool get canEdit; bool get canReset; bool get canRetry;
+ String get raw; bool get overridden; String? get effective; String? get automatic; String? get error; bool get saving; bool get canEdit; bool get canReset; bool get canRetry; bool get dirty; bool get canSave; int? get contextWindow; bool get adjusted;
 /// Create a copy of AccountCompactPresentation
 /// with the given fields replaced by the non-null parameter values.
 @JsonKey(includeFromJson: false, includeToJson: false)
@@ -3218,20 +4038,20 @@ $AccountCompactPresentationCopyWith<AccountCompactPresentation> get copyWith => 
 @override
 bool operator ==(Object other) {
   final _this = this as AccountCompactPresentation;
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is AccountCompactPresentation&&(identical(other.raw, _this.raw) || other.raw == _this.raw)&&(identical(other.overridden, _this.overridden) || other.overridden == _this.overridden)&&(identical(other.effective, _this.effective) || other.effective == _this.effective)&&(identical(other.automatic, _this.automatic) || other.automatic == _this.automatic)&&(identical(other.error, _this.error) || other.error == _this.error)&&(identical(other.saving, _this.saving) || other.saving == _this.saving)&&(identical(other.canEdit, _this.canEdit) || other.canEdit == _this.canEdit)&&(identical(other.canReset, _this.canReset) || other.canReset == _this.canReset)&&(identical(other.canRetry, _this.canRetry) || other.canRetry == _this.canRetry));
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is AccountCompactPresentation&&(identical(other.raw, _this.raw) || other.raw == _this.raw)&&(identical(other.overridden, _this.overridden) || other.overridden == _this.overridden)&&(identical(other.effective, _this.effective) || other.effective == _this.effective)&&(identical(other.automatic, _this.automatic) || other.automatic == _this.automatic)&&(identical(other.error, _this.error) || other.error == _this.error)&&(identical(other.saving, _this.saving) || other.saving == _this.saving)&&(identical(other.canEdit, _this.canEdit) || other.canEdit == _this.canEdit)&&(identical(other.canReset, _this.canReset) || other.canReset == _this.canReset)&&(identical(other.canRetry, _this.canRetry) || other.canRetry == _this.canRetry)&&(identical(other.dirty, _this.dirty) || other.dirty == _this.dirty)&&(identical(other.canSave, _this.canSave) || other.canSave == _this.canSave)&&(identical(other.contextWindow, _this.contextWindow) || other.contextWindow == _this.contextWindow)&&(identical(other.adjusted, _this.adjusted) || other.adjusted == _this.adjusted));
 }
 
 
 @override
 int get hashCode {
   final _this = this as AccountCompactPresentation;
-  return Object.hash(runtimeType,_this.raw,_this.overridden,_this.effective,_this.automatic,_this.error,_this.saving,_this.canEdit,_this.canReset,_this.canRetry);
+  return Object.hash(runtimeType,_this.raw,_this.overridden,_this.effective,_this.automatic,_this.error,_this.saving,_this.canEdit,_this.canReset,_this.canRetry,_this.dirty,_this.canSave,_this.contextWindow,_this.adjusted);
 }
 
 @override
 String toString() {
   final _this = this as AccountCompactPresentation;
-  return 'AccountCompactPresentation(raw: ${_this.raw}, overridden: ${_this.overridden}, effective: ${_this.effective}, automatic: ${_this.automatic}, error: ${_this.error}, saving: ${_this.saving}, canEdit: ${_this.canEdit}, canReset: ${_this.canReset}, canRetry: ${_this.canRetry})';
+  return 'AccountCompactPresentation(raw: ${_this.raw}, overridden: ${_this.overridden}, effective: ${_this.effective}, automatic: ${_this.automatic}, error: ${_this.error}, saving: ${_this.saving}, canEdit: ${_this.canEdit}, canReset: ${_this.canReset}, canRetry: ${_this.canRetry}, dirty: ${_this.dirty}, canSave: ${_this.canSave}, contextWindow: ${_this.contextWindow}, adjusted: ${_this.adjusted})';
 }
 
 
@@ -3242,7 +4062,7 @@ abstract mixin class $AccountCompactPresentationCopyWith<$Res>  {
   factory $AccountCompactPresentationCopyWith(AccountCompactPresentation value, $Res Function(AccountCompactPresentation) _then) = _$AccountCompactPresentationCopyWithImpl;
 @useResult
 $Res call({
- String raw, bool overridden, String? effective, String? automatic, String? error, bool saving, bool canEdit, bool canReset, bool canRetry
+ String raw, bool overridden, String? effective, String? automatic, String? error, bool saving, bool canEdit, bool canReset, bool canRetry, bool dirty, bool canSave, int? contextWindow, bool adjusted
 });
 
 
@@ -3259,7 +4079,7 @@ class _$AccountCompactPresentationCopyWithImpl<$Res>
 
 /// Create a copy of AccountCompactPresentation
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') @override $Res call({Object? raw = null,Object? overridden = null,Object? effective = freezed,Object? automatic = freezed,Object? error = freezed,Object? saving = null,Object? canEdit = null,Object? canReset = null,Object? canRetry = null,}) {
+@pragma('vm:prefer-inline') @override $Res call({Object? raw = null,Object? overridden = null,Object? effective = freezed,Object? automatic = freezed,Object? error = freezed,Object? saving = null,Object? canEdit = null,Object? canReset = null,Object? canRetry = null,Object? dirty = null,Object? canSave = null,Object? contextWindow = freezed,Object? adjusted = null,}) {
   return _then(AccountCompactPresentation(
 raw: null == raw ? _self.raw : raw // ignore: cast_nullable_to_non_nullable
 as String,overridden: null == overridden ? _self.overridden : overridden // ignore: cast_nullable_to_non_nullable
@@ -3270,6 +4090,10 @@ as String?,saving: null == saving ? _self.saving : saving // ignore: cast_nullab
 as bool,canEdit: null == canEdit ? _self.canEdit : canEdit // ignore: cast_nullable_to_non_nullable
 as bool,canReset: null == canReset ? _self.canReset : canReset // ignore: cast_nullable_to_non_nullable
 as bool,canRetry: null == canRetry ? _self.canRetry : canRetry // ignore: cast_nullable_to_non_nullable
+as bool,dirty: null == dirty ? _self.dirty : dirty // ignore: cast_nullable_to_non_nullable
+as bool,canSave: null == canSave ? _self.canSave : canSave // ignore: cast_nullable_to_non_nullable
+as bool,contextWindow: freezed == contextWindow ? _self.contextWindow : contextWindow // ignore: cast_nullable_to_non_nullable
+as int?,adjusted: null == adjusted ? _self.adjusted : adjusted // ignore: cast_nullable_to_non_nullable
 as bool,
   ));
 }
@@ -3355,10 +4179,10 @@ return $default(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( String raw,  bool overridden,  String? effective,  String? automatic,  String? error,  bool saving,  bool canEdit,  bool canReset,  bool canRetry)?  $default,{required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( String raw,  bool overridden,  String? effective,  String? automatic,  String? error,  bool saving,  bool canEdit,  bool canReset,  bool canRetry,  bool dirty,  bool canSave,  int? contextWindow,  bool adjusted)?  $default,{required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case _AccountCompactPresentation() when $default != null:
-return $default(_that.raw,_that.overridden,_that.effective,_that.automatic,_that.error,_that.saving,_that.canEdit,_that.canReset,_that.canRetry);case _:
+return $default(_that.raw,_that.overridden,_that.effective,_that.automatic,_that.error,_that.saving,_that.canEdit,_that.canReset,_that.canRetry,_that.dirty,_that.canSave,_that.contextWindow,_that.adjusted);case _:
   return orElse();
 
 }
@@ -3376,10 +4200,10 @@ return $default(_that.raw,_that.overridden,_that.effective,_that.automatic,_that
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( String raw,  bool overridden,  String? effective,  String? automatic,  String? error,  bool saving,  bool canEdit,  bool canReset,  bool canRetry)  $default,) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( String raw,  bool overridden,  String? effective,  String? automatic,  String? error,  bool saving,  bool canEdit,  bool canReset,  bool canRetry,  bool dirty,  bool canSave,  int? contextWindow,  bool adjusted)  $default,) {final _that = this;
 switch (_that) {
 case _AccountCompactPresentation():
-return $default(_that.raw,_that.overridden,_that.effective,_that.automatic,_that.error,_that.saving,_that.canEdit,_that.canReset,_that.canRetry);case _:
+return $default(_that.raw,_that.overridden,_that.effective,_that.automatic,_that.error,_that.saving,_that.canEdit,_that.canReset,_that.canRetry,_that.dirty,_that.canSave,_that.contextWindow,_that.adjusted);case _:
   throw StateError('Unexpected subclass');
 
 }
@@ -3396,10 +4220,10 @@ return $default(_that.raw,_that.overridden,_that.effective,_that.automatic,_that
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( String raw,  bool overridden,  String? effective,  String? automatic,  String? error,  bool saving,  bool canEdit,  bool canReset,  bool canRetry)?  $default,) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( String raw,  bool overridden,  String? effective,  String? automatic,  String? error,  bool saving,  bool canEdit,  bool canReset,  bool canRetry,  bool dirty,  bool canSave,  int? contextWindow,  bool adjusted)?  $default,) {final _that = this;
 switch (_that) {
 case _AccountCompactPresentation() when $default != null:
-return $default(_that.raw,_that.overridden,_that.effective,_that.automatic,_that.error,_that.saving,_that.canEdit,_that.canReset,_that.canRetry);case _:
+return $default(_that.raw,_that.overridden,_that.effective,_that.automatic,_that.error,_that.saving,_that.canEdit,_that.canReset,_that.canRetry,_that.dirty,_that.canSave,_that.contextWindow,_that.adjusted);case _:
   return null;
 
 }
@@ -3411,7 +4235,7 @@ return $default(_that.raw,_that.overridden,_that.effective,_that.automatic,_that
 
 
 class _AccountCompactPresentation implements AccountCompactPresentation {
-  const _AccountCompactPresentation({this.raw = '', this.overridden = false, this.effective, this.automatic, this.error, this.saving = false, this.canEdit = false, this.canReset = false, this.canRetry = false});
+  const _AccountCompactPresentation({this.raw = '', this.overridden = false, this.effective, this.automatic, this.error, this.saving = false, this.canEdit = false, this.canReset = false, this.canRetry = false, this.dirty = false, this.canSave = false, this.contextWindow, this.adjusted = false});
 
 
 @override@JsonKey() final  String raw;
@@ -3423,6 +4247,10 @@ class _AccountCompactPresentation implements AccountCompactPresentation {
 @override@JsonKey() final  bool canEdit;
 @override@JsonKey() final  bool canReset;
 @override@JsonKey() final  bool canRetry;
+@override@JsonKey() final  bool dirty;
+@override@JsonKey() final  bool canSave;
+@override final  int? contextWindow;
+@override@JsonKey() final  bool adjusted;
 
 /// Create a copy of AccountCompactPresentation
 /// with the given fields replaced by the non-null parameter values.
@@ -3434,18 +4262,18 @@ _$AccountCompactPresentationCopyWith<_AccountCompactPresentation> get copyWith =
 
 @override
 bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is _AccountCompactPresentation&&(identical(other.raw, raw) || other.raw == raw)&&(identical(other.overridden, overridden) || other.overridden == overridden)&&(identical(other.effective, effective) || other.effective == effective)&&(identical(other.automatic, automatic) || other.automatic == automatic)&&(identical(other.error, error) || other.error == error)&&(identical(other.saving, saving) || other.saving == saving)&&(identical(other.canEdit, canEdit) || other.canEdit == canEdit)&&(identical(other.canReset, canReset) || other.canReset == canReset)&&(identical(other.canRetry, canRetry) || other.canRetry == canRetry));
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is _AccountCompactPresentation&&(identical(other.raw, raw) || other.raw == raw)&&(identical(other.overridden, overridden) || other.overridden == overridden)&&(identical(other.effective, effective) || other.effective == effective)&&(identical(other.automatic, automatic) || other.automatic == automatic)&&(identical(other.error, error) || other.error == error)&&(identical(other.saving, saving) || other.saving == saving)&&(identical(other.canEdit, canEdit) || other.canEdit == canEdit)&&(identical(other.canReset, canReset) || other.canReset == canReset)&&(identical(other.canRetry, canRetry) || other.canRetry == canRetry)&&(identical(other.dirty, dirty) || other.dirty == dirty)&&(identical(other.canSave, canSave) || other.canSave == canSave)&&(identical(other.contextWindow, contextWindow) || other.contextWindow == contextWindow)&&(identical(other.adjusted, adjusted) || other.adjusted == adjusted));
 }
 
 
 @override
 int get hashCode {
-    return Object.hash(runtimeType,raw,overridden,effective,automatic,error,saving,canEdit,canReset,canRetry);
+    return Object.hash(runtimeType,raw,overridden,effective,automatic,error,saving,canEdit,canReset,canRetry,dirty,canSave,contextWindow,adjusted);
 }
 
 @override
 String toString() {
-    return 'AccountCompactPresentation(raw: $raw, overridden: $overridden, effective: $effective, automatic: $automatic, error: $error, saving: $saving, canEdit: $canEdit, canReset: $canReset, canRetry: $canRetry)';
+    return 'AccountCompactPresentation(raw: $raw, overridden: $overridden, effective: $effective, automatic: $automatic, error: $error, saving: $saving, canEdit: $canEdit, canReset: $canReset, canRetry: $canRetry, dirty: $dirty, canSave: $canSave, contextWindow: $contextWindow, adjusted: $adjusted)';
 }
 
 
@@ -3456,7 +4284,7 @@ abstract mixin class _$AccountCompactPresentationCopyWith<$Res> implements $Acco
   factory _$AccountCompactPresentationCopyWith(_AccountCompactPresentation value, $Res Function(_AccountCompactPresentation) _then) = __$AccountCompactPresentationCopyWithImpl;
 @override @useResult
 $Res call({
- String raw, bool overridden, String? effective, String? automatic, String? error, bool saving, bool canEdit, bool canReset, bool canRetry
+ String raw, bool overridden, String? effective, String? automatic, String? error, bool saving, bool canEdit, bool canReset, bool canRetry, bool dirty, bool canSave, int? contextWindow, bool adjusted
 });
 
 
@@ -3473,7 +4301,7 @@ class __$AccountCompactPresentationCopyWithImpl<$Res>
 
 /// Create a copy of AccountCompactPresentation
 /// with the given fields replaced by the non-null parameter values.
-@override @pragma('vm:prefer-inline') $Res call({Object? raw = null,Object? overridden = null,Object? effective = freezed,Object? automatic = freezed,Object? error = freezed,Object? saving = null,Object? canEdit = null,Object? canReset = null,Object? canRetry = null,}) {
+@override @pragma('vm:prefer-inline') $Res call({Object? raw = null,Object? overridden = null,Object? effective = freezed,Object? automatic = freezed,Object? error = freezed,Object? saving = null,Object? canEdit = null,Object? canReset = null,Object? canRetry = null,Object? dirty = null,Object? canSave = null,Object? contextWindow = freezed,Object? adjusted = null,}) {
   return _then(_AccountCompactPresentation(
 raw: null == raw ? _self.raw : raw // ignore: cast_nullable_to_non_nullable
 as String,overridden: null == overridden ? _self.overridden : overridden // ignore: cast_nullable_to_non_nullable
@@ -3484,6 +4312,10 @@ as String?,saving: null == saving ? _self.saving : saving // ignore: cast_nullab
 as bool,canEdit: null == canEdit ? _self.canEdit : canEdit // ignore: cast_nullable_to_non_nullable
 as bool,canReset: null == canReset ? _self.canReset : canReset // ignore: cast_nullable_to_non_nullable
 as bool,canRetry: null == canRetry ? _self.canRetry : canRetry // ignore: cast_nullable_to_non_nullable
+as bool,dirty: null == dirty ? _self.dirty : dirty // ignore: cast_nullable_to_non_nullable
+as bool,canSave: null == canSave ? _self.canSave : canSave // ignore: cast_nullable_to_non_nullable
+as bool,contextWindow: freezed == contextWindow ? _self.contextWindow : contextWindow // ignore: cast_nullable_to_non_nullable
+as int?,adjusted: null == adjusted ? _self.adjusted : adjusted // ignore: cast_nullable_to_non_nullable
 as bool,
   ));
 }
@@ -3494,7 +4326,7 @@ as bool,
 /// @nodoc
 mixin _$AccountModelEvaluation {
 
- String get title; String get outcome; String get updatedLabel; String get comment; List<AccountDisplayFact> get scores;
+ AccountEvaluationCategory get category; String get categoryLabel; AccountEvaluationOutcome get outcome; String get outcomeLabel; String get updatedLabel; int get updatedAt; String get comment; int? get quality; int? get instructionFollowing;
 /// Create a copy of AccountModelEvaluation
 /// with the given fields replaced by the non-null parameter values.
 @JsonKey(includeFromJson: false, includeToJson: false)
@@ -3506,20 +4338,20 @@ $AccountModelEvaluationCopyWith<AccountModelEvaluation> get copyWith => _$Accoun
 @override
 bool operator ==(Object other) {
   final _this = this as AccountModelEvaluation;
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is AccountModelEvaluation&&(identical(other.title, _this.title) || other.title == _this.title)&&(identical(other.outcome, _this.outcome) || other.outcome == _this.outcome)&&(identical(other.updatedLabel, _this.updatedLabel) || other.updatedLabel == _this.updatedLabel)&&(identical(other.comment, _this.comment) || other.comment == _this.comment)&&const DeepCollectionEquality().equals(other.scores, _this.scores));
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is AccountModelEvaluation&&(identical(other.category, _this.category) || other.category == _this.category)&&(identical(other.categoryLabel, _this.categoryLabel) || other.categoryLabel == _this.categoryLabel)&&(identical(other.outcome, _this.outcome) || other.outcome == _this.outcome)&&(identical(other.outcomeLabel, _this.outcomeLabel) || other.outcomeLabel == _this.outcomeLabel)&&(identical(other.updatedLabel, _this.updatedLabel) || other.updatedLabel == _this.updatedLabel)&&(identical(other.updatedAt, _this.updatedAt) || other.updatedAt == _this.updatedAt)&&(identical(other.comment, _this.comment) || other.comment == _this.comment)&&(identical(other.quality, _this.quality) || other.quality == _this.quality)&&(identical(other.instructionFollowing, _this.instructionFollowing) || other.instructionFollowing == _this.instructionFollowing));
 }
 
 
 @override
 int get hashCode {
   final _this = this as AccountModelEvaluation;
-  return Object.hash(runtimeType,_this.title,_this.outcome,_this.updatedLabel,_this.comment,const DeepCollectionEquality().hash(_this.scores));
+  return Object.hash(runtimeType,_this.category,_this.categoryLabel,_this.outcome,_this.outcomeLabel,_this.updatedLabel,_this.updatedAt,_this.comment,_this.quality,_this.instructionFollowing);
 }
 
 @override
 String toString() {
   final _this = this as AccountModelEvaluation;
-  return 'AccountModelEvaluation(title: ${_this.title}, outcome: ${_this.outcome}, updatedLabel: ${_this.updatedLabel}, comment: ${_this.comment}, scores: ${_this.scores})';
+  return 'AccountModelEvaluation(category: ${_this.category}, categoryLabel: ${_this.categoryLabel}, outcome: ${_this.outcome}, outcomeLabel: ${_this.outcomeLabel}, updatedLabel: ${_this.updatedLabel}, updatedAt: ${_this.updatedAt}, comment: ${_this.comment}, quality: ${_this.quality}, instructionFollowing: ${_this.instructionFollowing})';
 }
 
 
@@ -3530,7 +4362,7 @@ abstract mixin class $AccountModelEvaluationCopyWith<$Res>  {
   factory $AccountModelEvaluationCopyWith(AccountModelEvaluation value, $Res Function(AccountModelEvaluation) _then) = _$AccountModelEvaluationCopyWithImpl;
 @useResult
 $Res call({
- String title, String outcome, String updatedLabel, String comment, List<AccountDisplayFact> scores
+ AccountEvaluationCategory category, String categoryLabel, AccountEvaluationOutcome outcome, String outcomeLabel, String updatedLabel, int updatedAt, String comment, int? quality, int? instructionFollowing
 });
 
 
@@ -3547,14 +4379,18 @@ class _$AccountModelEvaluationCopyWithImpl<$Res>
 
 /// Create a copy of AccountModelEvaluation
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') @override $Res call({Object? title = null,Object? outcome = null,Object? updatedLabel = null,Object? comment = null,Object? scores = null,}) {
+@pragma('vm:prefer-inline') @override $Res call({Object? category = null,Object? categoryLabel = null,Object? outcome = null,Object? outcomeLabel = null,Object? updatedLabel = null,Object? updatedAt = null,Object? comment = null,Object? quality = freezed,Object? instructionFollowing = freezed,}) {
   return _then(AccountModelEvaluation(
-title: null == title ? _self.title : title // ignore: cast_nullable_to_non_nullable
+category: null == category ? _self.category : category // ignore: cast_nullable_to_non_nullable
+as AccountEvaluationCategory,categoryLabel: null == categoryLabel ? _self.categoryLabel : categoryLabel // ignore: cast_nullable_to_non_nullable
 as String,outcome: null == outcome ? _self.outcome : outcome // ignore: cast_nullable_to_non_nullable
+as AccountEvaluationOutcome,outcomeLabel: null == outcomeLabel ? _self.outcomeLabel : outcomeLabel // ignore: cast_nullable_to_non_nullable
 as String,updatedLabel: null == updatedLabel ? _self.updatedLabel : updatedLabel // ignore: cast_nullable_to_non_nullable
-as String,comment: null == comment ? _self.comment : comment // ignore: cast_nullable_to_non_nullable
-as String,scores: null == scores ? _self.scores : scores // ignore: cast_nullable_to_non_nullable
-as List<AccountDisplayFact>,
+as String,updatedAt: null == updatedAt ? _self.updatedAt : updatedAt // ignore: cast_nullable_to_non_nullable
+as int,comment: null == comment ? _self.comment : comment // ignore: cast_nullable_to_non_nullable
+as String,quality: freezed == quality ? _self.quality : quality // ignore: cast_nullable_to_non_nullable
+as int?,instructionFollowing: freezed == instructionFollowing ? _self.instructionFollowing : instructionFollowing // ignore: cast_nullable_to_non_nullable
+as int?,
   ));
 }
 
@@ -3639,10 +4475,10 @@ return $default(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( String title,  String outcome,  String updatedLabel,  String comment,  List<AccountDisplayFact> scores)?  $default,{required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( AccountEvaluationCategory category,  String categoryLabel,  AccountEvaluationOutcome outcome,  String outcomeLabel,  String updatedLabel,  int updatedAt,  String comment,  int? quality,  int? instructionFollowing)?  $default,{required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case _AccountModelEvaluation() when $default != null:
-return $default(_that.title,_that.outcome,_that.updatedLabel,_that.comment,_that.scores);case _:
+return $default(_that.category,_that.categoryLabel,_that.outcome,_that.outcomeLabel,_that.updatedLabel,_that.updatedAt,_that.comment,_that.quality,_that.instructionFollowing);case _:
   return orElse();
 
 }
@@ -3660,10 +4496,10 @@ return $default(_that.title,_that.outcome,_that.updatedLabel,_that.comment,_that
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( String title,  String outcome,  String updatedLabel,  String comment,  List<AccountDisplayFact> scores)  $default,) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( AccountEvaluationCategory category,  String categoryLabel,  AccountEvaluationOutcome outcome,  String outcomeLabel,  String updatedLabel,  int updatedAt,  String comment,  int? quality,  int? instructionFollowing)  $default,) {final _that = this;
 switch (_that) {
 case _AccountModelEvaluation():
-return $default(_that.title,_that.outcome,_that.updatedLabel,_that.comment,_that.scores);case _:
+return $default(_that.category,_that.categoryLabel,_that.outcome,_that.outcomeLabel,_that.updatedLabel,_that.updatedAt,_that.comment,_that.quality,_that.instructionFollowing);case _:
   throw StateError('Unexpected subclass');
 
 }
@@ -3680,10 +4516,10 @@ return $default(_that.title,_that.outcome,_that.updatedLabel,_that.comment,_that
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( String title,  String outcome,  String updatedLabel,  String comment,  List<AccountDisplayFact> scores)?  $default,) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( AccountEvaluationCategory category,  String categoryLabel,  AccountEvaluationOutcome outcome,  String outcomeLabel,  String updatedLabel,  int updatedAt,  String comment,  int? quality,  int? instructionFollowing)?  $default,) {final _that = this;
 switch (_that) {
 case _AccountModelEvaluation() when $default != null:
-return $default(_that.title,_that.outcome,_that.updatedLabel,_that.comment,_that.scores);case _:
+return $default(_that.category,_that.categoryLabel,_that.outcome,_that.outcomeLabel,_that.updatedLabel,_that.updatedAt,_that.comment,_that.quality,_that.instructionFollowing);case _:
   return null;
 
 }
@@ -3695,20 +4531,18 @@ return $default(_that.title,_that.outcome,_that.updatedLabel,_that.comment,_that
 
 
 class _AccountModelEvaluation implements AccountModelEvaluation {
-  const _AccountModelEvaluation({required this.title, required this.outcome, required this.updatedLabel, required this.comment,  List<AccountDisplayFact> scores = const <AccountDisplayFact>[]}): _scores = scores;
+  const _AccountModelEvaluation({required this.category, required this.categoryLabel, required this.outcome, required this.outcomeLabel, required this.updatedLabel, required this.updatedAt, required this.comment, this.quality, this.instructionFollowing});
 
 
-@override final  String title;
-@override final  String outcome;
+@override final  AccountEvaluationCategory category;
+@override final  String categoryLabel;
+@override final  AccountEvaluationOutcome outcome;
+@override final  String outcomeLabel;
 @override final  String updatedLabel;
+@override final  int updatedAt;
 @override final  String comment;
- final  List<AccountDisplayFact> _scores;
-@override@JsonKey() List<AccountDisplayFact> get scores {
-  if (_scores is EqualUnmodifiableListView) return _scores;
-  // ignore: implicit_dynamic_type
-  return EqualUnmodifiableListView(_scores);
-}
-
+@override final  int? quality;
+@override final  int? instructionFollowing;
 
 /// Create a copy of AccountModelEvaluation
 /// with the given fields replaced by the non-null parameter values.
@@ -3720,18 +4554,18 @@ _$AccountModelEvaluationCopyWith<_AccountModelEvaluation> get copyWith => __$Acc
 
 @override
 bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is _AccountModelEvaluation&&(identical(other.title, title) || other.title == title)&&(identical(other.outcome, outcome) || other.outcome == outcome)&&(identical(other.updatedLabel, updatedLabel) || other.updatedLabel == updatedLabel)&&(identical(other.comment, comment) || other.comment == comment)&&const DeepCollectionEquality().equals(other.scores, _scores));
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is _AccountModelEvaluation&&(identical(other.category, category) || other.category == category)&&(identical(other.categoryLabel, categoryLabel) || other.categoryLabel == categoryLabel)&&(identical(other.outcome, outcome) || other.outcome == outcome)&&(identical(other.outcomeLabel, outcomeLabel) || other.outcomeLabel == outcomeLabel)&&(identical(other.updatedLabel, updatedLabel) || other.updatedLabel == updatedLabel)&&(identical(other.updatedAt, updatedAt) || other.updatedAt == updatedAt)&&(identical(other.comment, comment) || other.comment == comment)&&(identical(other.quality, quality) || other.quality == quality)&&(identical(other.instructionFollowing, instructionFollowing) || other.instructionFollowing == instructionFollowing));
 }
 
 
 @override
 int get hashCode {
-    return Object.hash(runtimeType,title,outcome,updatedLabel,comment,const DeepCollectionEquality().hash(_scores));
+    return Object.hash(runtimeType,category,categoryLabel,outcome,outcomeLabel,updatedLabel,updatedAt,comment,quality,instructionFollowing);
 }
 
 @override
 String toString() {
-    return 'AccountModelEvaluation(title: $title, outcome: $outcome, updatedLabel: $updatedLabel, comment: $comment, scores: $scores)';
+    return 'AccountModelEvaluation(category: $category, categoryLabel: $categoryLabel, outcome: $outcome, outcomeLabel: $outcomeLabel, updatedLabel: $updatedLabel, updatedAt: $updatedAt, comment: $comment, quality: $quality, instructionFollowing: $instructionFollowing)';
 }
 
 
@@ -3742,7 +4576,7 @@ abstract mixin class _$AccountModelEvaluationCopyWith<$Res> implements $AccountM
   factory _$AccountModelEvaluationCopyWith(_AccountModelEvaluation value, $Res Function(_AccountModelEvaluation) _then) = __$AccountModelEvaluationCopyWithImpl;
 @override @useResult
 $Res call({
- String title, String outcome, String updatedLabel, String comment, List<AccountDisplayFact> scores
+ AccountEvaluationCategory category, String categoryLabel, AccountEvaluationOutcome outcome, String outcomeLabel, String updatedLabel, int updatedAt, String comment, int? quality, int? instructionFollowing
 });
 
 
@@ -3759,14 +4593,1152 @@ class __$AccountModelEvaluationCopyWithImpl<$Res>
 
 /// Create a copy of AccountModelEvaluation
 /// with the given fields replaced by the non-null parameter values.
-@override @pragma('vm:prefer-inline') $Res call({Object? title = null,Object? outcome = null,Object? updatedLabel = null,Object? comment = null,Object? scores = null,}) {
+@override @pragma('vm:prefer-inline') $Res call({Object? category = null,Object? categoryLabel = null,Object? outcome = null,Object? outcomeLabel = null,Object? updatedLabel = null,Object? updatedAt = null,Object? comment = null,Object? quality = freezed,Object? instructionFollowing = freezed,}) {
   return _then(_AccountModelEvaluation(
-title: null == title ? _self.title : title // ignore: cast_nullable_to_non_nullable
+category: null == category ? _self.category : category // ignore: cast_nullable_to_non_nullable
+as AccountEvaluationCategory,categoryLabel: null == categoryLabel ? _self.categoryLabel : categoryLabel // ignore: cast_nullable_to_non_nullable
 as String,outcome: null == outcome ? _self.outcome : outcome // ignore: cast_nullable_to_non_nullable
+as AccountEvaluationOutcome,outcomeLabel: null == outcomeLabel ? _self.outcomeLabel : outcomeLabel // ignore: cast_nullable_to_non_nullable
 as String,updatedLabel: null == updatedLabel ? _self.updatedLabel : updatedLabel // ignore: cast_nullable_to_non_nullable
-as String,comment: null == comment ? _self.comment : comment // ignore: cast_nullable_to_non_nullable
-as String,scores: null == scores ? _self._scores : scores // ignore: cast_nullable_to_non_nullable
-as List<AccountDisplayFact>,
+as String,updatedAt: null == updatedAt ? _self.updatedAt : updatedAt // ignore: cast_nullable_to_non_nullable
+as int,comment: null == comment ? _self.comment : comment // ignore: cast_nullable_to_non_nullable
+as String,quality: freezed == quality ? _self.quality : quality // ignore: cast_nullable_to_non_nullable
+as int?,instructionFollowing: freezed == instructionFollowing ? _self.instructionFollowing : instructionFollowing // ignore: cast_nullable_to_non_nullable
+as int?,
+  ));
+}
+
+
+}
+
+/// @nodoc
+mixin _$AccountModelPriceTier {
+
+ String get label; double get input; double get output; double? get cacheRead; double? get cacheWrite;
+/// Create a copy of AccountModelPriceTier
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$AccountModelPriceTierCopyWith<AccountModelPriceTier> get copyWith => _$AccountModelPriceTierCopyWithImpl<AccountModelPriceTier>(this as AccountModelPriceTier, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+  final _this = this as AccountModelPriceTier;
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is AccountModelPriceTier&&(identical(other.label, _this.label) || other.label == _this.label)&&(identical(other.input, _this.input) || other.input == _this.input)&&(identical(other.output, _this.output) || other.output == _this.output)&&(identical(other.cacheRead, _this.cacheRead) || other.cacheRead == _this.cacheRead)&&(identical(other.cacheWrite, _this.cacheWrite) || other.cacheWrite == _this.cacheWrite));
+}
+
+
+@override
+int get hashCode {
+  final _this = this as AccountModelPriceTier;
+  return Object.hash(runtimeType,_this.label,_this.input,_this.output,_this.cacheRead,_this.cacheWrite);
+}
+
+@override
+String toString() {
+  final _this = this as AccountModelPriceTier;
+  return 'AccountModelPriceTier(label: ${_this.label}, input: ${_this.input}, output: ${_this.output}, cacheRead: ${_this.cacheRead}, cacheWrite: ${_this.cacheWrite})';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $AccountModelPriceTierCopyWith<$Res>  {
+  factory $AccountModelPriceTierCopyWith(AccountModelPriceTier value, $Res Function(AccountModelPriceTier) _then) = _$AccountModelPriceTierCopyWithImpl;
+@useResult
+$Res call({
+ String label, double input, double output, double? cacheRead, double? cacheWrite
+});
+
+
+
+
+}
+/// @nodoc
+class _$AccountModelPriceTierCopyWithImpl<$Res>
+    implements $AccountModelPriceTierCopyWith<$Res> {
+  _$AccountModelPriceTierCopyWithImpl(this._self, this._then);
+
+  final AccountModelPriceTier _self;
+  final $Res Function(AccountModelPriceTier) _then;
+
+/// Create a copy of AccountModelPriceTier
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') @override $Res call({Object? label = null,Object? input = null,Object? output = null,Object? cacheRead = freezed,Object? cacheWrite = freezed,}) {
+  return _then(AccountModelPriceTier(
+label: null == label ? _self.label : label // ignore: cast_nullable_to_non_nullable
+as String,input: null == input ? _self.input : input // ignore: cast_nullable_to_non_nullable
+as double,output: null == output ? _self.output : output // ignore: cast_nullable_to_non_nullable
+as double,cacheRead: freezed == cacheRead ? _self.cacheRead : cacheRead // ignore: cast_nullable_to_non_nullable
+as double?,cacheWrite: freezed == cacheWrite ? _self.cacheWrite : cacheWrite // ignore: cast_nullable_to_non_nullable
+as double?,
+  ));
+}
+
+}
+
+
+/// Adds pattern-matching-related methods to [AccountModelPriceTier].
+extension AccountModelPriceTierPatterns on AccountModelPriceTier {
+/// A variant of `map` that fallback to returning `orElse`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeMap<TResult extends Object?>(TResult Function( _AccountModelPriceTier value)?  $default,{required TResult orElse(),}){
+final _that = this;
+switch (_that) {
+case _AccountModelPriceTier() when $default != null:
+return $default(_that);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// Callbacks receives the raw object, upcasted.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case final Subclass2 value:
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult map<TResult extends Object?>(TResult Function( _AccountModelPriceTier value)  $default,){
+final _that = this;
+switch (_that) {
+case _AccountModelPriceTier():
+return $default(_that);case _:
+  throw StateError('Unexpected subclass');
+
+}
+}
+/// A variant of `map` that fallback to returning `null`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>(TResult? Function( _AccountModelPriceTier value)?  $default,){
+final _that = this;
+switch (_that) {
+case _AccountModelPriceTier() when $default != null:
+return $default(_that);case _:
+  return null;
+
+}
+}
+/// A variant of `when` that fallback to an `orElse` callback.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( String label,  double input,  double output,  double? cacheRead,  double? cacheWrite)?  $default,{required TResult orElse(),}) {final _that = this;
+switch (_that) {
+case _AccountModelPriceTier() when $default != null:
+return $default(_that.label,_that.input,_that.output,_that.cacheRead,_that.cacheWrite);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// As opposed to `map`, this offers destructuring.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case Subclass2(:final field2):
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( String label,  double input,  double output,  double? cacheRead,  double? cacheWrite)  $default,) {final _that = this;
+switch (_that) {
+case _AccountModelPriceTier():
+return $default(_that.label,_that.input,_that.output,_that.cacheRead,_that.cacheWrite);case _:
+  throw StateError('Unexpected subclass');
+
+}
+}
+/// A variant of `when` that fallback to returning `null`
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( String label,  double input,  double output,  double? cacheRead,  double? cacheWrite)?  $default,) {final _that = this;
+switch (_that) {
+case _AccountModelPriceTier() when $default != null:
+return $default(_that.label,_that.input,_that.output,_that.cacheRead,_that.cacheWrite);case _:
+  return null;
+
+}
+}
+
+}
+
+/// @nodoc
+
+
+class _AccountModelPriceTier implements AccountModelPriceTier {
+  const _AccountModelPriceTier({required this.label, required this.input, required this.output, this.cacheRead, this.cacheWrite});
+
+
+@override final  String label;
+@override final  double input;
+@override final  double output;
+@override final  double? cacheRead;
+@override final  double? cacheWrite;
+
+/// Create a copy of AccountModelPriceTier
+/// with the given fields replaced by the non-null parameter values.
+@override @JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+_$AccountModelPriceTierCopyWith<_AccountModelPriceTier> get copyWith => __$AccountModelPriceTierCopyWithImpl<_AccountModelPriceTier>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is _AccountModelPriceTier&&(identical(other.label, label) || other.label == label)&&(identical(other.input, input) || other.input == input)&&(identical(other.output, output) || other.output == output)&&(identical(other.cacheRead, cacheRead) || other.cacheRead == cacheRead)&&(identical(other.cacheWrite, cacheWrite) || other.cacheWrite == cacheWrite));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,label,input,output,cacheRead,cacheWrite);
+}
+
+@override
+String toString() {
+    return 'AccountModelPriceTier(label: $label, input: $input, output: $output, cacheRead: $cacheRead, cacheWrite: $cacheWrite)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class _$AccountModelPriceTierCopyWith<$Res> implements $AccountModelPriceTierCopyWith<$Res> {
+  factory _$AccountModelPriceTierCopyWith(_AccountModelPriceTier value, $Res Function(_AccountModelPriceTier) _then) = __$AccountModelPriceTierCopyWithImpl;
+@override @useResult
+$Res call({
+ String label, double input, double output, double? cacheRead, double? cacheWrite
+});
+
+
+
+
+}
+/// @nodoc
+class __$AccountModelPriceTierCopyWithImpl<$Res>
+    implements _$AccountModelPriceTierCopyWith<$Res> {
+  __$AccountModelPriceTierCopyWithImpl(this._self, this._then);
+
+  final _AccountModelPriceTier _self;
+  final $Res Function(_AccountModelPriceTier) _then;
+
+/// Create a copy of AccountModelPriceTier
+/// with the given fields replaced by the non-null parameter values.
+@override @pragma('vm:prefer-inline') $Res call({Object? label = null,Object? input = null,Object? output = null,Object? cacheRead = freezed,Object? cacheWrite = freezed,}) {
+  return _then(_AccountModelPriceTier(
+label: null == label ? _self.label : label // ignore: cast_nullable_to_non_nullable
+as String,input: null == input ? _self.input : input // ignore: cast_nullable_to_non_nullable
+as double,output: null == output ? _self.output : output // ignore: cast_nullable_to_non_nullable
+as double,cacheRead: freezed == cacheRead ? _self.cacheRead : cacheRead // ignore: cast_nullable_to_non_nullable
+as double?,cacheWrite: freezed == cacheWrite ? _self.cacheWrite : cacheWrite // ignore: cast_nullable_to_non_nullable
+as double?,
+  ));
+}
+
+
+}
+
+/// @nodoc
+mixin _$AccountEvaluationFilter {
+
+ AccountEvaluationOutcome? get outcome; AccountEvaluationCategory? get category; int? get minimumQuality; AccountEvaluationSort get sort;
+/// Create a copy of AccountEvaluationFilter
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$AccountEvaluationFilterCopyWith<AccountEvaluationFilter> get copyWith => _$AccountEvaluationFilterCopyWithImpl<AccountEvaluationFilter>(this as AccountEvaluationFilter, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+  final _this = this as AccountEvaluationFilter;
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is AccountEvaluationFilter&&(identical(other.outcome, _this.outcome) || other.outcome == _this.outcome)&&(identical(other.category, _this.category) || other.category == _this.category)&&(identical(other.minimumQuality, _this.minimumQuality) || other.minimumQuality == _this.minimumQuality)&&(identical(other.sort, _this.sort) || other.sort == _this.sort));
+}
+
+
+@override
+int get hashCode {
+  final _this = this as AccountEvaluationFilter;
+  return Object.hash(runtimeType,_this.outcome,_this.category,_this.minimumQuality,_this.sort);
+}
+
+@override
+String toString() {
+  final _this = this as AccountEvaluationFilter;
+  return 'AccountEvaluationFilter(outcome: ${_this.outcome}, category: ${_this.category}, minimumQuality: ${_this.minimumQuality}, sort: ${_this.sort})';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $AccountEvaluationFilterCopyWith<$Res>  {
+  factory $AccountEvaluationFilterCopyWith(AccountEvaluationFilter value, $Res Function(AccountEvaluationFilter) _then) = _$AccountEvaluationFilterCopyWithImpl;
+@useResult
+$Res call({
+ AccountEvaluationOutcome? outcome, AccountEvaluationCategory? category, int? minimumQuality, AccountEvaluationSort sort
+});
+
+
+
+
+}
+/// @nodoc
+class _$AccountEvaluationFilterCopyWithImpl<$Res>
+    implements $AccountEvaluationFilterCopyWith<$Res> {
+  _$AccountEvaluationFilterCopyWithImpl(this._self, this._then);
+
+  final AccountEvaluationFilter _self;
+  final $Res Function(AccountEvaluationFilter) _then;
+
+/// Create a copy of AccountEvaluationFilter
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') @override $Res call({Object? outcome = freezed,Object? category = freezed,Object? minimumQuality = freezed,Object? sort = null,}) {
+  return _then(AccountEvaluationFilter(
+outcome: freezed == outcome ? _self.outcome : outcome // ignore: cast_nullable_to_non_nullable
+as AccountEvaluationOutcome?,category: freezed == category ? _self.category : category // ignore: cast_nullable_to_non_nullable
+as AccountEvaluationCategory?,minimumQuality: freezed == minimumQuality ? _self.minimumQuality : minimumQuality // ignore: cast_nullable_to_non_nullable
+as int?,sort: null == sort ? _self.sort : sort // ignore: cast_nullable_to_non_nullable
+as AccountEvaluationSort,
+  ));
+}
+
+}
+
+
+/// Adds pattern-matching-related methods to [AccountEvaluationFilter].
+extension AccountEvaluationFilterPatterns on AccountEvaluationFilter {
+/// A variant of `map` that fallback to returning `orElse`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeMap<TResult extends Object?>(TResult Function( _AccountEvaluationFilter value)?  $default,{required TResult orElse(),}){
+final _that = this;
+switch (_that) {
+case _AccountEvaluationFilter() when $default != null:
+return $default(_that);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// Callbacks receives the raw object, upcasted.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case final Subclass2 value:
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult map<TResult extends Object?>(TResult Function( _AccountEvaluationFilter value)  $default,){
+final _that = this;
+switch (_that) {
+case _AccountEvaluationFilter():
+return $default(_that);case _:
+  throw StateError('Unexpected subclass');
+
+}
+}
+/// A variant of `map` that fallback to returning `null`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>(TResult? Function( _AccountEvaluationFilter value)?  $default,){
+final _that = this;
+switch (_that) {
+case _AccountEvaluationFilter() when $default != null:
+return $default(_that);case _:
+  return null;
+
+}
+}
+/// A variant of `when` that fallback to an `orElse` callback.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( AccountEvaluationOutcome? outcome,  AccountEvaluationCategory? category,  int? minimumQuality,  AccountEvaluationSort sort)?  $default,{required TResult orElse(),}) {final _that = this;
+switch (_that) {
+case _AccountEvaluationFilter() when $default != null:
+return $default(_that.outcome,_that.category,_that.minimumQuality,_that.sort);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// As opposed to `map`, this offers destructuring.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case Subclass2(:final field2):
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( AccountEvaluationOutcome? outcome,  AccountEvaluationCategory? category,  int? minimumQuality,  AccountEvaluationSort sort)  $default,) {final _that = this;
+switch (_that) {
+case _AccountEvaluationFilter():
+return $default(_that.outcome,_that.category,_that.minimumQuality,_that.sort);case _:
+  throw StateError('Unexpected subclass');
+
+}
+}
+/// A variant of `when` that fallback to returning `null`
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( AccountEvaluationOutcome? outcome,  AccountEvaluationCategory? category,  int? minimumQuality,  AccountEvaluationSort sort)?  $default,) {final _that = this;
+switch (_that) {
+case _AccountEvaluationFilter() when $default != null:
+return $default(_that.outcome,_that.category,_that.minimumQuality,_that.sort);case _:
+  return null;
+
+}
+}
+
+}
+
+/// @nodoc
+
+
+class _AccountEvaluationFilter implements AccountEvaluationFilter {
+  const _AccountEvaluationFilter({this.outcome, this.category, this.minimumQuality, this.sort = AccountEvaluationSort.newest});
+
+
+@override final  AccountEvaluationOutcome? outcome;
+@override final  AccountEvaluationCategory? category;
+@override final  int? minimumQuality;
+@override@JsonKey() final  AccountEvaluationSort sort;
+
+/// Create a copy of AccountEvaluationFilter
+/// with the given fields replaced by the non-null parameter values.
+@override @JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+_$AccountEvaluationFilterCopyWith<_AccountEvaluationFilter> get copyWith => __$AccountEvaluationFilterCopyWithImpl<_AccountEvaluationFilter>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is _AccountEvaluationFilter&&(identical(other.outcome, outcome) || other.outcome == outcome)&&(identical(other.category, category) || other.category == category)&&(identical(other.minimumQuality, minimumQuality) || other.minimumQuality == minimumQuality)&&(identical(other.sort, sort) || other.sort == sort));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,outcome,category,minimumQuality,sort);
+}
+
+@override
+String toString() {
+    return 'AccountEvaluationFilter(outcome: $outcome, category: $category, minimumQuality: $minimumQuality, sort: $sort)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class _$AccountEvaluationFilterCopyWith<$Res> implements $AccountEvaluationFilterCopyWith<$Res> {
+  factory _$AccountEvaluationFilterCopyWith(_AccountEvaluationFilter value, $Res Function(_AccountEvaluationFilter) _then) = __$AccountEvaluationFilterCopyWithImpl;
+@override @useResult
+$Res call({
+ AccountEvaluationOutcome? outcome, AccountEvaluationCategory? category, int? minimumQuality, AccountEvaluationSort sort
+});
+
+
+
+
+}
+/// @nodoc
+class __$AccountEvaluationFilterCopyWithImpl<$Res>
+    implements _$AccountEvaluationFilterCopyWith<$Res> {
+  __$AccountEvaluationFilterCopyWithImpl(this._self, this._then);
+
+  final _AccountEvaluationFilter _self;
+  final $Res Function(_AccountEvaluationFilter) _then;
+
+/// Create a copy of AccountEvaluationFilter
+/// with the given fields replaced by the non-null parameter values.
+@override @pragma('vm:prefer-inline') $Res call({Object? outcome = freezed,Object? category = freezed,Object? minimumQuality = freezed,Object? sort = null,}) {
+  return _then(_AccountEvaluationFilter(
+outcome: freezed == outcome ? _self.outcome : outcome // ignore: cast_nullable_to_non_nullable
+as AccountEvaluationOutcome?,category: freezed == category ? _self.category : category // ignore: cast_nullable_to_non_nullable
+as AccountEvaluationCategory?,minimumQuality: freezed == minimumQuality ? _self.minimumQuality : minimumQuality // ignore: cast_nullable_to_non_nullable
+as int?,sort: null == sort ? _self.sort : sort // ignore: cast_nullable_to_non_nullable
+as AccountEvaluationSort,
+  ));
+}
+
+
+}
+
+/// @nodoc
+mixin _$AccountEvaluationSummary {
+
+ int get count; double? get quality; double? get instructionFollowing; Map<int, int> get qualityDistribution; List<AccountModelEvaluation> get visible; AccountEvaluationFilter get filter;
+/// Create a copy of AccountEvaluationSummary
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$AccountEvaluationSummaryCopyWith<AccountEvaluationSummary> get copyWith => _$AccountEvaluationSummaryCopyWithImpl<AccountEvaluationSummary>(this as AccountEvaluationSummary, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+  final _this = this as AccountEvaluationSummary;
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is AccountEvaluationSummary&&(identical(other.count, _this.count) || other.count == _this.count)&&(identical(other.quality, _this.quality) || other.quality == _this.quality)&&(identical(other.instructionFollowing, _this.instructionFollowing) || other.instructionFollowing == _this.instructionFollowing)&&const DeepCollectionEquality().equals(other.qualityDistribution, _this.qualityDistribution)&&const DeepCollectionEquality().equals(other.visible, _this.visible)&&(identical(other.filter, _this.filter) || other.filter == _this.filter));
+}
+
+
+@override
+int get hashCode {
+  final _this = this as AccountEvaluationSummary;
+  return Object.hash(runtimeType,_this.count,_this.quality,_this.instructionFollowing,const DeepCollectionEquality().hash(_this.qualityDistribution),const DeepCollectionEquality().hash(_this.visible),_this.filter);
+}
+
+@override
+String toString() {
+  final _this = this as AccountEvaluationSummary;
+  return 'AccountEvaluationSummary(count: ${_this.count}, quality: ${_this.quality}, instructionFollowing: ${_this.instructionFollowing}, qualityDistribution: ${_this.qualityDistribution}, visible: ${_this.visible}, filter: ${_this.filter})';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $AccountEvaluationSummaryCopyWith<$Res>  {
+  factory $AccountEvaluationSummaryCopyWith(AccountEvaluationSummary value, $Res Function(AccountEvaluationSummary) _then) = _$AccountEvaluationSummaryCopyWithImpl;
+@useResult
+$Res call({
+ int count, double? quality, double? instructionFollowing, Map<int, int> qualityDistribution, List<AccountModelEvaluation> visible, AccountEvaluationFilter filter
+});
+
+
+$AccountEvaluationFilterCopyWith<$Res> get filter;
+
+}
+/// @nodoc
+class _$AccountEvaluationSummaryCopyWithImpl<$Res>
+    implements $AccountEvaluationSummaryCopyWith<$Res> {
+  _$AccountEvaluationSummaryCopyWithImpl(this._self, this._then);
+
+  final AccountEvaluationSummary _self;
+  final $Res Function(AccountEvaluationSummary) _then;
+
+/// Create a copy of AccountEvaluationSummary
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') @override $Res call({Object? count = null,Object? quality = freezed,Object? instructionFollowing = freezed,Object? qualityDistribution = null,Object? visible = null,Object? filter = null,}) {
+  return _then(AccountEvaluationSummary(
+count: null == count ? _self.count : count // ignore: cast_nullable_to_non_nullable
+as int,quality: freezed == quality ? _self.quality : quality // ignore: cast_nullable_to_non_nullable
+as double?,instructionFollowing: freezed == instructionFollowing ? _self.instructionFollowing : instructionFollowing // ignore: cast_nullable_to_non_nullable
+as double?,qualityDistribution: null == qualityDistribution ? _self.qualityDistribution : qualityDistribution // ignore: cast_nullable_to_non_nullable
+as Map<int, int>,visible: null == visible ? _self.visible : visible // ignore: cast_nullable_to_non_nullable
+as List<AccountModelEvaluation>,filter: null == filter ? _self.filter : filter // ignore: cast_nullable_to_non_nullable
+as AccountEvaluationFilter,
+  ));
+}
+/// Create a copy of AccountEvaluationSummary
+/// with the given fields replaced by the non-null parameter values.
+@override
+@pragma('vm:prefer-inline')
+$AccountEvaluationFilterCopyWith<$Res> get filter {
+
+  return $AccountEvaluationFilterCopyWith<$Res>(_self.filter, (value) {
+    return _then(_self.copyWith(filter: value));
+  });
+}
+}
+
+
+/// Adds pattern-matching-related methods to [AccountEvaluationSummary].
+extension AccountEvaluationSummaryPatterns on AccountEvaluationSummary {
+/// A variant of `map` that fallback to returning `orElse`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeMap<TResult extends Object?>(TResult Function( _AccountEvaluationSummary value)?  $default,{required TResult orElse(),}){
+final _that = this;
+switch (_that) {
+case _AccountEvaluationSummary() when $default != null:
+return $default(_that);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// Callbacks receives the raw object, upcasted.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case final Subclass2 value:
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult map<TResult extends Object?>(TResult Function( _AccountEvaluationSummary value)  $default,){
+final _that = this;
+switch (_that) {
+case _AccountEvaluationSummary():
+return $default(_that);case _:
+  throw StateError('Unexpected subclass');
+
+}
+}
+/// A variant of `map` that fallback to returning `null`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>(TResult? Function( _AccountEvaluationSummary value)?  $default,){
+final _that = this;
+switch (_that) {
+case _AccountEvaluationSummary() when $default != null:
+return $default(_that);case _:
+  return null;
+
+}
+}
+/// A variant of `when` that fallback to an `orElse` callback.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( int count,  double? quality,  double? instructionFollowing,  Map<int, int> qualityDistribution,  List<AccountModelEvaluation> visible,  AccountEvaluationFilter filter)?  $default,{required TResult orElse(),}) {final _that = this;
+switch (_that) {
+case _AccountEvaluationSummary() when $default != null:
+return $default(_that.count,_that.quality,_that.instructionFollowing,_that.qualityDistribution,_that.visible,_that.filter);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// As opposed to `map`, this offers destructuring.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case Subclass2(:final field2):
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( int count,  double? quality,  double? instructionFollowing,  Map<int, int> qualityDistribution,  List<AccountModelEvaluation> visible,  AccountEvaluationFilter filter)  $default,) {final _that = this;
+switch (_that) {
+case _AccountEvaluationSummary():
+return $default(_that.count,_that.quality,_that.instructionFollowing,_that.qualityDistribution,_that.visible,_that.filter);case _:
+  throw StateError('Unexpected subclass');
+
+}
+}
+/// A variant of `when` that fallback to returning `null`
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( int count,  double? quality,  double? instructionFollowing,  Map<int, int> qualityDistribution,  List<AccountModelEvaluation> visible,  AccountEvaluationFilter filter)?  $default,) {final _that = this;
+switch (_that) {
+case _AccountEvaluationSummary() when $default != null:
+return $default(_that.count,_that.quality,_that.instructionFollowing,_that.qualityDistribution,_that.visible,_that.filter);case _:
+  return null;
+
+}
+}
+
+}
+
+/// @nodoc
+
+
+class _AccountEvaluationSummary implements AccountEvaluationSummary {
+  const _AccountEvaluationSummary({this.count = 0, this.quality, this.instructionFollowing,  Map<int, int> qualityDistribution = const <int, int>{},  List<AccountModelEvaluation> visible = const <AccountModelEvaluation>[], this.filter = const AccountEvaluationFilter()}): _qualityDistribution = qualityDistribution,_visible = visible;
+
+
+@override@JsonKey() final  int count;
+@override final  double? quality;
+@override final  double? instructionFollowing;
+ final  Map<int, int> _qualityDistribution;
+@override@JsonKey() Map<int, int> get qualityDistribution {
+  if (_qualityDistribution is EqualUnmodifiableMapView) return _qualityDistribution;
+  // ignore: implicit_dynamic_type
+  return EqualUnmodifiableMapView(_qualityDistribution);
+}
+
+ final  List<AccountModelEvaluation> _visible;
+@override@JsonKey() List<AccountModelEvaluation> get visible {
+  if (_visible is EqualUnmodifiableListView) return _visible;
+  // ignore: implicit_dynamic_type
+  return EqualUnmodifiableListView(_visible);
+}
+
+@override@JsonKey() final  AccountEvaluationFilter filter;
+
+/// Create a copy of AccountEvaluationSummary
+/// with the given fields replaced by the non-null parameter values.
+@override @JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+_$AccountEvaluationSummaryCopyWith<_AccountEvaluationSummary> get copyWith => __$AccountEvaluationSummaryCopyWithImpl<_AccountEvaluationSummary>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is _AccountEvaluationSummary&&(identical(other.count, count) || other.count == count)&&(identical(other.quality, quality) || other.quality == quality)&&(identical(other.instructionFollowing, instructionFollowing) || other.instructionFollowing == instructionFollowing)&&const DeepCollectionEquality().equals(other.qualityDistribution, _qualityDistribution)&&const DeepCollectionEquality().equals(other.visible, _visible)&&(identical(other.filter, filter) || other.filter == filter));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,count,quality,instructionFollowing,const DeepCollectionEquality().hash(_qualityDistribution),const DeepCollectionEquality().hash(_visible),filter);
+}
+
+@override
+String toString() {
+    return 'AccountEvaluationSummary(count: $count, quality: $quality, instructionFollowing: $instructionFollowing, qualityDistribution: $qualityDistribution, visible: $visible, filter: $filter)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class _$AccountEvaluationSummaryCopyWith<$Res> implements $AccountEvaluationSummaryCopyWith<$Res> {
+  factory _$AccountEvaluationSummaryCopyWith(_AccountEvaluationSummary value, $Res Function(_AccountEvaluationSummary) _then) = __$AccountEvaluationSummaryCopyWithImpl;
+@override @useResult
+$Res call({
+ int count, double? quality, double? instructionFollowing, Map<int, int> qualityDistribution, List<AccountModelEvaluation> visible, AccountEvaluationFilter filter
+});
+
+
+@override $AccountEvaluationFilterCopyWith<$Res> get filter;
+
+}
+/// @nodoc
+class __$AccountEvaluationSummaryCopyWithImpl<$Res>
+    implements _$AccountEvaluationSummaryCopyWith<$Res> {
+  __$AccountEvaluationSummaryCopyWithImpl(this._self, this._then);
+
+  final _AccountEvaluationSummary _self;
+  final $Res Function(_AccountEvaluationSummary) _then;
+
+/// Create a copy of AccountEvaluationSummary
+/// with the given fields replaced by the non-null parameter values.
+@override @pragma('vm:prefer-inline') $Res call({Object? count = null,Object? quality = freezed,Object? instructionFollowing = freezed,Object? qualityDistribution = null,Object? visible = null,Object? filter = null,}) {
+  return _then(_AccountEvaluationSummary(
+count: null == count ? _self.count : count // ignore: cast_nullable_to_non_nullable
+as int,quality: freezed == quality ? _self.quality : quality // ignore: cast_nullable_to_non_nullable
+as double?,instructionFollowing: freezed == instructionFollowing ? _self.instructionFollowing : instructionFollowing // ignore: cast_nullable_to_non_nullable
+as double?,qualityDistribution: null == qualityDistribution ? _self._qualityDistribution : qualityDistribution // ignore: cast_nullable_to_non_nullable
+as Map<int, int>,visible: null == visible ? _self._visible : visible // ignore: cast_nullable_to_non_nullable
+as List<AccountModelEvaluation>,filter: null == filter ? _self.filter : filter // ignore: cast_nullable_to_non_nullable
+as AccountEvaluationFilter,
+  ));
+}
+
+/// Create a copy of AccountEvaluationSummary
+/// with the given fields replaced by the non-null parameter values.
+@override
+@pragma('vm:prefer-inline')
+$AccountEvaluationFilterCopyWith<$Res> get filter {
+
+  return $AccountEvaluationFilterCopyWith<$Res>(_self.filter, (value) {
+    return _then(_self.copyWith(filter: value));
+  });
+}
+}
+
+/// @nodoc
+mixin _$AccountPerformancePresentation {
+
+ int get sampleCount; int get ttftSampleCount; double? get tokensPerSecond; double? get averageTtftMillis; String? get updatedLabel;
+/// Create a copy of AccountPerformancePresentation
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$AccountPerformancePresentationCopyWith<AccountPerformancePresentation> get copyWith => _$AccountPerformancePresentationCopyWithImpl<AccountPerformancePresentation>(this as AccountPerformancePresentation, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+  final _this = this as AccountPerformancePresentation;
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is AccountPerformancePresentation&&(identical(other.sampleCount, _this.sampleCount) || other.sampleCount == _this.sampleCount)&&(identical(other.ttftSampleCount, _this.ttftSampleCount) || other.ttftSampleCount == _this.ttftSampleCount)&&(identical(other.tokensPerSecond, _this.tokensPerSecond) || other.tokensPerSecond == _this.tokensPerSecond)&&(identical(other.averageTtftMillis, _this.averageTtftMillis) || other.averageTtftMillis == _this.averageTtftMillis)&&(identical(other.updatedLabel, _this.updatedLabel) || other.updatedLabel == _this.updatedLabel));
+}
+
+
+@override
+int get hashCode {
+  final _this = this as AccountPerformancePresentation;
+  return Object.hash(runtimeType,_this.sampleCount,_this.ttftSampleCount,_this.tokensPerSecond,_this.averageTtftMillis,_this.updatedLabel);
+}
+
+@override
+String toString() {
+  final _this = this as AccountPerformancePresentation;
+  return 'AccountPerformancePresentation(sampleCount: ${_this.sampleCount}, ttftSampleCount: ${_this.ttftSampleCount}, tokensPerSecond: ${_this.tokensPerSecond}, averageTtftMillis: ${_this.averageTtftMillis}, updatedLabel: ${_this.updatedLabel})';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $AccountPerformancePresentationCopyWith<$Res>  {
+  factory $AccountPerformancePresentationCopyWith(AccountPerformancePresentation value, $Res Function(AccountPerformancePresentation) _then) = _$AccountPerformancePresentationCopyWithImpl;
+@useResult
+$Res call({
+ int sampleCount, int ttftSampleCount, double? tokensPerSecond, double? averageTtftMillis, String? updatedLabel
+});
+
+
+
+
+}
+/// @nodoc
+class _$AccountPerformancePresentationCopyWithImpl<$Res>
+    implements $AccountPerformancePresentationCopyWith<$Res> {
+  _$AccountPerformancePresentationCopyWithImpl(this._self, this._then);
+
+  final AccountPerformancePresentation _self;
+  final $Res Function(AccountPerformancePresentation) _then;
+
+/// Create a copy of AccountPerformancePresentation
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') @override $Res call({Object? sampleCount = null,Object? ttftSampleCount = null,Object? tokensPerSecond = freezed,Object? averageTtftMillis = freezed,Object? updatedLabel = freezed,}) {
+  return _then(AccountPerformancePresentation(
+sampleCount: null == sampleCount ? _self.sampleCount : sampleCount // ignore: cast_nullable_to_non_nullable
+as int,ttftSampleCount: null == ttftSampleCount ? _self.ttftSampleCount : ttftSampleCount // ignore: cast_nullable_to_non_nullable
+as int,tokensPerSecond: freezed == tokensPerSecond ? _self.tokensPerSecond : tokensPerSecond // ignore: cast_nullable_to_non_nullable
+as double?,averageTtftMillis: freezed == averageTtftMillis ? _self.averageTtftMillis : averageTtftMillis // ignore: cast_nullable_to_non_nullable
+as double?,updatedLabel: freezed == updatedLabel ? _self.updatedLabel : updatedLabel // ignore: cast_nullable_to_non_nullable
+as String?,
+  ));
+}
+
+}
+
+
+/// Adds pattern-matching-related methods to [AccountPerformancePresentation].
+extension AccountPerformancePresentationPatterns on AccountPerformancePresentation {
+/// A variant of `map` that fallback to returning `orElse`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeMap<TResult extends Object?>(TResult Function( _AccountPerformancePresentation value)?  $default,{required TResult orElse(),}){
+final _that = this;
+switch (_that) {
+case _AccountPerformancePresentation() when $default != null:
+return $default(_that);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// Callbacks receives the raw object, upcasted.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case final Subclass2 value:
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult map<TResult extends Object?>(TResult Function( _AccountPerformancePresentation value)  $default,){
+final _that = this;
+switch (_that) {
+case _AccountPerformancePresentation():
+return $default(_that);case _:
+  throw StateError('Unexpected subclass');
+
+}
+}
+/// A variant of `map` that fallback to returning `null`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>(TResult? Function( _AccountPerformancePresentation value)?  $default,){
+final _that = this;
+switch (_that) {
+case _AccountPerformancePresentation() when $default != null:
+return $default(_that);case _:
+  return null;
+
+}
+}
+/// A variant of `when` that fallback to an `orElse` callback.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( int sampleCount,  int ttftSampleCount,  double? tokensPerSecond,  double? averageTtftMillis,  String? updatedLabel)?  $default,{required TResult orElse(),}) {final _that = this;
+switch (_that) {
+case _AccountPerformancePresentation() when $default != null:
+return $default(_that.sampleCount,_that.ttftSampleCount,_that.tokensPerSecond,_that.averageTtftMillis,_that.updatedLabel);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// As opposed to `map`, this offers destructuring.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case Subclass2(:final field2):
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( int sampleCount,  int ttftSampleCount,  double? tokensPerSecond,  double? averageTtftMillis,  String? updatedLabel)  $default,) {final _that = this;
+switch (_that) {
+case _AccountPerformancePresentation():
+return $default(_that.sampleCount,_that.ttftSampleCount,_that.tokensPerSecond,_that.averageTtftMillis,_that.updatedLabel);case _:
+  throw StateError('Unexpected subclass');
+
+}
+}
+/// A variant of `when` that fallback to returning `null`
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( int sampleCount,  int ttftSampleCount,  double? tokensPerSecond,  double? averageTtftMillis,  String? updatedLabel)?  $default,) {final _that = this;
+switch (_that) {
+case _AccountPerformancePresentation() when $default != null:
+return $default(_that.sampleCount,_that.ttftSampleCount,_that.tokensPerSecond,_that.averageTtftMillis,_that.updatedLabel);case _:
+  return null;
+
+}
+}
+
+}
+
+/// @nodoc
+
+
+class _AccountPerformancePresentation implements AccountPerformancePresentation {
+  const _AccountPerformancePresentation({required this.sampleCount, required this.ttftSampleCount, this.tokensPerSecond, this.averageTtftMillis, this.updatedLabel});
+
+
+@override final  int sampleCount;
+@override final  int ttftSampleCount;
+@override final  double? tokensPerSecond;
+@override final  double? averageTtftMillis;
+@override final  String? updatedLabel;
+
+/// Create a copy of AccountPerformancePresentation
+/// with the given fields replaced by the non-null parameter values.
+@override @JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+_$AccountPerformancePresentationCopyWith<_AccountPerformancePresentation> get copyWith => __$AccountPerformancePresentationCopyWithImpl<_AccountPerformancePresentation>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is _AccountPerformancePresentation&&(identical(other.sampleCount, sampleCount) || other.sampleCount == sampleCount)&&(identical(other.ttftSampleCount, ttftSampleCount) || other.ttftSampleCount == ttftSampleCount)&&(identical(other.tokensPerSecond, tokensPerSecond) || other.tokensPerSecond == tokensPerSecond)&&(identical(other.averageTtftMillis, averageTtftMillis) || other.averageTtftMillis == averageTtftMillis)&&(identical(other.updatedLabel, updatedLabel) || other.updatedLabel == updatedLabel));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,sampleCount,ttftSampleCount,tokensPerSecond,averageTtftMillis,updatedLabel);
+}
+
+@override
+String toString() {
+    return 'AccountPerformancePresentation(sampleCount: $sampleCount, ttftSampleCount: $ttftSampleCount, tokensPerSecond: $tokensPerSecond, averageTtftMillis: $averageTtftMillis, updatedLabel: $updatedLabel)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class _$AccountPerformancePresentationCopyWith<$Res> implements $AccountPerformancePresentationCopyWith<$Res> {
+  factory _$AccountPerformancePresentationCopyWith(_AccountPerformancePresentation value, $Res Function(_AccountPerformancePresentation) _then) = __$AccountPerformancePresentationCopyWithImpl;
+@override @useResult
+$Res call({
+ int sampleCount, int ttftSampleCount, double? tokensPerSecond, double? averageTtftMillis, String? updatedLabel
+});
+
+
+
+
+}
+/// @nodoc
+class __$AccountPerformancePresentationCopyWithImpl<$Res>
+    implements _$AccountPerformancePresentationCopyWith<$Res> {
+  __$AccountPerformancePresentationCopyWithImpl(this._self, this._then);
+
+  final _AccountPerformancePresentation _self;
+  final $Res Function(_AccountPerformancePresentation) _then;
+
+/// Create a copy of AccountPerformancePresentation
+/// with the given fields replaced by the non-null parameter values.
+@override @pragma('vm:prefer-inline') $Res call({Object? sampleCount = null,Object? ttftSampleCount = null,Object? tokensPerSecond = freezed,Object? averageTtftMillis = freezed,Object? updatedLabel = freezed,}) {
+  return _then(_AccountPerformancePresentation(
+sampleCount: null == sampleCount ? _self.sampleCount : sampleCount // ignore: cast_nullable_to_non_nullable
+as int,ttftSampleCount: null == ttftSampleCount ? _self.ttftSampleCount : ttftSampleCount // ignore: cast_nullable_to_non_nullable
+as int,tokensPerSecond: freezed == tokensPerSecond ? _self.tokensPerSecond : tokensPerSecond // ignore: cast_nullable_to_non_nullable
+as double?,averageTtftMillis: freezed == averageTtftMillis ? _self.averageTtftMillis : averageTtftMillis // ignore: cast_nullable_to_non_nullable
+as double?,updatedLabel: freezed == updatedLabel ? _self.updatedLabel : updatedLabel // ignore: cast_nullable_to_non_nullable
+as String?,
   ));
 }
 
@@ -3776,7 +5748,7 @@ as List<AccountDisplayFact>,
 /// @nodoc
 mixin _$AccountModelPresentation {
 
- AccountModelKey get key; String get name; AccountModelOrigin get origin; bool get enabled; bool get canToggle; bool get saving; String? get error; String? get summary; List<AccountDisplayFact> get capabilities; List<AccountDisplayFact> get priceTiers; List<AccountDisplayFact> get performance; List<AccountModelEvaluation> get evaluations; bool get readoutLoading; String? get readoutError; bool get canLoadReadout; AccountConnection? get connection; List<AccountConnection> get allowedConnections; AccountCompactPresentation? get compact; bool get canEdit; bool get canDelete;
+ AccountModelKey get key; String get name; AccountModelOrigin get origin; bool get enabled; bool get canToggle; bool get saving; String? get error; String? get summary; AccountModelSpecificationFacts get specificationFacts; List<AccountModelPriceTier> get priceTiers; String? get currency; String? get priceSource; String? get priceVerifiedLabel; AccountPerformancePresentation? get performance; List<AccountDisplayFact> get guidance; List<AccountModelEvaluation> get evaluations; AccountEvaluationSummary get evaluationSummary; bool get readoutLoading; String? get readoutError; bool get canLoadReadout; AccountConnection? get connection; List<AccountConnection> get allowedConnections; AccountCompactPresentation? get compact; bool get canEdit; bool get canDelete;
 /// Create a copy of AccountModelPresentation
 /// with the given fields replaced by the non-null parameter values.
 @JsonKey(includeFromJson: false, includeToJson: false)
@@ -3788,20 +5760,20 @@ $AccountModelPresentationCopyWith<AccountModelPresentation> get copyWith => _$Ac
 @override
 bool operator ==(Object other) {
   final _this = this as AccountModelPresentation;
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is AccountModelPresentation&&(identical(other.key, _this.key) || other.key == _this.key)&&(identical(other.name, _this.name) || other.name == _this.name)&&(identical(other.origin, _this.origin) || other.origin == _this.origin)&&(identical(other.enabled, _this.enabled) || other.enabled == _this.enabled)&&(identical(other.canToggle, _this.canToggle) || other.canToggle == _this.canToggle)&&(identical(other.saving, _this.saving) || other.saving == _this.saving)&&(identical(other.error, _this.error) || other.error == _this.error)&&(identical(other.summary, _this.summary) || other.summary == _this.summary)&&const DeepCollectionEquality().equals(other.capabilities, _this.capabilities)&&const DeepCollectionEquality().equals(other.priceTiers, _this.priceTiers)&&const DeepCollectionEquality().equals(other.performance, _this.performance)&&const DeepCollectionEquality().equals(other.evaluations, _this.evaluations)&&(identical(other.readoutLoading, _this.readoutLoading) || other.readoutLoading == _this.readoutLoading)&&(identical(other.readoutError, _this.readoutError) || other.readoutError == _this.readoutError)&&(identical(other.canLoadReadout, _this.canLoadReadout) || other.canLoadReadout == _this.canLoadReadout)&&(identical(other.connection, _this.connection) || other.connection == _this.connection)&&const DeepCollectionEquality().equals(other.allowedConnections, _this.allowedConnections)&&(identical(other.compact, _this.compact) || other.compact == _this.compact)&&(identical(other.canEdit, _this.canEdit) || other.canEdit == _this.canEdit)&&(identical(other.canDelete, _this.canDelete) || other.canDelete == _this.canDelete));
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is AccountModelPresentation&&(identical(other.key, _this.key) || other.key == _this.key)&&(identical(other.name, _this.name) || other.name == _this.name)&&(identical(other.origin, _this.origin) || other.origin == _this.origin)&&(identical(other.enabled, _this.enabled) || other.enabled == _this.enabled)&&(identical(other.canToggle, _this.canToggle) || other.canToggle == _this.canToggle)&&(identical(other.saving, _this.saving) || other.saving == _this.saving)&&(identical(other.error, _this.error) || other.error == _this.error)&&(identical(other.summary, _this.summary) || other.summary == _this.summary)&&(identical(other.specificationFacts, _this.specificationFacts) || other.specificationFacts == _this.specificationFacts)&&const DeepCollectionEquality().equals(other.priceTiers, _this.priceTiers)&&(identical(other.currency, _this.currency) || other.currency == _this.currency)&&(identical(other.priceSource, _this.priceSource) || other.priceSource == _this.priceSource)&&(identical(other.priceVerifiedLabel, _this.priceVerifiedLabel) || other.priceVerifiedLabel == _this.priceVerifiedLabel)&&(identical(other.performance, _this.performance) || other.performance == _this.performance)&&const DeepCollectionEquality().equals(other.guidance, _this.guidance)&&const DeepCollectionEquality().equals(other.evaluations, _this.evaluations)&&(identical(other.evaluationSummary, _this.evaluationSummary) || other.evaluationSummary == _this.evaluationSummary)&&(identical(other.readoutLoading, _this.readoutLoading) || other.readoutLoading == _this.readoutLoading)&&(identical(other.readoutError, _this.readoutError) || other.readoutError == _this.readoutError)&&(identical(other.canLoadReadout, _this.canLoadReadout) || other.canLoadReadout == _this.canLoadReadout)&&(identical(other.connection, _this.connection) || other.connection == _this.connection)&&const DeepCollectionEquality().equals(other.allowedConnections, _this.allowedConnections)&&(identical(other.compact, _this.compact) || other.compact == _this.compact)&&(identical(other.canEdit, _this.canEdit) || other.canEdit == _this.canEdit)&&(identical(other.canDelete, _this.canDelete) || other.canDelete == _this.canDelete));
 }
 
 
 @override
 int get hashCode {
   final _this = this as AccountModelPresentation;
-  return Object.hashAll([runtimeType,_this.key,_this.name,_this.origin,_this.enabled,_this.canToggle,_this.saving,_this.error,_this.summary,const DeepCollectionEquality().hash(_this.capabilities),const DeepCollectionEquality().hash(_this.priceTiers),const DeepCollectionEquality().hash(_this.performance),const DeepCollectionEquality().hash(_this.evaluations),_this.readoutLoading,_this.readoutError,_this.canLoadReadout,_this.connection,const DeepCollectionEquality().hash(_this.allowedConnections),_this.compact,_this.canEdit,_this.canDelete]);
+  return Object.hashAll([runtimeType,_this.key,_this.name,_this.origin,_this.enabled,_this.canToggle,_this.saving,_this.error,_this.summary,_this.specificationFacts,const DeepCollectionEquality().hash(_this.priceTiers),_this.currency,_this.priceSource,_this.priceVerifiedLabel,_this.performance,const DeepCollectionEquality().hash(_this.guidance),const DeepCollectionEquality().hash(_this.evaluations),_this.evaluationSummary,_this.readoutLoading,_this.readoutError,_this.canLoadReadout,_this.connection,const DeepCollectionEquality().hash(_this.allowedConnections),_this.compact,_this.canEdit,_this.canDelete]);
 }
 
 @override
 String toString() {
   final _this = this as AccountModelPresentation;
-  return 'AccountModelPresentation(key: ${_this.key}, name: ${_this.name}, origin: ${_this.origin}, enabled: ${_this.enabled}, canToggle: ${_this.canToggle}, saving: ${_this.saving}, error: ${_this.error}, summary: ${_this.summary}, capabilities: ${_this.capabilities}, priceTiers: ${_this.priceTiers}, performance: ${_this.performance}, evaluations: ${_this.evaluations}, readoutLoading: ${_this.readoutLoading}, readoutError: ${_this.readoutError}, canLoadReadout: ${_this.canLoadReadout}, connection: ${_this.connection}, allowedConnections: ${_this.allowedConnections}, compact: ${_this.compact}, canEdit: ${_this.canEdit}, canDelete: ${_this.canDelete})';
+  return 'AccountModelPresentation(key: ${_this.key}, name: ${_this.name}, origin: ${_this.origin}, enabled: ${_this.enabled}, canToggle: ${_this.canToggle}, saving: ${_this.saving}, error: ${_this.error}, summary: ${_this.summary}, specificationFacts: ${_this.specificationFacts}, priceTiers: ${_this.priceTiers}, currency: ${_this.currency}, priceSource: ${_this.priceSource}, priceVerifiedLabel: ${_this.priceVerifiedLabel}, performance: ${_this.performance}, guidance: ${_this.guidance}, evaluations: ${_this.evaluations}, evaluationSummary: ${_this.evaluationSummary}, readoutLoading: ${_this.readoutLoading}, readoutError: ${_this.readoutError}, canLoadReadout: ${_this.canLoadReadout}, connection: ${_this.connection}, allowedConnections: ${_this.allowedConnections}, compact: ${_this.compact}, canEdit: ${_this.canEdit}, canDelete: ${_this.canDelete})';
 }
 
 
@@ -3812,11 +5784,11 @@ abstract mixin class $AccountModelPresentationCopyWith<$Res>  {
   factory $AccountModelPresentationCopyWith(AccountModelPresentation value, $Res Function(AccountModelPresentation) _then) = _$AccountModelPresentationCopyWithImpl;
 @useResult
 $Res call({
- AccountModelKey key, String name, AccountModelOrigin origin, bool enabled, bool canToggle, bool saving, String? error, String? summary, List<AccountDisplayFact> capabilities, List<AccountDisplayFact> priceTiers, List<AccountDisplayFact> performance, List<AccountModelEvaluation> evaluations, bool readoutLoading, String? readoutError, bool canLoadReadout, AccountConnection? connection, List<AccountConnection> allowedConnections, AccountCompactPresentation? compact, bool canEdit, bool canDelete
+ AccountModelKey key, String name, AccountModelOrigin origin, bool enabled, bool canToggle, bool saving, String? error, String? summary, AccountModelSpecificationFacts specificationFacts, List<AccountModelPriceTier> priceTiers, String? currency, String? priceSource, String? priceVerifiedLabel, AccountPerformancePresentation? performance, List<AccountDisplayFact> guidance, List<AccountModelEvaluation> evaluations, AccountEvaluationSummary evaluationSummary, bool readoutLoading, String? readoutError, bool canLoadReadout, AccountConnection? connection, List<AccountConnection> allowedConnections, AccountCompactPresentation? compact, bool canEdit, bool canDelete
 });
 
 
-$AccountModelKeyCopyWith<$Res> get key;$AccountCompactPresentationCopyWith<$Res>? get compact;
+$AccountModelKeyCopyWith<$Res> get key;$AccountModelSpecificationFactsCopyWith<$Res> get specificationFacts;$AccountPerformancePresentationCopyWith<$Res>? get performance;$AccountEvaluationSummaryCopyWith<$Res> get evaluationSummary;$AccountCompactPresentationCopyWith<$Res>? get compact;
 
 }
 /// @nodoc
@@ -3829,7 +5801,7 @@ class _$AccountModelPresentationCopyWithImpl<$Res>
 
 /// Create a copy of AccountModelPresentation
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') @override $Res call({Object? key = null,Object? name = null,Object? origin = null,Object? enabled = null,Object? canToggle = null,Object? saving = null,Object? error = freezed,Object? summary = freezed,Object? capabilities = null,Object? priceTiers = null,Object? performance = null,Object? evaluations = null,Object? readoutLoading = null,Object? readoutError = freezed,Object? canLoadReadout = null,Object? connection = freezed,Object? allowedConnections = null,Object? compact = freezed,Object? canEdit = null,Object? canDelete = null,}) {
+@pragma('vm:prefer-inline') @override $Res call({Object? key = null,Object? name = null,Object? origin = null,Object? enabled = null,Object? canToggle = null,Object? saving = null,Object? error = freezed,Object? summary = freezed,Object? specificationFacts = null,Object? priceTiers = null,Object? currency = freezed,Object? priceSource = freezed,Object? priceVerifiedLabel = freezed,Object? performance = freezed,Object? guidance = null,Object? evaluations = null,Object? evaluationSummary = null,Object? readoutLoading = null,Object? readoutError = freezed,Object? canLoadReadout = null,Object? connection = freezed,Object? allowedConnections = null,Object? compact = freezed,Object? canEdit = null,Object? canDelete = null,}) {
   return _then(AccountModelPresentation(
 key: null == key ? _self.key : key // ignore: cast_nullable_to_non_nullable
 as AccountModelKey,name: null == name ? _self.name : name // ignore: cast_nullable_to_non_nullable
@@ -3839,11 +5811,16 @@ as bool,canToggle: null == canToggle ? _self.canToggle : canToggle // ignore: ca
 as bool,saving: null == saving ? _self.saving : saving // ignore: cast_nullable_to_non_nullable
 as bool,error: freezed == error ? _self.error : error // ignore: cast_nullable_to_non_nullable
 as String?,summary: freezed == summary ? _self.summary : summary // ignore: cast_nullable_to_non_nullable
-as String?,capabilities: null == capabilities ? _self.capabilities : capabilities // ignore: cast_nullable_to_non_nullable
-as List<AccountDisplayFact>,priceTiers: null == priceTiers ? _self.priceTiers : priceTiers // ignore: cast_nullable_to_non_nullable
-as List<AccountDisplayFact>,performance: null == performance ? _self.performance : performance // ignore: cast_nullable_to_non_nullable
+as String?,specificationFacts: null == specificationFacts ? _self.specificationFacts : specificationFacts // ignore: cast_nullable_to_non_nullable
+as AccountModelSpecificationFacts,priceTiers: null == priceTiers ? _self.priceTiers : priceTiers // ignore: cast_nullable_to_non_nullable
+as List<AccountModelPriceTier>,currency: freezed == currency ? _self.currency : currency // ignore: cast_nullable_to_non_nullable
+as String?,priceSource: freezed == priceSource ? _self.priceSource : priceSource // ignore: cast_nullable_to_non_nullable
+as String?,priceVerifiedLabel: freezed == priceVerifiedLabel ? _self.priceVerifiedLabel : priceVerifiedLabel // ignore: cast_nullable_to_non_nullable
+as String?,performance: freezed == performance ? _self.performance : performance // ignore: cast_nullable_to_non_nullable
+as AccountPerformancePresentation?,guidance: null == guidance ? _self.guidance : guidance // ignore: cast_nullable_to_non_nullable
 as List<AccountDisplayFact>,evaluations: null == evaluations ? _self.evaluations : evaluations // ignore: cast_nullable_to_non_nullable
-as List<AccountModelEvaluation>,readoutLoading: null == readoutLoading ? _self.readoutLoading : readoutLoading // ignore: cast_nullable_to_non_nullable
+as List<AccountModelEvaluation>,evaluationSummary: null == evaluationSummary ? _self.evaluationSummary : evaluationSummary // ignore: cast_nullable_to_non_nullable
+as AccountEvaluationSummary,readoutLoading: null == readoutLoading ? _self.readoutLoading : readoutLoading // ignore: cast_nullable_to_non_nullable
 as bool,readoutError: freezed == readoutError ? _self.readoutError : readoutError // ignore: cast_nullable_to_non_nullable
 as String?,canLoadReadout: null == canLoadReadout ? _self.canLoadReadout : canLoadReadout // ignore: cast_nullable_to_non_nullable
 as bool,connection: freezed == connection ? _self.connection : connection // ignore: cast_nullable_to_non_nullable
@@ -3862,6 +5839,36 @@ $AccountModelKeyCopyWith<$Res> get key {
 
   return $AccountModelKeyCopyWith<$Res>(_self.key, (value) {
     return _then(_self.copyWith(key: value));
+  });
+}/// Create a copy of AccountModelPresentation
+/// with the given fields replaced by the non-null parameter values.
+@override
+@pragma('vm:prefer-inline')
+$AccountModelSpecificationFactsCopyWith<$Res> get specificationFacts {
+
+  return $AccountModelSpecificationFactsCopyWith<$Res>(_self.specificationFacts, (value) {
+    return _then(_self.copyWith(specificationFacts: value));
+  });
+}/// Create a copy of AccountModelPresentation
+/// with the given fields replaced by the non-null parameter values.
+@override
+@pragma('vm:prefer-inline')
+$AccountPerformancePresentationCopyWith<$Res>? get performance {
+    if (_self.performance == null) {
+    return null;
+  }
+
+  return $AccountPerformancePresentationCopyWith<$Res>(_self.performance!, (value) {
+    return _then(_self.copyWith(performance: value));
+  });
+}/// Create a copy of AccountModelPresentation
+/// with the given fields replaced by the non-null parameter values.
+@override
+@pragma('vm:prefer-inline')
+$AccountEvaluationSummaryCopyWith<$Res> get evaluationSummary {
+
+  return $AccountEvaluationSummaryCopyWith<$Res>(_self.evaluationSummary, (value) {
+    return _then(_self.copyWith(evaluationSummary: value));
   });
 }/// Create a copy of AccountModelPresentation
 /// with the given fields replaced by the non-null parameter values.
@@ -3957,10 +5964,10 @@ return $default(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( AccountModelKey key,  String name,  AccountModelOrigin origin,  bool enabled,  bool canToggle,  bool saving,  String? error,  String? summary,  List<AccountDisplayFact> capabilities,  List<AccountDisplayFact> priceTiers,  List<AccountDisplayFact> performance,  List<AccountModelEvaluation> evaluations,  bool readoutLoading,  String? readoutError,  bool canLoadReadout,  AccountConnection? connection,  List<AccountConnection> allowedConnections,  AccountCompactPresentation? compact,  bool canEdit,  bool canDelete)?  $default,{required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( AccountModelKey key,  String name,  AccountModelOrigin origin,  bool enabled,  bool canToggle,  bool saving,  String? error,  String? summary,  AccountModelSpecificationFacts specificationFacts,  List<AccountModelPriceTier> priceTiers,  String? currency,  String? priceSource,  String? priceVerifiedLabel,  AccountPerformancePresentation? performance,  List<AccountDisplayFact> guidance,  List<AccountModelEvaluation> evaluations,  AccountEvaluationSummary evaluationSummary,  bool readoutLoading,  String? readoutError,  bool canLoadReadout,  AccountConnection? connection,  List<AccountConnection> allowedConnections,  AccountCompactPresentation? compact,  bool canEdit,  bool canDelete)?  $default,{required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case _AccountModelPresentation() when $default != null:
-return $default(_that.key,_that.name,_that.origin,_that.enabled,_that.canToggle,_that.saving,_that.error,_that.summary,_that.capabilities,_that.priceTiers,_that.performance,_that.evaluations,_that.readoutLoading,_that.readoutError,_that.canLoadReadout,_that.connection,_that.allowedConnections,_that.compact,_that.canEdit,_that.canDelete);case _:
+return $default(_that.key,_that.name,_that.origin,_that.enabled,_that.canToggle,_that.saving,_that.error,_that.summary,_that.specificationFacts,_that.priceTiers,_that.currency,_that.priceSource,_that.priceVerifiedLabel,_that.performance,_that.guidance,_that.evaluations,_that.evaluationSummary,_that.readoutLoading,_that.readoutError,_that.canLoadReadout,_that.connection,_that.allowedConnections,_that.compact,_that.canEdit,_that.canDelete);case _:
   return orElse();
 
 }
@@ -3978,10 +5985,10 @@ return $default(_that.key,_that.name,_that.origin,_that.enabled,_that.canToggle,
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( AccountModelKey key,  String name,  AccountModelOrigin origin,  bool enabled,  bool canToggle,  bool saving,  String? error,  String? summary,  List<AccountDisplayFact> capabilities,  List<AccountDisplayFact> priceTiers,  List<AccountDisplayFact> performance,  List<AccountModelEvaluation> evaluations,  bool readoutLoading,  String? readoutError,  bool canLoadReadout,  AccountConnection? connection,  List<AccountConnection> allowedConnections,  AccountCompactPresentation? compact,  bool canEdit,  bool canDelete)  $default,) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( AccountModelKey key,  String name,  AccountModelOrigin origin,  bool enabled,  bool canToggle,  bool saving,  String? error,  String? summary,  AccountModelSpecificationFacts specificationFacts,  List<AccountModelPriceTier> priceTiers,  String? currency,  String? priceSource,  String? priceVerifiedLabel,  AccountPerformancePresentation? performance,  List<AccountDisplayFact> guidance,  List<AccountModelEvaluation> evaluations,  AccountEvaluationSummary evaluationSummary,  bool readoutLoading,  String? readoutError,  bool canLoadReadout,  AccountConnection? connection,  List<AccountConnection> allowedConnections,  AccountCompactPresentation? compact,  bool canEdit,  bool canDelete)  $default,) {final _that = this;
 switch (_that) {
 case _AccountModelPresentation():
-return $default(_that.key,_that.name,_that.origin,_that.enabled,_that.canToggle,_that.saving,_that.error,_that.summary,_that.capabilities,_that.priceTiers,_that.performance,_that.evaluations,_that.readoutLoading,_that.readoutError,_that.canLoadReadout,_that.connection,_that.allowedConnections,_that.compact,_that.canEdit,_that.canDelete);case _:
+return $default(_that.key,_that.name,_that.origin,_that.enabled,_that.canToggle,_that.saving,_that.error,_that.summary,_that.specificationFacts,_that.priceTiers,_that.currency,_that.priceSource,_that.priceVerifiedLabel,_that.performance,_that.guidance,_that.evaluations,_that.evaluationSummary,_that.readoutLoading,_that.readoutError,_that.canLoadReadout,_that.connection,_that.allowedConnections,_that.compact,_that.canEdit,_that.canDelete);case _:
   throw StateError('Unexpected subclass');
 
 }
@@ -3998,10 +6005,10 @@ return $default(_that.key,_that.name,_that.origin,_that.enabled,_that.canToggle,
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( AccountModelKey key,  String name,  AccountModelOrigin origin,  bool enabled,  bool canToggle,  bool saving,  String? error,  String? summary,  List<AccountDisplayFact> capabilities,  List<AccountDisplayFact> priceTiers,  List<AccountDisplayFact> performance,  List<AccountModelEvaluation> evaluations,  bool readoutLoading,  String? readoutError,  bool canLoadReadout,  AccountConnection? connection,  List<AccountConnection> allowedConnections,  AccountCompactPresentation? compact,  bool canEdit,  bool canDelete)?  $default,) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( AccountModelKey key,  String name,  AccountModelOrigin origin,  bool enabled,  bool canToggle,  bool saving,  String? error,  String? summary,  AccountModelSpecificationFacts specificationFacts,  List<AccountModelPriceTier> priceTiers,  String? currency,  String? priceSource,  String? priceVerifiedLabel,  AccountPerformancePresentation? performance,  List<AccountDisplayFact> guidance,  List<AccountModelEvaluation> evaluations,  AccountEvaluationSummary evaluationSummary,  bool readoutLoading,  String? readoutError,  bool canLoadReadout,  AccountConnection? connection,  List<AccountConnection> allowedConnections,  AccountCompactPresentation? compact,  bool canEdit,  bool canDelete)?  $default,) {final _that = this;
 switch (_that) {
 case _AccountModelPresentation() when $default != null:
-return $default(_that.key,_that.name,_that.origin,_that.enabled,_that.canToggle,_that.saving,_that.error,_that.summary,_that.capabilities,_that.priceTiers,_that.performance,_that.evaluations,_that.readoutLoading,_that.readoutError,_that.canLoadReadout,_that.connection,_that.allowedConnections,_that.compact,_that.canEdit,_that.canDelete);case _:
+return $default(_that.key,_that.name,_that.origin,_that.enabled,_that.canToggle,_that.saving,_that.error,_that.summary,_that.specificationFacts,_that.priceTiers,_that.currency,_that.priceSource,_that.priceVerifiedLabel,_that.performance,_that.guidance,_that.evaluations,_that.evaluationSummary,_that.readoutLoading,_that.readoutError,_that.canLoadReadout,_that.connection,_that.allowedConnections,_that.compact,_that.canEdit,_that.canDelete);case _:
   return null;
 
 }
@@ -4013,7 +6020,7 @@ return $default(_that.key,_that.name,_that.origin,_that.enabled,_that.canToggle,
 
 
 class _AccountModelPresentation implements AccountModelPresentation {
-  const _AccountModelPresentation({required this.key, required this.name, required this.origin, this.enabled = true, this.canToggle = false, this.saving = false, this.error, this.summary,  List<AccountDisplayFact> capabilities = const <AccountDisplayFact>[],  List<AccountDisplayFact> priceTiers = const <AccountDisplayFact>[],  List<AccountDisplayFact> performance = const <AccountDisplayFact>[],  List<AccountModelEvaluation> evaluations = const <AccountModelEvaluation>[], this.readoutLoading = false, this.readoutError, this.canLoadReadout = false, this.connection,  List<AccountConnection> allowedConnections = const <AccountConnection>[], this.compact, this.canEdit = false, this.canDelete = false}): _capabilities = capabilities,_priceTiers = priceTiers,_performance = performance,_evaluations = evaluations,_allowedConnections = allowedConnections;
+  const _AccountModelPresentation({required this.key, required this.name, required this.origin, this.enabled = true, this.canToggle = false, this.saving = false, this.error, this.summary, this.specificationFacts = const AccountModelSpecificationFacts(),  List<AccountModelPriceTier> priceTiers = const <AccountModelPriceTier>[], this.currency, this.priceSource, this.priceVerifiedLabel, this.performance,  List<AccountDisplayFact> guidance = const <AccountDisplayFact>[],  List<AccountModelEvaluation> evaluations = const <AccountModelEvaluation>[], this.evaluationSummary = const AccountEvaluationSummary(), this.readoutLoading = false, this.readoutError, this.canLoadReadout = false, this.connection,  List<AccountConnection> allowedConnections = const <AccountConnection>[], this.compact, this.canEdit = false, this.canDelete = false}): _priceTiers = priceTiers,_guidance = guidance,_evaluations = evaluations,_allowedConnections = allowedConnections;
 
 
 @override final  AccountModelKey key;
@@ -4024,25 +6031,23 @@ class _AccountModelPresentation implements AccountModelPresentation {
 @override@JsonKey() final  bool saving;
 @override final  String? error;
 @override final  String? summary;
- final  List<AccountDisplayFact> _capabilities;
-@override@JsonKey() List<AccountDisplayFact> get capabilities {
-  if (_capabilities is EqualUnmodifiableListView) return _capabilities;
-  // ignore: implicit_dynamic_type
-  return EqualUnmodifiableListView(_capabilities);
-}
-
- final  List<AccountDisplayFact> _priceTiers;
-@override@JsonKey() List<AccountDisplayFact> get priceTiers {
+@override@JsonKey() final  AccountModelSpecificationFacts specificationFacts;
+ final  List<AccountModelPriceTier> _priceTiers;
+@override@JsonKey() List<AccountModelPriceTier> get priceTiers {
   if (_priceTiers is EqualUnmodifiableListView) return _priceTiers;
   // ignore: implicit_dynamic_type
   return EqualUnmodifiableListView(_priceTiers);
 }
 
- final  List<AccountDisplayFact> _performance;
-@override@JsonKey() List<AccountDisplayFact> get performance {
-  if (_performance is EqualUnmodifiableListView) return _performance;
+@override final  String? currency;
+@override final  String? priceSource;
+@override final  String? priceVerifiedLabel;
+@override final  AccountPerformancePresentation? performance;
+ final  List<AccountDisplayFact> _guidance;
+@override@JsonKey() List<AccountDisplayFact> get guidance {
+  if (_guidance is EqualUnmodifiableListView) return _guidance;
   // ignore: implicit_dynamic_type
-  return EqualUnmodifiableListView(_performance);
+  return EqualUnmodifiableListView(_guidance);
 }
 
  final  List<AccountModelEvaluation> _evaluations;
@@ -4052,6 +6057,7 @@ class _AccountModelPresentation implements AccountModelPresentation {
   return EqualUnmodifiableListView(_evaluations);
 }
 
+@override@JsonKey() final  AccountEvaluationSummary evaluationSummary;
 @override@JsonKey() final  bool readoutLoading;
 @override final  String? readoutError;
 @override@JsonKey() final  bool canLoadReadout;
@@ -4077,18 +6083,18 @@ _$AccountModelPresentationCopyWith<_AccountModelPresentation> get copyWith => __
 
 @override
 bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is _AccountModelPresentation&&(identical(other.key, key) || other.key == key)&&(identical(other.name, name) || other.name == name)&&(identical(other.origin, origin) || other.origin == origin)&&(identical(other.enabled, enabled) || other.enabled == enabled)&&(identical(other.canToggle, canToggle) || other.canToggle == canToggle)&&(identical(other.saving, saving) || other.saving == saving)&&(identical(other.error, error) || other.error == error)&&(identical(other.summary, summary) || other.summary == summary)&&const DeepCollectionEquality().equals(other.capabilities, _capabilities)&&const DeepCollectionEquality().equals(other.priceTiers, _priceTiers)&&const DeepCollectionEquality().equals(other.performance, _performance)&&const DeepCollectionEquality().equals(other.evaluations, _evaluations)&&(identical(other.readoutLoading, readoutLoading) || other.readoutLoading == readoutLoading)&&(identical(other.readoutError, readoutError) || other.readoutError == readoutError)&&(identical(other.canLoadReadout, canLoadReadout) || other.canLoadReadout == canLoadReadout)&&(identical(other.connection, connection) || other.connection == connection)&&const DeepCollectionEquality().equals(other.allowedConnections, _allowedConnections)&&(identical(other.compact, compact) || other.compact == compact)&&(identical(other.canEdit, canEdit) || other.canEdit == canEdit)&&(identical(other.canDelete, canDelete) || other.canDelete == canDelete));
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is _AccountModelPresentation&&(identical(other.key, key) || other.key == key)&&(identical(other.name, name) || other.name == name)&&(identical(other.origin, origin) || other.origin == origin)&&(identical(other.enabled, enabled) || other.enabled == enabled)&&(identical(other.canToggle, canToggle) || other.canToggle == canToggle)&&(identical(other.saving, saving) || other.saving == saving)&&(identical(other.error, error) || other.error == error)&&(identical(other.summary, summary) || other.summary == summary)&&(identical(other.specificationFacts, specificationFacts) || other.specificationFacts == specificationFacts)&&const DeepCollectionEquality().equals(other.priceTiers, _priceTiers)&&(identical(other.currency, currency) || other.currency == currency)&&(identical(other.priceSource, priceSource) || other.priceSource == priceSource)&&(identical(other.priceVerifiedLabel, priceVerifiedLabel) || other.priceVerifiedLabel == priceVerifiedLabel)&&(identical(other.performance, performance) || other.performance == performance)&&const DeepCollectionEquality().equals(other.guidance, _guidance)&&const DeepCollectionEquality().equals(other.evaluations, _evaluations)&&(identical(other.evaluationSummary, evaluationSummary) || other.evaluationSummary == evaluationSummary)&&(identical(other.readoutLoading, readoutLoading) || other.readoutLoading == readoutLoading)&&(identical(other.readoutError, readoutError) || other.readoutError == readoutError)&&(identical(other.canLoadReadout, canLoadReadout) || other.canLoadReadout == canLoadReadout)&&(identical(other.connection, connection) || other.connection == connection)&&const DeepCollectionEquality().equals(other.allowedConnections, _allowedConnections)&&(identical(other.compact, compact) || other.compact == compact)&&(identical(other.canEdit, canEdit) || other.canEdit == canEdit)&&(identical(other.canDelete, canDelete) || other.canDelete == canDelete));
 }
 
 
 @override
 int get hashCode {
-    return Object.hashAll([runtimeType,key,name,origin,enabled,canToggle,saving,error,summary,const DeepCollectionEquality().hash(_capabilities),const DeepCollectionEquality().hash(_priceTiers),const DeepCollectionEquality().hash(_performance),const DeepCollectionEquality().hash(_evaluations),readoutLoading,readoutError,canLoadReadout,connection,const DeepCollectionEquality().hash(_allowedConnections),compact,canEdit,canDelete]);
+    return Object.hashAll([runtimeType,key,name,origin,enabled,canToggle,saving,error,summary,specificationFacts,const DeepCollectionEquality().hash(_priceTiers),currency,priceSource,priceVerifiedLabel,performance,const DeepCollectionEquality().hash(_guidance),const DeepCollectionEquality().hash(_evaluations),evaluationSummary,readoutLoading,readoutError,canLoadReadout,connection,const DeepCollectionEquality().hash(_allowedConnections),compact,canEdit,canDelete]);
 }
 
 @override
 String toString() {
-    return 'AccountModelPresentation(key: $key, name: $name, origin: $origin, enabled: $enabled, canToggle: $canToggle, saving: $saving, error: $error, summary: $summary, capabilities: $capabilities, priceTiers: $priceTiers, performance: $performance, evaluations: $evaluations, readoutLoading: $readoutLoading, readoutError: $readoutError, canLoadReadout: $canLoadReadout, connection: $connection, allowedConnections: $allowedConnections, compact: $compact, canEdit: $canEdit, canDelete: $canDelete)';
+    return 'AccountModelPresentation(key: $key, name: $name, origin: $origin, enabled: $enabled, canToggle: $canToggle, saving: $saving, error: $error, summary: $summary, specificationFacts: $specificationFacts, priceTiers: $priceTiers, currency: $currency, priceSource: $priceSource, priceVerifiedLabel: $priceVerifiedLabel, performance: $performance, guidance: $guidance, evaluations: $evaluations, evaluationSummary: $evaluationSummary, readoutLoading: $readoutLoading, readoutError: $readoutError, canLoadReadout: $canLoadReadout, connection: $connection, allowedConnections: $allowedConnections, compact: $compact, canEdit: $canEdit, canDelete: $canDelete)';
 }
 
 
@@ -4099,11 +6105,11 @@ abstract mixin class _$AccountModelPresentationCopyWith<$Res> implements $Accoun
   factory _$AccountModelPresentationCopyWith(_AccountModelPresentation value, $Res Function(_AccountModelPresentation) _then) = __$AccountModelPresentationCopyWithImpl;
 @override @useResult
 $Res call({
- AccountModelKey key, String name, AccountModelOrigin origin, bool enabled, bool canToggle, bool saving, String? error, String? summary, List<AccountDisplayFact> capabilities, List<AccountDisplayFact> priceTiers, List<AccountDisplayFact> performance, List<AccountModelEvaluation> evaluations, bool readoutLoading, String? readoutError, bool canLoadReadout, AccountConnection? connection, List<AccountConnection> allowedConnections, AccountCompactPresentation? compact, bool canEdit, bool canDelete
+ AccountModelKey key, String name, AccountModelOrigin origin, bool enabled, bool canToggle, bool saving, String? error, String? summary, AccountModelSpecificationFacts specificationFacts, List<AccountModelPriceTier> priceTiers, String? currency, String? priceSource, String? priceVerifiedLabel, AccountPerformancePresentation? performance, List<AccountDisplayFact> guidance, List<AccountModelEvaluation> evaluations, AccountEvaluationSummary evaluationSummary, bool readoutLoading, String? readoutError, bool canLoadReadout, AccountConnection? connection, List<AccountConnection> allowedConnections, AccountCompactPresentation? compact, bool canEdit, bool canDelete
 });
 
 
-@override $AccountModelKeyCopyWith<$Res> get key;@override $AccountCompactPresentationCopyWith<$Res>? get compact;
+@override $AccountModelKeyCopyWith<$Res> get key;@override $AccountModelSpecificationFactsCopyWith<$Res> get specificationFacts;@override $AccountPerformancePresentationCopyWith<$Res>? get performance;@override $AccountEvaluationSummaryCopyWith<$Res> get evaluationSummary;@override $AccountCompactPresentationCopyWith<$Res>? get compact;
 
 }
 /// @nodoc
@@ -4116,7 +6122,7 @@ class __$AccountModelPresentationCopyWithImpl<$Res>
 
 /// Create a copy of AccountModelPresentation
 /// with the given fields replaced by the non-null parameter values.
-@override @pragma('vm:prefer-inline') $Res call({Object? key = null,Object? name = null,Object? origin = null,Object? enabled = null,Object? canToggle = null,Object? saving = null,Object? error = freezed,Object? summary = freezed,Object? capabilities = null,Object? priceTiers = null,Object? performance = null,Object? evaluations = null,Object? readoutLoading = null,Object? readoutError = freezed,Object? canLoadReadout = null,Object? connection = freezed,Object? allowedConnections = null,Object? compact = freezed,Object? canEdit = null,Object? canDelete = null,}) {
+@override @pragma('vm:prefer-inline') $Res call({Object? key = null,Object? name = null,Object? origin = null,Object? enabled = null,Object? canToggle = null,Object? saving = null,Object? error = freezed,Object? summary = freezed,Object? specificationFacts = null,Object? priceTiers = null,Object? currency = freezed,Object? priceSource = freezed,Object? priceVerifiedLabel = freezed,Object? performance = freezed,Object? guidance = null,Object? evaluations = null,Object? evaluationSummary = null,Object? readoutLoading = null,Object? readoutError = freezed,Object? canLoadReadout = null,Object? connection = freezed,Object? allowedConnections = null,Object? compact = freezed,Object? canEdit = null,Object? canDelete = null,}) {
   return _then(_AccountModelPresentation(
 key: null == key ? _self.key : key // ignore: cast_nullable_to_non_nullable
 as AccountModelKey,name: null == name ? _self.name : name // ignore: cast_nullable_to_non_nullable
@@ -4126,11 +6132,16 @@ as bool,canToggle: null == canToggle ? _self.canToggle : canToggle // ignore: ca
 as bool,saving: null == saving ? _self.saving : saving // ignore: cast_nullable_to_non_nullable
 as bool,error: freezed == error ? _self.error : error // ignore: cast_nullable_to_non_nullable
 as String?,summary: freezed == summary ? _self.summary : summary // ignore: cast_nullable_to_non_nullable
-as String?,capabilities: null == capabilities ? _self._capabilities : capabilities // ignore: cast_nullable_to_non_nullable
-as List<AccountDisplayFact>,priceTiers: null == priceTiers ? _self._priceTiers : priceTiers // ignore: cast_nullable_to_non_nullable
-as List<AccountDisplayFact>,performance: null == performance ? _self._performance : performance // ignore: cast_nullable_to_non_nullable
+as String?,specificationFacts: null == specificationFacts ? _self.specificationFacts : specificationFacts // ignore: cast_nullable_to_non_nullable
+as AccountModelSpecificationFacts,priceTiers: null == priceTiers ? _self._priceTiers : priceTiers // ignore: cast_nullable_to_non_nullable
+as List<AccountModelPriceTier>,currency: freezed == currency ? _self.currency : currency // ignore: cast_nullable_to_non_nullable
+as String?,priceSource: freezed == priceSource ? _self.priceSource : priceSource // ignore: cast_nullable_to_non_nullable
+as String?,priceVerifiedLabel: freezed == priceVerifiedLabel ? _self.priceVerifiedLabel : priceVerifiedLabel // ignore: cast_nullable_to_non_nullable
+as String?,performance: freezed == performance ? _self.performance : performance // ignore: cast_nullable_to_non_nullable
+as AccountPerformancePresentation?,guidance: null == guidance ? _self._guidance : guidance // ignore: cast_nullable_to_non_nullable
 as List<AccountDisplayFact>,evaluations: null == evaluations ? _self._evaluations : evaluations // ignore: cast_nullable_to_non_nullable
-as List<AccountModelEvaluation>,readoutLoading: null == readoutLoading ? _self.readoutLoading : readoutLoading // ignore: cast_nullable_to_non_nullable
+as List<AccountModelEvaluation>,evaluationSummary: null == evaluationSummary ? _self.evaluationSummary : evaluationSummary // ignore: cast_nullable_to_non_nullable
+as AccountEvaluationSummary,readoutLoading: null == readoutLoading ? _self.readoutLoading : readoutLoading // ignore: cast_nullable_to_non_nullable
 as bool,readoutError: freezed == readoutError ? _self.readoutError : readoutError // ignore: cast_nullable_to_non_nullable
 as String?,canLoadReadout: null == canLoadReadout ? _self.canLoadReadout : canLoadReadout // ignore: cast_nullable_to_non_nullable
 as bool,connection: freezed == connection ? _self.connection : connection // ignore: cast_nullable_to_non_nullable
@@ -4150,6 +6161,36 @@ $AccountModelKeyCopyWith<$Res> get key {
 
   return $AccountModelKeyCopyWith<$Res>(_self.key, (value) {
     return _then(_self.copyWith(key: value));
+  });
+}/// Create a copy of AccountModelPresentation
+/// with the given fields replaced by the non-null parameter values.
+@override
+@pragma('vm:prefer-inline')
+$AccountModelSpecificationFactsCopyWith<$Res> get specificationFacts {
+
+  return $AccountModelSpecificationFactsCopyWith<$Res>(_self.specificationFacts, (value) {
+    return _then(_self.copyWith(specificationFacts: value));
+  });
+}/// Create a copy of AccountModelPresentation
+/// with the given fields replaced by the non-null parameter values.
+@override
+@pragma('vm:prefer-inline')
+$AccountPerformancePresentationCopyWith<$Res>? get performance {
+    if (_self.performance == null) {
+    return null;
+  }
+
+  return $AccountPerformancePresentationCopyWith<$Res>(_self.performance!, (value) {
+    return _then(_self.copyWith(performance: value));
+  });
+}/// Create a copy of AccountModelPresentation
+/// with the given fields replaced by the non-null parameter values.
+@override
+@pragma('vm:prefer-inline')
+$AccountEvaluationSummaryCopyWith<$Res> get evaluationSummary {
+
+  return $AccountEvaluationSummaryCopyWith<$Res>(_self.evaluationSummary, (value) {
+    return _then(_self.copyWith(evaluationSummary: value));
   });
 }/// Create a copy of AccountModelPresentation
 /// with the given fields replaced by the non-null parameter values.
@@ -6676,7 +8717,7 @@ $AccountTextPresentationCopyWith<$Res> get maxOutputTokens {
 /// @nodoc
 mixin _$NativeAccountEditorPresentation {
 
- String get editorId; AccountDisplayKey? get accountKey; AccountTemplateKey get templateKey; List<AccountTemplatePresentation> get templates; AccountTextPresentation get name; AccountTextPresentation get endpoint; AccountTextPresentation get credential; String get protocolLabel; bool get canChangeTemplate; bool get hasStoredCredential; bool get credentialRequired; bool get dirty; bool get saving; bool get canSave; bool get canAddModel; List<ManualAccountModelPresentation> get manualModels; List<AccountModelPresentation> get declaredModels; AccountBillingPresentation get billing; String? get error;
+ String get editorId; AccountDisplayKey? get accountKey; AccountTemplateKey get templateKey; List<AccountTemplatePresentation> get templates; AccountTextPresentation get name; AccountTextPresentation get endpoint; AccountTextPresentation get credential; String get protocolLabel; bool get canChangeTemplate; bool get hasStoredCredential; bool get credentialRequired; bool get dirty; bool get saving; bool get canSave; bool get canAddModel; bool get setDefaultOnCreate; bool get showSetDefaultOnCreate; List<ManualAccountModelPresentation> get manualModels; List<AccountModelPresentation> get declaredModels; AccountBillingPresentation get billing; String? get error;
 /// Create a copy of NativeAccountEditorPresentation
 /// with the given fields replaced by the non-null parameter values.
 @JsonKey(includeFromJson: false, includeToJson: false)
@@ -6688,20 +8729,20 @@ $NativeAccountEditorPresentationCopyWith<NativeAccountEditorPresentation> get co
 @override
 bool operator ==(Object other) {
   final _this = this as NativeAccountEditorPresentation;
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is NativeAccountEditorPresentation&&(identical(other.editorId, _this.editorId) || other.editorId == _this.editorId)&&(identical(other.accountKey, _this.accountKey) || other.accountKey == _this.accountKey)&&(identical(other.templateKey, _this.templateKey) || other.templateKey == _this.templateKey)&&const DeepCollectionEquality().equals(other.templates, _this.templates)&&(identical(other.name, _this.name) || other.name == _this.name)&&(identical(other.endpoint, _this.endpoint) || other.endpoint == _this.endpoint)&&(identical(other.credential, _this.credential) || other.credential == _this.credential)&&(identical(other.protocolLabel, _this.protocolLabel) || other.protocolLabel == _this.protocolLabel)&&(identical(other.canChangeTemplate, _this.canChangeTemplate) || other.canChangeTemplate == _this.canChangeTemplate)&&(identical(other.hasStoredCredential, _this.hasStoredCredential) || other.hasStoredCredential == _this.hasStoredCredential)&&(identical(other.credentialRequired, _this.credentialRequired) || other.credentialRequired == _this.credentialRequired)&&(identical(other.dirty, _this.dirty) || other.dirty == _this.dirty)&&(identical(other.saving, _this.saving) || other.saving == _this.saving)&&(identical(other.canSave, _this.canSave) || other.canSave == _this.canSave)&&(identical(other.canAddModel, _this.canAddModel) || other.canAddModel == _this.canAddModel)&&const DeepCollectionEquality().equals(other.manualModels, _this.manualModels)&&const DeepCollectionEquality().equals(other.declaredModels, _this.declaredModels)&&(identical(other.billing, _this.billing) || other.billing == _this.billing)&&(identical(other.error, _this.error) || other.error == _this.error));
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is NativeAccountEditorPresentation&&(identical(other.editorId, _this.editorId) || other.editorId == _this.editorId)&&(identical(other.accountKey, _this.accountKey) || other.accountKey == _this.accountKey)&&(identical(other.templateKey, _this.templateKey) || other.templateKey == _this.templateKey)&&const DeepCollectionEquality().equals(other.templates, _this.templates)&&(identical(other.name, _this.name) || other.name == _this.name)&&(identical(other.endpoint, _this.endpoint) || other.endpoint == _this.endpoint)&&(identical(other.credential, _this.credential) || other.credential == _this.credential)&&(identical(other.protocolLabel, _this.protocolLabel) || other.protocolLabel == _this.protocolLabel)&&(identical(other.canChangeTemplate, _this.canChangeTemplate) || other.canChangeTemplate == _this.canChangeTemplate)&&(identical(other.hasStoredCredential, _this.hasStoredCredential) || other.hasStoredCredential == _this.hasStoredCredential)&&(identical(other.credentialRequired, _this.credentialRequired) || other.credentialRequired == _this.credentialRequired)&&(identical(other.dirty, _this.dirty) || other.dirty == _this.dirty)&&(identical(other.saving, _this.saving) || other.saving == _this.saving)&&(identical(other.canSave, _this.canSave) || other.canSave == _this.canSave)&&(identical(other.canAddModel, _this.canAddModel) || other.canAddModel == _this.canAddModel)&&(identical(other.setDefaultOnCreate, _this.setDefaultOnCreate) || other.setDefaultOnCreate == _this.setDefaultOnCreate)&&(identical(other.showSetDefaultOnCreate, _this.showSetDefaultOnCreate) || other.showSetDefaultOnCreate == _this.showSetDefaultOnCreate)&&const DeepCollectionEquality().equals(other.manualModels, _this.manualModels)&&const DeepCollectionEquality().equals(other.declaredModels, _this.declaredModels)&&(identical(other.billing, _this.billing) || other.billing == _this.billing)&&(identical(other.error, _this.error) || other.error == _this.error));
 }
 
 
 @override
 int get hashCode {
   final _this = this as NativeAccountEditorPresentation;
-  return Object.hashAll([runtimeType,_this.editorId,_this.accountKey,_this.templateKey,const DeepCollectionEquality().hash(_this.templates),_this.name,_this.endpoint,_this.credential,_this.protocolLabel,_this.canChangeTemplate,_this.hasStoredCredential,_this.credentialRequired,_this.dirty,_this.saving,_this.canSave,_this.canAddModel,const DeepCollectionEquality().hash(_this.manualModels),const DeepCollectionEquality().hash(_this.declaredModels),_this.billing,_this.error]);
+  return Object.hashAll([runtimeType,_this.editorId,_this.accountKey,_this.templateKey,const DeepCollectionEquality().hash(_this.templates),_this.name,_this.endpoint,_this.credential,_this.protocolLabel,_this.canChangeTemplate,_this.hasStoredCredential,_this.credentialRequired,_this.dirty,_this.saving,_this.canSave,_this.canAddModel,_this.setDefaultOnCreate,_this.showSetDefaultOnCreate,const DeepCollectionEquality().hash(_this.manualModels),const DeepCollectionEquality().hash(_this.declaredModels),_this.billing,_this.error]);
 }
 
 @override
 String toString() {
   final _this = this as NativeAccountEditorPresentation;
-  return 'NativeAccountEditorPresentation(editorId: ${_this.editorId}, accountKey: ${_this.accountKey}, templateKey: ${_this.templateKey}, templates: ${_this.templates}, name: ${_this.name}, endpoint: ${_this.endpoint}, credential: ${_this.credential}, protocolLabel: ${_this.protocolLabel}, canChangeTemplate: ${_this.canChangeTemplate}, hasStoredCredential: ${_this.hasStoredCredential}, credentialRequired: ${_this.credentialRequired}, dirty: ${_this.dirty}, saving: ${_this.saving}, canSave: ${_this.canSave}, canAddModel: ${_this.canAddModel}, manualModels: ${_this.manualModels}, declaredModels: ${_this.declaredModels}, billing: ${_this.billing}, error: ${_this.error})';
+  return 'NativeAccountEditorPresentation(editorId: ${_this.editorId}, accountKey: ${_this.accountKey}, templateKey: ${_this.templateKey}, templates: ${_this.templates}, name: ${_this.name}, endpoint: ${_this.endpoint}, credential: ${_this.credential}, protocolLabel: ${_this.protocolLabel}, canChangeTemplate: ${_this.canChangeTemplate}, hasStoredCredential: ${_this.hasStoredCredential}, credentialRequired: ${_this.credentialRequired}, dirty: ${_this.dirty}, saving: ${_this.saving}, canSave: ${_this.canSave}, canAddModel: ${_this.canAddModel}, setDefaultOnCreate: ${_this.setDefaultOnCreate}, showSetDefaultOnCreate: ${_this.showSetDefaultOnCreate}, manualModels: ${_this.manualModels}, declaredModels: ${_this.declaredModels}, billing: ${_this.billing}, error: ${_this.error})';
 }
 
 
@@ -6712,7 +8753,7 @@ abstract mixin class $NativeAccountEditorPresentationCopyWith<$Res>  {
   factory $NativeAccountEditorPresentationCopyWith(NativeAccountEditorPresentation value, $Res Function(NativeAccountEditorPresentation) _then) = _$NativeAccountEditorPresentationCopyWithImpl;
 @useResult
 $Res call({
- String editorId, AccountDisplayKey? accountKey, AccountTemplateKey templateKey, List<AccountTemplatePresentation> templates, AccountTextPresentation name, AccountTextPresentation endpoint, AccountTextPresentation credential, String protocolLabel, bool canChangeTemplate, bool hasStoredCredential, bool credentialRequired, bool dirty, bool saving, bool canSave, bool canAddModel, List<ManualAccountModelPresentation> manualModels, List<AccountModelPresentation> declaredModels, AccountBillingPresentation billing, String? error
+ String editorId, AccountDisplayKey? accountKey, AccountTemplateKey templateKey, List<AccountTemplatePresentation> templates, AccountTextPresentation name, AccountTextPresentation endpoint, AccountTextPresentation credential, String protocolLabel, bool canChangeTemplate, bool hasStoredCredential, bool credentialRequired, bool dirty, bool saving, bool canSave, bool canAddModel, bool setDefaultOnCreate, bool showSetDefaultOnCreate, List<ManualAccountModelPresentation> manualModels, List<AccountModelPresentation> declaredModels, AccountBillingPresentation billing, String? error
 });
 
 
@@ -6729,7 +8770,7 @@ class _$NativeAccountEditorPresentationCopyWithImpl<$Res>
 
 /// Create a copy of NativeAccountEditorPresentation
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') @override $Res call({Object? editorId = null,Object? accountKey = freezed,Object? templateKey = null,Object? templates = null,Object? name = null,Object? endpoint = null,Object? credential = null,Object? protocolLabel = null,Object? canChangeTemplate = null,Object? hasStoredCredential = null,Object? credentialRequired = null,Object? dirty = null,Object? saving = null,Object? canSave = null,Object? canAddModel = null,Object? manualModels = null,Object? declaredModels = null,Object? billing = null,Object? error = freezed,}) {
+@pragma('vm:prefer-inline') @override $Res call({Object? editorId = null,Object? accountKey = freezed,Object? templateKey = null,Object? templates = null,Object? name = null,Object? endpoint = null,Object? credential = null,Object? protocolLabel = null,Object? canChangeTemplate = null,Object? hasStoredCredential = null,Object? credentialRequired = null,Object? dirty = null,Object? saving = null,Object? canSave = null,Object? canAddModel = null,Object? setDefaultOnCreate = null,Object? showSetDefaultOnCreate = null,Object? manualModels = null,Object? declaredModels = null,Object? billing = null,Object? error = freezed,}) {
   return _then(NativeAccountEditorPresentation(
 editorId: null == editorId ? _self.editorId : editorId // ignore: cast_nullable_to_non_nullable
 as String,accountKey: freezed == accountKey ? _self.accountKey : accountKey // ignore: cast_nullable_to_non_nullable
@@ -6746,6 +8787,8 @@ as bool,dirty: null == dirty ? _self.dirty : dirty // ignore: cast_nullable_to_n
 as bool,saving: null == saving ? _self.saving : saving // ignore: cast_nullable_to_non_nullable
 as bool,canSave: null == canSave ? _self.canSave : canSave // ignore: cast_nullable_to_non_nullable
 as bool,canAddModel: null == canAddModel ? _self.canAddModel : canAddModel // ignore: cast_nullable_to_non_nullable
+as bool,setDefaultOnCreate: null == setDefaultOnCreate ? _self.setDefaultOnCreate : setDefaultOnCreate // ignore: cast_nullable_to_non_nullable
+as bool,showSetDefaultOnCreate: null == showSetDefaultOnCreate ? _self.showSetDefaultOnCreate : showSetDefaultOnCreate // ignore: cast_nullable_to_non_nullable
 as bool,manualModels: null == manualModels ? _self.manualModels : manualModels // ignore: cast_nullable_to_non_nullable
 as List<ManualAccountModelPresentation>,declaredModels: null == declaredModels ? _self.declaredModels : declaredModels // ignore: cast_nullable_to_non_nullable
 as List<AccountModelPresentation>,billing: null == billing ? _self.billing : billing // ignore: cast_nullable_to_non_nullable
@@ -6892,10 +8935,10 @@ return $default(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( String editorId,  AccountDisplayKey? accountKey,  AccountTemplateKey templateKey,  List<AccountTemplatePresentation> templates,  AccountTextPresentation name,  AccountTextPresentation endpoint,  AccountTextPresentation credential,  String protocolLabel,  bool canChangeTemplate,  bool hasStoredCredential,  bool credentialRequired,  bool dirty,  bool saving,  bool canSave,  bool canAddModel,  List<ManualAccountModelPresentation> manualModels,  List<AccountModelPresentation> declaredModels,  AccountBillingPresentation billing,  String? error)?  $default,{required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( String editorId,  AccountDisplayKey? accountKey,  AccountTemplateKey templateKey,  List<AccountTemplatePresentation> templates,  AccountTextPresentation name,  AccountTextPresentation endpoint,  AccountTextPresentation credential,  String protocolLabel,  bool canChangeTemplate,  bool hasStoredCredential,  bool credentialRequired,  bool dirty,  bool saving,  bool canSave,  bool canAddModel,  bool setDefaultOnCreate,  bool showSetDefaultOnCreate,  List<ManualAccountModelPresentation> manualModels,  List<AccountModelPresentation> declaredModels,  AccountBillingPresentation billing,  String? error)?  $default,{required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case _NativeAccountEditorPresentation() when $default != null:
-return $default(_that.editorId,_that.accountKey,_that.templateKey,_that.templates,_that.name,_that.endpoint,_that.credential,_that.protocolLabel,_that.canChangeTemplate,_that.hasStoredCredential,_that.credentialRequired,_that.dirty,_that.saving,_that.canSave,_that.canAddModel,_that.manualModels,_that.declaredModels,_that.billing,_that.error);case _:
+return $default(_that.editorId,_that.accountKey,_that.templateKey,_that.templates,_that.name,_that.endpoint,_that.credential,_that.protocolLabel,_that.canChangeTemplate,_that.hasStoredCredential,_that.credentialRequired,_that.dirty,_that.saving,_that.canSave,_that.canAddModel,_that.setDefaultOnCreate,_that.showSetDefaultOnCreate,_that.manualModels,_that.declaredModels,_that.billing,_that.error);case _:
   return orElse();
 
 }
@@ -6913,10 +8956,10 @@ return $default(_that.editorId,_that.accountKey,_that.templateKey,_that.template
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( String editorId,  AccountDisplayKey? accountKey,  AccountTemplateKey templateKey,  List<AccountTemplatePresentation> templates,  AccountTextPresentation name,  AccountTextPresentation endpoint,  AccountTextPresentation credential,  String protocolLabel,  bool canChangeTemplate,  bool hasStoredCredential,  bool credentialRequired,  bool dirty,  bool saving,  bool canSave,  bool canAddModel,  List<ManualAccountModelPresentation> manualModels,  List<AccountModelPresentation> declaredModels,  AccountBillingPresentation billing,  String? error)  $default,) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( String editorId,  AccountDisplayKey? accountKey,  AccountTemplateKey templateKey,  List<AccountTemplatePresentation> templates,  AccountTextPresentation name,  AccountTextPresentation endpoint,  AccountTextPresentation credential,  String protocolLabel,  bool canChangeTemplate,  bool hasStoredCredential,  bool credentialRequired,  bool dirty,  bool saving,  bool canSave,  bool canAddModel,  bool setDefaultOnCreate,  bool showSetDefaultOnCreate,  List<ManualAccountModelPresentation> manualModels,  List<AccountModelPresentation> declaredModels,  AccountBillingPresentation billing,  String? error)  $default,) {final _that = this;
 switch (_that) {
 case _NativeAccountEditorPresentation():
-return $default(_that.editorId,_that.accountKey,_that.templateKey,_that.templates,_that.name,_that.endpoint,_that.credential,_that.protocolLabel,_that.canChangeTemplate,_that.hasStoredCredential,_that.credentialRequired,_that.dirty,_that.saving,_that.canSave,_that.canAddModel,_that.manualModels,_that.declaredModels,_that.billing,_that.error);case _:
+return $default(_that.editorId,_that.accountKey,_that.templateKey,_that.templates,_that.name,_that.endpoint,_that.credential,_that.protocolLabel,_that.canChangeTemplate,_that.hasStoredCredential,_that.credentialRequired,_that.dirty,_that.saving,_that.canSave,_that.canAddModel,_that.setDefaultOnCreate,_that.showSetDefaultOnCreate,_that.manualModels,_that.declaredModels,_that.billing,_that.error);case _:
   throw StateError('Unexpected subclass');
 
 }
@@ -6933,10 +8976,10 @@ return $default(_that.editorId,_that.accountKey,_that.templateKey,_that.template
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( String editorId,  AccountDisplayKey? accountKey,  AccountTemplateKey templateKey,  List<AccountTemplatePresentation> templates,  AccountTextPresentation name,  AccountTextPresentation endpoint,  AccountTextPresentation credential,  String protocolLabel,  bool canChangeTemplate,  bool hasStoredCredential,  bool credentialRequired,  bool dirty,  bool saving,  bool canSave,  bool canAddModel,  List<ManualAccountModelPresentation> manualModels,  List<AccountModelPresentation> declaredModels,  AccountBillingPresentation billing,  String? error)?  $default,) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( String editorId,  AccountDisplayKey? accountKey,  AccountTemplateKey templateKey,  List<AccountTemplatePresentation> templates,  AccountTextPresentation name,  AccountTextPresentation endpoint,  AccountTextPresentation credential,  String protocolLabel,  bool canChangeTemplate,  bool hasStoredCredential,  bool credentialRequired,  bool dirty,  bool saving,  bool canSave,  bool canAddModel,  bool setDefaultOnCreate,  bool showSetDefaultOnCreate,  List<ManualAccountModelPresentation> manualModels,  List<AccountModelPresentation> declaredModels,  AccountBillingPresentation billing,  String? error)?  $default,) {final _that = this;
 switch (_that) {
 case _NativeAccountEditorPresentation() when $default != null:
-return $default(_that.editorId,_that.accountKey,_that.templateKey,_that.templates,_that.name,_that.endpoint,_that.credential,_that.protocolLabel,_that.canChangeTemplate,_that.hasStoredCredential,_that.credentialRequired,_that.dirty,_that.saving,_that.canSave,_that.canAddModel,_that.manualModels,_that.declaredModels,_that.billing,_that.error);case _:
+return $default(_that.editorId,_that.accountKey,_that.templateKey,_that.templates,_that.name,_that.endpoint,_that.credential,_that.protocolLabel,_that.canChangeTemplate,_that.hasStoredCredential,_that.credentialRequired,_that.dirty,_that.saving,_that.canSave,_that.canAddModel,_that.setDefaultOnCreate,_that.showSetDefaultOnCreate,_that.manualModels,_that.declaredModels,_that.billing,_that.error);case _:
   return null;
 
 }
@@ -6948,7 +8991,7 @@ return $default(_that.editorId,_that.accountKey,_that.templateKey,_that.template
 
 
 class _NativeAccountEditorPresentation implements NativeAccountEditorPresentation {
-  const _NativeAccountEditorPresentation({required this.editorId, this.accountKey, required this.templateKey,  List<AccountTemplatePresentation> templates = const <AccountTemplatePresentation>[], required this.name, required this.endpoint, required this.credential, required this.protocolLabel, this.canChangeTemplate = false, this.hasStoredCredential = false, this.credentialRequired = true, this.dirty = false, this.saving = false, this.canSave = false, this.canAddModel = false,  List<ManualAccountModelPresentation> manualModels = const <ManualAccountModelPresentation>[],  List<AccountModelPresentation> declaredModels = const <AccountModelPresentation>[], required this.billing, this.error}): _templates = templates,_manualModels = manualModels,_declaredModels = declaredModels;
+  const _NativeAccountEditorPresentation({required this.editorId, this.accountKey, required this.templateKey,  List<AccountTemplatePresentation> templates = const <AccountTemplatePresentation>[], required this.name, required this.endpoint, required this.credential, required this.protocolLabel, this.canChangeTemplate = false, this.hasStoredCredential = false, this.credentialRequired = true, this.dirty = false, this.saving = false, this.canSave = false, this.canAddModel = false, this.setDefaultOnCreate = false, this.showSetDefaultOnCreate = false,  List<ManualAccountModelPresentation> manualModels = const <ManualAccountModelPresentation>[],  List<AccountModelPresentation> declaredModels = const <AccountModelPresentation>[], required this.billing, this.error}): _templates = templates,_manualModels = manualModels,_declaredModels = declaredModels;
 
 
 @override final  String editorId;
@@ -6972,6 +9015,8 @@ class _NativeAccountEditorPresentation implements NativeAccountEditorPresentatio
 @override@JsonKey() final  bool saving;
 @override@JsonKey() final  bool canSave;
 @override@JsonKey() final  bool canAddModel;
+@override@JsonKey() final  bool setDefaultOnCreate;
+@override@JsonKey() final  bool showSetDefaultOnCreate;
  final  List<ManualAccountModelPresentation> _manualModels;
 @override@JsonKey() List<ManualAccountModelPresentation> get manualModels {
   if (_manualModels is EqualUnmodifiableListView) return _manualModels;
@@ -6999,18 +9044,18 @@ _$NativeAccountEditorPresentationCopyWith<_NativeAccountEditorPresentation> get 
 
 @override
 bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is _NativeAccountEditorPresentation&&(identical(other.editorId, editorId) || other.editorId == editorId)&&(identical(other.accountKey, accountKey) || other.accountKey == accountKey)&&(identical(other.templateKey, templateKey) || other.templateKey == templateKey)&&const DeepCollectionEquality().equals(other.templates, _templates)&&(identical(other.name, name) || other.name == name)&&(identical(other.endpoint, endpoint) || other.endpoint == endpoint)&&(identical(other.credential, credential) || other.credential == credential)&&(identical(other.protocolLabel, protocolLabel) || other.protocolLabel == protocolLabel)&&(identical(other.canChangeTemplate, canChangeTemplate) || other.canChangeTemplate == canChangeTemplate)&&(identical(other.hasStoredCredential, hasStoredCredential) || other.hasStoredCredential == hasStoredCredential)&&(identical(other.credentialRequired, credentialRequired) || other.credentialRequired == credentialRequired)&&(identical(other.dirty, dirty) || other.dirty == dirty)&&(identical(other.saving, saving) || other.saving == saving)&&(identical(other.canSave, canSave) || other.canSave == canSave)&&(identical(other.canAddModel, canAddModel) || other.canAddModel == canAddModel)&&const DeepCollectionEquality().equals(other.manualModels, _manualModels)&&const DeepCollectionEquality().equals(other.declaredModels, _declaredModels)&&(identical(other.billing, billing) || other.billing == billing)&&(identical(other.error, error) || other.error == error));
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is _NativeAccountEditorPresentation&&(identical(other.editorId, editorId) || other.editorId == editorId)&&(identical(other.accountKey, accountKey) || other.accountKey == accountKey)&&(identical(other.templateKey, templateKey) || other.templateKey == templateKey)&&const DeepCollectionEquality().equals(other.templates, _templates)&&(identical(other.name, name) || other.name == name)&&(identical(other.endpoint, endpoint) || other.endpoint == endpoint)&&(identical(other.credential, credential) || other.credential == credential)&&(identical(other.protocolLabel, protocolLabel) || other.protocolLabel == protocolLabel)&&(identical(other.canChangeTemplate, canChangeTemplate) || other.canChangeTemplate == canChangeTemplate)&&(identical(other.hasStoredCredential, hasStoredCredential) || other.hasStoredCredential == hasStoredCredential)&&(identical(other.credentialRequired, credentialRequired) || other.credentialRequired == credentialRequired)&&(identical(other.dirty, dirty) || other.dirty == dirty)&&(identical(other.saving, saving) || other.saving == saving)&&(identical(other.canSave, canSave) || other.canSave == canSave)&&(identical(other.canAddModel, canAddModel) || other.canAddModel == canAddModel)&&(identical(other.setDefaultOnCreate, setDefaultOnCreate) || other.setDefaultOnCreate == setDefaultOnCreate)&&(identical(other.showSetDefaultOnCreate, showSetDefaultOnCreate) || other.showSetDefaultOnCreate == showSetDefaultOnCreate)&&const DeepCollectionEquality().equals(other.manualModels, _manualModels)&&const DeepCollectionEquality().equals(other.declaredModels, _declaredModels)&&(identical(other.billing, billing) || other.billing == billing)&&(identical(other.error, error) || other.error == error));
 }
 
 
 @override
 int get hashCode {
-    return Object.hashAll([runtimeType,editorId,accountKey,templateKey,const DeepCollectionEquality().hash(_templates),name,endpoint,credential,protocolLabel,canChangeTemplate,hasStoredCredential,credentialRequired,dirty,saving,canSave,canAddModel,const DeepCollectionEquality().hash(_manualModels),const DeepCollectionEquality().hash(_declaredModels),billing,error]);
+    return Object.hashAll([runtimeType,editorId,accountKey,templateKey,const DeepCollectionEquality().hash(_templates),name,endpoint,credential,protocolLabel,canChangeTemplate,hasStoredCredential,credentialRequired,dirty,saving,canSave,canAddModel,setDefaultOnCreate,showSetDefaultOnCreate,const DeepCollectionEquality().hash(_manualModels),const DeepCollectionEquality().hash(_declaredModels),billing,error]);
 }
 
 @override
 String toString() {
-    return 'NativeAccountEditorPresentation(editorId: $editorId, accountKey: $accountKey, templateKey: $templateKey, templates: $templates, name: $name, endpoint: $endpoint, credential: $credential, protocolLabel: $protocolLabel, canChangeTemplate: $canChangeTemplate, hasStoredCredential: $hasStoredCredential, credentialRequired: $credentialRequired, dirty: $dirty, saving: $saving, canSave: $canSave, canAddModel: $canAddModel, manualModels: $manualModels, declaredModels: $declaredModels, billing: $billing, error: $error)';
+    return 'NativeAccountEditorPresentation(editorId: $editorId, accountKey: $accountKey, templateKey: $templateKey, templates: $templates, name: $name, endpoint: $endpoint, credential: $credential, protocolLabel: $protocolLabel, canChangeTemplate: $canChangeTemplate, hasStoredCredential: $hasStoredCredential, credentialRequired: $credentialRequired, dirty: $dirty, saving: $saving, canSave: $canSave, canAddModel: $canAddModel, setDefaultOnCreate: $setDefaultOnCreate, showSetDefaultOnCreate: $showSetDefaultOnCreate, manualModels: $manualModels, declaredModels: $declaredModels, billing: $billing, error: $error)';
 }
 
 
@@ -7021,7 +9066,7 @@ abstract mixin class _$NativeAccountEditorPresentationCopyWith<$Res> implements 
   factory _$NativeAccountEditorPresentationCopyWith(_NativeAccountEditorPresentation value, $Res Function(_NativeAccountEditorPresentation) _then) = __$NativeAccountEditorPresentationCopyWithImpl;
 @override @useResult
 $Res call({
- String editorId, AccountDisplayKey? accountKey, AccountTemplateKey templateKey, List<AccountTemplatePresentation> templates, AccountTextPresentation name, AccountTextPresentation endpoint, AccountTextPresentation credential, String protocolLabel, bool canChangeTemplate, bool hasStoredCredential, bool credentialRequired, bool dirty, bool saving, bool canSave, bool canAddModel, List<ManualAccountModelPresentation> manualModels, List<AccountModelPresentation> declaredModels, AccountBillingPresentation billing, String? error
+ String editorId, AccountDisplayKey? accountKey, AccountTemplateKey templateKey, List<AccountTemplatePresentation> templates, AccountTextPresentation name, AccountTextPresentation endpoint, AccountTextPresentation credential, String protocolLabel, bool canChangeTemplate, bool hasStoredCredential, bool credentialRequired, bool dirty, bool saving, bool canSave, bool canAddModel, bool setDefaultOnCreate, bool showSetDefaultOnCreate, List<ManualAccountModelPresentation> manualModels, List<AccountModelPresentation> declaredModels, AccountBillingPresentation billing, String? error
 });
 
 
@@ -7038,7 +9083,7 @@ class __$NativeAccountEditorPresentationCopyWithImpl<$Res>
 
 /// Create a copy of NativeAccountEditorPresentation
 /// with the given fields replaced by the non-null parameter values.
-@override @pragma('vm:prefer-inline') $Res call({Object? editorId = null,Object? accountKey = freezed,Object? templateKey = null,Object? templates = null,Object? name = null,Object? endpoint = null,Object? credential = null,Object? protocolLabel = null,Object? canChangeTemplate = null,Object? hasStoredCredential = null,Object? credentialRequired = null,Object? dirty = null,Object? saving = null,Object? canSave = null,Object? canAddModel = null,Object? manualModels = null,Object? declaredModels = null,Object? billing = null,Object? error = freezed,}) {
+@override @pragma('vm:prefer-inline') $Res call({Object? editorId = null,Object? accountKey = freezed,Object? templateKey = null,Object? templates = null,Object? name = null,Object? endpoint = null,Object? credential = null,Object? protocolLabel = null,Object? canChangeTemplate = null,Object? hasStoredCredential = null,Object? credentialRequired = null,Object? dirty = null,Object? saving = null,Object? canSave = null,Object? canAddModel = null,Object? setDefaultOnCreate = null,Object? showSetDefaultOnCreate = null,Object? manualModels = null,Object? declaredModels = null,Object? billing = null,Object? error = freezed,}) {
   return _then(_NativeAccountEditorPresentation(
 editorId: null == editorId ? _self.editorId : editorId // ignore: cast_nullable_to_non_nullable
 as String,accountKey: freezed == accountKey ? _self.accountKey : accountKey // ignore: cast_nullable_to_non_nullable
@@ -7055,6 +9100,8 @@ as bool,dirty: null == dirty ? _self.dirty : dirty // ignore: cast_nullable_to_n
 as bool,saving: null == saving ? _self.saving : saving // ignore: cast_nullable_to_non_nullable
 as bool,canSave: null == canSave ? _self.canSave : canSave // ignore: cast_nullable_to_non_nullable
 as bool,canAddModel: null == canAddModel ? _self.canAddModel : canAddModel // ignore: cast_nullable_to_non_nullable
+as bool,setDefaultOnCreate: null == setDefaultOnCreate ? _self.setDefaultOnCreate : setDefaultOnCreate // ignore: cast_nullable_to_non_nullable
+as bool,showSetDefaultOnCreate: null == showSetDefaultOnCreate ? _self.showSetDefaultOnCreate : showSetDefaultOnCreate // ignore: cast_nullable_to_non_nullable
 as bool,manualModels: null == manualModels ? _self._manualModels : manualModels // ignore: cast_nullable_to_non_nullable
 as List<ManualAccountModelPresentation>,declaredModels: null == declaredModels ? _self._declaredModels : declaredModels // ignore: cast_nullable_to_non_nullable
 as List<AccountModelPresentation>,billing: null == billing ? _self.billing : billing // ignore: cast_nullable_to_non_nullable

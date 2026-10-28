@@ -487,6 +487,9 @@ class AccountTemplateView {
     required this.modelCatalogId,
     required this.protocol,
     required this.suggestedModelId,
+    required this.defaultBillingKind,
+    required this.supportsModelDiscovery,
+    required this.supportsUsageQuery,
     this.hostedWebSearch = false,
     this.hostedWebSearchDialect = 'open_ai_responses',
     this.standaloneWebSearch = '',
@@ -508,6 +511,11 @@ class AccountTemplateView {
 
   /// 模板推荐的默认模型；不是账号 runtime 的第二份模型选择。
   final String suggestedModelId;
+  final BillingKind defaultBillingKind;
+  final bool supportsModelDiscovery;
+
+  /// Null means this catalog publisher has not supplied runtime query capability.
+  final bool? supportsUsageQuery;
   final bool hostedWebSearch;
   final String hostedWebSearchDialect;
   final String standaloneWebSearch;

@@ -2,15 +2,17 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../l10n/app_localizations.dart';
+import '../../../../app/routing/app_route.dart';
 import '../../../../platform/external_url_launcher.dart';
+import '../../../../presentation/providers/account_domains.dart';
 import '../state/account_presentations.dart';
 import '../state/account_view_state.dart';
 import '../view_models/account_models_view_model.dart';
 import '../view_models/accounts_view_model.dart';
+import '../view_models/account_projection.dart' show domainIdentity;
 import '../view_models/acp_account_view_model.dart';
 import '../views/account_dialogs.dart';
 import '../widgets/account_models_view.dart';
-import 'account_navigation.dart';
 
 Future<bool> confirmAccountDelete(
   BuildContext context,
@@ -33,14 +35,41 @@ Future<void> deleteAccount(
   WidgetRef ref,
   AccountDisplayKey key,
 ) async {
-  final navigation = ref.read(accountsViewModelProvider.notifier);
-  if (!await confirmLeaveAccountsEditor(context, ref) || !context.mounted) {
-    return;
+  final sourceRoute = ModalRoute.of(context);
+  if (sourceRoute == null || !sourceRoute.isCurrent) return;
+  final container = ProviderScope.containerOf(context, listen: false);
+  final accounts = ref.read(accountsViewModelProvider.notifier);
+  final repository = container.read(accountsRepositoryProvider);
+  final identity = domainIdentity(key);
+  final initial = repository.state.value;
+  final target = initial.account(identity);
+  if (!initial.loaded || target == null || !target.capabilities.remove) return;
+  final ownerEpoch = initial.stamp?.ownerEpoch;
+  bool sourceCurrent() =>
+      context.mounted &&
+      identical(ModalRoute.of(context), sourceRoute) &&
+      sourceRoute.isCurrent &&
+      container.exists(accountsViewModelProvider) &&
+      identical(container.read(accountsViewModelProvider.notifier), accounts) &&
+      container.exists(accountsRepositoryProvider) &&
+      identical(container.read(accountsRepositoryProvider), repository) &&
+      repository.state.value.loaded &&
+      repository.state.value.stamp?.ownerEpoch == ownerEpoch;
+  bool targetCurrent() {
+    if (!sourceCurrent()) return false;
+    final current = repository.state.value.account(identity);
+    return current != null &&
+        current.identity == target.identity &&
+        current.capabilities.remove &&
+        current.isDefault == target.isDefault &&
+        current.acpConnectionRevision == target.acpConnectionRevision;
   }
-  final name = navigation.accountName(key);
+
+  final name = accounts.accountName(key);
+  final needsReplacement = accounts.needsReplacement(key);
   AccountDisplayKey? replacement;
-  if (navigation.needsReplacement(key)) {
-    final candidates = navigation.replacements(key);
+  if (needsReplacement) {
+    final candidates = accounts.replacements(key);
     replacement = await showDialog<AccountDisplayKey>(
       context: context,
       builder: (dialogContext) => SimpleDialog(
@@ -54,10 +83,24 @@ Future<void> deleteAccount(
         ],
       ),
     );
-    if (replacement == null || !context.mounted) return;
+    if (replacement == null || !targetCurrent()) return;
   }
-  if (!await confirmAccountDelete(context, name) || !context.mounted) return;
-  await navigation.remove(key, replacement: replacement);
+  if (!context.mounted || !targetCurrent()) return;
+  if (!await confirmAccountDelete(context, name) || !targetCurrent()) return;
+  if (accounts.needsReplacement(key) != needsReplacement ||
+      (replacement != null &&
+          !accounts.replacements(key).any((row) => row.key == replacement))) {
+    return;
+  }
+  final removed = await accounts.remove(key, replacement: replacement);
+  // An admitted removal remains domain-owned. Only its still-current source
+  // may navigate on success, and an already-recreated target is not absence.
+  if (removed &&
+      sourceCurrent() &&
+      repository.state.value.account(identity) == null) {
+    if (!context.mounted) return;
+    const SettingsRoute().go(context);
+  }
 }
 
 AccountModelActions accountModelActions(
@@ -73,29 +116,99 @@ AccountModelActions accountModelActions(
   onCompactChanged: (key, raw) => ref
       .read(accountModelsViewModelProvider(key.account).notifier)
       .changeCompact(key.modelId, raw),
+  onCompactPreset: (key, percent) => ref
+      .read(accountModelsViewModelProvider(key.account).notifier)
+      .presetCompact(key.modelId, percent),
   onAction: (key, action) async {
+    if (action == AccountModelAction.delete &&
+        (!context.mounted ||
+            ModalRoute.of(context)?.isCurrent != true ||
+            !ref.exists(accountModelsViewModelProvider(key.account)))) {
+      return;
+    }
     final owner = ref.read(
       accountModelsViewModelProvider(key.account).notifier,
     );
     switch (action) {
-      case AccountModelAction.loadReadout || AccountModelAction.retryReadout:
+      case AccountModelAction.loadReadout:
+        AccountModelRoute(
+          kind: key.account.kind,
+          accountId: key.account.id,
+          modelId: key.modelId,
+        ).go(context);
+      case AccountModelAction.retryReadout:
         await owner.loadReadout(key.modelId);
+      case AccountModelAction.saveCompact:
+        await owner.saveCompact(key.modelId);
       case AccountModelAction.resetCompact:
         await owner.resetCompact(key.modelId);
       case AccountModelAction.retryCompact:
         await owner.retryCompact(key.modelId);
       case AccountModelAction.delete:
+        final sourceRoute = ModalRoute.of(context);
+        if (sourceRoute == null ||
+            !sourceRoute.isCurrent ||
+            key.account.kind != AccountKind.native) {
+          return;
+        }
+        final container = ProviderScope.containerOf(context, listen: false);
+        final provider = accountModelsViewModelProvider(key.account);
+        final repository = container.read(modelsRepositoryProvider);
+        final account = domainIdentity(key.account);
+        final catalogOwner =
+            repository.state.value.accounts[account]?.stamp?.ownerEpoch;
+        final configOwner =
+            repository.state.value.configurations[account]?.stamp?.ownerEpoch;
+        bool targetCurrent() {
+          if (!context.mounted ||
+              !identical(ModalRoute.of(context), sourceRoute) ||
+              !sourceRoute.isCurrent ||
+              !container.exists(provider) ||
+              !identical(container.read(provider.notifier), owner) ||
+              !container.exists(modelsRepositoryProvider) ||
+              !identical(
+                container.read(modelsRepositoryProvider),
+                repository,
+              )) {
+            return false;
+          }
+          final current = repository.state.value;
+          if (current.accounts[account]?.loaded != true ||
+              current.configurations[account]?.loaded != true ||
+              current.accounts[account]?.stamp?.ownerEpoch != catalogOwner ||
+              current.configurations[account]?.stamp?.ownerEpoch !=
+                  configOwner) {
+            return false;
+          }
+          final model = container
+              .read(provider)
+              .asData
+              ?.value
+              .catalog
+              .models
+              .where((model) => model.key == key)
+              .firstOrNull;
+          return model != null &&
+              model.origin == AccountModelOrigin.manual &&
+              model.canDelete &&
+              !model.saving;
+        }
+
+        if (!targetCurrent()) return;
         if (await confirmAccountDelete(
-          context,
-          key.modelId,
-          manualModel: true,
-        )) {
+              context,
+              key.modelId,
+              manualModel: true,
+            ) &&
+            targetCurrent()) {
           await owner.removeManual(key.modelId);
         }
       case AccountModelAction.edit:
-        if (await confirmLeaveAccountsEditor(context, ref) && context.mounted) {
-          ref.read(accountsViewModelProvider.notifier).edit(key.account);
-        }
+        AccountEditRoute(
+          kind: key.account.kind,
+          accountId: key.account.id,
+          focusModelId: key.modelId,
+        ).go(context);
     }
   },
 );

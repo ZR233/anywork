@@ -1,9 +1,8 @@
 import 'package:flutter/material.dart';
 
 import '../../../../l10n/app_localizations.dart';
-import '../../../../shared/account_brand.dart';
+import '../widgets/account_template_selector.dart';
 import '../state/account_presentations.dart';
-import '../state/account_view_key_values.dart';
 
 class AccountTemplatePickerView extends StatelessWidget {
   const AccountTemplatePickerView({
@@ -32,38 +31,12 @@ class AccountTemplatePickerView extends StatelessWidget {
               ),
               const SizedBox(height: 8),
               Text(l10n.accountsTemplatePickerHint),
-              // Keep official ACP integrations visible before the larger API catalog.
-              for (final kind in [AccountKind.acp, AccountKind.native]) ...[
-                Padding(
-                  padding: const EdgeInsets.only(top: 24, bottom: 12),
-                  child: Text(
-                    kind == AccountKind.native
-                        ? l10n.acpAccountPickerNativeGroup
-                        : l10n.acpAccountPickerAcpGroup,
-                    style: Theme.of(context).textTheme.titleMedium,
-                  ),
-                ),
-                for (final template in templates.where(
-                  (template) => template.key.kind == kind,
-                ))
-                  ListTile(
-                    key: ValueKey<String>(
-                      AccountViewKeyValues.template(
-                        template.key.kind.name,
-                        template.key.id,
-                      ),
-                    ),
-                    leading: AccountBrandMark(
-                      fallbackName: template.name,
-                      iconKey: template.iconKey,
-                    ),
-                    title: Text(template.name),
-                    subtitle: template.description == null
-                        ? null
-                        : Text(template.description!),
-                    onTap: () => onSelected(template.key),
-                  ),
-              ],
+              const SizedBox(height: 24),
+              AccountTemplateSelector(
+                templates: templates,
+                selected: null,
+                onSelected: onSelected,
+              ),
             ],
           ),
         ),
@@ -87,14 +60,18 @@ class AccountUnsavedChangesDialog extends StatelessWidget {
   const AccountUnsavedChangesDialog({
     required this.onChoice,
     this.canSave = true,
+    this.canDiscard = true,
     this.saving = false,
     this.error,
+    this.warning,
     super.key,
   });
   final ValueChanged<AccountLeaveChoice> onChoice;
   final bool canSave;
+  final bool canDiscard;
   final bool saving;
   final String? error;
+  final String? warning;
 
   @override
   Widget build(BuildContext context) {
@@ -106,6 +83,11 @@ class AccountUnsavedChangesDialog extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(l10n.accountsUnsavedBody),
+          if (warning != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 12),
+              child: Text(warning!),
+            ),
           if (saving)
             const Padding(
               padding: EdgeInsets.only(top: 12),
@@ -127,7 +109,9 @@ class AccountUnsavedChangesDialog extends StatelessWidget {
           child: Text(l10n.accountsKeepEditing),
         ),
         TextButton(
-          onPressed: saving ? null : () => onChoice(AccountLeaveChoice.discard),
+          onPressed: saving || !canDiscard
+              ? null
+              : () => onChoice(AccountLeaveChoice.discard),
           child: Text(l10n.accountsDiscard),
         ),
         FilledButton(

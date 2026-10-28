@@ -108,7 +108,7 @@ class _ModeEditorTabState extends ConsumerState<ModeEditorTab> {
     setState(() => _tab = tab);
   }
 
-  Future<bool> _guard() => confirmLeaveModeEditor(context, ref);
+  Future<bool> _guard() => confirmLeaveModeEditor(context);
 
   Future<void> _openMode(String id) async {
     final owner = ref.read(anyworkClientProvider).modeEditor;

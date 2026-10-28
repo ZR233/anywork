@@ -5,10 +5,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter/gestures.dart' show DragStartBehavior;
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:go_router/go_router.dart';
 import 'package:multi_split_view/multi_split_view.dart';
 
 import '../../app/app_graph.dart';
+import '../../app/routing/app_route.dart';
 import '../../presentation/providers/client_provider.dart';
 
 import '../../shared/studio_loading.dart';
@@ -30,6 +30,7 @@ import 'agent_switcher_menu.dart';
 import '../../shared/studio_driver_state.dart';
 import '../../presentation/providers/studio_update_controller.dart';
 import '../settings/settings_common.dart';
+import '../settings/settings_section.dart';
 import '../settings/settings_ssh_password_dialog.dart';
 import '../settings/settings_ssh_server_dialog.dart';
 import '../settings/settings_remote_directory_dialog.dart';

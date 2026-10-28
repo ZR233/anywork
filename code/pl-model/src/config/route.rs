@@ -181,7 +181,8 @@ impl AgentModelConfig {
 
     /// Check declaration integrity without discarding persisted choices removed by an endpoint.
     /// Malformed accounts, profiles, duplicate declarations, missing accounts and empty routes
-    /// still fail. Call `route_availability` separately; edits must use strict `validate`.
+    /// still fail; unreferenced accounts may have empty model declarations. Saving declarations
+    /// is separate from strictly resolving new or changed selections with `resolve_route`.
     pub fn validate_declarations(&self) -> Result<()> {
         if self.accounts.is_empty() {
             return Err(PureError::ConfigError(

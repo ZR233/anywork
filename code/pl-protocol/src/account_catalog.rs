@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 /// Account/模型目录跨产品传输协议版本。
-pub const ACCOUNT_CATALOG_SCHEMA_VERSION: u32 = 18;
+pub const ACCOUNT_CATALOG_SCHEMA_VERSION: u32 = 19;
 
 /// 账号计费意图的唯一事实源；请求由此冻结 [`crate::PricingMode`]。
 ///
@@ -69,6 +69,10 @@ pub struct AccountTemplateDescriptor {
     pub model_catalog_id: String,
     /// 模板默认的厂商协议选择；与 `ProtocolKind` 的 wire 值一致，不从模板 ID/URL 推断。
     pub protocol: String,
+    pub default_billing_kind: BillingKind,
+    pub supports_model_discovery: bool,
+    /// None means this catalog publisher does not provide runtime usage-query capability.
+    pub supports_usage_query: Option<bool>,
     /// 模板推荐的默认模型；不是账号 runtime 的第二份模型选择。
     pub suggested_model_id: String,
     pub icon_key: Option<String>,

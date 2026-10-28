@@ -17,12 +17,61 @@ Widget accountsListWidePreview() =>
     accountListPreview(AccountPreviewFixtures.list);
 
 @Preview(
+  name: 'List / concept comparison / 960 main area',
+  group: 'Accounts · List',
+  size: Size(960, 920),
+)
+Widget accountsListConceptWidePreview() =>
+    accountListPreview(AccountPreviewFixtures.list);
+
+@Preview(
   name: 'List / 390 narrow',
   group: 'Accounts · List',
   size: Size(390, 844),
 )
 Widget accountsListNarrowPreview() =>
     accountListPreview(AccountPreviewFixtures.list);
+
+@Preview(
+  name: 'List / concept comparison / 408 main area',
+  group: 'Accounts · List',
+  size: Size(408, 844),
+)
+Widget accountsListConceptNarrowPreview() =>
+    accountListPreview(AccountPreviewFixtures.list);
+
+@Preview(
+  name: 'List / English summary / 960 main area',
+  group: 'Accounts · List',
+  size: Size(960, 920),
+)
+Widget accountsListEnglishSummaryWidePreview() => accountListPreview(
+  _englishSummaryListFixture(),
+  locale: const Locale('en'),
+);
+
+@Preview(
+  name: 'List / English summary / 408 main area',
+  group: 'Accounts · List',
+  size: Size(408, 844),
+)
+Widget accountsListEnglishSummaryNarrowPreview() => accountListPreview(
+  _englishSummaryListFixture(),
+  locale: const Locale('en'),
+);
+
+@Preview(
+  name: 'List / long mixed last-good / 408 main area / 1.3',
+  group: 'Accounts · List',
+  size: Size(408, 1000),
+)
+Widget accountsListLongMixedLastGoodNarrowPreview() => accountListPreview(
+  AccountsListPresentation(
+    canRefresh: true,
+    rows: [AccountPreviewFixtures.stackedLastGoodRow],
+  ),
+  textScale: 1.3,
+);
 
 @Preview(
   name: 'List / long names / text 1.3',
@@ -34,7 +83,10 @@ Widget accountsListLargeTextPreview() => accountListPreview(
     rows: [
       AccountPreviewFixtures.list.rows.first.copyWith(
         name: '用于海外与研发环境的长账号名称 · 合成多币种余额与精确金额',
-        usage: AccountPreviewFixtures.balance,
+        content: const AccountRowContent.native(
+          billing: AccountBilling.metered,
+          usage: AccountPreviewFixtures.balance,
+        ),
       ),
     ],
   ),
@@ -76,8 +128,11 @@ Widget accountsListRefreshingPreview() => accountListPreview(
     refreshing: true,
     rows: [
       AccountPreviewFixtures.list.rows.first.copyWith(
-        usage: AccountPreviewFixtures.balance.copyWith(
-          phase: AccountQueryPhase.loading,
+        content: AccountRowContent.native(
+          billing: AccountBilling.metered,
+          usage: AccountPreviewFixtures.balance.copyWith(
+            phase: AccountQueryPhase.loading,
+          ),
         ),
       ),
     ],
@@ -94,8 +149,11 @@ Widget accountsListHealthPreview() => accountListPreview(
     rows: [
       AccountPreviewFixtures.list.rows.first.copyWith(
         name: '凭据缺失',
-        usage: const AccountUsagePresentation(
-          phase: AccountQueryPhase.missingCredential,
+        content: const AccountRowContent.native(
+          billing: AccountBilling.metered,
+          usage: AccountUsagePresentation(
+            phase: AccountQueryPhase.missingCredential,
+          ),
         ),
       ),
       AccountPreviewFixtures.list.rows.first.copyWith(
@@ -104,11 +162,14 @@ Widget accountsListHealthPreview() => accountListPreview(
           id: 'synthetic-insufficient',
         ),
         name: '余额不足',
-        usage: AccountPreviewFixtures.balance.copyWith(
-          balanceHealth: AccountBalanceHealth.insufficient,
-          balances: const [
-            AccountCurrencyBalance(currency: 'CNY', total: '-0.0001'),
-          ],
+        content: AccountRowContent.native(
+          billing: AccountBilling.metered,
+          usage: AccountPreviewFixtures.balance.copyWith(
+            balanceHealth: AccountBalanceHealth.insufficient,
+            balances: const [
+              AccountCurrencyBalance(currency: 'CNY', total: '-0.0001'),
+            ],
+          ),
         ),
       ),
     ],
@@ -136,12 +197,28 @@ Widget accountDetailsWidePreview() =>
     accountDetailsPreviewHost(AccountPreviewFixtures.details);
 
 @Preview(
+  name: 'Details / concept comparison / 960 main area',
+  group: 'Accounts · Detail',
+  size: Size(960, 1100),
+)
+Widget accountDetailsConceptWidePreview() =>
+    accountDetailsPreviewHost(AccountPreviewFixtures.conceptDetails);
+
+@Preview(
   name: 'Details / 390 narrow',
   group: 'Accounts · Detail',
   size: Size(390, 844),
 )
 Widget accountDetailsNarrowPreview() =>
     accountDetailsPreviewHost(AccountPreviewFixtures.details);
+
+@Preview(
+  name: 'Details / concept comparison / 408 main area',
+  group: 'Accounts · Detail',
+  size: Size(408, 900),
+)
+Widget accountDetailsConceptNarrowPreview() =>
+    accountDetailsPreviewHost(AccountPreviewFixtures.conceptDetails);
 
 @Preview(
   name: 'Details / long name / text 1.3',
@@ -179,7 +256,10 @@ Widget accountsListMultiCurrencyPreview() => accountListPreview(
   AccountPreviewFixtures.list.copyWith(
     rows: [
       AccountPreviewFixtures.list.rows.first.copyWith(
-        usage: AccountPreviewFixtures.balance,
+        content: const AccountRowContent.native(
+          billing: AccountBilling.metered,
+          usage: AccountPreviewFixtures.balance,
+        ),
       ),
     ],
   ),
@@ -194,10 +274,13 @@ Widget accountsListLastGoodPreview() => accountListPreview(
   AccountPreviewFixtures.list.copyWith(
     rows: [
       AccountPreviewFixtures.list.rows.first.copyWith(
-        usage: AccountPreviewFixtures.balance.copyWith(
-          phase: AccountQueryPhase.failed,
-          canRetry: true,
-          error: '合成网络错误，请重试。',
+        content: AccountRowContent.native(
+          billing: AccountBilling.metered,
+          usage: AccountPreviewFixtures.balance.copyWith(
+            phase: AccountQueryPhase.failed,
+            canRetry: true,
+            error: '合成网络错误，请重试。',
+          ),
         ),
       ),
     ],
@@ -271,11 +354,27 @@ Widget accountNativeEditorPreview() =>
     accountNativeEditorPreviewHost(AccountPreviewFixtures.editor);
 
 @Preview(
+  name: 'Editor / Native / concept comparison / 960 main area',
+  group: 'Accounts · Editor',
+  size: Size(960, 1100),
+)
+Widget accountNativeEditorConceptWidePreview() =>
+    accountNativeEditorPreviewHost(AccountPreviewFixtures.editor);
+
+@Preview(
   name: 'Editor / Native / 390 narrow',
   group: 'Accounts · Editor',
   size: Size(390, 844),
 )
 Widget accountNativeEditorNarrowPreview() =>
+    accountNativeEditorPreviewHost(AccountPreviewFixtures.editor);
+
+@Preview(
+  name: 'Editor / Native / concept comparison / 408 main area',
+  group: 'Accounts · Editor',
+  size: Size(408, 900),
+)
+Widget accountNativeEditorConceptNarrowPreview() =>
     accountNativeEditorPreviewHost(AccountPreviewFixtures.editor);
 
 @Preview(
@@ -393,6 +492,14 @@ Widget accountAcpEditorReadyPreview() => accountAcpEditorPreviewHost(
 );
 
 @Preview(
+  name: 'Editor / ACP / 408 main area',
+  group: 'Accounts · Editor',
+  size: Size(408, 844),
+)
+Widget accountAcpEditorNarrowPreview() =>
+    accountAcpEditorPreviewHost(AccountPreviewFixtures.acpEditor);
+
+@Preview(
   name: 'Editor / ACP / failure recovery',
   group: 'Accounts · Editor',
   size: Size(720, 900),
@@ -420,7 +527,7 @@ Widget accountModelExpandedPreview() => accountPreviewHost(
     padding: const EdgeInsets.all(24),
     children: [
       Card(
-        child: AccountModelTile(
+        child: AccountModelListItem(
           value: AccountPreviewFixtures.model,
           actions: accountPreviewModelActions(record),
           initiallyExpanded: true,
@@ -452,6 +559,8 @@ Widget accountCompactInvalidPreview() => accountPreviewHost(
           canRetry: true,
         ),
         onChanged: (raw) => record('threshold: $raw'),
+        onPreset: (percent) => record('preset: $percent'),
+        onSave: () => record('save threshold'),
         onReset: () => record('reset threshold'),
         onRetry: () => record('retry threshold'),
       ),
@@ -557,6 +666,39 @@ AccountDetailsPresentation _withNative(
         billing: billing ?? native.billing,
         catalog: catalog ?? native.catalog,
       ),
+    ),
+  );
+}
+
+AccountsListPresentation _englishSummaryListFixture() {
+  final source = AccountPreviewFixtures.list;
+  return source.copyWith(
+    rows: [for (final row in source.rows) _withEnglishQuotaLabels(row)],
+  );
+}
+
+AccountRowPresentation _withEnglishQuotaLabels(AccountRowPresentation row) {
+  final content = row.content;
+  if (content is! NativeAccountRowContent || content.usage.quotas.isEmpty) {
+    return row;
+  }
+  return row.copyWith(
+    content: AccountRowContent.native(
+      billing: content.billing,
+      usage: content.usage.copyWith(
+        quotas: [
+          for (final quota in content.usage.quotas)
+            quota.copyWith(
+              label: switch (quota.label) {
+                '5 小时额度' => '5-hour quota',
+                '每周额度' => 'Weekly quota',
+                'MCP 额度' => 'MCP quota',
+                _ => quota.label,
+              },
+            ),
+        ],
+      ),
+      displayEndpoint: content.displayEndpoint,
     ),
   );
 }

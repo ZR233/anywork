@@ -98,6 +98,150 @@ abstract class AppLocalizations {
     Locale('zh'),
   ];
 
+  /// No description provided for @accountsModelModalityCapabilities.
+  ///
+  /// In en, this message translates to:
+  /// **'Input/output modalities and capabilities'**
+  String get accountsModelModalityCapabilities;
+
+  /// No description provided for @accountsModelContextThreshold.
+  ///
+  /// In en, this message translates to:
+  /// **'Context and compaction threshold'**
+  String get accountsModelContextThreshold;
+
+  /// No description provided for @accountsModelProtocolOrigin.
+  ///
+  /// In en, this message translates to:
+  /// **'Protocol and model origin'**
+  String get accountsModelProtocolOrigin;
+
+  /// No description provided for @accountsSupportedConnections.
+  ///
+  /// In en, this message translates to:
+  /// **'Supported connections'**
+  String get accountsSupportedConnections;
+
+  /// No description provided for @accountsVisibleCount.
+  ///
+  /// In en, this message translates to:
+  /// **'Showing {count} accounts'**
+  String accountsVisibleCount(int count);
+
+  /// No description provided for @accountsTemplateProtocol.
+  ///
+  /// In en, this message translates to:
+  /// **'Protocol'**
+  String get accountsTemplateProtocol;
+
+  /// No description provided for @accountsTemplateDefaultEndpoint.
+  ///
+  /// In en, this message translates to:
+  /// **'Default endpoint'**
+  String get accountsTemplateDefaultEndpoint;
+
+  /// No description provided for @accountsTemplateDefaultBilling.
+  ///
+  /// In en, this message translates to:
+  /// **'Template default billing'**
+  String get accountsTemplateDefaultBilling;
+
+  /// No description provided for @accountsTemplateCapabilities.
+  ///
+  /// In en, this message translates to:
+  /// **'Catalog and usage capabilities'**
+  String get accountsTemplateCapabilities;
+
+  /// No description provided for @accountsTemplateDiscoverySupported.
+  ///
+  /// In en, this message translates to:
+  /// **'Online model catalog sync supported'**
+  String get accountsTemplateDiscoverySupported;
+
+  /// No description provided for @accountsTemplateDiscoveryUnsupported.
+  ///
+  /// In en, this message translates to:
+  /// **'Online model catalog sync not supported'**
+  String get accountsTemplateDiscoveryUnsupported;
+
+  /// No description provided for @accountsTemplateUsageSupported.
+  ///
+  /// In en, this message translates to:
+  /// **'Usage queries supported'**
+  String get accountsTemplateUsageSupported;
+
+  /// No description provided for @accountsTemplateUsageUnsupported.
+  ///
+  /// In en, this message translates to:
+  /// **'Usage queries not supported'**
+  String get accountsTemplateUsageUnsupported;
+
+  /// No description provided for @accountsTemplateUsageUnknown.
+  ///
+  /// In en, this message translates to:
+  /// **'Usage query capability not provided'**
+  String get accountsTemplateUsageUnknown;
+
+  /// No description provided for @accountsSetDefaultOnCreate.
+  ///
+  /// In en, this message translates to:
+  /// **'Set as default after creation'**
+  String get accountsSetDefaultOnCreate;
+
+  /// No description provided for @accountsSetDefaultOnCreateHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Update the default model for new chats in Simple mode. Other modes and existing chats are unchanged.'**
+  String get accountsSetDefaultOnCreateHint;
+
+  /// No description provided for @accountsCreatedDefaultIncomplete.
+  ///
+  /// In en, this message translates to:
+  /// **'Account created; setting the default did not complete'**
+  String get accountsCreatedDefaultIncomplete;
+
+  /// No description provided for @accountsUnconfirmedSaveDiscardWarning.
+  ///
+  /// In en, this message translates to:
+  /// **'Save outcome is not confirmed. Discarding only clears local edits; it does not cancel the submitted save, and the saved state may still change.'**
+  String get accountsUnconfirmedSaveDiscardWarning;
+
+  /// No description provided for @accountsConnectionBillingTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Connection, credentials & billing'**
+  String get accountsConnectionBillingTitle;
+
+  /// No description provided for @accountsTemplatesHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Search for a template, then review its connection settings. Changing templates is handled before replacing your edits.'**
+  String get accountsTemplatesHint;
+
+  /// No description provided for @accountsListHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Manage model services and integrations, and review current balances and quotas.'**
+  String get accountsListHint;
+
+  /// No description provided for @accountsTemplateNativeGroup.
+  ///
+  /// In en, this message translates to:
+  /// **'Model APIs'**
+  String get accountsTemplateNativeGroup;
+
+  /// No description provided for @accountsTemplateAcpGroup.
+  ///
+  /// In en, this message translates to:
+  /// **'Managed integrations'**
+  String get accountsTemplateAcpGroup;
+
+  /// No description provided for @accountsBackToAccount.
+  ///
+  /// In en, this message translates to:
+  /// **'Back to {accountName}'**
+  String accountsBackToAccount(String accountName);
+
   /// No description provided for @accountsStateStale.
   ///
   /// In en, this message translates to:
@@ -155,7 +299,7 @@ abstract class AppLocalizations {
   /// No description provided for @accountsStatusColumn.
   ///
   /// In en, this message translates to:
-  /// **'Status'**
+  /// **'Billing & status'**
   String get accountsStatusColumn;
 
   /// No description provided for @accountsBalanceColumn.
@@ -295,6 +439,84 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Load performance & evaluations'**
   String get accountsReadout;
+
+  /// No description provided for @accountsModelDetails.
+  ///
+  /// In en, this message translates to:
+  /// **'Details & evaluations'**
+  String get accountsModelDetails;
+
+  /// No description provided for @accountsSpecsTab.
+  ///
+  /// In en, this message translates to:
+  /// **'Specifications & performance'**
+  String get accountsSpecsTab;
+
+  /// No description provided for @accountsPriceMissing.
+  ///
+  /// In en, this message translates to:
+  /// **'No verified tiered prices for this model.'**
+  String get accountsPriceMissing;
+
+  /// No description provided for @accountsPerformanceMissing.
+  ///
+  /// In en, this message translates to:
+  /// **'No local performance samples yet.'**
+  String get accountsPerformanceMissing;
+
+  /// No description provided for @accountsEvaluationWindow.
+  ///
+  /// In en, this message translates to:
+  /// **'Summary of the latest 10 evaluations only; unrated outcomes are excluded from score averages.'**
+  String get accountsEvaluationWindow;
+
+  /// No description provided for @accountsFilterAll.
+  ///
+  /// In en, this message translates to:
+  /// **'All outcomes'**
+  String get accountsFilterAll;
+
+  /// No description provided for @accountsFilterCategory.
+  ///
+  /// In en, this message translates to:
+  /// **'All categories'**
+  String get accountsFilterCategory;
+
+  /// No description provided for @accountsFilterScore.
+  ///
+  /// In en, this message translates to:
+  /// **'Any quality score'**
+  String get accountsFilterScore;
+
+  /// No description provided for @accountsFilterEmpty.
+  ///
+  /// In en, this message translates to:
+  /// **'No evaluations match these filters.'**
+  String get accountsFilterEmpty;
+
+  /// No description provided for @accountsSortNewest.
+  ///
+  /// In en, this message translates to:
+  /// **'Newest first'**
+  String get accountsSortNewest;
+
+  /// No description provided for @accountsSortHighest.
+  ///
+  /// In en, this message translates to:
+  /// **'Highest quality first'**
+  String get accountsSortHighest;
+
+  /// No description provided for @accountsSortLowest.
+  ///
+  /// In en, this message translates to:
+  /// **'Lowest quality first'**
+  String get accountsSortLowest;
+
+  /// No description provided for @accountsCompactAdjusted.
+  ///
+  /// In en, this message translates to:
+  /// **'The model applies a safety limit. Your requested value is preserved; the effective value below is authoritative.'**
+  String get accountsCompactAdjusted;
 
   /// No description provided for @accountsConnection.
   ///

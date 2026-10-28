@@ -280,8 +280,16 @@ impl AccountCatalogRegistry {
         let templates = self
             .templates
             .iter()
-            .map(account_template_descriptor)
-            .collect();
+            .map(|template| {
+                let catalog = self.model_catalog(&template.model_catalog).ok_or_else(|| {
+                    PureError::ConfigError(format!(
+                        "account template {} references missing catalog: {}",
+                        template.id, template.model_catalog
+                    ))
+                })?;
+                account_template_descriptor(template, catalog)
+            })
+            .collect::<Result<Vec<_>>>()?;
         let model_catalogs = self
             .model_catalogs
             .iter()
@@ -405,8 +413,11 @@ fn template(
     }
 }
 
-fn account_template_descriptor(template: &AccountTemplate) -> AccountTemplateDescriptor {
-    AccountTemplateDescriptor {
+fn account_template_descriptor(
+    template: &AccountTemplate,
+    catalog: &ModelCatalog,
+) -> Result<AccountTemplateDescriptor> {
+    Ok(AccountTemplateDescriptor {
         id: template.id.to_string(),
         display_name: template.display_name.clone(),
         description: template.description.clone(),
@@ -417,12 +428,15 @@ fn account_template_descriptor(template: &AccountTemplate) -> AccountTemplateDes
         },
         model_catalog_id: template.model_catalog.to_string(),
         protocol: template.account.protocol.as_str().to_string(),
+        default_billing_kind: template.account.billing_kind()?,
+        supports_model_discovery: catalog.discovery.is_some(),
+        supports_usage_query: None,
         suggested_model_id: template.suggested_model_id.clone(),
         icon_key: template.icon_key.clone(),
         service_capabilities: account_service_capabilities_descriptor(
             &template.service_capabilities,
         ),
-    }
+    })
 }
 
 /// 将运行时服务能力投影为无凭证公共 DTO。

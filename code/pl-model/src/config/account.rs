@@ -641,8 +641,10 @@ impl AccountConfig {
         self.resolved_catalog = Some(entries);
     }
 
-    /// Structural validation for startup/reconciliation. Missing observed models or withdrawn
-    /// connection candidates are not corruption; manual declarations and edits remain strict.
+    /// Structural validation for saving declarations, startup and reconciliation.
+    /// Empty model declarations are valid, but strict availability checks and route resolution
+    /// still reject missing models. Declared models, overrides and references remain validated;
+    /// missing observed models or withdrawn connection candidates are not corruption.
     pub fn validate_declarations(&self, account_id: &AccountId) -> Result<()> {
         self.validate_structure(account_id, false)
     }
@@ -929,7 +931,7 @@ impl AccountConfig {
         .into_iter()
         .map(|entry| entry.model)
         .collect::<Vec<_>>();
-        if models.is_empty() && (strict_availability || self.model_catalog_overlay.is_none()) {
+        if models.is_empty() && strict_availability {
             return Err(PureError::ConfigError(format!(
                 "account {account_id} must define at least one model"
             )));

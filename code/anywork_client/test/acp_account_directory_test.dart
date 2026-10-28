@@ -17,10 +17,13 @@ const _nativeTemplate = AccountTemplateView(
   modelCatalogId: 'openai-compatible',
   protocol: 'open_ai_compatible',
   suggestedModelId: 'gpt',
+  defaultBillingKind: BillingKind.unknown,
+  supportsModelDiscovery: false,
+  supportsUsageQuery: null,
 );
 
 const _nativeCatalog = AccountCatalogView(
-  schemaVersion: 1,
+  schemaVersion: 19,
   revision: 'catalog-1',
   templates: [_nativeTemplate],
   modelCatalogs: {

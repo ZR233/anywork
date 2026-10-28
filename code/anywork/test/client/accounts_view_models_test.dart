@@ -4,6 +4,7 @@ import 'package:anywork/src/features/settings/accounts/connectors/account_string
 import 'package:anywork/src/features/settings/accounts/state/account_presentations.dart';
 import 'package:anywork/src/features/settings/accounts/state/account_view_state.dart';
 import 'package:anywork/src/features/settings/accounts/view_models/account_editor_view_model.dart';
+import 'package:anywork/src/features/settings/accounts/view_models/account_editor_session_view_model.dart';
 import 'package:anywork/src/features/settings/accounts/view_models/accounts_view_model.dart';
 import 'package:anywork/src/features/settings/accounts/view_models/account_models_view_model.dart';
 import 'package:anywork/src/features/settings/accounts/view_models/account_details_view_model.dart';
@@ -37,6 +38,9 @@ const nativeTemplate = AccountTemplateView(
   modelCatalogId: 'bundled',
   protocol: 'open_ai',
   suggestedModelId: 'suggested',
+  defaultBillingKind: BillingKind.subscription,
+  supportsModelDiscovery: false,
+  supportsUsageQuery: null,
 );
 const customTemplate = AccountTemplateView(
   id: 'custom',
@@ -48,6 +52,9 @@ const customTemplate = AccountTemplateView(
   modelCatalogId: '',
   protocol: 'open_ai',
   suggestedModelId: '',
+  defaultBillingKind: BillingKind.noCharge,
+  supportsModelDiscovery: true,
+  supportsUsageQuery: false,
 );
 const vmAcpTemplate = AcpAccountTemplateView(
   provider: AcpProviderView.antigravity,
@@ -78,13 +85,43 @@ OperationState savedVmOperation([String id = 'saved']) => OperationState(
     durable: true,
   ),
 );
+
+const vmOperationStrings = AccountStrings({
+  'unknownOutcome': 'Outcome unknown',
+  'saveFailed': 'Save failed',
+  'awaitingObservation': 'Waiting for observation',
+  'unconfirmedDiscard': 'May still change canonical settings',
+});
+
+/// Typed SDK outcomes are environment inputs, not a test-side classifier.
+OperationState failedVmOperation(
+  OperationPhase phase, {
+  required String id,
+  required Object error,
+}) => OperationState(
+  id: OperationId(id),
+  target: 'test',
+  failurePhase: phase,
+  error: error,
+  receipt: phase == OperationPhase.syncFailed
+      ? CommitReceipt(
+          operationId: OperationId(id),
+          disposition: CommitDisposition.applied,
+          targets: const [vmStamp],
+          effect: EffectPoint.immediate,
+          durable: true,
+        )
+      : null,
+);
 AccountSummary vmSummary(
   AccountIdentity identity, {
   String? name,
+  String? displayEndpoint,
   int? acpRevision = 1,
 }) => AccountSummary(
   identity: identity,
   name: name ?? identity.accountId,
+  displayEndpoint: displayEndpoint,
   isDefault: false,
   billingKind: identity is NativeAccountIdentity ? BillingKind.metered : null,
   usageQueryRevision: 1,
@@ -105,13 +142,14 @@ NativeAccountDetails vmNative({
   String id = 'native',
   String name = 'Saved name',
   List<AccountModelCommand> manual = const [],
+  bool hasBearerToken = true,
 }) => NativeAccountDetails(
   identity: NativeAccountIdentity(id),
   name: name,
   protocol: 'open_ai',
   templateId: 'native',
   baseUrl: 'https://native.example/v1',
-  hasBearerToken: true,
+  hasBearerToken: hasBearerToken,
   credentialRequired: true,
   usageQueryRevision: 1,
   customModels: manual,
@@ -161,7 +199,11 @@ class VmAccounts implements AccountsRepository {
   final billing = <BillingKind?>[];
   final defaultCalls = <NativeAccountIdentity>[];
   final removals = <NativeAccountIdentity>[];
+  final mutationCalls = <String>[];
   Future<OperationState> Function()? write;
+  Future<OperationState> Function()? createWrite;
+  Future<OperationState> Function()? patchWrite;
+  Future<OperationState> Function()? defaultWrite;
   int detailReads = 0;
   Object? detailFailure;
   void put(AccountDetails details, {bool stale = false}) =>
@@ -201,7 +243,10 @@ class VmAccounts implements AccountsRepository {
     DraftStamp? draft,
   }) {
     patches.add(command);
-    return write?.call() ?? Future.value(savedVmOperation());
+    mutationCalls.add('patch');
+    return patchWrite?.call() ??
+        write?.call() ??
+        Future.value(savedVmOperation());
   }
 
   @override
@@ -210,7 +255,10 @@ class VmAccounts implements AccountsRepository {
     DraftStamp? draft,
   }) {
     creates.add(command);
-    return write?.call() ?? Future.value(savedVmOperation());
+    mutationCalls.add('create');
+    return createWrite?.call() ??
+        write?.call() ??
+        Future.value(savedVmOperation());
   }
 
   @override
@@ -225,7 +273,10 @@ class VmAccounts implements AccountsRepository {
   @override
   Future<OperationState> setDefault(NativeAccountIdentity identity) {
     defaultCalls.add(identity);
-    return write?.call() ?? Future.value(savedVmOperation());
+    mutationCalls.add('default');
+    return defaultWrite?.call() ??
+        write?.call() ??
+        Future.value(savedVmOperation());
   }
 
   @override
@@ -260,6 +311,7 @@ class VmModels implements ModelsRepository {
                     outputModalities: [ModelModalityView.text],
                     context: ModelContextView(
                       unavailable: null,
+                      contextWindow: 2000,
                       autoCompactLimit: 1000,
                     ),
                   ),
@@ -280,10 +332,12 @@ class VmModels implements ModelsRepository {
   final LatestValue<ModelDirectoryState> state;
   final demands = <VmDemand>[];
   final compactCalls = <(AccountModelIdentity, AutoCompactIntent)>[];
+  final compactDrafts = <DraftStamp?>[];
   final connections = <(AccountModelIdentity, ModelConnectionIntent)>[];
   final removed = <AccountModelIdentity>[];
   Future<OperationState> Function()? compactWrite;
   Future<OperationState> Function()? connectionWrite;
+  Future<OperationState> Function()? removeWrite;
   Future<DelegationModelDetail> Function()? readout;
   @override
   AccountDemand observeAccount(NativeAccountIdentity identity) {
@@ -299,6 +353,7 @@ class VmModels implements ModelsRepository {
     DraftStamp? draft,
   }) {
     compactCalls.add((id, intent));
+    compactDrafts.add(draft);
     return compactWrite?.call() ?? Future.value(savedVmOperation());
   }
 
@@ -314,7 +369,7 @@ class VmModels implements ModelsRepository {
   @override
   Future<OperationState> removeManual(AccountModelIdentity id) async {
     removed.add(id);
-    return savedVmOperation();
+    return removeWrite?.call() ?? savedVmOperation();
   }
 
   @override
@@ -482,12 +537,39 @@ class AccountsVmHarness {
   final acp = VmAcp();
   late final ProviderContainer container;
   final List<void Function()> _listeners = [];
-  Future<AccountsViewModel> navigation() async {
+  final _sessionSlots =
+      Map<AccountEditorSessionOwner, AccountEditorSessionViewModel>.identity();
+  Future<AccountsViewModel> listOwner() async {
     _listeners.add(
       container.listen(accountsViewModelProvider, (_, _) {}).close,
     );
     await container.read(accountsViewModelProvider.future);
     return container.read(accountsViewModelProvider.notifier);
+  }
+
+  AccountEditorSessionOwner claimSession(AccountEditorEntryKey entry) {
+    final slot = container.read(
+      accountEditorSessionViewModelProvider(entry).notifier,
+    );
+    final owner = slot.claimMount(Object());
+    _sessionSlots[owner] = slot;
+    return owner;
+  }
+
+  void releaseSession(AccountEditorSessionOwner owner) {
+    final slot = _sessionSlots[owner];
+    if (slot == null) throw StateError('Session owner was not claimed here.');
+    slot.releaseMount(owner);
+  }
+
+  Future<AccountEditorSessionOwner> session(AccountEditorEntryKey entry) async {
+    final provider = accountEditorSessionViewModelProvider(entry);
+    _listeners.add(container.listen(provider, (_, _) {}).close);
+    await container.read(provider.future);
+    final owner = claimSession(entry);
+    await owner.initialize();
+    expect(container.read(provider).requireValue.ownerId, owner.ownerId);
+    return owner;
   }
 
   Future<AccountEditorViewModel> editor(AccountEditorKey key) async {
@@ -518,6 +600,9 @@ class AccountsVmHarness {
   AccountEditorViewState editorState(AccountEditorKey key) =>
       container.read(accountEditorViewModelProvider(key)).requireValue;
   void dispose() {
+    for (final entry in _sessionSlots.entries) {
+      entry.value.releaseMount(entry.key);
+    }
     for (final close in _listeners) {
       close();
     }
@@ -576,6 +661,35 @@ void publishVmAcp(
   );
 }
 
+void publishVmAcpReady(AccountsVmHarness h) {
+  h.acp.install.publish(
+    AccountResource(
+      stamp: vmStamp,
+      value: AcpInstallSnapshotView(
+        revision: 1,
+        updatedAt: 1,
+        installations: [
+          const AcpInstallEntryView(
+            provider: AcpProviderView.antigravity,
+            state: AcpInstallReadyState(
+              operationId: 'prepared',
+              server: AcpInstalledServerView(
+                installationId: 'id',
+                release: AcpInstallReleaseView(
+                  version: '1.4.1',
+                  target: 'linux-x86_64',
+                  archiveUrl: 'https://example.test/archive',
+                ),
+                program: '/managed/program',
+              ),
+            ),
+          ),
+        ],
+      ),
+    ),
+  );
+}
+
 Future<AcpAccountViewModel> listenVmAcp(
   AccountsVmHarness h,
   AccountAcpKey key,
@@ -606,10 +720,10 @@ DelegationModelDetail vmPerformance() => DelegationModelDetail(
   ),
   evaluations: const AgentEvaluationSummary(
     window: 12,
-    ratedSamples: 12,
-    passed: 12,
-    failed: 0,
-    notRated: 0,
+    ratedSamples: 11,
+    passed: 6,
+    failed: 5,
+    notRated: 1,
   ),
   recentEvaluations: [
     for (var i = 0; i < 12; i++)
@@ -623,7 +737,13 @@ DelegationModelDetail vmPerformance() => DelegationModelDetail(
         turnId: 'turn',
         revision: 1,
         taskCategory: AgentTaskCategory.coding,
-        outcome: AgentEvaluationOutcome.passed,
+        outcome: i == 11
+            ? AgentEvaluationOutcome.notRated
+            : i.isEven
+            ? AgentEvaluationOutcome.passed
+            : AgentEvaluationOutcome.failed,
+        quality: i == 11 ? null : i % 5 + 1,
+        instructionFollowing: i == 11 ? null : 5,
         comment: 'evaluation-$i',
         createdAt: i,
         updatedAt: i,
@@ -632,18 +752,465 @@ DelegationModelDetail vmPerformance() => DelegationModelDetail(
 );
 
 void main() {
+  test('compact typing and presets stay drafts until explicit Save, preserving exact positive intent', () async {
+    final h = AccountsVmHarness();
+    addTearDown(h.dispose);
+    final owner = await h.modelOwner();
+    AccountCompactPresentation current() => h.container
+        .read(accountModelsViewModelProvider(nativeKey))
+        .requireValue
+        .catalog
+        .models
+        .single
+        .compact!;
+    void editWithoutTimer(void Function() edit) {
+      final timers = <Duration>[];
+      runZoned(
+        edit,
+        zoneSpecification: ZoneSpecification(
+          createTimer: (self, parent, zone, duration, callback) {
+            timers.add(duration);
+            return parent.createTimer(zone, duration, callback);
+          },
+        ),
+      );
+      // The contract forbids scheduling submission, not merely a write before
+      // the next frame. Catch the former debounce without a wall-clock sleep.
+      expect(timers, isEmpty);
+    }
+
+    editWithoutTimer(() => owner.changeCompact('model', '9999999'));
+    expect(h.models.compactCalls, isEmpty);
+    expect(
+      (current().raw, current().dirty, current().canSave),
+      ('9999999', true, true),
+    );
+    await owner.saveCompact('model');
+    expect(
+      h.models.compactCalls.single.$1,
+      const AccountModelIdentity(
+        account: NativeAccountIdentity('native'),
+        modelId: 'model',
+      ),
+    );
+    expect(
+      (h.models.compactCalls.single.$2 as SetAutoCompactLimit).limit,
+      9999999,
+    );
+    expect(current().dirty, isFalse);
+    editWithoutTimer(() => owner.presetCompact('model', 25));
+    expect(current().raw, '500');
+    expect(h.models.compactCalls, hasLength(1));
+    owner.changeCompact('model', '1.5');
+    await owner.saveCompact('model');
+    expect((current().raw, current().canSave), ('1.5', false));
+    expect(h.models.compactCalls, hasLength(1));
+  });
+
+  test('compact leave freezes revisions and blocks failed or unknown saves without replay', () async {
+    final board = MutationBoard(clientId: 'compact-leave');
+    final newerObservations = <OperationId, LatestValue<OperationState>>{};
+    final h = AccountsVmHarness(
+      operationLookup: (id) => newerObservations[id] ?? board.lookup(id)?.state,
+    );
+    addTearDown(h.dispose);
+    final owner = await h.modelOwner();
+    owner.changeCompact('model', '1200');
+    expect(await owner.requestLeaveCompact(AccountLeaveChoice.cancel), isFalse);
+    final completing = Completer<OperationState>();
+    h.models.compactWrite = () => completing.future;
+    final leaving = owner.requestLeaveCompact(AccountLeaveChoice.save);
+    expect(owner.compactLeaveBlocked(), isTrue);
+    final frozenRevision = h.models.compactDrafts.single!.revision;
+    await owner.saveCompact('model');
+    await owner.resetCompact('model');
+    await owner.retryCompact('model');
+    expect(
+      await owner.requestLeaveCompact(AccountLeaveChoice.discard),
+      isFalse,
+    );
+    expect(h.models.compactCalls, hasLength(1));
+    owner.changeCompact('model', '1300');
+    completing.complete(savedVmOperation());
+    expect(await leaving, isFalse);
+    expect(owner.compactLeaveBlocked(), isFalse);
+    expect(owner.hasCompactDrafts(), isTrue);
+    // Before-admission exceptions remain throws; this is not dispatch loss.
+    h.models.compactWrite = () => Future.error(StateError('before admission'));
+    expect(await owner.requestLeaveCompact(AccountLeaveChoice.save), isFalse);
+    expect(h.models.compactDrafts.last!.revision, greaterThan(frozenRevision));
+    owner.setStrings(
+      const AccountStrings({
+        'unconfirmedDiscard': 'May still change canonical settings',
+      }),
+    );
+    for (final phase in [
+      OperationPhase.unknownOutcome,
+      OperationPhase.syncFailed,
+    ]) {
+      for (final clearing in [false, true]) {
+        owner.changeCompact('model', '1350');
+        final operation = board.begin(target: 'compact');
+        if (phase == OperationPhase.unknownOutcome) {
+          operation.unknownOutcome(StateError('unobserved'));
+        } else {
+          operation.accept(
+            CommitReceipt(
+              operationId: operation.id,
+              disposition: CommitDisposition.applied,
+              targets: const [vmStamp],
+              effect: EffectPoint.immediate,
+              durable: true,
+            ),
+          );
+          operation.syncFailed(StateError('observation failed'));
+        }
+        // A later board value cannot upgrade the one-shot result's frozen failure.
+        newerObservations[operation.id] = LatestValue(
+          savedVmOperation(operation.id.value),
+        );
+        final response = Completer<OperationState>();
+        h.models.compactWrite = () => response.future;
+        final saving = clearing
+            ? owner.resetCompact('model')
+            : owner.saveCompact('model');
+        expect(owner.compactLeaveBlocked(), isTrue);
+        if (!clearing) owner.changeCompact('model', '1375');
+        response.complete(operation.state.value);
+        await saving;
+        expect(owner.compactLeaveBlocked(), isFalse);
+        expect(owner.hasUnconfirmedCompactSave(), isTrue);
+        // The Router contract checks the production dialog's localized warning.
+        final compact = h.container
+            .read(accountModelsViewModelProvider(nativeKey))
+            .requireValue
+            .catalog
+            .models
+            .single
+            .compact!;
+        expect(
+          (
+            compact.raw,
+            compact.dirty,
+            compact.canSave,
+            compact.canReset,
+            compact.canRetry,
+          ),
+          (clearing ? '' : '1375', true, false, false, false),
+        );
+        if (clearing) {
+          expect(h.models.compactCalls.last.$2, isA<ClearAutoCompactLimit>());
+        } else {
+          expect(
+            (h.models.compactCalls.last.$2 as SetAutoCompactLimit).limit,
+            1350,
+          );
+        }
+        final calls = h.models.compactCalls.length;
+        owner.changeCompact('model', '1400');
+        expect(owner.hasUnconfirmedCompactSave(), isTrue);
+        await owner.saveCompact('model');
+        await owner.resetCompact('model');
+        await owner.retryCompact('model');
+        expect(
+          await owner.requestLeaveCompact(AccountLeaveChoice.save),
+          isFalse,
+        );
+        expect(
+          await owner.requestLeaveCompact(AccountLeaveChoice.cancel),
+          isFalse,
+        );
+        expect(h.models.compactCalls, hasLength(calls));
+        expect(
+          h.container
+              .read(accountModelsViewModelProvider(nativeKey))
+              .requireValue
+              .catalog
+              .models
+              .single
+              .compact!
+              .raw,
+          '1400',
+        );
+        expect(
+          await owner.requestLeaveCompact(AccountLeaveChoice.discard),
+          isTrue,
+        );
+        expect(owner.hasCompactDrafts(), isTrue);
+        expect(owner.hasUnconfirmedCompactSave(), isTrue);
+        expect(owner.discardCompactDrafts(owner.compactLeaveToken()), isTrue);
+        expect(owner.hasCompactDrafts(), isFalse);
+        expect(owner.hasUnconfirmedCompactSave(), isFalse);
+        // Discard retires only the local draft, not the admitted domain operation.
+        expect(board.lookup(operation.id), same(operation));
+        expect(operation.state.value.failurePhase, phase);
+        expect(operation.state.value.isPending, isTrue);
+        expect(h.models.compactCalls, hasLength(calls));
+      }
+    }
+  });
+
+  test('rejected compact CLEAR stays a clear draft for leave Save and explicit retry', () async {
+    final board = MutationBoard(clientId: 'compact-clear');
+    final h = AccountsVmHarness(
+      operationLookup: (id) => board.lookup(id)?.state,
+    );
+    addTearDown(h.dispose);
+    final owner = await h.modelOwner();
+    for (final leaveSave in [true, false]) {
+      final rejected = board.begin(target: 'compact-clear');
+      rejected.reject(StateError('rejected clear'));
+      h.models.compactWrite = () async => rejected.state.value;
+      await owner.resetCompact('model');
+      expect(owner.hasCompactDrafts(), isTrue);
+      expect(owner.compactLeaveBlocked(), isFalse);
+      expect(owner.hasUnconfirmedCompactSave(), isFalse);
+      final compact = h.container
+          .read(accountModelsViewModelProvider(nativeKey))
+          .requireValue
+          .catalog
+          .models
+          .single
+          .compact!;
+      expect(
+        (compact.raw, compact.canRetry, compact.canSave),
+        ('', true, true),
+      );
+      h.models.compactWrite = () async => savedVmOperation();
+      if (leaveSave) {
+        expect(
+          await owner.requestLeaveCompact(AccountLeaveChoice.save),
+          isTrue,
+        );
+      } else {
+        await owner.retryCompact('model');
+      }
+      expect(owner.hasCompactDrafts(), isFalse);
+    }
+    expect(h.models.compactCalls, hasLength(4));
+    expect(
+      h.models.compactCalls.every((call) => call.$2 is ClearAutoCompactLimit),
+      isTrue,
+    );
+  });
+
+  test(
+    'account scopes retain one compact owner and discard only on actual commit',
+    () async {
+      final h = AccountsVmHarness();
+      addTearDown(h.dispose);
+      final accountsOwner = await h.listOwner();
+      final models = await h.modelOwner();
+      final releaseDetails = models.retainAccountScope();
+      final releaseModel = models.retainAccountScope();
+      accountsOwner.search('saved query');
+      models.changeCompact('model', '1250');
+      final token = models.compactLeaveToken();
+      releaseModel();
+      releaseModel(); // A disposed child cannot release its parent's retention.
+      expect(
+        h.container.read(accountsViewModelProvider).requireValue.list.search,
+        'saved query',
+      );
+      expect(models.matchesCompactLeaveToken(token), isTrue);
+      expect(models.hasCompactDrafts(), isTrue);
+      expect(h.models.compactCalls, isEmpty);
+      expect(
+        await models.requestLeaveCompact(AccountLeaveChoice.discard),
+        isTrue,
+      );
+      expect(models.hasCompactDrafts(), isTrue);
+      models.changeCompact('model', '1300');
+      expect(models.discardCompactDrafts(token), isFalse);
+      expect(models.hasCompactDrafts(), isTrue);
+      expect(models.discardCompactDrafts(models.compactLeaveToken()), isTrue);
+      expect(models.hasCompactDrafts(), isFalse);
+      releaseDetails();
+    },
+  );
+
+  test('catalog refresh and temporary stale frames preserve compact ownership and the actual save await', () async {
+    final h = AccountsVmHarness();
+    addTearDown(h.dispose);
+    final owner = await h.modelOwner();
+    const identity = NativeAccountIdentity('native');
+    final baseline = h.models.state.value;
+    final descriptors = baseline.accounts[identity]!.value!.models;
+    void publish(int generation, {bool stale = false, bool removed = false}) {
+      h.models.state.publish(
+        ModelDirectoryState(
+          accounts: {
+            identity: AccountResource(
+              stamp: ResourceStamp(
+                resourceKey: 'catalog',
+                ownerEpoch: 'owner',
+                revision: generation,
+              ),
+              stale: stale,
+              value: AccountModelCatalog(
+                identity: identity,
+                models: removed ? const [] : descriptors,
+                status: ModelCatalogStatusView(
+                  supported: true,
+                  queryGeneration: generation,
+                ),
+              ),
+            ),
+          },
+          configurations: baseline.configurations,
+        ),
+      );
+    }
+
+    AccountCompactPresentation compact() => h.container
+        .read(accountModelsViewModelProvider(nativeKey))
+        .requireValue
+        .catalog
+        .models
+        .single
+        .compact!;
+    owner.changeCompact('model', '1200');
+    final token = owner.compactLeaveToken();
+    final work = Completer<OperationState>();
+    h.models.compactWrite = () => work.future;
+    final saving = owner.saveCompact('model');
+    publish(2);
+    expect(owner.matchesCompactLeaveToken(token), isTrue);
+    expect(
+      (compact().raw, compact().saving, owner.compactLeaveBlocked()),
+      ('1200', true, true),
+    );
+    expect(
+      await owner.requestLeaveCompact(AccountLeaveChoice.discard),
+      isFalse,
+    );
+    work.complete(savedVmOperation());
+    await saving;
+    expect(owner.hasCompactDrafts(), isFalse);
+    owner.changeCompact('model', '1300');
+    final nextToken = owner.compactLeaveToken();
+    publish(3, stale: true);
+    expect((compact().raw, compact().canSave), ('1300', false));
+    await owner.saveCompact('model');
+    expect(h.models.compactCalls, hasLength(1));
+    publish(4);
+    expect(owner.matchesCompactLeaveToken(nextToken), isTrue);
+    expect((compact().raw, compact().canSave), ('1300', true));
+    publish(5, removed: true);
+    expect(owner.hasCompactDrafts(), isTrue);
+    expect(owner.canSaveCompactDrafts(), isFalse);
+    expect(await owner.requestLeaveCompact(AccountLeaveChoice.save), isFalse);
+    expect(await owner.requestLeaveCompact(AccountLeaveChoice.discard), isTrue);
+    expect(h.models.compactCalls, hasLength(1));
+  });
+
+  test('leaving multiple compact drafts keeps real partial success and newer edits without a transaction', () async {
+    final h = AccountsVmHarness();
+    addTearDown(h.dispose);
+    const identity = NativeAccountIdentity('native');
+    final baseline = h.models.state.value;
+    h.models.state.publish(
+      ModelDirectoryState(
+        accounts: {
+          identity: AccountResource(
+            stamp: vmStamp,
+            value: AccountModelCatalog(
+              identity: identity,
+              models: [
+                baseline.accounts[identity]!.value!.models.single,
+                const AccountModelView(
+                  modelId: 'other',
+                  displayName: 'Other',
+                  reasoningEfforts: [],
+                ),
+              ],
+              status: const ModelCatalogStatusView(supported: true),
+            ),
+          ),
+        },
+        configurations: baseline.configurations,
+      ),
+    );
+    final owner = await h.modelOwner();
+    owner.changeCompact('model', '1200');
+    owner.changeCompact('other', '600');
+    final secondEntered = Completer<void>();
+    final second = Completer<OperationState>();
+    h.models.compactWrite = () {
+      if (h.models.compactCalls.length == 1) {
+        return Future.value(savedVmOperation('first'));
+      }
+      secondEntered.complete();
+      return second.future;
+    };
+    final leaving = owner.requestLeaveCompact(AccountLeaveChoice.save);
+    await secondEntered.future;
+    second.complete(
+      failedVmOperation(
+        OperationPhase.rejected,
+        id: 'second-model-rejected',
+        error: const StudioFailure(
+          code: StudioFailureCode.invalidArgument,
+          message: 'Second model rejected',
+          retryable: false,
+          correlationId: 'second-model',
+        ),
+      ),
+    );
+    expect(await leaving, isFalse);
+    Map<String, AccountCompactPresentation> drafts() => {
+      for (final model
+          in h.container
+              .read(accountModelsViewModelProvider(nativeKey))
+              .requireValue
+              .catalog
+              .models)
+        model.key.modelId: model.compact!,
+    };
+    expect(
+      (
+        drafts()['model']!.dirty,
+        drafts()['other']!.raw,
+        drafts()['other']!.dirty,
+      ),
+      (false, '600', true),
+    );
+    expect(h.models.compactCalls.map((call) => call.$1.modelId), [
+      'model',
+      'other',
+    ]);
+    final retry = Completer<OperationState>();
+    h.models.compactWrite = () => retry.future;
+    final retrying = owner.requestLeaveCompact(AccountLeaveChoice.save);
+    owner.changeCompact('model', '1500');
+    retry.complete(savedVmOperation('second'));
+    expect(await retrying, isFalse);
+    expect(
+      (
+        drafts()['model']!.raw,
+        drafts()['model']!.dirty,
+        drafts()['other']!.dirty,
+      ),
+      ('1500', true, false),
+    );
+    expect(h.models.compactCalls.map((call) => call.$1.modelId), [
+      'model',
+      'other',
+      'other',
+    ]);
+  });
   test('current Native detail observes default and delete failures outside the filtered list', () async {
     final h = AccountsVmHarness();
     addTearDown(h.dispose);
     h.accounts.put(vmNative());
-    final navigation = await h.navigation();
-    navigation.search('not-a-visible-row');
-    navigation.open(nativeKey);
+    final accountsOwner = await h.listOwner();
+    accountsOwner.setStrings(vmOperationStrings);
+    accountsOwner.search('not-a-visible-row');
     final owner = await h.details(nativeKey);
     final provider = accountDetailsViewModelProvider(nativeKey);
     AccountDetailsPresentation current() =>
         h.container.read(provider).requireValue.details;
-    for (final command in [navigation.setDefault, navigation.remove]) {
+    for (final command in [accountsOwner.setDefault, accountsOwner.remove]) {
       final work = Completer<OperationState>();
       h.accounts.write = () => work.future;
       final saving = command(nativeKey);
@@ -652,19 +1219,24 @@ void main() {
         (current().canEdit, current().canSetDefault, current().canDelete),
         (false, false, false),
       );
-      work.completeError(
-        const StudioFailure(
-          code: StudioFailureCode.unavailable,
-          message: 'Header command failed',
-          retryable: true,
-          correlationId: 'header',
+      // An explicit owner rejection is correctable; both header actions stay available.
+      work.complete(
+        failedVmOperation(
+          OperationPhase.rejected,
+          id: 'header-${h.accounts.defaultCalls.length}-${h.accounts.removals.length}',
+          error: const StudioFailure(
+            code: StudioFailureCode.invalidArgument,
+            message: 'Header command rejected',
+            retryable: false,
+            correlationId: 'header',
+          ),
         ),
       );
       expect(await saving, isFalse);
-      expect(current().error, 'Header command failed');
+      expect(current().error, 'Save failed');
       expect(current().loading, isFalse);
       expect(current().canDelete, isTrue);
-      expect(owner.presentation().error, 'Header command failed');
+      expect(owner.presentation().error, 'Save failed');
       final content = current().content as NativeAccountDetailsContent;
       expect(content.value.usage.phase, AccountQueryPhase.idle);
       expect(content.value.billing.error, isNull);
@@ -682,28 +1254,32 @@ void main() {
       final h = AccountsVmHarness();
       addTearDown(h.dispose);
       publishVmAcp(h, const AcpVerifiedState(checkedAt: 1, server: null));
-      final navigation = await h.navigation();
-      navigation.search('not-a-visible-row');
-      navigation.open(vmAcpKey.target);
+      final accountsOwner = await h.listOwner();
+      accountsOwner.setStrings(vmOperationStrings);
+      accountsOwner.search('not-a-visible-row');
       final owner = await h.details(vmAcpKey.target);
       await listenVmAcp(h, vmAcpKey);
       final provider = accountDetailsViewModelProvider(vmAcpKey.target);
       final work = Completer<OperationState>();
       h.acp.removeWrite = () => work.future;
-      final deleting = navigation.remove(vmAcpKey.target);
+      final deleting = accountsOwner.remove(vmAcpKey.target);
       expect(h.container.read(provider).requireValue.details.loading, isTrue);
-      work.completeError(
-        const StudioFailure(
-          code: StudioFailureCode.unavailable,
-          message: 'ACP delete failed',
-          retryable: true,
-          correlationId: 'delete',
+      work.complete(
+        failedVmOperation(
+          OperationPhase.unknownOutcome,
+          id: 'acp-delete-unknown',
+          error: const StudioFailure(
+            code: StudioFailureCode.unavailable,
+            message: 'ACP delete failed',
+            retryable: true,
+            correlationId: 'delete',
+          ),
         ),
       );
       expect(await deleting, isFalse);
       expect(
         h.container.read(provider).requireValue.details.error,
-        'ACP delete failed',
+        'Outcome unknown',
       );
       final active = owner.presentation(
         acp: h.container
@@ -711,7 +1287,10 @@ void main() {
             .requireValue
             .panel,
       );
-      expect(active.error, 'ACP delete failed');
+      expect(active.error, 'Outcome unknown');
+      expect(active.loading, isTrue);
+      expect(await accountsOwner.remove(vmAcpKey.target), isFalse);
+      expect(h.acp.removals, hasLength(1));
       expect(
         (active.content as AcpAccountDetailsContent).value.phase,
         AcpPresentationPhase.connected,
@@ -725,22 +1304,21 @@ void main() {
     );
     addTearDown(h.dispose);
     h.accounts.put(vmNative());
-    final navigation = await h.navigation();
-    navigation.setStrings(
+    final accountsOwner = await h.listOwner();
+    accountsOwner.setStrings(
       const AccountStrings({
         'awaitingObservation': 'Waiting for observation',
         'unknownOutcome': 'Outcome unknown',
       }),
     );
-    navigation.search('not-a-visible-row');
-    navigation.open(nativeKey);
+    accountsOwner.search('not-a-visible-row');
     await h.details(nativeKey);
     final provider = accountDetailsViewModelProvider(nativeKey);
     AccountDetailsPresentation current() =>
         h.container.read(provider).requireValue.details;
     final operation = board.begin(target: 'native-default');
     h.accounts.write = () async => operation.state.value;
-    expect(await navigation.setDefault(nativeKey), isFalse);
+    expect(await accountsOwner.setDefault(nativeKey), isFalse);
     expect(
       (current().loading, current().error, current().canSetDefault),
       (true, 'Waiting for observation', false),
@@ -764,7 +1342,7 @@ void main() {
       (current().loading, current().error, current().canSetDefault),
       (true, 'Outcome unknown', false),
     );
-    expect(await navigation.setDefault(nativeKey), isFalse);
+    expect(await accountsOwner.setDefault(nativeKey), isFalse);
     expect(h.accounts.defaultCalls, hasLength(1));
     // Only new authoritative evidence for this admitted id clears uncertainty.
     operation.accept(receipt);
@@ -802,9 +1380,9 @@ void main() {
     summaries(1);
     details(1);
     h.accounts.put(vmNative(id: 'shared'));
-    final navigation = await h.navigation();
-    navigation.search('not-a-visible-row');
-    navigation.open(acp);
+    final accountsOwner = await h.listOwner();
+    accountsOwner.setStrings(vmOperationStrings);
+    accountsOwner.search('not-a-visible-row');
     await h.details(acp);
     await h.details(native);
     final provider = accountDetailsViewModelProvider(acp);
@@ -812,55 +1390,69 @@ void main() {
         h.container.read(provider).requireValue.details;
     final old = Completer<OperationState>();
     h.acp.removeWrite = () => old.future;
-    final first = navigation.remove(acp);
-    h.accounts.write = () => Future.error(
-      const StudioFailure(
+    final first = accountsOwner.remove(acp);
+    h.accounts.write = () async => failedVmOperation(
+      OperationPhase.unknownOutcome,
+      id: 'native-only-unknown',
+      error: const StudioFailure(
         code: StudioFailureCode.unavailable,
         message: 'Native only',
         retryable: true,
         correlationId: 'native',
       ),
     );
-    await navigation.setDefault(native);
+    await accountsOwner.setDefault(native);
     expect(
       h.container
           .read(accountDetailsViewModelProvider(native))
           .requireValue
           .details
           .error,
-      'Native only',
+      'Outcome unknown',
     );
     expect((current().loading, current().error), (true, null));
     summaries(2);
     final next = Completer<OperationState>();
     h.acp.removeWrite = () => next.future;
-    final second = navigation.remove(acp);
+    final second = accountsOwner.remove(acp);
     // A new summary cannot attach its action to the retained old detail.
     expect((current().loading, current().error), (false, null));
     details(2);
     expect(current().loading, isTrue);
-    old.completeError(StateError('retired'));
+    old.complete(
+      failedVmOperation(
+        OperationPhase.unknownOutcome,
+        id: 'retired-acp-delete',
+        error: StateError('retired dispatch outcome'),
+      ),
+    );
     expect(await first, isFalse);
     expect((current().loading, current().error), (true, null));
-    next.completeError(
-      const StudioFailure(
-        code: StudioFailureCode.unavailable,
-        message: 'Current connection failed',
-        retryable: true,
-        correlationId: 'current',
+    next.complete(
+      failedVmOperation(
+        OperationPhase.syncFailed,
+        id: 'current-acp-delete',
+        error: const StudioFailure(
+          code: StudioFailureCode.unavailable,
+          message: 'Current connection failed',
+          retryable: true,
+          correlationId: 'current',
+        ),
       ),
     );
     expect(await second, isFalse);
-    expect(current().error, 'Current connection failed');
+    expect(current().error, 'Save failed');
+    expect(current().loading, isTrue);
+    expect(await accountsOwner.remove(acp), isFalse);
     expect(h.acp.removals, hasLength(2));
   });
   test('current detail action ownership does not revive after owner epoch A to B to A', () async {
     final h = AccountsVmHarness();
     addTearDown(h.dispose);
     h.accounts.put(vmNative());
-    final navigation = await h.navigation();
-    navigation.search('not-a-visible-row');
-    navigation.open(nativeKey);
+    final accountsOwner = await h.listOwner();
+    accountsOwner.setStrings(vmOperationStrings);
+    accountsOwner.search('not-a-visible-row');
     await h.details(nativeKey);
     final provider = accountDetailsViewModelProvider(nativeKey);
     AccountDetailsPresentation current() =>
@@ -879,32 +1471,82 @@ void main() {
         );
     final old = Completer<OperationState>();
     h.accounts.write = () => old.future;
-    final first = navigation.setDefault(nativeKey);
+    final first = accountsOwner.setDefault(nativeKey);
     publish('owner', stale: true);
     publish('replacement');
     publish('replacement', stale: true);
     publish('owner');
     final next = Completer<OperationState>();
     h.accounts.write = () => next.future;
-    final second = navigation.setDefault(nativeKey);
+    final second = accountsOwner.setDefault(nativeKey);
     old.complete(savedVmOperation('old-lifecycle'));
     expect(await first, isFalse);
     expect((current().loading, current().error), (true, null));
-    next.completeError(
-      const StudioFailure(
-        code: StudioFailureCode.unavailable,
-        message: 'Current owner failed',
-        retryable: true,
-        correlationId: 'current',
+    next.complete(
+      failedVmOperation(
+        OperationPhase.unknownOutcome,
+        id: 'current-owner-default',
+        error: const StudioFailure(
+          code: StudioFailureCode.unavailable,
+          message: 'Current owner failed',
+          retryable: true,
+          correlationId: 'current',
+        ),
       ),
     );
     expect(await second, isFalse);
-    expect(current().error, 'Current owner failed');
+    expect(current().error, 'Outcome unknown');
+    expect(current().loading, isTrue);
+    expect(await accountsOwner.setDefault(nativeKey), isFalse);
     expect(h.accounts.defaultCalls, hasLength(2));
   });
   test('editor declarations omit compact data while the real details model remains editable', () async {
     final h = AccountsVmHarness();
     addTearDown(h.dispose);
+    const identity = NativeAccountIdentity('native');
+    final baseline = h.models.state.value;
+    void publishDescriptor(AccountModelView descriptor) {
+      h.models.state.publish(
+        ModelDirectoryState(
+          accounts: {
+            identity: AccountResource(
+              stamp: vmStamp,
+              value: AccountModelCatalog(
+                identity: identity,
+                models: [descriptor],
+                status: const ModelCatalogStatusView(supported: true),
+              ),
+            ),
+          },
+          configurations: baseline.configurations,
+        ),
+      );
+    }
+
+    publishDescriptor(
+      baseline.accounts[identity]!.value!.models.single.copyWith(
+        reasoningEfforts: const ['low', 'high'],
+        inputCapabilities: const [
+          ModelInputCapabilityView(
+            modality: ModelModalityView.image,
+            sources: [
+              ModelInputSourceView.local,
+              ModelInputSourceView.remoteUrl,
+            ],
+          ),
+        ],
+        capabilities: const ['function_calling'],
+        maxContextWindow: 4000,
+        context: const ModelContextView(
+          unavailable: null,
+          contextWindow: 2000,
+          inputTokenLimit: 1500,
+          autoCompactLimit: 1000,
+        ),
+        wireApi: 'responses',
+        supportedConnectionModes: const ['http', 'web_socket'],
+      ),
+    );
     h.accounts.put(vmNative());
     final editor = await h.editor(editKey());
     final models = await h.modelOwner();
@@ -917,6 +1559,13 @@ void main() {
         .read(accountModelsViewModelProvider(nativeKey))
         .requireValue
         .catalog;
+    expect(catalog.models.single.origin, AccountModelOrigin.bundled);
+    expect(catalog.models.single.connection, AccountConnection.automatic);
+    expect(catalog.models.single.allowedConnections, [
+      AccountConnection.automatic,
+      AccountConnection.http,
+      AccountConnection.webSocket,
+    ]);
     final edited = editor.presentation(catalog: catalog).native!;
     expect(edited.declaredModels, isNotEmpty);
     expect(
@@ -948,33 +1597,108 @@ void main() {
       (AppLocalizationsZh(), '输出模态'),
     ]) {
       models.setStrings(accountStrings(l10n));
+      final strings = accountStrings(l10n);
       final facts = h.container
           .read(accountModelsViewModelProvider(nativeKey))
           .requireValue
           .catalog
           .models
           .single
-          .capabilities;
-      expect(
-        facts.where(
-          (fact) =>
-              fact.label == l10n.settingsOutputBudget ||
-              fact.label == modalitiesLabel,
+          .specificationFacts;
+      expect(facts.modalityCapabilities, [
+        AccountDisplayFact(label: strings['efforts'], value: 'low / high'),
+        AccountDisplayFact(
+          label: '${strings['capability']} · image',
+          value: 'local / remoteUrl',
         ),
-        [
-          AccountDisplayFact(label: l10n.settingsOutputBudget, value: '4096'),
-          AccountDisplayFact(label: modalitiesLabel, value: 'text'),
-        ],
-      );
+        AccountDisplayFact(label: modalitiesLabel, value: 'text'),
+        AccountDisplayFact(
+          label: strings['capability'],
+          value: 'function_calling',
+        ),
+      ]);
+      expect(facts.context, [
+        AccountDisplayFact(label: strings['context'], value: '2000'),
+        AccountDisplayFact(label: strings['maxContext'], value: '4000'),
+        AccountDisplayFact(label: strings['inputBudget'], value: '1500'),
+        AccountDisplayFact(label: l10n.settingsOutputBudget, value: '4096'),
+      ]);
+      expect(facts.connection, [
+        AccountDisplayFact(label: strings['modelId'], value: 'model'),
+        AccountDisplayFact(label: strings['protocol'], value: 'responses'),
+      ]);
+      // Complete ordered groups also reject accidental copies across groups.
+      final allFacts = [
+        ...facts.modalityCapabilities,
+        ...facts.context,
+        ...facts.connection,
+      ];
+      expect(allFacts, hasLength(10));
+      expect(allFacts.toSet(), hasLength(10));
     }
+    for (final unavailable in [ModelContextUnavailable.windowUnknown, null]) {
+      publishDescriptor(
+        AccountModelView(
+          modelId: 'model',
+          displayName: 'Model',
+          reasoningEfforts: const [],
+          context: ModelContextView(unavailable: unavailable),
+        ),
+      );
+      final projected = h.container
+          .read(accountModelsViewModelProvider(nativeKey))
+          .requireValue
+          .catalog
+          .models
+          .single;
+      final facts = projected.specificationFacts;
+      final strings = accountStrings(AppLocalizationsZh());
+      expect(facts.modalityCapabilities, isEmpty);
+      expect(
+        facts.context,
+        unavailable == null
+            ? <AccountDisplayFact>[]
+            : [
+                AccountDisplayFact(
+                  label: strings['context'],
+                  value: strings['contextUnavailable.windowUnknown'],
+                ),
+              ],
+      );
+      expect(facts.connection, [
+        AccountDisplayFact(label: strings['modelId'], value: 'model'),
+        AccountDisplayFact(
+          label: strings['protocol'],
+          value: 'chat_completions',
+        ),
+      ]);
+      expect(projected.origin, AccountModelOrigin.bundled);
+      expect(projected.connection, AccountConnection.automatic);
+      expect(projected.allowedConnections, [
+        AccountConnection.automatic,
+        AccountConnection.http,
+      ]);
+      expect(
+        (
+          projected.compact!.raw,
+          projected.compact!.effective,
+          projected.compact!.contextWindow,
+        ),
+        ('', null, null),
+      );
+      expect(projected.priceTiers, isEmpty);
+      expect(projected.performance, isNull);
+      expect(projected.evaluations, isEmpty);
+    }
+    expect(h.models.compactCalls, hasLength(1));
   });
   test('a display demand failure after create preserves durable baseline and saved manual identity', () async {
     final h = AccountsVmHarness();
     addTearDown(h.dispose);
-    final navigation = await h.navigation();
-    final key = navigation.create(
-      const AccountTemplateKey(kind: AccountKind.native, id: 'native'),
-    )!;
+    final session = await h.session(
+      const AccountEditorEntryKey.creating(routeEntryId: 'create'),
+    );
+    final key = session.currentEditor!;
     final owner = await h.editor(key);
     owner.addModel();
     final row = h.editorState(key).native!.manualModels.single.editorKey;
@@ -994,22 +1718,32 @@ void main() {
     addTearDown(h.dispose);
     const native = AccountDisplayKey(kind: AccountKind.native, id: 'shared');
     const acp = AccountDisplayKey(kind: AccountKind.acp, id: 'shared');
+    const accountName = 'https://name-hint.example/private';
+    const displayEndpoint = 'https://display.example:8443';
+    h.accounts.put(vmNative(id: 'shared'));
     h.accounts.state.publish(
       AccountsState(
         stamp: vmStamp,
         templates: h.accounts.state.value.templates,
         accounts: [
-          vmSummary(const NativeAccountIdentity('shared')),
+          vmSummary(
+            const NativeAccountIdentity('shared'),
+            name: accountName,
+            displayEndpoint: displayEndpoint,
+          ),
           vmSummary(const AcpAccountIdentity('shared')),
         ],
       ),
     );
-    final owner = await h.navigation();
+    final owner = await h.listOwner();
+    owner.setStrings(vmOperationStrings);
     final deleting = Completer<OperationState>();
     h.acp.removeWrite = () => deleting.future;
     final removal = owner.remove(acp);
-    h.accounts.write = () => Future.error(
-      const StudioFailure(
+    h.accounts.write = () async => failedVmOperation(
+      OperationPhase.unknownOutcome,
+      id: 'shared-native-default',
+      error: const StudioFailure(
         code: StudioFailureCode.unavailable,
         message: 'Native failed',
         retryable: true,
@@ -1022,15 +1756,25 @@ void main() {
           in h.container.read(accountsViewModelProvider).requireValue.list.rows)
         row.key: row,
     };
-    expect(rows[native]!.operationError, 'Native failed');
+    expect(rows[native]!.operationError, 'Outcome unknown');
+    expect(rows[native]!.actions, isEmpty);
+    expect(
+      (rows[native]!.content as NativeAccountRowContent).displayEndpoint,
+      displayEndpoint,
+    );
+    expect(rows[acp]!.content, isA<AcpAccountRowContent>());
     expect(rows[acp]!.operationError, isNull);
     expect(rows[acp]!.actions, isEmpty);
-    deleting.completeError(
-      const StudioFailure(
-        code: StudioFailureCode.unavailable,
-        message: 'ACP failed',
-        retryable: true,
-        correlationId: 'acp',
+    deleting.complete(
+      failedVmOperation(
+        OperationPhase.syncFailed,
+        id: 'shared-acp-delete',
+        error: const StudioFailure(
+          code: StudioFailureCode.unavailable,
+          message: 'ACP failed',
+          retryable: true,
+          correlationId: 'acp',
+        ),
       ),
     );
     await removal;
@@ -1039,13 +1783,37 @@ void main() {
           in h.container.read(accountsViewModelProvider).requireValue.list.rows)
         row.key: row,
     };
-    expect(rows[native]!.operationError, 'Native failed');
-    expect(rows[acp]!.operationError, 'ACP failed');
+    expect(rows[native]!.operationError, 'Outcome unknown');
+    expect(rows[acp]!.operationError, 'Save failed');
+    expect(rows[acp]!.actions, isEmpty);
+    expect(await owner.setDefault(native), isFalse);
+    expect(await owner.remove(acp), isFalse);
     expect(
       h.accounts.defaultCalls.single,
       const NativeAccountIdentity('shared'),
     );
     expect(h.acp.removals.single, const AcpAccountIdentity('shared'));
+    h.accounts.state.publish(
+      AccountsState(
+        stamp: vmStamp,
+        templates: h.accounts.state.value.templates,
+        accounts: [
+          vmSummary(const NativeAccountIdentity('shared'), name: accountName),
+          vmSummary(const AcpAccountIdentity('shared')),
+        ],
+      ),
+    );
+    rows = {
+      for (final row
+          in h.container.read(accountsViewModelProvider).requireValue.list.rows)
+        row.key: row,
+    };
+    expect(rows[native]!.name, accountName);
+    expect(
+      (rows[native]!.content as NativeAccountRowContent).displayEndpoint,
+      isNull,
+    );
+    expect(rows[acp]!.content, isA<AcpAccountRowContent>());
     expect(h.accounts.detailReads, 0);
     expect(h.accounts.detailDemands, isEmpty);
   });
@@ -1127,6 +1895,15 @@ void main() {
         .compact!;
     expect(compact.raw, '');
     expect(compact.error, isNotNull);
+    expect(compact.canSave, isFalse);
+    expect(await owner.requestLeaveCompact(AccountLeaveChoice.discard), isTrue);
+    expect(owner.hasCompactDrafts(), isTrue);
+    expect(owner.discardCompactDrafts(owner.compactLeaveToken()), isTrue);
+    owner.changeCompact('model', '700');
+    h.models.compactWrite = () async => savedVmOperation('new-owner');
+    await owner.saveCompact('model');
+    expect((h.models.compactCalls.last.$2 as SetAutoCompactLimit).limit, 700);
+    expect(owner.hasCompactDrafts(), isFalse);
   });
   test('summary-only ACP actions isolate late failure and finally from a rebuilt same-id connection', () async {
     final h = AccountsVmHarness();
@@ -1147,21 +1924,26 @@ void main() {
           ),
         );
     publish(1);
-    final navigation = await h.navigation();
+    final accountsOwner = await h.listOwner();
+    accountsOwner.setStrings(vmOperationStrings);
     final old = Completer<OperationState>();
     h.acp.removeWrite = () => old.future;
-    final first = navigation.remove(key);
+    final first = accountsOwner.remove(key);
     publish(2); // No intermediate deletion frame.
     final current = Completer<OperationState>();
     h.acp.removeWrite = () => current.future;
-    final second = navigation.remove(key);
+    final second = accountsOwner.remove(key);
     expect(h.acp.removals, hasLength(2));
-    old.completeError(
-      const StudioFailure(
-        code: StudioFailureCode.unavailable,
-        message: 'Old deletion failed',
-        retryable: true,
-        correlationId: 'old',
+    old.complete(
+      failedVmOperation(
+        OperationPhase.unknownOutcome,
+        id: 'old-connection-delete',
+        error: const StudioFailure(
+          code: StudioFailureCode.unavailable,
+          message: 'Old deletion failed',
+          retryable: true,
+          correlationId: 'old',
+        ),
       ),
     );
     expect(await first, isFalse);
@@ -1173,12 +1955,16 @@ void main() {
         .single;
     expect(row.operationError, isNull);
     expect(row.actions, isEmpty);
-    current.completeError(
-      const StudioFailure(
-        code: StudioFailureCode.unavailable,
-        message: 'Current deletion failed',
-        retryable: true,
-        correlationId: 'new',
+    current.complete(
+      failedVmOperation(
+        OperationPhase.syncFailed,
+        id: 'rebuilt-connection-delete',
+        error: const StudioFailure(
+          code: StudioFailureCode.unavailable,
+          message: 'Current deletion failed',
+          retryable: true,
+          correlationId: 'new',
+        ),
       ),
     );
     expect(await second, isFalse);
@@ -1188,12 +1974,13 @@ void main() {
         .list
         .rows
         .single;
-    expect(row.operationError, 'Current deletion failed');
-    expect(row.actions, contains(AccountRowAction.delete));
+    expect(row.operationError, 'Save failed');
+    expect(row.actions, isEmpty);
+    expect(await accountsOwner.remove(key), isFalse);
     publish(null);
-    expect(await navigation.remove(key), isFalse);
+    expect(await accountsOwner.remove(key), isFalse);
     publish(3, stale: true);
-    expect(await navigation.remove(key), isFalse);
+    expect(await accountsOwner.remove(key), isFalse);
     expect(h.acp.removals, hasLength(2));
     expect(h.accounts.detailDemands, isEmpty);
     expect(h.accounts.detailReads, 0);
@@ -1216,17 +2003,18 @@ void main() {
           ),
         );
     publish('owner-A');
-    final navigation = await h.navigation();
+    final accountsOwner = await h.listOwner();
+    accountsOwner.setStrings(vmOperationStrings);
     final old = Completer<OperationState>();
     h.acp.removeWrite = () => old.future;
-    final first = navigation.remove(key);
+    final first = accountsOwner.remove(key);
     publish('owner-A', stale: true);
     publish('owner-B');
     publish('owner-B', stale: true);
     publish('owner-A');
     final current = Completer<OperationState>();
     h.acp.removeWrite = () => current.future;
-    final second = navigation.remove(key);
+    final second = accountsOwner.remove(key);
     expect(h.acp.removals, hasLength(2));
     old.complete(savedVmOperation('old'));
     expect(await first, isFalse);
@@ -1240,12 +2028,16 @@ void main() {
           .actions,
       isEmpty,
     );
-    current.completeError(
-      const StudioFailure(
-        code: StudioFailureCode.unavailable,
-        message: 'New owner failure',
-        retryable: true,
-        correlationId: 'new',
+    current.complete(
+      failedVmOperation(
+        OperationPhase.unknownOutcome,
+        id: 'new-owner-delete',
+        error: const StudioFailure(
+          code: StudioFailureCode.unavailable,
+          message: 'New owner failure',
+          retryable: true,
+          correlationId: 'new',
+        ),
       ),
     );
     await second;
@@ -1257,8 +2049,9 @@ void main() {
           .rows
           .single
           .operationError,
-      'New owner failure',
+      'Outcome unknown',
     );
+    expect(await accountsOwner.remove(key), isFalse);
     expect(h.accounts.detailDemands, isEmpty);
     expect(h.accounts.detailReads, 0);
   });
@@ -1267,38 +2060,103 @@ void main() {
     () async {
       final h = AccountsVmHarness();
       addTearDown(h.dispose);
-      final navigation = await h.navigation();
-      h.accounts.write = () => Future.error(
-        const StudioFailure(
+      final accountsOwner = await h.listOwner();
+      accountsOwner.setStrings(vmOperationStrings);
+      h.accounts.write = () async => failedVmOperation(
+        OperationPhase.unknownOutcome,
+        id: 'default-unknown-health',
+        error: const StudioFailure(
           code: StudioFailureCode.unavailable,
           message: 'Default failed',
           retryable: true,
           correlationId: 'default',
         ),
       );
-      expect(await navigation.setDefault(nativeKey), isFalse);
+      expect(await accountsOwner.setDefault(nativeKey), isFalse);
       final row = h.container
           .read(accountsViewModelProvider)
           .requireValue
           .list
           .rows
           .single;
-      expect(row.operationError, 'Default failed');
-      expect(row.usage!.phase, AccountQueryPhase.idle);
-      expect(row.billing, AccountBilling.metered);
+      expect(row.operationError, 'Outcome unknown');
+      expect(row.actions, isEmpty);
+      expect(await accountsOwner.setDefault(nativeKey), isFalse);
+      expect(h.accounts.defaultCalls, hasLength(1));
+      expect(
+        (row.content as NativeAccountRowContent).usage.phase,
+        AccountQueryPhase.idle,
+      );
+      expect(
+        (row.content as NativeAccountRowContent).billing,
+        AccountBilling.metered,
+      );
       expect(h.accounts.detailReads, 0);
     },
   );
   test('new native create uses template defaults and explicit no-secret semantics, never upserts', () async {
     final h = AccountsVmHarness();
     addTearDown(h.dispose);
-    final navigation = await h.navigation();
-    final key = navigation.create(
-      const AccountTemplateKey(kind: AccountKind.native, id: 'native'),
-    )!;
+    final session = await h.session(
+      const AccountEditorEntryKey.creating(routeEntryId: 'create'),
+    );
+    final key = session.currentEditor!;
     final owner = await h.editor(key);
+    AccountBillingPresentation billing() => h.editorState(key).native!.billing;
+    expect(
+      (billing().billingKindOverride, billing().effective),
+      (null, AccountBilling.subscription),
+    );
+    const changedEndpoint = 'https://different-endpoint.example/v2';
+    owner.changeField(NativeAccountField.endpoint, changedEndpoint);
+    expect(
+      (billing().billingKindOverride, billing().effective),
+      (null, AccountBilling.unknown),
+    );
+    owner.changeBilling(AccountBilling.noCharge);
+    expect(
+      (billing().billingKindOverride, billing().effective),
+      (AccountBilling.noCharge, AccountBilling.noCharge),
+    );
+    owner.changeField(NativeAccountField.endpoint, nativeTemplate.baseUrl);
+    expect(billing().effective, AccountBilling.noCharge);
+    owner.changeBilling(AccountBilling.unknown);
+    expect(
+      (billing().billingKindOverride, billing().effective),
+      (AccountBilling.unknown, AccountBilling.unknown),
+    );
+    owner.changeField(NativeAccountField.endpoint, changedEndpoint);
+    owner.changeBilling(null);
+    expect(
+      (billing().billingKindOverride, billing().effective),
+      (null, AccountBilling.unknown),
+    );
+    owner.changeField(
+      NativeAccountField.endpoint,
+      '${nativeTemplate.baseUrl}/',
+    );
+    expect(
+      (billing().billingKindOverride, billing().effective),
+      (null, AccountBilling.unknown),
+    );
+    owner.changeField(NativeAccountField.endpoint, nativeTemplate.baseUrl);
+    expect(
+      (billing().billingKindOverride, billing().effective),
+      (null, AccountBilling.subscription),
+    );
+    expect(h.accounts.mutationCalls, isEmpty);
+    expect(h.accounts.billing, isEmpty);
+    expect(
+      (
+        h.editorState(key).native!.showSetDefaultOnCreate,
+        h.editorState(key).native!.setDefaultOnCreate,
+      ),
+      (true, false),
+    );
     expect(await owner.save(), isTrue);
     expect(h.accounts.patches, isEmpty);
+    expect(h.accounts.defaultCalls, isEmpty);
+    expect(h.accounts.mutationCalls, ['create']);
     final created = h.accounts.creates.single;
     expect(
       (
@@ -1309,13 +2167,221 @@ void main() {
       ),
       ('native-2', 'Native brand', 'open_ai', 'https://native.example/v1'),
     );
-    expect(created.secret.action, AccountSecretAction.clear);
+    expect(created.secret.action, AccountSecretAction.preserve);
     expect(created.customModels, isEmpty);
+    expect(created.initialBillingKind, isNull);
+    expect(
+      (billing().billingKindOverride, billing().effective),
+      (null, AccountBilling.unknown),
+    );
+  });
+  test('creating Native with default waits for durable creation and retries only the remaining default or field diff', () async {
+    final board = MutationBoard(clientId: 'create-default');
+    final h = AccountsVmHarness(
+      operationLookup: (id) => board.lookup(id)?.state,
+    );
+    addTearDown(h.dispose);
+    final session = await h.session(
+      const AccountEditorEntryKey.creating(routeEntryId: 'create'),
+    );
+    final key = session.currentEditor!;
+    final owner = await h.editor(key);
+    expect(h.editorState(key).native!.accountKey, isNull);
+    owner.changeSetDefaultOnCreate(true);
+    const createdStamp = ResourceStamp(
+      resourceKey: 'accounts',
+      ownerEpoch: 'owner',
+      revision: 2,
+    );
+    final creation = board.begin(target: 'create-native');
+    creation.accept(
+      CommitReceipt(
+        operationId: creation.id,
+        disposition: CommitDisposition.applied,
+        targets: const [createdStamp],
+        effect: EffectPoint.immediate,
+      ),
+    );
+    h.accounts.createWrite = () async => creation.state.value;
+    h.accounts.defaultWrite = () async {
+      final rejected = board.begin(target: 'default-native');
+      rejected.reject(StateError('default rejected'));
+      return rejected.state.value;
+    };
+    final creating = owner.save();
+    await h.container.pump();
+    expect(h.accounts.mutationCalls, ['create']);
+    expect(h.editorState(key).saving, isTrue);
+    expect(h.editorState(key).native!.accountKey, isNull);
+    final created = h.accounts.creates.single;
+    h.accounts.put(
+      vmNative(id: key.target.id, name: created.name, hasBearerToken: false),
+    );
+    final previous = h.accounts.state.value;
+    h.accounts.state.publish(
+      AccountsState(
+        stamp: createdStamp,
+        accounts: [
+          ...previous.accounts,
+          vmSummary(created.identity, name: created.name),
+        ],
+        templates: previous.templates,
+      ),
+    );
+    board.observe(createdStamp);
+    await h.container.pump();
+    expect(h.accounts.mutationCalls, ['create']);
+    expect(h.editorState(key).saving, isTrue);
+    expect(
+      (
+        h.editorState(key).native!.billing.billingKindOverride,
+        h.editorState(key).native!.billing.effective,
+      ),
+      (null, AccountBilling.metered),
+    );
+    creation.markDurable();
+    expect(await creating, isFalse);
+    expect(h.editorState(key).native!.accountKey, key.target);
+    expect(h.editorState(key).native!.showSetDefaultOnCreate, isTrue);
+    expect(h.accounts.defaultCalls, [created.identity]);
+    expect(h.accounts.mutationCalls, ['create', 'default']);
+    expect(session.isEditorCurrent(key), isTrue);
+    expect(
+      (
+        h.editorState(key).native!.billing.billingKindOverride,
+        h.editorState(key).native!.billing.effective,
+      ),
+      (null, AccountBilling.metered),
+    );
+    expect(h.editorState(key).dirty, isTrue);
+    expect(h.editorState(key).error, isNotNull);
+    expect(h.editorState(key).native!.canChangeTemplate, isFalse);
+    expect(owner.hasUnconfirmedSave(), isFalse);
+    expect(await owner.save(), isFalse);
+    expect(h.accounts.mutationCalls, ['create', 'default', 'default']);
+    expect(h.accounts.creates, hasLength(1));
+    expect(h.accounts.patches, isEmpty);
+    owner.changeField(NativeAccountField.name, 'Changed after partial success');
+    final defaultEntered = Completer<void>();
+    final defaultCompletion = Completer<OperationState>();
+    h.accounts.defaultWrite = () {
+      defaultEntered.complete();
+      return defaultCompletion.future;
+    };
+    final retrying = owner.save();
+    await defaultEntered.future.timeout(const Duration(seconds: 5));
+    expect(h.accounts.mutationCalls, [
+      'create',
+      'default',
+      'default',
+      'patch',
+      'default',
+    ]);
+    expect(
+      (h.accounts.patches.single.name as AccountTextSet).value,
+      'Changed after partial success',
+    );
+    expect(
+      h.accounts.patches.single.secret.action,
+      AccountSecretAction.preserve,
+    );
+    owner.changeField(NativeAccountField.name, 'Newer while setting default');
+    defaultCompletion.complete(savedVmOperation('default-saved'));
+    expect(await retrying, isFalse);
+    expect(
+      (h.editorState(key).native!.name.raw, h.editorState(key).dirty),
+      ('Newer while setting default', true),
+    );
+    expect(session.isEditorCurrent(key), isTrue);
+    h.accounts.defaultWrite = () =>
+        Future.error(StateError('must not repeat a saved default'));
+    expect(await owner.save(), isTrue);
+    expect(h.accounts.mutationCalls, [
+      'create',
+      'default',
+      'default',
+      'patch',
+      'default',
+      'patch',
+    ]);
+    expect(
+      (h.accounts.patches.last.name as AccountTextSet).value,
+      'Newer while setting default',
+    );
+    expect(h.accounts.creates, hasLength(1));
+    expect(h.accounts.defaultCalls, everyElement(created.identity));
+    expect(h.editorState(key).dirty, isFalse);
+  });
+  test('an unconfirmed default after Native creation never replays create or default and explicit discard keeps the domain operation', () async {
+    for (final phase in [
+      OperationPhase.unknownOutcome,
+      OperationPhase.syncFailed,
+    ]) {
+      final board = MutationBoard(clientId: 'create-default-${phase.name}');
+      final h = AccountsVmHarness(
+        operationLookup: (id) => board.lookup(id)?.state,
+      );
+      addTearDown(h.dispose);
+      final session = await h.session(
+        const AccountEditorEntryKey.creating(routeEntryId: 'create'),
+      );
+      final key = session.currentEditor!;
+      final owner = await h.editor(key);
+      owner.changeSetDefaultOnCreate(true);
+      final operation = board.begin(target: 'default-native');
+      if (phase == OperationPhase.unknownOutcome) {
+        operation.unknownOutcome(StateError('default response unknown'));
+      } else {
+        operation.syncFailed(StateError('default observation failed'));
+      }
+      h.accounts.defaultWrite = () async => operation.state.value;
+      expect(await owner.save(), isFalse);
+      expect(h.editorState(key).native!.accountKey, key.target);
+      expect(h.editorState(key).native!.showSetDefaultOnCreate, isTrue);
+      expect(h.accounts.mutationCalls, ['create', 'default']);
+      expect(h.accounts.creates, hasLength(1));
+      expect(
+        h.accounts.defaultCalls.single,
+        h.accounts.creates.single.identity,
+      );
+      expect((owner.leaveBlocked(), owner.hasUnconfirmedSave()), (false, true));
+      expect(
+        (
+          h.editorState(key).native!.billing.billingKindOverride,
+          h.editorState(key).native!.billing.effective,
+        ),
+        (null, AccountBilling.unknown),
+      );
+      owner.changeSetDefaultOnCreate(false);
+      expect(h.editorState(key).native!.setDefaultOnCreate, isTrue);
+      expect(
+        (owner.hasUnconfirmedSave(), h.editorState(key).canSave),
+        (true, false),
+      );
+      expect(await owner.save(), isFalse);
+      expect(session.isEditorCurrent(key), isTrue);
+      expect(h.accounts.mutationCalls, ['create', 'default']);
+      owner.changeField(
+        NativeAccountField.name,
+        'New raw cannot bypass uncertainty',
+      );
+      expect(await owner.save(), isFalse);
+      expect(await owner.requestLeave(AccountLeaveChoice.save), isFalse);
+      expect(await owner.requestLeave(AccountLeaveChoice.cancel), isFalse);
+      expect(session.isEditorCurrent(key), isTrue);
+      expect(h.accounts.mutationCalls, ['create', 'default']);
+      expect(await owner.requestLeave(AccountLeaveChoice.discard), isTrue);
+      h.releaseSession(session);
+      expect(board.lookup(operation.id), same(operation));
+      expect(operation.state.value.failurePhase, phase);
+      expect(operation.state.value.isPending, isTrue);
+      expect(h.accounts.mutationCalls, ['create', 'default']);
+    }
   });
   test('list projects exact decimals and transport failure independently of billing and canonical health', () async {
     final h = AccountsVmHarness();
     addTearDown(h.dispose);
-    await h.navigation();
+    await h.listOwner();
     const id = NativeAccountIdentity('native');
     h.usage.state.publish(
       AccountResource(
@@ -1364,13 +2430,21 @@ void main() {
         .list
         .rows
         .single;
-    expect(row.billing, AccountBilling.metered);
     expect(
-      row.usage!.balances.map((b) => (b.currency, b.total, b.granted)).toList(),
+      (row.content as NativeAccountRowContent).billing,
+      AccountBilling.metered,
+    );
+    expect(
+      (row.content as NativeAccountRowContent).usage.balances
+          .map((b) => (b.currency, b.total, b.granted))
+          .toList(),
       [('USD', '0.100000000000000001', null), ('CNY', '10.80', '0.80')],
     );
-    expect(row.usage!.hasLastGood, isTrue);
-    expect(row.usage!.error, 'Transport unavailable');
+    expect((row.content as NativeAccountRowContent).usage.hasLastGood, isTrue);
+    expect(
+      (row.content as NativeAccountRowContent).usage.error,
+      'Transport unavailable',
+    );
     expect(h.usage.state.value.value![id]!.phase, AccountUsagePhase.succeeded);
   });
   test('readout is explicit, bounded and invalidated across catalog identity; stale completion cannot replace a new request', () async {
@@ -1436,6 +2510,58 @@ void main() {
     expect(value.evaluations, hasLength(10));
     expect(value.evaluations.first.comment, 'evaluation-11');
     expect(owner.readObservedPerformance().keys, ['model']);
+    AccountModelPresentation model() => h.container
+        .read(accountModelsViewModelProvider(nativeKey))
+        .requireValue
+        .catalog
+        .models
+        .single;
+    expect(model().performance!.tokensPerSecond, 12.5);
+    expect(model().performance!.averageTtftMillis, isNull);
+    expect(
+      (model().performance!.sampleCount, model().performance!.ttftSampleCount),
+      (2, 2),
+    );
+    expect(model().priceTiers, isEmpty);
+    expect(model().currency, isNull);
+    expect(model().evaluationSummary.count, 10);
+    expect(model().evaluationSummary.quality, closeTo(28 / 9, .000001));
+    expect(model().evaluationSummary.instructionFollowing, 5);
+    expect(model().evaluationSummary.qualityDistribution, {
+      1: 2,
+      2: 1,
+      3: 2,
+      4: 2,
+      5: 2,
+    });
+    expect(
+      (
+        model().evaluations.first.category,
+        model().evaluations.first.outcome,
+        model().evaluations.first.updatedAt,
+      ),
+      (AccountEvaluationCategory.coding, AccountEvaluationOutcome.notRated, 11),
+    );
+    owner.filterEvaluations(
+      'model',
+      const AccountEvaluationFilter(
+        outcome: AccountEvaluationOutcome.failed,
+        minimumQuality: 4,
+        sort: AccountEvaluationSort.lowestQuality,
+      ),
+    );
+    expect(model().evaluationSummary.visible.map((item) => item.comment), [
+      'evaluation-3',
+      'evaluation-9',
+    ]);
+    expect(model().evaluationSummary.count, 10);
+    owner.filterEvaluations(
+      'model',
+      const AccountEvaluationFilter(
+        category: AccountEvaluationCategory.general,
+      ),
+    );
+    expect(model().evaluationSummary.visible, isEmpty);
   });
   test('template selection owns defaults, bundled declarations and typed suggested identity', () async {
     final h = AccountsVmHarness();
@@ -1451,17 +2577,68 @@ void main() {
         ],
       ),
     );
-    final navigation = await h.navigation();
-    final acp = navigation.create(
-      const AccountTemplateKey(kind: AccountKind.acp, id: 'antigravity'),
+    const entry = AccountEditorEntryKey.creating(routeEntryId: 'templates');
+    final session = await h.session(entry);
+    var templateEntry = entry;
+    const expectedNative = AccountTemplateContent.native(
+      defaultBilling: AccountBilling.subscription,
+      protocolLabel: 'open_ai',
+      defaultEndpoint: 'https://native.example/v1',
+      supportsModelDiscovery: false,
+      supportsUsageQuery: null,
+    );
+    const expectedCustom = AccountTemplateContent.native(
+      defaultBilling: AccountBilling.noCharge,
+      protocolLabel: 'open_ai',
+      defaultEndpoint: '',
+      supportsModelDiscovery: true,
+      supportsUsageQuery: false,
+    );
+    AccountTemplateContent templateContent(AccountTemplateKey key) => h
+        .container
+        .read(accountEditorSessionViewModelProvider(templateEntry))
+        .requireValue
+        .templates
+        .singleWhere((template) => template.key == key)
+        .content;
+    expect(
+      templateContent(
+        const AccountTemplateKey(kind: AccountKind.native, id: 'native'),
+      ),
+      expectedNative,
+    );
+    expect(
+      templateContent(
+        const AccountTemplateKey(kind: AccountKind.native, id: 'custom'),
+      ),
+      expectedCustom,
+    );
+    expect(
+      templateContent(
+        const AccountTemplateKey(kind: AccountKind.acp, id: 'antigravity'),
+      ),
+      const AccountTemplateContent.acp(),
+    );
+    final initial = session.currentEditor!;
+    final acp = session.replaceTemplate(
+      source: initial,
+      template: const AccountTemplateKey(
+        kind: AccountKind.acp,
+        id: 'antigravity',
+      ),
+      token: session.beginTemplateReplacement(initial)!,
     )!;
     expect(
       acp.target,
       const AccountDisplayKey(kind: AccountKind.acp, id: 'antigravity-3'),
     );
-    navigation.finishEditor(acp);
-    final native = navigation.create(
-      const AccountTemplateKey(kind: AccountKind.native, id: 'native'),
+    final native = session.replaceTemplate(
+      source: acp,
+      template: const AccountTemplateKey(
+        kind: AccountKind.native,
+        id: 'native',
+      ),
+      token: session.beginTemplateReplacement(acp)!,
     )!;
     final owner = await h.editor(native);
     final view = h.editorState(native).native!;
@@ -1471,23 +2648,71 @@ void main() {
     );
     expect(view.credential.helper, 'API token · NATIVE_TOKEN');
     expect(view.declaredModels.single.key.modelId, 'suggested');
-    owner.changeTemplate(
-      const AccountTemplateKey(kind: AccountKind.native, id: 'custom'),
-    );
-    expect(h.editorState(native).native!.declaredModels, isEmpty);
-    expect(h.editorState(native).native!.endpoint.raw, '');
-    owner.changeTemplate(
-      const AccountTemplateKey(kind: AccountKind.native, id: 'missing'),
-    );
-    expect(h.editorState(native).native!.templateKey.id, 'custom');
+    const draftEndpoint = 'https://editor-draft.example/private';
+    owner.changeField(NativeAccountField.endpoint, draftEndpoint);
+    final edited = h.editorState(native).native!;
+    expect(edited.endpoint.raw, draftEndpoint);
     expect(
-      navigation.create(
-        const AccountTemplateKey(kind: AccountKind.native, id: 'missing'),
+      edited.templates
+          .singleWhere((template) => template.key == native.template)
+          .content,
+      expectedNative,
+    );
+    expect(
+      edited.templates
+          .singleWhere((template) => template.key.id == 'custom')
+          .content,
+      expectedCustom,
+    );
+    expect(templateContent(native.template!), expectedNative);
+    owner.changeField(
+      NativeAccountField.credential,
+      'secret that must not cross templates',
+    );
+    expect(await owner.requestLeave(AccountLeaveChoice.cancel), isFalse);
+    expect(
+      h.editorState(native).native!.credential.raw,
+      'secret that must not cross templates',
+    );
+    expect(await owner.requestLeave(AccountLeaveChoice.discard), isTrue);
+    expect(session.isEditorCurrent(native), isTrue);
+    final custom = session.replaceTemplate(
+      source: native,
+      template: const AccountTemplateKey(
+        kind: AccountKind.native,
+        id: 'custom',
+      ),
+      token: session.beginTemplateReplacement(native)!,
+    )!;
+    final customOwner = await h.editor(custom);
+    expect(custom.editorId, isNot(native.editorId));
+    expect(h.editorState(custom).native!.declaredModels, isEmpty);
+    expect(h.editorState(custom).native!.endpoint.raw, '');
+    expect(h.editorState(custom).native!.credential.raw, '');
+    expect(
+      h
+          .editorState(custom)
+          .native!
+          .templates
+          .singleWhere((template) => template.key == custom.template)
+          .content,
+      expectedCustom,
+    );
+    expect(
+      session.replaceTemplate(
+        source: custom,
+        template: const AccountTemplateKey(
+          kind: AccountKind.native,
+          id: 'missing',
+        ),
+        token: session.beginTemplateReplacement(custom)!,
       ),
       isNull,
     );
-    owner.finish();
-    navigation.finishEditor(native);
+    expect(session.isEditorCurrent(custom), isTrue);
+    final customToken = customOwner.leaveToken();
+    h.releaseSession(session);
+    expect(customOwner.matchesLeaveToken(customToken), isFalse);
     h.accounts.state.publish(
       AccountsState(
         stamp: vmStamp,
@@ -1506,20 +2731,36 @@ void main() {
               modelCatalogId: '',
               protocol: 'open_ai',
               suggestedModelId: '',
+              defaultBillingKind: BillingKind.metered,
+              supportsModelDiscovery: false,
+              supportsUsageQuery: true,
             ),
           ],
           modelCatalogs: {},
         ),
       ),
     );
+    const freshEntry = AccountEditorEntryKey.creating(routeEntryId: 'fresh');
+    final freshSession = await h.session(freshEntry);
+    templateEntry = freshEntry;
+    expect(freshSession.currentEditor!.target.id, 'fresh');
     expect(
-      navigation
-          .create(
-            const AccountTemplateKey(kind: AccountKind.native, id: 'fresh'),
-          )!
-          .target
-          .id,
-      'fresh',
+      templateContent(
+        const AccountTemplateKey(kind: AccountKind.native, id: 'fresh'),
+      ),
+      const AccountTemplateContent.native(
+        defaultBilling: AccountBilling.metered,
+        protocolLabel: 'open_ai',
+        defaultEndpoint: 'https://fresh.example/v1',
+        supportsModelDiscovery: false,
+        supportsUsageQuery: true,
+      ),
+    );
+    expect(
+      templateContent(
+        const AccountTemplateKey(kind: AccountKind.acp, id: 'antigravity'),
+      ),
+      const AccountTemplateContent.acp(),
     );
   });
 
@@ -1529,6 +2770,8 @@ void main() {
     h.accounts.put(vmNative());
     final key = editKey();
     final owner = await h.editor(key);
+    expect(h.editorState(key).native!.accountKey, key.target);
+    owner.changeSetDefaultOnCreate(true);
     owner.changeField(NativeAccountField.name, '  Renamed  ');
     expect(await owner.save(), isTrue);
     final patch = h.accounts.patches.single;
@@ -1536,6 +2779,8 @@ void main() {
     expect(patch.baseUrl, isA<AccountTextKeep>());
     expect(patch.customModels, isA<AccountModelsKeep>());
     expect(patch.secret.action, AccountSecretAction.preserve);
+    expect(h.accounts.defaultCalls, isEmpty);
+    expect(h.editorState(key).native!.showSetDefaultOnCreate, isFalse);
     owner.addModel();
     final row = h.editorState(key).native!.manualModels.single.editorKey;
     owner.changeModel(row, field: ManualModelField.id, raw: '');
@@ -1590,7 +2835,8 @@ void main() {
       ),
       ('Second', true, false),
     );
-    h.accounts.write = () => Future.error(StateError('offline'));
+    // This failure occurs before admission, not after dispatch or a receipt.
+    h.accounts.write = () => Future.error(StateError('before admission'));
     expect(await owner.save(), isFalse);
     expect(h.editorState(key).native!.name.raw, 'Second');
     expect(h.editorState(key).dirty, isTrue);
@@ -1610,19 +2856,114 @@ void main() {
       expect(await owner.save(), isTrue);
       expect(owner.isSavedModel(row), isTrue);
       expect(h.editorState(key).native!.manualModels.single.canEditId, isFalse);
+      h.models.removeWrite = () async => failedVmOperation(
+        OperationPhase.rejected,
+        id: 'manual-delete-rejected',
+        error: const StudioFailure(
+          code: StudioFailureCode.invalidArgument,
+          message: 'Model removal rejected',
+          retryable: false,
+          correlationId: 'manual-delete',
+        ),
+      );
+      expect(await owner.removeModel(row), isFalse);
+      expect(owner.hasUnconfirmedSave(), isFalse);
+      expect(h.editorState(key).native!.manualModels.single.editorKey, row);
+      h.models.removeWrite = () async =>
+          savedVmOperation('manual-delete-saved');
       expect(await owner.removeModel(row), isTrue);
-      expect(h.models.removed.single.modelId, 'manual');
+      expect(h.models.removed.map((id) => id.modelId), ['manual', 'manual']);
     },
   );
 
+  test('uncertain saved-model removal locks the editor without discarding its row or newer raw', () async {
+    for (final phase in [
+      OperationPhase.unknownOutcome,
+      OperationPhase.syncFailed,
+    ]) {
+      final failure = failedVmOperation(
+        phase,
+        id: 'manual-delete-${phase.name}',
+        error: StateError('admitted removal not confirmed'),
+      );
+      final h = AccountsVmHarness();
+      addTearDown(h.dispose);
+      h.accounts.put(
+        vmNative(
+          manual: const [
+            AccountModelCommand(
+              modelId: 'manual',
+              displayName: 'Manual',
+              wireApi: 'chat_completions',
+              contextWindow: null,
+              maxOutputTokens: null,
+            ),
+          ],
+        ),
+      );
+      final session = await h.session(
+        const AccountEditorEntryKey.editing(
+          routeEntryId: 'remove-model',
+          account: nativeKey,
+        ),
+      );
+      final key = session.currentEditor!;
+      final owner = await h.editor(key);
+      owner.setStrings(vmOperationStrings);
+      owner.changeField(NativeAccountField.name, 'Local before removal');
+      final row = h.editorState(key).native!.manualModels.single.editorKey;
+      h.models.removeWrite = () async => failure;
+      expect(await owner.removeModel(row), isFalse);
+      expect(h.editorState(key).native!.manualModels.single.editorKey, row);
+      expect(h.editorState(key).native!.name.raw, 'Local before removal');
+      expect(h.editorState(key).key, key);
+      expect(
+        (
+          owner.hasUnconfirmedSave(),
+          owner.leaveBlocked(),
+          h.editorState(key).canSave,
+        ),
+        (true, false, false),
+      );
+      expect(
+        h.editorState(key).error,
+        phase == OperationPhase.unknownOutcome
+            ? 'Outcome unknown'
+            : 'Save failed',
+      );
+      expect(await owner.removeModel(row), isFalse);
+      expect(await owner.save(), isFalse);
+      owner.changeField(
+        NativeAccountField.name,
+        'New raw cannot replay removal',
+      );
+      expect(await owner.removeModel(row), isFalse);
+      expect(await owner.save(), isFalse);
+      expect(
+        h.editorState(key).native!.name.raw,
+        'New raw cannot replay removal',
+      );
+      expect(h.editorState(key).native!.manualModels.single.editorKey, row);
+      expect(h.models.removed, hasLength(1));
+      expect(h.accounts.patches, isEmpty);
+      expect(h.accounts.creates, isEmpty);
+      expect(await owner.requestLeave(AccountLeaveChoice.cancel), isFalse);
+      expect(session.isEditorCurrent(key), isTrue);
+      expect(await owner.requestLeave(AccountLeaveChoice.discard), isTrue);
+      h.releaseSession(session);
+      expect(session.currentEditor, isNull);
+      expect(h.models.removed, hasLength(1));
+    }
+  });
+
   test('visibility and provider disposal release display demand without cancelling accepted writes', () async {
     final h = AccountsVmHarness();
-    final navigation = await h.navigation();
+    final accountsOwner = await h.listOwner();
     expect(h.accounts.detailReads, 0);
-    navigation.setVisible(true);
-    navigation.setVisible(true);
+    accountsOwner.setVisible(true);
+    accountsOwner.setVisible(true);
     expect(h.usage.demands, hasLength(1));
-    navigation.setVisible(false);
+    accountsOwner.setVisible(false);
     expect(h.usage.demands.single.releases, 1);
     h.accounts.put(vmNative());
     final key = editKey();

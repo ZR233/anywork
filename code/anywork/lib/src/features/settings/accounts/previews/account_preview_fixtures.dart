@@ -94,19 +94,27 @@ abstract final class AccountPreviewFixtures {
     canLoadReadout: true,
     connection: AccountConnection.automatic,
     allowedConnections: AccountConnection.values,
-    capabilities: [
-      AccountDisplayFact(label: '上下文窗口', value: '1,050,000 tokens'),
-      AccountDisplayFact(label: '输入 / 输出', value: '文本、视觉 / 文本'),
-      AccountDisplayFact(label: '能力', value: '流式输出 · 思考 · 工具调用'),
-    ],
+    specificationFacts: AccountModelSpecificationFacts(
+      modalityCapabilities: [
+        AccountDisplayFact(label: '输入 / 输出', value: '文本、视觉 / 文本'),
+        AccountDisplayFact(label: '能力', value: '流式输出 · 思考 · 工具调用'),
+      ],
+      context: [AccountDisplayFact(label: '上下文窗口', value: '1,050,000 tokens')],
+    ),
+    currency: 'CNY',
+    priceSource: 'https://example.invalid/pricing',
     priceTiers: [
-      AccountDisplayFact(
-        label: '≤ 128K · CNY / 1M tokens',
-        value: '输入 2.00 · 输出 3.00 · 缓存读 0.20',
+      AccountModelPriceTier(
+        label: '≤ 128K',
+        input: 2,
+        output: 3,
+        cacheRead: .2,
       ),
-      AccountDisplayFact(
-        label: '> 128K · CNY / 1M tokens',
-        value: '输入 4.00 · 输出 6.00 · 缓存读 0.40',
+      AccountModelPriceTier(
+        label: '> 128K',
+        input: 4,
+        output: 6,
+        cacheRead: .4,
       ),
     ],
     compact: AccountCompactPresentation(
@@ -117,32 +125,61 @@ abstract final class AccountPreviewFixtures {
       canEdit: true,
       canReset: true,
     ),
-    performance: [
-      AccountDisplayFact(
-        label: '标准 · 12 次成功调用',
-        value: '首词元 0.8s · 输出 42 tokens/s',
-      ),
-      AccountDisplayFact(
-        label: '高思考 · 4 次成功调用',
-        value: '首词元 2.1s · 输出 36 tokens/s',
-      ),
-    ],
-    evaluations: [
-      AccountModelEvaluation(
-        title: '合成任务 A',
-        outcome: '通过',
-        updatedLabel: '10/26 12:34',
-        comment: '完整保留输入语义，并正确处理边界。',
-        scores: [AccountDisplayFact(label: '正确性 / 完整性', value: '4 / 5')],
-      ),
-      AccountModelEvaluation(
-        title: '合成任务 B',
-        outcome: '未通过',
-        updatedLabel: '10/25 09:12',
-        comment: '缺少失败恢复；此条仅用于预览。',
-      ),
-    ],
+    performance: AccountPerformancePresentation(
+      sampleCount: 16,
+      ttftSampleCount: 12,
+      tokensPerSecond: 42,
+      averageTtftMillis: 800,
+    ),
+    evaluations: evaluations,
+    evaluationSummary: AccountEvaluationSummary(
+      count: 3,
+      quality: 3.5,
+      instructionFollowing: 4,
+      qualityDistribution: {5: 1, 2: 1},
+      visible: evaluations,
+    ),
   );
+  static final filteredEmptyEvaluationSummary = model.evaluationSummary
+      .copyWith(
+        visible: const [],
+        filter: const AccountEvaluationFilter(
+          outcome: AccountEvaluationOutcome.failed,
+        ),
+      );
+  static const evaluations = [
+    AccountModelEvaluation(
+      category: AccountEvaluationCategory.coding,
+      categoryLabel: '编码',
+      outcome: AccountEvaluationOutcome.passed,
+      outcomeLabel: '通过',
+      updatedAt: 200,
+      updatedLabel: '10/26 12:34',
+      comment: '完整保留输入语义，并正确处理边界。此为合成预览。',
+      quality: 5,
+      instructionFollowing: 5,
+    ),
+    AccountModelEvaluation(
+      category: AccountEvaluationCategory.tooling,
+      categoryLabel: '工具使用',
+      outcome: AccountEvaluationOutcome.failed,
+      outcomeLabel: '未通过',
+      updatedAt: 100,
+      updatedLabel: '10/25 09:12',
+      comment: '缺少失败恢复；此条仅用于预览。',
+      quality: 2,
+      instructionFollowing: 3,
+    ),
+    AccountModelEvaluation(
+      category: AccountEvaluationCategory.general,
+      categoryLabel: '通用',
+      outcome: AccountEvaluationOutcome.notRated,
+      outcomeLabel: '未评级',
+      updatedAt: 50,
+      updatedLabel: '10/24 09:12',
+      comment: '证据不足，不生成分数。',
+    ),
+  ];
   static final catalog = AccountCatalogPresentation(
     canSync: true,
     checkedLabel: '10/26 09:31',
@@ -205,6 +242,37 @@ abstract final class AccountPreviewFixtures {
       ),
     ),
   );
+  static final conceptDetails = _detailsWithSyntheticContextWindow(details);
+
+  static AccountDetailsPresentation _detailsWithSyntheticContextWindow(
+    AccountDetailsPresentation value,
+  ) {
+    final content = value.content;
+    if (content is! NativeAccountDetailsContent) {
+      throw StateError('Concept account fixture must be Native');
+    }
+    final native = content.value;
+    final models = [
+      for (final model in native.catalog.models)
+        if (model.key == AccountPreviewFixtures.model.key)
+          model.copyWith(
+            compact: model.compact?.copyWith(
+              // Synthetic usable window for concept-only preset previews.
+              contextWindow: 1050000,
+              dirty: false,
+              canSave: false,
+            ),
+          )
+        else
+          model,
+    ];
+    return value.copyWith(
+      content: AccountDetailsContent.native(
+        native.copyWith(catalog: native.catalog.copyWith(models: models)),
+      ),
+    );
+  }
+
   static const acp = AcpAccountPresentation(
     phase: AcpPresentationPhase.needsLogin,
     status: '需要登录',
@@ -233,8 +301,11 @@ abstract final class AccountPreviewFixtures {
         key: nativeKey,
         name: 'DeepSeek',
         iconKey: 'deepseek',
-        billing: AccountBilling.metered,
-        usage: normalBalance,
+        content: AccountRowContent.native(
+          billing: AccountBilling.metered,
+          usage: normalBalance,
+          displayEndpoint: 'https://api.example.test:8443',
+        ),
         actions: AccountRowAction.values,
       ),
       const AccountRowPresentation(
@@ -244,16 +315,20 @@ abstract final class AccountPreviewFixtures {
         ),
         name: 'OpenAI',
         iconKey: 'openai',
-        billing: AccountBilling.metered,
-        usage: AccountUsagePresentation(phase: AccountQueryPhase.unsupported),
+        content: AccountRowContent.native(
+          billing: AccountBilling.metered,
+          usage: AccountUsagePresentation(phase: AccountQueryPhase.unsupported),
+        ),
         actions: [AccountRowAction.edit, AccountRowAction.delete],
       ),
       const AccountRowPresentation(
         key: AccountDisplayKey(kind: AccountKind.native, id: 'synthetic-xai'),
         name: 'xAI',
         iconKey: 'xai',
-        billing: AccountBilling.metered,
-        usage: AccountUsagePresentation(phase: AccountQueryPhase.unsupported),
+        content: AccountRowContent.native(
+          billing: AccountBilling.metered,
+          usage: AccountUsagePresentation(phase: AccountQueryPhase.unsupported),
+        ),
         actions: [AccountRowAction.edit, AccountRowAction.delete],
       ),
       const AccountRowPresentation(
@@ -261,43 +336,94 @@ abstract final class AccountPreviewFixtures {
         name: 'Zhipu Coding Plan',
         iconKey: 'zhipu',
         isDefault: true,
-        billing: AccountBilling.subscription,
-        usage: subscription,
+        content: AccountRowContent.native(
+          billing: AccountBilling.subscription,
+          usage: subscription,
+        ),
         actions: AccountRowAction.values,
       ),
       const AccountRowPresentation(
         key: AccountDisplayKey(kind: AccountKind.native, id: 'synthetic-local'),
         name: '本地服务',
-        billing: AccountBilling.noCharge,
-        usage: AccountUsagePresentation(phase: AccountQueryPhase.unsupported),
+        content: AccountRowContent.native(
+          billing: AccountBilling.noCharge,
+          usage: AccountUsagePresentation(phase: AccountQueryPhase.unsupported),
+        ),
         actions: [AccountRowAction.edit, AccountRowAction.delete],
       ),
     ],
+  );
+  static final stackedLastGoodRow = list.rows.first.copyWith(
+    name: '长账号名称 · 查询保留最近数据',
+    iconKey: 'unregistered',
+    content: AccountRowContent.native(
+      billing: AccountBilling.unknown,
+      usage: balance.copyWith(
+        phase: AccountQueryPhase.failed,
+        canRetry: true,
+        error: '合成请求失败，继续显示最近成功的多币种数据。',
+      ),
+    ),
   );
   static const nativeTemplates = [
     AccountTemplatePresentation(
       key: templateKey,
       name: 'DeepSeek',
+      content: AccountTemplateContent.native(
+        defaultBilling: AccountBilling.metered,
+        protocolLabel: 'DeepSeek',
+        defaultEndpoint: 'https://api.deepseek.com',
+        supportsModelDiscovery: true,
+        supportsUsageQuery: true,
+      ),
       iconKey: 'deepseek',
     ),
     AccountTemplatePresentation(
       key: AccountTemplateKey(kind: AccountKind.native, id: 'zhipu'),
       name: '智谱',
+      content: AccountTemplateContent.native(
+        defaultBilling: AccountBilling.metered,
+        protocolLabel: 'Zhipu · Chat Completions',
+        defaultEndpoint: 'https://open.bigmodel.cn/api/paas/v4',
+        supportsModelDiscovery: false,
+        supportsUsageQuery: false,
+      ),
       iconKey: 'zhipu',
     ),
     AccountTemplatePresentation(
       key: AccountTemplateKey(kind: AccountKind.native, id: 'openai'),
       name: 'OpenAI',
+      content: AccountTemplateContent.native(
+        defaultBilling: AccountBilling.metered,
+        protocolLabel: 'Responses',
+        defaultEndpoint: 'https://api.openai.com/v1',
+        supportsModelDiscovery: true,
+        supportsUsageQuery: false,
+      ),
       iconKey: 'openai',
     ),
     AccountTemplatePresentation(
       key: AccountTemplateKey(kind: AccountKind.native, id: 'xai'),
       name: 'xAI',
+      content: AccountTemplateContent.native(
+        defaultBilling: AccountBilling.metered,
+        protocolLabel: 'Responses',
+        defaultEndpoint: 'https://api.x.ai/v1',
+        supportsModelDiscovery: true,
+        supportsUsageQuery: false,
+      ),
       iconKey: 'xai',
     ),
     AccountTemplatePresentation(
       key: AccountTemplateKey(kind: AccountKind.native, id: 'mimo-api'),
       name: 'MiMo API',
+      content: AccountTemplateContent.native(
+        defaultBilling: AccountBilling.metered,
+        protocolLabel: 'MiMo · Chat Completions',
+        defaultEndpoint: 'https://api.xiaomimimo.com/v1',
+        supportsModelDiscovery: true,
+        supportsUsageQuery: false,
+      ),
       iconKey: 'mimo',
     ),
     AccountTemplatePresentation(
@@ -306,6 +432,13 @@ abstract final class AccountPreviewFixtures {
         id: 'openai-compatible',
       ),
       name: 'OpenAI API 兼容',
+      content: AccountTemplateContent.native(
+        defaultBilling: AccountBilling.unknown,
+        protocolLabel: 'OpenAI API 兼容',
+        defaultEndpoint: 'http://localhost:11434/v1',
+        supportsModelDiscovery: false,
+        supportsUsageQuery: false,
+      ),
     ),
     AccountTemplatePresentation(
       key: AccountTemplateKey(
@@ -313,11 +446,25 @@ abstract final class AccountPreviewFixtures {
         id: 'zhipu-coding-plan',
       ),
       name: 'Zhipu Coding Plan',
+      content: AccountTemplateContent.native(
+        defaultBilling: AccountBilling.subscription,
+        protocolLabel: 'Responses',
+        defaultEndpoint: 'https://open.bigmodel.cn/api/v1',
+        supportsModelDiscovery: false,
+        supportsUsageQuery: true,
+      ),
       iconKey: 'zhipu',
     ),
     AccountTemplatePresentation(
       key: AccountTemplateKey(kind: AccountKind.native, id: 'mimo-token-plan'),
       name: 'MiMo Token Plan',
+      content: AccountTemplateContent.native(
+        defaultBilling: AccountBilling.subscription,
+        protocolLabel: 'MiMo · Chat Completions',
+        defaultEndpoint: 'https://token-plan-cn.xiaomimimo.com/v1',
+        supportsModelDiscovery: true,
+        supportsUsageQuery: false,
+      ),
       iconKey: 'mimo',
     ),
   ];
@@ -328,6 +475,7 @@ abstract final class AccountPreviewFixtures {
     AccountTemplatePresentation(
       key: AccountTemplateKey(kind: AccountKind.acp, id: 'antigravity'),
       name: 'Antigravity',
+      content: AccountTemplateContent.acp(),
       description: '合成受管服务器（仅预览）',
     ),
   ];

@@ -56,7 +56,7 @@ final class AccountModelsViewModelProvider
 }
 
 String _$accountModelsViewModelHash() =>
-    r'01d56eaca4330093f8db590c4a057599016d91b3';
+    r'8a700f555166aa4b35bab576c9cf5e50cccbf7a3';
 
 /// Model controls are narrow intents, never part of an account card save.
 

@@ -38,10 +38,13 @@ class AccountEditorViewModel extends _$AccountEditorViewModel {
   bool _saving = false;
   bool _finished = false;
   bool _unknownResult = false;
+  bool _setDefaultOnCreate = false;
+  bool _baselineSetDefaultOnCreate = false;
   String? _baselineOwnerEpoch;
   bool _baselineInvalidated = false;
   int _revision = 0;
   int _rowSequence = 0;
+  String? _addModelEntryEditorKey;
   String? _error;
   AcpCommandNotice? _configurationNotice;
   void Function()? _closeRetention;
@@ -221,6 +224,9 @@ class AccountEditorViewModel extends _$AccountEditorViewModel {
   bool get _dirty =>
       !_finished &&
       ((_key.creating && !_created) ||
+          (_key.creating &&
+              _key.target.kind == AccountKind.native &&
+              _setDefaultOnCreate != _baselineSetDefaultOnCreate) ||
           (_raw != null &&
               _baseline != null &&
               !_raw!.sameFields(_baseline!)) ||
@@ -259,25 +265,6 @@ class AccountEditorViewModel extends _$AccountEditorViewModel {
     _publish();
   }
 
-  void changeTemplate(AccountTemplateKey key) {
-    if (!_key.creating ||
-        _created ||
-        key.kind != AccountKind.native ||
-        _saving) {
-      return;
-    }
-    final template = _accounts.state.value.templates.template(key.id);
-    if (template == null) {
-      _error = _strings['unknownTemplate'];
-      _publish();
-      return;
-    }
-    _raw = NativeAccountDraft.fromTemplate(template);
-    _revision++;
-    _error = null;
-    _publish();
-  }
-
   void changeBilling(AccountBilling? value) {
     if (_raw == null || _finished) return;
     _raw = _raw!.withBilling(value == null ? null : domainBilling(value));
@@ -285,14 +272,47 @@ class AccountEditorViewModel extends _$AccountEditorViewModel {
     _publish();
   }
 
-  void addModel() {
-    if (_raw == null || _finished) return;
-    _raw = _raw!.withRows([
-      ..._raw!.rows,
-      ManualModelDraft(editorKey: '${_key.editorId}-row-${++_rowSequence}'),
-    ]);
+  void changeSetDefaultOnCreate(bool value) {
+    if (!_key.creating ||
+        _key.target.kind != AccountKind.native ||
+        _finished ||
+        _saving ||
+        _unknownResult ||
+        value == _setDefaultOnCreate) {
+      return;
+    }
+    _setDefaultOnCreate = value;
     _revision++;
     _publish();
+  }
+
+  void addModel() {
+    if (_raw == null || _finished) return;
+    _appendModelRow();
+    _publish();
+  }
+
+  /// An entry request is consumed by this editor, not by a Connector mount.
+  /// Removing its row never authorizes an automatic replacement on a remount.
+  String? addModelEntryEditorKey() => _addModelEntryEditorKey;
+
+  String? consumeAddModelEntry({required bool requested}) {
+    if (_finished || !requested) return null;
+    if (_addModelEntryEditorKey != null) return _addModelEntryEditorKey;
+    if (_raw == null || _saving || _stale) return null;
+    _addModelEntryEditorKey = _appendModelRow();
+    _publish();
+    return _addModelEntryEditorKey;
+  }
+
+  String _appendModelRow() {
+    final editorKey = '${_key.editorId}-row-${++_rowSequence}';
+    _raw = _raw!.withRows([
+      ..._raw!.rows,
+      ManualModelDraft(editorKey: editorKey),
+    ]);
+    _revision++;
+    return editorKey;
   }
 
   void changeModel(
@@ -327,42 +347,46 @@ class AccountEditorViewModel extends _$AccountEditorViewModel {
     final row = _raw?.rows
         .where((row) => row.editorKey == editorKey)
         .firstOrNull;
-    if (row == null || _saving || _finished) return false;
-    if (row.savedId != null) {
-      try {
+    if (row == null || _saving || _finished || _unknownResult) return false;
+    final savedRow = row.savedId != null;
+    if (savedRow) {
+      _saving = true;
+      _error = null;
+      _publish();
+    }
+    try {
+      if (savedRow) {
         final result = await _models.removeManual(
           AccountModelIdentity(
             account: NativeAccountIdentity(_key.target.id),
             modelId: row.savedId!,
           ),
         );
-        if (!ref.mounted || _finished) return false;
-        final settled = await observeAccountOperation(ref, result);
-        if (!ref.mounted || _finished || settled == null) return false;
-        if (!operationSaved(settled)) {
-          _error = operationMessage(settled, _strings);
-          _publish();
-          return false;
-        }
+        if (!await _accept(result)) return false;
         _baseline = _baseline?.withRows([
           for (final value in _baseline!.rows)
             if (value.savedId != row.savedId) value,
         ]);
-      } catch (error) {
-        if (ref.mounted && !_finished) {
-          _error = safeAccountError(error, _strings);
-          _publish();
-        }
-        return false;
+      }
+      _raw = _raw?.withRows([
+        for (final value in _raw!.rows)
+          if (value.editorKey != editorKey) value,
+      ]);
+      _revision++;
+      _publish();
+      return true;
+    } catch (error) {
+      if (ref.mounted && !_finished) {
+        _error = safeAccountError(error, _strings);
+        _publish();
+      }
+      return false;
+    } finally {
+      if (savedRow && ref.mounted && !_finished) {
+        _saving = false;
+        _publish();
       }
     }
-    _raw = _raw?.withRows([
-      for (final value in _raw!.rows)
-        if (value.editorKey != editorKey) value,
-    ]);
-    _revision++;
-    _publish();
-    return true;
   }
 
   /// The submitted revision and all input intent are captured before awaiting.
@@ -374,120 +398,150 @@ class AccountEditorViewModel extends _$AccountEditorViewModel {
     final baseline = _baseline;
     final acpName = _acpName;
     final acpKey = _acpKey;
+    final target = _key.target;
+    final creating = _key.creating;
+    final wasCreating = creating && !_created;
+    final defaultIntent = _setDefaultOnCreate;
+    final defaultBaseline = _baselineSetDefaultOnCreate;
     final stamp = DraftStamp(draftId: _key.editorId, revision: revision);
+    var settingDefault = false;
     _saving = true;
     _error = null;
     _configurationNotice = null;
     _publish();
     try {
       if (raw != null && baseline != null) {
-        final identity = NativeAccountIdentity(_key.target.id);
-        final wasCreating = _key.creating && !_created;
-        final result = wasCreating
-            ? await _accounts.create(raw.create(identity), draft: stamp)
-            : await _accounts.patch(
-                raw.patch(identity, baseline),
-                draft: stamp,
+        final identity = NativeAccountIdentity(target.id);
+        // A retry of only the follow-up intent must not patch or create again.
+        if (wasCreating || !raw.sameFields(baseline)) {
+          final result = wasCreating
+              ? await _accounts.create(raw.create(identity), draft: stamp)
+              : await _accounts.patch(
+                  raw.patch(identity, baseline),
+                  draft: stamp,
+                );
+          if (!await _accept(result)) return false;
+          _created = true;
+          final savedRows = [for (final row in raw.rows) row.saved()];
+          // Mark only declaration identity, never replace newer field contents.
+          // If an unsaved id was changed while saving, retain the newly persisted
+          // row alongside the newer raw row. Removing it now requires confirmation.
+          final currentRows = [...?_raw?.rows];
+          for (final saved in savedRows) {
+            final index = currentRows.indexWhere(
+              (row) => row.editorKey == saved.editorKey,
+            );
+            if (index >= 0 && currentRows[index].id.trim() == saved.id.trim()) {
+              currentRows[index] = currentRows[index].saved();
+            } else {
+              currentRows.add(
+                saved.saved(key: '${saved.editorKey}-persisted-${saved.id}'),
               );
-        if (!await _accept(result)) return false;
-        _created = true;
-        final savedRows = [for (final row in raw.rows) row.saved()];
-        // Mark only declaration identity, never replace newer field contents.
-        // If an unsaved id was changed while saving, retain the newly persisted
-        // row alongside the newer raw row. Removing it now requires confirmation.
-        final currentRows = [...?_raw?.rows];
-        for (final saved in savedRows) {
-          final index = currentRows.indexWhere(
-            (row) => row.editorKey == saved.editorKey,
-          );
-          if (index >= 0 && currentRows[index].id.trim() == saved.id.trim()) {
-            currentRows[index] = currentRows[index].saved();
-          } else {
-            currentRows.add(
-              saved.saved(key: '${saved.editorKey}-persisted-${saved.id}'),
-            );
-          }
-        }
-        _raw = _raw?.withRows(currentRows);
-        // Configuration is already saved even if a following narrow step fails.
-        _baseline = NativeAccountDraft(
-          name: raw.name,
-          endpoint: raw.endpoint,
-          credential: raw.credential,
-          protocol: raw.protocol,
-          templateId: raw.templateId,
-          rows: [
-            for (final row in savedRows)
-              row.change(
-                mode: wasCreating
-                    ? row.connection
-                    : baseline.rows
-                              .where((old) => old.id == row.id)
-                              .firstOrNull
-                              ?.connection ??
-                          AccountConnection.automatic,
-              ),
-          ],
-          billing: wasCreating ? raw.billing : baseline.billing,
-        );
-        // Opening a display subscription may fail independently. Record the
-        // already-durable configuration first, including saved model identity.
-        _observeCreatedDetails();
-        if (!wasCreating) {
-          for (final row in raw.rows) {
-            final old = baseline.rows
-                .where((value) => value.id == row.id)
-                .firstOrNull;
-            if (row.connection ==
-                (old?.connection ?? AccountConnection.automatic)) {
-              continue;
             }
-            final connectionResult = await _models.setConnection(
-              AccountModelIdentity(account: identity, modelId: row.id.trim()),
-              switch (row.connection) {
-                AccountConnection.automatic =>
-                  const ModelConnectionIntent.clear(),
-                AccountConnection.http => const ModelConnectionIntent.set(
-                  AccountConnectionMode.http,
-                ),
-                AccountConnection.webSocket => const ModelConnectionIntent.set(
-                  AccountConnectionMode.webSocket,
-                ),
-              },
-            );
-            if (!await _accept(connectionResult)) return false;
-            _baseline = _baseline!.withRows([
-              for (final value in _baseline!.rows)
-                value.id == row.id ? value.change(mode: row.connection) : value,
-            ]);
           }
-          if (raw.billing != baseline.billing) {
-            if (!await _accept(
-              await _accounts.setBillingKind(identity, raw.billing),
-            )) {
+          _raw = _raw?.withRows(currentRows);
+          // Configuration is already saved even if a following narrow step fails.
+          _baseline = NativeAccountDraft(
+            name: raw.name,
+            endpoint: raw.endpoint,
+            credential: raw.credential,
+            protocol: raw.protocol,
+            templateId: raw.templateId,
+            rows: [
+              for (final row in savedRows)
+                row.change(
+                  mode: wasCreating
+                      ? row.connection
+                      : baseline.rows
+                                .where((old) => old.id == row.id)
+                                .firstOrNull
+                                ?.connection ??
+                            AccountConnection.automatic,
+                ),
+            ],
+            billing: wasCreating ? raw.billing : baseline.billing,
+          );
+          // Opening a display subscription may fail independently. Record the
+          // already-durable configuration first, including saved model identity.
+          _observeCreatedDetails();
+          if (!wasCreating) {
+            for (final row in raw.rows) {
+              final old = baseline.rows
+                  .where((value) => value.id == row.id)
+                  .firstOrNull;
+              if (row.connection ==
+                  (old?.connection ?? AccountConnection.automatic)) {
+                continue;
+              }
+              final connectionResult = await _models.setConnection(
+                AccountModelIdentity(account: identity, modelId: row.id.trim()),
+                switch (row.connection) {
+                  AccountConnection.automatic =>
+                    const ModelConnectionIntent.clear(),
+                  AccountConnection.http => const ModelConnectionIntent.set(
+                    AccountConnectionMode.http,
+                  ),
+                  AccountConnection.webSocket =>
+                    const ModelConnectionIntent.set(
+                      AccountConnectionMode.webSocket,
+                    ),
+                },
+              );
+              if (!await _accept(connectionResult)) return false;
+              _baseline = _baseline!.withRows([
+                for (final value in _baseline!.rows)
+                  value.id == row.id
+                      ? value.change(mode: row.connection)
+                      : value,
+              ]);
+            }
+            if (raw.billing != baseline.billing) {
+              if (!await _accept(
+                await _accounts.setBillingKind(identity, raw.billing),
+              )) {
+                return false;
+              }
+            }
+          }
+          _baseline = raw.withRows(savedRows);
+        }
+        if (creating) {
+          if (defaultIntent && !defaultBaseline) {
+            settingDefault = true;
+            if (!await _accept(await _accounts.setDefault(identity))) {
+              if (ref.mounted && !_finished) {
+                _error =
+                    '${_strings['createdDefaultIncomplete']} ${_error ?? _strings['saveFailed']}';
+              }
               return false;
             }
+            settingDefault = false;
           }
+          // Settle only the submitted local preference, never later form edits.
+          // Opting out does not undo a default route already saved earlier.
+          _baselineSetDefaultOnCreate = defaultIntent;
         }
-        _baseline = raw.withRows(savedRows);
       } else if (acpKey != null && acpName != null) {
         final provider = AcpProviderView.fromWire(acpKey.providerId)!;
         final command = AcpAccountUpdateView(
-          accountId: _key.target.id,
+          accountId: target.id,
           name: acpName.trim(),
           provider: provider,
         );
         if (_key.creating && !_created) {
           final result = await _acp.saveAndConnect(command, draft: stamp);
           if (!ref.mounted || _finished || _baselineInvalidated) return false;
+          if (!await _accept(result.operation)) return false;
+          // The Client supplies typed saved details only for this confirmed save.
+          final saved = result.saved!;
           _created = true;
           _baselineAcpName = acpName;
-          _initialAcp = result.saved;
+          _initialAcp = saved;
           _observeCreatedDetails();
           _acpKey = AccountAcpKey(
             target: _key.target,
-            providerId: result.saved.provider.wire,
-            connectionRevision: result.saved.connectionRevision,
+            providerId: saved.provider.wire,
+            connectionRevision: saved.connectionRevision,
             editorId: _key.editorId,
           );
           _observeAcp();
@@ -514,7 +568,10 @@ class AccountEditorViewModel extends _$AccountEditorViewModel {
             connectionRevision: account.connectionRevision,
           );
         } else {
-          _error = safeAccountError(error, _strings);
+          final message = safeAccountError(error, _strings);
+          _error = settingDefault
+              ? '${_strings['createdDefaultIncomplete']} $message'
+              : message;
         }
       }
       return false;
@@ -530,27 +587,34 @@ class AccountEditorViewModel extends _$AccountEditorViewModel {
     if (!ref.mounted || _finished) return false;
     final settled = await observeAccountOperation(ref, result);
     if (!ref.mounted || _finished || settled == null) return false;
-    if (_baselineInvalidated) return false;
     _unknownResult =
         settled.failurePhase == OperationPhase.unknownOutcome ||
-        settled.failurePhase == OperationPhase.syncFailed;
+        settled.failurePhase == OperationPhase.syncFailed ||
+        (settled.failurePhase == null && !operationSaved(settled));
     _error = operationMessage(settled, _strings);
-    return operationSaved(settled);
+    return !_baselineInvalidated && operationSaved(settled);
   }
 
-  /// UI supplies only the user's choice. Saving, failure and revision checks
-  /// remain with the same form owner on all internal and external exit paths.
+  /// UI supplies only the user's choice. A permission result never retires the
+  /// form: the actual route-entry disposal or template commit calls finish.
+  bool hasUnconfirmedSave() => _unknownResult;
+  bool leaveBlocked() => _saving;
+  Object leaveToken() => (_revision, _baselineInvalidated);
+  bool matchesLeaveToken(Object token) =>
+      ref.mounted && !_finished && token == leaveToken();
+
   Future<bool> requestLeave(AccountLeaveChoice choice) async {
     if (_saving || _finished || choice == AccountLeaveChoice.cancel) {
       return false;
     }
-    if (choice == AccountLeaveChoice.save && !await save()) return false;
-    finish();
+    if (choice == AccountLeaveChoice.save) {
+      if (_unknownResult || (_dirty && !await save())) return false;
+    }
     return true;
   }
 
-  /// Called only after a successful leave decision. It releases finite form
-  /// retention; it never cancels preparation, authentication or a saved command.
+  /// Called only on actual entry removal or committed template replacement. It
+  /// releases local retention, never domain preparation/authentication/writes.
   void finish() {
     if (_finished) return;
     _finished = true;
@@ -590,6 +654,7 @@ class AccountEditorViewModel extends _$AccountEditorViewModel {
     final template = draft?.templateId == null
         ? null
         : catalog.template(draft!.templateId!);
+    final summary = _accounts.state.value.account(domainIdentity(_key.target));
     final unknownTemplate =
         draft?.templateId != null &&
         catalog.revision.isNotEmpty &&
@@ -663,7 +728,7 @@ class AccountEditorViewModel extends _$AccountEditorViewModel {
           ? null
           : NativeAccountEditorPresentation(
               editorId: _key.editorId,
-              accountKey: _key.target,
+              accountKey: _key.creating && !_created ? null : _key.target,
               templateKey: AccountTemplateKey(
                 kind: AccountKind.native,
                 id: draft.templateId ?? '',
@@ -676,6 +741,13 @@ class AccountEditorViewModel extends _$AccountEditorViewModel {
                       id: value.id,
                     ),
                     name: value.displayName,
+                    content: AccountTemplateContent.native(
+                      defaultBilling: displayBilling(value.defaultBillingKind),
+                      protocolLabel: value.protocol,
+                      defaultEndpoint: value.baseUrl,
+                      supportsModelDiscovery: value.supportsModelDiscovery,
+                      supportsUsageQuery: value.supportsUsageQuery,
+                    ),
                     description: value.description,
                     iconKey: value.iconKey,
                   ),
@@ -700,6 +772,8 @@ class AccountEditorViewModel extends _$AccountEditorViewModel {
                 ].join(' · '),
               ),
               protocolLabel: draft.protocol,
+              setDefaultOnCreate: _setDefaultOnCreate,
+              showSetDefaultOnCreate: _key.creating,
               canChangeTemplate: _key.creating && !_created && !_saving,
               hasStoredCredential:
                   currentNative?.hasBearerToken ??
@@ -726,7 +800,7 @@ class AccountEditorViewModel extends _$AccountEditorViewModel {
                           ),
                         ),
                       )
-                      .copyWith(canRemove: !_saving),
+                      .copyWith(canRemove: !_saving && !_unknownResult),
               ],
               declaredModels: [
                 if (_key.creating && !_created && template != null)
@@ -744,12 +818,16 @@ class AccountEditorViewModel extends _$AccountEditorViewModel {
                     ),
               ],
               billing: AccountBillingPresentation(
-                effective: displayBilling(
-                  draft.billing ??
-                      _accounts.state.value
-                          .account(domainIdentity(_key.target))
-                          ?.billingKind,
-                ),
+                effective: draft.billing != null
+                    ? displayBilling(draft.billing)
+                    : summary != null
+                    ? displayBilling(summary.billingKind)
+                    : _key.creating &&
+                          !_created &&
+                          template != null &&
+                          draft.endpoint == template.baseUrl
+                    ? displayBilling(template.defaultBillingKind)
+                    : AccountBilling.unknown,
                 billingKindOverride: draft.billing == null
                     ? null
                     : displayBilling(draft.billing),
@@ -761,7 +839,7 @@ class AccountEditorViewModel extends _$AccountEditorViewModel {
           ? null
           : AcpAccountEditorPresentation(
               editorId: _key.editorId,
-              accountKey: _key.target,
+              accountKey: _key.creating && !_created ? null : _key.target,
               templateName: acpKey?.providerId == null
                   ? ''
                   : _acp.templates.value.templates

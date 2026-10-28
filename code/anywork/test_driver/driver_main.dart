@@ -19,6 +19,10 @@ import 'package:anywork/src/features/settings/accounts/views/acp_account_editor_
 import 'package:anywork/src/features/settings/accounts/view_models/accounts_view_model.dart';
 import 'package:anywork/src/features/settings/accounts/view_models/account_details_view_model.dart';
 import 'package:anywork/src/features/settings/accounts/view_models/account_editor_view_model.dart';
+import 'package:anywork/src/features/settings/accounts/view_models/account_editor_session_view_model.dart';
+import 'package:anywork/src/features/settings/accounts/views/account_model_details_view.dart';
+import 'package:anywork/src/app/routing/app_route.dart';
+import 'package:go_router/go_router.dart';
 import 'package:anywork/src/features/settings/accounts/view_models/account_models_view_model.dart';
 import 'package:anywork/src/features/settings/accounts/view_models/acp_account_view_model.dart';
 import 'package:anywork/src/app/app_graph.dart';
@@ -1185,21 +1189,53 @@ AccountIdentity _domainIdentity(AccountDisplayKey key) =>
     ? NativeAccountIdentity(key.id)
     : AcpAccountIdentity(key.id);
 
+/// Read the existing sole Router at request time. No retained navigation
+/// mirror, URI parser, provider creation or business demand is involved.
+AccountRouteIdentity? _accountNavigation() {
+  final root = WidgetsBinding.instance.rootElement;
+  if (root == null) return null;
+  GoRouter? router;
+  _visitElements(root, (element) {
+    router ??= GoRouter.maybeOf(element);
+  });
+  return router == null ? null : readAccountRouteIdentity(router!);
+}
+
+AccountEditorSessionOwner? _existingEditorOwner(
+  AccountRouteIdentity? navigation,
+) {
+  final entry = navigation?.entry;
+  if (entry == null) return null;
+  final provider = accountEditorSessionViewModelProvider(entry);
+  if (!_container.exists(provider)) return null;
+  final slot = _container.read(provider.notifier);
+  final session = slot.currentOwner();
+  if (session == null || !slot.isCurrentOwner(session) || !session.isActive) {
+    return null;
+  }
+  final projection = _container.read(provider).asData?.value;
+  if (projection == null ||
+      projection.ownerId != session.ownerId ||
+      projection.editor != session.currentEditor) {
+    return null;
+  }
+  return session;
+}
+
 Map<AccountIdentity, AccountResource<AccountDetails>>
 _observedAccountDetails() {
-  final view = _existingAccountsView();
+  final navigation = _accountNavigation();
   final result = <AccountIdentity, AccountResource<AccountDetails>>{};
-  final selected = view?.selected;
-  if (selected != null) {
-    final provider = accountDetailsViewModelProvider(selected);
+  final account = navigation?.account;
+  if (account != null) {
+    final provider = accountDetailsViewModelProvider(account);
     if (_container.exists(provider)) {
-      result[_domainIdentity(selected)] = _container
+      result[_domainIdentity(account)] = _container
           .read(provider.notifier)
           .readObservedDetails();
     }
   }
-  // Direct row -> editor need not have created a details VM.
-  final editor = view?.editor;
+  final editor = _existingEditorOwner(navigation)?.currentEditor;
   if (editor != null) {
     final provider = accountEditorViewModelProvider(editor);
     if (_container.exists(provider)) {
@@ -1210,11 +1246,13 @@ _observedAccountDetails() {
   return result;
 }
 
-Iterable<AccountDisplayKey> _existingModelKeys() sync* {
-  final view = _existingAccountsView();
-  final keys = {
-    if (view?.selected != null) view!.selected!,
-    if (view?.editor != null) view!.editor!.target,
+Iterable<AccountDisplayKey> _existingModelKeys([
+  AccountRouteIdentity? navigation,
+]) sync* {
+  final actual = navigation ?? _accountNavigation();
+  final keys = <AccountDisplayKey>{
+    ?actual?.account,
+    ?_existingEditorOwner(actual)?.currentEditor?.target,
   };
   for (final key in keys) {
     if (key.kind == AccountKind.native &&
@@ -1239,15 +1277,31 @@ AccountModelPresentation? _observedModel(String accountId, String modelId) {
 }
 
 Map<String, Object?> _accountsPresentation() {
+  final navigation = _accountNavigation();
   final view = _existingAccountsView();
   Map<String, Object?>? identity(AccountDisplayKey? key) =>
       key == null ? null : {'kind': key.kind.name, 'id': key.id};
-  final selected = view?.selected;
-  final editorKey = view?.editor;
+  Map<String, Object?>? entryIdentity(AccountEditorEntryKey? entry) =>
+      switch (entry) {
+        CreatingAccountEditorEntryKey(:final routeEntryId) => {
+          'kind': 'creating',
+          'routeEntryId': routeEntryId,
+        },
+        EditingAccountEditorEntryKey(:final routeEntryId, :final account) => {
+          'kind': 'editing',
+          'routeEntryId': routeEntryId,
+          'target': identity(account),
+        },
+        null => null,
+      };
+  final account = navigation?.account;
+  final session = _existingEditorOwner(navigation);
+  final editorKey = session?.currentEditor;
+  final modelKeys = _existingModelKeys(navigation).toList(growable: false);
   AccountDetailsViewState? details;
   AccountEditorViewState? editor;
-  if (selected != null) {
-    final provider = accountDetailsViewModelProvider(selected);
+  if (account != null) {
+    final provider = accountDetailsViewModelProvider(account);
     if (_container.exists(provider)) {
       details = _container.read(provider).asData?.value;
     }
@@ -1267,17 +1321,74 @@ Map<String, Object?> _accountsPresentation() {
     }
   }
   return {
+    'schemaVersion': 3,
+    'navigation': navigation == null
+        ? null
+        : {
+            'source': 'goRouter',
+            'location': navigation.location,
+            'page': navigation.page.name,
+            'account': identity(account),
+            'modelId': navigation.model?.modelId,
+            'tab': navigation.tab?.name,
+            'entry': entryIdentity(navigation.entry),
+          },
+    'resourceStatus': {
+      'list': view != null ? 'observed' : 'absent',
+      'editorSession': navigation == null
+          ? 'unknown'
+          : session == null
+          ? 'absent'
+          : 'active',
+      'editor': navigation == null
+          ? 'unknown'
+          : editor == null
+          ? 'absent'
+          : 'observed',
+      'details': navigation == null
+          ? 'unknown'
+          : details == null
+          ? 'absent'
+          : 'observed',
+      'models': navigation == null
+          ? 'unknown'
+          : modelKeys.isEmpty
+          ? 'absent'
+          : 'observed',
+    },
     'observed': view != null,
-    'mountedViews': _mountedAccountsViews(),
-    'selected': identity(selected),
+    'mountedViews': _mountedAccountsViews(navigation, editorKey),
     'search': view?.list.search,
-    'choosingTemplate': view?.choosingTemplate,
+    'list': view == null
+        ? null
+        : {
+            'phase': view.list.phase.name,
+            'search': view.list.search,
+            'refreshing': view.list.refreshing,
+            'rowTargets': [for (final row in view.list.rows) identity(row.key)],
+          },
+    'actions': view == null
+        ? null
+        : [
+            for (final action in view.actions.entries)
+              {
+                'target': identity(action.key),
+                'pending': action.value.pending,
+                'ownerEpoch': action.value.ownerEpoch,
+                'acpConnectionRevision': action.value.acpConnectionRevision,
+              },
+          ],
     'details': details == null
         ? null
-        : {'observed': details.observed, 'stale': details.stale},
+        : {
+            'target': identity(account),
+            'observed': details.observed,
+            'stale': details.stale,
+          },
     'editor': editor == null
         ? null
         : {
+            'ownerId': session!.ownerId,
             'editorId': editor.key.editorId,
             'target': identity(editor.key.target),
             'creating': editor.key.creating,
@@ -1286,9 +1397,12 @@ Map<String, Object?> _accountsPresentation() {
             'canSave': editor.canSave,
             'draftRevision': editor.draftRevision,
             'stale': editor.stale,
+            'confirmedAccount': identity(
+              editor.native?.accountKey ?? editor.acp?.accountKey,
+            ),
           },
     'models': [
-      for (final key in _existingModelKeys())
+      for (final key in modelKeys)
         {
           'target': identity(key),
           'stale': _container
@@ -1331,26 +1445,87 @@ Map<String, Object?> _accountsPresentation() {
   };
 }
 
-/// Inspect only explicit safe props of the mounted production views. In
-/// particular, never serialize their raw editor fields or error messages.
-Map<String, Object?> _mountedAccountsViews() {
+/// Explicit safe props of mounted production views, with visibility derived
+/// from the committed typed destination. Mounted/covered is not absent.
+Map<String, Object?> _mountedAccountsViews(
+  AccountRouteIdentity? navigation,
+  AccountEditorKey? editor,
+) {
+  final result = <String, Object?>{};
   final root = WidgetsBinding.instance.rootElement;
-  Map<String, Object?>? nativeEditor;
-  if (root != null) {
-    _visitElements(root, (element) {
-      final widget = element.widget;
-      if (widget is NativeAccountEditorView) {
-        nativeEditor = {
-          'editorId': widget.value.editorId,
-          'compactModelIds': [
-            for (final model in widget.value.declaredModels)
-              if (model.compact != null) model.key.modelId,
-          ],
-        };
-      }
+  if (root == null) return result;
+  void record(
+    String kind,
+    Element element,
+    bool matchesRoute,
+    Map<String, Object?> fields,
+  ) {
+    var offstage = false;
+    element.visitAncestorElements((ancestor) {
+      if (ancestor.widget case Offstage(offstage: true)) offstage = true;
+      return !offstage;
     });
+    final data = <String, Object?>{
+      'mounted': true,
+      'visible': navigation == null ? null : matchesRoute && !offstage,
+      ...fields,
+    };
+    final previous = result[kind] as Map<String, Object?>?;
+    if (previous == null || data['visible'] == true) result[kind] = data;
   }
-  return {'nativeEditor': nativeEditor};
+
+  _visitElements(root, (element) {
+    switch (element.widget) {
+      case AccountsListView():
+        record('list', element, navigation?.page == AccountRoutePage.list, {});
+      case AccountDetailsView(:final value):
+        record(
+          'details',
+          element,
+          navigation?.page == AccountRoutePage.details &&
+              navigation?.account == value.key,
+          {
+            'target': {'kind': value.key.kind.name, 'id': value.key.id},
+          },
+        );
+      case NativeAccountEditorView(:final value):
+        record(
+          'nativeEditor',
+          element,
+          navigation?.entry != null && editor?.editorId == value.editorId,
+          {
+            'editorId': value.editorId,
+            'compactModelIds': [
+              for (final model in value.declaredModels)
+                if (model.compact != null) model.key.modelId,
+            ],
+          },
+        );
+      case AcpAccountEditorView(:final value):
+        record(
+          'acpEditor',
+          element,
+          navigation?.entry != null && editor?.editorId == value.editorId,
+          {'editorId': value.editorId},
+        );
+      case AccountModelDetailsView(:final value, :final tab):
+        record(
+          'model',
+          element,
+          navigation?.page == AccountRoutePage.model &&
+              navigation?.model == value.key,
+          {
+            'target': {
+              'kind': value.key.account.kind.name,
+              'id': value.key.account.id,
+            },
+            'modelId': value.key.modelId,
+            'tab': tab.name,
+          },
+        );
+    }
+  });
+  return result;
 }
 
 /// Read-only Client facts for delegation acceptance; no hidden UI-bypassing writes.
