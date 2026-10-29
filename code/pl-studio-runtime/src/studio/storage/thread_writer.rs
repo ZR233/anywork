@@ -2114,6 +2114,7 @@ pub(crate) mod storage_fault_tests {
         let mut delta = crate::studio::store::directory::DirectoryDelta::upsert_project(
             crate::studio::store::directory::ProjectDirectoryRecord {
                 id: thread.project_id.clone(),
+                kind: pl_protocol::studio::WorkspaceKind::Project,
                 name: "Test".into(),
                 path: "/tmp/project-test".into(),
                 ssh_alias: None,
@@ -2257,6 +2258,7 @@ pub(crate) mod storage_fault_tests {
             let mut delta = crate::studio::store::directory::DirectoryDelta::upsert_project(
                 crate::studio::store::directory::ProjectDirectoryRecord {
                     id: thread.project_id.clone(),
+                    kind: pl_protocol::studio::WorkspaceKind::Project,
                     name: "Subdirectory Project".into(),
                     path: project_root.to_string_lossy().into_owned(),
                     ssh_alias: None,
@@ -2361,6 +2363,7 @@ pub(crate) mod storage_fault_tests {
                 &crate::studio::store::directory::DirectoryDelta::upsert_project(
                     crate::studio::store::directory::ProjectDirectoryRecord {
                         id: "project-test".into(),
+                        kind: pl_protocol::studio::WorkspaceKind::Project,
                         name: "Subdirectory Project".into(),
                         path: project_root.to_string_lossy().into_owned(),
                         ssh_alias: None,

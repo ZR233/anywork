@@ -7,18 +7,20 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use anyhow::{Context, Result, bail, ensure};
+use pl_protocol::studio::WorkspaceKind;
 
 use crate::studio::records::ProjectRecord;
 use crate::studio::store::StudioStore;
 use crate::studio::store::directory::DirectoryDelta;
 use crate::studio::toml_store::{self, RevisionedDocument};
 
-pub(in crate::studio) const WORKSPACES_SCHEMA_VERSION: u32 = 1;
+pub(in crate::studio) const WORKSPACES_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(in crate::studio) struct WorkspaceEntry {
     pub(in crate::studio) id: String,
+    pub(in crate::studio) kind: WorkspaceKind,
     pub(in crate::studio) name: String,
     pub(in crate::studio) path: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -35,6 +37,7 @@ impl WorkspaceEntry {
     pub(in crate::studio) fn project(&self) -> ProjectRecord {
         ProjectRecord {
             id: self.id.clone(),
+            kind: self.kind,
             name: self.name.clone(),
             path: self.path.clone(),
             ssh_alias: self.ssh_alias.clone(),
@@ -68,7 +71,19 @@ pub(in crate::studio) struct WorkspaceStore {
 impl WorkspaceStore {
     pub(in crate::studio) async fn load(path: PathBuf) -> Result<Self> {
         let document = match tokio::fs::read_to_string(&path).await {
-            Ok(content) => decode(&path, &content).map_err(crate::studio::startup::data_error)?,
+            Ok(content) => {
+                let (document, migrated) =
+                    decode_loaded(&path, &content).map_err(crate::studio::startup::data_error)?;
+                if migrated {
+                    let contents = toml::to_string_pretty(&document)?;
+                    let target = path.clone();
+                    tokio::task::spawn_blocking(move || {
+                        pl_tool::workspace::write_file_atomically(&target, contents.as_bytes())
+                    })
+                    .await??;
+                }
+                document
+            }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => WorkspacesDocument {
                 schema_version: WORKSPACES_SCHEMA_VERSION,
                 revision: 1,
@@ -115,6 +130,7 @@ impl WorkspaceStore {
             .iter()
             .map(|record| WorkspaceEntry {
                 id: record.id.clone(),
+                kind: record.kind,
                 name: record.name.clone(),
                 path: record.path.clone(),
                 ssh_alias: record.ssh_alias.clone(),
@@ -127,6 +143,17 @@ impl WorkspaceStore {
         {
             let document = self.lock();
             for entry in &upserts {
+                if entry.kind == WorkspaceKind::Standalone {
+                    ensure!(
+                        entry.ssh_alias.is_none()
+                            && !entry.closed
+                            && document.workspaces.iter().all(|existing| {
+                                existing.kind != WorkspaceKind::Standalone
+                                    || existing.id == entry.id
+                            }),
+                        "Studio workspaces contain an invalid standalone owner"
+                    );
+                }
                 if let Some(existing) = document
                     .workspaces
                     .iter()
@@ -134,6 +161,15 @@ impl WorkspaceStore {
                 {
                     ensure_identity_stable(existing, entry)?;
                 }
+            }
+            for removal in &delta.project_removals {
+                ensure!(
+                    document.workspaces.iter().all(|existing| {
+                        existing.id != removal.project_id
+                            || existing.kind != WorkspaceKind::Standalone
+                    }),
+                    "the standalone workspace cannot be archived"
+                );
             }
         }
         let removals = delta
@@ -207,6 +243,34 @@ impl WorkspaceStore {
     }
 }
 
+/// The sole schema-1 decoding boundary; ordinary decoding requires an explicit kind.
+fn decode_loaded(path: &Path, content: &str) -> Result<(WorkspacesDocument, bool)> {
+    let mut value: toml::Table = toml::from_str(content)
+        .with_context(|| format!("invalid Studio workspaces {}", path.display()))?;
+    if value.get("schemaVersion").and_then(toml::Value::as_integer) != Some(1) {
+        return decode(path, content).map(|document| (document, false));
+    }
+    let entries = value
+        .get_mut("workspaces")
+        .and_then(toml::Value::as_array_mut)
+        .context("legacy Studio workspaces has no workspace array")?;
+    for entry in entries {
+        let entry = entry.as_table_mut().context("invalid legacy workspace")?;
+        ensure!(
+            !entry.contains_key("kind"),
+            "legacy workspace contains kind"
+        );
+        entry.insert("kind".into(), toml::Value::String("project".into()));
+    }
+    value.insert("schemaVersion".into(), toml::Value::Integer(2));
+    let mut document = decode(path, &toml::to_string(&value)?)?;
+    document.revision = document
+        .revision
+        .checked_add(1)
+        .context("Studio workspaces revision overflow")?;
+    Ok((document, true))
+}
+
 fn decode(path: &Path, content: &str) -> Result<WorkspacesDocument> {
     let document: WorkspacesDocument = toml::from_str(content)
         .with_context(|| format!("invalid Studio workspaces {}", path.display()))?;
@@ -230,6 +294,18 @@ fn decode(path: &Path, content: &str) -> Result<WorkspacesDocument> {
             "Studio workspaces contain a duplicate Project identity"
         );
     }
+    let standalone = document
+        .workspaces
+        .iter()
+        .filter(|entry| entry.kind == WorkspaceKind::Standalone)
+        .collect::<Vec<_>>();
+    ensure!(
+        standalone.len() <= 1
+            && standalone
+                .iter()
+                .all(|entry| entry.ssh_alias.is_none() && !entry.closed),
+        "Studio workspaces contain an invalid standalone owner"
+    );
     Ok(document)
 }
 
@@ -240,7 +316,10 @@ impl StudioStore {
 }
 
 fn ensure_identity_stable(existing: &WorkspaceEntry, next: &WorkspaceEntry) -> Result<()> {
-    if existing.path != next.path || existing.ssh_alias != next.ssh_alias {
+    if existing.path != next.path
+        || existing.ssh_alias != next.ssh_alias
+        || existing.kind != next.kind
+    {
         bail!(
             "Project {} directory identity changed: persisted path {}, delta path {}",
             existing.id,
@@ -249,4 +328,99 @@ fn ensure_identity_stable(existing: &WorkspaceEntry, next: &WorkspaceEntry) -> R
         );
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn workspace_schema_one_migrates_all_fields_and_is_idempotent() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let path = temp.path().join("workspaces.toml");
+        let old = r#"
+schemaVersion = 1
+revision = 17
+
+[[workspaces]]
+id = "open"
+name = "保留项目"
+path = "/projects/kept"
+createdAt = 3
+updatedAt = 8
+lastOpenedAt = 7
+closed = false
+
+[[workspaces]]
+id = "closed"
+name = "Remote"
+path = "/srv/kept"
+sshAlias = "remote"
+createdAt = 4
+updatedAt = 11
+lastOpenedAt = 9
+closed = true
+"#;
+        tokio::fs::write(&path, old).await?;
+        let store = WorkspaceStore::load(path.clone()).await?;
+        assert_eq!(store.entries().len(), 2);
+        assert!(
+            store
+                .entries()
+                .iter()
+                .all(|entry| entry.kind == WorkspaceKind::Project)
+        );
+        let contents = tokio::fs::read_to_string(&path).await?;
+        let mut upgraded: toml::Table = toml::from_str(&contents)?;
+        assert_eq!(upgraded["schemaVersion"].as_integer(), Some(2));
+        assert_eq!(upgraded["revision"].as_integer(), Some(18));
+        upgraded.insert("schemaVersion".into(), toml::Value::Integer(1));
+        upgraded.insert("revision".into(), toml::Value::Integer(17));
+        for entry in upgraded["workspaces"].as_array_mut().unwrap() {
+            assert_eq!(
+                entry
+                    .as_table_mut()
+                    .unwrap()
+                    .remove("kind")
+                    .unwrap()
+                    .as_str(),
+                Some("project")
+            );
+        }
+        assert_eq!(upgraded, toml::from_str::<toml::Table>(old)?);
+        let reopened = WorkspaceStore::load(path.clone()).await?;
+        assert_eq!(reopened.entries(), store.entries());
+        assert_eq!(tokio::fs::read_to_string(path).await?, contents);
+        Ok(())
+    }
+
+    #[test]
+    fn workspace_schema_two_requires_known_kind_and_unique_local_standalone() -> Result<()> {
+        let path = Path::new("workspaces.toml");
+        let header = "schemaVersion = 2\nrevision = 1\n";
+        let entry = r#"
+[[workspaces]]
+id = "owner"
+kind = "standalone"
+name = "anywork"
+path = "/documents/anywork"
+createdAt = 1
+updatedAt = 2
+"#;
+        let valid = format!("{header}{entry}");
+        assert_eq!(
+            decode(path, &valid)?.workspaces[0].kind,
+            WorkspaceKind::Standalone
+        );
+        for invalid in [
+            valid.replace("kind = \"standalone\"\n", ""),
+            valid.replace("\"standalone\"", "\"unknown\""),
+            format!("{valid}closed = true\n"),
+            format!("{valid}sshAlias = \"remote\"\n"),
+            format!("{valid}{}", entry.replace("\"owner\"", "\"other\"")),
+        ] {
+            assert!(decode(path, &invalid).is_err(), "{invalid}");
+        }
+        Ok(())
+    }
 }

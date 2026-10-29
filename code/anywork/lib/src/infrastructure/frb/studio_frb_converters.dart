@@ -352,6 +352,10 @@ StudioProject _projectFromFrb(frb.ProjectDto project) {
     id: project.id,
     name: project.name,
     path: project.path,
+    kind: switch (project.kind) {
+      frb.BridgeWorkspaceKind.project => WorkspaceKind.project,
+      frb.BridgeWorkspaceKind.standalone => WorkspaceKind.standalone,
+    },
     sshAlias: project.sshAlias,
   );
 }

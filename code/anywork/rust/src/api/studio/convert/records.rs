@@ -4,6 +4,14 @@ impl From<pl_studio_runtime::ProjectRecord> for ProjectDto {
     fn from(project: pl_studio_runtime::ProjectRecord) -> Self {
         Self {
             id: project.id,
+            kind: match project.kind {
+                pl_protocol::studio::WorkspaceKind::Project => {
+                    crate::api::studio::types::BridgeWorkspaceKind::Project
+                }
+                pl_protocol::studio::WorkspaceKind::Standalone => {
+                    crate::api::studio::types::BridgeWorkspaceKind::Standalone
+                }
+            },
             name: project.name,
             path: project.path,
             ssh_alias: project.ssh_alias,

@@ -94,6 +94,7 @@ async fn canonical_project_without_sqlite_mirror_accepts_and_restores_new_thread
         .store
         .persist_directory_summaries(&DirectoryDelta::upsert_project(ProjectDirectoryRecord {
             id: "project-published".into(),
+            kind: pl_protocol::studio::WorkspaceKind::Project,
             name: "Published".into(),
             path: workspace.to_string_lossy().into_owned(),
             ssh_alias: None,
@@ -312,6 +313,7 @@ async fn seed(home: &Path) -> Result<StudioPaths> {
     let mut delta = crate::studio::store::directory::DirectoryDelta::upsert_project(
         crate::studio::store::directory::ProjectDirectoryRecord {
             id: "project-cold".into(),
+            kind: pl_protocol::studio::WorkspaceKind::Project,
             name: "Cold".into(),
             path: "/tmp/project-cold".into(),
             ssh_alias: None,
@@ -833,6 +835,7 @@ async fn seed_legacy_layout_home() -> Result<(tempfile::TempDir, StudioPaths, st
     let mut delta = crate::studio::store::directory::DirectoryDelta::upsert_project(
         crate::studio::store::directory::ProjectDirectoryRecord {
             id: "project-a".into(),
+            kind: pl_protocol::studio::WorkspaceKind::Project,
             name: "Layout".into(),
             path: "/tmp/layout".into(),
             ssh_alias: None,

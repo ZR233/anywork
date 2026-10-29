@@ -15,6 +15,7 @@ mod request;
 mod settings;
 mod settings_update;
 mod thread_preparation;
+mod workspace;
 
 pub use accounts::*;
 pub use acp::*;
@@ -31,3 +32,4 @@ pub use request::*;
 pub use settings::*;
 pub use settings_update::*;
 pub use thread_preparation::*;
+pub use workspace::*;

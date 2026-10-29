@@ -165,6 +165,7 @@ pub(in crate::studio) struct ProjectRemoval {
 #[derive(Debug, Clone)]
 pub(in crate::studio) struct ProjectDirectoryRecord {
     pub(in crate::studio) id: String,
+    pub(in crate::studio) kind: pl_protocol::studio::WorkspaceKind,
     pub(in crate::studio) name: String,
     pub(in crate::studio) path: String,
     pub(in crate::studio) ssh_alias: Option<String>,
@@ -265,6 +266,7 @@ async fn upsert_thread_directory_row(
                 tx,
                 &ProjectDirectoryRecord {
                     id: project.id,
+                    kind: project.kind,
                     name: project.name,
                     path: project.path,
                     ssh_alias: project.ssh_alias,

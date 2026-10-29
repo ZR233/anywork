@@ -700,6 +700,10 @@ class AppLocalizationsEn extends AppLocalizations {
   }
 
   @override
+  String get startPageStandaloneBody =>
+      'No project needed. Files are saved in your Documents/anywork folder.';
+
+  @override
   String get startPageOpenProjectTitle => 'Open a project to get started';
 
   @override
@@ -3570,6 +3574,17 @@ class AppLocalizationsEn extends AppLocalizations {
   @override
   String get sidebarEmptyProject =>
       'No sessions yet. Use + on this project to start';
+
+  @override
+  String get sidebarStandaloneSessions => 'Non-project sessions';
+
+  @override
+  String get sidebarStandaloneEmpty => 'No non-project sessions yet.';
+
+  @override
+  String sidebarStandalonePrepareFailed(String error) {
+    return 'Couldn\'t prepare a workspace: $error. Select New session to retry.';
+  }
 
   @override
   String get sidebarEarlier => 'Show earlier sessions';

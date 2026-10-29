@@ -1,5 +1,19 @@
 part of 'studio_shell.dart';
 
+final _standalonePreparationStateProvider =
+    Provider.autoDispose<({bool isPreparing, String? error})>((ref) {
+      final source = ref.read(anyworkClientProvider).directoryCommands.source;
+      final commandState = observeClient(
+        ref,
+        source,
+        (_) => ref.invalidateSelf(),
+      );
+      return (
+        isPreparing: commandState.standalonePreparationInProgress,
+        error: commandState.standalonePreparationError,
+      );
+    });
+
 class _Sidebar extends ConsumerStatefulWidget {
   const _Sidebar({super.key, required this.state, this.onNavigate});
   final SidebarView state;
@@ -144,6 +158,19 @@ class _SidebarState extends ConsumerState<_Sidebar> {
         affected.add(selected);
       }
     }
+    final previousStandaloneIds = {
+      for (final project in previous.projects)
+        if (project.isStandalone) project.id,
+    };
+    affected.addAll(
+      widget.state.projects
+          .where(
+            (project) =>
+                project.isStandalone &&
+                !previousStandaloneIds.contains(project.id),
+          )
+          .map((project) => project.id),
+    );
     return affected;
   }
 
@@ -184,6 +211,12 @@ class _SidebarState extends ConsumerState<_Sidebar> {
     _fullPending = false;
     _pendingProjects.clear();
     for (final project in widget.state.projects) {
+      if (project.isStandalone) {
+        if (full || target.contains(project.id)) {
+          unawaited(_load(project.id));
+        }
+        continue;
+      }
       if (!full && !target.contains(project.id)) continue;
       if (_filtered || _expanded.contains(project.id)) {
         unawaited(_load(project.id));
@@ -255,9 +288,14 @@ class _SidebarState extends ConsumerState<_Sidebar> {
   @override
   Widget build(BuildContext context) {
     final general = ref.watch(shellGeneralProvider);
+    final preparationState = ref.watch(_standalonePreparationStateProvider);
+    final standalone = widget.state.projects
+        .where((project) => project.isStandalone)
+        .firstOrNull;
     final projects =
         [
           ...widget.state.projects.where((project) {
+            if (project.isStandalone) return false;
             if (!_filtered ||
                 _pages[project.id] == null ||
                 _errors.containsKey(project.id)) {
@@ -386,6 +424,47 @@ class _SidebarState extends ConsumerState<_Sidebar> {
                   ],
                 ),
               ),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(14, 0, 14, 10),
+                child: SizedBox(
+                  width: double.infinity,
+                  child: FilledButton.icon(
+                    key: StudioDriverKeys.newSession,
+                    onPressed: preparationState.isPreparing
+                        ? null
+                        : () async {
+                            try {
+                              await ref
+                                  .read(anyworkClientProvider)
+                                  .directoryCommands
+                                  .beginStandaloneThread();
+                            } catch (_) {
+                              // The Client command publishes the failure for an
+                              // inline message and a repeatable retry.
+                              return;
+                            }
+                            if (context.mounted) widget.onNavigate?.call();
+                          },
+                    icon: preparationState.isPreparing
+                        ? const SizedBox.square(
+                            dimension: 18,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Icon(Icons.add),
+                    label: Text(context.l10n.sidebarNewSession),
+                  ),
+                ),
+              ),
+              if (preparationState.error case final error?)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(18, 0, 18, 10),
+                  child: Text(
+                    context.l10n.sidebarStandalonePrepareFailed(error),
+                    style: TextStyle(color: context.colors.error),
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
               Expanded(
                 child: SingleChildScrollView(
                   key: const ValueKey('sidebar-project-tree'),
@@ -393,7 +472,7 @@ class _SidebarState extends ConsumerState<_Sidebar> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
-                      if (projects.isEmpty)
+                      if (projects.isEmpty && standalone == null)
                         Padding(
                           padding: const EdgeInsets.all(16),
                           child: Text(context.l10n.sidebarNoResults),
@@ -430,6 +509,34 @@ class _SidebarState extends ConsumerState<_Sidebar> {
                           ..._projectThreads(project, general),
                         const SizedBox(height: 8),
                       ],
+                      const Divider(height: 20),
+                      KeyedSubtree(
+                        key: StudioDriverKeys.nonProjectSessionsArea,
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            Padding(
+                              padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
+                              child: Text(
+                                context.l10n.sidebarStandaloneSessions,
+                                style: context.text.labelLarge,
+                              ),
+                            ),
+                            if (standalone case final project?)
+                              ..._projectThreads(project, general)
+                            else
+                              Padding(
+                                padding: const EdgeInsets.fromLTRB(12, 0, 8, 8),
+                                child: Text(
+                                  _filtered
+                                      ? context.l10n.sidebarNoResults
+                                      : context.l10n.sidebarStandaloneEmpty,
+                                  style: context.text.bodySmall,
+                                ),
+                              ),
+                          ],
+                        ),
+                      ),
                     ],
                   ),
                 ),
@@ -548,6 +655,8 @@ class _SidebarState extends ConsumerState<_Sidebar> {
           child: Text(
             _filtered
                 ? context.l10n.sidebarNoResults
+                : project.isStandalone
+                ? context.l10n.sidebarStandaloneEmpty
                 : context.l10n.sidebarEmptyProject,
             style: context.text.bodySmall,
           ),

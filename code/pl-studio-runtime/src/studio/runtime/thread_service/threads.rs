@@ -59,13 +59,14 @@ impl StudioRuntime {
         self.thread_factory
             .verify_project_workspace(&project)
             .await?;
+        let workspace_path = local_thread_workspace(&project, &thread_id).await?;
         let (mut delta, mut thread) = DirectoryDelta::register_root_thread(
             thread_id,
             project_id,
             title,
             pl_protocol::ThreadModeId::simple(),
             pl_protocol::ThreadWorkspaceMode::Local,
-            project.path,
+            workspace_path,
         );
         let delegation = self.config_runtime.read()?.config.delegation;
         thread.delegation_mode = delegation.mode;
@@ -139,6 +140,11 @@ impl StudioRuntime {
             .find(|project| project.id == request.project_id)
             .cloned()
             .context("selected Project not found")?;
+        anyhow::ensure!(
+            project.kind != pl_protocol::studio::WorkspaceKind::Standalone
+                || request.workspace_mode == pl_protocol::ThreadWorkspaceMode::Local,
+            "standalone sessions only support local workspaces"
+        );
         self.ensure_project_thread_admission_open(&request.project_id)?;
         self.thread_factory
             .verify_project_workspace(&project)
@@ -193,11 +199,10 @@ impl StudioRuntime {
             session_lease = Some(lease);
         }
 
-        // 会话对外只有一个 canonical 工作区地址：`local` 取 canonical Project 目录，
-        // `worktree` 取该会话工作树路径；写定后只读（design/12 §12.1）。
+        // Standalone roots own an exclusive per-Thread local directory, never the shared owner root.
         let workspace_path = match &session_lease {
             Some(lease) => lease.path.clone(),
-            None => project.path.clone(),
+            None => local_thread_workspace(&project, &thread_id).await?,
         };
         report(
             ThreadPreparationStage::InitializingSession,
@@ -780,4 +785,39 @@ impl StudioRuntime {
         }
         Ok(())
     }
+}
+
+async fn local_thread_workspace(
+    project: &crate::studio::ProjectRecord,
+    thread_id: &str,
+) -> Result<String> {
+    if project.kind == pl_protocol::studio::WorkspaceKind::Project {
+        return Ok(project.path.clone());
+    }
+    anyhow::ensure!(
+        project.ssh_alias.is_none(),
+        "standalone workspace must be local"
+    );
+    let mut components = std::path::Path::new(thread_id).components();
+    anyhow::ensure!(
+        matches!(components.next(), Some(std::path::Component::Normal(_)))
+            && components.next().is_none(),
+        "standalone Thread identity must be a single directory name"
+    );
+    let root_path = project.path.clone();
+    let root = tokio::task::spawn_blocking(move || dunce::canonicalize(root_path))
+        .await?
+        .context("resolve standalone workspace root")?;
+    let path = root.join(thread_id);
+    // Exclusive creation intentionally rejects unknown leftovers, including links. A failure after
+    // this point preserves the owned directory rather than deleting possible user work.
+    tokio::fs::create_dir(&path)
+        .await
+        .with_context(|| format!("create standalone Thread directory {}", path.display()))?;
+    let canonical = tokio::task::spawn_blocking(move || dunce::canonicalize(path)).await??;
+    anyhow::ensure!(
+        canonical.parent() == Some(root.as_path()),
+        "standalone Thread directory escaped its owner root"
+    );
+    Ok(canonical.to_string_lossy().into_owned())
 }

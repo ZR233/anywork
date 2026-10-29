@@ -132,6 +132,7 @@ impl StudioThreadFactory {
             .unwrap_or(associated.clone());
         ensure!(
             effective.id == thread.project_id
+                && effective.kind == associated.kind
                 && effective.path == associated.path
                 && effective.ssh_alias == associated.ssh_alias,
             "execution project binding changed"

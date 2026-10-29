@@ -255,6 +255,7 @@
   "preparationStepRunning": "进行中",
   "preparationStepFailed": "未完成",
   "startPageProject": "当前项目：{project}",
+  "startPageStandaloneBody": "无需选择项目，文件会保存在 Documents/anywork 目录中。",
   "startPageOpenProjectTitle": "请先打开项目",
   "startPageOpenProjectBody": "从侧栏打开一个项目后即可发送第一条消息。",
   "shellSessionUpdated": "{mode} · 更新于 {time}",
@@ -1291,6 +1292,16 @@
   "sidebarNewConnection": "新建远程配置",
   "sidebarNoResults": "没有匹配的项目或会话",
   "sidebarEmptyProject": "还没有会话，点击项目右侧 ＋ 开始",
+  "sidebarStandaloneSessions": "非项目会话",
+  "sidebarStandaloneEmpty": "还没有非项目会话。",
+  "sidebarStandalonePrepareFailed": "准备工作区失败：{error}。点击“新建会话”重试。",
+  "@sidebarStandalonePrepareFailed": {
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
   "sidebarEarlier": "查看更早会话",
   "sidebarArchived": "已归档",
   "sidebarRestore": "取消归档",
