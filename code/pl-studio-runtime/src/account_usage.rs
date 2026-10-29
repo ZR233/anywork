@@ -16,6 +16,7 @@ use reqwest::header::{ACCEPT_LANGUAGE, AUTHORIZATION, CONTENT_TYPE, HeaderMap, H
 use serde_json::Value;
 
 use crate::config_editor::account_template_kind;
+use crate::first_run::AccountTemplateKind;
 use crate::studio::unix_seconds;
 use pl_model::config::AccountConfig;
 use serde::{Deserialize, Serialize};
@@ -513,17 +514,35 @@ pub enum AccountUsageData {
     ZhipuCodingPlan(ZhipuCodingPlanUsage),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AccountUsageQueryKind {
+    DeepSeek,
+    ZhipuCodingPlan,
+}
+
+pub(crate) fn account_usage_query_kind(
+    template: Option<AccountTemplateKind>,
+) -> Option<AccountUsageQueryKind> {
+    match template.as_ref().map(AccountTemplateKind::key) {
+        Some("deepseek") => Some(AccountUsageQueryKind::DeepSeek),
+        Some("zhipu-coding-plan") => Some(AccountUsageQueryKind::ZhipuCodingPlan),
+        Some(_) | None => None,
+    }
+}
+
 pub(crate) async fn query_account_usage(
     record: AccountUsageRecord,
     provider: AccountConfig,
     operation_id: String,
 ) -> Result<AccountUsageRecord, AccountUsageTransitionError> {
-    let state = match account_template_kind(&provider) {
-        Ok(kind) => match kind.as_ref().map(|kind| kind.key()) {
-            Some("deepseek") => account_usage_data(provider, query_deepseek).await,
-            Some("zhipu-coding-plan") => account_usage_data(provider, query_zhipu).await,
-            Some(_) | None => AccountUsageState::unsupported(),
-        },
+    let state = match account_template_kind(&provider).map(account_usage_query_kind) {
+        Ok(Some(AccountUsageQueryKind::DeepSeek)) => {
+            account_usage_data(provider, query_deepseek).await
+        }
+        Ok(Some(AccountUsageQueryKind::ZhipuCodingPlan)) => {
+            account_usage_data(provider, query_zhipu).await
+        }
+        Ok(None) => AccountUsageState::unsupported(),
         Err(error) => AccountUsageState::failed(StateError {
             code: "accountUsageConfigurationFailed".to_string(),
             message: error.to_string(),

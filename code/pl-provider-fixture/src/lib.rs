@@ -38,10 +38,11 @@ pub use context_replay_recovery::{
     ReplayExpectation, gui_context_replay_recovery_script, replay_output, replay_tool_arguments,
 };
 pub use provider_usage::{
-    DENIED_QUOTA_CATEGORY, DENIED_QUOTA_KEY, FAST_QUOTA_KEY, MCP_KEY as PROVIDER_USAGE_MCP_KEY,
-    MCP_PATH as PROVIDER_USAGE_MCP_PATH, MCP_TOOL_NAME as PROVIDER_USAGE_MCP_TOOL_NAME,
-    PLAN_QUOTA_KEY, ProviderUsageLiveState, RELEASE_PATH as PROVIDER_USAGE_RELEASE_PATH,
-    SLOW_QUOTA_KEY, STATE_PATH as PROVIDER_USAGE_STATE_PATH,
+    CONTROL_PATH as PROVIDER_USAGE_CONTROL_PATH, DENIED_QUOTA_CATEGORY, DENIED_QUOTA_KEY,
+    FAST_QUOTA_KEY, MCP_KEY as PROVIDER_USAGE_MCP_KEY, MCP_PATH as PROVIDER_USAGE_MCP_PATH,
+    MCP_TOOL_NAME as PROVIDER_USAGE_MCP_TOOL_NAME, PLAN_QUOTA_KEY, ProviderUsageLiveState,
+    RELEASE_PATH as PROVIDER_USAGE_RELEASE_PATH, SLOW_QUOTA_KEY,
+    STATE_PATH as PROVIDER_USAGE_STATE_PATH, is_provider_usage_owned_reject,
 };
 pub use question_history::{
     GUI_QUESTION_HISTORY_NOTES_ANSWER, GUI_QUESTION_HISTORY_NOTES_ID, GUI_QUESTION_HISTORY_PROMPT,
@@ -1607,7 +1608,7 @@ impl FixtureReport {
             let owned = self
                 .requests
                 .iter()
-                .filter(|request| provider_usage::is_owned_reject(request))
+                .filter(|request| is_provider_usage_owned_reject(request))
                 .count();
             let unexpected = rejected - owned;
             bail!(
@@ -1684,7 +1685,7 @@ impl FixtureReport {
         let owned_rejected = self
             .requests
             .iter()
-            .filter(|request| provider_usage::is_owned_reject(request))
+            .filter(|request| is_provider_usage_owned_reject(request))
             .count();
         let unexpected_rejected = rejected - owned_rejected;
         let complete = self.script_complete();
@@ -1952,6 +1953,10 @@ impl FixtureServer {
             .route(
                 provider_usage::RELEASE_PATH,
                 post(provider_usage::release).fallback(unexpected_route),
+            )
+            .route(
+                provider_usage::CONTROL_PATH,
+                post(provider_usage::control).fallback(unexpected_route),
             )
         } else {
             app

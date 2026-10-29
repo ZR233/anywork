@@ -2,6 +2,9 @@ use super::super::StudioRuntime;
 use anyhow::Result;
 use pl_model::config::AccountId;
 use pl_protocol::studio::*;
+use url::Url;
+
+use crate::account_usage::account_usage_query_kind;
 
 pub(super) fn read(
     runtime: &StudioRuntime,
@@ -26,15 +29,16 @@ pub(super) fn read(
                         .get(&pl_protocol::ThreadModeId::simple())
                         .map(|route| &route.account_id);
                     for (id, account) in &desired.models.accounts {
-                        let usage = crate::config_editor::account_template_kind(account)?
-                            .is_some_and(|kind| {
-                                matches!(kind.key(), "deepseek" | "zhipu-coding-plan")
-                            });
+                        let usage = account_usage_query_kind(
+                            crate::config_editor::account_template_kind(account)?,
+                        )
+                        .is_some();
                         accounts.push(AccountSummary {
                             identity: AccountIdentity::Native {
                                 account_id: id.to_string(),
                             },
                             name: account.name.clone(),
+                            display_endpoint: display_endpoint(&account.base_url),
                             brand_key: account.template_id().and_then(|template_id| {
                                 account_catalog
                                     .as_ref()?
@@ -71,6 +75,7 @@ pub(super) fn read(
                                 account_id: account.account_id,
                             },
                             name: account.name,
+                            display_endpoint: None,
                             brand_key: Some(account.provider.as_str().to_owned()),
                             is_default: false,
                             billing_kind: None,
@@ -180,4 +185,13 @@ pub(super) fn read(
             })
         }
     }
+}
+
+fn display_endpoint(base_url: &str) -> Option<String> {
+    let parsed = Url::parse(base_url).ok()?;
+    if !parsed.has_host() {
+        return None;
+    }
+    let origin = parsed.origin();
+    origin.is_tuple().then(|| origin.ascii_serialization())
 }

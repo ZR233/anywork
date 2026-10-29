@@ -330,6 +330,9 @@ class BridgeAccountTemplateDescriptor {
 
   /// 模板默认的厂商协议；与 ProtocolKind 的 wire 值一致。
   final String protocol;
+  final BridgeBillingKind defaultBillingKind;
+  final bool supportsModelDiscovery;
+  final bool? supportsUsageQuery;
   final String suggestedModelId;
   final String? iconKey;
   final BridgeServiceCapabilitiesDescriptor serviceCapabilities;
@@ -343,6 +346,9 @@ class BridgeAccountTemplateDescriptor {
     this.credentialEnv,
     required this.modelCatalogId,
     required this.protocol,
+    required this.defaultBillingKind,
+    required this.supportsModelDiscovery,
+    this.supportsUsageQuery,
     required this.suggestedModelId,
     this.iconKey,
     required this.serviceCapabilities,
@@ -358,6 +364,9 @@ class BridgeAccountTemplateDescriptor {
       credentialEnv.hashCode ^
       modelCatalogId.hashCode ^
       protocol.hashCode ^
+      defaultBillingKind.hashCode ^
+      supportsModelDiscovery.hashCode ^
+      supportsUsageQuery.hashCode ^
       suggestedModelId.hashCode ^
       iconKey.hashCode ^
       serviceCapabilities.hashCode;
@@ -375,6 +384,9 @@ class BridgeAccountTemplateDescriptor {
           credentialEnv == other.credentialEnv &&
           modelCatalogId == other.modelCatalogId &&
           protocol == other.protocol &&
+          defaultBillingKind == other.defaultBillingKind &&
+          supportsModelDiscovery == other.supportsModelDiscovery &&
+          supportsUsageQuery == other.supportsUsageQuery &&
           suggestedModelId == other.suggestedModelId &&
           iconKey == other.iconKey &&
           serviceCapabilities == other.serviceCapabilities;

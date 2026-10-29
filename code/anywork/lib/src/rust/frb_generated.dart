@@ -8963,21 +8963,22 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   BridgeAccountSummary dco_decode_bridge_account_summary(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 10)
-      throw Exception('unexpected arr length: expect 10 but see ${arr.length}');
+    if (arr.length != 11)
+      throw Exception('unexpected arr length: expect 11 but see ${arr.length}');
     return BridgeAccountSummary(
       identity: dco_decode_bridge_account_identity(arr[0]),
       name: dco_decode_String(arr[1]),
       brandKey: dco_decode_opt_String(arr[2]),
-      isDefault: dco_decode_bool(arr[3]),
-      billingKind: dco_decode_opt_box_autoadd_bridge_billing_kind(arr[4]),
+      displayEndpoint: dco_decode_opt_String(arr[3]),
+      isDefault: dco_decode_bool(arr[4]),
+      billingKind: dco_decode_opt_box_autoadd_bridge_billing_kind(arr[5]),
       billingKindOverride: dco_decode_opt_box_autoadd_bridge_billing_kind(
-        arr[5],
+        arr[6],
       ),
-      credentialReady: dco_decode_opt_box_autoadd_bool(arr[6]),
-      usageQueryRevision: dco_decode_opt_box_autoadd_u_64(arr[7]),
-      acpConnectionRevision: dco_decode_opt_box_autoadd_u_64(arr[8]),
-      capabilities: dco_decode_bridge_account_capabilities(arr[9]),
+      credentialReady: dco_decode_opt_box_autoadd_bool(arr[7]),
+      usageQueryRevision: dco_decode_opt_box_autoadd_u_64(arr[8]),
+      acpConnectionRevision: dco_decode_opt_box_autoadd_u_64(arr[9]),
+      capabilities: dco_decode_bridge_account_capabilities(arr[10]),
     );
   }
 
@@ -8987,8 +8988,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 11)
-      throw Exception('unexpected arr length: expect 11 but see ${arr.length}');
+    if (arr.length != 14)
+      throw Exception('unexpected arr length: expect 14 but see ${arr.length}');
     return BridgeAccountTemplateDescriptor(
       id: dco_decode_String(arr[0]),
       displayName: dco_decode_String(arr[1]),
@@ -8998,10 +8999,13 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       credentialEnv: dco_decode_opt_String(arr[5]),
       modelCatalogId: dco_decode_String(arr[6]),
       protocol: dco_decode_String(arr[7]),
-      suggestedModelId: dco_decode_String(arr[8]),
-      iconKey: dco_decode_opt_String(arr[9]),
+      defaultBillingKind: dco_decode_bridge_billing_kind(arr[8]),
+      supportsModelDiscovery: dco_decode_bool(arr[9]),
+      supportsUsageQuery: dco_decode_opt_box_autoadd_bool(arr[10]),
+      suggestedModelId: dco_decode_String(arr[11]),
+      iconKey: dco_decode_opt_String(arr[12]),
       serviceCapabilities: dco_decode_bridge_service_capabilities_descriptor(
-        arr[10],
+        arr[13],
       ),
     );
   }
@@ -20736,6 +20740,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_identity = sse_decode_bridge_account_identity(deserializer);
     var var_name = sse_decode_String(deserializer);
     var var_brandKey = sse_decode_opt_String(deserializer);
+    var var_displayEndpoint = sse_decode_opt_String(deserializer);
     var var_isDefault = sse_decode_bool(deserializer);
     var var_billingKind = sse_decode_opt_box_autoadd_bridge_billing_kind(
       deserializer,
@@ -20752,6 +20757,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       identity: var_identity,
       name: var_name,
       brandKey: var_brandKey,
+      displayEndpoint: var_displayEndpoint,
       isDefault: var_isDefault,
       billingKind: var_billingKind,
       billingKindOverride: var_billingKindOverride,
@@ -20775,6 +20781,9 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_credentialEnv = sse_decode_opt_String(deserializer);
     var var_modelCatalogId = sse_decode_String(deserializer);
     var var_protocol = sse_decode_String(deserializer);
+    var var_defaultBillingKind = sse_decode_bridge_billing_kind(deserializer);
+    var var_supportsModelDiscovery = sse_decode_bool(deserializer);
+    var var_supportsUsageQuery = sse_decode_opt_box_autoadd_bool(deserializer);
     var var_suggestedModelId = sse_decode_String(deserializer);
     var var_iconKey = sse_decode_opt_String(deserializer);
     var var_serviceCapabilities =
@@ -20788,6 +20797,9 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       credentialEnv: var_credentialEnv,
       modelCatalogId: var_modelCatalogId,
       protocol: var_protocol,
+      defaultBillingKind: var_defaultBillingKind,
+      supportsModelDiscovery: var_supportsModelDiscovery,
+      supportsUsageQuery: var_supportsUsageQuery,
       suggestedModelId: var_suggestedModelId,
       iconKey: var_iconKey,
       serviceCapabilities: var_serviceCapabilities,
@@ -35550,6 +35562,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_bridge_account_identity(self.identity, serializer);
     sse_encode_String(self.name, serializer);
     sse_encode_opt_String(self.brandKey, serializer);
+    sse_encode_opt_String(self.displayEndpoint, serializer);
     sse_encode_bool(self.isDefault, serializer);
     sse_encode_opt_box_autoadd_bridge_billing_kind(
       self.billingKind,
@@ -35579,6 +35592,9 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_opt_String(self.credentialEnv, serializer);
     sse_encode_String(self.modelCatalogId, serializer);
     sse_encode_String(self.protocol, serializer);
+    sse_encode_bridge_billing_kind(self.defaultBillingKind, serializer);
+    sse_encode_bool(self.supportsModelDiscovery, serializer);
+    sse_encode_opt_box_autoadd_bool(self.supportsUsageQuery, serializer);
     sse_encode_String(self.suggestedModelId, serializer);
     sse_encode_opt_String(self.iconKey, serializer);
     sse_encode_bridge_service_capabilities_descriptor(

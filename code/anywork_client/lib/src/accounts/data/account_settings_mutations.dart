@@ -29,6 +29,7 @@ final class AccountSettingsMutations {
     DraftStamp? draft,
     required Map<String, AccountObservationTarget> targets,
     required Future<SettingsCommandReply> Function(int, OperationId) request,
+    void Function(OperationHandle operation)? onAdmitted,
   }) {
     if (coordinator.isClosed)
       return Future.error(StateError('Settings writes are closed'));
@@ -43,90 +44,98 @@ final class AccountSettingsMutations {
     var issued = false;
     late final _TargetConfirmation confirmation;
     try {
+      // Hand off before observation admission can fail; callback failures must
+      // also settle this already admitted operation rather than leave submitting.
+      onAdmitted?.call(operation);
       confirmation = _TargetConfirmation(operation, targets, observations);
       _confirmations.add(confirmation);
       confirmation.onDone = () => _confirmations.remove(confirmation);
     } catch (error) {
-      operation.reject(error);
-      rethrow;
+      return Future.value(operation.reject(error));
     }
     if (coordinator.isClosed) {
       final failure = StateError('Settings writes closed during admission');
-      operation.reject(failure);
+      final snapshot = operation.reject(failure);
       confirmation.dispose();
-      return Future.error(failure);
+      return Future.value(snapshot);
     }
-    return coordinator.enqueue(() async {
+    Future<OperationState> execute() async {
       try {
-        if (generation != observations.generation)
-          throw const _AccountOwnerChanged();
-        Future<bool> refresh() async {
-          try {
-            for (final target in targets.values.toSet()) {
-              await observations.refresh(target);
+        return await coordinator.enqueue(() async {
+          if (generation != observations.generation)
+            throw const _AccountOwnerChanged();
+          Future<bool> refresh() async {
+            try {
+              for (final target in targets.values.toSet()) {
+                await observations.refresh(target);
+              }
+              return coordinator.stamp != null;
+            } catch (_) {
+              return false;
             }
-            return coordinator.stamp != null;
-          } catch (_) {
-            return false;
           }
-        }
 
-        final reply = await retryRevisionConflict(() async {
-          if (generation != observations.generation)
-            throw const _AccountOwnerChanged();
-          final revision = await coordinator.expectedRevision(() async {
-            if (!await refresh())
-              throw StateError('Account settings are unavailable');
-          }, owner: owner);
-          if (generation != observations.generation)
-            throw const _AccountOwnerChanged();
-          issued = true;
-          return request(revision, operation.id);
-        }, refresh: refresh);
-        if (reply.receipt.operationId != operation.id)
-          throw const StudioFailure(
-            code: StudioFailureCode.protocol,
-            message: 'Account receipt belongs to another operation',
-            retryable: false,
-            correlationId: 'accounts-receipt',
+          final reply = await retryRevisionConflict(() async {
+            if (generation != observations.generation)
+              throw const _AccountOwnerChanged();
+            final revision = await coordinator.expectedRevision(() async {
+              if (!await refresh())
+                throw StateError('Account settings are unavailable');
+            }, owner: owner);
+            if (generation != observations.generation)
+              throw const _AccountOwnerChanged();
+            issued = true;
+            return request(revision, operation.id);
+          }, refresh: refresh);
+          if (reply.receipt.operationId != operation.id)
+            throw const StudioFailure(
+              code: StudioFailureCode.protocol,
+              message: 'Account receipt belongs to another operation',
+              retryable: false,
+              correlationId: 'accounts-receipt',
+            );
+          final receipt = reply.receipt;
+          operation.accept(
+            CommitReceipt(
+              operationId: receipt.operationId,
+              disposition: receipt.disposition,
+              targets: receipt.targets,
+              effect: receipt.effect,
+              effective: receipt.effective,
+              durable: receipt.durable,
+              requiresIdentityObservation: true,
+            ),
           );
-        final receipt = reply.receipt;
-        operation.accept(
-          CommitReceipt(
-            operationId: receipt.operationId,
-            disposition: receipt.disposition,
-            targets: receipt.targets,
-            effect: receipt.effect,
-            effective: receipt.effective,
-            durable: receipt.durable,
-            requiresIdentityObservation: true,
-          ),
-        );
-        if (generation != observations.generation) {
-          confirmation.dispose();
-          throw const _AccountOwnerChanged();
-        }
-        coordinator.requireOwner(owner);
-        applyReply(reply);
-        coordinator.requireOwner(owner);
-        confirmation.check();
-        return operation.state.value;
+          if (generation != observations.generation) {
+            confirmation.dispose();
+            throw const _AccountOwnerChanged();
+          }
+          coordinator.requireOwner(owner);
+          applyReply(reply);
+          coordinator.requireOwner(owner);
+          confirmation.check();
+          return operation.state.value;
+        });
       } catch (error) {
-        if (operation.state.value.receipt != null) {
-          operation.syncFailed(error);
+        final current = operation.state.value;
+        if (current.failurePhase != null) return current;
+        if (current.receipt != null) {
+          return operation.syncFailed(error);
         } else if (isKnownAccountRejection(error) ||
             (error is _AccountOwnerChanged ||
                     error is SettingsWriteOwnerChanged) &&
                 !issued) {
-          operation.reject(error);
+          final snapshot = operation.reject(error);
           confirmation.dispose();
+          return snapshot;
         } else {
           // Unknown outcomes remain registered and target-observed until exit.
-          operation.unknownOutcome(error);
+          return operation.unknownOutcome(error);
         }
-        rethrow;
       }
-    });
+    }
+
+    return execute();
   }
 
   void disposeConfirmations() {

@@ -155,9 +155,9 @@ The runtime compiles the workflow before publishing it. State and transition IDs
 
 ## Model compaction thresholds
 
-Each account catalog may store `auto_compact_overrides` keyed by exact model model_id. A missing key means no user override: use the model's explicit `auto_compact_token_limit` template, otherwise floor 90% of its resolved context capacity (`context_window`, falling back to `max_context_window`). Unknown capacity disables automatic compaction; never substitute zero or a guessed window. User overrides must be positive and the effective value cannot exceed the 90% safety limit. Restore default by removing only the corresponding override key; do not copy computed defaults into the configuration.
+Each account catalog may store `auto_compact_overrides` keyed by exact `model_id`. A missing key means no user override: the model layer resolves the automatic value from its declared threshold and safe input capacity. Use its effective value and adjustment reason; do not assume every automatic threshold is 90% of a displayed context window. Unknown capacity stays unknown; never substitute zero or a guessed window. User overrides must be positive and remain subject to the model layer's safety policy. Restore automatic behavior by removing only the corresponding override key; do not copy computed defaults into the configuration.
 
-Edit a threshold directly in the account detail card's model list: valid input saves automatically, and restore default clears the override. Other account connection, credential and model-declaration edits still use their editor's Save/Cancel draft. A successful configuration reply does not change an in-flight model request; new bindings use it at their next safe refresh boundary.
+Edit a threshold in the account's model list or model information page: typing and percentage presets change only the shared draft. Save submits the exact positive integer; Restore automatic explicitly clears the override. Keep the raw input when the backend reports an adjusted effective value or a failure. An unknown save outcome must be confirmed before resubmission. Other account connection, credential and model-declaration edits also use their editor's Save/Cancel draft. A successful configuration reply does not change an in-flight model request; new bindings use it at their next safe refresh boundary.
 
 ## Credentials
 
@@ -167,11 +167,15 @@ During the versioned account migration only, an old `provider:<id>` credential i
 
 Account IDs are stable after creation. Changing the display name does not rekey credentials, routes, catalogs or statistics. Create an account from an account template; its default name follows the template display name, and multiple accounts may use the same template. The model identity in selectors and top-level statistics is `(account_id, configured model_id)`; reasoning effort is a second-level breakdown and sent/reported models remain diagnostics. Unknown historical identities stay unknown.
 
+Leaving the credential field empty during account creation or editing means Preserve, not Clear. A nonempty replacement is an explicit credential change; never manufacture a key or expose a stored secret to fill the editor. Required-credential validation remains in force.
+
 The four built-in Zhipu MCP servers only borrow a usable key from `template = "zhipu-coding-plan"`. With multiple instances, the first usable key in stable account-ID order wins. Ordinary `zhipu` templates and matching endpoint hosts are not credential fallbacks. A missing/blank key does not connect, discover or register callable tools; an explicit builtin disable remains disabled. They use the same generic MCP runtime and published-generation leases as user MCP servers, with no account-specific Thread.
 
 ## Model catalog sources
 
 A account catalog either bundles a built-in model list or declares only user models. `additional_models` entries are user-authored and the only entries a user may add or delete; a `Bundled` catalog without an observation still resolves to its built-in list.
+
+A Native account with an empty Explicit catalog may be saved and reloaded before any route references it. Its catalog remains empty and has no online discovery or selectable model; it cannot become the default account or resolve an executable route until a usable model is added. Creating the account and setting it as default are separate operations: a rejected default change keeps the created account identity. Other declarations, overrides and route references must still be valid; deleting the last model referenced by an Explicit route is not allowed by this empty-account rule.
 
 Online discovery is declared per catalog, never per adapter: a catalog that supports it records the discovery transport; no model families are excluded. During startup the runtime queries every instance whose catalog declares discovery, one independent task per instance with its own query identity, timeout and cache file. Explicit account-level model synchronization uses the same discovery and atomic publication path; repeated requests for the same query identity share the in-flight operation. A successful response replaces that instance's observed list as a whole, and a valid empty list is an accepted replacement. A failed query records that instance's typed error and retains its last successful snapshot, or its built-in list on first launch; it does not rewrite saved configuration or reset selections. Catalog status and account-local metadata changes publish through the separate catalog revision.
 

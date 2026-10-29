@@ -14,11 +14,33 @@
 // depends on `package:flutter_driver/flutter_driver.dart`.
 import 'package:flutter_driver/flutter_driver.dart';
 
-class RawTap extends CommandWithTarget {
-  RawTap(super.finder, {super.timeout});
+enum RawTapKind { touch, mouse }
 
-  RawTap.deserialize(super.json, super.finderFactory) : super.deserialize();
+enum RawTapButton { primary, secondary }
+
+class RawTap extends CommandWithTarget {
+  RawTap(
+    super.finder, {
+    this.pointerKind = RawTapKind.touch,
+    this.button = RawTapButton.primary,
+    super.timeout,
+  });
+
+  RawTap.deserialize(super.json, super.finderFactory)
+    : pointerKind = RawTapKind.values.byName(json['pointerKind'] ?? 'touch'),
+      button = RawTapButton.values.byName(json['button'] ?? 'primary'),
+      super.deserialize();
+
+  final RawTapKind pointerKind;
+  final RawTapButton button;
 
   @override
   String get kind => 'RawTap';
+
+  @override
+  Map<String, String> serialize() => {
+    ...super.serialize(),
+    'pointerKind': pointerKind.name,
+    'button': button.name,
+  };
 }

@@ -36,6 +36,7 @@ pub struct BridgeAccountSummary {
     pub identity: BridgeAccountIdentity,
     pub name: String,
     pub brand_key: Option<String>,
+    pub display_endpoint: Option<String>,
     pub is_default: bool,
     pub billing_kind: Option<BridgeBillingKind>,
     pub billing_kind_override: Option<BridgeBillingKind>,

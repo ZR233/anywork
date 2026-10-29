@@ -2,9 +2,9 @@ import 'package:anywork_client/studio_client.dart'
     show DeepSeekWebFetchEnabledCommand, DeepSeekWebSearchEnabledCommand;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:go_router/go_router.dart';
 
 import '../../app/theme/studio_tokens.dart';
+import '../../app/routing/app_route.dart';
 import '../../presentation/providers/client_provider.dart';
 import '../../l10n/studio_l10n.dart';
 import '../../shared/studio_driver_keys.dart';
@@ -14,10 +14,10 @@ import 'settings_general_tab.dart';
 import 'settings_instructions_tab.dart';
 import 'settings_lsp_tab.dart';
 import 'settings_mcp_tab.dart';
-import '../modes/modes.dart';
+import '../modes/modes.dart' show ModeCatalogTab;
 import 'accounts/connectors/accounts_connector.dart';
-import 'accounts/connectors/account_navigation.dart';
 import 'settings_scope.dart';
+import 'settings_section.dart';
 import 'settings_security_tab.dart';
 import 'settings_skills_tab.dart';
 import 'settings_ssh_tab.dart';
@@ -26,29 +26,63 @@ import 'settings_views.dart';
 import 'settings_bots_tab.dart';
 
 class SettingsPage extends StatelessWidget {
-  const SettingsPage({super.key});
+  const SettingsPage({
+    this.section = SettingsSection.accounts,
+    this.accountChild,
+    this.routeVisible = true,
+    super.key,
+  });
+
+  final SettingsSection section;
+  final Widget? accountChild;
+  final bool routeVisible;
 
   @override
-  Widget build(BuildContext context) => const _SettingsPageShell();
+  Widget build(BuildContext context) => _SettingsPageShell(
+    section: section,
+    accountChild: accountChild,
+    routeVisible: routeVisible,
+  );
 }
 
 /// Owns the tab controller independently from the reactive settings projection.
 /// A model/account save refreshes canonical content without recreating the
 /// navigation controller or restarting the whole settings page animation.
 class _SettingsPageShell extends StatelessWidget {
-  const _SettingsPageShell();
+  const _SettingsPageShell({
+    required this.section,
+    required this.routeVisible,
+    this.accountChild,
+  });
+
+  final SettingsSection section;
+  final Widget? accountChild;
+  final bool routeVisible;
 
   @override
   Widget build(BuildContext context) {
     return DefaultTabController(
       length: _settingsTabs.length,
-      child: const _SettingsPageBody(),
+      initialIndex: section.index,
+      child: _SettingsPageBody(
+        section: section,
+        accountChild: accountChild,
+        routeVisible: routeVisible,
+      ),
     );
   }
 }
 
 class _SettingsPageBody extends ConsumerWidget {
-  const _SettingsPageBody();
+  const _SettingsPageBody({
+    required this.section,
+    required this.routeVisible,
+    this.accountChild,
+  });
+
+  final SettingsSection section;
+  final Widget? accountChild;
+  final bool routeVisible;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -68,55 +102,86 @@ class _SettingsPageBody extends ConsumerWidget {
       backgroundColor: context.colors.surface,
       body: KeyedSubtree(
         key: StudioDriverKeys.settingsPage,
-        child: _SettingsTabVisibilitySync(child: const _SettingsScaffold()),
+        child: _SettingsRouteVisibilitySync(
+          section: section,
+          routeVisible: routeVisible,
+          child: _SettingsScaffold(
+            section: section,
+            accountChild: accountChild,
+            routeVisible: routeVisible,
+          ),
+        ),
       ),
     );
   }
 }
 
-/// 把设置壳的 [DefaultTabController] 当前索引同步到 [settingsVisibleTabProvider]。
+/// Derives display visibility from the committed route section.
 ///
 /// 设置壳保活已访问过的 tab；可见性只决定各数据页的显示观察，不接线 topic lease。
 /// account 写入延到微任务，避免在 build/通知阶段直接改 account。
-class _SettingsTabVisibilitySync extends ConsumerStatefulWidget {
-  const _SettingsTabVisibilitySync({required this.child});
+class _SettingsRouteVisibilitySync extends ConsumerStatefulWidget {
+  const _SettingsRouteVisibilitySync({
+    required this.section,
+    required this.routeVisible,
+    required this.child,
+  });
 
+  final SettingsSection section;
+  final bool routeVisible;
   final Widget child;
 
   @override
-  ConsumerState<_SettingsTabVisibilitySync> createState() =>
-      _SettingsTabVisibilitySyncState();
+  ConsumerState<_SettingsRouteVisibilitySync> createState() =>
+      _SettingsRouteVisibilitySyncState();
 }
 
-class _SettingsTabVisibilitySyncState
-    extends ConsumerState<_SettingsTabVisibilitySync> {
+class _SettingsRouteVisibilitySyncState
+    extends ConsumerState<_SettingsRouteVisibilitySync> {
   TabController? _controller;
 
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
     final controller = DefaultTabController.of(context);
-    if (identical(controller, _controller)) return;
-    _controller?.removeListener(_sync);
-    _controller = controller;
-    controller.addListener(_sync);
-    _sync();
+    if (!identical(controller, _controller)) _controller = controller;
   }
 
-  void _sync() {
-    final controller = _controller;
-    if (controller == null) return;
-    final index = controller.index;
+  @override
+  void initState() {
+    super.initState();
+    _syncRouteSection();
+  }
+
+  @override
+  void didUpdateWidget(covariant _SettingsRouteVisibilitySync oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.section != widget.section ||
+        oldWidget.routeVisible != widget.routeVisible) {
+      _syncRouteSection();
+      _syncControllerToRoute();
+    }
+  }
+
+  void _syncRouteSection() {
+    if (!widget.routeVisible) return;
+    final index = widget.section.index;
     Future<void>.microtask(() {
       if (!mounted) return;
       ref.read(settingsVisibleTabProvider.notifier).select(index);
     });
   }
 
-  @override
-  void dispose() {
-    _controller?.removeListener(_sync);
-    super.dispose();
+  void _syncControllerToRoute() {
+    if (!widget.routeVisible) return;
+    final controller = _controller;
+    final section = widget.section;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !widget.routeVisible || widget.section != section) return;
+      if (controller != null && controller.index != section.index) {
+        controller.animateTo(section.index);
+      }
+    });
   }
 
   @override
@@ -127,13 +192,19 @@ class _SettingsTabVisibilitySyncState
 /// The retained settings shell therefore survives catalog/config events and a
 /// model click only rebuilds the account tab that displays that catalog.
 class _ProvidersSettingsTab extends ConsumerWidget {
-  const _ProvidersSettingsTab();
+  const _ProvidersSettingsTab({required this.routeVisible, this.accountChild});
+
+  final bool routeVisible;
+  final Widget? accountChild;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    if (accountChild case final child?) return child;
     return AccountsConnector(
       visible:
-          ref.watch(settingsVisibleTabProvider) == _SettingsTab.accounts.index,
+          routeVisible &&
+          ref.watch(settingsVisibleTabProvider) ==
+              SettingsSection.accounts.index,
     );
   }
 }
@@ -190,78 +261,76 @@ class _GeneralSettingsTab extends ConsumerWidget {
 }
 
 const _settingsTabs = [
-  _SettingsTabInfo(Icons.cloud_outlined, _SettingsTab.accounts),
-  _SettingsTabInfo(Icons.notes_outlined, _SettingsTab.instructions),
-  _SettingsTabInfo(Icons.account_tree_outlined, _SettingsTab.workModes),
-  _SettingsTabInfo(Icons.extension_outlined, _SettingsTab.skills),
-  _SettingsTabInfo(Icons.groups_outlined, _SettingsTab.agents),
-  _SettingsTabInfo(Icons.hub_outlined, _SettingsTab.mcp),
-  _SettingsTabInfo(Icons.code_outlined, _SettingsTab.lsp),
-  _SettingsTabInfo(Icons.dns_outlined, _SettingsTab.ssh),
-  _SettingsTabInfo(Icons.query_stats_outlined, _SettingsTab.statistics),
-  _SettingsTabInfo(Icons.security_outlined, _SettingsTab.security),
-  _SettingsTabInfo(Icons.tune_outlined, _SettingsTab.general),
-  _SettingsTabInfo(Icons.smart_toy_outlined, _SettingsTab.bots),
+  _SettingsTabInfo(Icons.cloud_outlined, SettingsSection.accounts),
+  _SettingsTabInfo(Icons.notes_outlined, SettingsSection.instructions),
+  _SettingsTabInfo(Icons.account_tree_outlined, SettingsSection.workModes),
+  _SettingsTabInfo(Icons.extension_outlined, SettingsSection.skills),
+  _SettingsTabInfo(Icons.groups_outlined, SettingsSection.agents),
+  _SettingsTabInfo(Icons.hub_outlined, SettingsSection.mcp),
+  _SettingsTabInfo(Icons.code_outlined, SettingsSection.lsp),
+  _SettingsTabInfo(Icons.dns_outlined, SettingsSection.ssh),
+  _SettingsTabInfo(Icons.query_stats_outlined, SettingsSection.statistics),
+  _SettingsTabInfo(Icons.security_outlined, SettingsSection.security),
+  _SettingsTabInfo(Icons.tune_outlined, SettingsSection.general),
+  _SettingsTabInfo(Icons.smart_toy_outlined, SettingsSection.bots),
 ];
 
 class _SettingsTabInfo {
   const _SettingsTabInfo(this.icon, this.tab);
 
   final IconData icon;
-  final _SettingsTab tab;
+  final SettingsSection tab;
 
   String label(BuildContext context) {
     return switch (tab) {
-      _SettingsTab.accounts => context.l10n.settingsAccountsTab,
-      _SettingsTab.instructions => context.l10n.settingsInstructionsTab,
-      _SettingsTab.workModes => context.l10n.modeEditorTitle,
-      _SettingsTab.skills => context.l10n.settingsSkillsTab,
-      _SettingsTab.agents => context.l10n.settingsAgentsTab,
-      _SettingsTab.mcp => context.l10n.settingsMcpTab,
-      _SettingsTab.lsp => context.l10n.settingsLspTab,
-      _SettingsTab.ssh => context.l10n.settingsSshTab,
-      _SettingsTab.statistics => context.l10n.settingsStatisticsTab,
-      _SettingsTab.security => context.l10n.settingsSecurityTab,
-      _SettingsTab.general => context.l10n.settingsGeneralTab,
-      _SettingsTab.bots => context.l10n.settingsBotsTab,
+      SettingsSection.accounts => context.l10n.settingsAccountsTab,
+      SettingsSection.instructions => context.l10n.settingsInstructionsTab,
+      SettingsSection.workModes => context.l10n.modeEditorTitle,
+      SettingsSection.skills => context.l10n.settingsSkillsTab,
+      SettingsSection.agents => context.l10n.settingsAgentsTab,
+      SettingsSection.mcp => context.l10n.settingsMcpTab,
+      SettingsSection.lsp => context.l10n.settingsLspTab,
+      SettingsSection.ssh => context.l10n.settingsSshTab,
+      SettingsSection.statistics => context.l10n.settingsStatisticsTab,
+      SettingsSection.security => context.l10n.settingsSecurityTab,
+      SettingsSection.general => context.l10n.settingsGeneralTab,
+      SettingsSection.bots => context.l10n.settingsBotsTab,
     };
   }
 }
 
-enum _SettingsTab {
-  accounts,
-  instructions,
-  workModes,
-  skills,
-  agents,
-  mcp,
-  lsp,
-  ssh,
-  statistics,
-  security,
-  general,
-  bots,
-}
-
 class _SettingsScaffold extends ConsumerWidget {
-  const _SettingsScaffold();
+  const _SettingsScaffold({
+    required this.section,
+    required this.routeVisible,
+    this.accountChild,
+  });
+
+  final SettingsSection section;
+  final Widget? accountChild;
+  final bool routeVisible;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final visibleTab = ref.watch(settingsVisibleTabProvider);
+    final visibleTab = routeVisible ? section.index : -1;
     final views = [
-      const _ProvidersSettingsTab(),
+      _ProvidersSettingsTab(
+        routeVisible: routeVisible,
+        accountChild: accountChild,
+      ),
       const _InstructionsSettingsTab(),
-      ModeCatalogTab(tabIndex: _SettingsTab.workModes.index),
-      SkillsTab(tabIndex: _SettingsTab.skills.index),
-      AgentsTab(tabIndex: _SettingsTab.agents.index),
-      McpTab(tabIndex: _SettingsTab.mcp.index),
-      LspTab(tabIndex: _SettingsTab.lsp.index),
+      ModeCatalogTab(tabIndex: SettingsSection.workModes.index),
+      SkillsTab(tabIndex: SettingsSection.skills.index),
+      AgentsTab(tabIndex: SettingsSection.agents.index),
+      McpTab(tabIndex: SettingsSection.mcp.index),
+      LspTab(tabIndex: SettingsSection.lsp.index),
       const SshTab(),
-      StatisticsConnector(visible: visibleTab == _SettingsTab.statistics.index),
+      StatisticsConnector(
+        visible: visibleTab == SettingsSection.statistics.index,
+      ),
       const SecurityTab(),
       const _GeneralSettingsTab(),
-      BotsTab(tabIndex: _SettingsTab.bots.index),
+      BotsTab(tabIndex: SettingsSection.bots.index),
     ];
     return LayoutBuilder(
       builder: (context, constraints) {
@@ -274,7 +343,7 @@ class _SettingsScaffold extends ConsumerWidget {
           direction: compact ? Axis.vertical : Axis.horizontal,
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            _SettingsNav(compact: compact),
+            _SettingsNav(compact: compact, section: section),
             _SettingsNavDivider(
               direction: compact ? Axis.vertical : Axis.horizontal,
             ),
@@ -313,30 +382,23 @@ class _SettingsNavDivider extends StatelessWidget {
 }
 
 class _SettingsNav extends ConsumerWidget {
-  const _SettingsNav({required this.compact});
+  const _SettingsNav({required this.compact, required this.section});
 
   final bool compact;
+  final SettingsSection section;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final controller = DefaultTabController.of(context);
-    Future<void> select(int index) async {
-      if (index == controller.index) return;
-      if (controller.index == _SettingsTab.workModes.index &&
-          !await confirmLeaveModeEditor(context)) {
-        return;
-      }
-      if (!context.mounted || !await confirmLeaveAccountsEditor(context)) {
-        return;
-      }
-      if (!context.mounted) return;
-      controller.animateTo(index);
+    void select(int index) {
+      if (index == section.index) return;
+      SettingsRoute(section: SettingsSection.values[index]).go(context);
     }
 
     return AnimatedBuilder(
       animation: controller,
       builder: (context, _) {
-        final selected = controller.index;
+        final selected = section.index;
         final navItems = [
           for (var index = 0; index < _settingsTabs.length; index++)
             _SettingsNavItem(
@@ -435,7 +497,7 @@ class _SettingsBackTile extends ConsumerWidget {
         child: InkWell(
           key: StudioDriverKeys.settingsBack,
           borderRadius: BorderRadius.circular(StudioRadii.sm),
-          onTap: () => context.pop(),
+          onTap: () => const StudioRoute().go(context),
           child: Padding(
             padding: EdgeInsets.symmetric(
               horizontal: compact ? 10 : 10,

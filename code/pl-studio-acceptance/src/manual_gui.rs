@@ -15,12 +15,13 @@ mod websocket_recovery;
 use anyhow::{Context, Result, bail, ensure};
 use clap::Parser;
 use pl_dev_support::{paths, process};
-use pl_model::config::{AccountConfig, AccountId};
+use pl_model::config::{AccountConfig, AccountId, AgentRoleId};
 use pl_model::model::{
     MediaRepresentation, MediaWireFormat, ModelInfo, ModelInputCapability, ModelInputSource,
     ModelMediaInputProfile, ModelModality, ModelTransportProfile,
 };
 use pl_model::protocol::ProtocolEndpoint;
+use pl_protocol::ThreadModeId;
 use pl_studio_runtime::config::{
     ConfigPaths, ConfigRuntime, ConfigStore, McpServerTransport, StudioConfig, StudioMcpServerEntry,
 };
@@ -140,6 +141,46 @@ struct FixtureReady {
     ws_url: String,
     scenario: String,
 }
+
+#[derive(Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+enum ExplicitRoleRouteCaptureState {
+    Initialized,
+    SessionOk,
+    SessionError,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ExplicitRoleRouteEvidence<'a> {
+    schema: u32,
+    scenario: &'static str,
+    run_id: &'a str,
+    phase: &'static str,
+    capture_state: ExplicitRoleRouteCaptureState,
+    explicit_role_routes: Vec<ExplicitRoleRouteRow>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ExplicitRoleRouteRow {
+    key: String,
+    account_id: String,
+    model_id: String,
+    effort: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ExplicitRoleRouteEvidenceMarker<'a> {
+    schema: u32,
+    run_id: &'a str,
+    harness_pid: u32,
+    before_file: &'static str,
+}
+
+const EXPLICIT_ROLE_ROUTES_BEFORE_FILE: &str = "explicit-role-routes-before.json";
+const EXPLICIT_ROLE_ROUTES_AFTER_FILE: &str = "explicit-role-routes-after.json";
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -944,6 +985,25 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
     let workspace = paths::workspace_root()?;
     let app_dir = paths::studio_app_dir(&workspace);
     let stamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
+    let ordinary_gui = options.scenario == "gui"
+        && !options.retain_environment
+        && options.ssh_target.is_none()
+        && options.ssh_workspace_parent.is_none()
+        && options.startup_fault.is_none()
+        && options.seed_home_copy.is_none()
+        && options.model_catalog_url.is_none()
+        && options.model_catalog_inventory.is_none()
+        && options.model_catalog_control.is_none()
+        && !options.model_catalog_restart
+        && !options.model_catalog_restart_check
+        && options.web_search_fault.is_none()
+        && options.web_search_accounts.is_none()
+        && options.web_search_models.is_none()
+        && options.web_search_probe.is_none()
+        && !options.timeline_displacement
+        && !options.bots_fixture
+        && options.acp_install_from.is_none()
+        && options.delegation_driver.is_none();
     let output = options.output.unwrap_or_else(|| {
         workspace
             .join("target/manual-gui")
@@ -975,6 +1035,11 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
         .prefix("environment-")
         .tempdir_in(&output)
         .context("failed to create isolated GUI home")?;
+    let run_id = working
+        .path()
+        .file_name()
+        .and_then(|name| name.to_str())
+        .context("isolated GUI environment basename is not valid UTF-8")?;
     let home = working.path().join("home");
     if let Some(source) = &options.seed_home_copy {
         copy_closed_home(source, &home)?;
@@ -1150,7 +1215,12 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
     if let Err(error) = (if options.seed_home_copy.is_some() {
         write_copy_fixture_config(&home, &ready)
     } else {
-        write_config(&home, &ready, options.web_search_fault.as_deref())
+        write_config(
+            &home,
+            &ready,
+            options.web_search_fault.as_deref(),
+            ordinary_gui,
+        )
     })
     .and_then(|()| {
         if let Some(control) = catalog_control.as_ref() {
@@ -1172,6 +1242,15 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
                 "--model-catalog-url requires --scenario gui"
             );
             model_catalog::configure(&home, url, None)?;
+        }
+        if ordinary_gui {
+            write_explicit_role_route_evidence(
+                &home,
+                &output,
+                run_id,
+                ExplicitRoleRouteCaptureState::Initialized,
+            )?;
+            publish_explicit_role_route_evidence_marker(run_id)?;
         }
         Ok(())
     }) {
@@ -1888,6 +1967,22 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
         fs::copy(&probe_frames, output.join("probe-frames.json"))?;
     }
     drop(gui);
+    // This records only the harness session Result, not shutdown acknowledgement
+    // or successful reclamation of the complete GUI process tree.
+    let role_after_result = if ordinary_gui {
+        write_explicit_role_route_evidence(
+            &home,
+            &output,
+            run_id,
+            if session.is_ok() {
+                ExplicitRoleRouteCaptureState::SessionOk
+            } else {
+                ExplicitRoleRouteCaptureState::SessionError
+            },
+        )
+    } else {
+        Ok(())
+    };
     let bots_cleanup = bots_fixture::finish_optional(bots.take(), &output);
     let primary = (|| -> Result<()> {
         let runtime_log = home.join("studio/logs/studio.log");
@@ -2346,7 +2441,10 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
 
         Ok(())
     })();
-    bots_fixture::with_cleanup(primary, bots_cleanup)
+    bots_fixture::with_cleanup(
+        bots_fixture::with_cleanup(primary, role_after_result),
+        bots_cleanup,
+    )
 }
 
 /// timeline-history：一次真实提交、同 home 冷重启、可选原生位移矩阵。
@@ -3261,8 +3359,14 @@ fn write_copy_fixture_config(home: &Path, ready: &FixtureReady) -> Result<()> {
 
 /// This is the single writer every scenario (including the descendant
 /// `shutdown` module) uses; the `web_search_fault` selector is only meaningful
-/// for the `web-search` scenario, so the other callers pass `None`.
-fn write_config(home: &Path, ready: &FixtureReady, web_search_fault: Option<&str>) -> Result<()> {
+/// for the `web-search` scenario, so the other callers pass `None`. Only the
+/// ordinary GUI run requests a mixed explicit/inherited role fixture.
+fn write_config(
+    home: &Path,
+    ready: &FixtureReady,
+    web_search_fault: Option<&str>,
+    ordinary_gui: bool,
+) -> Result<()> {
     if pl_provider_fixture::delegation::Scenario::parse(&ready.scenario).is_some() {
         return delegation::write_config(home, ready);
     }
@@ -3282,15 +3386,23 @@ fn write_config(home: &Path, ready: &FixtureReady, web_search_fault: Option<&str
     } else {
         ModelTransportProfile::responses_http()
     };
-    write_config_with_profile(home, ready, profile)
+    write_config_with_profile(home, ready, profile, ordinary_gui)
 }
 
 fn write_config_with_profile(
     home: &Path,
     ready: &FixtureReady,
     profile: ModelTransportProfile,
+    ordinary_gui: bool,
 ) -> Result<()> {
-    let config = fixture_config(home, ready, profile)?;
+    let mut config = fixture_config(home, ready, profile)?;
+    if ordinary_gui {
+        let route = config.mode_model_route(&ThreadModeId::simple())?.clone();
+        config
+            .models
+            .routes
+            .insert(AgentRoleId::new("explorer")?, route);
+    }
     persist_config(home, &config)
 }
 
@@ -3583,6 +3695,60 @@ fn persist_config(home: &Path, config: &StudioConfig) -> Result<()> {
     let file = home.join("config.toml");
     fs::write(&file, toml::to_string_pretty(config)?)
         .with_context(|| format!("failed to create isolated config: {}", file.display()))
+}
+
+/// Reads the persisted explicit overrides afresh; effective inherited routes
+/// belong to the Driver's separate canonical snapshots.
+fn write_explicit_role_route_evidence(
+    home: &Path,
+    output: &Path,
+    run_id: &str,
+    capture_state: ExplicitRoleRouteCaptureState,
+) -> Result<()> {
+    let config: StudioConfig = toml::from_str(&fs::read_to_string(home.join("config.toml"))?)?;
+    let explicit_role_routes = config
+        .models
+        .routes
+        .iter()
+        .map(|(key, route)| ExplicitRoleRouteRow {
+            key: key.as_str().to_owned(),
+            account_id: route.account_id.as_str().to_owned(),
+            model_id: route.model_id.clone(),
+            effort: route
+                .effort
+                .as_ref()
+                .map(|effort| effort.as_str().to_owned()),
+        })
+        .collect();
+    let (phase, file) = match capture_state {
+        ExplicitRoleRouteCaptureState::Initialized => ("before", EXPLICIT_ROLE_ROUTES_BEFORE_FILE),
+        ExplicitRoleRouteCaptureState::SessionOk | ExplicitRoleRouteCaptureState::SessionError => {
+            ("after", EXPLICIT_ROLE_ROUTES_AFTER_FILE)
+        }
+    };
+    let evidence = ExplicitRoleRouteEvidence {
+        schema: 1,
+        scenario: "gui",
+        run_id,
+        phase,
+        capture_state,
+        explicit_role_routes,
+    };
+    fs::write(output.join(file), serde_json::to_vec_pretty(&evidence)?)?;
+    Ok(())
+}
+
+fn publish_explicit_role_route_evidence_marker(run_id: &str) -> Result<()> {
+    let marker = serde_json::to_string(&ExplicitRoleRouteEvidenceMarker {
+        schema: 1,
+        run_id,
+        harness_pid: std::process::id(),
+        before_file: EXPLICIT_ROLE_ROUTES_BEFORE_FILE,
+    })?;
+    let mut stdout = io::stdout().lock();
+    writeln!(stdout, "ANYWORK_ACCOUNT_ROLE_EVIDENCE {marker}")?;
+    stdout.flush()?;
+    Ok(())
 }
 
 fn keep_isolated_environment(

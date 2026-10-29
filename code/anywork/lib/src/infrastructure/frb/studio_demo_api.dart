@@ -288,6 +288,7 @@ class DemoStudioTransport extends StudioTransport
                 identity: NativeAccountIdentity(account.id),
                 name: account.name,
                 brandKey: account.templateId,
+                displayEndpoint: null,
                 isDefault:
                     account.id ==
                     (_defaultAccountId ?? accounts.firstOrNull?.id),
@@ -300,7 +301,11 @@ class DemoStudioTransport extends StudioTransport
                   setDefault: true,
                   edit: true,
                   remove: true,
-                  queryUsage: true,
+                  queryUsage:
+                      _accountCatalog
+                          .template(account.templateId ?? '')
+                          ?.supportsUsageQuery ==
+                      true,
                   syncModels: account.modelCatalog.supported,
                   editModels: true,
                   acpAuth: false,
@@ -311,6 +316,7 @@ class DemoStudioTransport extends StudioTransport
                 identity: AcpAccountIdentity(account.accountId),
                 name: account.name,
                 brandKey: account.provider.wire,
+                displayEndpoint: null,
                 isDefault: false,
                 acpConnectionRevision: account.connectionRevision,
                 capabilities: const AccountCapabilities(

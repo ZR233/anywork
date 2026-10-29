@@ -5,6 +5,8 @@
 /// 本层不推断“已登录”，也不从本地布尔值合成成功。
 library;
 
+import '../commands/mutation_board.dart';
+
 import 'command_receipts.dart';
 import 'collection_equality.dart';
 import 'collection_extensions.dart';
@@ -649,12 +651,17 @@ final class AcpAuthenticateActionView extends AcpAuthActionView {
   int get hashCode => Object.hash(0x0212, methodId);
 }
 
-/// “保存并连接”的结果：保存是已成立的事实，检查是否受理是另一件事。
+/// 本次保存的结算与保存确认后的检查结果；检查受理不代表已认证。
 final class AcpSaveAndConnectResult {
-  const AcpSaveAndConnectResult({required this.saved, this.checkFailure});
+  const AcpSaveAndConnectResult({
+    required this.operation,
+    this.saved,
+    this.checkFailure,
+  });
 
-  final AcpAccountSettingsView saved;
+  final OperationState operation;
+  final AcpAccountSettingsView? saved;
 
-  /// 检查命令被拒绝时的 typed 原因；null 表示已受理（不代表已登录）。
+  /// 仅保存已确认后才可能携带检查错误；null 本身不证明检查已受理。
   final StudioFailure? checkFailure;
 }

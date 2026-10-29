@@ -356,14 +356,7 @@ cargo xtask run-gui --driver
     let unexpected = requests
         .iter()
         .filter(|request| !request.accepted)
-        .filter(|request| {
-            !(request.method == "GET"
-                && request.path == "/api/monitor/usage/quota/limit"
-                && request.body["keyAlias"] == "denied"
-                && request.diagnostic.as_ref().is_some_and(|diagnostic| {
-                    diagnostic.category == pl_provider_fixture::DENIED_QUOTA_CATEGORY
-                }))
-        })
+        .filter(|request| !pl_provider_fixture::is_provider_usage_owned_reject(request))
         .count();
     fs::write(
         context.output.join("collection.json"),
@@ -426,6 +419,7 @@ fn write_scenario_log(source: &Path, destination: &Path, context: &Scenario<'_>)
         ("fixture-usage-slow".into(), "[fixture-key]"),
         ("fixture-usage-fast".into(), "[fixture-key]"),
         ("fixture-usage-denied".into(), "[fixture-key]"),
+        (pl_provider_fixture::PLAN_QUOTA_KEY.into(), "[fixture-key]"),
         (
             pl_provider_fixture::PROVIDER_USAGE_MCP_KEY.into(),
             "[fixture-key]",

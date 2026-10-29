@@ -14,39 +14,64 @@ abstract final class AccountTemplatePreviewFixtures {
     id: 'preview-$id',
   );
 
-  static AccountBilling billing(String id) => switch (id) {
-    'zhipu-coding-plan' || 'mimo-token-plan' => AccountBilling.subscription,
-    'openai-compatible' => AccountBilling.unknown,
-    _ => AccountBilling.metered,
-  };
+  static NativeAccountTemplateContent nativeContent(String id) =>
+      switch (template(id).content) {
+        final NativeAccountTemplateContent value => value,
+        AcpAccountTemplateContent() => throw ArgumentError.value(
+          id,
+          'id',
+          'not a Native template',
+        ),
+      };
 
-  static AccountUsagePresentation usage(String id) => switch (id) {
-    'deepseek' => AccountPreviewFixtures.normalBalance,
-    'zhipu-coding-plan' => AccountPreviewFixtures.subscription,
-    // MiMo Token Plan has subscription billing but no usage query. Do not
-    // manufacture Zhipu quota windows or a monetary balance for it.
-    _ => const AccountUsagePresentation(phase: AccountQueryPhase.unsupported),
-  };
+  static AccountBilling billing(String id) => nativeContent(id).defaultBilling;
 
-  static String endpoint(String id) => switch (id) {
-    'openai' => 'https://api.openai.com/v1',
-    'deepseek' => 'https://api.deepseek.com',
-    'xai' => 'https://api.x.ai/v1',
-    'zhipu' => 'https://open.bigmodel.cn/api/paas/v4',
-    'zhipu-coding-plan' => 'https://open.bigmodel.cn/api/v1',
-    'mimo-api' => 'https://api.xiaomimimo.com/v1',
-    'mimo-token-plan' => 'https://token-plan-cn.xiaomimimo.com/v1',
-    'openai-compatible' => 'http://localhost:11434/v1',
-    _ => throw ArgumentError.value(id, 'id', 'not a Native template'),
-  };
+  static final _sharedUsageUnknownTemplate = _createUsageUnknownTemplate();
 
-  static String protocol(String id) => switch (id) {
-    'openai' || 'xai' || 'zhipu-coding-plan' => 'Responses',
-    'deepseek' => 'DeepSeek',
-    'zhipu' => 'Zhipu · Chat Completions',
-    'mimo-api' || 'mimo-token-plan' => 'MiMo · Chat Completions',
-    _ => 'OpenAI API 兼容 · Chat Completions',
-  };
+  static AccountTemplatePresentation usageUnknownTemplate() =>
+      _sharedUsageUnknownTemplate;
+
+  /// Explicitly synthetic omission state; not a built-in account template.
+  static AccountTemplatePresentation _createUsageUnknownTemplate() {
+    final source = nativeContent('deepseek');
+    return AccountTemplatePresentation(
+      key: const AccountTemplateKey(
+        kind: AccountKind.native,
+        id: 'synthetic-usage-unknown',
+      ),
+      name: '合成目录条目 · 用量能力未提供',
+      iconKey: template('deepseek').iconKey,
+      description: '仅展示 supportsUsageQuery 为 null 的合成状态。',
+      content: AccountTemplateContent.native(
+        defaultBilling: source.defaultBilling,
+        protocolLabel: source.protocolLabel,
+        defaultEndpoint: source.defaultEndpoint,
+        supportsModelDiscovery: source.supportsModelDiscovery,
+        supportsUsageQuery: null,
+      ),
+    );
+  }
+
+  static AccountUsagePresentation usage(String id) {
+    final support = nativeContent(id).supportsUsageQuery;
+    if (support == null) {
+      return const AccountUsagePresentation(phase: AccountQueryPhase.idle);
+    }
+    if (!support) {
+      return const AccountUsagePresentation(
+        phase: AccountQueryPhase.unsupported,
+      );
+    }
+    return switch (id) {
+      'deepseek' => AccountPreviewFixtures.normalBalance,
+      'zhipu-coding-plan' => AccountPreviewFixtures.subscription,
+      _ => throw StateError('Missing synthetic usage fixture for $id'),
+    };
+  }
+
+  static String endpoint(String id) => nativeContent(id).defaultEndpoint;
+
+  static String protocol(String id) => nativeContent(id).protocolLabel;
 
   static AccountModelPresentation model(String id) {
     final modelId = switch (id) {
@@ -72,19 +97,30 @@ abstract final class AccountTemplatePreviewFixtures {
     );
   }
 
-  static AccountRowPresentation row(String id) {
+  static AccountRowPresentation row(String id, {String? displayEndpoint}) {
     final value = template(id);
     return AccountRowPresentation(
       key: key(id),
       name: value.name,
       iconKey: value.iconKey,
-      billing: id == 'antigravity' ? null : billing(id),
-      usage: id == 'antigravity' ? null : usage(id),
-      acpStatus: id == 'antigravity' ? AccountPreviewFixtures.acp.status : null,
+      content: switch (value.content) {
+        NativeAccountTemplateContent(:final defaultBilling) =>
+          AccountRowContent.native(
+            billing: defaultBilling,
+            usage: usage(id),
+            displayEndpoint: displayEndpoint,
+          ),
+        AcpAccountTemplateContent() => AccountRowContent.acp(
+          status: AccountPreviewFixtures.acp.status,
+        ),
+      },
       actions: [
-        if (id == 'deepseek' || id == 'zhipu-coding-plan')
+        if (value.content case NativeAccountTemplateContent(
+          supportsUsageQuery: true,
+        ))
           AccountRowAction.refresh,
-        if (id != 'antigravity') AccountRowAction.setDefault,
+        if (value.content case NativeAccountTemplateContent())
+          AccountRowAction.setDefault,
         AccountRowAction.edit,
         AccountRowAction.delete,
       ],
@@ -115,16 +151,8 @@ abstract final class AccountTemplatePreviewFixtures {
                 billing: billingControl(id),
                 catalog: AccountCatalogPresentation(
                   models: [model(id)],
-                  // Discovery capability is independent of the retained
-                  // bundled snapshot; no successful online check is simulated.
-                  canSync: switch (id) {
-                    'openai' ||
-                    'deepseek' ||
-                    'xai' ||
-                    'mimo-api' ||
-                    'mimo-token-plan' => true,
-                    _ => false,
-                  },
+                  // No successful online check is simulated.
+                  canSync: nativeContent(id).supportsModelDiscovery,
                   sourceLabel: id == 'openai-compatible' ? '手动模型' : '内置目录',
                 ),
                 usage: usage(id),
@@ -158,6 +186,19 @@ abstract final class AccountTemplatePreviewFixtures {
             ? AccountPreviewFixtures.editor.manualModels
             : [],
       );
+
+  static final editorWithUsageUnknownTemplate =
+      _createEditorWithUsageUnknownTemplate();
+
+  static NativeAccountEditorPresentation
+  _createEditorWithUsageUnknownTemplate() {
+    final base = editor('deepseek');
+    final unknown = usageUnknownTemplate();
+    return base.copyWith(
+      templates: [...base.templates, unknown],
+      templateKey: unknown.key,
+    );
+  }
 
   static AccountsListPresentation get allTemplates => AccountsListPresentation(
     canRefresh: true,

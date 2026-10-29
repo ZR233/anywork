@@ -10,6 +10,83 @@ class AppLocalizationsZh extends AppLocalizations {
   AppLocalizationsZh([String locale = 'zh']) : super(locale);
 
   @override
+  String get accountsModelModalityCapabilities => '输入／输出模态与能力';
+
+  @override
+  String get accountsModelContextThreshold => '上下文与压缩阈值';
+
+  @override
+  String get accountsModelProtocolOrigin => '协议与模型来源';
+
+  @override
+  String get accountsSupportedConnections => '支持的连接方式';
+
+  @override
+  String accountsVisibleCount(int count) {
+    return '显示 $count 个账号';
+  }
+
+  @override
+  String get accountsTemplateProtocol => '协议';
+
+  @override
+  String get accountsTemplateDefaultEndpoint => '默认端点';
+
+  @override
+  String get accountsTemplateDefaultBilling => '模板默认计费';
+
+  @override
+  String get accountsTemplateCapabilities => '目录与用量能力';
+
+  @override
+  String get accountsTemplateDiscoverySupported => '支持在线模型目录同步';
+
+  @override
+  String get accountsTemplateDiscoveryUnsupported => '不支持在线模型目录同步';
+
+  @override
+  String get accountsTemplateUsageSupported => '支持用量查询';
+
+  @override
+  String get accountsTemplateUsageUnsupported => '不支持用量查询';
+
+  @override
+  String get accountsTemplateUsageUnknown => '用量查询能力未提供';
+
+  @override
+  String get accountsSetDefaultOnCreate => '创建后设为默认';
+
+  @override
+  String get accountsSetDefaultOnCreateHint => '更新普通模式的新会话默认模型，不影响其他模式或已有会话。';
+
+  @override
+  String get accountsCreatedDefaultIncomplete => '账号已创建，设为默认未完成';
+
+  @override
+  String get accountsUnconfirmedSaveDiscardWarning =>
+      '保存结果尚未确认。放弃只会清除本地编辑，不会撤销已发送的保存；稍后状态仍可能更新。';
+
+  @override
+  String get accountsConnectionBillingTitle => '连接、凭据与计费配置';
+
+  @override
+  String get accountsTemplatesHint => '搜索并选择模板，再检查连接配置。切换模板前会先处理当前编辑。';
+
+  @override
+  String get accountsListHint => '管理模型服务与受管接入，查看实时余额与订阅额度。';
+
+  @override
+  String get accountsTemplateNativeGroup => '模型 API';
+
+  @override
+  String get accountsTemplateAcpGroup => '受管接入';
+
+  @override
+  String accountsBackToAccount(String accountName) {
+    return '返回 $accountName';
+  }
+
+  @override
   String get accountsStateStale => '连接已变化。当前账号重新被观察前显示旧数据，并保留你的输入。';
 
   @override
@@ -37,7 +114,7 @@ class AppLocalizationsZh extends AppLocalizations {
   String get accountsTargetMissing => '此账号已不存在。';
 
   @override
-  String get accountsStatusColumn => '状态';
+  String get accountsStatusColumn => '计费与状态';
 
   @override
   String get accountsBalanceColumn => '余额与额度';
@@ -108,6 +185,45 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get accountsReadout => '加载性能与评价资料';
+
+  @override
+  String get accountsModelDetails => '详情与评价';
+
+  @override
+  String get accountsSpecsTab => '规格与性能';
+
+  @override
+  String get accountsPriceMissing => '此模型暂无已核验的阶梯价格。';
+
+  @override
+  String get accountsPerformanceMissing => '暂无本地性能样本。';
+
+  @override
+  String get accountsEvaluationWindow => '仅统计最近 10 条评价；未评级结果不计入分项均分。';
+
+  @override
+  String get accountsFilterAll => '全部结果';
+
+  @override
+  String get accountsFilterCategory => '全部任务类别';
+
+  @override
+  String get accountsFilterScore => '全部质量分数';
+
+  @override
+  String get accountsFilterEmpty => '没有符合筛选条件的评价。';
+
+  @override
+  String get accountsSortNewest => '最近优先';
+
+  @override
+  String get accountsSortHighest => '质量从高到低';
+
+  @override
+  String get accountsSortLowest => '质量从低到高';
+
+  @override
+  String get accountsCompactAdjusted => '模型已应用安全上限。保留您的输入意图，实际生效值以下方权威结果为准。';
 
   @override
   String get accountsConnection => '连接方式';

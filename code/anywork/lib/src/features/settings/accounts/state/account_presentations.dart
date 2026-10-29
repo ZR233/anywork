@@ -24,6 +24,8 @@ enum AccountRowAction { refresh, setDefault, edit, delete }
 
 enum AccountModelOrigin { online, bundled, manual }
 
+enum AccountModelTab { specifications, pricing, evaluations }
+
 enum AccountModelAction {
   edit,
   delete,
@@ -31,6 +33,24 @@ enum AccountModelAction {
   retryReadout,
   resetCompact,
   retryCompact,
+  saveCompact,
+}
+
+enum AccountItemLayout { columns, stacked }
+
+enum AccountMetricDensity { summary, detailed }
+
+enum AccountEvaluationOutcome { passed, failed, notRated }
+
+enum AccountEvaluationSort { newest, highestQuality, lowestQuality }
+
+enum AccountEvaluationCategory {
+  reasoning,
+  coding,
+  tooling,
+  longContext,
+  multimodal,
+  general,
 }
 
 enum AccountConnection { automatic, http, webSocket }
@@ -95,10 +115,23 @@ abstract class AccountTemplateKey with _$AccountTemplateKey {
 }
 
 @freezed
+sealed class AccountTemplateContent with _$AccountTemplateContent {
+  const factory AccountTemplateContent.native({
+    required AccountBilling defaultBilling,
+    required String protocolLabel,
+    required String defaultEndpoint,
+    required bool supportsModelDiscovery,
+    required bool? supportsUsageQuery,
+  }) = NativeAccountTemplateContent;
+  const factory AccountTemplateContent.acp() = AcpAccountTemplateContent;
+}
+
+@freezed
 abstract class AccountTemplatePresentation with _$AccountTemplatePresentation {
   const factory AccountTemplatePresentation({
     required AccountTemplateKey key,
     required String name,
+    required AccountTemplateContent content,
     String? iconKey,
     String? description,
   }) = _AccountTemplatePresentation;
@@ -146,15 +179,24 @@ abstract class AccountUsagePresentation with _$AccountUsagePresentation {
 }
 
 @freezed
+sealed class AccountRowContent with _$AccountRowContent {
+  const factory AccountRowContent.native({
+    required AccountBilling billing,
+    required AccountUsagePresentation usage,
+    String? displayEndpoint,
+  }) = NativeAccountRowContent;
+  const factory AccountRowContent.acp({required String status}) =
+      AcpAccountRowContent;
+}
+
+@freezed
 abstract class AccountRowPresentation with _$AccountRowPresentation {
   const factory AccountRowPresentation({
     required AccountDisplayKey key,
     required String name,
+    required AccountRowContent content,
     String? iconKey,
     @Default(false) bool isDefault,
-    AccountBilling? billing,
-    AccountUsagePresentation? usage,
-    String? acpStatus,
     String? operationError,
     @Default(<AccountRowAction>[]) List<AccountRowAction> actions,
   }) = _AccountRowPresentation;
@@ -171,8 +213,6 @@ abstract class AccountsListPresentation with _$AccountsListPresentation {
     @Default(true) bool canAdd,
     @Default(false) bool canRefresh,
     String? error,
-    AccountDisplayKey? selectedKey,
-    AccountDisplayKey? editingKey,
   }) = _AccountsListPresentation;
 }
 
@@ -182,6 +222,17 @@ abstract class AccountDisplayFact with _$AccountDisplayFact {
     required String label,
     required String value,
   }) = _AccountDisplayFact;
+}
+
+@freezed
+abstract class AccountModelSpecificationFacts
+    with _$AccountModelSpecificationFacts {
+  const factory AccountModelSpecificationFacts({
+    @Default(<AccountDisplayFact>[])
+    List<AccountDisplayFact> modalityCapabilities,
+    @Default(<AccountDisplayFact>[]) List<AccountDisplayFact> context,
+    @Default(<AccountDisplayFact>[]) List<AccountDisplayFact> connection,
+  }) = _AccountModelSpecificationFacts;
 }
 
 @freezed
@@ -207,18 +258,71 @@ abstract class AccountCompactPresentation with _$AccountCompactPresentation {
     @Default(false) bool canEdit,
     @Default(false) bool canReset,
     @Default(false) bool canRetry,
+    @Default(false) bool dirty,
+    @Default(false) bool canSave,
+    int? contextWindow,
+    @Default(false) bool adjusted,
   }) = _AccountCompactPresentation;
 }
 
 @freezed
 abstract class AccountModelEvaluation with _$AccountModelEvaluation {
   const factory AccountModelEvaluation({
-    required String title,
-    required String outcome,
+    required AccountEvaluationCategory category,
+    required String categoryLabel,
+    required AccountEvaluationOutcome outcome,
+    required String outcomeLabel,
     required String updatedLabel,
+    required int updatedAt,
     required String comment,
-    @Default(<AccountDisplayFact>[]) List<AccountDisplayFact> scores,
+    int? quality,
+    int? instructionFollowing,
   }) = _AccountModelEvaluation;
+}
+
+@freezed
+abstract class AccountModelPriceTier with _$AccountModelPriceTier {
+  const factory AccountModelPriceTier({
+    required String label,
+    required double input,
+    required double output,
+    double? cacheRead,
+    double? cacheWrite,
+  }) = _AccountModelPriceTier;
+}
+
+@freezed
+abstract class AccountEvaluationFilter with _$AccountEvaluationFilter {
+  const factory AccountEvaluationFilter({
+    AccountEvaluationOutcome? outcome,
+    AccountEvaluationCategory? category,
+    int? minimumQuality,
+    @Default(AccountEvaluationSort.newest) AccountEvaluationSort sort,
+  }) = _AccountEvaluationFilter;
+}
+
+@freezed
+abstract class AccountEvaluationSummary with _$AccountEvaluationSummary {
+  const factory AccountEvaluationSummary({
+    @Default(0) int count,
+    double? quality,
+    double? instructionFollowing,
+    @Default(<int, int>{}) Map<int, int> qualityDistribution,
+    @Default(<AccountModelEvaluation>[]) List<AccountModelEvaluation> visible,
+    @Default(AccountEvaluationFilter()) AccountEvaluationFilter filter,
+  }) = _AccountEvaluationSummary;
+}
+
+@freezed
+abstract class AccountPerformancePresentation
+    with _$AccountPerformancePresentation {
+  const factory AccountPerformancePresentation({
+    required int sampleCount,
+    required int ttftSampleCount,
+    double? tokensPerSecond,
+    double? averageTtftMillis,
+    String? updatedLabel,
+  }) = _AccountPerformancePresentation;
 }
 
 @freezed
@@ -232,11 +336,18 @@ abstract class AccountModelPresentation with _$AccountModelPresentation {
     @Default(false) bool saving,
     String? error,
     String? summary,
-    @Default(<AccountDisplayFact>[]) List<AccountDisplayFact> capabilities,
-    @Default(<AccountDisplayFact>[]) List<AccountDisplayFact> priceTiers,
-    @Default(<AccountDisplayFact>[]) List<AccountDisplayFact> performance,
+    @Default(AccountModelSpecificationFacts())
+    AccountModelSpecificationFacts specificationFacts,
+    @Default(<AccountModelPriceTier>[]) List<AccountModelPriceTier> priceTiers,
+    String? currency,
+    String? priceSource,
+    String? priceVerifiedLabel,
+    AccountPerformancePresentation? performance,
+    @Default(<AccountDisplayFact>[]) List<AccountDisplayFact> guidance,
     @Default(<AccountModelEvaluation>[])
     List<AccountModelEvaluation> evaluations,
+    @Default(AccountEvaluationSummary())
+    AccountEvaluationSummary evaluationSummary,
     @Default(false) bool readoutLoading,
     String? readoutError,
     @Default(false) bool canLoadReadout,
@@ -394,6 +505,8 @@ abstract class NativeAccountEditorPresentation
     @Default(false) bool saving,
     @Default(false) bool canSave,
     @Default(false) bool canAddModel,
+    @Default(false) bool setDefaultOnCreate,
+    @Default(false) bool showSetDefaultOnCreate,
     @Default(<ManualAccountModelPresentation>[])
     List<ManualAccountModelPresentation> manualModels,
     @Default(<AccountModelPresentation>[])

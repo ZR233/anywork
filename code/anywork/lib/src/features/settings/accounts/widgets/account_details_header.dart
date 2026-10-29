@@ -1,9 +1,10 @@
 import 'package:flutter/material.dart';
 
 import '../../../../l10n/app_localizations.dart';
-import '../../../../shared/account_brand.dart';
+import 'account_identity.dart';
 import '../state/account_presentations.dart';
 import 'account_sections.dart';
+import 'account_usage_view.dart';
 
 class AccountDetailsHeader extends StatelessWidget {
   const AccountDetailsHeader({
@@ -21,41 +22,30 @@ class AccountDetailsHeader extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final l10n = AppLocalizations.of(context);
-    final identity = Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        AccountBrandMark(
-          fallbackName: value.name,
-          iconKey: value.iconKey,
-          size: 76,
+    final identity = AccountIdentity(
+      name: value.name,
+      iconKey: value.iconKey,
+      subtitle: value.endpoint,
+      layout: AccountIdentityLayout.header,
+      badge: switch (value.content) {
+        NativeAccountDetailsContent(:final value) => AccountBillingBadge(
+          billing: value.billing.effective,
         ),
-        const SizedBox(width: 24),
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                value.name,
-                style: Theme.of(context).textTheme.headlineLarge
-                    ?.copyWith(fontWeight: FontWeight.w800),
-              ),
-              if (value.endpoint != null)
-                AccountSelectableText(
-                  value.endpoint!,
-                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                    color: Theme.of(context).colorScheme.onSurfaceVariant,
-                  ),
-                ),
-            ],
-          ),
-        ),
-      ],
+        AcpAccountDetailsContent() => null,
+      },
     );
     final actions = Wrap(
       spacing: 8,
       runSpacing: 8,
       crossAxisAlignment: WrapCrossAlignment.center,
       children: [
+        if (value.canSetDefault)
+          TextButton.icon(
+            key: const ValueKey<String>('account-details-set-default'),
+            onPressed: onSetDefault,
+            icon: const Icon(Icons.star_outline, size: 18),
+            label: Text(l10n.settingsSetAsDefaultAccount),
+          ),
         if (value.canEdit)
           OutlinedButton.icon(
             style: accountActionButtonStyle(context),
@@ -64,33 +54,19 @@ class AccountDetailsHeader extends StatelessWidget {
             icon: const Icon(Icons.edit_outlined),
             label: Text(l10n.settingsEditAccount),
           ),
-        if (value.canSetDefault || value.canDelete)
-          AccountMenuButton(
-            buttonKey: const ValueKey<String>('account-details-menu'),
-            tooltip: l10n.settingsAccountActions,
-            menuChildren: [
-              if (value.canSetDefault)
-                MenuItemButton(
-                  key: const ValueKey<String>('account-details-set-default'),
-                  onPressed: onSetDefault,
-                  leadingIcon: const Icon(Icons.star_outline),
-                  child: Text(l10n.settingsSetAsDefaultAccount),
-                ),
-              if (value.canDelete)
-                MenuItemButton(
-                  key: const ValueKey<String>('account-details-delete'),
-                  onPressed: onDelete,
-                  leadingIcon: const Icon(Icons.delete_outline),
-                  child: Text(l10n.settingsDeleteAccount),
-                ),
-            ],
+        if (value.canDelete)
+          IconButton(
+            key: const ValueKey<String>('account-details-delete'),
+            tooltip: l10n.settingsDeleteAccount,
+            onPressed: onDelete,
+            icon: const Icon(Icons.delete_outline, size: 20),
           ),
       ],
     );
     return LayoutBuilder(
       builder: (context, constraints) =>
           constraints.maxWidth >=
-              680 * MediaQuery.textScalerOf(context).scale(1)
+              760 * MediaQuery.textScalerOf(context).scale(1)
           ? Row(
               crossAxisAlignment: CrossAxisAlignment.center,
               children: [

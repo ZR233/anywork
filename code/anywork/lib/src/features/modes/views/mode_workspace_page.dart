@@ -20,6 +20,8 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../../app/routing/app_route.dart'
+    show ModeDetailRoute, ModeWorkspaceRoute;
 import '../../../app/theme/studio_tokens.dart';
 import '../../../l10n/studio_l10n.dart';
 import '../../../presentation/providers/client_provider.dart';
@@ -34,7 +36,6 @@ import '../widgets/mode_editor_panes.dart';
 import '../widgets/mode_stage_detail_panel.dart';
 import '../widgets/mode_transition_detail_panel.dart';
 import '../widgets/mode_workflow_canvas.dart';
-import '../../../app/routing/app_route.dart';
 
 /// 宽屏（画布与右侧详情并排）与窄屏（详情作为子路由页面）的断点。
 const double modeWorkspaceWideBreakpoint = 960;
@@ -352,7 +353,7 @@ class _ModeWorkspacePageState extends ConsumerState<ModeWorkspacePage>
       return;
     }
     _narrowDetailOpen = true;
-    final route = switch (selection) {
+    final detail = switch (selection) {
       ModeStageSelection(:final stateId) => ModeDetailRoute(
         modeId: widget.modeId,
         stage: stateId,
@@ -364,7 +365,7 @@ class _ModeWorkspacePageState extends ConsumerState<ModeWorkspacePage>
         ),
     };
     unawaited(
-      route.push<void>(context).whenComplete(() => _narrowDetailOpen = false),
+      detail.push<void>(context).whenComplete(() => _narrowDetailOpen = false),
     );
   }
 
@@ -487,7 +488,9 @@ class _ModeWorkspacePageState extends ConsumerState<ModeWorkspacePage>
       toolbarHeight: 64,
       leading: BackButton(
         key: ModeEditorKeys.backButton,
-        onPressed: () => context.pop(),
+        onPressed: () {
+          if (context.canPop()) context.pop();
+        },
       ),
       titleSpacing: 0,
       title: Row(

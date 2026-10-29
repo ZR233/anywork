@@ -7140,6 +7140,7 @@ impl SseDecode for crate::api::studio::accounts::types::BridgeAccountSummary {
             <crate::api::studio::accounts::types::BridgeAccountIdentity>::sse_decode(deserializer);
         let mut var_name = <String>::sse_decode(deserializer);
         let mut var_brandKey = <Option<String>>::sse_decode(deserializer);
+        let mut var_displayEndpoint = <Option<String>>::sse_decode(deserializer);
         let mut var_isDefault = <bool>::sse_decode(deserializer);
         let mut var_billingKind =
             <Option<crate::api::studio::types::delegation::BridgeBillingKind>>::sse_decode(
@@ -7159,6 +7160,7 @@ impl SseDecode for crate::api::studio::accounts::types::BridgeAccountSummary {
             identity: var_identity,
             name: var_name,
             brand_key: var_brandKey,
+            display_endpoint: var_displayEndpoint,
             is_default: var_isDefault,
             billing_kind: var_billingKind,
             billing_kind_override: var_billingKindOverride,
@@ -7181,6 +7183,10 @@ impl SseDecode for crate::api::studio::types::settings::BridgeAccountTemplateDes
         let mut var_credentialEnv = <Option<String>>::sse_decode(deserializer);
         let mut var_modelCatalogId = <String>::sse_decode(deserializer);
         let mut var_protocol = <String>::sse_decode(deserializer);
+        let mut var_defaultBillingKind =
+            <crate::api::studio::types::delegation::BridgeBillingKind>::sse_decode(deserializer);
+        let mut var_supportsModelDiscovery = <bool>::sse_decode(deserializer);
+        let mut var_supportsUsageQuery = <Option<bool>>::sse_decode(deserializer);
         let mut var_suggestedModelId = <String>::sse_decode(deserializer);
         let mut var_iconKey = <Option<String>>::sse_decode(deserializer);
         let mut var_serviceCapabilities =
@@ -7196,6 +7202,9 @@ impl SseDecode for crate::api::studio::types::settings::BridgeAccountTemplateDes
             credential_env: var_credentialEnv,
             model_catalog_id: var_modelCatalogId,
             protocol: var_protocol,
+            default_billing_kind: var_defaultBillingKind,
+            supports_model_discovery: var_supportsModelDiscovery,
+            supports_usage_query: var_supportsUsageQuery,
             suggested_model_id: var_suggestedModelId,
             icon_key: var_iconKey,
             service_capabilities: var_serviceCapabilities,
@@ -21707,6 +21716,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::studio::accounts::types::Brid
             self.identity.into_into_dart().into_dart(),
             self.name.into_into_dart().into_dart(),
             self.brand_key.into_into_dart().into_dart(),
+            self.display_endpoint.into_into_dart().into_dart(),
             self.is_default.into_into_dart().into_dart(),
             self.billing_kind.into_into_dart().into_dart(),
             self.billing_kind_override.into_into_dart().into_dart(),
@@ -21743,6 +21753,9 @@ impl flutter_rust_bridge::IntoDart
             self.credential_env.into_into_dart().into_dart(),
             self.model_catalog_id.into_into_dart().into_dart(),
             self.protocol.into_into_dart().into_dart(),
+            self.default_billing_kind.into_into_dart().into_dart(),
+            self.supports_model_discovery.into_into_dart().into_dart(),
+            self.supports_usage_query.into_into_dart().into_dart(),
             self.suggested_model_id.into_into_dart().into_dart(),
             self.icon_key.into_into_dart().into_dart(),
             self.service_capabilities.into_into_dart().into_dart(),
@@ -35851,6 +35864,7 @@ impl SseEncode for crate::api::studio::accounts::types::BridgeAccountSummary {
         );
         <String>::sse_encode(self.name, serializer);
         <Option<String>>::sse_encode(self.brand_key, serializer);
+        <Option<String>>::sse_encode(self.display_endpoint, serializer);
         <bool>::sse_encode(self.is_default, serializer);
         <Option<crate::api::studio::types::delegation::BridgeBillingKind>>::sse_encode(
             self.billing_kind,
@@ -35881,6 +35895,12 @@ impl SseEncode for crate::api::studio::types::settings::BridgeAccountTemplateDes
         <Option<String>>::sse_encode(self.credential_env, serializer);
         <String>::sse_encode(self.model_catalog_id, serializer);
         <String>::sse_encode(self.protocol, serializer);
+        <crate::api::studio::types::delegation::BridgeBillingKind>::sse_encode(
+            self.default_billing_kind,
+            serializer,
+        );
+        <bool>::sse_encode(self.supports_model_discovery, serializer);
+        <Option<bool>>::sse_encode(self.supports_usage_query, serializer);
         <String>::sse_encode(self.suggested_model_id, serializer);
         <Option<String>>::sse_encode(self.icon_key, serializer);
         <crate::api::studio::types::settings::BridgeServiceCapabilitiesDescriptor>::sse_encode(
