@@ -218,7 +218,9 @@ mod tests {
         let old = legacy_checkpoint()?;
         checkpoint::write(db, &old, None).await?;
         db.execute_unprepared("INSERT INTO session_costs VALUES('null','CNY',8.25);
-            DELETE FROM seaql_migrations WHERE version='m20261027_000002_history_producer_payloads';").await?;
+            DELETE FROM seaql_migrations WHERE version IN ('m20261027_000002_history_producer_payloads','m20261027_000004_history_atomic_timeline');
+            DROP TABLE timeline_records;
+            UPDATE history_meta SET schema_version=9;").await?;
         // Unknown envelope extensions and exact numeric tokens survive known-field replacement.
         let mut saved = raw(db).await?;
         let mut metadata: serde_json::Value = serde_json::from_str(&saved.0)?;
@@ -338,7 +340,9 @@ mod tests {
             123,
             &current.state.usage_summary,
         )?;
-        db.execute_unprepared("DELETE FROM seaql_migrations WHERE version='m20261027_000002_history_producer_payloads';
+        db.execute_unprepared("DELETE FROM seaql_migrations WHERE version IN ('m20261027_000002_history_producer_payloads','m20261027_000004_history_atomic_timeline');
+            DROP TABLE timeline_records;
+            UPDATE history_meta SET schema_version=9;
             CREATE TRIGGER no_current_checkpoint_rewrite BEFORE UPDATE ON session_checkpoint BEGIN SELECT RAISE(ABORT,'current checkpoint rewritten'); END;
             CREATE TRIGGER no_current_context_rewrite BEFORE UPDATE ON current_context BEGIN SELECT RAISE(ABORT,'current context rewritten'); END;").await?;
         schema::prepare(db, "producer", schema::Preparation::Schema, None).await?;

@@ -112,6 +112,7 @@ async fn persist(store: &HistoryStore, state: ThreadSnapshot, append: bool) -> R
             &checkpoint,
             &effect,
             EffectCommit {
+                completions: &[],
                 items: &[],
                 rolled_back_turns: &empty,
                 identities: &[],
@@ -1522,6 +1523,7 @@ async fn mode_binding_recovery_replaces_unknown_snapshot_and_keeps_initial_conte
             &checkpoint,
             &effect,
             EffectCommit {
+                completions: &[],
                 items: &[],
                 rolled_back_turns: &empty,
                 identities: &[],
