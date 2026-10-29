@@ -18,7 +18,7 @@ import 'thread_stream.dart';
 import 'thread_stream/item.dart';
 part 'chat.freezed.dart';
 
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
 
 @freezed
 sealed class BridgeContentField with _$BridgeContentField {
@@ -32,26 +32,28 @@ sealed class BridgeContentField with _$BridgeContentField {
   const factory BridgeContentField.toolArguments() =
       BridgeContentField_ToolArguments;
   const factory BridgeContentField.toolResult() = BridgeContentField_ToolResult;
-
-  /// 工具的一次执行附加的开放产物（只在 canonical/详情边界编码）。
   const factory BridgeContentField.toolOutputArtifacts() =
       BridgeContentField_ToolOutputArtifacts;
-
-  /// 普通问答正文：问题位置 + 该问题内的一段可展示正文。
   const factory BridgeContentField.toolUserInput({
     required int questionIndex,
     required BridgeThreadUserInputFieldPart part_,
   }) = BridgeContentField_ToolUserInput;
-
-  /// 原始记录的一段正文：它在原记录里的顺序。
   const factory BridgeContentField.rawPayload({required int payloadIndex}) =
       BridgeContentField_RawPayload;
+  const factory BridgeContentField.planDocument() =
+      BridgeContentField_PlanDocument;
+  const factory BridgeContentField.planFeedback() =
+      BridgeContentField_PlanFeedback;
 }
 
 @freezed
 sealed class BridgeConversationEvent with _$BridgeConversationEvent {
   const BridgeConversationEvent._();
 
+  const factory BridgeConversationEvent.activityContent({
+    required BridgeActivityContentFrame frame,
+    BridgeTimelineUpdate? completed,
+  }) = BridgeConversationEvent_ActivityContent;
   const factory BridgeConversationEvent.state({
     required BridgeThreadSubscriptionUpdate update,
   }) = BridgeConversationEvent_State;
@@ -67,8 +69,6 @@ sealed class BridgeConversationEvent with _$BridgeConversationEvent {
       BridgeConversationEvent_Closed;
 }
 
-/// Transport sequence is independent of both domain watermarks. Terminal events reuse the last
-/// data sequence (zero before the first data frame) and never consume credit.
 class BridgeConversationFrame {
   final String threadId;
   final String subscriptionId;
@@ -120,36 +120,31 @@ sealed class BridgeThreadUserInputFieldPart
   }) = BridgeThreadUserInputFieldPart_OptionDescription;
 }
 
-/// 一条尾部连接的基线。
 class BridgeTimelineBaseline {
-  /// 本连接的订阅身份；重连换新，同连接重同步保持不变。
   final String subscriptionId;
-
-  /// 订阅自己的内容版本；与条目 revision、持久化水位无关。
-  final BigInt version;
+  final String timelineEpoch;
   final List<BridgeTimelineItem> items;
-
-  /// 直接继续翻更旧一页的边界 token；只有 `has_older` 为真时给出。与 `items` 来自同一次一致读取。
   final String? before;
-
-  /// 是否真的还有更旧内容（真实存在性证明，不凭条数猜 EOF）。
   final bool hasOlder;
+  final BridgeTimelineCompletionCursor completedCursor;
 
   const BridgeTimelineBaseline({
     required this.subscriptionId,
-    required this.version,
+    required this.timelineEpoch,
     required this.items,
     this.before,
     required this.hasOlder,
+    required this.completedCursor,
   });
 
   @override
   int get hashCode =>
       subscriptionId.hashCode ^
-      version.hashCode ^
+      timelineEpoch.hashCode ^
       items.hashCode ^
       before.hashCode ^
-      hasOlder.hashCode;
+      hasOlder.hashCode ^
+      completedCursor.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -157,54 +152,46 @@ class BridgeTimelineBaseline {
       other is BridgeTimelineBaseline &&
           runtimeType == other.runtimeType &&
           subscriptionId == other.subscriptionId &&
-          version == other.version &&
+          timelineEpoch == other.timelineEpoch &&
           items == other.items &&
           before == other.before &&
-          hasOlder == other.hasOlder;
+          hasOlder == other.hasOlder &&
+          completedCursor == other.completedCursor;
 }
 
-@freezed
-sealed class BridgeTimelineChange with _$BridgeTimelineChange {
-  const BridgeTimelineChange._();
+class BridgeTimelineCompletionCursor {
+  final String timelineEpoch;
+  final BigInt appendSeq;
 
-  /// 订阅尚未交付过的一条权威条目（装箱以避免整个枚举按最大变体取值）。
-  const factory BridgeTimelineChange.add({required BridgeTimelineItem item}) =
-      BridgeTimelineChange_Add;
+  const BridgeTimelineCompletionCursor({
+    required this.timelineEpoch,
+    required this.appendSeq,
+  });
 
-  /// 同一身份的全部内容与状态字段，在**一次** expectedRevision/revision 提交里原子应用。
-  ///
-  /// 应用条件：本地该 `itemId` 的 content revision 等于 `expectedRevision`；否则按宿主策略重同步。
-  const factory BridgeTimelineChange.updateItem({
-    required String itemId,
-    required BigInt expectedRevision,
-    required BigInt revision,
-    required bool saved,
-    required BridgeTimelineLifecycle lifecycle,
-    BridgeTimelineItemHeader? header,
-    BridgeTimelineDescriptor? descriptor,
-    required List<BridgeTimelineFieldUpdate> fields,
-  }) = BridgeTimelineChange_UpdateItem;
+  @override
+  int get hashCode => timelineEpoch.hashCode ^ appendSeq.hashCode;
 
-  /// 真实删除：该身份不再存在。预览缓存退出不是删除。
-  const factory BridgeTimelineChange.remove({required String itemId}) =
-      BridgeTimelineChange_Remove;
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeTimelineCompletionCursor &&
+          runtimeType == other.runtimeType &&
+          timelineEpoch == other.timelineEpoch &&
+          appendSeq == other.appendSeq;
 }
 
-/// 一段完整正文块。
 class BridgeTimelineDetailChunk {
+  final String timelineEpoch;
   final String itemId;
   final BridgeContentField field;
-  final BigInt revision;
   final String text;
-
-  /// 该字段完整正文的 UTF-8 字节数。
   final BigInt totalBytes;
   final String? continuation;
 
   const BridgeTimelineDetailChunk({
+    required this.timelineEpoch,
     required this.itemId,
     required this.field,
-    required this.revision,
     required this.text,
     required this.totalBytes,
     this.continuation,
@@ -212,9 +199,9 @@ class BridgeTimelineDetailChunk {
 
   @override
   int get hashCode =>
+      timelineEpoch.hashCode ^
       itemId.hashCode ^
       field.hashCode ^
-      revision.hashCode ^
       text.hashCode ^
       totalBytes.hashCode ^
       continuation.hashCode;
@@ -224,32 +211,31 @@ class BridgeTimelineDetailChunk {
       identical(this, other) ||
       other is BridgeTimelineDetailChunk &&
           runtimeType == other.runtimeType &&
+          timelineEpoch == other.timelineEpoch &&
           itemId == other.itemId &&
           field == other.field &&
-          revision == other.revision &&
           text == other.text &&
           totalBytes == other.totalBytes &&
           continuation == other.continuation;
 }
 
-/// 详情读取请求：item 由调用参数给出，其余绑定在同一份 typed 请求里。
 class BridgeTimelineDetailQuery {
+  final String timelineEpoch;
   final BridgeContentField field;
-  final BigInt revision;
   final String? continuation;
   final int? maxBytes;
 
   const BridgeTimelineDetailQuery({
+    required this.timelineEpoch,
     required this.field,
-    required this.revision,
     this.continuation,
     this.maxBytes,
   });
 
   @override
   int get hashCode =>
+      timelineEpoch.hashCode ^
       field.hashCode ^
-      revision.hashCode ^
       continuation.hashCode ^
       maxBytes.hashCode;
 
@@ -258,31 +244,10 @@ class BridgeTimelineDetailQuery {
       identical(this, other) ||
       other is BridgeTimelineDetailQuery &&
           runtimeType == other.runtimeType &&
+          timelineEpoch == other.timelineEpoch &&
           field == other.field &&
-          revision == other.revision &&
           continuation == other.continuation &&
           maxBytes == other.maxBytes;
-}
-
-@freezed
-sealed class BridgeTimelineFieldChange with _$BridgeTimelineFieldChange {
-  const BridgeTimelineFieldChange._();
-
-  /// 正文不变，但所属 item 的 revision 仍要提交（版本帧不是空补丁）。
-  const factory BridgeTimelineFieldChange.unchanged() =
-      BridgeTimelineFieldChange_Unchanged;
-
-  /// 该字段仍以前缀方式扩展本地已交付末尾；`text` 是新增字节。
-  const factory BridgeTimelineFieldChange.append({required String text}) =
-      BridgeTimelineFieldChange_Append;
-
-  /// 本地基线已失效；`text` 是整段权威正文。
-  const factory BridgeTimelineFieldChange.replace({required String text}) =
-      BridgeTimelineFieldChange_Replace;
-
-  /// 该字段已从条目移除。
-  const factory BridgeTimelineFieldChange.remove() =
-      BridgeTimelineFieldChange_Remove;
 }
 
 class BridgeTimelineFieldPreview {
@@ -309,71 +274,22 @@ class BridgeTimelineFieldPreview {
           totalBytes == other.totalBytes;
 }
 
-/// 同一 item 的一个字段变化。
-class BridgeTimelineFieldUpdate {
-  final BridgeContentField field;
-  final BridgeTimelineFieldChange change;
-
-  /// 该字段完整正文的 UTF-8 字节数；预览被截断时仍是原文长度。
-  final BigInt totalBytes;
-
-  /// 本次交付的预览字节数。
-  final BigInt previewBytes;
-
-  const BridgeTimelineFieldUpdate({
-    required this.field,
-    required this.change,
-    required this.totalBytes,
-    required this.previewBytes,
-  });
-
-  @override
-  int get hashCode =>
-      field.hashCode ^
-      change.hashCode ^
-      totalBytes.hashCode ^
-      previewBytes.hashCode;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is BridgeTimelineFieldUpdate &&
-          runtimeType == other.runtimeType &&
-          field == other.field &&
-          change == other.change &&
-          totalBytes == other.totalBytes &&
-          previewBytes == other.previewBytes;
-}
-
-/// 一条时间线条目的预览值。
 class BridgeTimelineItem {
   final BridgeTimelineItemHeader header;
-  final BigInt revision;
   final BridgeTimelineDescriptor descriptor;
   final BridgeTimelineItemSource source;
-  final bool saved;
-  final BridgeTimelineLifecycle lifecycle;
   final List<BridgeTimelineFieldPreview> fields;
 
   const BridgeTimelineItem({
     required this.header,
-    required this.revision,
     required this.descriptor,
     required this.source,
-    required this.saved,
-    required this.lifecycle,
     required this.fields,
   });
 
   @override
   int get hashCode =>
-      header.hashCode ^
-      revision.hashCode ^
-      descriptor.hashCode ^
-      source.hashCode ^
-      saved.hashCode ^
-      lifecycle.hashCode ^
-      fields.hashCode;
+      header.hashCode ^ descriptor.hashCode ^ source.hashCode ^ fields.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -381,11 +297,8 @@ class BridgeTimelineItem {
       other is BridgeTimelineItem &&
           runtimeType == other.runtimeType &&
           header == other.header &&
-          revision == other.revision &&
           descriptor == other.descriptor &&
           source == other.source &&
-          saved == other.saved &&
-          lifecycle == other.lifecycle &&
           fields == other.fields;
 }
 
@@ -401,61 +314,51 @@ sealed class BridgeTimelineItemSource with _$BridgeTimelineItemSource {
   }) = BridgeTimelineItemSource_ModelRecovery;
 }
 
-/// 条目的执行终态事实，与保存水位 `saved` 严格独立。
-enum BridgeTimelineLifecycle { streaming, terminal }
-
-/// 一页升序预览条目、下一更旧边界与是否真的还有更旧内容。
 class BridgeTimelinePage {
+  final String timelineEpoch;
   final List<BridgeTimelineItem> items;
-
-  /// 请求更旧一页时原样回传的不透明边界 token。
   final String? before;
   final bool hasOlder;
 
   const BridgeTimelinePage({
+    required this.timelineEpoch,
     required this.items,
     this.before,
     required this.hasOlder,
   });
 
   @override
-  int get hashCode => items.hashCode ^ before.hashCode ^ hasOlder.hashCode;
+  int get hashCode =>
+      timelineEpoch.hashCode ^
+      items.hashCode ^
+      before.hashCode ^
+      hasOlder.hashCode;
 
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
       other is BridgeTimelinePage &&
           runtimeType == other.runtimeType &&
+          timelineEpoch == other.timelineEpoch &&
           items == other.items &&
           before == other.before &&
           hasOlder == other.hasOlder;
 }
 
-/// 一帧是否需要立即应用，还是普通文本已经合帧。
-enum BridgeTimelinePriority { immediate, coalesced }
-
 enum BridgeTimelineRecoveryNotice { retry, result }
-
-/// 订阅无法继续用连续补丁表达时的原因。
-enum BridgeTimelineResyncReason { lagging, unavailable }
 
 @freezed
 sealed class BridgeTimelineUpdate with _$BridgeTimelineUpdate {
   const BridgeTimelineUpdate._();
 
-  /// 连续补丁：`from` 必须等于本地已交付版本。
-  const factory BridgeTimelineUpdate.patch({
+  const factory BridgeTimelineUpdate.batch({
     required String subscriptionId,
-    required BigInt from,
-    required BigInt to,
-    required List<BridgeTimelineChange> changes,
-    required BridgeTimelinePriority priority,
-  }) = BridgeTimelineUpdate_Patch;
-
-  /// 无法连续表达：给出原因与新的最新小页基线，同连接沿用本订阅身份。
-  const factory BridgeTimelineUpdate.resync({
-    required String subscriptionId,
-    required BridgeTimelineResyncReason reason,
+    required String timelineEpoch,
+    required BigInt fromSeq,
+    required BigInt throughSeq,
+    required List<BridgeTimelineItem> items,
+  }) = BridgeTimelineUpdate_Batch;
+  const factory BridgeTimelineUpdate.reset({
     required BridgeTimelineBaseline baseline,
-  }) = BridgeTimelineUpdate_Resync;
+  }) = BridgeTimelineUpdate_Reset;
 }

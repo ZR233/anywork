@@ -30,6 +30,7 @@ import '../../rust/api/studio/subscription/shutdown.dart' as frb_shutdown_sub;
 import '../../rust/api/studio/subscription/startup.dart' as frb_startup_sub;
 import '../../rust/api/studio/types/product_topic.dart' as frb_topic_types;
 import '../../rust/api/studio/handlers/chat.dart' as frb_chat;
+import '../../rust/api/studio/handlers/history/timeline_reader.dart' as frb_history_reader;
 import '../../rust/api/studio/handlers/mode_editor.dart' as frb_mode_editor;
 import '../../rust/api/studio/types/chat.dart' as frb_chat_types;
 import '../../rust/api/studio/types/command.dart' as frb_command;

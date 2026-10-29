@@ -2374,24 +2374,24 @@ impl LiveProjection {
                             preview
                                 .fields
                                 .iter()
-                                .filter_map(|(field, block)| {
+                                .filter(|(field, _)| {
                                     matches!(
                                         field,
                                         ChatField::Part(PresentationPart::SummaryText(_))
                                     )
-                                    .then(|| block.text())
                                 })
+                                .map(|(_, block)| block.text())
                                 .collect(),
                             preview
                                 .fields
                                 .iter()
-                                .filter_map(|(field, block)| {
+                                .filter(|(field, _)| {
                                     matches!(
                                         field,
                                         ChatField::Part(PresentationPart::ReasoningText(_))
                                     )
-                                    .then(|| block.text())
                                 })
+                                .map(|(_, block)| block.text())
                                 .collect(),
                             value.lifecycle().clone(),
                         ))

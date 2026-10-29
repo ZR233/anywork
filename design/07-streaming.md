@@ -56,7 +56,10 @@ SDK 各领域 Repository 是当前态唯一 Dart writer，FRB 只做一次类型
 
 FRB 桌面桥接层与 HTTP SSE 服务端共用同一套运行时订阅 API，不各自维护流状态机：
 - **端点与订阅顺序**：HTTP 产品流端点为 `GET /api/v1/events/product`，线程状态流端点为 `GET /api/v1/threads/{thread_id}/events`。订阅建立时一律先注册接收通道、再读取当前基线状态（如自更新主题流 `Updater` 先登记接收者再读取当前更新状态），确保建连期间完成的后台状态变更不会漏发。
-- **内存驻留钉扎（Residency Pin）**：线程状态流首帧固定下发权威快照，后续依次下发 `notification`、`lagged` 或 `closed`。生产端在订阅连接存活期间持有该线程的内存驻留钉扎（pin）；当连接断开或服务端关闭时，立即取消生产任务并释放接收通道与钉扎句柄（多个重叠订阅与临时激活操作采用引用计数独立管理）。
+- **统一会话 SSE**：`GET /api/v1/threads/{thread_id}/events` 直接消费同一个 Runtime `ConversationFeed`。状态沿用 `snapshot`、`notification`、`lagged` 事件；完成历史使用 `contentBaseline`、`contentUpdate`，实时正文使用 `activityContent`。后者携带 typed `frame` 和可选 `completed`；仅活动 Commit 可以附带完成批次，消费者先接纳完成项再公开活动结束。不得重新引入实时详情 query 或在 HTTP 侧重组活动/历史。
+- **会话恢复位置**：会话 SSE 可同时提供查询参数 `timelineEpoch`、`appendSeq`，表示呈现端已经连续接纳的完成前缀；只提供其中之一、空 epoch 或越过可表示范围的序号均明确拒绝。没有参数时推最新 Baseline，同代恢复先推当前态再连续补发，异代按 Runtime 的 Reset 处理。`Last-Event-ID` 不是完成接纳位置，不用于推断该前缀；未显式提供前缀的重连重新建立基线，不重放业务命令。
+- **独立完成尾部**：`GET /api/v1/threads/{thread_id}/timeline/events` 只提供不可变完成历史，事件名为 `baseline`、`batch`、`reset`；Batch 只追加连续完成项，Reset 仅用于 epoch 变化。事件 ID 同时包含 epoch 与完成位置，不能把执行 revision 当作完成序号；该端点不承担实时正文或跨连接的 durable replay。
+- **内存驻留与关闭**：统一 feed 在连接存活期间持有正式 reader/订阅作用域，不在 HTTP 新建平行会话登记或内容缓存。正文发送最多保留一个有界排队帧；发送背压、断连及服务端关闭均保留原取消语义，先取消并 join 真实 feed 再释放作用域。重叠订阅与临时激活各自管理所有权。
 - **快照点查与技能激活通知**：FRB 的 `readThreadSnapshot` 与 HTTP 的 `GET /api/v1/threads/{thread_id}` 调用同一快照查询入口，返回不含历史条目的当前线程完整状态。技能（`Skill`）激活通过常规的终态技能条目与 `threadRuntimeUpdated` 通知表达，激活来源为强类型的 `Tool { toolCallId } | UserGesture { invocationId }`，资源位置为类型化资源基址（resource base），时间线据此区分“智能体调用激活”与“用户手动激活”（压缩重置与冷恢复语义见 [10](./10-skills.md) §10.6）。
 - **滞后重同步与心跳**：产品流发生滞后或收到客户端携带 `Last-Event-ID` 的重连请求时，立即下发 `stale` 事件要求客户端重读 `/api/v1/state`。SSE 连接每 15 秒发送一次注释行心跳（comment heartbeat），心跳不占用业务序号，且 FRB 与 HTTP 各自的传输缓冲区互不共享序号或取消句柄。会话标题的自动生成与提交统一通过 `ThreadDirectoryChanged` 增量事件发布（见 [18](./18-studio-state.md)），不设平行的标题通知帧。
 

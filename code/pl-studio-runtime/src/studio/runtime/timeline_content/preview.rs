@@ -6,10 +6,10 @@
 use std::collections::BTreeSet;
 
 use anyhow::{Result, anyhow};
-use pl_core::chat::{CHAT_ITEM_PREVIEW_BYTES, ChatError, ChatField, ChatItem, ChatLifecycle};
+use pl_core::chat::{CHAT_ITEM_PREVIEW_BYTES, ChatError, ChatField, ChatItem};
 use pl_protocol::{
     AGENT_SESSION_PLAN_CONFIRMATION_QUESTION_ID, TimelineDescriptor, TimelineFieldPreview,
-    TimelineItem, TimelineLifecycle, studio::StudioError, studio::StudioErrorCode,
+    TimelineItem, studio::StudioError, studio::StudioErrorCode,
 };
 
 use super::meta::TimelineMeta;
@@ -253,14 +253,8 @@ pub(crate) fn timeline_item(item: &ChatItem) -> Result<TimelineItem> {
     }
     Ok(TimelineItem {
         source: crate::studio::thread_projection::order::timeline_source(&item.item_id),
-        header: meta.header,
-        revision: item.revision,
+        header: meta.header(item),
         descriptor: meta.descriptor,
-        saved: item.saved,
-        lifecycle: match item.lifecycle {
-            ChatLifecycle::Streaming => TimelineLifecycle::Streaming,
-            ChatLifecycle::Terminal => TimelineLifecycle::Terminal,
-        },
         fields,
     })
 }

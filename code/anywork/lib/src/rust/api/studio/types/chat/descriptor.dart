@@ -12,7 +12,29 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'package:freezed_annotation/freezed_annotation.dart' hide protected;
 part 'descriptor.freezed.dart';
 
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
+
+@freezed
+sealed class BridgeTimelineAgentOutcome with _$BridgeTimelineAgentOutcome {
+  const BridgeTimelineAgentOutcome._();
+
+  const factory BridgeTimelineAgentOutcome.succeeded({
+    required PlatformInt64 completedAt,
+    required String summary,
+  }) = BridgeTimelineAgentOutcome_Succeeded;
+  const factory BridgeTimelineAgentOutcome.denied({
+    required PlatformInt64 deniedAt,
+    required String reason,
+  }) = BridgeTimelineAgentOutcome_Denied;
+  const factory BridgeTimelineAgentOutcome.failed({
+    required PlatformInt64 failedAt,
+    required String error,
+  }) = BridgeTimelineAgentOutcome_Failed;
+  const factory BridgeTimelineAgentOutcome.cancelled({
+    required PlatformInt64 cancelledAt,
+    required String reason,
+  }) = BridgeTimelineAgentOutcome_Cancelled;
+}
 
 class BridgeTimelineAnswerDescriptor {
   final String questionId;
@@ -40,6 +62,23 @@ class BridgeTimelineAnswerDescriptor {
 }
 
 @freezed
+sealed class BridgeTimelineContentOutcome with _$BridgeTimelineContentOutcome {
+  const BridgeTimelineContentOutcome._();
+
+  const factory BridgeTimelineContentOutcome.completed({
+    required PlatformInt64 completedAt,
+  }) = BridgeTimelineContentOutcome_Completed;
+  const factory BridgeTimelineContentOutcome.failed({
+    required PlatformInt64 failedAt,
+    required String error,
+  }) = BridgeTimelineContentOutcome_Failed;
+  const factory BridgeTimelineContentOutcome.cancelled({
+    required PlatformInt64 cancelledAt,
+    required String reason,
+  }) = BridgeTimelineContentOutcome_Cancelled;
+}
+
+@freezed
 sealed class BridgeTimelineDescriptor with _$BridgeTimelineDescriptor {
   const BridgeTimelineDescriptor._();
 
@@ -57,16 +96,16 @@ sealed class BridgeTimelineDescriptor with _$BridgeTimelineDescriptor {
   ) = BridgeTimelineDescriptor_Raw;
   const factory BridgeTimelineDescriptor.agent({
     required BridgeThreadAgentIdentity identity,
-    required BridgeThreadAgentState state,
+    required BridgeTimelineAgentOutcome outcome,
   }) = BridgeTimelineDescriptor_Agent;
   const factory BridgeTimelineDescriptor.turn({
-    required BridgeTurnState state,
+    required BridgeTimelineTurnOutcome outcome,
     String? inputId,
   }) = BridgeTimelineDescriptor_Turn;
   const factory BridgeTimelineDescriptor.inference({
     required String inferenceId,
     required String model,
-    required BridgeThreadInferenceState state,
+    required BridgeTimelineInferenceOutcome outcome,
   }) = BridgeTimelineDescriptor_Inference;
   const factory BridgeTimelineDescriptor.skill({
     required String name,
@@ -86,23 +125,48 @@ sealed class BridgeTimelineDescriptor with _$BridgeTimelineDescriptor {
     BigInt? afterTokens,
     required PlatformInt64 compactedAt,
   }) = BridgeTimelineDescriptor_ContextCompaction;
+  const factory BridgeTimelineDescriptor.plan({
+    required String interactionId,
+    BigInt? documentVersion,
+    String? contentHash,
+    required BridgeTimelinePlanDecision decision,
+  }) = BridgeTimelineDescriptor_Plan;
+}
+
+@freezed
+sealed class BridgeTimelineInferenceOutcome
+    with _$BridgeTimelineInferenceOutcome {
+  const BridgeTimelineInferenceOutcome._();
+
+  const factory BridgeTimelineInferenceOutcome.completed({
+    required PlatformInt64 completedAt,
+    required BridgeTokenUsageSnapshot usage,
+  }) = BridgeTimelineInferenceOutcome_Completed;
+  const factory BridgeTimelineInferenceOutcome.failed({
+    required PlatformInt64 failedAt,
+    required String error,
+  }) = BridgeTimelineInferenceOutcome_Failed;
+  const factory BridgeTimelineInferenceOutcome.cancelled({
+    required PlatformInt64 cancelledAt,
+    required String reason,
+  }) = BridgeTimelineInferenceOutcome_Cancelled;
 }
 
 class BridgeTimelineItemHeader {
   final String id;
   final String threadId;
-  final String turnId;
-  final BigInt ordinal;
-  final PlatformInt64 createdAt;
-  final PlatformInt64 updatedAt;
+  final String? turnId;
+  final BigInt appendSeq;
+  final BigInt? sourceEffectSeq;
+  final PlatformInt64? sealedAt;
 
   const BridgeTimelineItemHeader({
     required this.id,
     required this.threadId,
-    required this.turnId,
-    required this.ordinal,
-    required this.createdAt,
-    required this.updatedAt,
+    this.turnId,
+    required this.appendSeq,
+    this.sourceEffectSeq,
+    this.sealedAt,
   });
 
   @override
@@ -110,9 +174,9 @@ class BridgeTimelineItemHeader {
       id.hashCode ^
       threadId.hashCode ^
       turnId.hashCode ^
-      ordinal.hashCode ^
-      createdAt.hashCode ^
-      updatedAt.hashCode;
+      appendSeq.hashCode ^
+      sourceEffectSeq.hashCode ^
+      sealedAt.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -122,9 +186,16 @@ class BridgeTimelineItemHeader {
           id == other.id &&
           threadId == other.threadId &&
           turnId == other.turnId &&
-          ordinal == other.ordinal &&
-          createdAt == other.createdAt &&
-          updatedAt == other.updatedAt;
+          appendSeq == other.appendSeq &&
+          sourceEffectSeq == other.sourceEffectSeq &&
+          sealedAt == other.sealedAt;
+}
+
+enum BridgeTimelinePlanDecision {
+  approved,
+  revisionRequested,
+  cancelled,
+  resolved,
 }
 
 class BridgeTimelineQuestionDescriptor {
@@ -210,17 +281,17 @@ class BridgeTimelineRawPayloadDescriptor {
 class BridgeTimelineTextDescriptor {
   final BridgeThreadTextChannel channel;
   final List<BridgeThreadAttachment> attachments;
-  final BridgeThreadContentLifecycle lifecycle;
+  final BridgeTimelineContentOutcome outcome;
 
   const BridgeTimelineTextDescriptor({
     required this.channel,
     required this.attachments,
-    required this.lifecycle,
+    required this.outcome,
   });
 
   @override
   int get hashCode =>
-      channel.hashCode ^ attachments.hashCode ^ lifecycle.hashCode;
+      channel.hashCode ^ attachments.hashCode ^ outcome.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -229,23 +300,23 @@ class BridgeTimelineTextDescriptor {
           runtimeType == other.runtimeType &&
           channel == other.channel &&
           attachments == other.attachments &&
-          lifecycle == other.lifecycle;
+          outcome == other.outcome;
 }
 
 class BridgeTimelineThinkingDescriptor {
-  final BridgeThreadContentLifecycle lifecycle;
+  final BridgeTimelineContentOutcome outcome;
 
-  const BridgeTimelineThinkingDescriptor({required this.lifecycle});
+  const BridgeTimelineThinkingDescriptor({required this.outcome});
 
   @override
-  int get hashCode => lifecycle.hashCode;
+  int get hashCode => outcome.hashCode;
 
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
       other is BridgeTimelineThinkingDescriptor &&
           runtimeType == other.runtimeType &&
-          lifecycle == other.lifecycle;
+          outcome == other.outcome;
 }
 
 class BridgeTimelineToolDescriptor {
@@ -340,20 +411,9 @@ class BridgeTimelineToolOutputDescriptor {
 sealed class BridgeTimelineToolState with _$BridgeTimelineToolState {
   const BridgeTimelineToolState._();
 
-  const factory BridgeTimelineToolState.queued() =
-      BridgeTimelineToolState_Queued;
-  const factory BridgeTimelineToolState.cancelling() =
-      BridgeTimelineToolState_Cancelling;
-  const factory BridgeTimelineToolState.started() =
-      BridgeTimelineToolState_Started;
-  const factory BridgeTimelineToolState.streaming() =
-      BridgeTimelineToolState_Streaming;
-  const factory BridgeTimelineToolState.awaitingApproval() =
-      BridgeTimelineToolState_AwaitingApproval;
-  const factory BridgeTimelineToolState.approved() =
-      BridgeTimelineToolState_Approved;
-  const factory BridgeTimelineToolState.running() =
-      BridgeTimelineToolState_Running;
+  const factory BridgeTimelineToolState.backgroundStarted({
+    required PlatformInt64 startedAt,
+  }) = BridgeTimelineToolState_BackgroundStarted;
   const factory BridgeTimelineToolState.interrupted({
     required PlatformInt64 interruptedAt,
     required String reason,
@@ -375,6 +435,34 @@ sealed class BridgeTimelineToolState with _$BridgeTimelineToolState {
     required PlatformInt64 cancelledAt,
     required String reason,
   }) = BridgeTimelineToolState_Cancelled;
+}
+
+@freezed
+sealed class BridgeTimelineTurnOutcome with _$BridgeTimelineTurnOutcome {
+  const BridgeTimelineTurnOutcome._();
+
+  const factory BridgeTimelineTurnOutcome.completed({
+    PlatformInt64? startedAt,
+    required PlatformInt64 completedAt,
+    required BridgeTurnCompletion completion,
+  }) = BridgeTimelineTurnOutcome_Completed;
+  const factory BridgeTimelineTurnOutcome.cancelled({
+    PlatformInt64? startedAt,
+    required PlatformInt64 requestedAt,
+    required PlatformInt64 completedAt,
+    required BridgeTurnCancellationCause cause,
+  }) = BridgeTimelineTurnOutcome_Cancelled;
+  const factory BridgeTimelineTurnOutcome.failed({
+    PlatformInt64? startedAt,
+    required PlatformInt64 completedAt,
+    required BridgeTurnFailureDto failure,
+  }) = BridgeTimelineTurnOutcome_Failed;
+  const factory BridgeTimelineTurnOutcome.budgetLimited({
+    PlatformInt64? startedAt,
+    required PlatformInt64 completedAt,
+    required BridgeTurnBudgetLimit limit,
+    required BridgeTurnRolloverOutcome rollover,
+  }) = BridgeTimelineTurnOutcome_BudgetLimited;
 }
 
 class BridgeTimelineUserInputDescriptor {
@@ -406,8 +494,6 @@ class BridgeTimelineUserInputDescriptor {
 sealed class BridgeTimelineUserInputState with _$BridgeTimelineUserInputState {
   const BridgeTimelineUserInputState._();
 
-  const factory BridgeTimelineUserInputState.pending() =
-      BridgeTimelineUserInputState_Pending;
   const factory BridgeTimelineUserInputState.cancelled() =
       BridgeTimelineUserInputState_Cancelled;
   const factory BridgeTimelineUserInputState.resolved({

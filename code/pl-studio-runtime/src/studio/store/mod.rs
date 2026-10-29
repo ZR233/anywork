@@ -110,7 +110,10 @@ impl StudioStore {
         if let Some(active) = self.thread_persistence.chat_session(thread_id) {
             return Ok(active);
         }
-        let session = pl_core::chat::Session::new(self.history_for(project_id, thread_id).await?);
+        let session = pl_core::chat::Session::new(
+            self.history_for(project_id, thread_id).await?,
+            pl_core::chat::TimelineEpoch::new(crate::studio::ids::new_id("timeline"))?,
+        );
         Ok(self
             .thread_persistence
             .install_chat_session(thread_id, session))

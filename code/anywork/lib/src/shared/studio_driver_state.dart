@@ -19,7 +19,9 @@ final class TimelineDisplayFacts {
     required this.ready,
     required this.mode,
     required this.connection,
-    required this.appliedVersion,
+    required this.timelineEpoch,
+    required this.completedThrough,
+    required this.loadedCount,
     required this.olderCursor,
     required this.hasOlder,
     required this.loadingOlder,
@@ -27,7 +29,6 @@ final class TimelineDisplayFacts {
     required this.olderErrorCode,
     required this.olderErrorCorrelationId,
     required this.hasNewOutput,
-    required this.preparingLive,
     List<TimelineItemFacts> items = const [],
     List<TimelinePresentationFacts> presentationItems = const [],
   }) : items = List.unmodifiable(items),
@@ -38,7 +39,9 @@ final class TimelineDisplayFacts {
   final bool ready;
   final TimelineDisplayMode mode;
   final TimelineConnectionPhase connection;
-  final int? appliedVersion;
+  final String? timelineEpoch;
+  final int? completedThrough;
+  final int? loadedCount;
   final String? olderCursor;
   final bool hasOlder;
   final bool loadingOlder;
@@ -46,7 +49,6 @@ final class TimelineDisplayFacts {
   final StudioFailureCode? olderErrorCode;
   final String? olderErrorCorrelationId;
   final bool hasNewOutput;
-  final bool preparingLive;
   final List<TimelineItemFacts> items;
   final List<TimelinePresentationFacts> presentationItems;
 }
@@ -60,12 +62,11 @@ final class TimelinePresentationFacts {
   TimelinePresentationFacts({
     required this.id,
     required this.kind,
-    required this.ordinal,
+    required this.firstAppendSeq,
     required List<String> memberIds,
     required List<String> visibleMemberIds,
     required Map<String, String> skillPairs,
     required this.expanded,
-    required this.activeCount,
     required this.issueCount,
   }) : memberIds = List.unmodifiable(memberIds),
        visibleMemberIds = List.unmodifiable(visibleMemberIds),
@@ -73,7 +74,7 @@ final class TimelinePresentationFacts {
 
   final String id;
   final String kind;
-  final int ordinal;
+  final int firstAppendSeq;
   final List<String> memberIds;
 
   /// 当前组内可见活动行的成员身份，按 canonical 顺序。
@@ -83,7 +84,6 @@ final class TimelinePresentationFacts {
   final Map<String, String> skillPairs;
 
   final bool expanded;
-  final int activeCount;
   final int issueCount;
 }
 
@@ -91,10 +91,9 @@ final class TimelinePresentationFacts {
 final class TimelineItemFacts {
   TimelineItemFacts({
     required this.id,
-    required this.ordinal,
-    required this.revision,
-    required this.saved,
-    required this.terminal,
+    required this.appendSeq,
+    required this.sourceEffectSeq,
+    required this.sealedAt,
     required this.omittedBytes,
     required this.kind,
     required this.status,
@@ -108,10 +107,9 @@ final class TimelineItemFacts {
        attachments = List.unmodifiable(attachments);
 
   final String id;
-  final int ordinal;
-  final int revision;
-  final bool saved;
-  final bool terminal;
+  final int appendSeq;
+  final int? sourceEffectSeq;
+  final int? sealedAt;
   final int omittedBytes;
   final String kind;
   final String status;
@@ -138,7 +136,7 @@ final class TimelineToolFacts {
     required this.arguments,
     required this.result,
     required this.progressBytes,
-    required this.itemRevision,
+    required this.appendSeq,
     this.denialReason,
     this.workingDirectory,
     this.exitCode,
@@ -153,24 +151,22 @@ final class TimelineToolFacts {
 
   /// 预览结果的 UTF-8 字节数：逐次增长即在途真实产出。
   final int progressBytes;
-  final int itemRevision;
+  final int appendSeq;
   final String? denialReason;
   final String? workingDirectory;
   final int? exitCode;
   final List<TimelineAttachmentFacts> attachments;
 }
 
-/// 一个内容字段的详情引用诊断（字段身份 + revision + 完整/预览字节数）。
+/// 一个内容字段的详情引用诊断（字段身份 + 完整/预览字节数）。
 final class TimelineDetailFacts {
   const TimelineDetailFacts({
     required this.field,
-    required this.revision,
     required this.totalBytes,
     required this.previewBytes,
   });
 
   final String field;
-  final int revision;
   final int totalBytes;
   final int previewBytes;
 }
@@ -1013,15 +1009,62 @@ abstract final class StudioDriverState {
           : {
               'identity': _conversationActivity!.identity,
               'kind': _conversationActivity!.kind.name,
+              'turnId': _conversationActivity!.turnId,
+              'executionId': _conversationActivity!.executionId,
               'summary': _conversationActivity!.summary,
+              'reasoningParts': [
+                for (final part in _conversationActivity!.reasoningParts)
+                  {
+                    'itemId': part.itemId,
+                    'complete': part.complete,
+                    'text': part.text,
+                    'byteLength': utf8.encode(part.text).length,
+                  },
+              ],
+              'reasoningBytes': _conversationActivity!.reasoningParts.fold(
+                0,
+                (total, part) => total + utf8.encode(part.text).length,
+              ),
+              'responseParts': [
+                for (final part in _conversationActivity!.responseParts)
+                  {
+                    'itemId': part.itemId,
+                    'complete': part.complete,
+                    'text': part.text,
+                    'byteLength': utf8.encode(part.text).length,
+                  },
+              ],
+              'responseBytes': _conversationActivity!.responseParts.fold(
+                0,
+                (total, part) => total + utf8.encode(part.text).length,
+              ),
               'activeToolCount': _conversationActivity!.activeToolCount,
               'backgroundToolCount': _conversationActivity!.backgroundToolCount,
               'errorMessage': _conversationActivity!.errorMessage,
               'expandable': _conversationActivity!.expandable,
               // `expandable` 是能力；`expanded` 是用户此刻的实际展开态。
               'expanded': _activityExpanded,
-              'detailsLoading': _conversationActivity!.detailsLoading,
-              'detailsError': _conversationActivity!.detailsError,
+              'toolDetails': [
+                for (final tool in _conversationActivity!.toolDetails)
+                  {
+                    'callId': tool.callId,
+                    'taskId': tool.taskId,
+                    'name': tool.name,
+                    'state': tool.state.name,
+                    'outputParts': [
+                      for (final part in tool.outputParts ?? const [])
+                        {
+                          'partId': part.partId,
+                          'text': part.text,
+                          'byteLength': utf8.encode(part.text).length,
+                        },
+                    ],
+                    'outputBytes': (tool.outputParts ?? const []).fold(
+                      0,
+                      (total, part) => total + utf8.encode(part.text).length,
+                    ),
+                  },
+              ],
               'details': [
                 for (final detail in _conversationActivity!.details)
                   {'id': detail.id, 'title': detail.title, 'body': detail.body},
@@ -1176,7 +1219,9 @@ abstract final class StudioDriverState {
       'ready': timeline.ready,
       'mode': timeline.mode.name,
       'connection': timeline.connection.name,
-      'appliedVersion': timeline.appliedVersion,
+      'timelineEpoch': timeline.timelineEpoch,
+      'completedThrough': timeline.completedThrough,
+      'loadedCount': timeline.loadedCount,
       'itemCount': timeline.items.length,
       'itemIds': [for (final item in timeline.items) item.id],
       'presentationItemCount': timeline.presentationItems.length,
@@ -1185,12 +1230,11 @@ abstract final class StudioDriverState {
           {
             'id': item.id,
             'kind': item.kind,
-            'ordinal': item.ordinal,
+            'firstAppendSeq': item.firstAppendSeq,
             'memberIds': item.memberIds,
             'visibleMemberIds': item.visibleMemberIds,
             'skillPairs': item.skillPairs,
             'expanded': item.expanded,
-            'activeCount': item.activeCount,
             'issueCount': item.issueCount,
           },
       ],
@@ -1201,15 +1245,13 @@ abstract final class StudioDriverState {
       'olderErrorCode': timeline.olderErrorCode?.name,
       'olderErrorCorrelationId': timeline.olderErrorCorrelationId,
       'hasNewOutput': timeline.hasNewOutput,
-      'preparingLive': timeline.preparingLive,
       'items': [
         for (final item in timeline.items)
           {
             'id': item.id,
-            'ordinal': item.ordinal,
-            'revision': item.revision,
-            'saved': item.saved,
-            'terminal': item.terminal,
+            'appendSeq': item.appendSeq,
+            'sourceEffectSeq': item.sourceEffectSeq,
+            'sealedAt': item.sealedAt,
             'omittedBytes': item.omittedBytes,
             'kind': item.kind,
             'status': item.status,
@@ -1219,7 +1261,6 @@ abstract final class StudioDriverState {
               for (final detail in item.details)
                 {
                   'field': detail.field,
-                  'revision': detail.revision,
                   'totalBytes': detail.totalBytes,
                   'previewBytes': detail.previewBytes,
                 },
@@ -1244,7 +1285,7 @@ abstract final class StudioDriverState {
                 // 在途工具的只读采样字段（同一 typed 事实的派生视图）。
                 'output': tool.result,
                 'progressBytes': tool.progressBytes,
-                'itemRevision': tool.itemRevision,
+                'appendSeq': tool.appendSeq,
                 'denialReason': tool.denialReason,
                 'workingDirectory': tool.workingDirectory,
                 'exitCode': tool.exitCode,

@@ -288,7 +288,7 @@ impl Session {
                 // part of the same atomic publication.
                 self.0.changed.send_replace(seq);
             }
-            records.sort_by(|left, right| left.append_seq.cmp(&right.append_seq));
+            records.sort_by_key(|record| record.append_seq);
             return Ok(Arc::from(records));
         }
     }

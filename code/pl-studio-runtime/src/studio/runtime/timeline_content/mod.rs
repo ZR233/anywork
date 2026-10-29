@@ -7,26 +7,20 @@
 //! 这里不缓存第二份正文，也不重建客户端基线。
 
 mod field;
-pub(super) mod meta;
+pub(crate) mod meta;
 pub(crate) mod preview;
-pub(super) mod restore;
 
 use anyhow::Result;
 use pl_core::chat::{
-    ChatDetailRequest, ChatPageRequest, ChatTail, ChatTailUpdate, ChatUpdatePriority, FieldChange,
-    Session, TailChange,
+    ChatDetailRequest, ChatPageRequest, ChatTail, ChatTailUpdate, Session, TimelineEpoch,
 };
 use pl_protocol::{
-    TimelineChange, TimelineDetailChunk, TimelineDetailQuery, TimelineFieldChange,
-    TimelineFieldUpdate, TimelineLifecycle, TimelinePage, TimelinePageQuery, TimelinePriority,
-    TimelineResyncReason, TimelineTailBaseline, TimelineTailUpdate,
+    TimelineCompletionCursor, TimelineDetailChunk, TimelineDetailQuery, TimelinePage,
+    TimelinePageQuery, TimelineTailBaseline, TimelineTailUpdate,
 };
 
 use super::StudioRuntime;
-use field::{
-    core_field, detail_cursor, encode_detail_cursor, encode_page_cursor, page_cursor, wire_field,
-};
-use meta::TimelineMeta;
+use field::{core_field, detail_cursor, encode_detail_cursor, encode_page_cursor, page_cursor};
 use preview::timeline_item;
 
 /// 一个 Thread 的内容句柄：捕获同一共享 `Session` 与 Thread 身份。
@@ -44,6 +38,22 @@ impl TimelineContentReader {
     /// 本句柄所属的 Thread 身份。
     pub fn thread_id(&self) -> &str {
         &self.thread.id
+    }
+
+    /// 当前注册 Session 的完成代际。
+    pub fn epoch(&self) -> String {
+        self.session.epoch().as_str().to_owned()
+    }
+
+    /// 已初始化 Session 的当前可见完成上界；冷会话初始化前为零。
+    pub fn head_seq(&self) -> u64 {
+        self.session.head_seq()
+    }
+
+    /// 当前注册 Session 已由 writer 确认的连续持久化完成前缀。
+    /// page/open_tail 已完成初始化后，冷历史的该值同样来自真实持久化种子。
+    pub fn durable_seq(&self) -> u64 {
+        self.session.durable_seq()
     }
 
     /// 复核本句柄的恢复读准入：与分页、详情和尾部建立共用同一 Registry 决策。
@@ -82,6 +92,7 @@ impl TimelineContentReader {
         }
         Ok(TimelinePage {
             thread_id: self.thread.id.clone(),
+            timeline_epoch: page.epoch.as_str().to_owned(),
             items,
             before: page
                 .before
@@ -94,14 +105,23 @@ impl TimelineContentReader {
     /// 读一段完整正文块。
     ///
     /// # Errors
-    /// 跨上下文的 continuation、非法块大小、过期 revision、未知条目／字段与存储失败。
+    /// 跨上下文的 continuation、非法块大小、过期 epoch、未知条目／字段与存储失败。
     pub async fn read_detail(
         &self,
         item_id: &str,
         query: &TimelineDetailQuery,
     ) -> Result<TimelineDetailChunk> {
         self.recovery.ensure_thread_read_access(&self.thread)?;
-        let mut request = ChatDetailRequest::new(item_id, core_field(query.field), query.revision);
+        let requested_epoch = TimelineEpoch::new(query.timeline_epoch.clone())?;
+        let session_epoch = self.session.epoch();
+        if requested_epoch != session_epoch {
+            return Err(pl_core::chat::ChatError::EpochMismatch {
+                cursor: requested_epoch,
+                session: session_epoch,
+            }
+            .into());
+        }
+        let mut request = ChatDetailRequest::new(item_id, core_field(query.field));
         if let Some(token) = query.continuation.as_deref() {
             request =
                 request.with_continuation(detail_cursor(&self.thread.id, item_id, query, token)?);
@@ -115,7 +135,7 @@ impl TimelineContentReader {
             thread_id: self.thread.id.clone(),
             item_id: chunk.item_id,
             field: query.field,
-            revision: chunk.revision,
+            timeline_epoch: query.timeline_epoch.clone(),
             text: chunk.text,
             total_bytes: chunk.total_bytes,
             continuation: chunk.continuation.map(|cursor| {
@@ -138,6 +158,31 @@ impl TimelineContentReader {
             // 复用已有的 id 能力（时间前缀 + 进程内序号），因此重启后也不会重复旧身份，且不额外
             // 引入随机/编码依赖。
             subscription_id: crate::studio::ids::new_id("timeline-tail"),
+            epoch: self.session.epoch().as_str().to_owned(),
+            tail,
+        })
+    }
+
+    /// 只从已接纳的完成序号续接；内部占位首帧不公开为最新基线。
+    pub async fn open_tail_after(
+        &self,
+        after: &TimelineCompletionCursor,
+    ) -> Result<TimelineTailStream> {
+        self.ensure_read_access()?;
+        let mut tail = self
+            .session
+            .subscribe_after(pl_core::chat::ChatCompletionCursor::new(
+                TimelineEpoch::new(after.timeline_epoch.clone())?,
+                after.append_seq,
+            ))
+            .await?;
+        tail.initial()?;
+        self.ensure_read_access()?;
+        Ok(TimelineTailStream {
+            thread: self.thread.clone(),
+            recovery: self.recovery.clone(),
+            subscription_id: crate::studio::ids::new_id("timeline-tail"),
+            epoch: self.session.epoch().as_str().to_owned(),
             tail,
         })
     }
@@ -148,6 +193,7 @@ pub struct TimelineTailStream {
     thread: pl_protocol::Thread,
     recovery: crate::studio::StudioRecoveryRegistry,
     subscription_id: String,
+    epoch: String,
     tail: ChatTail,
 }
 
@@ -172,11 +218,22 @@ impl TimelineTailStream {
     /// 等待并交付下一帧；`Ok(None)` 只表示会话不再发布进度。
     pub async fn next(&mut self) -> Result<Option<TimelineTailUpdate>> {
         self.recovery.ensure_thread_read_access(&self.thread)?;
-        let Some(update) = self.tail.next().await? else {
-            return Ok(None);
-        };
+        let update = self.tail.next().await?;
         self.recovery.ensure_thread_read_access(&self.thread)?;
-        self.convert(update).map(Some)
+        match update {
+            ChatTailUpdate::Closed => Ok(None),
+            ChatTailUpdate::Batch(batch) => Ok(Some(TimelineTailUpdate::Batch {
+                subscription_id: self.subscription_id.clone(),
+                timeline_epoch: self.epoch.clone(),
+                from_seq: batch.from_seq,
+                through_seq: batch.through_seq,
+                items: batch
+                    .items
+                    .iter()
+                    .map(timeline_item)
+                    .collect::<Result<_>>()?,
+            })),
+        }
     }
 
     /// 释放本连接的基线、连续性缓存与 Session 引用。
@@ -187,7 +244,14 @@ impl TimelineTailStream {
     fn baseline(&self, baseline: &pl_core::chat::ChatTailBaseline) -> Result<TimelineTailBaseline> {
         Ok(TimelineTailBaseline {
             subscription_id: self.subscription_id.clone(),
-            version: baseline.version,
+            timeline_epoch: baseline.epoch.as_str().to_owned(),
+            completed_cursor: TimelineCompletionCursor {
+                timeline_epoch: baseline.epoch.as_str().to_owned(),
+                append_seq: baseline
+                    .completed_cursor
+                    .as_ref()
+                    .map_or(0, |cursor| cursor.append_seq),
+            },
             items: baseline
                 .items
                 .iter()
@@ -199,114 +263,6 @@ impl TimelineTailStream {
                 .map(|cursor| encode_page_cursor(&self.thread.id, cursor)),
             has_older: baseline.has_older,
         })
-    }
-
-    fn convert(&self, update: ChatTailUpdate) -> Result<TimelineTailUpdate> {
-        Ok(match update {
-            ChatTailUpdate::Resync { baseline, reason } => TimelineTailUpdate::Resync {
-                subscription_id: self.subscription_id.clone(),
-                reason: match reason {
-                    pl_core::chat::ChatResyncReason::Lagging => TimelineResyncReason::Lagging,
-                    pl_core::chat::ChatResyncReason::Unavailable => {
-                        TimelineResyncReason::Unavailable
-                    }
-                },
-                baseline: self.baseline(&baseline)?,
-            },
-            ChatTailUpdate::Patch(patch) => {
-                let mut changes = Vec::with_capacity(patch.changes.len());
-                for change in patch.changes {
-                    changes.push(self.change(change)?);
-                }
-                TimelineTailUpdate::Patch {
-                    subscription_id: self.subscription_id.clone(),
-                    from: patch.from,
-                    to: patch.to,
-                    changes,
-                    priority: match patch.priority {
-                        ChatUpdatePriority::Immediate => TimelinePriority::Immediate,
-                        ChatUpdatePriority::Coalesced => TimelinePriority::Coalesced,
-                    },
-                }
-            }
-        })
-    }
-
-    fn change(&self, change: TailChange) -> Result<TimelineChange> {
-        Ok(match change {
-            TailChange::Add { item } => TimelineChange::Add {
-                item: Box::new(timeline_item(&item)?),
-            },
-            TailChange::Remove { item_id } => TimelineChange::Remove { item_id },
-            TailChange::UpdateItem {
-                item_id,
-                expected_revision,
-                revision,
-                omitted_bytes: _,
-                saved,
-                lifecycle,
-                meta,
-                fields,
-            } => {
-                let mut converted = Vec::with_capacity(fields.len());
-                for update in fields {
-                    let Some(field) = wire_field(&update.field) else {
-                        return self.protocol_gap();
-                    };
-                    converted.push(TimelineFieldUpdate {
-                        field,
-                        change: field_change(update.change),
-                        total_bytes: update.total_bytes,
-                        preview_bytes: update.preview_bytes,
-                    });
-                }
-                let meta = meta.as_deref().map(TimelineMeta::decode).transpose()?;
-                let (header, descriptor) = match meta {
-                    Some(meta) => {
-                        if meta.header.id != item_id {
-                            return self.protocol_gap();
-                        }
-                        (Some(meta.header), Some(Box::new(meta.descriptor)))
-                    }
-                    None => (None, None),
-                };
-                TimelineChange::UpdateItem {
-                    item_id,
-                    expected_revision,
-                    revision,
-                    saved,
-                    lifecycle: lifecycle_of(lifecycle),
-                    header,
-                    descriptor,
-                    fields: converted,
-                }
-            }
-        })
-    }
-
-    /// 内容字段没有产品域：这是一次无法映射的权威变化，绝不静默丢弃结构化数据。
-    fn protocol_gap<T>(&self) -> Result<T> {
-        Err(anyhow::anyhow!(pl_protocol::studio::StudioError::new(
-            pl_protocol::studio::StudioErrorCode::Protocol,
-            "timeline tail delivered a content field this product cannot address",
-            false,
-        )))
-    }
-}
-
-fn lifecycle_of(lifecycle: pl_core::chat::ChatLifecycle) -> TimelineLifecycle {
-    match lifecycle {
-        pl_core::chat::ChatLifecycle::Streaming => TimelineLifecycle::Streaming,
-        pl_core::chat::ChatLifecycle::Terminal => TimelineLifecycle::Terminal,
-    }
-}
-
-fn field_change(change: FieldChange) -> TimelineFieldChange {
-    match change {
-        FieldChange::Unchanged => TimelineFieldChange::Unchanged,
-        FieldChange::Append(text) => TimelineFieldChange::Append { text },
-        FieldChange::Replace(block) => TimelineFieldChange::Replace { text: block.text() },
-        FieldChange::Remove => TimelineFieldChange::Remove,
     }
 }
 

@@ -3,7 +3,7 @@ mod billing;
 pub(crate) use billing::AuxiliaryBillingReceipt;
 pub(in crate::studio) use billing::billing_facts;
 mod activity;
-pub(in crate::studio) use activity::{ActivityDetailRead, ActivityProjection, project_activity};
+pub(in crate::studio) use activity::{ActivityProjection, ActivitySnapshot, project_activity};
 mod compactions;
 mod completions;
 pub(crate) use completions::committed_finish;
@@ -73,10 +73,6 @@ pub(in crate::studio) fn prepared_terminal_turn(
 /// so a failure never finalizes a channel the attempt never started.
 pub(in crate::studio) fn attempt_channel_id(attempt_id: &str, channel: &str) -> String {
     order::response_id(attempt_id, channel)
-}
-
-pub(in crate::studio) fn presentation_preview_prefix(attempt_id: &str) -> String {
-    order::presentation_prefix(attempt_id)
 }
 
 #[derive(Debug, thiserror::Error)]

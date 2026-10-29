@@ -6,7 +6,7 @@ use pl_protocol::studio::{
     SaveBotRequest, SetAccountModelConnectionRequest, SetThreadModeRequest, SettingsFieldUpdate,
     StudioPromptInput, SubmitPromptRequest, UpdateSettingsFieldRequest,
 };
-use pl_protocol::{ThreadContentField, ThreadStatus, TimelineDescriptor, TurnState};
+use pl_protocol::{ThreadContentField, ThreadStatus, TimelineDescriptor};
 use pl_provider_fixture::{
     agent_definitions::{
         AgentPhase, CHILD_MODEL, COMPACT_MODEL, FUTURE_MODEL, ROOT_MODEL, USER_MODEL_NEW,
@@ -385,7 +385,16 @@ impl Observation<'_> {
             message_id(AgentPhase::ColdFeishu)
         );
         let before_cold = self.session.http()?.read_timeline(&feishu, 100).await?;
-        ensure!(!before_cold.items.iter().any(|item| matches!(&item.descriptor, TimelineDescriptor::Turn(turn) if turn.input_id() == Some(cold_input.as_str()))), "cold platform input already existed before this inbound");
+        ensure!(
+            !before_cold.items.iter().any(|item| {
+                matches!(
+                    &item.descriptor,
+                    TimelineDescriptor::Turn(turn)
+                        if turn.input_id.as_deref() == Some(cold_input.as_str())
+                )
+            }),
+            "cold platform input already existed before this inbound"
+        );
         self.ingress(&bot, AgentPhase::ColdFeishu).await?;
         let cold_bindings = sqlite::thread_bindings(&self.session.home, &bot).await?;
         let cold_binding = cold_bindings
@@ -399,15 +408,33 @@ impl Observation<'_> {
             "cold inbound changed original bot/chat Thread binding"
         );
         let cold_timeline = self.session.http()?.read_timeline(&feishu, 100).await?;
-        let cold_turns = cold_timeline.items.iter().filter(|item| matches!(&item.descriptor, TimelineDescriptor::Turn(turn) if turn.input_id() == Some(cold_input.as_str()) && matches!(turn.state(), TurnState::Completed(_)))).collect::<Vec<_>>();
+        let cold_turns = cold_timeline
+            .items
+            .iter()
+            .filter(|item| {
+                matches!(
+                    &item.descriptor,
+                    TimelineDescriptor::Turn(turn)
+                        if turn.input_id.as_deref() == Some(cold_input.as_str())
+                            && matches!(
+                                &turn.outcome,
+                                pl_protocol::TimelineTurnOutcome::Completed(_)
+                            )
+                )
+            })
+            .collect::<Vec<_>>();
         ensure!(
             cold_turns.len() == 1,
             "original Feishu Thread has no unique completed Turn for current platform message"
         );
-        let cold_turn = &cold_turns[0].header.turn_id;
+        let cold_turn = cold_turns[0]
+            .header
+            .turn_id
+            .as_deref()
+            .context("completed cold input Turn has no Turn identity")?;
         let has_text = |channel, expected: &str| {
             cold_timeline.items.iter().any(|item| {
-                item.header.turn_id == *cold_turn
+                item.header.turn_id.as_deref() == Some(cold_turn)
                     && matches!(&item.descriptor, TimelineDescriptor::Text(text) if text.channel == channel)
                     && item.fields.iter().any(|field| field.field == ThreadContentField::Text && field.text == expected)
             })
@@ -489,10 +516,13 @@ impl Observation<'_> {
             let page = self.session.http()?.read_timeline(id, 100).await?;
             for item in &page.items {
                 if let TimelineDescriptor::Turn(turn) = &item.descriptor
-                    && turn.input_id() == Some(input_id.as_str())
+                    && turn.input_id.as_deref() == Some(input_id.as_str())
                 {
-                    match turn.state() {
-                        TurnState::Completed(_) => {
+                    let turn_id = item.header.turn_id.as_deref().with_context(|| {
+                        format!("Agent phase {phase:?} Turn has no canonical identity")
+                    })?;
+                    match &turn.outcome {
+                        pl_protocol::TimelineTurnOutcome::Completed(_) => {
                             let snapshot = self.session.http()?.read_thread(id).await?;
                             if snapshot.active_turn.is_none()
                                 && snapshot.thread.status == ThreadStatus::Idle
@@ -500,10 +530,9 @@ impl Observation<'_> {
                                 return Ok(());
                             }
                         }
-                        state if state.is_terminal() => {
-                            bail!("Agent phase {phase:?} failed: {state:?}")
+                        outcome => {
+                            bail!("Agent phase {phase:?} Turn {turn_id} failed: {outcome:?}")
                         }
-                        _ => {}
                     }
                 }
             }

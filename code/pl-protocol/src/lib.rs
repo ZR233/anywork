@@ -44,8 +44,7 @@ pub use accounting::{
 pub use activity::{
     ACTIVITY_FRAME_BYTES, ACTIVITY_SUMMARY_LIMIT, ACTIVITY_TEXT_FRAME_BYTES, ActivityContentFrame,
     ActivityPartMetadata, ActivityTextOperation, ActivityTextRegion, ActivityToolMetadata,
-    ThreadActivity, ThreadActivityArguments, ThreadActivityContentPart, ThreadActivityDetail,
-    ThreadActivityDetailQuery, ThreadActivityKind, ThreadActivityToolDetail,
+    ActivityToolOutputMetadata, ThreadActivity, ThreadActivityArguments, ThreadActivityKind,
     ThreadActivityToolEntry, ThreadActivityToolState, ThreadActivityTools,
 };
 pub use agent::*;

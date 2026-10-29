@@ -4,12 +4,13 @@
 //! 明确失败或让调用方按权威重同步收束。
 
 use anyhow::{Result, anyhow};
-use pl_core::chat::{ChatCursor, ChatDetailCursor, ChatField, PresentationPart};
+use pl_core::chat::{ChatCursor, ChatDetailCursor, ChatField, PresentationPart, TimelineEpoch};
 use pl_protocol::{
     ThreadContentField, ThreadUserInputFieldPart, TimelineDetailCursor, TimelineDetailQuery,
     TimelinePageCursor, studio::StudioError, studio::StudioErrorCode,
 };
 
+use super::meta::{PLAN_DOCUMENT_FIELD, PLAN_FEEDBACK_FIELD};
 use crate::studio::runtime::chat_item::{
     RAW_PAYLOAD_FIELD, TOOL_ARGUMENTS_FIELD, TOOL_OUTPUT_ARTIFACTS_FIELD, TOOL_RESULT_FIELD,
     TOOL_USER_INPUT_FIELD,
@@ -39,6 +40,12 @@ pub(crate) fn wire_field(field: &ChatField) -> Option<ThreadContentField> {
         ChatField::Host(key) if key.as_ref() == TOOL_OUTPUT_ARTIFACTS_FIELD => {
             Some(ThreadContentField::ToolOutputArtifacts)
         }
+        ChatField::Host(key) if key.as_ref() == PLAN_DOCUMENT_FIELD => {
+            Some(ThreadContentField::PlanDocument)
+        }
+        ChatField::Host(key) if key.as_ref() == PLAN_FEEDBACK_FIELD => {
+            Some(ThreadContentField::PlanFeedback)
+        }
         ChatField::Host(key) => {
             if let Some(payload_index) = key.as_ref().strip_prefix(RAW_PAYLOAD_FIELD) {
                 return payload_index
@@ -64,6 +71,8 @@ pub(crate) fn core_field(field: ThreadContentField) -> ChatField {
         ThreadContentField::ToolArguments => ChatField::host(TOOL_ARGUMENTS_FIELD),
         ThreadContentField::ToolResult => ChatField::host(TOOL_RESULT_FIELD),
         ThreadContentField::ToolOutputArtifacts => ChatField::host(TOOL_OUTPUT_ARTIFACTS_FIELD),
+        ThreadContentField::PlanDocument => ChatField::host(PLAN_DOCUMENT_FIELD),
+        ThreadContentField::PlanFeedback => ChatField::host(PLAN_FEEDBACK_FIELD),
         ThreadContentField::ToolUserInput {
             question_index,
             part,
@@ -148,14 +157,19 @@ pub(crate) fn page_cursor(thread_id: &str, token: &str) -> Result<ChatCursor> {
             "timeline page cursor belongs to another Thread",
         ));
     }
-    Ok(ChatCursor::new(cursor.order, cursor.item_id))
+    Ok(ChatCursor::new(
+        TimelineEpoch::new(cursor.timeline_epoch)?,
+        cursor.append_seq,
+        cursor.item_id,
+    ))
 }
 
 /// 严格 keyset 边界 → Thread 绑定的不透明 token。
 pub(crate) fn encode_page_cursor(thread_id: &str, cursor: &ChatCursor) -> String {
     TimelinePageCursor {
         thread_id: thread_id.to_owned(),
-        order: cursor.order,
+        timeline_epoch: cursor.epoch.as_str().to_owned(),
+        append_seq: cursor.append_seq,
         item_id: cursor.item_id.clone(),
     }
     .encode()
@@ -188,15 +202,14 @@ pub(crate) fn detail_cursor(
             "timeline detail continuation belongs to another content field",
         ));
     }
-    if cursor.revision != query.revision {
+    if cursor.timeline_epoch != query.timeline_epoch {
         return Err(invalid_argument(
-            "timeline detail continuation binds another revision",
+            "timeline detail continuation binds another epoch",
         ));
     }
     Ok(ChatDetailCursor::new(
         item_id,
         core_field(query.field),
-        query.revision,
         cursor.offset,
     ))
 }
@@ -212,7 +225,7 @@ pub(crate) fn encode_detail_cursor(
         thread_id: thread_id.to_owned(),
         item_id: item_id.to_owned(),
         field: query.field.token_label(),
-        revision: query.revision,
+        timeline_epoch: query.timeline_epoch.clone(),
         offset,
     }
     .encode()

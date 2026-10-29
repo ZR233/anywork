@@ -11,7 +11,166 @@ import 'package:freezed_annotation/freezed_annotation.dart' hide protected;
 import 'thread_stream/item.dart';
 part 'thread_activity.freezed.dart';
 
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
+
+@freezed
+sealed class BridgeActivityContentFrame with _$BridgeActivityContentFrame {
+  const BridgeActivityContentFrame._();
+
+  const factory BridgeActivityContentFrame.begin({
+    required String generation,
+    BigInt? baseRevision,
+    required BigInt revision,
+    BridgeThreadActivity? activity,
+    required List<BridgeActivityPartMetadata> reasoning,
+    required List<BridgeActivityPartMetadata> response,
+    required List<BridgeActivityToolMetadata> tools,
+    required BigInt totalBytes,
+  }) = BridgeActivityContentFrame_Begin;
+  const factory BridgeActivityContentFrame.text({
+    required String generation,
+    required BigInt revision,
+    required List<BridgeActivityTextOperation> operations,
+  }) = BridgeActivityContentFrame_Text;
+  const factory BridgeActivityContentFrame.commit({
+    required String generation,
+    required BigInt revision,
+  }) = BridgeActivityContentFrame_Commit;
+}
+
+class BridgeActivityPartMetadata {
+  final String itemId;
+  final bool complete;
+  final BigInt totalBytes;
+
+  const BridgeActivityPartMetadata({
+    required this.itemId,
+    required this.complete,
+    required this.totalBytes,
+  });
+
+  @override
+  int get hashCode => itemId.hashCode ^ complete.hashCode ^ totalBytes.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeActivityPartMetadata &&
+          runtimeType == other.runtimeType &&
+          itemId == other.itemId &&
+          complete == other.complete &&
+          totalBytes == other.totalBytes;
+}
+
+@freezed
+sealed class BridgeActivityTextOperation with _$BridgeActivityTextOperation {
+  const BridgeActivityTextOperation._();
+
+  const factory BridgeActivityTextOperation.append({
+    required BridgeActivityTextRegion region,
+    required String text,
+  }) = BridgeActivityTextOperation_Append;
+  const factory BridgeActivityTextOperation.replace({
+    required BridgeActivityTextRegion region,
+    required String text,
+  }) = BridgeActivityTextOperation_Replace;
+  const factory BridgeActivityTextOperation.remove({
+    required BridgeActivityTextRegion region,
+  }) = BridgeActivityTextOperation_Remove;
+}
+
+@freezed
+sealed class BridgeActivityTextRegion with _$BridgeActivityTextRegion {
+  const BridgeActivityTextRegion._();
+
+  const factory BridgeActivityTextRegion.reasoning({required String itemId}) =
+      BridgeActivityTextRegion_Reasoning;
+  const factory BridgeActivityTextRegion.response({required String itemId}) =
+      BridgeActivityTextRegion_Response;
+  const factory BridgeActivityTextRegion.toolArguments({
+    required String callId,
+  }) = BridgeActivityTextRegion_ToolArguments;
+  const factory BridgeActivityTextRegion.toolOutput({
+    required String callId,
+    required String partId,
+  }) = BridgeActivityTextRegion_ToolOutput;
+}
+
+class BridgeActivityToolMetadata {
+  final String callId;
+  final String? taskId;
+  final String name;
+  final BridgeThreadActivityToolState state;
+  final PlatformInt64? startedAt;
+  final BigInt? sourceOrder;
+  final BigInt? argumentsBytes;
+  final BigInt? outputBytes;
+  final List<BridgeActivityToolOutputMetadata> outputParts;
+  final BridgeThreadWaitPresentation? wait;
+
+  const BridgeActivityToolMetadata({
+    required this.callId,
+    this.taskId,
+    required this.name,
+    required this.state,
+    this.startedAt,
+    this.sourceOrder,
+    this.argumentsBytes,
+    this.outputBytes,
+    required this.outputParts,
+    this.wait,
+  });
+
+  @override
+  int get hashCode =>
+      callId.hashCode ^
+      taskId.hashCode ^
+      name.hashCode ^
+      state.hashCode ^
+      startedAt.hashCode ^
+      sourceOrder.hashCode ^
+      argumentsBytes.hashCode ^
+      outputBytes.hashCode ^
+      outputParts.hashCode ^
+      wait.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeActivityToolMetadata &&
+          runtimeType == other.runtimeType &&
+          callId == other.callId &&
+          taskId == other.taskId &&
+          name == other.name &&
+          state == other.state &&
+          startedAt == other.startedAt &&
+          sourceOrder == other.sourceOrder &&
+          argumentsBytes == other.argumentsBytes &&
+          outputBytes == other.outputBytes &&
+          outputParts == other.outputParts &&
+          wait == other.wait;
+}
+
+class BridgeActivityToolOutputMetadata {
+  final String partId;
+  final BigInt totalBytes;
+
+  const BridgeActivityToolOutputMetadata({
+    required this.partId,
+    required this.totalBytes,
+  });
+
+  @override
+  int get hashCode => partId.hashCode ^ totalBytes.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeActivityToolOutputMetadata &&
+          runtimeType == other.runtimeType &&
+          partId == other.partId &&
+          totalBytes == other.totalBytes;
+}
 
 enum BridgeHistoryFault {
   queueFull,
@@ -26,7 +185,8 @@ class BridgeThreadActivity {
   final String threadId;
   final String identity;
   final BigInt revision;
-  final String turnId;
+  final String? turnId;
+  final String? executionId;
   final String? inputId;
   final String? attemptId;
   final BridgeThreadActivityKind kind;
@@ -40,7 +200,8 @@ class BridgeThreadActivity {
     required this.threadId,
     required this.identity,
     required this.revision,
-    required this.turnId,
+    this.turnId,
+    this.executionId,
     this.inputId,
     this.attemptId,
     required this.kind,
@@ -57,6 +218,7 @@ class BridgeThreadActivity {
       identity.hashCode ^
       revision.hashCode ^
       turnId.hashCode ^
+      executionId.hashCode ^
       inputId.hashCode ^
       attemptId.hashCode ^
       kind.hashCode ^
@@ -75,6 +237,7 @@ class BridgeThreadActivity {
           identity == other.identity &&
           revision == other.revision &&
           turnId == other.turnId &&
+          executionId == other.executionId &&
           inputId == other.inputId &&
           attemptId == other.attemptId &&
           kind == other.kind &&
@@ -93,58 +256,6 @@ enum BridgeThreadActivityArguments {
   unavailable,
 }
 
-class BridgeThreadActivityContentPart {
-  final String itemId;
-
-  /// canonical item revision；`None` 表示这段内容来自纯内存推导，没有可证明的 revision。
-  final BigInt? revision;
-
-  /// 该内容段是否已终态；`false` 表示仍在流式追加。
-  final bool complete;
-  final String text;
-
-  const BridgeThreadActivityContentPart({
-    required this.itemId,
-    this.revision,
-    required this.complete,
-    required this.text,
-  });
-
-  @override
-  int get hashCode =>
-      itemId.hashCode ^ revision.hashCode ^ complete.hashCode ^ text.hashCode;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is BridgeThreadActivityContentPart &&
-          runtimeType == other.runtimeType &&
-          itemId == other.itemId &&
-          revision == other.revision &&
-          complete == other.complete &&
-          text == other.text;
-}
-
-@freezed
-sealed class BridgeThreadActivityDetail with _$BridgeThreadActivityDetail {
-  const BridgeThreadActivityDetail._();
-
-  const factory BridgeThreadActivityDetail.current({
-    required BridgeThreadActivity activity,
-    required List<BridgeThreadActivityContentPart> reasoning,
-    required List<BridgeThreadActivityContentPart> response,
-    required List<BridgeThreadActivityToolDetail> tools,
-  }) = BridgeThreadActivityDetail_Current;
-  const factory BridgeThreadActivityDetail.superseded({
-    required BridgeThreadActivity activity,
-    required String requestedActivityId,
-  }) = BridgeThreadActivityDetail_Superseded;
-  const factory BridgeThreadActivityDetail.ended({
-    required String threadId,
-    required String activityId,
-  }) = BridgeThreadActivityDetail_Ended;
-}
-
 enum BridgeThreadActivityKind {
   preparing,
   compacting,
@@ -156,61 +267,6 @@ enum BridgeThreadActivityKind {
   awaitingApproval,
   awaitingInput,
   stopping,
-}
-
-class BridgeThreadActivityToolDetail {
-  final String callId;
-  final String? taskId;
-  final String name;
-  final BridgeThreadActivityToolState state;
-
-  /// canonical item 的原始调用参数；不可读时为 `None`。
-  final String? arguments;
-
-  /// 目前观测到的流式或终态输出；暂无输出为 `None`。
-  final String? output;
-  final BigInt? ordinal;
-  final PlatformInt64? startedAt;
-  final BridgeThreadWaitPresentation? wait;
-
-  const BridgeThreadActivityToolDetail({
-    required this.callId,
-    this.taskId,
-    required this.name,
-    required this.state,
-    this.arguments,
-    this.output,
-    this.ordinal,
-    this.startedAt,
-    this.wait,
-  });
-
-  @override
-  int get hashCode =>
-      callId.hashCode ^
-      taskId.hashCode ^
-      name.hashCode ^
-      state.hashCode ^
-      arguments.hashCode ^
-      output.hashCode ^
-      ordinal.hashCode ^
-      startedAt.hashCode ^
-      wait.hashCode;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is BridgeThreadActivityToolDetail &&
-          runtimeType == other.runtimeType &&
-          callId == other.callId &&
-          taskId == other.taskId &&
-          name == other.name &&
-          state == other.state &&
-          arguments == other.arguments &&
-          output == other.output &&
-          ordinal == other.ordinal &&
-          startedAt == other.startedAt &&
-          wait == other.wait;
 }
 
 class BridgeThreadActivityToolEntry {

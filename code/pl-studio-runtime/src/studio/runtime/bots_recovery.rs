@@ -5,15 +5,13 @@
 //! 的 typed 契约。读取显式区分 Ready/Absent/NotReady：读、IO 与 decode 失败保持
 //! `Result` 错误，不折叠成 None，也不激活执行 owner 或创建第二份历史事实源。
 
-use anyhow::{Result, bail};
+use anyhow::Result;
 use pl_core::thread::interactions::{InteractionRecord, InteractionState};
 use pl_core::thread::permissions::{PermissionRecord, PermissionState};
-use pl_protocol::{InteractionRequest, InteractionStatus, ThreadItemState};
+use pl_protocol::{InteractionRequest, InteractionStatus};
 
 use super::StudioRuntime;
-use crate::bots::{
-    BotInputRead, BotInteractionFact, BotInteractionKind, BotInteractionRead, BotTurnRead,
-};
+use crate::bots::{BotInputRead, BotInteractionFact, BotInteractionKind, BotInteractionRead};
 
 impl StudioRuntime {
     /// 读取一条输入的持久路由与消费身份；不重新受理、不回放历史。
@@ -43,23 +41,6 @@ impl StudioRuntime {
             delivery: receipt.entry.delivery,
             state: receipt.entry.state,
         })
-    }
-
-    /// 按 Turn 身份定点读取持久 typed 状态；不用最新终态 Turn 或整段翻页代替目标。
-    pub(crate) async fn bot_turn_fact(
-        &self,
-        thread_id: &str,
-        turn_id: &str,
-    ) -> Result<BotTurnRead> {
-        let history = self.store.history(thread_id).await?;
-        let item_id = crate::studio::thread_projection::order::turn_id(turn_id);
-        let Some(item) = history.item(&item_id).await? else {
-            return Ok(BotTurnRead::Absent);
-        };
-        match item.state() {
-            ThreadItemState::Turn(turn_item) => Ok(BotTurnRead::Ready(turn_item.state().clone())),
-            _ => bail!("durable turn item {item_id} does not carry turn state"),
-        }
     }
 
     /// 读取一条交互的 canonical 事实：驻留/checkpoint 提供 pending 与新近记录，

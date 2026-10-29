@@ -72,6 +72,12 @@ async fn pump(
 
 fn convert(event: ConversationEvent) -> Result<BridgeConversationEvent, BridgeError> {
     Ok(match event {
+        ConversationEvent::ActivityContent { frame, completed } => {
+            BridgeConversationEvent::ActivityContent {
+                frame: crate::api::studio::convert::thread_stream::bridge_activity_content(frame),
+                completed: completed.map(|value| Box::new(timeline_content::update(*value))),
+            }
+        }
         ConversationEvent::State { update } => BridgeConversationEvent::State {
             update: Box::new(bridge_thread_update(*update)?),
         },

@@ -261,9 +261,11 @@ pub trait ColdStore: Send + Sync + fmt::Debug + 'static {
     fn fold_usage(&self, _summary: &mut UsageSummary, _effect: &ThreadEffectBatch) {}
     /// Reserves an observed presentation identity synchronously, before a coalescing preview
     /// can discard it. Backends without ordered presentation storage need not reserve anything.
+    /// `attempt_id` is the real source lifecycle; backends must not infer it from `item_id`.
     fn reserve_observed_item(
         &self,
         _thread_id: &str,
+        _attempt_id: &str,
         _item_id: &str,
     ) -> Result<(), ColdStoreError> {
         Ok(())
@@ -347,7 +349,12 @@ pub trait ColdStore: Send + Sync + fmt::Debug + 'static {
 }
 trait ErasedColdStore: Send + Sync + fmt::Debug {
     fn fold_usage(&self, summary: &mut UsageSummary, effect: &ThreadEffectBatch);
-    fn reserve_observed_item(&self, thread_id: &str, item_id: &str) -> Result<(), ColdStoreError>;
+    fn reserve_observed_item(
+        &self,
+        thread_id: &str,
+        attempt_id: &str,
+        item_id: &str,
+    ) -> Result<(), ColdStoreError>;
     fn reserve_operation_output(
         &self,
         thread_id: &str,
@@ -379,8 +386,13 @@ impl<T: ColdStore> ErasedColdStore for T {
     fn fold_usage(&self, summary: &mut UsageSummary, effect: &ThreadEffectBatch) {
         ColdStore::fold_usage(self, summary, effect);
     }
-    fn reserve_observed_item(&self, thread_id: &str, item_id: &str) -> Result<(), ColdStoreError> {
-        ColdStore::reserve_observed_item(self, thread_id, item_id)
+    fn reserve_observed_item(
+        &self,
+        thread_id: &str,
+        attempt_id: &str,
+        item_id: &str,
+    ) -> Result<(), ColdStoreError> {
+        ColdStore::reserve_observed_item(self, thread_id, attempt_id, item_id)
     }
     fn reserve_operation_output(
         &self,
@@ -442,9 +454,10 @@ impl ColdStoreHandle {
     pub(crate) fn reserve_observed_item(
         &self,
         thread_id: &str,
+        attempt_id: &str,
         item_id: &str,
     ) -> Result<(), ColdStoreError> {
-        self.0.reserve_observed_item(thread_id, item_id)
+        self.0.reserve_observed_item(thread_id, attempt_id, item_id)
     }
 
     /// Reserves one operation's live-output quota from this backend's reliable budget.

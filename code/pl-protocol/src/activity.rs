@@ -155,7 +155,7 @@ fn background_is_zero(value: &u32) -> bool {
 
 /// Thread 当前执行活动的权威小摘要。
 ///
-/// `identity` 绑定**当前这一步活动**：Turn、当前 attempt（准备阶段为 `preparing`）与实际前台
+/// `identity` 绑定**当前这一步活动**：真实 execution 或 Turn、当前 attempt 与实际前台
 /// `kind` 一起决定身份。于是同一活动内流式正文增长不会换身份，而 API/思考/工具/交互之间的真实
 /// 前台切换会换身份——客户端因此可以按身份固定活动行并在真实切换时重置展开状态。活动结束以
 /// `None` 表达（见 [`crate::ThreadNotification::ActivityChanged`]），迟到帧不会恢复旧活动。
@@ -163,14 +163,18 @@ fn background_is_zero(value: &u32) -> bool {
 #[serde(rename_all = "camelCase")]
 pub struct ThreadActivity {
     pub thread_id: String,
-    /// 稳定活动身份：`activity:{turn_id}:{step}:{kind}`。
+    /// 稳定活动身份；调用方不得解析它来猜测来源。
     pub identity: String,
     /// 该活动自其身份建立以来的单调递增版本。
     ///
     /// 身份不变时每次活动事实变化递增（含只有流式进展、尚未提交的更新）；身份变化即新活动，版本
     /// 重新从 0 开始。它**不是** canonical 提交水位，也不是状态流 envelope 的 `revision`。
     pub revision: u64,
-    pub turn_id: String,
+    /// Turn 建立前为空，不引用上一 Turn 或伪造占位 Turn。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input_id: Option<String>,
     /// 当前 attempt；`preparing` 阶段为 `None`。
@@ -193,98 +197,11 @@ pub struct ThreadActivity {
 }
 
 impl ThreadActivity {
-    /// 一步活动（Turn + 当前步骤 + 前台 kind）的稳定身份。
+    /// 一步活动（真实 execution 或 Turn + 当前步骤 + 前台 kind）的稳定身份。
     ///
     /// `step` 是当前 attempt 的身份，准备阶段用 `preparing` 占位。同一活动内重复调用得到同一身份；
     /// 只有活动真实切换（attempt 推进或前台 kind 变化）才产生新身份。
-    pub fn identity(turn_id: &str, step: &str, kind: ThreadActivityKind) -> String {
-        format!("activity:{turn_id}:{step}:{}", kind.label())
+    pub fn identity(source_id: &str, step: &str, kind: ThreadActivityKind) -> String {
+        format!("activity:{source_id}:{step}:{}", kind.label())
     }
-}
-
-/// 按活动身份读取完整内容事实的请求。
-///
-/// 只读：不激活 owner、不 flush writer、不改变任何 revision。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ThreadActivityDetailQuery {
-    /// canonical 活动身份，与 [`ThreadActivity::identity`] 完全一致。
-    pub activity_id: String,
-}
-
-/// 一段完整内容事实。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ThreadActivityContentPart {
-    /// canonical item identity。
-    pub item_id: String,
-    /// 该内容段当前的 canonical item revision。
-    ///
-    /// `None` 表示这段内容来自纯内存推导，没有可证明的 canonical item revision（观察者提交该活动的
-    /// canonical 条目事实后才会给出）。客户端遇到 `None` 应整段替换，不按 revision 合并，也不要把
-    /// `None` 当成 0。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub revision: Option<u64>,
-    /// 该内容段是否已终态；`false` 表示仍在流式追加。
-    pub complete: bool,
-    /// 完整文本（未经预览压缩）。
-    pub text: String,
-}
-
-/// 一条活跃工具的完整调用与输出事实。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ThreadActivityToolDetail {
-    pub call_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub task_id: Option<String>,
-    pub name: String,
-    /// 该调用当前的执行状态；已经结束的调用为 [`ThreadActivityToolState::Finished`]。
-    pub state: ThreadActivityToolState,
-    /// canonical item 的原始调用参数；`None` 表示该调用的参数事实当前不可读。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub arguments: Option<String>,
-    /// 目前已观测的流式或终态输出；`None` 表示暂无输出事实。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub output: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ordinal: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub started_at: Option<i64>,
-    /// Typed wait/sleep presentation when this call is a wait or sleep.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub wait: Option<crate::ThreadWaitPresentation>,
-}
-
-/// 活动详情的生命周期结果。
-///
-/// 只有请求身份**当前仍然成立**时才返回正文；活动结束后不再提供旧活动的完整内容，因此迟到的
-/// 展开请求不会把已结束的活动恢复到 UI。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(
-    rename_all = "camelCase",
-    tag = "state",
-    rename_all_fields = "camelCase"
-)]
-pub enum ThreadActivityDetail {
-    /// 请求身份仍是当前活动。
-    Current {
-        activity: ThreadActivity,
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        reasoning: Vec<ThreadActivityContentPart>,
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        response: Vec<ThreadActivityContentPart>,
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        tools: Vec<ThreadActivityToolDetail>,
-    },
-    /// 请求身份已被同一 Thread 的更新活动取代。
-    Superseded {
-        activity: ThreadActivity,
-        requested_activity_id: String,
-    },
-    /// 请求身份所在活动已结束（当前没有活动）。
-    Ended {
-        thread_id: String,
-        activity_id: String,
-    },
 }

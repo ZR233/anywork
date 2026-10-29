@@ -102,6 +102,12 @@ fn project_plan(
         ));
     };
     let questions = content.questions().to_vec();
+    let identity =
+        crate::thread_assembler::plan_confirmation_document_identity(record).map_err(|error| {
+            ProjectionError::UserInput(format!(
+                "saved Plan document identity cannot be projected: {error}"
+            ))
+        })?;
     let state = match projected.status() {
         InteractionStatus::Pending => ThreadToolUserInputState::Pending,
         InteractionStatus::Cancelled => ThreadToolUserInputState::Cancelled,
@@ -127,11 +133,10 @@ fn project_plan(
             ));
         }
     };
-    Ok(ThreadToolUserInput::new(
-        record.request.id.clone(),
-        questions,
-        state,
-    ))
+    Ok(
+        ThreadToolUserInput::new(record.request.id.clone(), questions, state)
+            .with_plan_document(identity),
+    )
 }
 
 /// Attaches one projected user-input history to the tool item that owns the interaction.

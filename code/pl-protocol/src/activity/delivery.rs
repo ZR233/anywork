@@ -21,7 +21,7 @@ pub enum ActivityTextRegion {
     Reasoning { item_id: String },
     Response { item_id: String },
     ToolArguments { call_id: String },
-    ToolOutput { call_id: String },
+    ToolOutput { call_id: String, part_id: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -44,7 +44,16 @@ pub struct ActivityToolMetadata {
     /// None means unavailable, not an empty body.
     pub arguments_bytes: Option<u64>,
     pub output_bytes: Option<u64>,
+    /// Canonical part order, including observed empty parts. None output has no parts.
+    pub output_parts: Vec<ActivityToolOutputMetadata>,
     pub wait: Option<crate::ThreadWaitPresentation>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActivityToolOutputMetadata {
+    pub part_id: String,
+    pub total_bytes: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

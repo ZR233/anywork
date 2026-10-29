@@ -594,7 +594,9 @@ void main() {
   testWidgets('History 回到最新沿用展示窗口和订阅，完成追加仍可见', (tester) async {
     final (client, owner, transport) = await _openDetailSession(
       tester,
-      baseline: componentBaseline([textItem('only', appendSeq: 1)]),
+      baseline: componentBaseline([
+        textItem('only', appendSeq: 1, body: '已完成的长正文\n' * 80),
+      ]),
     );
     final lease = owner.lease('thread')!;
     _fixtures[lease] = (owner, transport);
@@ -609,12 +611,23 @@ void main() {
     await tester.pumpAndSettle();
     await _appendCompleted(tester, lease, [textItem('new', appendSeq: 2)]);
     await tester.pumpAndSettle();
+    await tester.drag(
+      find.byKey(StudioDriverKeys.timeline),
+      const Offset(0, 280),
+    );
+    await tester.pumpAndSettle();
+    expect(lease.scrollController.position.pixels, greaterThan(200));
     expect(find.textContaining('有新输出'), findsOneWidget);
     await tester.tap(find.byKey(StudioDriverKeys.timelineReturnLive));
     await tester.pumpAndSettle();
     expect(owner.source.value?.mode, TimelineDisplayMode.live);
     expect(owner.source.value?.hasNewOutput, isFalse);
     expect(owner.lease('thread'), same(lease));
+    expect(lease.scrollController.position.pixels, closeTo(0, 0.5));
+    expect(
+      lease.scrollController.position.extentBefore.abs(),
+      lessThanOrEqualTo(1),
+    );
     expect(lease.loadedCount, 2);
     expect(lease.completedCursor?.appendSeq, 2);
     expect(

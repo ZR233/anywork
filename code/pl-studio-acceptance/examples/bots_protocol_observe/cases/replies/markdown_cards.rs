@@ -1680,7 +1680,7 @@ async fn inbound_target_timeline(
     let input_id = format!("bot:{bot_id}:{DIRECT_CHAT_ID}:{message_id}");
     let mut turns = page.items.iter().filter(|item| {
         matches!(&item.descriptor,
-        TimelineDescriptor::Turn(turn) if turn.input_id() == Some(input_id.as_str()))
+        TimelineDescriptor::Turn(turn) if turn.input_id.as_deref() == Some(input_id.as_str()))
     });
     let turn = turns
         .next()
@@ -1690,10 +1690,19 @@ async fn inbound_target_timeline(
         "inbound input has multiple Turns in the timeline"
     );
     ensure!(
-        turn.header.thread_id == thread_id && !turn.header.turn_id.is_empty(),
+        turn.header.thread_id == thread_id
+            && turn
+                .header
+                .turn_id
+                .as_deref()
+                .is_some_and(|turn_id| !turn_id.is_empty()),
         "inbound Turn has an invalid thread or empty Turn identity"
     );
-    let turn_id = turn.header.turn_id.clone();
+    let turn_id = turn
+        .header
+        .turn_id
+        .clone()
+        .context("inbound Turn has no canonical Turn identity")?;
     Ok((page, turn_id))
 }
 
@@ -1790,7 +1799,7 @@ fn final_total_bytes(page: &TimelinePage, turn_id: &str) -> Result<u64> {
 }
 
 fn is_channel(item: &TimelineItem, turn_id: &str, channel: ThreadTextChannel) -> bool {
-    item.header.turn_id == turn_id
+    item.header.turn_id.as_deref() == Some(turn_id)
         && matches!(&item.descriptor, TimelineDescriptor::Text(text) if text.channel == channel)
 }
 

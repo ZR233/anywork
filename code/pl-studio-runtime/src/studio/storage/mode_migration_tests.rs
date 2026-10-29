@@ -2656,6 +2656,38 @@ async fn registered_history(
     store.history_for(&thread.project_id, &thread.id).await
 }
 
+/// These fixtures seed only checkpoint/context data using the current writer. The published
+/// pre-framework v5/v8 tables have the same shape, but no atomic-timeline output or SeaORM ledger.
+/// Never discard a completion when restoring that older boundary.
+async fn restore_pre_timeline_history_fixture(
+    db: &sea_orm::DatabaseConnection,
+    version: i64,
+) -> Result<()> {
+    use sea_orm::{DatabaseBackend, Statement};
+    assert!(matches!(version, 5 | 8));
+    let row = db
+        .query_one_raw(Statement::from_string(
+            DatabaseBackend::Sqlite,
+            "SELECT COUNT(*) AS count FROM timeline_records",
+        ))
+        .await?
+        .context("fixture timeline output")?;
+    assert_eq!(
+        row.try_get::<i64>("", "count")?,
+        0,
+        "legacy fixture must not discard completed history"
+    );
+    db.execute_unprepared("DROP TABLE timeline_records; DROP TABLE seaql_migrations")
+        .await?;
+    db.execute_raw(Statement::from_sql_and_values(
+        DatabaseBackend::Sqlite,
+        "UPDATE history_meta SET schema_version=? WHERE id=1",
+        [version.into()],
+    ))
+    .await?;
+    Ok(())
+}
+
 async fn downgrade_checkpoint_to_schema_four(path: &std::path::Path) -> Result<String> {
     use sea_orm::{DatabaseBackend, Statement};
     let db = raw_database(path).await?;
@@ -2683,10 +2715,7 @@ async fn downgrade_checkpoint_to_schema_four(path: &std::path::Path) -> Result<S
         ],
     ))
     .await?;
-    db.execute_unprepared(
-        "DROP TABLE IF EXISTS seaql_migrations; UPDATE history_meta SET schema_version=8",
-    )
-    .await?;
+    restore_pre_timeline_history_fixture(&db, 8).await?;
     db.close().await?;
     Ok(encoded)
 }
@@ -2741,6 +2770,7 @@ async fn checkpoint_envelope_upgrade_is_atomic_and_preserves_v2_history() -> Res
         .await
         .expect_err("the explicit upgrade must reach the checkpoint transaction");
     assert!(format!("{failure:#}").contains("m20261026_000006_history_checkpoint_v5"));
+    assert!(format!("{failure:#}").contains("injected envelope migration failure"));
     assert_eq!(
         crate::studio::startup::StudioStartupError::input("history", failure).kind,
         crate::studio::startup::StudioStartupErrorKind::Migration
@@ -3464,12 +3494,9 @@ async fn legacy_native_compaction_receipt_upgrades_sources_through_the_history_u
     state.context.records = records.into();
     persist_legacy_producer(&history, &history_path, state.clone()).await?;
     let before = history.checkpoint().await?.context("legacy checkpoint")?;
-    raw_database(&history_path)
-        .await?
-        .execute_unprepared(
-            "DROP TABLE IF EXISTS seaql_migrations; UPDATE history_meta SET schema_version=5",
-        )
-        .await?;
+    let db = raw_database(&history_path).await?;
+    restore_pre_timeline_history_fixture(&db, 5).await?;
+    db.close().await?;
     drop(history);
     drop(store);
 
@@ -3569,16 +3596,17 @@ async fn unusable_legacy_compaction_source_fails_closed_without_rewriting() -> R
     });
     state.context.records = records.into();
     persist_legacy_producer(&store, &path, state).await?;
-    raw_database(&path)
-        .await?
-        .execute_unprepared(
-            "DROP TABLE IF EXISTS seaql_migrations; UPDATE history_meta SET schema_version=5",
-        )
-        .await?;
+    let db = raw_database(&path).await?;
+    restore_pre_timeline_history_fixture(&db, 5).await?;
+    db.close().await?;
     drop(store);
 
     let failed = HistoryStore::open(&path, "migration").await?;
-    assert!(failed.prepare_activation().await.is_err());
+    let failure = failed
+        .prepare_activation()
+        .await
+        .expect_err("unusable source must fail inside context migration");
+    assert!(format!("{failure:#}").contains("m20261026_000004_history_context_sources"));
     assert!(
         failed.prepare_activation().await.is_err(),
         "升级步骤没有被标记完成，仍可重试"
@@ -3800,7 +3828,7 @@ fn finish_shared_history_drive<T>(drive: Result<T>, cleanup: Result<()>) -> Resu
 }
 
 /// All Studio-owned database families reject unknown future formats and migration names before
-/// a writer changes the SQLite file. This also covers takeover of a current pre-framework file.
+/// a writer changes the SQLite file. This also covers takeover of supported pre-framework files.
 #[tokio::test]
 async fn studio_databases_adopt_current_files_and_refuse_future_writes() -> Result<()> {
     use crate::studio::{StudioStore, paths::StudioPaths, storage::calls::CallsStore};
@@ -3832,7 +3860,11 @@ async fn studio_databases_adopt_current_files_and_refuse_future_writes() -> Resu
                 }
                 if generation == 0 {
                     let db = raw_database(&path).await?;
-                    db.execute_unprepared("DROP TABLE seaql_migrations").await?;
+                    if family == "history" {
+                        restore_pre_timeline_history_fixture(&db, 8).await?;
+                    } else {
+                        db.execute_unprepared("DROP TABLE seaql_migrations").await?;
+                    }
                     db.close().await?;
                 }
             }
@@ -3853,7 +3885,7 @@ async fn studio_databases_adopt_current_files_and_refuse_future_writes() -> Resu
                 db.execute_unprepared(match family {
                     "product" => "DROP TABLE seaql_migrations; DROP TABLE studio_objects",
                     "calls" => "DROP TABLE seaql_migrations; DROP TABLE call_usage_summary",
-                    _ => "DROP TABLE seaql_migrations; DROP TABLE history_items",
+                    _ => "DROP TABLE history_items",
                 })
                 .await?;
             } else if fault == "checkpoint" {
@@ -3861,7 +3893,6 @@ async fn studio_databases_adopt_current_files_and_refuse_future_writes() -> Resu
                     ThreadCheckpoint::capture("adoption".into(), 0, ThreadSnapshot::default());
                 checkpoint.schema_version = 6;
                 let payload = serde_json::to_string(&checkpoint)?;
-                db.execute_unprepared("DROP TABLE seaql_migrations").await?;
                 db.execute_raw(Statement::from_sql_and_values(DatabaseBackend::Sqlite,
                     "INSERT INTO session_checkpoint(id,revision,context_revision,context_count,payload,payload_hash) VALUES(1,0,0,0,?,?)",
                     vec![payload.clone().into(), pl_core::context::content_hash(payload.as_bytes()).into()])).await?;

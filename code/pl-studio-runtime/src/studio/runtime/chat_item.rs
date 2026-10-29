@@ -1,17 +1,20 @@
-//! Canonical `ThreadItem` ↔ typed `ChatItem` 适配。
+//! Canonical `ThreadItem` → typed `ChatItem`/`ChatDraft` 适配。
 //!
 //! core 的内容条目是「静态结构 + 若干共享 `ContentBlock` 内容域」。宿主把 canonical 条目的**静态部分**
 //! （身份、kind、时间戳、附件、工具身份……）编码一次进 `meta`，把**动态正文**按 [`ChatField`] 放进
 //! `fields`：流式热路径只克隆 `Arc`/共享链，不 JSON、不逐 token 复制全文。
 //!
-//! 读取 DTO 直接解码头部与描述并遍历有界字段；反向构造只发生在可靠保存或必要权威边界。
+//! 完成草稿经 `Session::publish_batch` 冻结为不可变完成记录；读取 DTO 直接解码头部与描述并遍历
+//! 有界字段。完成记录不携带执行 ordinal/revision/时间戳——它们是 Runtime 的内部执行事实，因此这里
+//! 不存在“从完成记录重建 canonical ThreadItem”的方向；实时预览的权威重建由 live 投影用自身
+//! 的运行事实直接完成，不经过完成 meta。
 //! `static_state` 仅服务投影判等，不是内存 meta 或读取 DTO。
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use anyhow::Result;
-use pl_core::chat::{ChatField, ChatItem, ChatLifecycle, PresentationPart};
+use pl_core::chat::{ChatDraft, ChatField, PresentationPart};
 use pl_core::model::ContentBlock;
 
 use pl_protocol::{
@@ -20,10 +23,69 @@ use pl_protocol::{
     ThreadToolUserInput, ThreadToolUserInputAnswer, ThreadToolUserInputState, UserQuestion,
 };
 
-use super::timeline_content::{
-    meta::{TimelineMeta, count, validate_counts},
-    restore,
+use super::timeline_content::meta::{
+    PLAN_DOCUMENT_FIELD, PLAN_FEEDBACK_FIELD, TimelineMeta, count, plan_completion, validate_counts,
 };
+
+mod record;
+pub(crate) use record::{decode_record, encode_record};
+mod legacy;
+pub(crate) use legacy::legacy_completion_drafts;
+#[cfg(test)]
+mod tests;
+
+/// Freeze only the acknowledged background handoff, not the still-running final result.
+pub(crate) fn background_started_draft(
+    item: &ThreadItem,
+    task_id: &str,
+    receipt: &str,
+    source_effect_seq: u64,
+    started_at: i64,
+) -> Result<ChatDraft> {
+    let ThreadItemState::Tool(tool) = item.state() else {
+        anyhow::bail!("background acknowledgement has no tool invocation");
+    };
+    let invocation = tool.invocation();
+    let id = crate::studio::thread_projection::order::tool_background_started_id(
+        invocation.tool_call_id(),
+    );
+    let turn_id = (!item.turn_id.is_empty()).then(|| item.turn_id.clone());
+    let meta = TimelineMeta {
+        id: id.clone(),
+        thread_id: item.thread_id.clone(),
+        turn_id: turn_id.clone(),
+        descriptor: pl_protocol::TimelineDescriptor::Tool(pl_protocol::TimelineToolDescriptor {
+            invocation: pl_protocol::TimelineToolInvocation {
+                tool_call_id: invocation.tool_call_id().to_owned(),
+                call_id: invocation.call_id().map(str::to_owned),
+                provider_item_id: invocation.provider_item_id().map(str::to_owned),
+                name: invocation.name().to_owned(),
+                working_directory: invocation.working_directory().map(str::to_owned),
+                task_id: Some(task_id.to_owned()),
+            },
+            state: pl_protocol::TimelineToolState::BackgroundStarted { started_at },
+            user_input: None,
+            wait: None,
+        }),
+    };
+    Ok(ChatDraft {
+        item_id: id,
+        turn_id,
+        source_effect_seq: Some(source_effect_seq),
+        sealed_at: Some(started_at),
+        fields: BTreeMap::from([
+            (
+                ChatField::host(TOOL_ARGUMENTS_FIELD),
+                ContentBlock::from_text(invocation.arguments()),
+            ),
+            (
+                ChatField::host(TOOL_RESULT_FIELD),
+                ContentBlock::from_text(receipt),
+            ),
+        ]),
+        meta: Arc::from(serde_json::to_vec(&meta)?),
+    })
+}
 
 /// 工具参数、工具结果与工具开放产物各自的宿主字段域 key（稳定身份，不是内容推断）。
 pub(crate) const TOOL_ARGUMENTS_FIELD: &str = "tool.arguments";
@@ -34,35 +96,43 @@ pub(crate) const TOOL_USER_INPUT_FIELD: &str = "tool.user-input.";
 /// 原始记录正文域 key 前缀：一段原始 payload 的正文按它在记录里的顺序寻址。
 pub(crate) const RAW_PAYLOAD_FIELD: &str = "raw.payload.";
 
-/// 把一条 canonical 条目拆成 typed 预览条目：静态结构进 `meta`，动态正文进 `fields`。
+/// 把一条 canonical 条目冻结为完成草稿：静态结构进 `meta`，动态正文进 `fields`。
 ///
-/// `saved` 是 writer 已确认的保存水位，独立于执行终态 `lifecycle`。返回的条目是**完整**条目：
-/// 有界预览只在交付边界由宿主 codec 裁剪，且裁剪不改变字段的完整字节数。
-pub(crate) fn typed_item(item: ThreadItem, saved: bool) -> Result<ChatItem> {
-    // History keeps exactly what the projection of the day wrote: a raw record stays a raw record and
-    // is never re-interpreted at read time. A payload can be produced by several sources (a stored
-    // input, a parent message, an undecodable model response), so its shape alone can never prove
-    // that a row was framework control.
-    let lifecycle = if item.state().is_terminal() {
-        ChatLifecycle::Terminal
+/// 调用方只在该条目的可靠完成边界构造一次草稿：`sealed_at` 取执行事实的落章时间，`turn_id`
+/// 为空表示发布时消费 Turn 未知（之后不得回补修改已发布原子）。执行 ordinal/revision 不进入
+/// 完成记录——它们是 Runtime 的内部执行索引。
+pub(crate) fn completion_draft(item: &ThreadItem, source_effect_seq: u64) -> Result<ChatDraft> {
+    let meta = static_meta(item)?;
+    let fields = if let Some(plan) = plan_completion(item)? {
+        let mut fields = BTreeMap::new();
+        if let Some(document) = plan.document {
+            fields.insert(
+                ChatField::host(PLAN_DOCUMENT_FIELD),
+                ContentBlock::from_text(&document),
+            );
+        }
+        if let Some(feedback) = plan.feedback {
+            fields.insert(
+                ChatField::host(PLAN_FEEDBACK_FIELD),
+                ContentBlock::from_text(&feedback),
+            );
+        }
+        fields
     } else {
-        ChatLifecycle::Streaming
+        content_fields(item.state())?
     };
-    let meta = static_meta(&item)?;
-    let fields = content_fields(item.state())?;
-    Ok(ChatItem::complete(pl_core::chat::ChatItemParts {
-        item_id: item.id,
-        turn_id: item.turn_id,
-        order: item.ordinal,
-        revision: item.revision,
+    let turn_id = (!item.turn_id.is_empty()).then(|| item.turn_id.clone());
+    Ok(ChatDraft {
+        item_id: item.id.clone(),
+        turn_id,
+        source_effect_seq: Some(source_effect_seq),
+        sealed_at: Some(item.updated_at),
         fields,
         meta,
-        saved,
-        lifecycle,
-    }))
+    })
 }
 
-/// 仅编码当前头部与独立描述；revision 由 ChatItem 持有，不在 meta 中驻留。
+/// 仅编码完成身份与独立描述；执行 revision 不进入完成记录。
 pub(crate) fn static_meta(item: &ThreadItem) -> Result<Arc<[u8]>> {
     Ok(Arc::from(serde_json::to_vec(&TimelineMeta::from_item(
         item,
@@ -135,7 +205,11 @@ pub(crate) fn content_fields(
                 }
                 for answer in user_input.answers() {
                     // validate_counts 已验证关联；正文始终来自公开投影，不回读私有值。
-                    if answer.is_redacted() {
+                    if answer.is_redacted()
+                        || user_input.questions().iter().any(|question| {
+                            question.id == answer.question_id() && question.is_secret
+                        })
+                    {
                         continue;
                     }
                     let position =
@@ -213,22 +287,6 @@ pub(crate) fn static_state(state: &ThreadItemState) -> ThreadItemState {
     }
 }
 
-/// 从当前头部、描述及完整字段重建可靠载荷；不可用于有界读取预览。
-pub(crate) fn canonical_item(item: &ChatItem) -> Result<ThreadItem> {
-    let meta = TimelineMeta::for_item(item)?;
-    let state = restore::state(&meta.descriptor, item, &meta.header.thread_id)?;
-    Ok(ThreadItem::new(
-        meta.header.id,
-        meta.header.thread_id,
-        meta.header.turn_id,
-        meta.header.ordinal,
-        item.revision,
-        meta.header.created_at,
-        meta.header.updated_at,
-        state,
-    ))
-}
-
 /// 一个问题标题的内容域身份。
 pub(crate) fn user_input_header_field(question_index: usize) -> ChatField {
     ChatField::host(format!(
@@ -301,7 +359,7 @@ fn user_input_question_fields(
 /// 一个已作答问题在原问题顺序里的位置。
 ///
 /// 回答以 question ID 关联问题，投影边界保证每个回答都指向一个真实问题；结构本身仍按位置寻址，
-/// 因此一段正文在 `content_fields` 与 [`canonical_item`] 两侧落到同一个域上。
+/// 因此一段正文在 `content_fields` 与完成读取两侧落到同一个域上。
 fn question_position(user_input: &ThreadToolUserInput, question_id: &str) -> Option<usize> {
     user_input
         .questions()
@@ -311,7 +369,7 @@ fn question_position(user_input: &ThreadToolUserInput, question_id: &str) -> Opt
 
 /// 静态结构里的问答：所有正文清空，结构、顺序、ID 与脱敏状态如实保留。
 fn clear_user_input(user_input: &ThreadToolUserInput) -> ThreadToolUserInput {
-    ThreadToolUserInput::new(
+    let cleared = ThreadToolUserInput::new(
         user_input.interaction_id().to_owned(),
         user_input
             .questions()
@@ -353,7 +411,11 @@ fn clear_user_input(user_input: &ThreadToolUserInput) -> ThreadToolUserInput {
                 ))
             }
         },
-    )
+    );
+    match user_input.plan_document() {
+        Some(identity) => cleared.with_plan_document(identity.clone()),
+        None => cleared,
+    }
 }
 
 fn streamed_output(state: &ThreadToolState) -> Option<&str> {

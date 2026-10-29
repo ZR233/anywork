@@ -1,6 +1,7 @@
 //! Product read descriptors → FRB; no body reconstruction or protocol reinterpretation.
 use crate::api::studio::convert::thread_stream::{
-    attachment, bridge_turn_state, content_lifecycle, token_usage, wait_presentation,
+    attachment, bridge_turn_failure, token_usage, turn_budget_limit, turn_cancellation_cause,
+    turn_rollover, wait_presentation,
 };
 use crate::api::studio::types::*;
 use pl_protocol::*;
@@ -10,9 +11,9 @@ pub(super) fn header(value: TimelineItemHeader) -> BridgeTimelineItemHeader {
         id: value.id,
         thread_id: value.thread_id,
         turn_id: value.turn_id,
-        ordinal: value.ordinal,
-        created_at: value.created_at,
-        updated_at: value.updated_at,
+        append_seq: value.append_seq,
+        source_effect_seq: value.source_effect_seq,
+        sealed_at: value.sealed_at,
     }
 }
 
@@ -27,12 +28,12 @@ pub(super) fn descriptor(value: TimelineDescriptor) -> BridgeTimelineDescriptor 
                     ThreadTextChannel::Final => BridgeThreadTextChannel::Final,
                 },
                 attachments: value.attachments.iter().map(attachment).collect(),
-                lifecycle: content_lifecycle(&value.lifecycle),
+                outcome: content_outcome(value.outcome),
             })
         }
         TimelineDescriptor::Thinking(value) => {
             BridgeTimelineDescriptor::Thinking(BridgeTimelineThinkingDescriptor {
-                lifecycle: content_lifecycle(&value.lifecycle),
+                outcome: content_outcome(value.outcome),
             })
         }
         TimelineDescriptor::Raw(value) => {
@@ -69,7 +70,7 @@ pub(super) fn descriptor(value: TimelineDescriptor) -> BridgeTimelineDescriptor 
             }))
         }
         TimelineDescriptor::Agent(value) => {
-            let identity = value.identity();
+            let identity = &value.identity;
             BridgeTimelineDescriptor::Agent {
                 identity: BridgeThreadAgentIdentity {
                     id: identity.id().to_string(),
@@ -79,22 +80,24 @@ pub(super) fn descriptor(value: TimelineDescriptor) -> BridgeTimelineDescriptor 
                     task: identity.task().to_string(),
                     depth: identity.depth(),
                 },
-                state: match value.state() {
-                    ThreadAgentState::Queued(_) => BridgeThreadAgentState::Queued,
-                    ThreadAgentState::Running(_) => BridgeThreadAgentState::Running,
-                    ThreadAgentState::Succeeded(state) => BridgeThreadAgentState::Succeeded {
-                        completed_at: state.completed_at(),
-                        summary: state.summary().to_string(),
-                    },
-                    ThreadAgentState::Denied(state) => BridgeThreadAgentState::Denied {
+                outcome: match value.outcome {
+                    TimelineAgentOutcome::Succeeded(state) => {
+                        BridgeTimelineAgentOutcome::Succeeded {
+                            completed_at: state.completed_at(),
+                            summary: state.summary().to_string(),
+                        }
+                    }
+                    TimelineAgentOutcome::Denied(state) => BridgeTimelineAgentOutcome::Denied {
                         denied_at: state.denied_at(),
                         reason: state.reason().to_string(),
                     },
-                    ThreadAgentState::Cancelled(state) => BridgeThreadAgentState::Cancelled {
-                        cancelled_at: state.cancelled_at(),
-                        reason: state.reason().to_string(),
-                    },
-                    ThreadAgentState::Failed(state) => BridgeThreadAgentState::Failed {
+                    TimelineAgentOutcome::Cancelled(state) => {
+                        BridgeTimelineAgentOutcome::Cancelled {
+                            cancelled_at: state.cancelled_at(),
+                            reason: state.reason().to_string(),
+                        }
+                    }
+                    TimelineAgentOutcome::Failed(state) => BridgeTimelineAgentOutcome::Failed {
                         failed_at: state.failed_at(),
                         error: state.error().to_string(),
                     },
@@ -102,26 +105,29 @@ pub(super) fn descriptor(value: TimelineDescriptor) -> BridgeTimelineDescriptor 
             }
         }
         TimelineDescriptor::Turn(value) => BridgeTimelineDescriptor::Turn {
-            state: bridge_turn_state(value.state()),
-            input_id: value.input_id().map(str::to_owned),
+            outcome: turn_outcome(value.outcome),
+            input_id: value.input_id,
         },
         TimelineDescriptor::Inference(value) => BridgeTimelineDescriptor::Inference {
-            inference_id: value.inference_id().to_string(),
-            model: value.model().to_string(),
-            state: match value.state() {
-                ThreadInferenceState::Running(_) => BridgeThreadInferenceState::Running,
-                ThreadInferenceState::Completed(state) => BridgeThreadInferenceState::Completed {
-                    completed_at: state.completed_at(),
-                    usage: token_usage(state.usage().clone()),
-                },
-                ThreadInferenceState::Failed(state) => BridgeThreadInferenceState::Failed {
+            inference_id: value.inference_id,
+            model: value.model,
+            outcome: match value.outcome {
+                TimelineInferenceOutcome::Completed(state) => {
+                    BridgeTimelineInferenceOutcome::Completed {
+                        completed_at: state.completed_at(),
+                        usage: token_usage(state.usage().clone()),
+                    }
+                }
+                TimelineInferenceOutcome::Failed(state) => BridgeTimelineInferenceOutcome::Failed {
                     failed_at: state.failed_at(),
                     error: state.error().to_string(),
                 },
-                ThreadInferenceState::Cancelled(state) => BridgeThreadInferenceState::Cancelled {
-                    cancelled_at: state.cancelled_at(),
-                    reason: state.reason().to_string(),
-                },
+                TimelineInferenceOutcome::Cancelled(state) => {
+                    BridgeTimelineInferenceOutcome::Cancelled {
+                        cancelled_at: state.cancelled_at(),
+                        reason: state.reason().to_string(),
+                    }
+                }
             },
         },
         TimelineDescriptor::Skill(value) => {
@@ -170,18 +176,27 @@ pub(super) fn descriptor(value: TimelineDescriptor) -> BridgeTimelineDescriptor 
                 compacted_at: value.compacted_at(),
             }
         }
+        TimelineDescriptor::Plan(value) => BridgeTimelineDescriptor::Plan {
+            interaction_id: value.interaction_id,
+            document_version: value.document_version,
+            content_hash: value.content_hash,
+            decision: match value.decision {
+                TimelinePlanDecision::Approved => BridgeTimelinePlanDecision::Approved,
+                TimelinePlanDecision::RevisionRequested => {
+                    BridgeTimelinePlanDecision::RevisionRequested
+                }
+                TimelinePlanDecision::Cancelled => BridgeTimelinePlanDecision::Cancelled,
+                TimelinePlanDecision::Resolved => BridgeTimelinePlanDecision::Resolved,
+            },
+        },
     }
 }
 
 fn tool_state(value: TimelineToolState) -> BridgeTimelineToolState {
     match value {
-        TimelineToolState::Queued => BridgeTimelineToolState::Queued,
-        TimelineToolState::Cancelling => BridgeTimelineToolState::Cancelling,
-        TimelineToolState::Started => BridgeTimelineToolState::Started,
-        TimelineToolState::Streaming => BridgeTimelineToolState::Streaming,
-        TimelineToolState::AwaitingApproval => BridgeTimelineToolState::AwaitingApproval,
-        TimelineToolState::Approved => BridgeTimelineToolState::Approved,
-        TimelineToolState::Running => BridgeTimelineToolState::Running,
+        TimelineToolState::BackgroundStarted { started_at } => {
+            BridgeTimelineToolState::BackgroundStarted { started_at }
+        }
         TimelineToolState::Interrupted {
             interrupted_at,
             reason,
@@ -246,7 +261,6 @@ fn user_input(value: TimelineUserInputDescriptor) -> BridgeTimelineUserInputDesc
             })
             .collect(),
         state: match value.state {
-            TimelineUserInputState::Pending => BridgeTimelineUserInputState::Pending,
             TimelineUserInputState::Cancelled => BridgeTimelineUserInputState::Cancelled,
             TimelineUserInputState::Resolved { answers } => {
                 BridgeTimelineUserInputState::Resolved {
@@ -260,6 +274,52 @@ fn user_input(value: TimelineUserInputDescriptor) -> BridgeTimelineUserInputDesc
                         .collect(),
                 }
             }
+        },
+    }
+}
+
+fn content_outcome(value: TimelineContentOutcome) -> BridgeTimelineContentOutcome {
+    match value {
+        TimelineContentOutcome::Completed(state) => BridgeTimelineContentOutcome::Completed {
+            completed_at: state.completed_at(),
+        },
+        TimelineContentOutcome::Failed(state) => BridgeTimelineContentOutcome::Failed {
+            failed_at: state.failed_at(),
+            error: state.error().to_owned(),
+        },
+        TimelineContentOutcome::Cancelled(state) => BridgeTimelineContentOutcome::Cancelled {
+            cancelled_at: state.cancelled_at(),
+            reason: state.reason().to_owned(),
+        },
+    }
+}
+
+fn turn_outcome(value: TimelineTurnOutcome) -> BridgeTimelineTurnOutcome {
+    match value {
+        TimelineTurnOutcome::Completed(state) => BridgeTimelineTurnOutcome::Completed {
+            started_at: state.started_at(),
+            completed_at: state.completed_at(),
+            completion: match state.completion() {
+                TurnCompletion::Normal => BridgeTurnCompletion::Normal,
+                TurnCompletion::InteractionRequested => BridgeTurnCompletion::InteractionRequested,
+            },
+        },
+        TimelineTurnOutcome::Cancelled(state) => BridgeTimelineTurnOutcome::Cancelled {
+            started_at: state.started_at(),
+            requested_at: state.requested_at(),
+            completed_at: state.completed_at(),
+            cause: turn_cancellation_cause(state.cause().clone()),
+        },
+        TimelineTurnOutcome::Failed(state) => BridgeTimelineTurnOutcome::Failed {
+            started_at: state.started_at(),
+            completed_at: state.completed_at(),
+            failure: bridge_turn_failure(state.failure().clone()),
+        },
+        TimelineTurnOutcome::BudgetLimited(state) => BridgeTimelineTurnOutcome::BudgetLimited {
+            started_at: state.started_at(),
+            completed_at: state.completed_at(),
+            limit: turn_budget_limit(*state.limit()),
+            rollover: turn_rollover(state.rollover().clone()),
         },
     }
 }

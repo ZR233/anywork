@@ -102,6 +102,8 @@ abstract final class StudioDriverKeyValues {
         ThreadToolArgumentsFieldView() => 'tool-arguments',
         ThreadToolResultFieldView() => 'tool-result',
         ThreadToolOutputArtifactsFieldView() => 'tool-artifacts',
+        ThreadPlanDocumentFieldView() => 'plan-document',
+        ThreadPlanFeedbackFieldView() => 'plan-feedback',
         ThreadRawPayloadFieldView(:final payloadIndex) =>
           'raw-payload-$payloadIndex',
         ThreadToolUserInputFieldView(:final questionIndex, :final part) =>

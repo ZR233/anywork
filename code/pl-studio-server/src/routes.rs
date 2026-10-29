@@ -7,7 +7,6 @@ use axum::extract::{FromRequest, FromRequestParts, Multipart, Path, Query, Reque
 use axum::http::request::Parts;
 use axum::http::{StatusCode, header};
 use axum::response::IntoResponse;
-use pl_protocol::ThreadActivityDetailQuery;
 use pl_protocol::studio::{
     AccountDomainFrame, AccountObservationTarget, AcpAccountCatalog, AcpAuthCommandReply,
     AcpAuthSnapshot, AcpInstallCommandReply, AcpInstallSnapshot, AdmitAttachmentDraftsRequest,
@@ -234,7 +233,6 @@ pub(crate) fn api_router() -> OpenApiRouter<AppState> {
         .routes(routes!(list_threads))
         .routes(routes!(create_thread))
         .routes(routes!(read_thread))
-        .routes(routes!(read_thread_activity_detail))
         .routes(routes!(archive_thread))
         .routes(routes!(query_threads))
         .routes(routes!(restore_thread))
@@ -480,25 +478,6 @@ async fn read_thread(
     ))
 }
 
-/// 按活动身份读取当前完整内容事实（reasoning / 输出正文 / 工具参数与流式输出）。
-///
-/// 只读：不激活 owner、不 flush writer、不改变 revision。身份不再成立时返回 `superseded` /
-/// `ended`；未知 Thread 返回 404，客户端不据此恢复旧活动。
-#[utoipa::path(get, path = "/api/v1/threads/{thread_id}/activity/detail", operation_id = "thread.readActivityDetail", params(("thread_id" = String, Path), ("activityId" = String, Query)), responses(StudioApiErrors, (status = 200)))]
-async fn read_thread_activity_detail(
-    State(state): State<AppState>,
-    Path(thread_id): Path<String>,
-    ApiQuery(query): ApiQuery<ThreadActivityDetailQuery>,
-) -> Result<impl IntoResponse, ApiError> {
-    Ok(Json(
-        state
-            .runtime
-            .read_thread_activity_detail(&thread_id, &query.activity_id)
-            .await
-            .map_err(ApiError::from)?,
-    ))
-}
-
 #[utoipa::path(delete, path = "/api/v1/threads/{thread_id}", operation_id = "thread.archive", params(("thread_id" = String, Path)), request_body = StudioCommandRequest, responses(StudioApiErrors, (status = 200)))]
 async fn archive_thread(
     State(state): State<AppState>,
@@ -680,10 +659,10 @@ async fn list_thread_timeline(
     ))
 }
 
-/// 按 `item`／`field`／`revision` 分块读取完整正文。
+/// 按 `item`／`field`／`timelineEpoch` 分块读取不可变完整正文。
 ///
-/// 请求体是 typed 查询（字段身份、revision、不透明 continuation、块大小），不是把带索引的字段压成
-/// 临时字符串路径。读取绑定同一 revision：内容变化时报 `staleRevision`，绝不混版本拼接。
+/// typed 查询绑定完成窗口的 epoch、字段身份、不透明 continuation 与块大小；
+/// 不把执行 revision 当正文版本，跨 epoch 拒绝拼接，也不读取运行中的活动正文。
 #[utoipa::path(post, path = "/api/v1/threads/{thread_id}/timeline/items/{item_id}/detail", operation_id = "thread.readTimelineDetail", params(("thread_id" = String, Path), ("item_id" = String, Path)), request_body = TimelineDetailQuery, responses(StudioApiErrors, (status = 200)))]
 async fn read_thread_timeline_detail(
     State(state): State<AppState>,

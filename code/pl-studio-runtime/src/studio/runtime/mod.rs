@@ -18,6 +18,7 @@ mod account_usage;
 pub mod accounts;
 mod acp_auth;
 mod acp_install;
+mod activity_delivery;
 mod attachment_drafts;
 mod background_task;
 mod bots_api;

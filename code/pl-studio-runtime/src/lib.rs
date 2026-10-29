@@ -3,11 +3,15 @@
 //! 本 crate 负责 Studio 配置、SQLite projection、project/thread 编排与 bridge DTO；
 //! 通用模型循环、agent actor、工具和协议基础类型由 `pl-core` 提供。
 
+// Unit tests reuse the same isolated Runtime fixtures as the integration binaries.
+#[cfg(test)]
+extern crate self as pl_studio_runtime;
+
 pub(crate) use pl_core::context::content_hash as canonical_content_hash;
 pub(crate) use pl_protocol::*;
 // Public Studio timeline signatures use the core content types; adapters need no direct
 // dependency on the execution kernel to name them.
-pub use pl_core::chat::{CHAT_ITEM_PREVIEW_BYTES, ChatError, ChatField, ChatItem, ChatLifecycle};
+pub use pl_core::chat::{CHAT_ITEM_PREVIEW_BYTES, ChatError, ChatField, ChatItem};
 pub use pl_core::model::ContentBlock;
 mod hash;
 

@@ -15,7 +15,7 @@ pub struct ThreadToolItem {
     /// stays on the call's own item instead of becoming a second persisted Q&A record. An ordinary
     /// question tool and the `plan_submit` call's Plan confirmation share this one structure.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    user_input: Option<ThreadToolUserInput>,
+    user_input: Option<Box<ThreadToolUserInput>>,
     /// Typed wait/sleep presentation derived from canonical parameters, tasks and results.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     wait: Option<Box<ThreadWaitPresentation>>,
@@ -33,7 +33,7 @@ impl ThreadToolItem {
 
     /// Attaches (or clears) the Q&A history projection without touching the call's own state.
     pub fn with_user_input(mut self, user_input: Option<ThreadToolUserInput>) -> Self {
-        self.user_input = user_input;
+        self.user_input = user_input.map(Box::new);
         self
     }
 
@@ -52,7 +52,7 @@ impl ThreadToolItem {
     }
 
     pub fn user_input(&self) -> Option<&ThreadToolUserInput> {
-        self.user_input.as_ref()
+        self.user_input.as_deref()
     }
 
     pub fn wait(&self) -> Option<&ThreadWaitPresentation> {

@@ -215,7 +215,20 @@ impl Observation<'_> {
 
     async fn assert_child_completed(&self, child: &str, turn_id: &str) -> Result<()> {
         let page = self.session.http()?.read_timeline(child, 100).await?;
-        ensure!(page.items.iter().any(|item| item.header.turn_id == turn_id && matches!(&item.descriptor, pl_protocol::TimelineDescriptor::Turn(turn) if matches!(turn.state(), pl_protocol::TurnState::Completed(_)))), "original child Turn {turn_id} did not complete successfully");
+        ensure!(
+            page.items.iter().any(|item| {
+                item.header.turn_id.as_deref() == Some(turn_id)
+                    && matches!(
+                        &item.descriptor,
+                        pl_protocol::TimelineDescriptor::Turn(turn)
+                            if matches!(
+                                &turn.outcome,
+                                pl_protocol::TimelineTurnOutcome::Completed(_)
+                            )
+                    )
+            }),
+            "original child Turn {turn_id} did not complete successfully"
+        );
         Ok(())
     }
 

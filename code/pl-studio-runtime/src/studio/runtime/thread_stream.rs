@@ -17,8 +17,8 @@ use super::StudioRuntime;
 use anyhow::{Context, Result};
 use pl_core::thread::{ThreadHandle, ThreadSnapshot};
 use pl_protocol::{
-    ThreadActivity, ThreadActivityDetail, ThreadNotification, ThreadNotificationEnvelope,
-    ThreadStorageState, ThreadSubscriptionUpdate,
+    ThreadActivity, ThreadNotification, ThreadNotificationEnvelope, ThreadStorageState,
+    ThreadSubscriptionUpdate,
 };
 use std::{collections::VecDeque, num::NonZeroUsize, sync::Arc};
 use tokio::{
@@ -27,7 +27,7 @@ use tokio::{
 };
 
 use super::thread_observation::ThreadLiveEvent;
-use crate::studio::thread_projection::{ActivityDetailRead, LiveEvent, TurnEvent};
+use crate::studio::thread_projection::{LiveEvent, TurnEvent};
 
 /// Fixed upper bound on frames a live subscription may queue for one slow consumer.
 ///
@@ -894,78 +894,6 @@ impl StudioRuntime {
             .find(|snapshot| snapshot.thread_id == thread_id)
     }
 
-    /// 按活动身份读取当前活动的完整内容事实（reasoning、输出正文、工具参数与流式输出）。
-    ///
-    /// 只读且**纯内存**：活动与活动的有界详情由 owner 助手
-    /// [`crate::studio::thread_projection::ActivityProjection`] 从驻留 owner 已发布的
-    /// `ThreadSnapshot` 推导——不读 `Session`、不做 SQL、不整 Turn 回读历史、不读 Thread 目录、
-    /// 不激活 owner、不 flush writer、不改变任何 revision。身份不再成立时给出明确的
-    /// `Superseded` / `Ended` 生命周期结果，而不是回退到旧活动的正文；未知 Thread 明确报
-    /// `NotFound`。
-    ///
-    /// # Errors
-    ///
-    /// 未知 Thread。
-    pub async fn read_thread_activity_detail(
-        &self,
-        thread_id: &str,
-        activity_id: &str,
-    ) -> Result<ThreadActivityDetail> {
-        if let Some(thread) = self
-            .agent_facility
-            .product_events
-            .thread_snapshot(thread_id)
-        {
-            self.check_thread_read_access(&thread)?;
-        }
-        let Some(handle) = self
-            .threads
-            .observed_threads()
-            .into_iter()
-            .find(|(id, _)| id == thread_id)
-            .map(|(_, handle)| handle)
-        else {
-            // 没有驻留 owner 就没有“当前活动”：不激活执行，也不读 durable 正文。存在性只按
-            // canonical 目录确认（内存优先），未知身份明确 NotFound。
-            return match self.read_protocol_thread(thread_id).await {
-                Ok(thread) => {
-                    self.check_thread_read_access(&thread)?;
-                    Ok(ThreadActivityDetail::Ended {
-                        thread_id: thread_id.to_owned(),
-                        activity_id: activity_id.to_owned(),
-                    })
-                }
-                Err(_) => Err(anyhow::Error::new(
-                    pl_protocol::studio::StudioError::not_found("Thread"),
-                )),
-            };
-        };
-        let state = handle.snapshot();
-        // 活动与详情都由同一个纯内存 owner 助手推导：只吃 owner 已发布快照，不读 Session、不做 SQL、
-        // 不整 Turn 回读历史。推导结果与观察任务持有的那份一致（同一纯函数、同一快照事实）。
-        let mut projection = crate::studio::thread_projection::ActivityProjection::default();
-        let _ = projection.observe(thread_id, &state);
-        Ok(match projection.detail(activity_id) {
-            ActivityDetailRead::Current(detail) => ThreadActivityDetail::Current {
-                activity: detail.activity,
-                reasoning: detail.content.reasoning,
-                response: detail.content.response,
-                tools: detail.content.tools,
-            },
-            ActivityDetailRead::Superseded {
-                activity,
-                requested_activity_id,
-            } => ThreadActivityDetail::Superseded {
-                activity,
-                requested_activity_id,
-            },
-            ActivityDetailRead::Ended => ThreadActivityDetail::Ended {
-                thread_id: thread_id.to_owned(),
-                activity_id: activity_id.to_owned(),
-            },
-        })
-    }
-
     /// Cumulative usage summary the projection must consume for one Thread.
     ///
     /// The writer is the single folder of committed effects, so its reported summary is the value a
@@ -1167,7 +1095,8 @@ mod storage_fault_tests {
                 thread_id: thread.id.clone(),
                 identity: "old-activity".into(),
                 revision: 9,
-                turn_id: "old-turn".into(),
+                turn_id: Some("old-turn".into()),
+                execution_id: None,
                 input_id: None,
                 attempt_id: None,
                 kind: pl_protocol::ThreadActivityKind::Thinking,

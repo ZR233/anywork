@@ -63,6 +63,7 @@ class TimelineView extends StatefulWidget {
 
 class _TimelineViewState extends State<TimelineView> {
   StreamSubscription<ChatOperation>? _operations;
+  VoidCallback? _scrollToBottom;
   bool _userIntent = false;
   bool _actionIntent = false;
   bool _scheduled = false;
@@ -156,6 +157,8 @@ class _TimelineViewState extends State<TimelineView> {
 
   Future<void> _returnToLatest() async {
     final controls = widget.controls;
+    final scrollToBottom = _scrollToBottom;
+    if (scrollToBottom == null) return;
     await widget.onReturnLive();
     if (!mounted ||
         !identical(widget.controls, controls) ||
@@ -163,16 +166,9 @@ class _TimelineViewState extends State<TimelineView> {
         !controls.scrollController.hasClients) {
       return;
     }
-    final scroll = controls.scrollController;
-    if (MediaQuery.disableAnimationsOf(context)) {
-      scroll.jumpTo(scroll.position.minScrollExtent);
-    } else {
-      await scroll.animateTo(
-        scroll.position.minScrollExtent,
-        duration: const Duration(milliseconds: 180),
-        curve: Curves.easeOut,
-      );
-    }
+    // Keep our explicit reading intent/footer, but delegate geometry and timing
+    // to Flyer's public builder callback for this mounted list.
+    scrollToBottom();
   }
 
   Widget _body(ConversationItem item, String text) => TimelineMarkdown(
@@ -338,8 +334,10 @@ class _TimelineViewState extends State<TimelineView> {
                                 builders: Builders(
                                   composerBuilder: (_) =>
                                       const SizedBox.shrink(),
-                                  scrollToBottomBuilder: (_, _, _) =>
-                                      const SizedBox.shrink(),
+                                  scrollToBottomBuilder: (_, _, onPressed) {
+                                    _scrollToBottom = onPressed;
+                                    return const SizedBox.shrink();
+                                  },
                                   emptyChatListBuilder: (_) => Center(
                                     child: SelectionContainer.disabled(
                                       child: Text(

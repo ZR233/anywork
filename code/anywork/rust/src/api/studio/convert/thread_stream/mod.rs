@@ -1,7 +1,8 @@
 mod activity;
+mod activity_delivery;
+pub(crate) use activity_delivery::activity_content as bridge_activity_content;
 mod interaction;
 
-pub(crate) use activity::activity_detail as bridge_activity_detail;
 pub(crate) use interaction::child_interaction as bridge_child_interaction;
 pub(crate) use interaction::interaction as bridge_interaction;
 
@@ -10,12 +11,11 @@ use pl_protocol::{
     AgentSessionPlanDocument, AgentSessionPlanPhase, AgentSessionPlanRuntimeSnapshot,
     BudgetLimitKind, BudgetLimitSnapshot, McpAvailabilityDescriptor, McpHealthSnapshot,
     McpServerDescriptor, PromptPrefixChangedReason, RuntimeCostAmount, Thread, ThreadAttachment,
-    ThreadContentLifecycle, ThreadNotification, ThreadNotificationEnvelope, ThreadRuntimeLiveUsage,
-    ThreadRuntimeSnapshot, ThreadRuntimeUsage, ThreadRuntimeUsageState, ThreadSnapshot,
-    ThreadStatus, ThreadSubscriptionUpdate, TodoItem, TodoListSnapshot, TodoStatus,
-    TokenUsageSnapshot, Turn, TurnCancellationCause, TurnCompletion, TurnPhase,
-    TurnRolloverOutcome, TurnState, WorkflowRunLifecycle, WorkflowRuntimeRunSnapshot,
-    WorkflowRuntimeSnapshot,
+    ThreadNotification, ThreadNotificationEnvelope, ThreadRuntimeLiveUsage, ThreadRuntimeSnapshot,
+    ThreadRuntimeUsage, ThreadRuntimeUsageState, ThreadSnapshot, ThreadStatus,
+    ThreadSubscriptionUpdate, TodoItem, TodoListSnapshot, TodoStatus, TokenUsageSnapshot, Turn,
+    TurnCancellationCause, TurnCompletion, TurnPhase, TurnRolloverOutcome, TurnState,
+    WorkflowRunLifecycle, WorkflowRuntimeRunSnapshot, WorkflowRuntimeSnapshot,
 };
 
 use crate::api::studio::types::*;
@@ -188,7 +188,7 @@ pub(super) fn bridge_turn_state(value: &TurnState) -> BridgeTurnState {
     }
 }
 
-fn turn_cancellation_cause(value: TurnCancellationCause) -> BridgeTurnCancellationCause {
+pub(super) fn turn_cancellation_cause(value: TurnCancellationCause) -> BridgeTurnCancellationCause {
     match value {
         TurnCancellationCause::Unspecified => BridgeTurnCancellationCause::Unspecified,
         TurnCancellationCause::UserRequested => BridgeTurnCancellationCause::UserRequested,
@@ -202,7 +202,7 @@ fn turn_cancellation_cause(value: TurnCancellationCause) -> BridgeTurnCancellati
     }
 }
 
-fn turn_rollover(value: TurnRolloverOutcome) -> BridgeTurnRolloverOutcome {
+pub(super) fn turn_rollover(value: TurnRolloverOutcome) -> BridgeTurnRolloverOutcome {
     match value {
         TurnRolloverOutcome::NotAttempted => BridgeTurnRolloverOutcome::NotAttempted,
         TurnRolloverOutcome::Succeeded => BridgeTurnRolloverOutcome::Succeeded,
@@ -210,7 +210,7 @@ fn turn_rollover(value: TurnRolloverOutcome) -> BridgeTurnRolloverOutcome {
     }
 }
 
-fn turn_budget_limit(value: BudgetLimitSnapshot) -> BridgeTurnBudgetLimit {
+pub(super) fn turn_budget_limit(value: BudgetLimitSnapshot) -> BridgeTurnBudgetLimit {
     BridgeTurnBudgetLimit {
         kind: match value.kind {
             BudgetLimitKind::ModelStep => BridgeTurnBudgetLimitKind::ModelStep,
@@ -230,7 +230,7 @@ fn turn_budget_limit(value: BudgetLimitSnapshot) -> BridgeTurnBudgetLimit {
     }
 }
 
-fn bridge_turn_failure(value: pl_protocol::TurnFailure) -> BridgeTurnFailureDto {
+pub(super) fn bridge_turn_failure(value: pl_protocol::TurnFailure) -> BridgeTurnFailureDto {
     BridgeTurnFailureDto {
         category: format!("{:?}", value.category).to_ascii_lowercase(),
         provider_kind: value
@@ -252,23 +252,6 @@ fn turn_phase(value: TurnPhase) -> BridgeTurnPhase {
         TurnPhase::Planning => BridgeTurnPhase::Planning,
         TurnPhase::RunningTool => BridgeTurnPhase::RunningTool,
         TurnPhase::Persisting => BridgeTurnPhase::Persisting,
-    }
-}
-
-pub(super) fn content_lifecycle(value: &ThreadContentLifecycle) -> BridgeThreadContentLifecycle {
-    match value {
-        ThreadContentLifecycle::Streaming(_) => BridgeThreadContentLifecycle::Streaming,
-        ThreadContentLifecycle::Completed(state) => BridgeThreadContentLifecycle::Completed {
-            completed_at: state.completed_at(),
-        },
-        ThreadContentLifecycle::Failed(state) => BridgeThreadContentLifecycle::Failed {
-            failed_at: state.failed_at(),
-            error: state.error().to_string(),
-        },
-        ThreadContentLifecycle::Cancelled(state) => BridgeThreadContentLifecycle::Cancelled {
-            cancelled_at: state.cancelled_at(),
-            reason: state.reason().to_string(),
-        },
     }
 }
 

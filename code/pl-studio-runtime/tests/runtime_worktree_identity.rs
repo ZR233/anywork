@@ -303,7 +303,10 @@ async fn factory_missing_error_stays_typed_and_recovery_never_calls_missing_deta
         let history = support::saved(&env.home, &root.thread.id).await?;
         let original_snapshot = env.runtime.thread_snapshot(&root.thread.id).await?;
         let query = TimelinePageQuery::default();
-        let original_page = env.runtime.timeline_page(&root.thread.id, &query).await?;
+        // A page value does not retain a cold Session. Hold the same explicit
+        // query scope across subscription and recovery, as production readers do.
+        let reader = env.runtime.timeline_reader(&root.thread.id).await?;
+        let original_page = reader.page(&query).await?;
         ensure!(
             original_page.thread_id == root.thread.id
                 && !original_page.has_older
@@ -343,9 +346,11 @@ async fn factory_missing_error_stays_typed_and_recovery_never_calls_missing_deta
                 && snapshot.thread.workspace_path == root.thread.workspace_path,
             "history subscription lost the original Thread/workspace identity"
         );
+        let subscribed_page = env.runtime.timeline_page(&root.thread.id, &query).await?;
         ensure!(
-            env.runtime.timeline_page(&root.thread.id, &query).await? == original_page,
-            "missing-worktree subscription lost original history content"
+            subscribed_page == original_page,
+            "missing-worktree subscription lost original history content: \
+             before={original_page:?}; after={subscribed_page:?}"
         );
         ensure!(
             snapshot.active_turn.is_none()
