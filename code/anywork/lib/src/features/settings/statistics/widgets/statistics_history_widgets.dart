@@ -6,12 +6,13 @@ import '../../../../app/theme/studio_tokens.dart';
 import '../../../../l10n/studio_l10n.dart';
 import '../../../../shared/studio_driver_keys.dart';
 import '../../settings_common.dart';
+import '../../../status/usage_diagnostic_labels.dart';
+import '../state/statistics_filter_options.dart';
 import 'statistics_formatters.dart';
 
 class StatisticsHistoryHeader extends StatelessWidget {
   const StatisticsHistoryHeader({
-    required this.history,
-    required this.summaries,
+    required this.options,
     required this.value,
     required this.onChanged,
     required this.effortValue,
@@ -21,8 +22,7 @@ class StatisticsHistoryHeader extends StatelessWidget {
     super.key,
   });
 
-  final List<StatisticsSample> history;
-  final List<StatisticsSummary> summaries;
+  final StatisticsFilterOptions options;
   final String? value;
   final ValueChanged<String?> onChanged;
   final String? effortValue;
@@ -34,7 +34,6 @@ class StatisticsHistoryHeader extends StatelessWidget {
   Widget build(BuildContext context) {
     return LayoutBuilder(
       builder: (context, constraints) {
-        final seen = <String>{};
         final filterWidth = constraints.maxWidth < 240
             ? constraints.maxWidth
             : 240.0;
@@ -61,51 +60,29 @@ class StatisticsHistoryHeader extends StatelessWidget {
                 label: context.l10n.settingsStatisticsAllModels,
                 labelWidget: Text(context.l10n.settingsStatisticsAllModels),
               ),
-              for (final sample in history)
-                if (seen.add(sample.filterKey))
-                  DropdownMenuEntry<String?>(
-                    value: sample.filterKey,
-                    label: formatStatisticsPerformanceIdentity(
-                      context,
-                      sample.accountDisplayName,
-                      sample.accountId,
-                      sample.displayModel,
-                    ),
-                    labelWidget: Text(
-                      formatStatisticsPerformanceIdentity(
-                        context,
-                        sample.accountDisplayName,
-                        sample.accountId,
-                        sample.displayModel,
-                      ),
-                      overflow: TextOverflow.ellipsis,
-                    ),
+              for (final option in options.models)
+                DropdownMenuEntry<String?>(
+                  value: option.key,
+                  label: formatStatisticsPerformanceIdentity(
+                    context,
+                    option.accountDisplayName,
+                    option.accountId,
+                    option.modelId,
                   ),
-              for (final summary in summaries)
-                if (seen.add(summary.filterKey))
-                  DropdownMenuEntry<String?>(
-                    value: summary.filterKey,
-                    label: formatStatisticsPerformanceIdentity(
+                  labelWidget: Text(
+                    formatStatisticsPerformanceIdentity(
                       context,
-                      summary.accountDisplayName,
-                      summary.accountId,
-                      summary.modelId,
+                      option.accountDisplayName,
+                      option.accountId,
+                      option.modelId,
                     ),
-                    labelWidget: Text(
-                      formatStatisticsPerformanceIdentity(
-                        context,
-                        summary.accountDisplayName,
-                        summary.accountId,
-                        summary.modelId,
-                      ),
-                      overflow: TextOverflow.ellipsis,
-                    ),
+                    overflow: TextOverflow.ellipsis,
                   ),
+                ),
             ],
             onSelected: onChanged,
           ),
         );
-        final seenEfforts = <String>{};
         final effortFilter = SizedBox(
           key: StudioDriverKeys.statisticsEffortFilter,
           width: filterWidth,
@@ -120,19 +97,18 @@ class StatisticsHistoryHeader extends StatelessWidget {
                 label: context.l10n.statisticsAllEfforts,
                 labelWidget: Text(context.l10n.statisticsAllEfforts),
               ),
-              for (final sample in history)
-                if (seenEfforts.add(sample.effortKey))
-                  DropdownMenuEntry<String?>(
-                    value: sample.effortKey,
-                    label: formatStatisticsReasoningEffort(
-                      context,
-                      sample.effort,
-                    ),
-                    labelWidget: Text(
-                      formatStatisticsReasoningEffort(context, sample.effort),
-                      overflow: TextOverflow.ellipsis,
-                    ),
+              for (final option in options.efforts)
+                DropdownMenuEntry<String?>(
+                  value: option.key,
+                  label: formatStatisticsReasoningEffort(
+                    context,
+                    option.effort,
                   ),
+                  labelWidget: Text(
+                    formatStatisticsReasoningEffort(context, option.effort),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
             ],
             onSelected: onEffortChanged,
           ),
@@ -203,16 +179,31 @@ class StatisticsWideHistoryRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return _WideCells(
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Text(formatStatisticsCompletedAt(context, sample.completedAt)),
-        _ModelIdentity(sample: sample),
-        Text(formatStatisticsReasoningEffort(context, sample.effort)),
-        Text(formatTokenCount(sample.completionTokens)),
-        Text(formatStatisticsSampleMillis(context, sample.ttftMillis)),
-        Text(formatStatisticsSampleMillis(context, sample.decodeMillis)),
-        Text(formatStatisticsSampleMillis(context, sample.totalResponseMillis)),
-        Text(formatStatisticsSampleSpeed(context, sample.tokensPerSecond)),
+        _WideCells(
+          children: [
+            Text(formatStatisticsCompletedAt(context, sample.completedAt)),
+            _ModelIdentity(sample: sample),
+            Text(formatStatisticsReasoningEffort(context, sample.effort)),
+            Text(
+              sample.completionTokens == null
+                  ? context.l10n.usageUnknown
+                  : formatTokenCount(sample.completionTokens),
+            ),
+            Text(formatStatisticsSampleMillis(context, sample.ttftMillis)),
+            Text(formatStatisticsSampleMillis(context, sample.decodeMillis)),
+            Text(
+              formatStatisticsSampleMillis(context, sample.totalResponseMillis),
+            ),
+            Text(formatStatisticsSampleSpeed(context, sample.tokensPerSecond)),
+          ],
+        ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(12, 0, 12, 10),
+          child: StatisticsSampleDiagnostics(sample: sample),
+        ),
       ],
     );
   }
@@ -282,6 +273,8 @@ class StatisticsCompactHistoryCard extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 12),
+          StatisticsSampleDiagnostics(sample: sample),
+          const SizedBox(height: 12),
           Wrap(
             spacing: 16,
             runSpacing: 8,
@@ -296,7 +289,9 @@ class StatisticsCompactHistoryCard extends StatelessWidget {
               ),
               SettingsMetric(
                 context.l10n.statisticsOutputTokens,
-                formatTokenCount(sample.completionTokens),
+                sample.completionTokens == null
+                    ? context.l10n.usageUnknown
+                    : formatTokenCount(sample.completionTokens),
               ),
               SettingsMetric(
                 'TTFT',
@@ -318,6 +313,57 @@ class StatisticsCompactHistoryCard extends StatelessWidget {
           const Divider(height: 24),
         ],
       ),
+    );
+  }
+}
+
+/// The call identity is copied verbatim, including unknown historical identities.
+/// No alias, timestamp or row position is used to invent a call ID.
+class StatisticsSampleDiagnostics extends StatelessWidget {
+  const StatisticsSampleDiagnostics({required this.sample, super.key});
+
+  final StatisticsSample sample;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Wrap(
+          spacing: 16,
+          runSpacing: 4,
+          children: [
+            Text(
+              '${context.l10n.usagePurpose}: '
+              '${sample.purpose ?? context.l10n.usageUnknown}',
+            ),
+            Tooltip(
+              message: context.l10n.usageFirstOutputNote,
+              child: SelectableText(
+                '${context.l10n.usageFirstOutput}: '
+                '${firstOutputSourceLabel(context, sample.firstOutputSource)}',
+              ),
+            ),
+            Text(usageReportStatusLabel(context, sample.usageStatus)),
+            if (sample.ttftAvailability != MetricAvailability.available)
+              Text(
+                'TTFT: '
+                '${metricAvailabilityLabel(context, sample.ttftAvailability)}',
+              ),
+            if (sample.throughputAvailability != MetricAvailability.available)
+              Text(
+                '${context.l10n.statisticsSpeed}: '
+                '${metricAvailabilityLabel(context, sample.throughputAvailability)}',
+              ),
+          ],
+        ),
+        SelectableText(
+          '${context.l10n.usageThreadId}: ${sample.threadId}\n'
+          '${context.l10n.usageCallId}: ${sample.callId}',
+          style: Theme.of(context).textTheme.bodySmall,
+        ),
+      ],
     );
   }
 }

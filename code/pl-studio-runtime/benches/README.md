@@ -74,7 +74,7 @@ cargo bench --locked -p pl-studio-runtime --features benchmarks --bench statisti
 | `history/recent_{0,100,3000}/old_{0,6000}` | 相同最近 3000 个成功样本；多出的 6000 条旧成功日志索引不改变最近结果。真实 `recent_performance_samples` 调用计时，之后校验返回条数和全部字段的 SHA-256。 |
 | `billing/single`、`billing/batch_64` | 每次使用空的新 calls store，计时从受理前到真实 JSONL 与 SQL commit 后的 durable ticket；每条记录另存其受理至 durable 屏障返回的真实耗时。64 条是一组业务输入，不强制改变 writer 原有按条数/字节聚批的调度。 |
 | `billing/segment_rotation_64` | setup 先写 52 条各含 300 KiB 合法字段的记录，测量再写 64 条并验证实际 segment open。每条低于记录上限；基准不覆盖生产的批次、16 MiB segment 或同步设置，实际 flush/sync 次数由钩子记录。 |
-| `effects/no_billing_change/active_{1,32}/working_1` | 每次连续提交 32 个无计费变化 effect；真实 admit、live projection、history/checkpoint commit、calls durable 与所有活跃 observer 的真实单 Thread 水位查询均在各 effect 屏障内。其余 Thread 存活但不产生工作，实际 15 秒 observer tick 仍运行。 |
+| `effects/no_billing_change/active_{1,32}/working_1` | 每次连续提交 32 个无计费变化 effect；真实 admit、live projection、history/checkpoint commit、calls 屏障与受影响 Thread 的实际进度采用均在各 effect 屏障内。setup 确认全部 Thread 已初始化，其余 Thread 存活但不产生工作并校验其水位不变；不强制保留重构前全局唤醒后的逐 Thread SQL 查询或 15 秒回读。 |
 | `costs/roots_{1,32,256}/purposes_4/currencies_3` | 每个 root 4 个 Thread、4 purpose、3 currency；真实 summary 写入用于 setup，测量真实费用聚合查询，按精确二进制小数验证全部币种与 purpose 的累计值和身份摘要。 |
 | `parallel/recent_3000/batch_64` | 4 次真实 3000 样本读取与连续 8 组 64 条真实写入并行。先观察首个真实查询已进入，再启动写任务；不注入人工锁或 sleep，也不要求重构后的查询仍持有旧日志锁。写入的是更旧样本，因此每次读取仍验证同一最近集合。保存写吞吐、逐读/逐记录/逐批耗时、队列高水位和真实读写锁等待。 |
 | `publication/materialize_3000/roots_32` | 实际统计 owner 对 3000 个样本、32 个 root 费用执行显式物化，计时包含读取、采用及事件发送；计时外核验已发布历史、样本和费用条数。此只读负载不推进 owner revision，缓存持久化分支可能跳过，不宣称覆盖持久化成功；它也不测 GUI 消费延迟或“后到 Summary”的故障场景。 |

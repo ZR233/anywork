@@ -85,7 +85,7 @@ final class StatisticsMaterializer {
       if (next == null) break;
       offset = next;
     }
-    return List.unmodifiable(summaries);
+    return StatisticsMaterial.freeze(summaries);
   }
 
   static Future<List<StatisticsEffortSummary>> _readEfforts(
@@ -150,7 +150,7 @@ final class StatisticsMaterializer {
       if (next == null) break;
       offset = next;
     }
-    return List.unmodifiable(history);
+    return StatisticsMaterial.freeze(history);
   }
 
   static void _validatePage<T>(

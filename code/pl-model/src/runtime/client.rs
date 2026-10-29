@@ -116,6 +116,7 @@ pub struct RemoteCompaction<'a> {
 /// A validated native replacement and its observed service accounting.
 #[derive(Debug)]
 pub struct NativeCompactionCheckpoint {
+    pub timing: Option<pl_protocol::InferenceTiming>,
     pub item: crate::completion::ModelContextItem,
     pub accounting: pl_protocol::InferenceAccounting,
     pub model_observation: Option<pl_protocol::InferenceModelObservation>,
@@ -160,6 +161,7 @@ impl RemoteCompaction<'_> {
                 CompletionFailure {
                     source: Box::new(source),
                     accounting: Box::new(response.accounting.clone()),
+                    timing: response.timing,
                     model_observation: response.model_observation.clone().map(Box::new),
                     presentation_items: Vec::new(),
                     partial_progress: None,
@@ -167,6 +169,7 @@ impl RemoteCompaction<'_> {
                 }
             })?;
         Ok(NativeCompactionCheckpoint {
+            timing: response.timing,
             item,
             accounting: response.accounting,
             model_observation: response.model_observation,

@@ -383,19 +383,20 @@ impl LegacyThreadCheckpoint {
                 header.schema_version,
             ));
         }
+        let mut root: serde_json::Value = serde_json::from_str(envelope)?;
+        super::checkpoint_usage::upgrade(&mut root)?;
         if header.schema_version >= 3 {
             // Schemas 3 and 4 already use the lightweight resident attempt shape, so their only
             // conversion is the current envelope: a version-4 checkpoint simply has no continuation,
             // execution, purpose or durable requirement yet, and every missing field keeps its
             // default instead of being reconstructed into a fact that never existed.
-            let checkpoint: ThreadCheckpoint = serde_json::from_str(envelope)?;
+            let checkpoint: ThreadCheckpoint = serde_json::from_value(root)?;
             return Ok(Self {
                 checkpoint,
                 attempts: Vec::new(),
                 attempt_bodies: Vec::new(),
             });
         }
-        let mut root: serde_json::Value = serde_json::from_str(envelope)?;
         let mut attempts = Vec::new();
         let mut attempt_bodies = Vec::new();
         if let Some(object) = root.as_object_mut() {
@@ -434,8 +435,7 @@ impl LegacyThreadCheckpoint {
         {
             return Err(CheckpointLegacyError::InvalidAttemptSlot);
         }
-        let mut checkpoint: ThreadCheckpoint = serde_json::from_value(root)?;
-        checkpoint.schema_version = 5;
+        let checkpoint: ThreadCheckpoint = serde_json::from_value(root)?;
         Ok(Self {
             checkpoint,
             attempts,
@@ -486,10 +486,10 @@ impl LegacyThreadCheckpoint {
         if !checkpoint.external_bodies.is_empty() {
             return Err(CheckpointLegacyError::ExternalBodiesPending);
         }
-        if checkpoint.schema_version == 4 {
+        if checkpoint.schema_version >= 4 {
             // Schema 4 already records typed context sources and usage provenance. Adding the
             // schema-5 execution/continuation defaults must not erase or re-infer those facts.
-            checkpoint.schema_version = 5;
+            checkpoint.schema_version = ThreadCheckpoint::SCHEMA_VERSION;
             return Ok(checkpoint);
         }
         // The legacy envelope already stored `liveCalls`; attempt identity is rebuilt from the
@@ -515,7 +515,7 @@ impl LegacyThreadCheckpoint {
                 .collect::<Vec<_>>()
                 .into();
         }
-        checkpoint.schema_version = 5;
+        checkpoint.schema_version = ThreadCheckpoint::SCHEMA_VERSION;
         checkpoint.state.last_attempt_usage_origin = None;
         let sources = checkpoint
             .state
@@ -581,19 +581,20 @@ pub struct ThreadCheckpoint {
 }
 
 impl ThreadCheckpoint {
-    /// Current checkpoint schema. Schema 5 adds the continuation point, the preparing execution
+    /// Current checkpoint schema. Schema 6 groups usage totals and preserves typed diagnostics.
+    /// Schema 5 adds the continuation point, the preparing execution
     /// identity, the input purpose and the durable watermark a claimed continuation owes; schema 4
     /// added typed host facts, message purpose and usage provenance. The lightweight resident attempt
     /// shape introduced by schema 3 still excludes the frozen input context and the complete attempt
     /// outcome, because the matching [`super::ThreadEffectBatch`] is their only durable copy.
-    pub const SCHEMA_VERSION: u32 = 5;
+    pub const SCHEMA_VERSION: u32 = 6;
 
     /// Schema versions this build no longer interprets in its normal path, but can still convert
     /// through [`Self::decode_legacy`].
     ///
     /// Schema 1 inlines every body; schema 2 may name external bodies instead of inlining them and
     /// schema 1/2 also inline attempt bodies that later schemas keep only in the effect batch.
-    pub const LEGACY_SCHEMA_VERSIONS: [u32; 4] = [1, 2, 3, 4];
+    pub const LEGACY_SCHEMA_VERSIONS: [u32; 5] = [1, 2, 3, 4, 5];
 
     /// Whether this build interprets `schema_version` without loss.
     pub fn supports_schema(schema_version: u32) -> bool {

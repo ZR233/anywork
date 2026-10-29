@@ -103,7 +103,7 @@ async fn preflight(db: &DatabaseConnection) -> Result<()> {
             (1..=CALLS_SCHEMA_VERSION).contains(&version),
             "unsupported calls schema {version}; existing data preserved"
         );
-        if version == 7 {
+        if version >= 7 {
             for table in [
                 "call_watermarks",
                 "call_log_index",
@@ -178,6 +178,7 @@ impl MigratorTraitSelf for Migrator {
             }),
             Box::new(FinalizeLegacy),
             Box::new(ThroughputEpoch),
+            Box::new(MaterialProvenance),
         ]
     }
 }
@@ -327,6 +328,110 @@ impl MigrationTrait for ThroughputEpoch {
             .await
             .map_err(conversion)
     }
+}
+
+struct MaterialProvenance;
+impl MigrationName for MaterialProvenance {
+    fn name(&self) -> &str {
+        "m20261026_000006_calls_material_provenance"
+    }
+}
+#[sea_orm_migration::async_trait::async_trait]
+impl MigrationTrait for MaterialProvenance {
+    fn use_transaction(&self) -> Option<bool> {
+        Some(true)
+    }
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        let db = manager.get_connection();
+        ensure_columns(
+            db,
+            "performance_samples",
+            &[
+                ("purpose", "TEXT"),
+                ("usage_status", "TEXT NOT NULL DEFAULT 'legacyUnknown'"),
+                (
+                    "first_output_source",
+                    "TEXT NOT NULL DEFAULT 'legacyUnknown'",
+                ),
+                ("throughput_valid", "INTEGER NOT NULL DEFAULT 0"),
+            ],
+        )
+        .await
+        .map_err(conversion)?;
+        ensure_columns(db, "call_usage_summary", &[("content_hash", "TEXT")])
+            .await
+            .map_err(conversion)?;
+        upgrade_auxiliary_usage(db).await.map_err(conversion)?;
+        db.execute_unprepared(
+            "CREATE INDEX IF NOT EXISTS call_usage_summary_by_thread ON call_usage_summary(thread_id,revision DESC);
+             UPDATE calls_meta SET schema_version=8 WHERE id=1;"
+        ).await?;
+        Ok(())
+    }
+}
+
+/// Exact flat payload emitted by the retired calls aggregation migration. It is
+/// deliberately not accepted by the normal UsageSummary reader, nor default-filled.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct LegacyAuxiliaryUsage {
+    inference_count: u64,
+    prompt_tokens: u64,
+    completion_tokens: u64,
+    cached_prompt_tokens: u64,
+    cache_write_tokens: u64,
+    reasoning_tokens: u64,
+    total_tokens: u64,
+    has_incomplete_usage: bool,
+    cache_incomplete: bool,
+    has_unpriced_usage: bool,
+}
+
+async fn upgrade_auxiliary_usage(db: &impl ConnectionTrait) -> Result<()> {
+    for row in db
+        .query_all_raw(statement(
+            "SELECT thread_id,payload FROM legacy_auxiliary_usage",
+            vec![],
+        ))
+        .await?
+    {
+        let old: LegacyAuxiliaryUsage =
+            serde_json::from_str(&row.try_get::<String>("", "payload")?)?;
+        let current = pl_core::thread::UsageSummary {
+            totals: pl_core::usage::UsageTotals {
+                inference_count: old.inference_count,
+                prompt_tokens: old.prompt_tokens,
+                completion_tokens: old.completion_tokens,
+                cached_prompt_tokens: old.cached_prompt_tokens,
+                cache_write_tokens: old.cache_write_tokens,
+                reasoning_tokens: old.reasoning_tokens,
+                total_tokens: old.total_tokens,
+            },
+            cache: pl_core::usage::UsageCacheSummary {
+                incomplete: old.cache_incomplete,
+                ..Default::default()
+            },
+            diagnostics: pl_core::usage::UsageDiagnostics {
+                legacy_unknown: true,
+                legacy_incomplete: old.has_incomplete_usage,
+                ..Default::default()
+            },
+            pricing: pl_core::thread::UsagePricingSummary {
+                incomplete: old.has_unpriced_usage,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        db.execute_raw(statement(
+            "UPDATE legacy_auxiliary_usage SET payload=? WHERE thread_id=?",
+            vec![
+                serde_json::to_string(&current)?.into(),
+                row.try_get::<String>("", "thread_id")?.into(),
+            ],
+        ))
+        .await?;
+    }
+    Ok(())
 }
 
 /// 一次性丢弃旧统计口径的性能样本，不换算、不回填。
@@ -582,10 +687,11 @@ async fn convert_legacy_rows(db: &DatabaseConnection, log: &mut CallLog) -> Resu
             )
             .await?
             {
-                let _: InferenceBillingRecord = serde_json::from_slice(&body)?;
+                validate_legacy_billing(&body)?;
             }
-            append_record(&tx, log, &record, now).await?;
+            append_record(&tx, log, &PreparedRecord::new(record)?, now).await?;
         }
+        log.sync_pending().await?;
         tx.commit().await?;
     }
     Ok(())
@@ -593,6 +699,22 @@ async fn convert_legacy_rows(db: &DatabaseConnection, log: &mut CallLog) -> Resu
 
 fn is_retained(recorded_at: i64, now: i64) -> bool {
     now.saturating_sub(recorded_at) <= log::LOG_RETENTION_SECONDS
+}
+
+/// Only the retired blob boundary accepts timing without a first-content provenance.
+/// This validates in memory; neither historical blob bytes nor JSONL records are rewritten.
+fn validate_legacy_billing(body: &[u8]) -> Result<()> {
+    let mut value: serde_json::Value = serde_json::from_slice(body)?;
+    if let Some(timing) = value
+        .get_mut("timing")
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        timing
+            .entry("firstOutputSource")
+            .or_insert_with(|| serde_json::json!("legacyUnknown"));
+    }
+    let _: InferenceBillingRecord = serde_json::from_value(value)?;
+    Ok(())
 }
 
 async fn indexed(db: &impl ConnectionTrait, record: &CallLogRecord) -> Result<bool> {
@@ -669,6 +791,7 @@ pub(super) fn legacy_record(row: &QueryResult) -> Result<CallLogRecord> {
             reasoning_tokens: opt_u64(row, "reasoning_tokens")?,
             total_tokens: opt_u64(row, "total_tokens")?,
         }),
+        usage_status: Some(pl_core::usage::UsageStatus::LegacyUnknown),
         cost,
         has_unpriced_usage: row.try_get::<i64>("", "has_unpriced_usage")? != 0,
         timing,
@@ -814,7 +937,7 @@ pub(super) async fn seed_version_for_test(
     ))
     .await?;
     db.execute_unprepared(seed_sql).await?;
-    if schema_version == CALLS_SCHEMA_VERSION {
+    if schema_version >= 7 {
         ensure_schema(&db).await?;
     }
     Ok(())
@@ -1050,7 +1173,10 @@ async fn convert_legacy_tools(db: &DatabaseConnection, log: &mut CallLog) -> Res
                     }
                 };
                 if !indexed(db, &record).await? {
-                    append_record(db, log, &record, now).await?;
+                    let tx = db.begin().await?;
+                    append_record(&tx, log, &PreparedRecord::new(record)?, now).await?;
+                    log.sync_pending().await?;
+                    tx.commit().await?;
                 }
             }
         }
@@ -1061,6 +1187,28 @@ async fn convert_legacy_tools(db: &DatabaseConnection, log: &mut CallLog) -> Res
 #[cfg(test)]
 mod storage_fault_tests {
     use super::*;
+
+    #[test]
+    fn legacy_billing_timing_is_adapted_only_at_the_retired_blob_boundary() -> Result<()> {
+        let body = serde_json::to_vec(&serde_json::json!({
+            "inferenceId": "legacy", "accounting": pl_protocol::InferenceAccounting::default(),
+            "recordedAt": 10, "timing": {
+                "ttftMillis": 5, "decodeMillis": 95, "responseMillis": 100
+            },
+        }))?;
+        assert!(
+            serde_json::from_slice::<InferenceBillingRecord>(&body).is_err(),
+            "normal runtime decoding still requires an explicit source"
+        );
+        validate_legacy_billing(&body)?;
+        assert!(
+            !serde_json::from_slice::<serde_json::Value>(&body)?["timing"]
+                .as_object()
+                .unwrap()
+                .contains_key("firstOutputSource")
+        );
+        Ok(())
+    }
 
     #[tokio::test]
     async fn published_v5_repairs_foreign_key_and_replays_lost_samples_without_rebilling()
@@ -1082,6 +1230,7 @@ mod storage_fault_tests {
         )
         .await?;
         ensure_schema(&db).await?;
+        ensure_columns(&db, "call_usage_summary", &[("content_hash", "TEXT")]).await?;
         let tx = db.begin().await?;
         summary::replace(
             &tx,
@@ -1098,6 +1247,7 @@ mod storage_fault_tests {
                     }],
                 }],
             },
+            "test-summary",
             #[cfg(feature = "benchmarks")]
             None,
         )
@@ -1122,10 +1272,12 @@ mod storage_fault_tests {
                 ..Default::default()
             }),
             timing: Some(event::CallTimingRecord {
+                first_output_source: pl_protocol::FirstOutputSource::Incremental,
                 ttft_millis: Some(2_700),
                 decode_millis: Some(278),
                 response_millis: Some(2_978),
             }),
+            usage_status: Some(pl_core::usage::UsageStatus::Partial),
             throughput_epoch: event::THROUGHPUT_EPOCH,
             ..Default::default()
         };
@@ -1136,21 +1288,44 @@ mod storage_fault_tests {
             &line,
         )
         .await?;
+        log.sync_pending().await?;
         drop(log);
         let store = CallsStore::open(&path).await?;
         assert!(!store.statistics_gap());
         assert_eq!(store.recent_performance_samples(10).await?.len(), 1);
         assert_eq!(
-            store.performance_summary_rows().await?[0].completion_tokens,
+            store
+                .read_statistics(StatisticsReadRequest {
+                    costs: false,
+                    performance: true,
+                })
+                .await?
+                .summary
+                .expect("performance summary requested")[0]
+                .completion_tokens,
             41
         );
         // A fresh successful call must also insert into the repaired table.
         let mut next = record;
         next.call_id = "new-sample".into();
         let tx = store.writer.db.begin().await?;
-        apply_billing(&mut *store.writer.log.lock().await, &tx, &next).await?;
+        let mut log = store.writer.log.lock().await;
+        apply_billing(&mut log, &tx, &PreparedRecord::new(next)?).await?;
+        log.sync_pending().await?;
         tx.commit().await?;
-        assert_eq!(store.performance_summary_rows().await?[0].sample_count, 2);
+        drop(log);
+        assert_eq!(
+            store
+                .read_statistics(StatisticsReadRequest {
+                    costs: false,
+                    performance: true,
+                })
+                .await?
+                .summary
+                .expect("performance summary requested")[0]
+                .sample_count,
+            2
+        );
         assert_eq!(
             store.session_cost_rollups().await?[0].estimated_costs[0].amount,
             3.0
@@ -1159,7 +1334,15 @@ mod storage_fault_tests {
         let reopened = CallsStore::open(&path).await?;
         assert!(!reopened.statistics_gap());
         assert_eq!(
-            reopened.performance_summary_rows().await?[0].sample_count,
+            reopened
+                .read_statistics(StatisticsReadRequest {
+                    costs: false,
+                    performance: true,
+                })
+                .await?
+                .summary
+                .expect("performance summary requested")[0]
+                .sample_count,
             2
         );
         assert_eq!(
@@ -1179,8 +1362,8 @@ mod storage_fault_tests {
         let hash = pl_core::context::content_hash(&body);
         seed_legacy_for_test(&path, &format!("ALTER TABLE tool_calls ADD COLUMN started_at INTEGER;
             INSERT INTO tool_calls(thread_id,call_id,body_ref,started_at) VALUES('thread','tool','{hash}',{now});
-            INSERT INTO model_calls(thread_id,call_id,turn_id,attempt_id,revision,admitted_at,started_at,status,terminal,purpose,input_tokens,output_tokens,total_tokens,cost_currency,cost_amount,root_thread_id)
-            VALUES('thread','review','turn','review',1,{now},{now},'committed',1,'review',10,5,15,'USD',4.0,'thread');")).await?;
+            INSERT INTO model_calls(thread_id,call_id,turn_id,attempt_id,revision,admitted_at,started_at,status,terminal,purpose,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,reasoning_tokens,total_tokens,has_unpriced_usage,cost_currency,cost_amount,root_thread_id)
+            VALUES('thread','review','turn','review',1,{now},{now},'committed',1,'review',10,5,2,1,3,15,1,'USD',4.0,'thread');")).await?;
         tokio::fs::create_dir_all(temp.path().join("blobs")).await?;
         tokio::fs::write(
             temp.path()
@@ -1190,9 +1373,30 @@ mod storage_fault_tests {
         )
         .await?;
         let store = CallsStore::open(&path).await?;
+        let usage = store.legacy_auxiliary_usage("thread").await?;
         assert_eq!(
-            store.legacy_auxiliary_usage("thread").await?.total_tokens,
-            15
+            usage.totals,
+            pl_core::usage::UsageTotals {
+                inference_count: 1,
+                prompt_tokens: 10,
+                completion_tokens: 5,
+                cached_prompt_tokens: 2,
+                cache_write_tokens: 1,
+                reasoning_tokens: 3,
+                total_tokens: 15,
+            }
+        );
+        assert!(usage.cache.incomplete);
+        assert!(usage.diagnostics.legacy_unknown);
+        assert!(usage.diagnostics.legacy_incomplete);
+        assert!(usage.pricing.incomplete);
+        assert_eq!(
+            usage.diagnostics.incomplete_calls, 0,
+            "legacy flags do not prove per-call diagnostic counts"
+        );
+        assert_eq!(
+            usage.cache.sample_count, 0,
+            "legacy totals do not prove cache sample counts"
         );
         assert_eq!(
             store.session_cost_rollups().await?[0].estimated_costs[0].amount,
@@ -1208,6 +1412,7 @@ mod storage_fault_tests {
         assert_eq!(rows.len(), 2);
         store.stop_best_effort();
         let reopened = CallsStore::open(&path).await?;
+        assert_eq!(reopened.legacy_auxiliary_usage("thread").await?, usage);
         assert!(reopened.recent_performance_samples(100).await?.is_empty());
         reopened.stop_best_effort();
         Ok(())

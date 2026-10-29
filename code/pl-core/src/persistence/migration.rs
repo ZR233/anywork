@@ -25,7 +25,7 @@ struct UsageBackfillEnvelope {
 struct UsageBackfillState {
     commit_sequence: u64,
     #[serde(default)]
-    usage_summary: crate::thread::UsageSummary,
+    usage_summary: crate::thread::checkpoint_usage::LegacyUsageSummary,
 }
 
 /// Upgrades an existing database while holding its exclusive maintenance lease.
@@ -151,7 +151,7 @@ async fn preflight(db: &DatabaseConnection, allow_upgrade: bool) -> Result<(), S
     }
     if SchemaManager::new(db).has_table("thread_checkpoints").await?
         && db.query_one_raw(sqlite::statement(
-            "SELECT 1 FROM thread_checkpoints WHERE schema_version NOT BETWEEN 1 AND 5 OR json_extract(envelope,'$.schemaVersion') NOT BETWEEN 1 AND 5 LIMIT 1", vec![]
+            "SELECT 1 FROM thread_checkpoints WHERE schema_version NOT BETWEEN 1 AND 6 OR json_extract(envelope,'$.schemaVersion') NOT BETWEEN 1 AND 6 LIMIT 1", vec![]
         )).await?.is_some()
     {
         return Err(SessionStoreError::Invalid("unsupported checkpoint schema; existing data preserved".into()));
@@ -227,6 +227,7 @@ impl MigratorTraitSelf for Migrator {
             Box::new(TaskIndex),
             Box::new(CheckpointV5),
             Box::new(CurrentEffects),
+            Box::new(CheckpointV6),
         ]
     }
 }
@@ -430,6 +431,27 @@ impl MigrationTrait for CurrentEffects {
     }
 }
 
+struct CheckpointV6;
+impl MigrationName for CheckpointV6 {
+    fn name(&self) -> &str {
+        "m20261026_000009_core_checkpoint_v6"
+    }
+}
+#[sea_orm_migration::async_trait::async_trait]
+impl MigrationTrait for CheckpointV6 {
+    fn use_transaction(&self) -> Option<bool> {
+        Some(true)
+    }
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        let db = manager.get_connection();
+        super::usage_migration::convert_checkpoints(db)
+            .await
+            .map_err(conversion)?;
+        db.execute_unprepared("PRAGMA user_version=14").await?;
+        Ok(())
+    }
+}
+
 async fn create_checkpoint_table(tx: &impl ConnectionTrait) -> Result<(), SessionStoreError> {
     let base = tx
             .query_one_raw(sqlite::statement(
@@ -510,7 +532,12 @@ async fn backfill_usage(tx: &impl ConnectionTrait) -> Result<(), SessionStoreErr
                     "Thread {thread_id} checkpoint is inconsistent with its fence"
                 )));
             }
-            let mut summary = header.state.usage_summary;
+            if value["state"].get("usageSummary").is_some() {
+                // Existing accounting is authoritative, even if a historical writer left its
+                // watermark behind. Never replay history over a saved cumulative fact.
+                continue;
+            }
+            let mut summary = crate::thread::UsageSummary::from(header.state.usage_summary);
             let mut expected = summary.applied_sequence + 1;
             let upper = format!("pl.resource.thread-commit.{:020}", header.state_revision);
             while expected <= header.state_revision {
@@ -537,7 +564,9 @@ async fn backfill_usage(tx: &impl ConnectionTrait) -> Result<(), SessionStoreErr
                     expected += 1;
                 }
             }
-            value["state"]["usageSummary"] = serde_json::to_value(&summary)?;
+            value["state"]["usageSummary"] = serde_json::to_value(
+                crate::thread::checkpoint_usage::LegacyUsageSummary::from(summary),
+            )?;
             let envelope = serde_json::to_string(&value)?;
             let hash = crate::context::content_hash(envelope.as_bytes());
             tx.execute_raw(sqlite::statement(

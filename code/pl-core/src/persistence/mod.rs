@@ -12,6 +12,7 @@ mod thread_history;
 mod thread_journal;
 mod tool_task_index;
 mod tool_tasks;
+mod usage_migration;
 mod writer;
 
 /// Current SQLite cold-history format. Unsupported formats are never automatically reset.
@@ -21,8 +22,9 @@ mod writer;
 /// effect rows that are the durable history query contract. Older data is upgraded only through the
 /// explicit [`migration::migrate_to_current`] path; opening a database never converts or discards
 /// it. Schema 13 normalizes supported v2 effect tags in both entries and entry history; pre-v2
-/// schemas (6 and earlier) are unsupported and never rewritten.
-pub const SESSION_SCHEMA_VERSION: i64 = 13;
+/// schemas (6 and earlier) are unsupported and never rewritten. Schema 14 converts checkpoint
+/// accounting from the flat schema-5 layout into the named schema-6 groups without replay.
+pub const SESSION_SCHEMA_VERSION: i64 = 14;
 
 use std::sync::Arc;
 

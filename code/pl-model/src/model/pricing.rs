@@ -2,9 +2,10 @@
 
 use serde::{Deserialize, Serialize};
 
+pub use pl_core::usage::UsageStatus;
 pub use pl_protocol::{
     InferenceAccounting, ModelPriceTierDto, ModelPricingDto, ModelPricingSnapshot, PricingMode,
-    PricingOutcome, RuntimeCostAmount, UnpricedReason, UsageReport, UsageStatus,
+    PricingOutcome, RuntimeCostAmount, UnpricedReason, UsageReport,
 };
 
 /// One rate table selected by the complete request's input and output lengths.
@@ -334,9 +335,9 @@ impl ModelPricing {
         ),
         UnpricedReason,
     > {
-        match usage.status() {
+        match super::usage::analyze(usage).status {
             UsageStatus::Invalid => return Err(UnpricedReason::InvalidUsage),
-            UsageStatus::Missing | UsageStatus::Partial => {
+            UsageStatus::Missing | UsageStatus::Partial | UsageStatus::LegacyUnknown => {
                 return Err(UnpricedReason::MissingUsage);
             }
             UsageStatus::Reported => {}

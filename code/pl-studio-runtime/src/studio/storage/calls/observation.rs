@@ -12,6 +12,7 @@ macro_rules! metrics {
         #[derive(Clone, Copy)]
         pub(crate) enum Metric { $($name,)+ Count }
         const NAMES: &[&str] = &[$($label,)+];
+        const METRICS: &[Metric] = &[$(Metric::$name,)+];
     };
 }
 
@@ -191,8 +192,13 @@ impl Observation {
         ObservationSnapshot {
             counters: NAMES
                 .iter()
-                .zip(&self.counters)
-                .map(|(name, value)| (name.to_string(), value.load(Ordering::Relaxed)))
+                .zip(METRICS)
+                .map(|(name, metric)| {
+                    (
+                        name.to_string(),
+                        self.counters[*metric as usize].load(Ordering::Relaxed),
+                    )
+                })
                 .collect(),
             queue_high_water_mutations: self.queue_mutations.load(Ordering::Relaxed),
             queue_high_water_bytes: self.queue_bytes.load(Ordering::Relaxed),

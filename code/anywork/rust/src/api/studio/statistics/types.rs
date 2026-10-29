@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 
-use crate::api::studio::types::BridgeError;
+use crate::api::studio::types::{
+    BridgeError, BridgeFirstOutputSource, BridgeMetricAvailability, BridgeUsageReportStatus,
+};
 
 /// One ordered event from the native statistics feed.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -78,6 +80,13 @@ pub struct BridgeStatisticsEffortSummary {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct BridgeStatisticsSample {
+    pub thread_id: String,
+    pub call_id: String,
+    pub purpose: Option<String>,
+    pub first_output_source: BridgeFirstOutputSource,
+    pub usage_status: BridgeUsageReportStatus,
+    pub ttft_availability: BridgeMetricAvailability,
+    pub throughput_availability: BridgeMetricAvailability,
     pub completed_at: i64,
     pub account_id: String,
     pub account_display_name: String,
@@ -86,7 +95,7 @@ pub struct BridgeStatisticsSample {
     pub reported_model: Option<String>,
     pub model_match_state: BridgeStatisticsModelMatchState,
     pub effort: Option<String>,
-    pub completion_tokens: u64,
+    pub completion_tokens: Option<u64>,
     pub ttft_millis: Option<u64>,
     pub decode_millis: Option<u64>,
     pub total_response_millis: Option<u64>,

@@ -17,6 +17,7 @@ pub struct TextSummaryRequest<'a> {
 /// Actual summary text and service accounting, before any history replacement.
 #[derive(Debug)]
 pub struct TextSummary {
+    pub timing: Option<pl_protocol::InferenceTiming>,
     pub text: String,
     pub accounting: InferenceAccounting,
     pub model_observation: Option<crate::completion::InferenceModelObservation>,
@@ -58,6 +59,7 @@ impl ModelRuntime {
                 return Err(CompletionFailure {
                     source: Box::new(source),
                     accounting: Box::new(response.accounting),
+                    timing: response.timing,
                     model_observation: response.model_observation.map(Box::new),
                     presentation_items: response.presentation_items,
                     partial_progress: Some(Box::new(response.observation.into())),
@@ -76,6 +78,7 @@ impl ModelRuntime {
                         },
                     ))),
                     accounting: failure.accounting,
+                    timing: failure.timing,
                     model_observation: failure.model_observation,
                     presentation_items: failure.presentation_items,
                     partial_progress: failure.partial_progress,
@@ -88,6 +91,7 @@ impl ModelRuntime {
             return Err(CompletionFailure {
                 source: Box::new(PureError::LlmError(request.empty_summary_error.to_owned())),
                 accounting: Box::new(response.accounting),
+                timing: response.timing,
                 model_observation: model_observation.clone().map(Box::new),
                 presentation_items: response.presentation_items,
                 partial_progress: Some(Box::new(response.observation.into())),
@@ -95,6 +99,7 @@ impl ModelRuntime {
             });
         };
         Ok(TextSummary {
+            timing: response.timing,
             text,
             accounting: response.accounting,
             model_observation,

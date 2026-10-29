@@ -9,8 +9,8 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail, ensure};
 use pl_protocol::{
-    InferenceAccounting, InferenceBillingRecord, InferenceModelObservation, InferenceTiming,
-    PricingOutcome, RuntimeCostAmount, UsageReport,
+    FirstOutputSource, InferenceAccounting, InferenceBillingRecord, InferenceModelObservation,
+    InferenceTiming, PricingOutcome, RuntimeCostAmount, UsageReport,
 };
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -423,7 +423,10 @@ impl PreparedCase {
         match self.fixture.take() {
             Some(Fixture::Calls(calls)) => calls.close().await,
             Some(Fixture::Writer(writer)) => writer.close().await,
-            Some(Fixture::Publication(fixture)) => fixture.store.close().await,
+            Some(Fixture::Publication(fixture)) => {
+                fixture.owner.close().await?;
+                fixture.store.close().await
+            }
             None => Ok(()),
         }
     }
@@ -513,6 +516,7 @@ fn billing(index: usize, old: bool, padding: usize) -> InferenceBillingRecord {
             ttft_millis: Some(20),
             decode_millis: Some(80),
             response_millis: 100,
+            first_output_source: FirstOutputSource::Incremental,
         }),
         recorded_at: if old {
             FIXTURE_TIME - 100_000 + index as i64

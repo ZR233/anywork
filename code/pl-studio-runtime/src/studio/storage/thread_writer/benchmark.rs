@@ -88,9 +88,11 @@ impl WriterFixture {
     }
 
     /// Admission -> real live projection -> history/checkpoint commit -> calls durability ->
-    /// all active observers' real per-Thread watermark queries. Only Thread zero produces work.
+    /// the affected Thread's actual directed progress observation. Idle Threads remain initialized
+    /// and their absolute progress is checked, but they owe no work for another Thread's mutation.
     pub(crate) async fn empty_effect(&mut self) -> Result<Duration> {
-        let active = &mut self.threads[0];
+        let (working, idle_threads) = self.threads.split_at_mut(1);
+        let active = &mut working[0];
         let sequence = active.sequence + 1;
         let id = active.sink.0.thread.id.clone();
         let write = ThreadWrite {
@@ -137,8 +139,17 @@ impl WriterFixture {
         crate::studio::benchmark::wait_calls(calls, target).await?;
         calls
             .observation()
-            .wait_observers(&self.expected_watermarks, target)
+            .wait_observers(
+                &std::collections::BTreeMap::from([(id.clone(), sequence)]),
+                target,
+            )
             .await?;
+        for idle in idle_threads {
+            ensure!(
+                lock_progress(&idle.sink.0).calls_durable == 0,
+                "an idle benchmark Thread acquired another Thread's progress"
+            );
+        }
         let elapsed = started.elapsed();
         ensure!(
             lock_progress(&active.sink.0).calls_durable == sequence,

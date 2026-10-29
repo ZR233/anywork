@@ -52,15 +52,25 @@ pub(crate) fn replace_payload(saved: &mut RawObject, payload: &OpaquePayload) ->
 }
 
 pub(crate) fn normalize(payload: &OpaquePayload) -> Result<Option<OpaquePayload>> {
-    let content = match payload.format() {
-        "pl.studio.auxiliary-billing" => migrate_auxiliary(payload.version(), payload.content())?,
-        "pl.studio.compaction" => migrate_compaction(payload.version(), payload.content())?,
+    let (content, current) = match payload.format() {
+        "pl.studio.auxiliary-billing" => (
+            migrate_auxiliary(payload.version(), payload.content())?,
+            AuxiliaryBillingReceipt::VERSION,
+        ),
+        "pl.studio.compaction" => (
+            migrate_compaction(payload.version(), payload.content())?,
+            CompactionReceipt::VERSION,
+        ),
         _ => return pl_model::runtime::migration::migrate_payload(payload).map_err(Into::into),
     };
-    if payload.version() == 3 {
+    if payload.version() == current {
         return Ok(None);
     }
-    Ok(Some(OpaquePayload::new(payload.format(), 3, content)?))
+    Ok(Some(OpaquePayload::new(
+        payload.format(),
+        current,
+        content,
+    )?))
 }
 
 /// Source evidence must be decoded before the v1 receipt is upgraded.
@@ -127,11 +137,13 @@ fn migrate_auxiliary(version: u32, content: &str) -> Result<String> {
             Ok(())
         })?;
     }
+    if version < 4 {
+        edit(&mut object, "billing", migrate_timing)?;
+    }
     let encoded = serde_json::to_string(&object)?;
     let receipt: AuxiliaryBillingReceipt = serde_json::from_str(&encoded)?;
     ensure!(
-        version == AuxiliaryBillingReceipt::VERSION
-            || receipt.billing.accounting.pricing != pl_protocol::PricingOutcome::NoCharge,
+        version >= 3 || receipt.billing.accounting.pricing != pl_protocol::PricingOutcome::NoCharge,
         "no-charge accounting requires auxiliary billing version 3"
     );
     Ok(encoded)
@@ -148,12 +160,33 @@ fn migrate_compaction(version: u32, content: &str) -> Result<String> {
             pl_model::runtime::migration::migrate_call_binding(field(&object, "binding")?.get())?;
         object.insert("binding".into(), RawValue::from_string(binding)?);
     }
+    if version < 4 {
+        object.insert(
+            "timing".into(),
+            to_raw_value(&Option::<pl_protocol::InferenceTiming>::None)?,
+        );
+    }
     let encoded = serde_json::to_string(&object)?;
     let receipt: CompactionReceipt = serde_json::from_str(&encoded)?;
     ensure!(
-        version == CompactionReceipt::VERSION
-            || receipt.accounting.pricing != pl_protocol::PricingOutcome::NoCharge,
+        version >= 3 || receipt.accounting.pricing != pl_protocol::PricingOutcome::NoCharge,
         "no-charge accounting requires compaction receipt version 3"
     );
     Ok(encoded)
+}
+
+fn migrate_timing(object: &mut RawObject) -> Result<()> {
+    if object
+        .get("timing")
+        .is_some_and(|timing| timing.get() != "null")
+    {
+        edit(object, "timing", |timing| {
+            put(
+                timing,
+                "firstOutputSource",
+                to_raw_value(&pl_protocol::FirstOutputSource::LegacyUnknown)?,
+            )
+        })?;
+    }
+    Ok(())
 }

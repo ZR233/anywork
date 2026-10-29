@@ -173,9 +173,10 @@ mod tests {
             );
         }
         state.extension_sequence = 7;
-        state.usage_summary.inference_count = 5;
+        state.usage_summary.totals.inference_count = 5;
         state
             .usage_summary
+            .pricing
             .estimated_costs
             .push(pl_core::thread::UsageCost {
                 currency: "CNY".into(),
@@ -304,7 +305,7 @@ mod tests {
         else {
             anyhow::bail!("assistant")
         };
-        assert_eq!(payload.version(), 4);
+        assert_eq!(payload.version(), 5);
         let assistant: serde_json::Value = serde_json::from_str(payload.content())?;
         assert_eq!(
             assistant["receipt"]["response"]["vendorExtension"],
@@ -312,7 +313,7 @@ mod tests {
         );
         for record in current.state.extensions.values() {
             assert_eq!(record.revision, 7);
-            assert_eq!(record.payload.version(), 3);
+            assert_eq!(record.payload.version(), 4);
             assert!(crate::studio::producer_migration::normalize(&record.payload)?.is_none());
         }
         let auxiliary = &current.state.extensions["studio.auxiliary-billing.title"].payload;
@@ -379,6 +380,7 @@ mod tests {
         imported.prepare_activation().await?;
         let mut legacy =
             serde_json::to_value(toml::from_str::<toml::Value>(&toml::to_string(&old)?)?)?;
+        super::legacy_usage::flatten(&mut legacy);
         legacy["schemaVersion"] = json!(4);
         tokio::fs::write(
             import_dir.path().join("state.toml"),

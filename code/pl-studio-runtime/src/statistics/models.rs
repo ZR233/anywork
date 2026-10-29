@@ -66,6 +66,13 @@ pub struct StudioModelPerformanceEffortSummary {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct StudioModelPerformanceSample {
+    pub thread_id: String,
+    pub call_id: String,
+    pub purpose: Option<String>,
+    pub first_output_source: pl_protocol::FirstOutputSource,
+    pub usage_status: pl_protocol::UsageReportStatus,
+    pub ttft_availability: pl_protocol::MetricAvailability,
+    pub throughput_availability: pl_protocol::MetricAvailability,
     pub completed_at: i64,
     pub account_id: String,
     pub account_display_name: String,
@@ -79,7 +86,7 @@ pub struct StudioModelPerformanceSample {
     pub model_match_state: pl_protocol::ModelMatchState,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<String>,
-    pub completion_tokens: u64,
+    pub completion_tokens: Option<u64>,
     pub ttft_millis: Option<u64>,
     pub decode_millis: Option<u64>,
     pub total_response_millis: Option<u64>,

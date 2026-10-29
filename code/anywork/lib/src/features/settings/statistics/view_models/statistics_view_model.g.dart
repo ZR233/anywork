@@ -45,7 +45,7 @@ final class StatisticsViewModelProvider
 }
 
 String _$statisticsViewModelHash() =>
-    r'94d635a90ee6da8ce3ccc2f74b2ad0d44e6cef3b';
+    r'5352cab4b719c4a23dd9187ea744a47274525be6';
 
 /// Owns statistics filters and their immutable presentation projection.
 

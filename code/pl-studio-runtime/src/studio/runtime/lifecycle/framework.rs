@@ -163,6 +163,7 @@ impl StudioRuntime {
         }
         // Call statistics are a lossy projection; they never hold up authoritative history.
         self.store.calls().stop_best_effort();
+        self.model_performance.close().await?;
         Ok(())
     }
 

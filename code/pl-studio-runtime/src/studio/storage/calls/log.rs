@@ -8,7 +8,7 @@
 //! 日志是单个逻辑 writer 的私有资源；它只被 `CallsWriter` 唯一后台任务持有，不跨任务共享。
 
 use super::*;
-use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
+use tokio::io::AsyncWriteExt;
 
 /// 周期性清理间隔。
 pub(super) const LOG_CLEANUP_INTERVAL: Duration = Duration::from_secs(15 * 60);
@@ -49,6 +49,7 @@ struct Segment {
     name: String,
     file: tokio::fs::File,
     bytes: u64,
+    dirty: bool,
 }
 
 struct SegmentInfo {
@@ -67,6 +68,8 @@ pub(super) struct CallLog {
     total_bytes: u64,
     next_sequence: u64,
     degraded: Option<String>,
+    #[cfg(test)]
+    pub(super) fail_next_sync: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -75,58 +78,7 @@ enum OpenPolicy {
     Strict,
 }
 
-#[derive(Debug, thiserror::Error)]
-pub(super) enum LogReadError {
-    #[error("call diagnostic expired: {0}")]
-    Expired(String),
-    #[error("call diagnostic is missing: {0}")]
-    Missing(String),
-    #[error("call diagnostic is damaged: {0}")]
-    Damaged(String),
-}
-
 impl CallLog {
-    /// Read one retained record while holding the writer's log lease, excluding concurrent cleanup.
-    pub(super) async fn read(
-        &self,
-        location: &AppendedRecord,
-        hash: &str,
-        recorded_at: i64,
-    ) -> Result<CallLogRecord> {
-        if crate::studio::unix_seconds().saturating_sub(recorded_at) >= LOG_RETENTION_SECONDS {
-            return Err(LogReadError::Expired(location.segment.clone()).into());
-        }
-        ensure!(
-            location.length <= event::CALL_LOG_RECORD_MAX_BYTES as u64
-                && !location.segment.contains(['/', '\\']),
-            "invalid diagnostic location"
-        );
-        #[cfg(feature = "benchmarks")]
-        self.observation
-            .increment(observation::Metric::JsonlReadOpen);
-        let mut file = match tokio::fs::File::open(self.dir.join(&location.segment)).await {
-            Ok(file) => file,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                return Err(LogReadError::Missing(location.segment.clone()).into());
-            }
-            Err(error) => return Err(error.into()),
-        };
-        file.seek(std::io::SeekFrom::Start(location.offset)).await?;
-        let mut bytes = vec![0; usize::try_from(location.length)?];
-        file.read_exact(&mut bytes).await?;
-        let mut ending = [0];
-        file.read_exact(&mut ending).await?;
-        if ending[0] != b'\n' || pl_core::context::content_hash(&bytes) != hash {
-            return Err(LogReadError::Damaged(location.segment.clone()).into());
-        }
-        let record: CallLogRecord = serde_json::from_slice(&bytes)?;
-        ensure!(
-            record.version == event::CALL_LOG_RECORD_VERSION,
-            "unsupported diagnostic version"
-        );
-        Ok(record)
-    }
-
     /// 打开（必要时创建）日志目录，统计现有段并修复最新段的半条尾记录。
     pub(super) async fn open(dir: PathBuf) -> Result<Self> {
         Self::open_with_policy(dir, OpenPolicy::Degraded).await
@@ -157,6 +109,8 @@ impl CallLog {
                     total_bytes: 0,
                     next_sequence: 0,
                     degraded: Some(error.to_string()),
+                    #[cfg(test)]
+                    fail_next_sync: false,
                 });
             }
         };
@@ -175,6 +129,8 @@ impl CallLog {
             total_bytes,
             next_sequence,
             degraded: None,
+            #[cfg(test)]
+            fail_next_sync: false,
         };
         if let Some(newest) = segments.last() {
             let path = log.dir.join(&newest.name);
@@ -243,6 +199,7 @@ impl CallLog {
             }
         };
         if rotate {
+            self.sync_pending().await?;
             self.current = None;
             self.open_segment(day).await?;
             let outcome = self.cleanup_budget(now, len).await;
@@ -264,13 +221,8 @@ impl CallLog {
             return Err(error.into());
         }
         segment.bytes = offset + len;
+        segment.dirty = true;
         self.total_bytes = self.total_bytes.saturating_add(len);
-        #[cfg(feature = "benchmarks")]
-        self.observation.increment(observation::Metric::JsonlFlush);
-        segment.file.flush().await?;
-        #[cfg(feature = "benchmarks")]
-        self.observation.increment(observation::Metric::JsonlSync);
-        segment.file.sync_data().await?;
         if let Some(previous) = self.degraded.take() {
             tracing::info!(error = previous, "调用日志已从先前的失败中恢复");
         }
@@ -284,6 +236,27 @@ impl CallLog {
         })
     }
 
+    /// A batch barriers each touched segment once; rotation barriers the old segment before
+    /// releasing its handle. Dirty stays set on failure so retries cannot skip the barrier.
+    pub(super) async fn sync_pending(&mut self) -> Result<()> {
+        if let Some(segment) = self.current.as_mut()
+            && segment.dirty
+        {
+            #[cfg(test)]
+            if std::mem::take(&mut self.fail_next_sync) {
+                bail!("injected call log sync failure");
+            }
+            #[cfg(feature = "benchmarks")]
+            self.observation.increment(observation::Metric::JsonlFlush);
+            segment.file.flush().await?;
+            #[cfg(feature = "benchmarks")]
+            self.observation.increment(observation::Metric::JsonlSync);
+            segment.file.sync_data().await?;
+            segment.dirty = false;
+        }
+        Ok(())
+    }
+
     /// 清理过期与超量段，返回被删除的段名。永远不删除当前写入段。
     pub(super) async fn cleanup(&mut self, now: i64) -> CleanupOutcome {
         self.cleanup_budget(now, 0).await
@@ -295,6 +268,12 @@ impl CallLog {
             .as_ref()
             .is_some_and(|segment| is_expired(segment.day, now))
         {
+            if let Err(error) = self.sync_pending().await {
+                return CleanupOutcome {
+                    failure: Some(error),
+                    ..Default::default()
+                };
+            }
             self.current = None;
         }
         let mut segments = match list_segments(&self.dir).await {
@@ -385,7 +364,7 @@ impl CallLog {
                 super::index_record(
                     &tx,
                     &record,
-                    text,
+                    &pl_core::context::content_hash(text.as_bytes()),
                     &AppendedRecord {
                         segment: segment.name.clone(),
                         offset: offset as u64,
@@ -398,6 +377,7 @@ impl CallLog {
                 // both disposable projections, including samples lost by schema 5's
                 // legacy foreign key, without reading or adding reliable cost totals.
                 if record.status == CallStatus::Committed.as_str()
+                    && record.usage_status != Some(pl_core::usage::UsageStatus::LegacyUnknown)
                     && matches!(
                         record.kind.as_str(),
                         event::CALL_LOG_KIND_BILLING | event::CALL_LOG_KIND_MIGRATED
@@ -439,6 +419,7 @@ impl CallLog {
             name,
             file,
             bytes,
+            dirty: false,
         });
         Ok(())
     }
@@ -532,6 +513,7 @@ mod storage_fault_tests {
         let boundary = log
             .append(event::record_day(retained_at), boundary_now, &retained_line)
             .await?;
+        log.sync_pending().await?;
         assert!(log.cleanup(boundary_now).await.removed.is_empty());
         let retained_path = temp.path().join(&boundary.record.segment);
         assert_eq!(
@@ -539,16 +521,11 @@ mod storage_fault_tests {
             format!("{retained_line}\n")
         );
         let first = log.append(day, now, &line).await?;
-        assert!(
-            log.read(
-                &first.record,
-                &pl_core::context::content_hash(line.as_bytes()),
-                now
-            )
-            .await?
-            .truncated
-        );
+        log.sync_pending().await?;
         let path = temp.path().join(&first.record.segment);
+        let text = tokio::fs::read_to_string(&path).await?;
+        assert_eq!(text, format!("{line}\n"));
+        assert!(event::decode_record(text.trim_end())?.truncated);
         log.current = None;
         let mut file = tokio::fs::OpenOptions::new()
             .append(true)
@@ -570,26 +547,7 @@ mod storage_fault_tests {
             .cleanup(now + LOG_RETENTION_SECONDS + SECONDS_PER_DAY)
             .await;
         assert!(expired.removed.contains(&first.record.segment));
-        let missing = log
-            .read(
-                &first.record,
-                &pl_core::context::content_hash(line.as_bytes()),
-                now,
-            )
-            .await
-            .unwrap_err();
-        assert!(matches!(
-            missing.downcast_ref::<LogReadError>(),
-            Some(LogReadError::Missing(_))
-        ));
-        let expired = log
-            .read(&first.record, "", now - LOG_RETENTION_SECONDS)
-            .await
-            .unwrap_err();
-        assert!(matches!(
-            expired.downcast_ref::<LogReadError>(),
-            Some(LogReadError::Expired(_))
-        ));
+        assert!(!tokio::fs::try_exists(&path).await?);
         assert!(tokio::fs::try_exists(temp.path().join(&second.record.segment)).await?);
 
         // A filesystem refusal preserves its segment and is retried after repair.

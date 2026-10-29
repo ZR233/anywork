@@ -26,7 +26,13 @@ pub mod timeline_content;
 mod tool;
 mod turn;
 mod turn_failure;
+mod usage_diagnostics;
 mod workflow;
+pub use usage_diagnostics::{
+    MetricAvailability, ThreadUsageDiagnostics, UsageCallSnapshot, UsageCounterField,
+    UsageGapIssue, UsageGapReason, UsageIssueCountSnapshot, UsageOutcomeCountSnapshot,
+    UsagePurposeCountSnapshot, UsageReportStatus, UsageTerminalStatus,
+};
 
 pub use account_catalog::{
     ACCOUNT_CATALOG_SCHEMA_VERSION, AccountCatalogSnapshot, AccountServiceCapabilitiesDescriptor,
@@ -39,7 +45,7 @@ pub use account_catalog::{
     ModelTypeSupport, WebSearchResolutionDescriptor, WebSearchServiceCapabilitiesDescriptor,
 };
 pub use accounting::{
-    InferenceAccounting, PricingMode, PricingOutcome, UnpricedReason, UsageReport, UsageStatus,
+    InferenceAccounting, PricingMode, PricingOutcome, UnpricedReason, UsageReport,
 };
 pub use activity::{
     ACTIVITY_SUMMARY_LIMIT, ThreadActivity, ThreadActivityArguments, ThreadActivityContentPart,
@@ -60,9 +66,9 @@ pub use agent_session::plan::{
     AgentSessionPlanTransitionError, AgentSessionPlanTransitionRecord,
 };
 pub use billing::{
-    InferenceBillingAppend, InferenceBillingRecord, InferenceModelObservation,
+    FirstOutputSource, InferenceBillingRecord, InferenceModelObservation,
     InferenceOrchestrationMetrics, InferenceTiming, InferenceTokenUsage, ModelMatchState,
-    ModelPricingSnapshot, TurnBillingRecord,
+    ModelPricingSnapshot,
 };
 pub use delegation::{
     AGENT_EVALUATION_COMMENT_MAX_CHARS, AGENT_EVALUATION_WINDOW, AgentEvaluation,

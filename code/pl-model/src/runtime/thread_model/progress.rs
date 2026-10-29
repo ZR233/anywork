@@ -32,8 +32,9 @@ use pl_core::model::{
     AggregateChannel, ModelParts, ModelProgressSender, ModelTextChannel, ObservedItemKind,
     ObservedPart, ObservedPartIdentity, ObservedPartKind, ProviderPartIdentity,
 };
+use pl_core::usage::UsageStatus;
+use pl_protocol::PureError;
 use pl_protocol::trace::TraceTextChannel;
-use pl_protocol::{PureError, UsageStatus};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -271,10 +272,11 @@ impl ProgressProjection {
                 // A provider may report only one side of accounting while a stream is still
                 // running. Preserve those confirmed fields, but reject a report whose internal
                 // relationships are invalid; `None` remains unknown instead of becoming zero.
-                if usage.status() != UsageStatus::Invalid
+                let analysis = crate::model::usage::analyze(usage);
+                if analysis.status != UsageStatus::Invalid
                     && let Some(sender) = &self.sender
                 {
-                    sender.observe_usage(usage.output_tokens, usage.known_total_tokens());
+                    sender.observe_usage(usage.output_tokens, analysis.total_tokens);
                 }
             }
             ModelStreamEvent::ToolInputStarted {

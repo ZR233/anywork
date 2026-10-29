@@ -36,9 +36,11 @@ pub fn migrate_payload(payload: &OpaquePayload) -> Result<Option<OpaquePayload>,
     let current = match payload.format() {
         "pl.model.compaction" => {
             match payload.version() {
-                2 => {
+                2 | 3 => {
                     let value: RawObject = parse(payload.content())?;
-                    migrate_call_binding(field(&value, "binding")?.get())?;
+                    if payload.version() == 2 {
+                        migrate_call_binding(field(&value, "binding")?.get())?;
+                    }
                 }
                 super::compaction::NATIVE_CHECKPOINT_VERSION => {
                     let checkpoint: super::compaction::NativeCheckpoint = parse(payload.content())?;
@@ -79,7 +81,12 @@ pub fn migrate_payload(payload: &OpaquePayload) -> Result<Option<OpaquePayload>,
     }
     let mut value: RawObject = parse(payload.content())?;
     match payload.format() {
-        "pl.model.compaction" => migrate_binding_field(&mut value)?,
+        "pl.model.compaction" => {
+            if payload.version() == 2 {
+                migrate_binding_field(&mut value)?;
+            }
+            migrate_timing(&mut value)?;
+        }
         "pl.model.assistant" if payload.version() == 2 => {
             edit(&mut value, "receipt", migrate_binding_field)?;
         }
@@ -130,6 +137,15 @@ pub fn migrate_payload(payload: &OpaquePayload) -> Result<Option<OpaquePayload>,
         }
         _ => {}
     }
+    match payload.format() {
+        "pl.model.assistant" => {
+            edit(&mut value, "receipt", |receipt| {
+                edit(receipt, "response", migrate_timing)
+            })?;
+        }
+        "pl.model.failure" => migrate_timing(&mut value)?,
+        _ => {}
+    }
     let migrated = OpaquePayload::new(
         payload.format(),
         current,
@@ -143,6 +159,36 @@ pub fn migrate_payload(payload: &OpaquePayload) -> Result<Option<OpaquePayload>,
 
 fn parse<T: serde::de::DeserializeOwned>(content: &str) -> Result<T, ModelError> {
     serde_json::from_str(content).map_err(json_error)
+}
+
+/// Upgrade only the producer-owned timing object, never provider raw strings or absent timing.
+fn migrate_timing(object: &mut RawObject) -> Result<(), ModelError> {
+    if object
+        .get("timing")
+        .is_some_and(|timing| timing.get() != "null")
+    {
+        edit(object, "timing", |timing| {
+            put(
+                timing,
+                "firstOutputSource",
+                serde_json::value::to_raw_value(&pl_protocol::FirstOutputSource::LegacyUnknown)
+                    .map_err(json_error)?,
+            )
+        })?;
+    }
+    Ok(())
+}
+
+fn legacy_timing_content(payload: &OpaquePayload, assistant: bool) -> Result<String, ModelError> {
+    let mut object: RawObject = parse(payload.content())?;
+    if assistant {
+        edit(&mut object, "receipt", |receipt| {
+            edit(receipt, "response", migrate_timing)
+        })?;
+    } else {
+        migrate_timing(&mut object)?;
+    }
+    serde_json::to_string(&object).map_err(json_error)
 }
 fn json_error(source: serde_json::Error) -> ModelError {
     failure(ModelFailureKind::UnsupportedContent, source)
@@ -341,6 +387,7 @@ struct FailureReceiptV2 {
 impl FailureReceiptV2 {
     fn migrate(self) -> ModelFailureReceipt {
         ModelFailureReceipt {
+            timing: None,
             provider_failure: self.provider_failure,
             message: self.message,
             binding: self.binding.migrate(),
@@ -518,6 +565,7 @@ impl FailureReceiptV1 {
             None => None,
         };
         Ok(ModelFailureReceipt {
+            timing: None,
             provider_failure: self.provider_failure,
             message: self.message,
             binding: self.binding.migrate(),
@@ -593,18 +641,23 @@ impl FailureProgressV1 {
 }
 
 fn decode_failure(payload: &OpaquePayload) -> Result<ModelFailureReceipt, ModelError> {
+    let content = if payload.version() < FAILURE_RECEIPT_VERSION {
+        legacy_timing_content(payload, false)?
+    } else {
+        payload.content().to_owned()
+    };
     let receipt = match payload.version() {
-        FAILURE_RECEIPT_VERSION | LEGACY_FAILURE_RECEIPT_VERSION_V3 => {
-            serde_json::from_str::<ModelFailureReceipt>(payload.content())
+        FAILURE_RECEIPT_VERSION | 4 | LEGACY_FAILURE_RECEIPT_VERSION_V3 => {
+            serde_json::from_str::<ModelFailureReceipt>(&content)
                 .map_err(|source| super::failure(ModelFailureKind::UnsupportedContent, source))
         }
         LEGACY_FAILURE_RECEIPT_VERSION_V2 => {
-            let legacy: FailureReceiptV2 = serde_json::from_str(payload.content())
+            let legacy: FailureReceiptV2 = serde_json::from_str(&content)
                 .map_err(|source| super::failure(ModelFailureKind::UnsupportedContent, source))?;
             Ok(legacy.migrate())
         }
         LEGACY_FAILURE_RECEIPT_VERSION => {
-            let legacy: FailureReceiptV1 = serde_json::from_str(payload.content())
+            let legacy: FailureReceiptV1 = serde_json::from_str(&content)
                 .map_err(|source| super::failure(ModelFailureKind::UnsupportedContent, source))?;
             legacy.migrate()
         }
@@ -613,8 +666,7 @@ fn decode_failure(payload: &OpaquePayload) -> Result<ModelFailureReceipt, ModelE
             std::io::Error::other("unsupported model failure receipt"),
         )),
     }?;
-    if payload.version() < FAILURE_RECEIPT_VERSION
-        && receipt.accounting.pricing == pl_protocol::PricingOutcome::NoCharge
+    if payload.version() < 4 && receipt.accounting.pricing == pl_protocol::PricingOutcome::NoCharge
     {
         return Err(super::failure(
             ModelFailureKind::UnsupportedContent,
@@ -654,13 +706,18 @@ struct LegacyAssistantFrameV2 {
 /// binding field names.
 fn decode_frame_legacy(payload: &OpaquePayload) -> Result<AssistantFrame, ModelError> {
     let unsupported = || invalid("unsupported or repeated model response receipt");
+    let content = if payload.version() < FRAME_VERSION {
+        legacy_timing_content(payload, true)?
+    } else {
+        payload.content().to_owned()
+    };
     let frame = match payload.version() {
-        FRAME_VERSION | LEGACY_FRAME_VERSION_V3 => {
-            serde_json::from_str::<AssistantFrame>(payload.content())
+        FRAME_VERSION | 4 | LEGACY_FRAME_VERSION_V3 => {
+            serde_json::from_str::<AssistantFrame>(&content)
                 .map_err(|source| failure(ModelFailureKind::UnsupportedContent, source))
         }
         LEGACY_FRAME_VERSION_V2 => {
-            let legacy: LegacyAssistantFrameV2 = serde_json::from_str(payload.content())
+            let legacy: LegacyAssistantFrameV2 = serde_json::from_str(&content)
                 .map_err(|source| failure(ModelFailureKind::UnsupportedContent, source))?;
             Ok(AssistantFrame {
                 receipt: legacy.receipt.migrate(),
@@ -672,7 +729,7 @@ fn decode_frame_legacy(payload: &OpaquePayload) -> Result<AssistantFrame, ModelE
     }?;
     // v3 has the same field layout, but its Disabled outcome remains historical "not estimated".
     // A new no-charge declaration must never be smuggled into an older producer version.
-    if payload.version() < FRAME_VERSION
+    if payload.version() < 4
         && frame.receipt.response.accounting.pricing == pl_protocol::PricingOutcome::NoCharge
     {
         return Err(invalid(

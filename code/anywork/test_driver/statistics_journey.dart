@@ -104,6 +104,7 @@ Future<void> main(List<String> args) async {
         'Local statistics fast response',
         newThread: true,
       );
+      final fastThreadId = await _waitForSubmittedThread(driver);
       await File('${coord.path}/fast-submitted').writeAsString('submitted');
       await stage('fast_submitted');
       await _openStatistics(driver, progress);
@@ -114,10 +115,14 @@ Future<void> main(List<String> args) async {
           .writeAsBytes(await driver.screenshot());
       await File('${coord.path}/lock-observed').writeAsString('observed');
       await stage('lock_observed');
-      await _waitForTurn(driver, 5, output, 'fast');
       final fast = await _waitForStatistics(driver, 1);
       _verifyHealthy(fast);
       await _capture(driver, output, 'statistics-fast', fast);
+      await _rawTap(driver, 'settings-back');
+      await revealSidebarThread(driver, fastThreadId);
+      await _rawTap(driver, 'thread-row-$fastThreadId');
+      await _waitForTurn(driver, 5, output, 'fast');
+      await _openStatistics(driver, progress);
       await stage('fast_verified');
 
       await progress.run(
@@ -359,6 +364,24 @@ Future<void> _submit(
     'composer-submit',
     () => _rawTap(driver, 'composer-submit'),
   );
+}
+
+Future<String> _waitForSubmittedThread(FlutterDriverSession driver) async {
+  final deadline = DateTime.now().add(const Duration(seconds: 60));
+  while (DateTime.now().isBefore(deadline)) {
+    final snapshot = await driver.readSnapshot();
+    final navigation = snapshot['navigation'];
+    final workspace = snapshot['workspace'];
+    final selected = navigation is Map ? navigation['selectedThreadId'] : null;
+    if (selected is String &&
+        selected.isNotEmpty &&
+        workspace is Map &&
+        workspace['threadId'] == selected) {
+      return selected;
+    }
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+  }
+  throw StateError('submitted Thread was not selected');
 }
 
 Future<void> _waitForKey(
@@ -643,7 +666,7 @@ Future<void> _capture(
   if ((data['history'] as List).isNotEmpty) {
     final item = (data['history'] as List).first as Map;
     final key =
-        'statistics-history-row:${jsonEncode([item['accountId'], item['modelId'], item['effort'], 0])}';
+        'statistics-history-call:${jsonEncode([item['threadId'], item['callId']])}';
     await driver.scrollUntilVisible(
       find.byValueKey('statistics-history'),
       find.byValueKey(key),

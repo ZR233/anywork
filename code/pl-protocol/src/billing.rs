@@ -2,18 +2,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::{PromptPrefixChangedReason, TokenUsageSnapshot};
 
-/// 向一个 Turn 追加 inference 计费记录的结果。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum InferenceBillingAppend {
-    Inserted,
-    Identical,
-}
-
 /// 一次成功 inference 的单调时钟耗时事实。
 ///
 /// 三者以产生成功结果的 transport attempt 发送为起点；失败尝试、退避和工具执行不混入。
 /// `response_millis` 到归一化终止事件到达为止，不包含其后的消费、展示与保存开销，也是输出
-/// 吞吐的分母。`ttft_millis` 是首个非空文本、推理或工具输入增量；未观察到增量时保持未知。
+/// 吞吐的分母。`ttft_millis` 是首次非空内容观测；完整工具项也可提供边界，来源单独保留。
 /// `decode_millis` 只是 `response - ttft` 的诊断值，不作为吞吐分母。
 ///
 /// 旧口径的序列化只带 `totalMillis`；该字段不属于当前契约，解码后 `response_millis` 为 0，
@@ -21,12 +14,24 @@ pub enum InferenceBillingAppend {
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct InferenceTiming {
+    pub first_output_source: FirstOutputSource,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ttft_millis: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub decode_millis: Option<u64>,
     #[serde(default)]
     pub response_millis: u64,
+}
+
+/// 客户端首次内容观测，不代表供应商生成首 token 的时间。
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum FirstOutputSource {
+    #[default]
+    Unobserved,
+    Incremental,
+    CompletedToolInput,
+    LegacyUnknown,
 }
 
 impl InferenceTiming {
@@ -47,15 +52,6 @@ impl InferenceTiming {
             }
             (Some(_), None) | (None, Some(_)) => false,
         }
-    }
-
-    /// 校验同一次速度样本的两侧，不改写供应商原始用量。
-    /// 输出缺失或为零、计数矛盾及无效计时均保持不可用。
-    pub fn throughput_output_tokens(self, usage: &crate::UsageReport) -> Option<u64> {
-        if !self.has_throughput_sample() || usage.status() == crate::UsageStatus::Invalid {
-            return None;
-        }
-        usage.output_tokens.filter(|tokens| *tokens > 0)
     }
 }
 
@@ -187,22 +183,6 @@ impl InferenceOrchestrationMetrics {
 }
 
 impl InferenceTokenUsage {
-    /// Adds one inference's known counters without reinterpreting provider classifications.
-    pub fn merge(&mut self, other: &Self) {
-        self.prompt_tokens = self.prompt_tokens.saturating_add(other.prompt_tokens);
-        self.completion_tokens = self
-            .completion_tokens
-            .saturating_add(other.completion_tokens);
-        self.cached_prompt_tokens = self
-            .cached_prompt_tokens
-            .saturating_add(other.cached_prompt_tokens);
-        self.cache_write_tokens = self
-            .cache_write_tokens
-            .saturating_add(other.cache_write_tokens);
-        self.reasoning_tokens = self.reasoning_tokens.saturating_add(other.reasoning_tokens);
-        self.total_tokens = self.total_tokens.saturating_add(other.total_tokens);
-    }
-
     pub fn public_snapshot(&self) -> TokenUsageSnapshot {
         let normalized = self;
         TokenUsageSnapshot {
@@ -288,84 +268,4 @@ pub struct InferenceBillingRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timing: Option<InferenceTiming>,
     pub recorded_at: i64,
-}
-
-/// 一个 Turn 的全部 inference 计费记录。
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct TurnBillingRecord {
-    #[serde(default)]
-    pub version: u32,
-    #[serde(default)]
-    pub inferences: Vec<InferenceBillingRecord>,
-}
-
-impl TurnBillingRecord {
-    /// Version 7 adds the explicit NoCharge pricing outcome; historical Disabled is unchanged.
-    pub const VERSION: u32 = 7;
-
-    pub fn new() -> Self {
-        Self {
-            version: Self::VERSION,
-            inferences: Vec::new(),
-        }
-    }
-
-    pub fn aggregate_usage(&self) -> InferenceTokenUsage {
-        self.inferences.iter().fold(
-            InferenceTokenUsage::default(),
-            |mut aggregate, inference| {
-                let usage = &inference.accounting.usage.totals();
-                aggregate.prompt_tokens =
-                    aggregate.prompt_tokens.saturating_add(usage.prompt_tokens);
-                aggregate.cached_prompt_tokens = aggregate
-                    .cached_prompt_tokens
-                    .saturating_add(usage.cached_prompt_tokens);
-                aggregate.cache_write_tokens = aggregate
-                    .cache_write_tokens
-                    .saturating_add(usage.cache_write_tokens);
-                aggregate.completion_tokens = aggregate
-                    .completion_tokens
-                    .saturating_add(usage.completion_tokens);
-                aggregate.reasoning_tokens = aggregate
-                    .reasoning_tokens
-                    .saturating_add(usage.reasoning_tokens);
-                aggregate.total_tokens = aggregate.total_tokens.saturating_add(usage.total_tokens);
-                aggregate
-            },
-        )
-    }
-
-    pub fn aggregate_orchestration(&self) -> InferenceOrchestrationMetrics {
-        self.inferences.iter().fold(
-            InferenceOrchestrationMetrics::default(),
-            |mut aggregate, inference| {
-                aggregate.merge(&inference.orchestration);
-                aggregate
-            },
-        )
-    }
-
-    /// 按 `inference_id` 幂等追加；相同 id 的不同内容必须拒绝。
-    pub fn append(
-        &mut self,
-        inference: InferenceBillingRecord,
-    ) -> Result<InferenceBillingAppend, String> {
-        let Some(existing) = self
-            .inferences
-            .iter()
-            .find(|existing| existing.inference_id == inference.inference_id)
-        else {
-            self.inferences.push(inference);
-            return Ok(InferenceBillingAppend::Inserted);
-        };
-        if existing == &inference {
-            Ok(InferenceBillingAppend::Identical)
-        } else {
-            Err(format!(
-                "inference {} conflicts with the durable billing record",
-                inference.inference_id
-            ))
-        }
-    }
 }

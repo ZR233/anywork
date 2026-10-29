@@ -102,6 +102,17 @@ ThreadRuntimeView _runtimeUsage(int completionTokens) => ThreadRuntimeView(
 void main() {
   test('combined feed preserves approved plan and independently advances state/content clocks', () async {
     final fixture = ConversationFixture();
+    final diagnostics = ThreadUsageDiagnostics(
+      incompleteCalls: 1,
+      missingCalls: 1,
+      partialCalls: 0,
+      invalidCalls: 0,
+      overflowCalls: 0,
+      otherPurposeCalls: 0,
+      latestCall: null,
+      legacyUnknown: true,
+      countsOverflowed: false,
+    );
     final feed = await fixture.open(initial: baseline(100));
     final session = fixture.session();
     await feed.deliver(
@@ -112,7 +123,7 @@ void main() {
             runtime: _approvedPlanRuntime(
               markdown: '# Plan\n\nOriginal.\n',
               version: 3,
-            ),
+            ).copyWith(usageDiagnostics: diagnostics),
           ),
         ),
       ),
@@ -120,6 +131,11 @@ void main() {
     expect(
       session.state.runtime!.plan!.document!.markdown,
       '# Plan\n\nOriginal.\n',
+    );
+    expect(session.state.runtime!.usageDiagnostics, same(diagnostics));
+    expect(
+      session.state.runtime!.copyWith(modelId: 'renamed').usageDiagnostics,
+      same(diagnostics),
     );
     await feed.deliver(
       ConversationStateEvent(
@@ -129,10 +145,20 @@ void main() {
           baseRevision: 1,
           epoch: 7,
           update: ThreadRuntimeUpdate(
-            runtime: _approvedPlanRuntime(
-              markdown: '# Revised\n\nKeep exact trailing newline.\n',
-              version: 4,
-            ),
+            runtime:
+                _approvedPlanRuntime(
+                  markdown: '# Revised\n\nKeep exact trailing newline.\n',
+                  version: 4,
+                ).copyWith(
+                  usageDiagnostics: diagnostics,
+                  cacheUsage: const CacheUsageView(
+                    inputTokens: 20,
+                    cacheReadTokens: 10,
+                    hitRate: 0.5,
+                    sampleCount: 2,
+                    legacySampleCountUnknown: true,
+                  ),
+                ),
             todo: null,
           ),
         ),
@@ -141,6 +167,9 @@ void main() {
     expect(session.state.streamEpoch, 7);
     expect(session.state.revision, 2);
     expect(session.state.runtime!.plan!.document!.version, 4);
+    expect(session.state.runtime!.usageDiagnostics, same(diagnostics));
+    expect(session.state.runtime!.cacheUsage.sampleCount, 2);
+    expect(session.state.runtime!.cacheUsage.legacySampleCountUnknown, isTrue);
     expect(
       (session.content.lastDeliveredFrame as ConversationBaselineFrame)
           .baseline
