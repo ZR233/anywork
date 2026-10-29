@@ -607,9 +607,7 @@ Future<void> _expectLatestQueuedColdSelection({
     fixture.graph.setConversationPageVisible(true);
     final session = client.conversations.existingSession(sibling.id)!;
     await session.source.waitFor((state) => state.workspace != null);
-    await session.content.state.waitFor(
-      (state) => state.snapshot is ConversationBaselineFrame,
-    );
+    await session.content.state.waitFor((state) => state.snapshot == true);
     expect(client.selection.state.selectedThreadId, sibling.id);
     expect(
       client.threadDirectory.state.overlayThreads.map((thread) => thread.id),
@@ -677,9 +675,7 @@ Future<void> _expectSelectedHistory(_ColdFixture fixture) async {
   fixture.graph.setConversationPageVisible(true);
   final session = client.conversations.existingSession(fixture.child.id)!;
   await session.source.waitFor((state) => state.workspace != null);
-  await session.content.state.waitFor(
-    (state) => state.snapshot is ConversationBaselineFrame,
-  );
+  await session.content.state.waitFor((state) => state.snapshot == true);
   expect(client.selection.state.selectedThreadId, fixture.child.id);
   expect(client.selection.state.needsOpen, isFalse);
   expect(client.findThread(fixture.child.id)?.status, ThreadStatusView.closed);
@@ -860,12 +856,15 @@ final class _ColdSelectionTransport extends RecordingDemoTransport {
   }
 
   @override
-  Future<ConversationFeed> openConversationFeed(String threadId) async {
+  Future<ConversationFeed> openConversationFeed(
+    String threadId, {
+    ConversationCompletionCursor? resumeAfter,
+  }) async {
     stateReads.add(threadId);
     final saved =
         savedThreadOverrides[threadId] ?? (threadId == child.id ? child : null);
     return MappedConversationFeed(
-      await super.openConversationFeed(threadId),
+      await super.openConversationFeed(threadId, resumeAfter: resumeAfter),
       (frame) => switch (frame) {
         ThreadSnapshotFrame(:final workspace) when saved != null =>
           ThreadSnapshotFrame(workspace: workspace.copyWith(thread: saved)),

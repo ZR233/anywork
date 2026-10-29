@@ -29,9 +29,7 @@ void main() {
       final session = graph.client.conversations.existingSession(
         'thread-main',
       )!;
-      await session.content.state.waitFor(
-        (state) => state.snapshot is ConversationBaselineFrame,
-      );
+      await session.content.ready;
       final initial = session.state.workspace!;
       final summaries = graph.accounts.observeSummaries();
       addTearDown(summaries.release);
@@ -163,9 +161,7 @@ void main() {
     await (graph..setConversationPageVisible(true)).client.directoryCommands
         .selectThread('thread-main');
     final session = graph.client.conversations.existingSession('thread-main')!;
-    await session.content.state.waitFor(
-      (state) => state.snapshot is ConversationBaselineFrame,
-    );
+    await session.content.ready;
     final composer = graph.client.drafts.existingComposer('thread-main')!;
     composer.updateDraft('keep this draft');
     final initial = session.state.workspace!;

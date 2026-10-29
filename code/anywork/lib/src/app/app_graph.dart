@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:anywork_client/studio_client.dart';
 import 'package:anywork_client/statistics.dart';
 import 'package:anywork_client/statistics_ports.dart';
@@ -234,10 +236,16 @@ class AppGraph {
     }
   }
 
-  Future<CloseReport> close({required DateTime deadline}) =>
-      _closing ??= _close(deadline);
+  Future<CloseReport> close({required DateTime deadline}) {
+    final existing = _closing;
+    if (existing != null) return existing;
+    final completion = Completer<CloseReport>();
+    _closing = completion.future;
+    completion.complete(Future<CloseReport>.sync(() => _close(deadline)));
+    return completion.future;
+  }
 
-  /// 关闭顺序：先同步发布「无展示」促使现存 Chat 子树卸载，再同时收束 Client。
+  /// 先同步封闭 Client 准入，并在首次 await 前发布「无展示」促使 Chat 子树卸载。
   ///
   /// `timeline.close` 在首次 await 之前同步清空展示元数据；视图卸载后其真实 `dispose`
   /// 才允许 lease 销毁 controller 并观察 stock stream done。树仍借用 controller 时不会
@@ -252,8 +260,8 @@ class AppGraph {
     _workspaceObservation = null;
     _admissionObservation?.cancel();
     _admissionObservation = null;
-    final timelineClose = timeline.close(deadline: deadline);
     final clientClose = client.close(deadline: deadline);
+    final timelineClose = timeline.close(deadline: deadline);
     final statisticsClose = statisticsRepository.close(deadline: deadline);
     final accountClose = accountDomains.close(deadline: deadline);
     final reports = await Future.wait([

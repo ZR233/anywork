@@ -15,27 +15,19 @@ import '../../../client/support/conversation_fixtures.dart';
 
 ConversationItem componentText(
   String id, {
-  required int ordinal,
+  required int appendSeq,
   String body = '正文',
-  bool terminal = true,
   int? totalBytes,
-  int revision = 1,
 }) => conversationFixture(
   id: id,
   threadId: 'thread',
-  ordinal: ordinal,
-  revision: revision,
-  createdAt: DateTime.utc(2026),
-  updatedAt: DateTime.utc(2026),
-  lifecycle: terminal
-      ? ConversationLifecycle.terminal
-      : ConversationLifecycle.streaming,
+  appendSeq: appendSeq,
   descriptor: ConversationTextDescriptor(
     channel: ThreadTextChannel.finalAnswer,
     attachments: const [],
-    lifecycle: terminal
-        ? CompletedThreadContentView(DateTime.utc(2026))
-        : const StreamingThreadContentView(),
+    outcome: ConversationContentCompleted(
+      CompletedThreadContentView(DateTime.utc(2026)),
+    ),
   ),
   fields: {const ThreadTextFieldView(): body},
   totalBytes: {const ThreadTextFieldView(): ?totalBytes},
@@ -43,21 +35,17 @@ ConversationItem componentText(
 
 ConversationItem componentTool(
   String id, {
-  int ordinal = 1,
+  int appendSeq = 1,
   String name = 'exec_command',
   required String arguments,
   String result = 'ok',
-  int revision = 1,
   List<ThreadAttachmentView> attachments = const [],
   int? totalArgumentsBytes,
   int? totalResultBytes,
 }) => conversationFixture(
   id: id,
   threadId: 'thread',
-  ordinal: ordinal,
-  revision: revision,
-  createdAt: DateTime.utc(2026),
-  updatedAt: DateTime.utc(2026),
+  appendSeq: appendSeq,
   descriptor: ConversationToolDescriptor(
     invocation: ConversationToolInvocation(
       toolCallId: id,
@@ -83,11 +71,17 @@ ConversationBaseline componentBaseline(
   List<ConversationItem> items, {
   String? before,
   bool hasOlder = false,
+  String timelineEpoch = 'component-epoch',
+  String subscriptionId = 'fixture',
 }) => ConversationBaseline(
-  subscriptionId: 'fixture',
-  version: 1,
+  subscriptionId: subscriptionId,
+  timelineEpoch: timelineEpoch,
+  completedCursor: ConversationCompletionCursor(
+    timelineEpoch: timelineEpoch,
+    appendSeq: items.isEmpty ? 0 : items.last.header.appendSeq,
+  ),
   items: items,
-  before: before,
+  before: before == null ? null : ConversationQueryCursor(before),
   hasOlder: hasOlder,
 );
 

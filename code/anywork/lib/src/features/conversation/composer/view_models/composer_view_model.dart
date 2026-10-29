@@ -4,7 +4,6 @@ import 'dart:typed_data';
 import 'package:anywork_client/studio_client.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
-import '../../../../app/app_graph.dart';
 import '../../../../presentation/providers/account_domains.dart';
 import '../../../../presentation/providers/attachment_drafts.dart';
 import '../../../../presentation/providers/client_provider.dart';
@@ -290,14 +289,8 @@ class ComposerDockViewModel extends _$ComposerDockViewModel {
     });
   }
 
-  Future<void> submit(String threadId) => ref
-      .read(anyworkClientProvider)
-      .drafts
-      .composer(threadId)
-      .submit(
-        beforeSubmit: () =>
-            ref.read(appGraphProvider).timeline.prepareSend(threadId),
-      );
+  Future<void> submit(String threadId) =>
+      ref.read(anyworkClientProvider).drafts.composer(threadId).submit();
 
   void updateDraft(String threadId, String text) => ref
       .read(anyworkClientProvider)

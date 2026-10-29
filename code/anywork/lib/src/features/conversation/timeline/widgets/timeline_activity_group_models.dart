@@ -54,15 +54,19 @@ sealed class TimelineActivityGroupMessage {
 
   final String id;
   final int order;
-  final DateTime createdAt;
-  final DateTime completedAt;
+  final DateTime? createdAt;
+  final DateTime? completedAt;
   final bool rolledBack;
   final List<TimelineActivityDetailRef> details;
   final bool bodyUnavailable;
 
-  Duration get duration => completedAt.isAfter(createdAt)
-      ? completedAt.difference(createdAt)
-      : Duration.zero;
+  Duration? get duration {
+    final start = createdAt;
+    final end = completedAt;
+    return start == null || end == null || end.isBefore(start)
+        ? null
+        : end.difference(start);
+  }
 }
 
 /// 1. 组内已完成思考消息。
@@ -247,10 +251,11 @@ class TimelineActivityGroupController extends ChangeNotifier {
     DateTime? latestEnd;
     for (final message in _messages) {
       final start = message.createdAt;
+      final end = message.completedAt;
+      if (start == null || end == null) return null;
       if (earliestStart == null || start.isBefore(earliestStart)) {
         earliestStart = start;
       }
-      final end = message.completedAt;
       if (latestEnd == null || end.isAfter(latestEnd)) {
         latestEnd = end;
       }

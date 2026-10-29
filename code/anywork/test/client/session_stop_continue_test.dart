@@ -1,7 +1,9 @@
+import 'package:anywork/src/app/app_graph.dart';
 import 'package:anywork_client/studio_client.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'support/recording_demo_transport.dart';
+import 'support/test_statistics_feed.dart';
 
 /// Holds the demo Turn in its running phase so the stop target is stable while
 /// the command runs. Everything else is the real demo transport.
@@ -14,25 +16,22 @@ class _HeldTurnTransport extends RecordingDemoTransport {
 }
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+
   test('stop targets the demo execution identity and continue opens exactly one new Turn', () async {
     final transport = _HeldTurnTransport();
-    final client = AnyworkClient(
+    final graph = AppGraph(
+      statisticsFeed: const TestStatisticsFeedPort(),
       transport: transport,
       clientId: 'stop-continue',
     );
-    addTearDown(
-      () => client.close(
-        deadline: DateTime.now().add(const Duration(seconds: 5)),
-      ),
-    );
+    final client = graph.client;
+    addTearDown(() => _closeGraph(graph, transport));
     await client.bootstrap();
     // Demo's root session; bootstrap only loads the directory and settings.
     const threadId = 'thread-main';
-    client.selection.selectThread(
-      projectId: client.selection.state.selectedProjectId!,
-      threadId: threadId,
-    );
-    client.conversations.setVisibleThread(threadId);
+    graph.setConversationPageVisible(true);
+    await client.directoryCommands.selectThread(threadId);
     final session = client.conversations.session(threadId);
     // The saved model route is the CAS baseline of an explicit continue.
     await session.source.waitFor((state) => state.runtime?.modelRoute != null);
@@ -110,22 +109,17 @@ void main() {
 
   test('准入后的继续被报告为已消费并绑定接续轮次', () async {
     final transport = RecordingDemoTransport();
-    final client = AnyworkClient(
+    final graph = AppGraph(
+      statisticsFeed: const TestStatisticsFeedPort(),
       transport: transport,
       clientId: 'continue-consumed',
     );
-    addTearDown(
-      () => client.close(
-        deadline: DateTime.now().add(const Duration(seconds: 5)),
-      ),
-    );
+    final client = graph.client;
+    addTearDown(() => _closeGraph(graph, transport));
     await client.bootstrap();
     const threadId = 'thread-main';
-    client.selection.selectThread(
-      projectId: client.selection.state.selectedProjectId!,
-      threadId: threadId,
-    );
-    client.conversations.setVisibleThread(threadId);
+    graph.setConversationPageVisible(true);
+    await client.directoryCommands.selectThread(threadId);
     final session = client.conversations.session(threadId);
     await session.source.waitFor((state) => state.runtime?.modelRoute != null);
     await client.threadCommands.submitComposer(
@@ -176,22 +170,17 @@ void main() {
 
   test('同一操作身份用于不同请求时明确冲突，不继承别人的回执', () async {
     final transport = _HeldTurnTransport();
-    final client = AnyworkClient(
+    final graph = AppGraph(
+      statisticsFeed: const TestStatisticsFeedPort(),
       transport: transport,
       clientId: 'continue-identity',
     );
-    addTearDown(
-      () => client.close(
-        deadline: DateTime.now().add(const Duration(seconds: 5)),
-      ),
-    );
+    final client = graph.client;
+    addTearDown(() => _closeGraph(graph, transport));
     await client.bootstrap();
     const threadId = 'thread-main';
-    client.selection.selectThread(
-      projectId: client.selection.state.selectedProjectId!,
-      threadId: threadId,
-    );
-    client.conversations.setVisibleThread(threadId);
+    graph.setConversationPageVisible(true);
+    await client.directoryCommands.selectThread(threadId);
     final session = client.conversations.session(threadId);
     await session.source.waitFor((state) => state.runtime?.modelRoute != null);
     await client.threadCommands.submitComposer(
@@ -237,22 +226,17 @@ void main() {
 
   test('准入前停止的继续不被报告为已消费', () async {
     final transport = _HeldTurnTransport();
-    final client = AnyworkClient(
+    final graph = AppGraph(
+      statisticsFeed: const TestStatisticsFeedPort(),
       transport: transport,
       clientId: 'continue-before-admission',
     );
-    addTearDown(
-      () => client.close(
-        deadline: DateTime.now().add(const Duration(seconds: 5)),
-      ),
-    );
+    final client = graph.client;
+    addTearDown(() => _closeGraph(graph, transport));
     await client.bootstrap();
     const threadId = 'thread-main';
-    client.selection.selectThread(
-      projectId: client.selection.state.selectedProjectId!,
-      threadId: threadId,
-    );
-    client.conversations.setVisibleThread(threadId);
+    graph.setConversationPageVisible(true);
+    await client.directoryCommands.selectThread(threadId);
     final session = client.conversations.session(threadId);
     await session.source.waitFor((state) => state.runtime?.modelRoute != null);
     await client.threadCommands.submitComposer(
@@ -290,4 +274,24 @@ void main() {
     );
     expect(view.state, isA<PendingContinuation>(), reason: '准入前取消不得冒充已消费');
   });
+}
+
+Future<void> _closeGraph(
+  AppGraph graph,
+  RecordingDemoTransport transport,
+) async {
+  final report = await graph.close(
+    deadline: DateTime.now().add(const Duration(seconds: 5)),
+  );
+  expect(
+    report.complete,
+    isTrue,
+    reason: report.unresolved
+        .map((value) => '${value.owner}: ${value.reason}')
+        .join('; '),
+  );
+  for (final feed in transport.feeds) {
+    expect(feed.joined.isCompleted, isTrue);
+    expect(feed.closeCalls, 1);
+  }
 }

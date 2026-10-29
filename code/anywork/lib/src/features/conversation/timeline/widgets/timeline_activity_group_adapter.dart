@@ -5,9 +5,6 @@ import 'timeline_activity_group_models.dart';
 
 /// 上层时间线消息无法转换为工作组成员的原因。
 enum TimelineActivityRejectionReason {
-  /// 条目尚未到达终态（工作组只接受已完成项）。
-  nonTerminalItem,
-
   /// 无需在时间线展示的内部记账条目（如 `inference`、`file`）。
   ignoredNoContent,
 
@@ -58,7 +55,7 @@ final class TimelineActivityConversionRejected
 /// 不感知轮次或组外类型。上层在向工作组追加消息前通过本转换器完成单条转换：
 /// - 若转换返回 [TimelineActivityConverted]，可将得到的 [TimelineActivityGroupMessage]
 ///   传给 [TimelineActivityGroupController.add]；
-/// - 若转换返回 [TimelineActivityConversionRejected]，说明遇到了非工作组条目或未完成项，
+/// - 若转换返回 [TimelineActivityConversionRejected]，说明遇到了非工作组条目，
 ///   上层据此结束当前工作组并按需开启下一段。
 abstract final class TimelineActivityGroupAdapter {
   static TimelineActivityConversionResult convertItem(ConversationItem item) {
@@ -69,9 +66,6 @@ abstract final class TimelineActivityGroupAdapter {
       itemId: item.id,
       message: reason.name,
     );
-    if (!item.terminal) {
-      return reject(TimelineActivityRejectionReason.nonTerminalItem);
-    }
     if (item.source is ConversationRecoverySource) {
       return reject(TimelineActivityRejectionReason.recoveryItem);
     }
@@ -84,7 +78,8 @@ abstract final class TimelineActivityGroupAdapter {
     String field(ThreadContentFieldView field) =>
         item.fieldFor(field)?.text ?? '';
     switch (item.descriptor) {
-      case ConversationThinkingDescriptor(:final lifecycle):
+      case ConversationThinkingDescriptor(:final outcome):
+        final lifecycle = _thinkingLifecycle(outcome);
         final summaries = [
           for (final f in item.fields)
             if (f.field is ThreadThinkingSummaryFieldView) f.text,
@@ -92,9 +87,9 @@ abstract final class TimelineActivityGroupAdapter {
         return TimelineActivityConverted(
           TimelineThinkingGroupMessage(
             id: item.id,
-            order: h.ordinal,
-            createdAt: h.createdAt,
-            completedAt: lifecycle.terminalAt ?? h.updatedAt,
+            order: h.appendSeq,
+            createdAt: null,
+            completedAt: lifecycle.terminalAt,
             summary: summaries.lastOrNull ?? '',
             summaryChunks: summaries,
             content: [
@@ -112,7 +107,9 @@ abstract final class TimelineActivityGroupAdapter {
         :final userInput,
         :final wait,
       ):
-        if (userInput != null || invocation.name == 'show_image') {
+        if (userInput != null ||
+            invocation.name == 'show_image' ||
+            state is ConversationToolBackgroundStarted) {
           return reject(TimelineActivityRejectionReason.standaloneToolItem);
         }
         final output = switch (state) {
@@ -153,15 +150,16 @@ abstract final class TimelineActivityGroupAdapter {
             interruptedAt,
             reason,
           ),
-          _ => throw StateError(
-            'Terminal tool item has a non-terminal descriptor',
-          ),
+          _ => (null, null, null),
         };
+        if (outcome == null || ended == null) {
+          return reject(TimelineActivityRejectionReason.standaloneToolItem);
+        }
         return TimelineActivityConverted(
           TimelineToolGroupMessage(
             id: item.id,
-            order: h.ordinal,
-            createdAt: h.createdAt,
+            order: h.appendSeq,
+            createdAt: null,
             completedAt: ended,
             toolCallId: invocation.toolCallId,
             name: invocation.name,
@@ -187,8 +185,8 @@ abstract final class TimelineActivityGroupAdapter {
         return TimelineActivityConverted(
           TimelineSkillGroupMessage(
             id: item.id,
-            order: h.ordinal,
-            createdAt: h.createdAt,
+            order: h.appendSeq,
+            createdAt: null,
             completedAt: value.activatedAt,
             skillName: value.name,
             source: value.source,
@@ -205,3 +203,11 @@ abstract final class TimelineActivityGroupAdapter {
     }
   }
 }
+
+ThreadContentLifecycleView _thinkingLifecycle(
+  ConversationContentOutcome outcome,
+) => switch (outcome) {
+  ConversationContentCompleted(:final value) => value,
+  ConversationContentFailed(:final value) => value,
+  ConversationContentCancelled(:final value) => value,
+};

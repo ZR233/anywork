@@ -17,6 +17,7 @@ import '../../presentation/providers/thread_directory_store.dart';
 import '../../presentation/providers/thread_session_store.dart';
 import '../../presentation/providers/client_provider.dart';
 import '../../presentation/providers/bootstrap_store.dart';
+import '../../presentation/providers/observe_client.dart';
 
 part 'shell_view.g.dart';
 
@@ -266,15 +267,15 @@ AgentWorkspaceView? conversationWorkspace(
   );
 }
 
-/// 活动条的 canonical 输入。展开详情是 host 的 ephemeral 状态，不进 store。
+/// 只读当前活动与独立领域状态，不拥有 feed 或第二正文镜像。
 class ConversationActivityInput {
   const ConversationActivityInput({
-    required this.activity,
+    required this.currentActivity,
     required this.storage,
     required this.interaction,
   });
 
-  final ThreadActivityView? activity;
+  final CurrentActivity? currentActivity;
   final ThreadStorageStateView? storage;
   final PendingInteraction? interaction;
 
@@ -282,12 +283,12 @@ class ConversationActivityInput {
   bool operator ==(Object other) =>
       identical(this, other) ||
       other is ConversationActivityInput &&
-          activity == other.activity &&
+          currentActivity == other.currentActivity &&
           storage == other.storage &&
           interaction == other.interaction;
 
   @override
-  int get hashCode => Object.hash(activity, storage, interaction);
+  int get hashCode => Object.hash(currentActivity, storage, interaction);
 }
 
 @riverpod
@@ -297,9 +298,18 @@ ConversationActivityInput? conversationActivityInput(Ref ref, String threadId) {
       threadId) {
     return null;
   }
-  if (session.workspace == null && !session.hasSnapshot) return null;
+  final owner = ref
+      .read(anyworkClientProvider)
+      .conversations
+      .existingSession(threadId);
+  final current = owner == null
+      ? null
+      : observeClient(ref, owner.currentActivity, (_) => ref.invalidateSelf());
+  if (session.workspace == null && !session.hasSnapshot && current == null) {
+    return null;
+  }
   return ConversationActivityInput(
-    activity: session.activity,
+    currentActivity: current,
     storage: session.storage,
     interaction: primaryInteraction(session.interactions),
   );

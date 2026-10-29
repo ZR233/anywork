@@ -5,8 +5,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_chat_core/flutter_chat_core.dart';
 import 'package:flutter_chat_ui/flutter_chat_ui.dart';
-import 'package:flyer_chat_text_message/flyer_chat_text_message.dart';
-import 'package:flyer_chat_text_stream_message/flyer_chat_text_stream_message.dart';
 import 'package:flyer_chat_file_message/flyer_chat_file_message.dart';
 
 import '../../../../app/theme/studio_tokens.dart';
@@ -100,9 +98,7 @@ class _TimelineViewState extends State<TimelineView> {
       !widget.controls.isRetired &&
       widget.view.hasOlder &&
       !widget.view.isLoadingOlder &&
-      widget.view.olderError == null &&
-      !widget.view.isPreparingLive &&
-      widget.view.connection == TimelineConnectionPhase.ready;
+      widget.view.olderError == null;
   void _scheduleFill() {
     if (!mounted || _scheduled) return;
     _scheduled = true;
@@ -158,6 +154,27 @@ class _TimelineViewState extends State<TimelineView> {
     return false;
   }
 
+  Future<void> _returnToLatest() async {
+    final controls = widget.controls;
+    await widget.onReturnLive();
+    if (!mounted ||
+        !identical(widget.controls, controls) ||
+        controls.isRetired ||
+        !controls.scrollController.hasClients) {
+      return;
+    }
+    final scroll = controls.scrollController;
+    if (MediaQuery.disableAnimationsOf(context)) {
+      scroll.jumpTo(scroll.position.minScrollExtent);
+    } else {
+      await scroll.animateTo(
+        scroll.position.minScrollExtent,
+        duration: const Duration(milliseconds: 180),
+        curve: Curves.easeOut,
+      );
+    }
+  }
+
   Widget _body(ConversationItem item, String text) => TimelineMarkdown(
     id: item.id,
     text: text,
@@ -166,7 +183,7 @@ class _TimelineViewState extends State<TimelineView> {
     imageBuilder: widget.remoteImageBuilder,
   );
 
-  Widget _text(BuildContext context, TextMessage message, int index) {
+  Widget _text(BuildContext context, TextMessage message) {
     final entry = timelineEntryOf(message)!;
     return Column(
       key: StudioDriverKeys.timelineBlock(entry.first.id),
@@ -181,29 +198,11 @@ class _TimelineViewState extends State<TimelineView> {
               key: StudioDriverKeys.parentAgentLabel(entry.first.id),
             ),
           ),
-        if (timelineNeedsSafeMarkdown(message.text) ||
-            message.text.length > 6144)
-          _body(entry.first, message.text)
-        else
-          FlyerChatTextMessage(
-            message: message,
-            index: index,
-            padding: EdgeInsets.zero,
-            constraints: const BoxConstraints(),
-            showTime: false,
-            showStatus: false,
-            receivedBackgroundColor: Colors.transparent,
-            sentBackgroundColor: Colors.transparent,
-            receivedTextStyle: context.text.bodyMedium?.copyWith(height: 1.57),
-            sentTextStyle: context.text.bodyMedium?.copyWith(height: 1.57),
-            // Defense in depth only: unsafe candidates never reach a gesture
-            // because the Markdown path leaves them as plain text spans.
-            onLinkTap: (url, _) {
-              if (widget.isSafeLink(url)) widget.onLink(url);
-            },
-          ),
+        _body(entry.first, message.text),
         _terminal(entry.first),
         TimelineDetailNotices(item: entry.first, onDetail: widget.onDetail),
+        if (timelineAttachments(entry.first).isNotEmpty)
+          widget.groupMediaBuilder(entry.first),
       ],
     );
   }
@@ -213,11 +212,11 @@ class _TimelineViewState extends State<TimelineView> {
     if (descriptor is! ConversationTextDescriptor) {
       return const SizedBox.shrink();
     }
-    final lifecycle = descriptor.lifecycle;
+    final outcome = descriptor.outcome;
     // Stops/errors remain outside the exact canonical body and selection.
-    final text = switch (lifecycle) {
-      CancelledThreadContentView() => context.l10n.timelineTurnStopped,
-      FailedThreadContentView(:final error) => error,
+    final text = switch (outcome) {
+      ConversationContentCancelled() => context.l10n.timelineTurnStopped,
+      ConversationContentFailed(:final value) => value.error,
       _ => null,
     };
     return text == null
@@ -228,52 +227,13 @@ class _TimelineViewState extends State<TimelineView> {
               child: Text(
                 text,
                 style: context.text.bodySmall?.copyWith(
-                  color: lifecycle is FailedThreadContentView
+                  color: outcome is ConversationContentFailed
                       ? context.colors.error
                       : context.colors.onSurfaceVariant,
                 ),
               ),
             ),
           );
-  }
-
-  Widget _stream(BuildContext context, TextStreamMessage message, int index) {
-    final stream = widget.controls.streamFor(message.id);
-    if (stream == null) return const SizedBox.shrink();
-    return ValueListenableBuilder<StreamState>(
-      valueListenable: stream,
-      builder: (context, value, _) {
-        final text = value is StreamStateStreaming ? value.accumulatedText : '';
-        final item = timelineEntryOf(message)!.first;
-        return Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            if (timelineNeedsSafeMarkdown(text) || text.length > 6144)
-              _body(item, text)
-            else
-              FlyerChatTextStreamMessage(
-                message: message,
-                index: index,
-                streamState: value,
-                mode: TextStreamMessageMode.animatedOpacity,
-                chunkAnimationDuration: Duration.zero,
-                padding: EdgeInsets.zero,
-                showTime: false,
-                showStatus: false,
-                receivedBackgroundColor: Colors.transparent,
-                sentBackgroundColor: Colors.transparent,
-                receivedTextStyle: context.text.bodyMedium?.copyWith(
-                  height: 1.57,
-                ),
-                onLinkTap: (url, _) {
-                  if (widget.isSafeLink(url)) widget.onLink(url);
-                },
-              ),
-            TimelineDetailNotices(item: item, onDetail: widget.onDetail),
-          ],
-        );
-      },
-    );
   }
 
   @override
@@ -479,14 +439,7 @@ class _TimelineViewState extends State<TimelineView> {
                                     index, {
                                     required bool isSentByMe,
                                     MessageGroupStatus? groupStatus,
-                                  }) => _text(context, message, index),
-                                  textStreamMessageBuilder: (
-                                    context,
-                                    message,
-                                    index, {
-                                    required bool isSentByMe,
-                                    MessageGroupStatus? groupStatus,
-                                  }) => _stream(context, message, index),
+                                  }) => _text(context, message),
                                   imageMessageBuilder:
                                       (
                                         context,
@@ -553,13 +506,9 @@ class _TimelineViewState extends State<TimelineView> {
                 alignment: AlignmentDirectional.centerEnd,
                 child: TextButton.icon(
                   key: StudioDriverKeys.timelineReturnLive,
-                  onPressed:
-                      widget.view.mode != TimelineDisplayMode.history ||
-                          widget.view.isPreparingLive
+                  onPressed: widget.view.mode != TimelineDisplayMode.history
                       ? null
-                      : () => unawaited(
-                          widget.onReturnLive().catchError((Object _) {}),
-                        ),
+                      : () => unawaited(_returnToLatest()),
                   icon: const Icon(Icons.south),
                   label: Text(
                     widget.view.hasNewOutput

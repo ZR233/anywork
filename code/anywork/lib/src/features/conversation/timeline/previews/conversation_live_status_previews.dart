@@ -1,3 +1,4 @@
+import 'package:anywork_client/studio_client.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/widget_previews.dart';
 
@@ -14,7 +15,6 @@ Widget _liveStatusPreviewHost(Widget child) {
     localizationsDelegates: AppLocalizations.localizationsDelegates,
     supportedLocales: AppLocalizations.supportedLocales,
     home: Scaffold(
-      backgroundColor: const Color(0xFFFAF9F5),
       body: Padding(
         padding: const EdgeInsets.all(20),
         child: Center(
@@ -30,321 +30,207 @@ Widget _liveStatusPreviewHost(Widget child) {
   );
 }
 
+/// Pure inputs for the production widget; previews own no feed or reducer.
 abstract final class ConversationLiveStatusPreviewFixtures {
-  static final DateTime _baseClock = DateTime.utc(2026, 10, 28, 12, 0, 12);
+  static const waiting = ConversationActivityView(
+    identity: 'preview:waiting',
+    turnId: 'preview-turn',
+    kind: ConversationActivityKind.thinking,
+  );
 
-  static ConversationLiveStatusController buildCompactingController() {
-    final controller = ConversationLiveStatusController(
-      clock: () => _baseClock,
-    );
-    controller.ingest(
-      const ConversationLivePhaseMessage(
-        identity: 'preview:turn-1:compacting',
-        turnId: 'turn-1',
-        phase: ConversationLivePhase.compacting,
-        summary: '正在总结前序 28 条历史记录并释放上下文窗口…',
-      ),
-    );
-    return controller;
-  }
+  static const compacting = ConversationActivityView(
+    identity: 'preview:compacting',
+    turnId: 'preview-turn',
+    kind: ConversationActivityKind.compacting,
+    summary: '正在整理前序记录，保留本轮任务与关键决定。',
+  );
 
-  static ConversationLiveStatusController
-  buildStickySummaryWithToolsController({bool expanded = true}) {
-    final controller = ConversationLiveStatusController(
-      clock: () => _baseClock,
-    );
-    controller.ingestAll([
-      const ConversationLivePhaseMessage(
-        identity: 'preview:turn-2:running-tool',
-        turnId: 'turn-2',
-        phase: ConversationLivePhase.runningTool,
+  static const thinking = ConversationActivityView(
+    identity: 'preview:thinking',
+    turnId: 'preview-turn',
+    kind: ConversationActivityKind.thinking,
+    thinkingSummary: '核对依赖，准备下一步修改',
+    reasoningParts: [
+      ThreadActivityContentPart(
+        itemId: 'preview-reasoning-1',
+        complete: false,
+        text:
+            '先核对现有调用链和测试入口，再确认需要修改的边界。\n\n'
+            '长段落应在阅读列内自然换行，展开后仍能完整阅读与选择复制。',
       ),
-      const ConversationLiveThinkingSummaryMessage(
-        turnId: 'turn-2',
-        summaryMarkdown: '正在准备重构方案并核对 `LiveToolSpec<S, M>` 泛型契约',
-        elapsedSeconds: 3,
+      ThreadActivityContentPart(
+        itemId: 'preview-reasoning-2',
+        complete: false,
+        text: '随后检查错误传播与关闭后的资源归属，保留已有验证证据。',
       ),
-      const ConversationLiveThinkingStreamMessage.replace(
-        '首先梳理 `ConversationLiveStatusController` 的状态归约边界：\n'
-        '1. 压缩上下文阶段独立映射为 `compacting`（展示“正在压缩”）；\n'
-        '2. 思考摘要一旦出现即保持粘性作为最外层展示，直到新摘要替换；\n'
-        '3. 内部正在执行的工具通过 `LiveToolSpec<S, M>` 抹除具体类型。',
-      ),
-      ConversationLiveToolStartedMessage<
-        CommandLiveToolState,
-        CommandLiveToolEvent
-      >(
-        callId: 'call-exec-1',
-        toolName: 'exec',
-        spec: const CommandLiveToolSpec(),
-        initialState: const CommandLiveToolState(
-          command: 'cargo test -p pl-core --test model_execution_phases',
-          workingDirectory: 'code/pl-core',
-          stdout: 'Compiling pl-core v0.1.0\nRunning tests/model_execution_phases.rs\ntest compacting_phase_published ... ok',
-        ),
-        startedAt: _baseClock.subtract(const Duration(seconds: 6)),
-      ),
-      ConversationLiveToolStartedMessage<FileLiveToolState, FileLiveToolEvent>(
-        callId: 'call-edit-2',
-        toolName: 'write_file',
-        spec: const FileLiveToolSpec(),
-        initialState: const FileLiveToolState(
-          operation: 'write_file',
-          path: 'code/anywork/lib/src/features/conversation/timeline/widgets/conversation_activity_bar.dart',
-          lineRange: 'L1-240',
-          diffPreview: '+ class ConversationActivityBar extends StatefulWidget {\n+   const ConversationActivityBar.fromController({required this.controller});',
-        ),
-        startedAt: _baseClock.subtract(const Duration(seconds: 3)),
-      ),
-      ConversationLiveToolStartedMessage<
-        WebSearchLiveToolState,
-        WebSearchLiveToolEvent
-      >(
-        callId: 'call-search-3',
-        toolName: 'web_search',
-        spec: const WebSearchLiveToolSpec(),
-        initialState: const WebSearchLiveToolState(
-          toolName: 'web_search',
-          queries: [
-            'Flutter Widget Preview @Preview annotation',
-            'GptMarkdown',
-          ],
-          resultsPreview: 'Matched 4 official documentation entries.',
-        ),
-        startedAt: _baseClock.subtract(const Duration(seconds: 2)),
-      ),
-    ]);
-    if (expanded) {
-      controller.setExpanded(true);
-      controller.setToolExpanded('call-exec-1', true);
-    }
-    return controller;
-  }
+    ],
+    expandable: true,
+  );
 
-  static ConversationLiveStatusController
-  buildStreamingThinkingWithoutSummaryController({bool expanded = false}) {
-    final controller = ConversationLiveStatusController(
-      clock: () => _baseClock,
-    );
-    controller.ingestAll([
-      const ConversationLivePhaseMessage(
-        identity: 'preview:turn-3:thinking',
-        turnId: 'turn-3',
-        phase: ConversationLivePhase.thinking,
+  static final tools = ConversationActivityView(
+    identity: 'preview:tools',
+    turnId: 'preview-turn',
+    kind: ConversationActivityKind.runningTool,
+    thinkingSummary: '核对依赖，准备下一步修改',
+    summary: '运行检查并读取相关说明',
+    activeToolCount: 2,
+    activeTools: const [
+      ThreadActivityToolEntry(
+        callId: 'preview-exec',
+        name: 'exec',
+        summary: 'cargo test -p pl-core --features sqlite',
+        arguments: ThreadActivityArgumentsKind.commandLine,
+        state: ThreadActivityToolState.running,
       ),
-      const ConversationLiveThinkingStreamMessage.replace(
-        '正在检查会话输入框上方状态栏在无思考摘要时的流式思考表现：外层只显示单行流式内容，随增量不断更新并截断前面部分，点击可展开查看完整推理正文与滚动条。',
+      ThreadActivityToolEntry(
+        callId: 'preview-read',
+        name: 'exec',
+        summary: 'rg -n "publish_batch" code/pl-core',
+        arguments: ThreadActivityArgumentsKind.commandLine,
+        state: ThreadActivityToolState.running,
       ),
-    ]);
-    if (expanded) {
-      controller.setExpanded(true);
-    }
-    return controller;
-  }
+    ],
+    toolDetails: [
+      ThreadActivityToolDetail(
+        callId: 'preview-exec',
+        name: 'exec',
+        state: ThreadActivityToolState.running,
+        arguments: 'cargo test -p pl-core --features sqlite',
+        outputParts: const [
+          ThreadActivityToolOutputPart(
+            partId: 'stdout',
+            text: 'running 12 tests\ntest completed_items_keep_their_identity ... ok',
+          ),
+          ThreadActivityToolOutputPart(
+            partId: 'stderr',
+            text: 'Compiling pl-core v0.1.0',
+          ),
+        ],
+      ),
+      ThreadActivityToolDetail(
+        callId: 'preview-read',
+        name: 'exec',
+        state: ThreadActivityToolState.running,
+        arguments: 'rg -n "publish_batch" code/pl-core',
+      ),
+    ],
+    expandable: true,
+  );
 
-  static ConversationLiveStatusController buildRespondingStreamController() {
-    final controller = ConversationLiveStatusController(
-      clock: () => _baseClock,
-    );
-    controller.ingestAll([
-      const ConversationLivePhaseMessage(
-        identity: 'preview:turn-4:responding',
-        turnId: 'turn-4',
-        phase: ConversationLivePhase.responding,
+  static const responding = ConversationActivityView(
+    identity: 'preview:responding',
+    turnId: 'preview-turn',
+    kind: ConversationActivityKind.responding,
+    responseParts: [
+      ThreadActivityContentPart(
+        itemId: 'preview-response-1',
+        complete: false,
+        text:
+            '已完成当前修改，并保留相关验证结果。\n\n'
+            '- 已完成的内容逐条进入历史；\n'
+            '- 当前工具输出仍按原始段落展示；\n'
+            '- 长中文、链接和 `行内代码` 在阅读列内换行。',
       ),
-      const ConversationLiveResponseStreamMessage.replace(
-        '已完成会话实时状态栏的组件化重构：\n\n'
-        '- **压缩阶段独立展示**：上下文压缩时明确展示 `正在压缩`；\n'
-        '- **思考摘要粘性展示**：出现思考摘要后以 Markdown 渲染（如 `思考了 3 秒 · 正在准备计划`），后续工具执行阶段保持在外层，直到新摘要替换；\n'
-        '- **泛型工具消息架构**：通过 `LiveToolSpec<S, M>` 支持任意工具与工具自定义流式事件，新增工具零修改状态栏组件。',
+      ThreadActivityContentPart(
+        itemId: 'preview-response-2',
+        complete: false,
+        text: '接下来检查剩余调用方和实际界面表现。',
       ),
-    ]);
-    return controller;
-  }
+    ],
+  );
 }
 
 @Preview(
-  name: 'Live Status / 1. Compacting Context (正在压缩)',
-  group: 'Timeline · Live Status Bar',
+  name: '实时活动 / 等待正文（不可展开）',
+  group: 'Timeline · 实时活动',
   size: Size(760, 140),
 )
+Widget conversationLiveStatusWaitingPreview() => _liveStatusPreviewHost(
+  const ConversationActivityBar(
+    view: ConversationLiveStatusPreviewFixtures.waiting,
+  ),
+);
+
+@Preview(name: '实时活动 / 正在压缩', group: 'Timeline · 实时活动', size: Size(760, 140))
 Widget conversationLiveStatusCompactingPreview() => _liveStatusPreviewHost(
-  ConversationActivityBar.fromController(
-    controller:
-        ConversationLiveStatusPreviewFixtures.buildCompactingController(),
+  const ConversationActivityBar(
+    view: ConversationLiveStatusPreviewFixtures.compacting,
   ),
 );
 
 @Preview(
-  name: 'Live Status / 2. Sticky Thinking Summary + Running Tools (展开态)',
-  group: 'Timeline · Live Status Bar',
+  name: '实时活动 / 并行工具（点击展开）',
+  group: 'Timeline · 实时活动',
   size: Size(760, 380),
 )
-Widget
-conversationLiveStatusStickySummaryExpandedPreview() => _liveStatusPreviewHost(
-  ConversationActivityBar.fromController(
-    controller:
-        ConversationLiveStatusPreviewFixtures.buildStickySummaryWithToolsController(
-          expanded: true,
-        ),
-  ),
+Widget conversationLiveStatusToolsPreview() => _liveStatusPreviewHost(
+  ConversationActivityBar(view: ConversationLiveStatusPreviewFixtures.tools),
 );
 
 @Preview(
-  name: 'Live Status / 3. Streaming Thinking Without Summary (单行前向截断)',
-  group: 'Timeline · Live Status Bar',
+  name: '实时活动 / 分段思考（点击展开）',
+  group: 'Timeline · 实时活动',
   size: Size(760, 260),
 )
-Widget conversationLiveStatusThinkingStreamPreview() => _liveStatusPreviewHost(
-  ConversationActivityBar.fromController(
-    controller:
-        ConversationLiveStatusPreviewFixtures.buildStreamingThinkingWithoutSummaryController(
-          expanded: true,
-        ),
+Widget conversationLiveStatusThinkingPreview() => _liveStatusPreviewHost(
+  const ConversationActivityBar(
+    view: ConversationLiveStatusPreviewFixtures.thinking,
   ),
 );
 
 @Preview(
-  name: 'Live Status / 4. Streaming Text Output (动态增高 · 不可展开)',
-  group: 'Timeline · Live Status Bar',
+  name: '实时活动 / 分段回复（动态高度）',
+  group: 'Timeline · 实时活动',
   size: Size(760, 280),
 )
 Widget conversationLiveStatusRespondingPreview() => _liveStatusPreviewHost(
-  ConversationActivityBar.fromController(
-    controller:
-        ConversationLiveStatusPreviewFixtures.buildRespondingStreamController(),
+  const ConversationActivityBar(
+    view: ConversationLiveStatusPreviewFixtures.responding,
   ),
 );
 
-@Preview(
-  name: 'Live Status / 5. Interactive Sealed Message Feeder (交互式喂入台)',
-  group: 'Timeline · Live Status Bar',
-  size: Size(820, 520),
-)
+@Preview(name: '实时活动 / 切换当前态', group: 'Timeline · 实时活动', size: Size(820, 520))
 Widget conversationLiveStatusInteractivePreview() =>
-    _liveStatusPreviewHost(const _InteractiveLiveStatusFeeder());
+    _liveStatusPreviewHost(const _InteractiveActivityPreview());
 
-class _InteractiveLiveStatusFeeder extends StatefulWidget {
-  const _InteractiveLiveStatusFeeder();
+class _InteractiveActivityPreview extends StatefulWidget {
+  const _InteractiveActivityPreview();
 
   @override
-  State<_InteractiveLiveStatusFeeder> createState() =>
-      _InteractiveLiveStatusFeederState();
+  State<_InteractiveActivityPreview> createState() =>
+      _InteractiveActivityPreviewState();
 }
 
-class _InteractiveLiveStatusFeederState
-    extends State<_InteractiveLiveStatusFeeder> {
-  late final ConversationLiveStatusController _controller;
-  int _summaryCounter = 1;
-  int _chunkCounter = 1;
+class _InteractiveActivityPreviewState
+    extends State<_InteractiveActivityPreview> {
+  ConversationActivityView _view =
+      ConversationLiveStatusPreviewFixtures.waiting;
 
   @override
-  void initState() {
-    super.initState();
-    _controller =
-        ConversationLiveStatusPreviewFixtures.buildStickySummaryWithToolsController(
-          expanded: true,
-        );
-  }
-
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        Wrap(
-          spacing: 8,
-          runSpacing: 8,
-          children: [
-            ActionChip(
-              label: const Text('喂入：正在压缩'),
-              onPressed: () {
-                _controller.ingest(
-                  const ConversationLivePhaseMessage(
-                    identity: 'interactive:compacting',
-                    turnId: 'turn-interactive',
-                    phase: ConversationLivePhase.compacting,
-                    summary: '正在压缩历史上下文…',
-                  ),
-                );
-              },
+  Widget build(BuildContext context) => Column(
+    mainAxisSize: MainAxisSize.min,
+    crossAxisAlignment: CrossAxisAlignment.stretch,
+    children: [
+      Wrap(
+        spacing: 8,
+        runSpacing: 8,
+        children: [
+          for (final (label, view) in [
+            ('等待正文', ConversationLiveStatusPreviewFixtures.waiting),
+            ('正在压缩', ConversationLiveStatusPreviewFixtures.compacting),
+            ('分段思考', ConversationLiveStatusPreviewFixtures.thinking),
+            ('并行工具', ConversationLiveStatusPreviewFixtures.tools),
+            ('分段回复', ConversationLiveStatusPreviewFixtures.responding),
+          ])
+            ChoiceChip(
+              label: Text(label),
+              selected: _view.identity == view.identity,
+              onSelected: (_) => setState(() => _view = view),
             ),
-            ActionChip(
-              label: const Text('喂入：新思考摘要 (替换粘性摘要)'),
-              onPressed: () {
-                _summaryCounter++;
-                _controller.ingestAll([
-                  const ConversationLivePhaseMessage(
-                    identity: 'interactive:running-tool',
-                    turnId: 'turn-interactive',
-                    phase: ConversationLivePhase.runningTool,
-                  ),
-                  ConversationLiveThinkingSummaryMessage(
-                    turnId: 'turn-interactive',
-                    summaryMarkdown:
-                        '第 $_summaryCounter 阶段：正在验证 `LiveToolSpec<S, M>` 与 **无框纯文本导引线**',
-                    elapsedSeconds: 2 + _summaryCounter,
-                  ),
-                ]);
-              },
-            ),
-            ActionChip(
-              label: const Text('喂入：流式思考 Delta (无摘要)'),
-              onPressed: () {
-                _chunkCounter++;
-                _controller.ingestAll([
-                  ConversationLivePhaseMessage(
-                    identity: 'interactive:thinking-raw',
-                    turnId: 'turn-raw-$_chunkCounter',
-                    phase: ConversationLivePhase.thinking,
-                  ),
-                  ConversationLiveThinkingStreamMessage.append(
-                    ' [片段 #$_chunkCounter: 正在推导前向截断与最大高度滚动条约束]',
-                  ),
-                ]);
-              },
-            ),
-            ActionChip(
-              label: const Text('喂入：工具流式 Stdout 事件'),
-              onPressed: () {
-                _chunkCounter++;
-                _controller.ingest(
-                  ConversationLiveToolEventMessage<CommandLiveToolEvent>(
-                    callId: 'call-exec-1',
-                    event: CommandStdoutAppendEvent(
-                      '\n[chunk #$_chunkCounter] test live_tool_spec_reduction ... ok',
-                    ),
-                  ),
-                );
-              },
-            ),
-            ActionChip(
-              label: const Text('喂入：流式文本回复 (不可展开)'),
-              onPressed: () {
-                _chunkCounter++;
-                _controller.ingestAll([
-                  const ConversationLivePhaseMessage(
-                    identity: 'interactive:responding',
-                    turnId: 'turn-interactive',
-                    phase: ConversationLivePhase.responding,
-                  ),
-                  ConversationLiveResponseStreamMessage.append(
-                    '\n- 新增流式输出行 #$_chunkCounter：状态栏随正文动态增高，达到上限后出现滚动条，无展开箭头。',
-                  ),
-                ]);
-              },
-            ),
-          ],
-        ),
-        const Spacer(),
-        ConversationActivityBar.fromController(controller: _controller),
-      ],
-    );
-  }
+        ],
+      ),
+      const SizedBox(height: 16),
+      ConversationActivityBar(view: _view),
+    ],
+  );
 }

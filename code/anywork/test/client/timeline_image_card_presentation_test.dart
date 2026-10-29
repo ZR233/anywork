@@ -26,6 +26,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'support/recording_demo_transport.dart';
 import 'support/pump_client_future.dart';
+import 'support/mapped_conversation_feed.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -43,7 +44,7 @@ void main() {
 
   ConversationItem toolItem(
     String id, {
-    required int ordinal,
+    required int appendSeq,
     required String name,
     String arguments = '{}',
     List<ThreadAttachmentView> attachments = const [],
@@ -51,12 +52,7 @@ void main() {
     id: id,
     threadId: 'thread',
     turnId: 'turn',
-    ordinal: ordinal,
-    revision: 1,
-    createdAt: timestamp,
-    updatedAt: timestamp,
-    saved: true,
-    lifecycle: ConversationLifecycle.terminal,
+    appendSeq: appendSeq,
     descriptor: ConversationToolDescriptor(
       invocation: ConversationToolInvocation(
         toolCallId: 'call-$id',
@@ -77,12 +73,12 @@ void main() {
   /// 一条展示工具卡片条目：参数只带 canonical 展示文案。
   ConversationItem cardItem(
     String id, {
-    required int ordinal,
+    required int appendSeq,
     String arguments = '{"caption":"雨后的天台"}',
     List<ThreadAttachmentView> attachments = const [cardImage],
   }) => toolItem(
     id,
-    ordinal: ordinal,
+    appendSeq: appendSeq,
     name: 'show_image',
     arguments: arguments,
     attachments: attachments,
@@ -114,27 +110,46 @@ void main() {
     expect(lease.isReleased, isTrue, reason: '卸载后等待真实 stock operations done');
   }
 
-  TimelineDisplayLease leaseWith(
+  Future<TimelineDisplayLease> leaseWith(
     List<ConversationItem> items, {
     WidgetTester? tester,
-  }) {
-    final lease = TimelineDisplayLease(
-      threadId: 'thread',
-      generation: 1,
-      content: conversationContentFixture(tester: tester),
+  }) async {
+    final client = AnyworkClient(
+      transport: _ImageCardTransport(items),
+      clientId: 'image-card-owner',
     );
-    lease.adoptBaseline(
-      ConversationBaseline(
-        subscriptionId: 'test',
-        version: 0,
-        items: items,
-        before: null,
-        hasOlder: false,
-      ),
-    );
-    addTearDown(
-      tester == null ? lease.retire : () => unmountTimeline(tester, lease),
-    );
+    final owner = TimelineSessionOwner(client: client);
+    client.conversations.setVisibleThread('thread');
+    owner.select('thread');
+    late TimelineDisplayLease lease;
+    addTearDown(() async {
+      client.conversations.setVisibleThread(null);
+      if (tester != null) await unmountTimeline(tester, lease);
+      final closing = owner.close();
+      final report = tester == null
+          ? await closing
+          : await pumpClientFuture(tester, closing, 'image owner close');
+      expect(report.complete, isTrue);
+      final closeClient = client.close();
+      expect(
+        (tester == null
+                ? await closeClient
+                : await pumpClientFuture(
+                    tester,
+                    closeClient,
+                    'image owner client close',
+                  ))
+            .complete,
+        isTrue,
+      );
+    });
+    final ready = client.conversations.session('thread').content.ready;
+    if (tester == null) {
+      await ready;
+    } else {
+      await pumpClientFuture(tester, ready, 'image owner acceptance');
+    }
+    lease = owner.lease('thread')!;
     return lease;
   }
 
@@ -149,14 +164,13 @@ void main() {
     isLoadingOlder: false,
     olderError: null,
     hasNewOutput: false,
-    isPreparingLive: false,
   );
 
+  final mediaTransports = <AnyworkClient, _CardMediaTransport>{};
   AnyworkClient openClient(WidgetTester tester) {
-    final client = AnyworkClient(
-      transport: RecordingDemoTransport(),
-      clientId: 'image-card',
-    );
+    final transport = _CardMediaTransport();
+    final client = AnyworkClient(transport: transport, clientId: 'image-card');
+    mediaTransports[client] = transport;
     // close 的原 Future 可能同时依赖真实队列和 FakeAsync；驱动两者后再校验报告。
     addTearDown(() async {
       final report = await pumpClientFuture(
@@ -265,12 +279,12 @@ void main() {
   }
 
   group('展示工具的呈现分类', () {
-    test('show_image 载荷独立成图片卡片组，不并入普通工具活动组', () {
-      final lease = leaseWith([
-        toolItem('call-before', ordinal: 1, name: 'stat_path'),
-        cardItem('card', ordinal: 2),
-        toolItem('call-after', ordinal: 3, name: 'stat_path'),
-        toolItem('read-image', ordinal: 4, name: 'view_image'),
+    test('show_image 载荷独立成图片卡片组，不并入普通工具活动组', () async {
+      final lease = await leaseWith([
+        toolItem('call-before', appendSeq: 1, name: 'stat_path'),
+        cardItem('card', appendSeq: 2),
+        toolItem('call-after', appendSeq: 3, name: 'stat_path'),
+        toolItem('read-image', appendSeq: 4, name: 'view_image'),
       ]);
 
       expect(
@@ -281,9 +295,12 @@ void main() {
       expect(card, isA<TimelineEntry>());
       expect(card.kind, TimelineEntryKind.single);
       expect(card.memberIds, ['card']);
-      final image = lease.controller.messages.whereType<ImageMessage>().single;
-      expect(identical(timelineEntryOf(image), card), isTrue);
-      expect(image.metadata!['attachment'], same(cardImage));
+      final message = lease.controller.messages.singleWhere(
+        (message) => identical(timelineEntryOf(message), card),
+      );
+      expect(message, isA<CustomMessage>());
+      expect(timelineAttachments(card.first), [cardImage]);
+      expect(lease.controller.messages, hasLength(4));
       // 后续同一 Turn 的普通工具仍按既有规则成组，且不含卡片成员。
       final after = lease.presentationFor('call-after')!;
       expect(after.kind, TimelineEntryKind.activity);
@@ -295,10 +312,10 @@ void main() {
       );
     });
 
-    test('同 Turn 的多条展示调用各自一张卡片，不合并成组', () {
-      final lease = leaseWith([
-        cardItem('card-a', ordinal: 1),
-        cardItem('card-b', ordinal: 2, arguments: '{"caption":"第二张"}'),
+    test('同 Turn 的多条展示调用各自一张卡片，不合并成组', () async {
+      final lease = await leaseWith([
+        cardItem('card-a', appendSeq: 1),
+        cardItem('card-b', appendSeq: 2, arguments: '{"caption":"第二张"}'),
       ]);
       final first = lease.presentationFor('card-a')!;
       final second = lease.presentationFor('card-b')!;
@@ -309,9 +326,9 @@ void main() {
       expect(second.memberIds, ['card-b']);
     });
 
-    test('没有图片附件的展示调用仍是卡片，不退回普通工具活动组', () {
-      final lease = leaseWith([
-        cardItem('card-empty', ordinal: 1, attachments: const []),
+    test('没有图片附件的展示调用仍是卡片，不退回普通工具活动组', () async {
+      final lease = await leaseWith([
+        cardItem('card-empty', appendSeq: 1, attachments: const []),
       ]);
       expect(
         lease.presentationFor('card-empty')!.kind,
@@ -323,7 +340,9 @@ void main() {
   group('展示工具的图片卡片', () {
     testWidgets('带 typed 图片附件与 caption 时渲染卡片', (tester) async {
       final client = openClient(tester);
-      final lease = leaseWith([cardItem('card', ordinal: 1)], tester: tester);
+      final lease = await leaseWith([
+        cardItem('card', appendSeq: 1),
+      ], tester: tester);
       await pumpTimeline(tester, lease, client: client);
 
       expect(
@@ -337,6 +356,17 @@ void main() {
       );
       expect(find.text('雨后的天台'), findsOneWidget);
       expect(find.text('Image card'), findsOneWidget);
+      await pumpClientUntil(
+        tester,
+        () => mediaTransports[client]!.reads.isNotEmpty,
+        'typed image attachment authorized read',
+      );
+      expect(mediaTransports[client]!.reads, [('thread', 'card-image')]);
+      expect(
+        lease.controller.messages,
+        hasLength(1),
+        reason: '附件在原子内展示，不新增兄弟消息',
+      );
       expect(tester.takeException(), isNull);
       await unmountTimeline(tester, lease);
       await closeClient(tester, client);
@@ -344,8 +374,8 @@ void main() {
 
     testWidgets('caption 非字符串或超长时按容错规则处理', (tester) async {
       final client = openClient(tester);
-      final lease = leaseWith([
-        cardItem('card-bad', ordinal: 1, arguments: '{"caption":42}'),
+      final lease = await leaseWith([
+        cardItem('card-bad', appendSeq: 1, arguments: '{"caption":42}'),
       ], tester: tester);
       await pumpTimeline(tester, lease, client: client);
 
@@ -365,8 +395,8 @@ void main() {
 
     testWidgets('没有图片附件时渲染卡片错误态', (tester) async {
       final client = openClient(tester);
-      final lease = leaseWith([
-        cardItem('card-empty', ordinal: 1, attachments: const []),
+      final lease = await leaseWith([
+        cardItem('card-empty', appendSeq: 1, attachments: const []),
       ], tester: tester);
       await pumpTimeline(tester, lease, client: client);
 
@@ -381,4 +411,37 @@ void main() {
       await closeClient(tester, client);
     });
   });
+}
+
+final class _CardMediaTransport extends RecordingDemoTransport {
+  final reads = <(String, String)>[];
+  @override
+  Future<Uint8List> readThreadAttachment(String threadId, String attachmentId) {
+    reads.add((threadId, attachmentId));
+    return super.readThreadAttachment(threadId, attachmentId);
+  }
+}
+
+final class _ImageCardTransport extends Fake implements StudioTransport {
+  _ImageCardTransport(this.items);
+  final List<ConversationItem> items;
+  @override
+  Future<ConversationFeed> openConversationFeed(
+    String threadId, {
+    ConversationCompletionCursor? resumeAfter,
+  }) async => ScriptedConversationFeed(
+    threadId: threadId,
+    subscriptionId: 'cards',
+    baseline: () => ConversationBaseline(
+      subscriptionId: 'cards',
+      timelineEpoch: 'cards-epoch',
+      items: items,
+      before: null,
+      hasOlder: false,
+      completedCursor: ConversationCompletionCursor(
+        timelineEpoch: 'cards-epoch',
+        appendSeq: items.last.header.appendSeq,
+      ),
+    ),
+  );
 }

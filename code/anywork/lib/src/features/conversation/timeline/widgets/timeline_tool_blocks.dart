@@ -611,7 +611,10 @@ List<String> _patchChangedFiles(TimelineToolGroupMessage? tool) {
 
 /// 本次调用耗时：只取该调用的创建与 canonical 终态时间，不用保存或更新时间。
 Duration? _toolElapsed(TimelineToolGroupMessage item) {
-  final elapsed = item.completedAt.difference(item.createdAt);
+  final createdAt = item.createdAt;
+  final completedAt = item.completedAt;
+  if (createdAt == null || completedAt == null) return null;
+  final elapsed = completedAt.difference(createdAt);
   return elapsed.isNegative ? null : elapsed;
 }
 

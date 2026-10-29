@@ -10,7 +10,7 @@ import 'package:anywork/src/presentation/providers/skills_store.dart';
 import 'package:anywork/src/presentation/providers/session_costs_store.dart';
 import 'package:anywork/src/infrastructure/frb/studio_api.dart';
 import 'package:anywork_client/studio_client.dart'
-    show DomainSyncPhase, FailedComposerThreadState, ResourceKind;
+    show CloseReport, DomainSyncPhase, FailedComposerThreadState, ResourceKind;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -18,6 +18,48 @@ import 'support/recording_demo_transport.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+
+  test(
+    'reentrant graph close keeps the first future and mounted display report',
+    () async {
+      final transport = RecordingDemoTransport();
+      final graph = AppGraph(
+        statisticsFeed: const TestStatisticsFeedPort(),
+        transport: transport,
+        clientId: 'reentrant-graph-close',
+      );
+      await graph.client.bootstrap();
+      graph.setConversationPageVisible(true);
+      await graph.client.directoryCommands.selectThread('thread-main');
+      await graph.client.conversations.session('thread-main').content.ready;
+      final lease = graph.timeline.lease('thread-main')!..bind();
+      Future<CloseReport>? nested;
+      final observation = graph.timeline.source.watch((state) {
+        if (state == null) nested = graph.close(deadline: _deadline());
+      });
+      try {
+        final closing = graph.close(deadline: DateTime.utc(2000));
+        expect(nested, same(closing));
+        final report = await closing;
+        expect(report.complete, isFalse);
+        expect(
+          report.unresolved.any(
+            (entry) => entry.owner == 'timeline-display:thread-main',
+          ),
+          isTrue,
+        );
+        expect(lease.isReleased, isFalse);
+        await lease.unbind();
+        expect(graph.close(deadline: _deadline()), same(closing));
+      } finally {
+        observation.cancel();
+        if (!lease.isReleased) await lease.unbind();
+        await graph.timeline.close(deadline: _deadline());
+        await graph.client.retryCleanup(deadline: _deadline());
+      }
+      expect(graph.client.budget.used(ResourceKind.chatHandle), 0);
+    },
+  );
 
   test('observing missing resources never admits a Client owner', () async {
     final transport = RecordingDemoTransport();
@@ -93,9 +135,7 @@ void main() {
       final session = graph.client.conversations.existingSession(
         'thread-main',
       )!;
-      await session.content.state.waitFor(
-        (state) => state.snapshot is ConversationBaselineFrame,
-      );
+      await session.content.state.waitFor((state) => state.snapshot == true);
       final connection = transport.feeds.single;
       await connection.nextEntered.future;
       final attemptId = session.content.currentAttemptId?.value;
@@ -148,7 +188,7 @@ void main() {
       expect(connection.requestCloseCalls, 0);
       expect(connection.closeCalls, 0);
       expect(session.content.currentAttemptId?.value, attemptId);
-      expect(session.content.lastDeliveredFrame, isNotNull);
+      expect(session.content.state.value.snapshot, isNotNull);
       expect(graph.client.drafts.startDraft, same(startOwner));
       expect(graph.client.drafts.composer('thread-main'), same(composerOwner));
       expect(
@@ -232,12 +272,12 @@ void main() {
           .session('thread-main')
           .content
           .state
-          .waitFor((state) => state.snapshot is ConversationBaselineFrame),
+          .waitFor((state) => state.snapshot == true),
       second.client.conversations
           .session('thread-main')
           .content
           .state
-          .waitFor((state) => state.snapshot is ConversationBaselineFrame),
+          .waitFor((state) => state.snapshot == true),
     ]);
     final firstContainer = _container(first);
     final secondContainer = _container(second);
@@ -290,7 +330,9 @@ void main() {
       second.client.conversations
           .session('thread-main')
           .content
-          .lastDeliveredFrame,
+          .state
+          .value
+          .snapshot,
       isNotNull,
     );
     expect(
@@ -337,7 +379,7 @@ void main() {
           .session('thread-alt')
           .content
           .state
-          .waitFor((state) => state.snapshot is ConversationBaselineFrame);
+          .waitFor((state) => state.snapshot == true);
       final selected = graph.client.conversations.session('thread-alt');
       final currentAttempt = selected.content.currentAttemptId?.value;
       final current = connections.lastWhere(
@@ -357,7 +399,7 @@ void main() {
       expect(late.closeCalls, 1);
       expect(current.requestCloseCalls, 0);
       expect(selected.content.currentAttemptId?.value, currentAttempt);
-      expect(selected.content.lastDeliveredFrame, isNotNull);
+      expect(selected.content.state.value.snapshot, isNotNull);
       final display = graph.timeline.lease('thread-alt')!;
       expect(display.controller.messages, isNotEmpty);
       // This is the Client attempt contract over Demo connections, not native FRB.

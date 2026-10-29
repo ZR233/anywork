@@ -9,6 +9,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:anywork/src/app/theme/material3_theme.dart';
+import 'package:anywork/src/app/app_graph.dart';
 import 'package:anywork/src/domain/models/timeline_commands.dart';
 import 'package:anywork/src/features/conversation/timeline/connectors/timeline_connector.dart';
 import 'package:anywork/src/features/conversation/timeline/connectors/timeline_detail_connector.dart';
@@ -19,12 +20,12 @@ import 'package:anywork/src/features/conversation/timeline/widgets/timeline_acti
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_group_adapter.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_group_views.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_entry_view.dart';
-import 'package:anywork/src/features/conversation/timeline/widgets/timeline_markdown.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/presentation/providers/client_provider.dart';
 import 'package:anywork/src/presentation/view_models/timeline_session_owner.dart';
 import 'package:anywork/src/shared/studio_driver_key_values.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
+import 'package:anywork/src/shared/studio_chrome.dart';
 import 'package:anywork/src/shared/studio_driver_projection.dart';
 import 'package:anywork/src/shared/studio_driver_state.dart';
 import 'package:anywork_client/accounts_ports.dart';
@@ -42,45 +43,44 @@ import '../../client/support/conversation_fixtures.dart';
 import '../../client/support/mapped_conversation_feed.dart';
 import '../../client/support/pump_client_future.dart';
 import '../../client/support/unused_account_ports.dart';
+import '../../client/support/recording_demo_transport.dart';
+import '../../client/support/test_statistics_feed.dart';
 import 'support/timeline_component_fixtures.dart';
 
 void main() {
   ConversationItem textItem(
     String id, {
-    required int ordinal,
+    required int appendSeq,
     String body = '正文',
-    bool terminal = true,
     int? totalBytes,
   }) => componentText(
     id,
-    ordinal: ordinal,
+    appendSeq: appendSeq,
     body: body,
-    terminal: terminal,
     totalBytes: totalBytes,
   );
 
   ConversationItem toolItem(
     String id, {
-    int ordinal = 1,
+    int appendSeq = 1,
     String name = 'exec_command',
     required String arguments,
-  }) => componentTool(id, ordinal: ordinal, name: name, arguments: arguments);
+  }) =>
+      componentTool(id, appendSeq: appendSeq, name: name, arguments: arguments);
 
   ConversationItem imageToolItem(
     String id, {
-    required int ordinal,
+    required int appendSeq,
     String attachmentId = 'att-shared',
     String name = 'view_image',
     String result = 'ok',
-    int revision = 1,
     int? totalResultBytes,
   }) => componentTool(
     id,
-    ordinal: ordinal,
+    appendSeq: appendSeq,
     name: name,
     arguments: '{"path":"/workspace/images/shot.png"}',
     result: result,
-    revision: revision,
     totalResultBytes: totalResultBytes,
     attachments: [
       ThreadAttachmentView(
@@ -95,37 +95,29 @@ void main() {
     ],
   );
 
-  TimelineDisplayLease leaseFor(
+  Future<TimelineDisplayLease> leaseFor(
     WidgetTester tester, {
     required List<ConversationItem> items,
     String? before,
     bool hasOlder = false,
-  }) {
-    // Pure-list cases borrow real SDK content without declaring feed demand.
-    final content = conversationContentFixture(tester: tester);
-    final lease = TimelineDisplayLease(
-      threadId: 'thread',
-      generation: 1,
-      content: content,
-    );
-    lease.adoptBaseline(
-      ConversationBaseline(
-        subscriptionId: 'test',
-        version: 0,
-        items: items,
+  }) async {
+    final (_, owner, transport) = await _openDetailSession(
+      tester,
+      baseline: componentBaseline(
+        items.take(32).toList(),
         before: before,
         hasOlder: hasOlder,
       ),
     );
-    addTearDown(() async {
-      await _unmountTimeline(tester);
-      await pumpClientFuture(
+    final lease = owner.lease('thread')!;
+    _fixtures[lease] = (owner, transport);
+    for (var start = 32; start < items.length; start += 32) {
+      await _appendCompleted(
         tester,
-        lease.retire(),
-        'pure-list lease teardown',
+        lease,
+        items.skip(start).take(32).toList(),
       );
-      expect(lease.isReleased, isTrue);
-    });
+    }
     return lease;
   }
 
@@ -135,7 +127,6 @@ void main() {
     bool isLoadingOlder = false,
     Object? olderError,
     bool hasNewOutput = false,
-    bool isPreparingLive = false,
     TimelineConnectionPhase connection = TimelineConnectionPhase.ready,
     Object? connectionError,
   }) => TimelineSessionViewState(
@@ -149,7 +140,6 @@ void main() {
     isLoadingOlder: isLoadingOlder,
     olderError: olderError,
     hasNewOutput: hasNewOutput,
-    isPreparingLive: isPreparingLive,
   );
 
   /// 需要真实 Client 的用例（附件字节等）在这里注入 override。
@@ -181,7 +171,10 @@ void main() {
   testWidgets('生产 Timeline 使用公开 Chat + ChatAnimatedListReversed 并真实绑卸载', (
     tester,
   ) async {
-    final lease = leaseFor(tester, items: [textItem('item-a', ordinal: 1)]);
+    final lease = await leaseFor(
+      tester,
+      items: [textItem('item-a', appendSeq: 1)],
+    );
     await tester.pumpWidget(
       host(
         componentTimeline(
@@ -204,16 +197,30 @@ void main() {
       timelineEntryOf(lease.controller.messages.single),
       same(lease.presentationFor('item-a')),
     );
-    expect(find.byKey(StudioDriverKeys.timelineRow('item-a')), findsOneWidget);
+    expect(
+      find.byKey(
+        StudioDriverKeys.timelineRow(lease.presentationFor('item-a')!.id),
+      ),
+      findsOneWidget,
+    );
     expect(lease.isMounted, isTrue);
 
+    final owner = _fixtures[lease]!.$1;
+    final closing = await pumpClientFuture(
+      tester,
+      owner.close(deadline: DateTime.utc(2000)),
+      'mounted Chat close report',
+    );
+    expect(closing.complete, isFalse);
+    expect(closing.unresolved.single.owner, 'timeline-display:thread');
+    expect(lease.isReleased, isFalse, reason: 'close 不能把仍挂载的 Chat 当作已释放');
     // 真实子树卸载后 lease 才能释放 controller。
     await tester.pumpWidget(host(const SizedBox.shrink()));
     await tester.pumpAndSettle();
     expect(lease.isMounted, isFalse);
     await pumpClientFuture(
       tester,
-      lease.retire(),
+      owner.close(),
       'unmounted Chat lease release',
     );
     expect(lease.isReleased, isTrue);
@@ -222,12 +229,71 @@ void main() {
     expect(lease.bind, throwsStateError);
   });
 
+  testWidgets('真实 Flyer 短消息保留原文复制，裸邮箱无链接手势', (tester) async {
+    const body = '    raw paragraph: user@example.test\n\nlast line  \r\n';
+    String? copied;
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(SystemChannels.platform, (call) async {
+      if (call.method == 'Clipboard.setData') {
+        copied = (call.arguments as Map)['text'] as String;
+      }
+      return null;
+    });
+    addTearDown(
+      () => messenger.setMockMethodCallHandler(SystemChannels.platform, null),
+    );
+    final lease = await leaseFor(
+      tester,
+      items: [textItem('raw-short', appendSeq: 1, body: body)],
+    );
+    await tester.pumpWidget(
+      host(
+        componentTimeline(
+          threadId: 'thread',
+          view: viewState(),
+          lease: lease,
+          onLoadOlder: () async {},
+          onRetryOlder: () async {},
+          onReturnLive: () async {},
+          onEnterHistory: () {},
+          onRetryConnection: () {},
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.byType(Chat), findsOneWidget);
+    expect(find.byType(ChatAnimatedListReversed), findsOneWidget);
+    final text = find.byKey(const ValueKey('plain-text-raw-short'));
+    expect(tester.widget<Text>(text).data, body);
+    bool interactive(InlineSpan span) =>
+        span is TextSpan &&
+        (span.recognizer != null || (span.children?.any(interactive) ?? false));
+    final rich = tester.widget<RichText>(
+      find.descendant(of: text, matching: find.byType(RichText)),
+    );
+    expect(interactive(rich.text), isFalse);
+    final selection = tester.state<SelectableRegionState>(
+      find.byType(SelectableRegion),
+    );
+    selection.selectAll(SelectionChangedCause.keyboard);
+    await tester.pump();
+    final copy = selection.contextMenuButtonItems
+        .firstWhere((item) => item.type == ContextMenuButtonType.copy)
+        .onPressed;
+    expect(copy, isNotNull);
+    copy!();
+    await tester.pump();
+    expect(copied, body);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('只有真实用户滚动离开底端才进入 History，改窗不误判', (tester) async {
     final items = [
       for (var index = 0; index < 40; index++)
-        textItem('item-$index', ordinal: index, body: '第 $index 段正文' * 4),
+        textItem('item-$index', appendSeq: index + 1, body: '第 $index 段正文' * 4),
     ];
-    final lease = leaseFor(
+    final lease = await leaseFor(
       tester,
       items: items,
       before: 'cursor',
@@ -268,7 +334,10 @@ void main() {
   });
 
   testWidgets('短内容自动加载更早，失败保留内容并可重试', (tester) async {
-    final lease = leaseFor(tester, items: [textItem('only', ordinal: 1)]);
+    final lease = await leaseFor(
+      tester,
+      items: [textItem('only', appendSeq: 1)],
+    );
     var loads = 0;
     var retries = 0;
     final page = Completer<void>();
@@ -293,7 +362,12 @@ void main() {
     );
     await tester.pumpAndSettle();
     expect(loads, 1);
-    expect(find.byKey(StudioDriverKeys.timelineRow('only')), findsOneWidget);
+    expect(
+      find.byKey(
+        StudioDriverKeys.timelineRow(lease.presentationFor('only')!.id),
+      ),
+      findsOneWidget,
+    );
 
     // 分页失败：内容仍在，入口变成可重试。
     await tester.pumpWidget(
@@ -318,14 +392,19 @@ void main() {
     page.complete();
     await tester.pumpAndSettle();
     expect(loads, 1, reason: '失败不能由布局或重建自动重试');
-    expect(find.byKey(StudioDriverKeys.timelineRow('only')), findsOneWidget);
+    expect(
+      find.byKey(
+        StudioDriverKeys.timelineRow(lease.presentationFor('only')!.id),
+      ),
+      findsOneWidget,
+    );
     await tester.tap(find.byKey(StudioDriverKeys.timelineRetryOlder));
     await tester.pumpAndSettle();
     expect(retries, 1);
   });
 
   testWidgets('空基线后首条消息通过原生列表立即显示', (tester) async {
-    final lease = leaseFor(tester, items: []);
+    final lease = await leaseFor(tester, items: []);
     await tester.pumpWidget(
       host(
         componentTimeline(
@@ -341,27 +420,23 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
-    lease.applyPatch(
-      ConversationPatch(
-        subscriptionId: 'test',
-        from: 0,
-        to: 1,
-        changes: [ConversationAdd(textItem('first-live', ordinal: 1))],
-        priority: ConversationPriority.immediate,
-      ),
-    );
+    await _appendCompleted(tester, lease, [
+      textItem('first-live', appendSeq: 1),
+    ]);
     await tester.pumpAndSettle();
     expect(
-      find.byKey(StudioDriverKeys.timelineRow('first-live')),
+      find.byKey(
+        StudioDriverKeys.timelineRow(lease.presentationFor('first-live')!.id),
+      ),
       findsOneWidget,
     );
     expect(tester.takeException(), isNull);
   });
 
   testWidgets('短内容在途分页结束后，同游标 ready 重建可重新受理', (tester) async {
-    final lease = leaseFor(
+    final lease = await leaseFor(
       tester,
-      items: [textItem('only', ordinal: 1)],
+      items: [textItem('only', appendSeq: 1)],
       before: 'cursor',
       hasOlder: true,
     );
@@ -404,9 +479,11 @@ void main() {
   testWidgets('窗口扩大后按实际视口补页，resize 不改变阅读模式', (tester) async {
     await tester.binding.setSurfaceSize(const Size(900, 300));
     addTearDown(() => tester.binding.setSurfaceSize(null));
-    final lease = leaseFor(
+    final lease = await leaseFor(
       tester,
-      items: [for (var i = 0; i < 12; i++) textItem('row-$i', ordinal: i)],
+      items: [
+        for (var i = 0; i < 12; i++) textItem('row-$i', appendSeq: i + 1),
+      ],
       before: 'cursor',
       hasOlder: true,
     );
@@ -449,120 +526,112 @@ void main() {
   });
 
   testWidgets('分页只补充折叠组而高度不变时继续检查推进后的游标', (tester) async {
-    final lease = leaseFor(
+    final (client, owner, transport) = await _openDetailSession(
       tester,
-      items: [toolItem('new-tool', ordinal: 100, arguments: '{}')],
-      before: 'cursor',
-      hasOlder: true,
-    );
-    var view = viewState(hasOlder: true);
-    var loads = 0;
-    await tester.pumpWidget(
-      host(
-        StatefulBuilder(
-          builder: (context, update) => componentTimeline(
-            threadId: 'thread',
-            view: view,
-            lease: lease,
-            onLoadOlder: () async {
-              loads++;
-              final page = loads == 1
-                  ? ConversationPage(
-                      items: [
-                        toolItem('older-tool', ordinal: 99, arguments: '{}'),
-                      ],
-                      before: 'next',
-                      hasOlder: true,
-                    )
-                  : ConversationPage(
-                      items: [
-                        textItem('old-text', ordinal: 98, body: '历史正文\n' * 120),
-                      ],
-                      before: null,
-                      hasOlder: false,
-                    );
-              lease.prependOlder(page);
-              update(
-                () => view = view.copyWith(
-                  olderCursor: page.before,
-                  hasOlder: page.hasOlder,
-                ),
-              );
-            },
-            onRetryOlder: () async {},
-            onReturnLive: () async {},
-            onEnterHistory: () {},
-            onRetryConnection: () async {},
-          ),
-        ),
+      baseline: componentBaseline(
+        [toolItem('new-tool', appendSeq: 100, arguments: '{}')],
+        before: 'cursor',
+        hasOlder: true,
       ),
     );
+    await tester.pumpWidget(
+      host(
+        const TimelineConnector(threadId: 'thread'),
+        client: client,
+        owner: owner,
+      ),
+    );
+    await pumpClientFuture(
+      tester,
+      transport.pageEntered(1),
+      'first viewport page',
+    );
+    expect(
+      transport.pageCalls.single.before,
+      const ConversationQueryCursor('cursor'),
+    );
+    transport.pageCalls[0].reply.complete(
+      ConversationPage(
+        threadId: 'thread',
+        timelineEpoch: 'component-epoch',
+        items: [toolItem('older-tool', appendSeq: 99, arguments: '{}')],
+        before: const ConversationQueryCursor('next'),
+        hasOlder: true,
+      ),
+    );
+    await pumpClientFuture(
+      tester,
+      transport.pageEntered(2),
+      'collapsed group requests advancing page',
+    );
+    expect(
+      transport.pageCalls[1].before,
+      const ConversationQueryCursor('next'),
+    );
+    transport.pageCalls[1].reply.complete(
+      ConversationPage(
+        threadId: 'thread',
+        timelineEpoch: 'component-epoch',
+        items: [textItem('old-text', appendSeq: 98, body: '历史正文\n' * 120)],
+        before: null,
+        hasOlder: false,
+      ),
+    );
+    await pumpClientUntil(
+      tester,
+      () => owner.source.value?.hasOlder == false,
+      'older page committed',
+    );
     await tester.pumpAndSettle();
-    expect(loads, 2);
-    expect(view.hasOlder, isFalse);
+    final lease = owner.lease('thread')!;
+    expect(transport.pageCalls, hasLength(2));
     expect(lease.loadedCount, 3);
+    expect(lease.completedCursor?.appendSeq, 100, reason: '分页不推进完成 cursor');
     expect(lease.scrollController.position.maxScrollExtent, greaterThan(0));
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('History 显示回到实时入口，并在准备期禁用重复触发', (tester) async {
-    final lease = leaseFor(tester, items: [textItem('only', ordinal: 1)]);
-    var returns = 0;
+  testWidgets('History 回到最新沿用展示窗口和订阅，完成追加仍可见', (tester) async {
+    final (client, owner, transport) = await _openDetailSession(
+      tester,
+      baseline: componentBaseline([textItem('only', appendSeq: 1)]),
+    );
+    final lease = owner.lease('thread')!;
+    _fixtures[lease] = (owner, transport);
+    await owner.dispatch('thread', const TimelineEnterHistory());
     await tester.pumpWidget(
       host(
-        componentTimeline(
-          threadId: 'thread',
-          view: viewState(
-            mode: TimelineDisplayMode.history,
-            hasNewOutput: true,
-          ),
-          lease: lease,
-          onLoadOlder: () async {},
-          onRetryOlder: () async {},
-          onReturnLive: () async {
-            returns += 1;
-          },
-          onEnterHistory: () {},
-          onRetryConnection: () async {},
-        ),
+        const TimelineConnector(threadId: 'thread'),
+        client: client,
+        owner: owner,
       ),
     );
+    await tester.pumpAndSettle();
+    await _appendCompleted(tester, lease, [textItem('new', appendSeq: 2)]);
     await tester.pumpAndSettle();
     expect(find.textContaining('有新输出'), findsOneWidget);
     await tester.tap(find.byKey(StudioDriverKeys.timelineReturnLive));
     await tester.pumpAndSettle();
-    expect(returns, 1);
-
-    await tester.pumpWidget(
-      host(
-        componentTimeline(
-          threadId: 'thread',
-          view: viewState(
-            mode: TimelineDisplayMode.history,
-            isPreparingLive: true,
-          ),
-          lease: lease,
-          onLoadOlder: () async {},
-          onRetryOlder: () async {},
-          onReturnLive: () async {
-            returns += 1;
-          },
-          onEnterHistory: () {},
-          onRetryConnection: () async {},
-        ),
+    expect(owner.source.value?.mode, TimelineDisplayMode.live);
+    expect(owner.source.value?.hasNewOutput, isFalse);
+    expect(owner.lease('thread'), same(lease));
+    expect(lease.loadedCount, 2);
+    expect(lease.completedCursor?.appendSeq, 2);
+    expect(
+      find.byKey(
+        StudioDriverKeys.timelineRow(lease.presentationFor('new')!.id),
       ),
+      findsOneWidget,
     );
-    // 准备期的进度指示是持续动画：只推进帧，不等静止。
-    await tester.pump();
-    await tester.tap(find.byKey(StudioDriverKeys.timelineReturnLive));
-    await tester.pump();
-    expect(returns, 1, reason: '准备期间的新代次请求不重复触发');
+    expect(transport.openCalls, 1);
+    expect(transport.readerOpens, 0);
+    expect(transport.queryAdmissions, 0);
   });
 
   testWidgets('详情查看器按字段打开、可关闭，且不改动历史行预览', (tester) async {
-    final lease = leaseFor(
+    final lease = await leaseFor(
       tester,
-      items: [textItem('big', ordinal: 1, body: '预览正文', totalBytes: 126)],
+      items: [textItem('big', appendSeq: 1, body: '预览正文', totalBytes: 126)],
     );
     await tester.pumpWidget(
       host(
@@ -582,34 +651,40 @@ void main() {
     final open = find.byKey(StudioDriverKeys.timelineDetailOpen('big', 'text'));
     expect(open, findsOneWidget);
     await tester.tap(open);
+    await pumpClientUntil(
+      tester,
+      () => _fixtures[lease]!.$2.detailCalls.isNotEmpty,
+      'detail query admitted',
+    );
+    _fixtures[lease]!.$2.detailCalls.single.reply.completeError(
+      StateError('detail unavailable'),
+    );
     await tester.pumpAndSettle();
     expect(find.byKey(StudioDriverKeys.timelineDetailDialog), findsOneWidget);
-    // 没有活动查询 scope：查看器显示可重试错误，而不是伪造全文。
+    // 独立 reader 读取失败：查看器显示可重试错误，而不是伪造全文。
     expect(find.byKey(StudioDriverKeys.timelineDetailRetry), findsOneWidget);
     await tester.tap(find.byKey(StudioDriverKeys.timelineDetailClose));
     await tester.pumpAndSettle();
     expect(find.byKey(StudioDriverKeys.timelineDetailDialog), findsNothing);
-    expect(find.byKey(StudioDriverKeys.timelineRow('big')), findsOneWidget);
+    expect(
+      find.byKey(
+        StudioDriverKeys.timelineRow(lease.presentationFor('big')!.id),
+      ),
+      findsOneWidget,
+    );
   });
 
   // ---- B1 键盘 / 滚动条轨道：真实阅读意图 --------------------------------------
 
   List<ConversationItem> longHistory({int count = 120}) => [
     for (var index = 0; index < count; index++)
-      textItem('item-$index', ordinal: index, body: '第 $index 段正文' * 4),
+      textItem('item-$index', appendSeq: index + 1, body: '第 $index 段正文' * 4),
   ];
 
-  testWidgets('键盘 PageUp 是真实阅读意图，改窗与流式增长不是', (tester) async {
-    final history = longHistory();
-    history[history.length - 1] = componentText(
-      'item-119',
-      ordinal: 119,
-      body: '第 119 段正文' * 4,
-      terminal: false,
-    );
-    final lease = leaseFor(
+  testWidgets('键盘 PageUp 是真实阅读意图，改窗与完成追加不是', (tester) async {
+    final lease = await leaseFor(
       tester,
-      items: history,
+      items: longHistory(),
       before: 'cursor',
       hasOlder: true,
     );
@@ -641,38 +716,20 @@ void main() {
     await tester.pumpAndSettle();
     expect(enteredHistory, 0);
 
-    expect(lease.controller.messages.last, isA<TextStreamMessage>());
-    expect(
-      lease.applyPatch(
-        ConversationPatch(
-          subscriptionId: 'test',
-          from: 0,
-          to: 1,
-          priority: ConversationPriority.immediate,
-          changes: [
-            ConversationAdd(
-              componentText(
-                'item-119',
-                ordinal: 119,
-                revision: 2,
-                terminal: false,
-                body: '${'第 119 段正文' * 4}\n流式新增第一行\n第二行',
-              ),
-            ),
-          ],
-        ),
-      ),
-      isTrue,
-    );
+    expect(lease.controller.messages.last, isA<TextMessage>());
+    await _appendCompleted(tester, lease, [
+      componentText('item-120', appendSeq: 121, body: '完成新增第一行\n第二行'),
+    ]);
     await tester.pumpAndSettle();
-    expect(enteredHistory, 0, reason: '真实流式高度增长不是阅读意图');
+    expect(enteredHistory, 0, reason: '真实完成追加的高度增长不是阅读意图');
 
     // 键盘：先让焦点落在正文（真实用户路径：点选正文后再翻页），再按 PageUp。
     // 鼠标点选正文：官方 SelectionArea 在鼠标按下时请求焦点，读历史用键盘时焦点在它上面。
-    await tester.tap(
-      find.byKey(StudioDriverKeys.timelineRow('item-119')),
-      kind: PointerDeviceKind.mouse,
+    final visibleBody = find.byKey(
+      StudioDriverKeys.timelineRow(lease.presentationFor('item-119')!.id),
     );
+    expect(visibleBody, findsOneWidget);
+    await tester.tap(visibleBody, kind: PointerDeviceKind.mouse);
     await tester.pumpAndSettle();
     await tester.sendKeyEvent(LogicalKeyboardKey.pageUp);
     await tester.pumpAndSettle();
@@ -723,7 +780,7 @@ void main() {
   });
 
   testWidgets('滚动条轨道点击分页进入 History', (tester) async {
-    final lease = leaseFor(
+    final lease = await leaseFor(
       tester,
       items: longHistory(),
       before: 'cursor',
@@ -791,9 +848,9 @@ void main() {
     );
 
     // 视图上的按钮 key 与快照 token 同源。
-    final lease = leaseFor(
+    final lease = await leaseFor(
       tester,
-      items: [textItem('big', ordinal: 1, body: '预览', totalBytes: 46)],
+      items: [textItem('big', appendSeq: 1, body: '预览', totalBytes: 46)],
     );
     await tester.pumpWidget(
       host(
@@ -826,12 +883,11 @@ void main() {
   // ---- B4 详情查看器：活动 scope、重试不重拼、退役即终态 --------------------------
 
   group('B4 详情查看器', () {
-    testWidgets('每块/重试都取当前 lease 的活动 scope，退役后停止并要求重开', (tester) async {
+    testWidgets('详情独立 reader 不随 feed 重连失活，epoch reset 后终态并真实换绑', (
+      tester,
+    ) async {
       final (client, owner, transport) = await _openDetailSession(tester);
-      final deadline = DateTime.now().add(const Duration(seconds: 5));
       final lease = owner.lease('thread')!;
-      final first = transport.connections.single;
-
       await tester.pumpWidget(
         host(
           componentTimeline(
@@ -842,12 +898,13 @@ void main() {
             onRetryOlder: () async {},
             onReturnLive: () async {},
             onEnterHistory: () {},
-            onRetryConnection: () async {},
+            onRetryConnection: () {},
           ),
+          client: client,
+          owner: owner,
         ),
       );
-      await tester.pump();
-
+      await tester.pumpAndSettle();
       await tester.tap(
         find.byKey(
           StudioDriverKeys.timelineDetailOpen(
@@ -858,122 +915,96 @@ void main() {
           ),
         ),
       );
-      await _pumpFrames(tester);
-
-      // 第一块：从活动 scope 请求，continuation 为 null、revision 固定。
-      expect(first.detailCalls, hasLength(1));
-      expect(first.detailCalls.single.query.continuation, isNull);
-      expect(first.detailCalls.single.query.revision, 1);
-      first.detailCalls.single.reply.complete(_chunk(continuation: 'c1'));
-      await _pumpFrames(tester);
-
-      // 自动继续：第二块携带同一 revision 的 continuation，前缀不重复。
-      expect(first.detailCalls, hasLength(2));
-      expect(first.detailCalls[1].query.continuation, 'c1');
+      await pumpClientUntil(
+        tester,
+        () => transport.detailCalls.length == 1,
+        'first detail admitted',
+      );
+      expect(
+        transport.detailCalls.single.query.timelineEpoch,
+        lease.timelineEpoch,
+      );
+      expect(transport.detailCalls.single.query.continuation, isNull);
+      transport.detailCalls.single.reply.complete(_chunk(continuation: 'c1'));
+      await pumpClientUntil(
+        tester,
+        () => transport.detailCalls.length == 2,
+        'continuation admitted',
+      );
       final text = find.byKey(StudioDriverKeys.timelineDetailText);
       expect(tester.widget<SelectableText>(text).data, '甲🐱\n');
       expect(
-        tester
-            .widget<IconButton>(find.byKey(StudioDriverKeys.timelineDetailCopy))
-            .onPressed,
-        isNull,
-        reason: '未读完整时不允许“复制全文”',
+        transport.detailCalls[1].query.continuation,
+        const ConversationQueryCursor('c1'),
       );
-
-      // 第二块在 attempt 更替后失效 → 可见可重试错误。
-      first.detailCalls[1].reply.completeError(const StaleConversationScope());
-      await _pumpFrames(tester);
-      expect(find.byKey(StudioDriverKeys.timelineDetailRetry), findsOneWidget);
-      expect(find.textContaining('scope has been retired'), findsOneWidget);
-      expect(tester.widget<SelectableText>(text).data, '甲🐱\n');
-
-      // 连接 attempt 更替（新订阅尚未建立）：旧 scope 失活。
-      final session = client.conversations.session('thread');
-      transport.holdNextOpen = true;
-      await tester.runAsync(() async {
-        session.content.refresh();
-        await transport.opened(2);
-      });
-      await _pumpFrames(tester);
-
-      // 重试：从当前 lease 重新取活动 scope；不得再向旧 attempt 发块。
-      await tester.tap(find.byKey(StudioDriverKeys.timelineDetailRetry));
-      await _pumpFrames(tester);
-      expect(
-        first.detailCalls,
-        hasLength(2),
-        reason: '重试不得复用旧 scope 继续向旧 attempt 发块',
+      final viewer = tester
+          .widget<TimelineDetailConnector>(find.byType(TimelineDetailConnector))
+          .owner;
+      expect(viewer.canCopy, isFalse);
+      transport.holdNextInitial = true;
+      client.conversations.session('thread').content.refresh();
+      await pumpClientFuture(
+        tester,
+        transport.opened(2),
+        'replacement feed open',
       );
-      expect(
-        find.textContaining('attempt has been retired'),
-        findsOneWidget,
-        reason: '重试必须落在新 attempt 的 scope 上（旧 scope 会永远报 scope retired）',
+      transport.detailCalls[1].reply.complete(_chunk(text: '乙\r\n'));
+      await pumpClientUntil(
+        tester,
+        () => viewer.state.complete,
+        'reader completed while feed waits',
       );
-      expect(tester.widget<SelectableText>(text).data, '甲🐱\n');
-
-      // 新基线到达 → 新代次；生产 shell 用新 lease 重建列表，旧代次真实卸载后退役。
-      await tester.runAsync(() async {
-        transport.releaseHeld();
-        await session.content.ready;
-        await owner.source.waitFor(
-          (state) => state != null && state.generation > lease.generation,
-        );
-      });
-      await _pumpFrames(tester);
-      final nextLease = owner.lease('thread')!;
-      expect(nextLease.generation, greaterThan(lease.generation));
-      expect(lease.isMounted, isTrue, reason: '换代前旧 View 仍真实挂载');
+      expect(tester.widget<SelectableText>(text).data, '甲🐱\n乙\r\n');
+      expect(viewer.canCopy, isTrue);
+      expect(owner.lease('thread'), same(lease));
+      expect(transport.readerOpens, 1, reason: '重连不重开独立 reader');
+      transport.baseline = componentBaseline([
+        componentText('replacement', appendSeq: 1),
+      ], timelineEpoch: 'replacement-epoch');
+      transport.releaseInitial();
+      await pumpClientUntil(
+        tester,
+        () => owner.lease('thread') != lease,
+        'explicit epoch reset',
+      );
+      final replacement = owner.lease('thread')!;
+      expect(lease.isRetired, isTrue);
+      expect(lease.isMounted, isTrue, reason: '旧纯 View 尚未重建');
+      expect(lease.isReleased, isFalse);
       await tester.pumpWidget(
         host(
           componentTimeline(
             threadId: 'thread',
             view: owner.source.value!,
-            lease: nextLease,
+            lease: replacement,
             onLoadOlder: () async {},
             onRetryOlder: () async {},
             onReturnLive: () async {},
             onEnterHistory: () {},
-            onRetryConnection: () async {},
+            onRetryConnection: () {},
           ),
+          client: client,
+          owner: owner,
         ),
       );
-      await _pumpFrames(tester);
-      expect(
-        lease.isMounted,
-        isFalse,
-        reason: '新 key 必须销毁旧 View 并解绑旧 controls',
-      );
-      expect(nextLease.isMounted, isTrue, reason: '同位置新 View 必须绑定新 controls');
-      // 旧代次真实退役并释放（owner 已 retire；这里等待真实 released ACK）。
-      await pumpClientFuture(tester, lease.retire(), 'B4 old lease retirement');
       await pumpClientFuture(
         tester,
         lease.released,
-        'B4 old lease released ACK',
+        'old Chat subtree and reader joined',
       );
       await _pumpFrames(tester);
-
-      // lease 退役：终态、无 retry、不拼接新内容、不再向新连接发块。
+      expect(lease.isMounted, isFalse);
+      expect(replacement.isMounted, isTrue);
       expect(
         find.byKey(StudioDriverKeys.timelineDetailTerminal),
         findsOneWidget,
       );
       expect(find.byKey(StudioDriverKeys.timelineDetailRetry), findsNothing);
-      // 退役即释放正文/累计字节并禁复制（不是只保 prefix）。
       expect(tester.widget<SelectableText>(text).data, '');
-      expect(
-        tester
-            .widget<IconButton>(find.byKey(StudioDriverKeys.timelineDetailCopy))
-            .onPressed,
-        isNull,
-      );
-      expect(transport.connections, hasLength(2));
-      expect(transport.connections[1].detailCalls, isEmpty);
-
+      expect(viewer.canCopy, isFalse);
+      expect(transport.detailCalls, hasLength(2));
+      expect(transport.readers.single.closed, isTrue);
       await _unmountTimeline(tester);
-      await _pumpFrames(tester);
-      await _closeDetailSession(tester, owner, client, deadline);
-      await _pumpFrames(tester, frames: 2);
     });
   });
 
@@ -981,7 +1012,7 @@ void main() {
     final (client, owner, transport) = await _openDetailSession(tester);
     final deadline = DateTime.now().add(const Duration(seconds: 5));
     final lease = owner.lease('thread')!;
-    final first = transport.connections.single;
+    final first = transport;
     final queriesBefore = client.budget.used(ResourceKind.pendingOperation);
 
     await tester.pumpWidget(
@@ -1013,8 +1044,8 @@ void main() {
     expect(first.detailCalls, hasLength(1));
     expect(
       client.budget.used(ResourceKind.pendingOperation),
-      queriesBefore + 1,
-      reason: '真实 SDK scope 持有已受理读取的 permit',
+      queriesBefore + 2,
+      reason: '真实 SDK scope 同时持有 reader 与已受理读取的 permit',
     );
 
     // 读取仍在途：点关闭必须先等它真的退出，不能同步 pop 出假 ACK。
@@ -1028,7 +1059,7 @@ void main() {
     expect(first.detailCalls, hasLength(1), reason: '停止后续块');
     expect(
       client.budget.used(ResourceKind.pendingOperation),
-      queriesBefore + 1,
+      queriesBefore + 2,
       reason: '关闭请求不能提前释放尚未退出的读取',
     );
 
@@ -1039,23 +1070,24 @@ void main() {
     expect(find.byKey(StudioDriverKeys.timelineDetailDialog), findsNothing);
     expect(first.detailCalls, hasLength(1), reason: '关闭后不再发新块');
     expect(client.budget.used(ResourceKind.pendingOperation), queriesBefore);
-    expect(first.closed, isFalse, reason: '详情关闭只释放自己的 scope，不关闭共享 feed');
+    expect(first.readers.single.closed, isTrue);
+    expect(first.connections.single.closed, isFalse, reason: '详情关闭不关闭共享 feed');
 
     await _unmountTimeline(tester);
     await _pumpFrames(tester);
     await _closeDetailSession(tester, owner, client, deadline);
     expect(lease.isReleased, isTrue);
-    expect(first.closed, isTrue);
-    expect(first.closeCalls, 1);
+    expect(first.connections.single.closed, isTrue);
+    expect(first.connections.single.closeCalls, 1);
     expect(client.budget.usage, isEmpty);
     await _pumpFrames(tester, frames: 2);
   });
 
-  testWidgets('同 lease 重试走新 attempt 的 scope 并成功续读，不重字、可复制', (tester) async {
+  testWidgets('同 lease 独立详情重试成功续读，不重字、可复制且不重开 feed', (tester) async {
     final (client, owner, transport) = await _openDetailSession(tester);
     final deadline = DateTime.now().add(const Duration(seconds: 5));
     final lease = owner.lease('thread')!;
-    final first = transport.connections.single;
+    final first = transport;
     final generation = lease.generation;
 
     await tester.pumpWidget(
@@ -1086,27 +1118,23 @@ void main() {
     await _pumpFrames(tester);
     first.detailCalls.single.reply.complete(_chunk(continuation: 'c1'));
     await _pumpFrames(tester);
-    first.detailCalls[1].reply.completeError(const StaleConversationScope());
+    first.detailCalls[1].reply.completeError(
+      StateError('temporary detail read failure'),
+    );
     await _pumpFrames(tester);
     expect(find.byKey(StudioDriverKeys.timelineDetailRetry), findsOneWidget);
 
-    // 新连接已打开但首帧仍挂起：旧 lease 保持活跃，新 attempt 的 scope 已可用。
-    transport.holdNextInitial = true;
-    final session = client.conversations.session('thread');
-    await tester.runAsync(() async {
-      session.content.refresh();
-      await transport.opened(2);
-    });
-    await _pumpFrames(tester);
-    expect(transport.connections, hasLength(2));
-
+    // A transient detail failure does not retire its independent scope or feed.
     await tester.tap(find.byKey(StudioDriverKeys.timelineDetailRetry));
     await _pumpFrames(tester);
-    final second = transport.connections[1];
-    expect(second.detailCalls, hasLength(1), reason: '重试走新 attempt 的 scope');
-    expect(second.detailCalls.single.query.continuation, 'c1');
-    expect(second.detailCalls.single.query.revision, 1);
-    second.detailCalls.single.reply.complete(_chunk(text: '乙\r\n'));
+    final second = transport;
+    expect(second.detailCalls, hasLength(3), reason: '重试实际受理 continuation');
+    expect(
+      second.detailCalls.last.query.continuation,
+      const ConversationQueryCursor('c1'),
+    );
+    expect(second.detailCalls.last.query.timelineEpoch, 'component-epoch');
+    second.detailCalls.last.reply.complete(_chunk(text: '乙\r\n'));
     await _pumpFrames(tester);
 
     final text = find.byKey(StudioDriverKeys.timelineDetailText);
@@ -1139,29 +1167,11 @@ void main() {
     await _pumpFrames(tester);
     expect(copied, '甲🐱\n乙\r\n', reason: '复制内容必须等于逐块拼接的真实正文');
     expect(lease.generation, generation, reason: '同 lease 重试不换代');
-    expect(first.detailCalls, hasLength(2), reason: '旧 attempt 不再收块');
+    expect(first.detailCalls, hasLength(3), reason: '真实 reader 收到三次请求');
 
-    transport.releaseInitial();
-    await tester.runAsync(() async {
-      await session.content.ready;
-      await owner.source.waitFor(
-        (state) => state != null && state.generation > generation,
-      );
-    });
-    await _pumpFrames(tester);
-    final replacement = owner.lease('thread')!;
-    expect(replacement, isNot(same(lease)));
-    expect(
-      replacement.queries!.generation,
-      replacement.generation,
-      reason: '新基线的新代次必须拥有自己的真实查询 scope',
-    );
-    expect(find.byKey(StudioDriverKeys.timelineDetailTerminal), findsOneWidget);
-    expect(
-      tester.widget<SelectableText>(text).data,
-      '',
-      reason: '已复制完成的旧查看器同样在展示退役时释放原文',
-    );
+    expect(owner.lease('thread'), same(lease));
+    expect(transport.openCalls, 1);
+    expect(transport.readerOpens, 1);
     await _unmountTimeline(tester);
     await _pumpFrames(tester);
     await _closeDetailSession(tester, owner, client, deadline);
@@ -1171,14 +1181,14 @@ void main() {
   // ---- R1 typed 确定失效：同一冻结引用重试无意义 -----------------------------------
 
   for (final code in const <StudioFailureCode>[
-    StudioFailureCode.staleRevision,
+    StudioFailureCode.conflict,
     StudioFailureCode.notFound,
   ]) {
     testWidgets('SDK 明确 ${code.name} 时查看器进入终态：清正文、无 retry、禁复制', (tester) async {
       final (client, owner, transport) = await _openDetailSession(tester);
       final deadline = DateTime.now().add(const Duration(seconds: 5));
       final lease = owner.lease('thread')!;
-      final connection = transport.connections.single;
+      final connection = transport;
 
       await tester.pumpWidget(
         host(
@@ -1272,7 +1282,7 @@ void main() {
       );
       final deadline = DateTime.now().add(const Duration(seconds: 5));
       final lease = owner.lease('thread')!;
-      final connection = transport.connections.single;
+      final connection = transport;
 
       await tester.pumpWidget(
         host(
@@ -1536,13 +1546,11 @@ void main() {
       owner: owner,
       lease: lease,
       connection: transport.connections.single,
-      from: 1,
-      to: 2,
       items: [
         for (var index = 32; index < 40; index++)
           componentText(
             'line-$index',
-            ordinal: index,
+            appendSeq: index + 1,
             body: '第 $index 段静态正文' * 6,
           ),
       ],
@@ -1615,7 +1623,9 @@ void main() {
 
     // 真实内容拖动：标准 position 自己进入滚动活动，诊断必须当场为 true。
     final anchor = tester.getCenter(
-      find.byKey(StudioDriverKeys.timelineRow('line-39')),
+      find.byKey(
+        StudioDriverKeys.timelineRow(lease.presentationFor('line-39')!.id),
+      ),
     );
     final gesture = await tester.startGesture(
       anchor,
@@ -1702,18 +1712,18 @@ void main() {
       (<String>[], ['Full reasoning evidence']),
       (<String>['  '], <String>[]),
     ]) {
-      final lease = leaseFor(
+      final lease = await leaseFor(
         tester,
         items: [
           conversationFixture(
             id: 'thinking',
             threadId: 'thread',
-            ordinal: 1,
-            createdAt: DateTime.utc(2026),
-            updatedAt: DateTime.utc(2026).add(const Duration(seconds: 3)),
+            appendSeq: 1,
             descriptor: ConversationThinkingDescriptor(
-              lifecycle: CompletedThreadContentView(
-                DateTime.utc(2026).add(const Duration(seconds: 3)),
+              outcome: ConversationContentCompleted(
+                CompletedThreadContentView(
+                  DateTime.utc(2026).add(const Duration(seconds: 3)),
+                ),
               ),
             ),
             fields: {
@@ -1744,9 +1754,14 @@ void main() {
       final topSummaryFinder = find.byKey(
         StudioDriverKeys.timelineActivitySummary(group.id),
       );
-      final topRow = tester.widget<TimelineActivityRow>(topSummaryFinder);
+      final topRow = tester.widget<TimelineActivityRow>(
+        find.descendant(
+          of: topSummaryFinder,
+          matching: find.byType(TimelineActivityRow),
+        ),
+      );
       expect(topRow.icon, isNull, reason: '顶层总折叠行去掉左侧图标');
-      expect(topRow.label, 'Worked for 3s', reason: '顶层总折叠行显示整组工作时长');
+      expect(topRow.label, 'Thought ended', reason: '完成项没有开始时间，不伪造工作时长');
 
       await tester.tap(
         find.byKey(StudioDriverKeys.timelineActivitySummary(group.id)),
@@ -1820,9 +1835,7 @@ void main() {
       final completedToolItem = conversationFixture(
         id: 'tool-1',
         threadId: 'thread',
-        ordinal: 2,
-        createdAt: timestamp.add(const Duration(seconds: 2)),
-        updatedAt: timestamp.add(const Duration(seconds: 8)),
+        appendSeq: 2,
         descriptor: ConversationToolDescriptor(
           invocation: const ConversationToolInvocation(
             toolCallId: 'tool-1',
@@ -1830,7 +1843,7 @@ void main() {
           ),
           state: ConversationToolSucceeded(
             completedAt: timestamp.add(const Duration(seconds: 8)),
-            output: const ConversationToolOutputDescriptor(attachments: []),
+            output: ConversationToolOutputDescriptor(attachments: []),
           ),
         ),
         fields: {
@@ -1849,7 +1862,7 @@ void main() {
       expect(replacedTool, isFalse);
       await tester.pumpAndSettle();
       expect(readTopRow().icon, isNull);
-      expect(readTopRow().label, 'Worked for 8s · 1 tools');
+      expect(readTopRow().label, 'Thinking and tools · 1 tools');
 
       // 3. 展开工作组，验证仅含概要的思考消息不提供二次展开（expandable: false）。
       await tester.tap(
@@ -1883,7 +1896,7 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
-      expect(readTopRow().label, 'Worked for 10s · 1 tools');
+      expect(readTopRow().label, 'Thinking and tools · 1 tools');
       final expandableThinkingSummary = find.byKey(
         StudioDriverKeys.timelineActivitySummary('think-with-content'),
       );
@@ -1895,7 +1908,11 @@ void main() {
       );
 
       // 5. 上层转换器对组外类型（助手正文、未完成项等）直接拒绝转换，由上层决定结束当前工作组。
-      final assistantItem = textItem('assistant-1', ordinal: 4, body: 'Answer');
+      final assistantItem = textItem(
+        'assistant-1',
+        appendSeq: 4,
+        body: 'Answer',
+      );
       final rejectedConversion = TimelineActivityGroupAdapter.convertItem(
         assistantItem,
       );
@@ -1908,7 +1925,7 @@ void main() {
   );
 
   testWidgets('只读工具 stat_path 以状态和文件名单行展示，详情只在点击后构建', (tester) async {
-    final lease = leaseFor(
+    final lease = await leaseFor(
       tester,
       items: [
         toolItem(
@@ -1954,14 +1971,14 @@ void main() {
     expect(find.byTooltip('/workspace/src/target.dart'), findsOneWidget);
     final bodies = find.descendant(
       of: block,
-      matching: find.byType(TimelineMarkdown),
+      matching: find.byType(StudioCodeBlock),
     );
     expect(bodies, findsNothing, reason: '点击前不得构建工具参数/结果正文');
     await tester.tap(row);
     await tester.pumpAndSettle();
     expect(
-      tester.widgetList<TimelineMarkdown>(bodies).map((body) => body.text),
-      ['{"path":"/workspace/src/target.dart"}', 'ok'],
+      tester.widgetList<StudioCodeBlock>(bodies).map((body) => body.text),
+      ['{\n  "path": "/workspace/src/target.dart"\n}', 'ok'],
       reason: '点击后按原文展示参数和结果，不依赖旧私有代码块形状',
     );
     await _unmountTimeline(tester);
@@ -1971,7 +1988,7 @@ void main() {
 
   // ---- S1 图片增量：默认折叠、用户展开语义与引用释放 --------------------------------
 
-  testWidgets('图片组默认折叠只按需读取，同 ID 更新保持用户展开/折叠，引用释放可判别', (tester) async {
+  testWidgets('图片组按需读取共享重试，完成追加保持折叠意图，reset 释放图片引用', (tester) async {
     const arguments = '{"path":"/workspace/images/shot.png"}';
     const fullResult = 'ok: tool produced shared image';
     final transport = _ImageTransport(
@@ -1979,11 +1996,11 @@ void main() {
       baseline: componentBaseline([
         imageToolItem(
           'call-a',
-          ordinal: 1,
+          appendSeq: 1,
           name: 'mcp__plot',
           totalResultBytes: utf8.encode(fullResult).length,
         ),
-        imageToolItem('call-b', ordinal: 2),
+        imageToolItem('call-b', appendSeq: 2),
       ]),
     );
     final (client, owner, _) = await _openDetailSession(
@@ -1991,33 +2008,13 @@ void main() {
       backend: transport,
     );
     final lease = owner.lease('thread')!;
-    final connection = transport.connections.single;
+    final connection = transport;
     final pendingBefore = client.budget.used(ResourceKind.pendingOperation);
     final entryA = StudioDriverKeys.toolImageEntryId('call-a', 'att-shared');
     Finder toggleFor(String id) => find.byKey(
       StudioDriverKeys.timelineActivitySummary(lease.presentationFor(id)!.id),
     );
-    var version = lease.appliedVersion!;
-    Future<void> patch(List<ConversationChange> changes) async {
-      connection.emit(
-        ConversationPatch(
-          subscriptionId: connection.subscriptionId,
-          from: version,
-          to: ++version,
-          priority: ConversationPriority.immediate,
-          changes: changes,
-        ),
-      );
-      await pumpClientUntil(
-        tester,
-        () => lease.appliedVersion == version,
-        'image feed patch version $version applied',
-      );
-      expect(owner.lease('thread'), same(lease));
-      expect(lease.appliedVersion, version);
-      expect(transport.connections, hasLength(1));
-    }
-
+    _fixtures[lease] = (owner, transport);
     await tester.pumpWidget(
       host(
         componentTimeline(
@@ -2042,29 +2039,30 @@ void main() {
     expect(_imageThumbnail('call-b'), findsNothing);
     expect(transport.reads, isEmpty, reason: '折叠状态不得读取原图');
 
-    // 连续调用共用展开意图，两个缩略图复用同一附件读取。
+    // 两个独立完成图片项各自展开；资源缓存仍共享同一附件读取。
     await tester.tap(toggleFor('call-a'));
     await _pumpFrames(tester);
     await tester.pumpAndSettle();
     expect(transport.reads, ['thread:att-shared']);
-    // The expanded production group is lazy and shorter than its first image.
-    // Reach the second member through its actual inner scroll viewport.
-    await tester.scrollUntilVisible(
-      _imageRetry('call-b'),
-      80,
-      scrollable: find.descendant(
-        of: find.byType(ListView),
-        matching: find.byType(Scrollable),
-      ),
-    );
+    await tester.tap(toggleFor('call-b'));
+    await _pumpFrames(tester);
+    await tester.ensureVisible(_imageRetry('call-b'));
+    await tester.pumpAndSettle();
+    expect(transport.reads, ['thread:att-shared']);
     expect(_imageRetry('call-a'), findsOneWidget);
     expect(_imageRetry('call-b'), findsOneWidget);
     // One shared retry replaces the failed attempt for BOTH mounted consumers.
     // Revealing the whole first button would evict the second lazy member.
     // Tap its actual visible portion instead, without calling either callback.
+    await tester.ensureVisible(_imageRetry('call-a'));
+    await tester.pumpAndSettle();
+    final imageListA = find.ancestor(
+      of: _imageConnector('call-a'),
+      matching: find.byType(ListView),
+    );
     final visibleRetry = tester
         .getRect(_imageRetry('call-a'))
-        .intersect(tester.getRect(find.byType(ListView)));
+        .intersect(tester.getRect(imageListA));
     expect(visibleRetry.isEmpty, isFalse);
     await tester.tapAt(visibleRetry.center);
     expect(_imageConnector('call-a'), findsOneWidget);
@@ -2076,14 +2074,8 @@ void main() {
       () => _imageThumbnail('call-b').evaluate().length == 1,
       'shared-retry second image thumbnail decoded',
     );
-    await tester.scrollUntilVisible(
-      _imageConnector('call-a'),
-      -40,
-      scrollable: find.descendant(
-        of: find.byType(ListView),
-        matching: find.byType(Scrollable),
-      ),
-    );
+    await tester.ensureVisible(_imageConnector('call-a'));
+    await tester.pumpAndSettle();
     await pumpClientUntil(
       tester,
       () =>
@@ -2138,16 +2130,17 @@ void main() {
       connection.detailCalls[0].query.field,
       const ThreadToolArgumentsFieldView(),
     );
-    expect(connection.detailCalls[0].query.revision, 1);
+    expect(connection.detailCalls[0].query.timelineEpoch, 'component-epoch');
     expect(connection.detailCalls[0].query.continuation, isNull);
     connection.detailCalls[0].reply.complete(
       ConversationDetailChunk(
+        threadId: 'thread',
+        timelineEpoch: 'component-epoch',
         itemId: 'call-a',
         field: const ThreadToolArgumentsFieldView(),
-        revision: 1,
         text: '{"path":"/workspace/images/',
         totalBytes: utf8.encode(arguments).length,
-        continuation: 'path-tail',
+        continuation: const ConversationQueryCursor('path-tail'),
       ),
     );
     await _pumpFrames(tester);
@@ -2157,12 +2150,16 @@ void main() {
       connection.detailCalls[1].query.field,
       const ThreadToolArgumentsFieldView(),
     );
-    expect(connection.detailCalls[1].query.continuation, 'path-tail');
+    expect(
+      connection.detailCalls[1].query.continuation,
+      const ConversationQueryCursor('path-tail'),
+    );
     connection.detailCalls[1].reply.complete(
       ConversationDetailChunk(
+        threadId: 'thread',
+        timelineEpoch: 'component-epoch',
         itemId: 'call-a',
         field: const ThreadToolArgumentsFieldView(),
-        revision: 1,
         text: 'shot.png"}',
         totalBytes: utf8.encode(arguments).length,
         continuation: null,
@@ -2187,7 +2184,7 @@ void main() {
     expect(find.byKey(StudioDriverKeys.timelineDetailDialog), findsNothing);
     expect(client.budget.used(ResourceKind.pendingOperation), pendingBefore);
     expect(sharedScope.isActive, isTrue);
-    expect(connection.closeCalls, 0);
+    expect(connection.connections.single.closeCalls, 0);
 
     // Text accompanying an MCP image remains available as the full result
     // field. The baseline deliberately contains only its truncated preview.
@@ -2208,9 +2205,10 @@ void main() {
     expect(connection.detailCalls[2].query.continuation, isNull);
     connection.detailCalls[2].reply.complete(
       ConversationDetailChunk(
+        threadId: 'thread',
+        timelineEpoch: 'component-epoch',
         itemId: 'call-a',
         field: const ThreadToolResultFieldView(),
-        revision: 1,
         text: fullResult,
         totalBytes: utf8.encode(fullResult).length,
         continuation: null,
@@ -2247,21 +2245,22 @@ void main() {
     expect(sharedScope.pendingQueries, 0, reason: '详情不借用共享分页 scope');
     expect(
       client.budget.used(ResourceKind.pendingOperation),
-      pendingBefore + 1,
+      pendingBefore + 2,
     );
     await tester.tap(find.byKey(StudioDriverKeys.timelineDetailClose));
     await _pumpFrames(tester);
     expect(find.byKey(StudioDriverKeys.timelineDetailDialog), findsOneWidget);
     expect(
       client.budget.used(ResourceKind.pendingOperation),
-      pendingBefore + 1,
+      pendingBefore + 2,
     );
-    expect(connection.closeCalls, 0);
+    expect(connection.connections.single.closeCalls, 0);
     connection.detailCalls[3].reply.complete(
       ConversationDetailChunk(
+        threadId: 'thread',
+        timelineEpoch: 'component-epoch',
         itemId: 'call-a',
         field: const ThreadToolResultFieldView(),
-        revision: 1,
         text: fullResult,
         totalBytes: utf8.encode(fullResult).length,
         continuation: null,
@@ -2271,95 +2270,80 @@ void main() {
     expect(find.byKey(StudioDriverKeys.timelineDetailDialog), findsNothing);
     expect(sharedScope.isActive, isTrue);
     expect(client.budget.used(ResourceKind.pendingOperation), pendingBefore);
-    expect(connection.closeCalls, 0);
+    expect(connection.connections.single.closeCalls, 0);
     expect(transport.reads, hasLength(2), reason: '原图与工具详情操作均不重新读取附件');
     await tester.tap(find.byKey(StudioDriverKeys.timelineImageClose));
     await tester.pumpAndSettle();
     expect(imageDialog, findsNothing);
 
-    // 同 canonicalID 的普通内容更新：保持用户已展开，且共享缓存不重读。
-    await patch([
-      ConversationAdd(
-        imageToolItem(
-          'call-a',
-          ordinal: 1,
-          name: 'mcp__plot',
-          result: 'ok (streamed)',
-          revision: 2,
-        ),
-      ),
+    // Immutable completed image atoms append without replacing prior entries.
+    await _appendCompleted(tester, lease, [
+      imageToolItem('call-c', appendSeq: 3),
     ]);
     await _pumpFrames(tester);
     expect(
       _imageThumbnail('call-a'),
       findsOneWidget,
-      reason: '用户展开后同 ID 更新保持展开',
+      reason: '完成追加保持旧图片项的用户展开',
     );
-    expect(transport.reads, hasLength(2), reason: '同附件不得重读');
-
-    // 用户主动折叠后再更新：不得自动展开。
+    expect(transport.reads, hasLength(2), reason: '同附件继续复用缓存');
     await tester.tap(toggleFor('call-a'));
-    await _pumpFrames(tester);
     await tester.pumpAndSettle();
-    expect(_imageThumbnail('call-a'), findsNothing);
-    await patch([
-      ConversationAdd(
-        imageToolItem(
-          'call-a',
-          ordinal: 1,
-          name: 'mcp__plot',
-          result: 'ok (final)',
-          revision: 3,
+    await _appendCompleted(tester, lease, [
+      imageToolItem('call-d', appendSeq: 4),
+    ]);
+    await _pumpFrames(tester);
+    expect(_imageThumbnail('call-a'), findsNothing, reason: '折叠后完成追加不自动展开');
+    expect(transport.reads, hasLength(2));
+    final oldResources = lease.imageResources;
+    final feed = transport.connections.single;
+    feed.emit(
+      ConversationReset(
+        componentBaseline(
+          [imageToolItem('replacement-image', appendSeq: 1)],
+          timelineEpoch: 'replacement-epoch',
+          subscriptionId: feed.subscriptionId,
         ),
       ),
-    ]);
-    await _pumpFrames(tester);
-    expect(
-      _imageThumbnail('call-a'),
-      findsNothing,
-      reason: '用户折叠后同 ID 更新不得自动展开',
     );
-    expect(transport.reads, hasLength(2));
-
-    // 共享引用：移除 call-a 后 call-b 仍持有该附件 → 缓存保留，展开不重读。
-    await patch([const ConversationRemove('call-a')]);
-    await _pumpFrames(tester);
-    await tester.tap(toggleFor('call-b'));
     await pumpClientUntil(
       tester,
-      () => _imageThumbnail('call-b').evaluate().length == 1,
-      'retained shared image thumbnail decoded',
+      () => owner.lease('thread') != lease,
+      'image epoch reset',
     );
-    expect(_imageThumbnail('call-b'), findsOneWidget);
-    expect(transport.reads, hasLength(2), reason: '共享附件在仍有引用时不丢缓存');
-
-    // 最后一个引用消失 → 缓存释放：重新插入并展开会重新读取。
-    await patch([const ConversationRemove('call-b')]);
-    await _pumpFrames(tester);
-    await patch([
-      // Reappearance keeps the item's stable ordering identity; it changes
-      // neither the attachment reference-release boundary nor the new read.
-      ConversationAdd(
-        imageToolItem('call-a', ordinal: 1, name: 'mcp__plot', revision: 4),
+    final replacement = owner.lease('thread')!;
+    expect(replacement.imageResources, isNot(same(oldResources)));
+    await tester.pumpWidget(
+      host(
+        const TimelineConnector(threadId: 'thread'),
+        client: client,
+        owner: owner,
       ),
-    ]);
-    await _pumpFrames(tester);
-    await tester.tap(toggleFor('call-a'));
+    );
+    await tester.pumpAndSettle();
+    await pumpClientFuture(tester, lease.released, 'old image subtree release');
+    expect(lease.isReleased, isTrue);
+    expect(transport.reads, hasLength(2), reason: '新代次仍默认折叠');
+    await tester.tap(
+      find.byKey(
+        StudioDriverKeys.timelineActivitySummary(
+          replacement.presentationFor('replacement-image')!.id,
+        ),
+      ),
+    );
     await pumpClientUntil(
       tester,
-      () => _imageThumbnail('call-a').evaluate().length == 1,
-      'reinserted image thumbnail decoded after last reference release',
+      () => _imageThumbnail('replacement-image').evaluate().length == 1,
+      'replacement image decoded',
     );
-    expect(transport.reads, hasLength(3), reason: '最后引用释放后重新展开必须重新读取');
-    expect(_imageThumbnail('call-a'), findsOneWidget);
-    expect(_imageRetry('call-a'), findsNothing);
+    expect(transport.reads, hasLength(3), reason: '旧代次已释放后必须重新读取');
 
     await _unmountTimeline(tester);
     await _pumpFrames(tester);
   });
 
   testWidgets('退役展示尚未卸载时不再发布阅读意图', (tester) async {
-    final lease = leaseFor(tester, items: longHistory());
+    final lease = await leaseFor(tester, items: longHistory());
     var intents = 0;
     await tester.pumpWidget(
       host(
@@ -2391,398 +2375,251 @@ void main() {
     }
   });
 
-  testWidgets('退役展示的已捕获按钮回调不再发布动作', (tester) async {
-    for (final phase in [
-      TimelineConnectionPhase.ready,
-      TimelineConnectionPhase.failed,
-    ]) {
-      final baseline = componentBaseline(
-        [
-          for (var index = 0; index < 32; index++)
-            componentText(
-              'history-$index',
-              ordinal: 100 + index,
-              body: '旧展示第 $index 段正文' * 8,
-            ),
-        ],
-        before: 'old-cursor',
-        hasOlder: true,
-      );
-      final (client, owner, transport) = await _openDetailSession(
-        tester,
-        baseline: baseline,
-      );
-      final lease = owner.lease('thread')!;
-      final first = transport.connections.single;
-      await _emitTailAdditions(
-        tester,
+  testWidgets('失败连接的已捕获重试与返回按钮在展示退役后不能重开 feed', (tester) async {
+    final (client, owner, transport) = await _openDetailSession(
+      tester,
+      baseline: _longBaseline(),
+    );
+    final lease = owner.lease('thread')!;
+    await owner.dispatch('thread', const TimelineEnterHistory());
+    await tester.pumpWidget(
+      host(
+        const TimelineConnector(threadId: 'thread'),
+        client: client,
         owner: owner,
-        lease: lease,
-        connection: first,
-        from: 1,
-        to: 2,
-        items: [
-          for (var index = 32; index < 40; index++)
-            componentText(
-              'history-$index',
-              ordinal: 100 + index,
-              body: '旧展示第 $index 段正文' * 8,
-            ),
-        ],
-      );
-      expect(lease.loadedCount, 40);
-      expect(lease.items.map((item) => item.id), [
-        for (var index = 0; index < 40; index++) 'history-$index',
-      ]);
-      expect(first.pageCalls, isEmpty, reason: '补足规模仅用真实增量，不占分页计数');
-      final pendingBefore = client.budget.used(ResourceKind.pendingOperation);
-      await owner.dispatch('thread', const TimelineEnterHistory());
-      expect(lease.hasOlder, isTrue);
-      expect(lease.olderCursor, 'old-cursor');
-
-      // Obtain the real error banner from a legally admitted history query.
-      final failedPage = owner.loadOlder(
-        'thread',
-        generation: lease.generation,
-      );
-      await pumpClientFuture(
-        tester,
-        first.pageEntered(1),
-        'history page admitted',
-      );
-      expect(first.pageCalls.single.before, 'old-cursor');
-      final pageFailure = StateError('synthetic history page failure');
-      first.pageCalls.single.reply.completeError(pageFailure);
-      await pumpClientFuture(tester, failedPage, 'failed history page settled');
-      expect(owner.source.value!.olderError, same(pageFailure));
-      expect(owner.source.value!.hasOlder, isTrue);
-      expect(lease.hasOlder, isTrue);
-      expect(lease.queries!.isActive, isTrue);
-      expect(client.budget.used(ResourceKind.pendingOperation), pendingBefore);
-
-      Future<void> renderConnector() async {
-        await tester.pumpWidget(
-          host(
-            const TimelineConnector(threadId: 'thread'),
-            client: client,
-            owner: owner,
-          ),
-        );
-        await tester.pump();
-      }
-
-      const actionKeys = <Key>[
-        StudioDriverKeys.timelineRetryOlder,
-        StudioDriverKeys.timelineReturnLive,
-        StudioDriverKeys.timelineRetryConnection,
-      ];
-      Map<Key, VoidCallback> captureActions(Set<Key> expected) {
-        final callbacks = <Key, VoidCallback>{};
-        for (final key in actionKeys) {
-          final finder = find.byKey(key);
-          if (!expected.contains(key)) {
-            expect(finder, findsNothing, reason: '$phase 不应显示 $key');
-            continue;
-          }
-          expect(finder, findsOneWidget, reason: '$phase 必须显示可操作的 $key');
-          final callback = tester.widget<ButtonStyleButton>(finder).onPressed;
-          expect(callback, isNotNull, reason: '$phase 的 $key 必须实际可操作');
-          callbacks[key] = callback!;
-        }
-        expect(callbacks.keys, unorderedEquals(expected));
-        return callbacks;
-      }
-
-      await renderConnector();
-      await tester.pumpAndSettle();
-      expect(
-        lease.scrollController.position.maxScrollExtent,
-        greaterThan(0),
-        reason: '长历史真实溢出，避免自动补页掩盖被测按钮',
-      );
-      final readyCallbacks = captureActions({
-        StudioDriverKeys.timelineRetryOlder,
-        StudioDriverKeys.timelineReturnLive,
-      });
-      final oldScope = lease.queries!;
-
-      // First invoke retry while valid. It MUST admit the same real cursor;
-      // retaining that query gate proves the later no-op is not an empty setup.
-      readyCallbacks[StudioDriverKeys.timelineRetryOlder]!();
-      await pumpClientFuture(
-        tester,
-        first.pageEntered(2),
-        'retry history page admitted',
-      );
+      ),
+    );
+    transport.openFailure = const StudioFailure(
+      code: StudioFailureCode.unavailable,
+      message: 'synthetic terminal connection failure',
+      retryable: false,
+      correlationId: 'retired-failed-actions',
+    );
+    client.conversations.session('thread').content.refresh();
+    await pumpClientUntil(
+      tester,
+      () => transport.openCalls == 2,
+      'failed reconnect admitted',
+    );
+    // Advance only the SDK's documented retry timers, not an arbitrary settling delay.
+    for (final (index, delay) in const RetryPolicy().delays.indexed) {
       await tester.pump();
-      expect(first.pageCalls[1].before, 'old-cursor');
-      expect(oldScope.pendingQueries, 1);
-      expect(owner.source.value!.isLoadingOlder, isTrue);
-      expect(
-        client.budget.used(ResourceKind.pendingOperation),
-        pendingBefore + 1,
-      );
-      final acceptedPage = owner.retryOlder(
-        'thread',
-        generation: lease.generation,
-      );
-      expect(first.pageCalls, hasLength(2), reason: '借用原在途 join，不再受理一页');
-
-      var callbacks = readyCallbacks;
-      if (phase == TimelineConnectionPhase.failed) {
-        const openFailure = StudioFailure(
-          code: StudioFailureCode.unavailable,
-          message: 'synthetic reconnect open failure',
-          retryable: false,
-          correlationId: 'retired-actions-connection',
-        );
-        // Exercise SDK failure/retry exhaustion, not a fabricated ViewState.
-        // Waiting for its terminal state observes the real retry policy; there
-        // is no sleep or test-side replacement of the connection state machine.
-        transport.openFailure = openFailure;
-        await tester.runAsync(() async {
-          client.conversations.session('thread').content.refresh();
-          await owner.source.waitFor(
-            (state) => state?.connection == TimelineConnectionPhase.failed,
-          );
-        });
-        await tester.pump();
-        expect(owner.source.value!.connectionError, same(openFailure));
-        expect(owner.lease('thread'), same(lease));
-        expect(lease.hasOlder, isTrue);
-        expect(oldScope.pendingQueries, 1);
-        callbacks = captureActions({
-          StudioDriverKeys.timelineReturnLive,
-          StudioDriverKeys.timelineRetryConnection,
-        });
-      }
-
-      final beforeRetirement = owner.source.value;
-      final oldMessages = List<Message>.of(lease.controller.messages);
-      final oldVersion = lease.appliedVersion;
-      final opensBeforeRetirement = transport.openCalls;
-      final queriesBeforeRetirement = transport.queryAdmissions;
-      final released = lease.retire();
-      expect(lease.isMounted, isTrue);
-      expect(lease.isReleased, isFalse);
-      expect(oldScope.isActive, isFalse);
-      for (final action in callbacks.entries) {
-        action.value();
-        await tester.pump();
-        expect(
-          owner.source.value,
-          same(beforeRetirement),
-          reason: '${action.key} 不得从仍挂载的退役 View 发布动作',
-        );
-        expect(owner.lease('thread'), same(lease));
-        expect(lease.isMounted, isTrue);
-        expect(lease.isReleased, isFalse);
-        expect(lease.appliedVersion, oldVersion);
-        expect(lease.controller.messages, orderedEquals(oldMessages));
-        expect(
-          transport.openCalls,
-          opensBeforeRetirement,
-          reason: '${action.key}',
-        );
-        expect(
-          transport.queryAdmissions,
-          queriesBeforeRetirement,
-          reason: '${action.key}',
-        );
-        expect(oldScope.pendingQueries, 1);
-        expect(
-          client.budget.used(ResourceKind.pendingOperation),
-          pendingBefore + 1,
-        );
-      }
-
-      // Establish a genuine replacement while the original accepted page is
-      // still blocked. No empty-tree pump is allowed to stand in for rebind.
-      transport.openFailure = null;
-      transport.baseline = ConversationBaseline(
-        subscriptionId: 'replacement-authority',
-        version: 7,
-        items: [
-          for (var index = 0; index < 32; index++)
-            componentText(
-              'history-$index',
-              ordinal: 100 + index,
-              revision: 2,
-              body: '新展示第 $index 段正文' * 8,
-            ),
-        ],
-        before: 'old-cursor',
-        hasOlder: true,
-      );
-      await tester.runAsync(() => owner.returnToLive('thread'));
-      final replacement = owner.lease('thread')!;
-      expect(replacement, isNot(same(lease)));
-      expect(replacement.generation, greaterThan(lease.generation));
-      expect(replacement.hasOlder, isTrue);
-      expect(replacement.olderCursor, 'old-cursor');
-      expect(replacement.appliedVersion, 7);
-      expect(replacement.loadedCount, 32);
-      await _emitTailAdditions(
+      await tester.pump(delay);
+      await pumpClientUntil(
         tester,
-        owner: owner,
-        lease: replacement,
-        connection: transport.connections.last,
-        from: 7,
-        to: 8,
-        items: [
-          for (var index = 32; index < 40; index++)
-            componentText(
-              'history-$index',
-              ordinal: 100 + index,
-              revision: 2,
-              body: '新展示第 $index 段正文' * 8,
-            ),
-        ],
+        () => transport.openCalls == index + 3,
+        'retry policy attempt ${index + 1}',
       );
-      expect(replacement.appliedVersion, 8);
-      expect(replacement.loadedCount, 40);
-      expect(transport.connections.last.pageCalls, isEmpty);
-      await renderConnector();
-      await tester.pumpAndSettle();
-      expect(lease.isMounted, isFalse);
-      expect(replacement.isMounted, isTrue);
-      expect(lease.isReleased, isFalse, reason: '卸载不提前释放原查询许可');
-      expect(replacement.items.map((item) => item.id), [
-        for (var index = 0; index < 40; index++) 'history-$index',
-      ]);
-      expect(
-        replacement
-            .itemOf('history-39')!
-            .fieldFor(const ThreadTextFieldView())!
-            .text,
-        '新展示第 39 段正文' * 8,
-      );
-      final replacementState = owner.source.value!;
-      expect(replacementState.isLoadingOlder, isFalse);
-      expect(replacementState.isPreparingLive, isFalse);
-      final replacementMessages = List<Message>.of(
-        replacement.controller.messages,
-      );
-      const replacementVersion = 8;
-      final opensBeforeReplay = transport.openCalls;
-      final queriesBeforeReplay = transport.queryAdmissions;
-      final replacementBodies = {
-        for (var index = 0; index < 40; index++)
-          'history-$index': '新展示第 $index 段正文' * 8,
-      };
-      void expectReplacementUnchanged() {
-        expect(owner.lease('thread'), same(replacement));
-        expect(owner.source.value, same(replacementState));
-        expect(owner.source.value!.isLoadingOlder, isFalse);
-        expect(owner.source.value!.isPreparingLive, isFalse);
-        expect(replacement.appliedVersion, replacementVersion);
-        expect(
-          replacement.controller.messages,
-          orderedEquals(replacementMessages),
-        );
-        expect({
-          for (final item in replacement.items)
-            item.id: item.fieldFor(const ThreadTextFieldView())!.text,
-        }, replacementBodies);
-        expect(replacement.items.map((item) => item.revision), everyElement(2));
-        expect(transport.openCalls, opensBeforeReplay);
-        expect(transport.queryAdmissions, queriesBeforeReplay);
-      }
-
-      for (final action in callbacks.entries) {
-        action.value();
-        await tester.pump();
-        expectReplacementUnchanged();
-        expect(oldScope.pendingQueries, 1, reason: '${action.key} 不得遗失原 query');
-        expect(
-          client.budget.used(ResourceKind.pendingOperation),
-          pendingBefore + 1,
-        );
-        expect(first.closeCalls, 0, reason: '原后端 gate 未退出前不能确认 feed join');
-      }
-
-      // Complete only the original backend gate, then join the SDK scope and
-      // lease. Late history must not append into the replacement or reset it.
-      first.pageCalls[1].reply.complete(
-        ConversationPage(
-          items: [componentText('late-old', ordinal: 99, body: '迟到的旧页')],
-          before: 'older-next',
-          hasOlder: true,
-        ),
-      );
-      await _pumpFrames(tester);
-      await pumpClientFuture(
-        tester,
-        acceptedPage,
-        'original accepted history page join',
-      );
-      final report = await pumpClientFuture(
-        tester,
-        oldScope.close(),
-        'old history scope close',
-      );
-      expect(report.unresolved, isEmpty);
-      await pumpClientFuture(tester, released, 'old history lease release');
-      await tester.pump();
-      expect(lease.isReleased, isTrue);
-      expect(first.closeCalls, 1);
-      expect(oldScope.pendingQueries, 0);
-      expect(client.budget.used(ResourceKind.pendingOperation), pendingBefore);
-      expectReplacementUnchanged();
-      expect(replacement.itemOf('late-old'), isNull);
-
-      // A real replacement scope can now query the SAME cursor. This is the
-      // SDK cancellation/retry proof; the small View-only ready test is not.
-      final replacementPage = owner.loadOlder(
-        'thread',
-        generation: replacement.generation,
-      );
-      final second = transport.connections.last;
-      await pumpClientFuture(
-        tester,
-        second.pageEntered(1),
-        'replacement page admitted',
-      );
-      expect(second.pageCalls.single.before, 'old-cursor');
-      expect(replacement.queries, isNot(same(oldScope)));
-      expect(replacement.queries!.generation, replacement.generation);
-      expect(replacement.queries!.isActive, isTrue);
-      expect(
-        client.budget.used(ResourceKind.pendingOperation),
-        pendingBefore + 1,
-      );
-      second.pageCalls.single.reply.complete(
-        ConversationPage(
-          items: [
-            componentText(
-              'replacement-older',
-              ordinal: 99,
-              body: '新 scope 接纳的旧页',
-            ),
-          ],
-          before: null,
-          hasOlder: false,
-        ),
-      );
-      await pumpClientFuture(
-        tester,
-        replacementPage,
-        'replacement page settled',
-      );
-      await tester.pump();
-      expect(owner.lease('thread'), same(replacement));
-      expect(
-        replacement
-            .itemOf('replacement-older')!
-            .fieldFor(const ThreadTextFieldView())!
-            .text,
-        '新 scope 接纳的旧页',
-      );
-      expect(replacement.hasOlder, isFalse);
-      expect(owner.source.value!.isLoadingOlder, isFalse);
-      expect(client.budget.used(ResourceKind.pendingOperation), pendingBefore);
-      await _unmountTimeline(tester);
     }
+    await pumpClientUntil(
+      tester,
+      () => owner.source.value?.connection == TimelineConnectionPhase.failed,
+      'real SDK connection failure',
+    );
+    await tester.pumpAndSettle();
+    final retry = tester
+        .widget<ButtonStyleButton>(
+          find.byKey(StudioDriverKeys.timelineRetryConnection),
+        )
+        .onPressed!;
+    final back = tester
+        .widget<ButtonStyleButton>(
+          find.byKey(StudioDriverKeys.timelineReturnLive),
+        )
+        .onPressed!;
+    final before = owner.source.value;
+    final opensBefore = transport.openCalls;
+    final messages = List<Message>.of(lease.controller.messages);
+    final released = lease.retire();
+    expect(lease.isMounted, isTrue);
+    expect(lease.isReleased, isFalse);
+    for (final action in [retry, back]) {
+      action();
+      await tester.pump();
+      expect(owner.source.value, same(before));
+      expect(lease.controller.messages, orderedEquals(messages));
+      expect(transport.openCalls, opensBefore, reason: '捕获的旧按钮不能重新打开连接');
+      expect(transport.queryAdmissions, 0);
+      expect(lease.isReleased, isFalse);
+    }
+    await _unmountTimeline(tester);
+    await pumpClientFuture(tester, released, 'failed display subtree released');
+    expect(lease.isReleased, isTrue);
+  });
+
+  testWidgets('epoch reset 换绑拒绝旧按钮和迟到页，真实卸载后仍等待旧 reader', (tester) async {
+    final (client, owner, transport) = await _openDetailSession(
+      tester,
+      baseline: componentBaseline(
+        [
+          for (var i = 100; i < 132; i++)
+            componentText('old-$i', appendSeq: i, body: '旧展示正文' * 16),
+        ],
+        before: 'same-cursor',
+        hasOlder: true,
+      ),
+    );
+    final lease = owner.lease('thread')!;
+    await owner.dispatch('thread', const TimelineEnterHistory());
+    final failedPage = owner.loadOlder('thread', generation: lease.generation);
+    await pumpClientFuture(
+      tester,
+      transport.pageEntered(1),
+      'old page admitted',
+    );
+    transport.pageCalls[0].reply.completeError(StateError('page failure'));
+    await pumpClientFuture(tester, failedPage, 'page failure rendered');
+    await tester.pumpWidget(
+      host(
+        const TimelineConnector(threadId: 'thread'),
+        client: client,
+        owner: owner,
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(lease.isMounted, isTrue);
+    final retry = tester
+        .widget<ButtonStyleButton>(
+          find.byKey(StudioDriverKeys.timelineRetryOlder),
+        )
+        .onPressed!;
+    final back = tester
+        .widget<ButtonStyleButton>(
+          find.byKey(StudioDriverKeys.timelineReturnLive),
+        )
+        .onPressed!;
+    retry();
+    await pumpClientFuture(
+      tester,
+      transport.pageEntered(2),
+      'captured valid retry admitted',
+    );
+    final accepted = owner.retryOlder('thread', generation: lease.generation);
+    final oldScope = lease.queries!;
+    expect(oldScope.pendingQueries, 1);
+    final pending = client.budget.used(ResourceKind.pendingOperation);
+    final feed = transport.connections.single;
+    transport.baseline = componentBaseline(
+      [
+        for (var i = 100; i < 132; i++)
+          componentText('new-$i', appendSeq: i, body: '新展示正文' * 16),
+      ],
+      before: 'same-cursor',
+      hasOlder: true,
+      timelineEpoch: 'new-epoch',
+      subscriptionId: feed.subscriptionId,
+    );
+    feed.emit(ConversationReset(transport.baseline));
+    await pumpClientUntil(
+      tester,
+      () => owner.lease('thread') != lease,
+      'new epoch accepted',
+    );
+    final replacement = owner.lease('thread')!;
+    await tester.pumpAndSettle();
+    expect(replacement.isMounted, isTrue);
+    expect(lease.isMounted, isFalse);
+    expect(lease.isReleased, isFalse, reason: '真实卸载不能丢失旧页与 reader join');
+    expect(oldScope.isActive, isFalse);
+    final state = owner.source.value;
+    final messages = List<Message>.of(replacement.controller.messages);
+    final cursor = replacement.completedCursor;
+    for (final action in [retry, back]) {
+      action();
+      await tester.pump();
+      expect(owner.source.value, same(state));
+      expect(replacement.controller.messages, orderedEquals(messages));
+      expect(replacement.completedCursor, same(cursor));
+      expect(transport.queryAdmissions, 2);
+      expect(transport.openCalls, 1);
+      expect(oldScope.pendingQueries, 1);
+      expect(client.budget.used(ResourceKind.pendingOperation), pending);
+    }
+    final closing = await pumpClientFuture(
+      tester,
+      oldScope.close(deadline: DateTime.utc(2000)),
+      'retired reader pending close report',
+    );
+    expect(closing.complete, isFalse);
+    expect(closing.unresolved, isNotEmpty);
+    expect(replacement.isRetired, isFalse);
+    expect(replacement.isMounted, isTrue);
+    expect(client.budget.used(ResourceKind.pendingOperation), pending);
+    transport.pageCalls[1].reply.complete(
+      ConversationPage(
+        threadId: 'thread',
+        timelineEpoch: 'component-epoch',
+        items: [componentText('late-old', appendSeq: 99, body: '迟到旧页')],
+        before: const ConversationQueryCursor('older-next'),
+        hasOlder: true,
+      ),
+    );
+    await pumpClientFuture(tester, accepted, 'old accepted page joined');
+    await pumpClientFuture(
+      tester,
+      lease.released,
+      'old reader and Chat released',
+    );
+    expect(replacement.itemOf('late-old'), isNull);
+    expect(replacement.completedCursor, same(cursor));
+    expect(replacement.controller.messages, orderedEquals(messages));
+    expect(owner.source.value, same(state), reason: '迟到页不能污染仍活动的新展示');
+    expect(transport.readers.single.closed, isTrue);
+    final replacementPage = owner.loadOlder(
+      'thread',
+      generation: replacement.generation,
+    );
+    await pumpClientFuture(
+      tester,
+      transport.pageEntered(3),
+      'replacement same cursor admitted',
+    );
+    expect(
+      transport.pageCalls[2].before,
+      const ConversationQueryCursor('same-cursor'),
+    );
+    expect(replacement.queries, isNot(same(oldScope)));
+    expect(replacement.queries!.generation, replacement.generation);
+    transport.pageCalls[2].reply.complete(
+      ConversationPage(
+        threadId: 'thread',
+        timelineEpoch: 'new-epoch',
+        items: [
+          componentText(
+            'replacement-older',
+            appendSeq: 99,
+            body: '新 scope 接纳的旧页',
+          ),
+        ],
+        before: null,
+        hasOlder: false,
+      ),
+    );
+    await pumpClientFuture(
+      tester,
+      replacementPage,
+      'replacement page committed',
+    );
+    await tester.pumpAndSettle();
+    expect(
+      replacement
+          .itemOf('replacement-older')
+          ?.fieldFor(const ThreadTextFieldView())
+          ?.text,
+      '新 scope 接纳的旧页',
+    );
+    expect(replacement.hasOlder, isFalse);
+    expect(replacement.completedCursor, same(cursor));
+    expect(transport.openCalls, 1);
+    expect(transport.readers, hasLength(2));
+    expect(transport.readers.last.closed, isFalse);
+    await _unmountTimeline(tester);
+    final joined = await pumpClientFuture(
+      tester,
+      owner.close(),
+      'retry owner cleanup',
+    );
+    expect(joined.complete, isTrue);
   });
 
   // ---- R2 嵌套工具内部滚动：桌面平台语义下的承重证明 -----------------------------
@@ -2791,7 +2628,7 @@ void main() {
     '嵌套工具内部滚动不会把主 Timeline 推进 History',
     variant: TargetPlatformVariant.only(TargetPlatform.linux),
     (tester) async {
-      final lease = leaseFor(
+      final lease = await leaseFor(
         tester,
         items: [
           toolItem(
@@ -2892,7 +2729,7 @@ void main() {
   // ---- R3 无位移动作不得悬挂意图 --------------------------------------------------
 
   testWidgets('底端无位移的键盘/轨道动作不把之后的几何修正误判为用户意图', (tester) async {
-    final lease = leaseFor(tester, items: longHistory());
+    final lease = await leaseFor(tester, items: longHistory());
     var enteredHistory = 0;
     var loads = 0;
     await tester.pumpWidget(
@@ -2916,7 +2753,9 @@ void main() {
     // 已在底端：先点选最靠近底端的正文让键盘焦点进入，再按 PageDown
     // （反向列表底端无位移）。
     await tester.tap(
-      find.byKey(StudioDriverKeys.timelineRow('item-119')),
+      find.byKey(
+        StudioDriverKeys.timelineRow(lease.presentationFor('item-119')!.id),
+      ),
       kind: PointerDeviceKind.mouse,
     );
     await tester.pumpAndSettle();
@@ -2991,7 +2830,10 @@ void main() {
   // ---- R4 有内容时连接状态可见 + 重试不换代 ---------------------------------------
 
   testWidgets('重连/失败在已有内容时可见，重试不换代也不丢 History', (tester) async {
-    final lease = leaseFor(tester, items: [textItem('only', ordinal: 1)]);
+    final lease = await leaseFor(
+      tester,
+      items: [textItem('only', appendSeq: 1)],
+    );
     var retries = 0;
     await tester.pumpWidget(
       host(
@@ -3045,7 +2887,12 @@ void main() {
       findsWidgets,
       reason: '重连状态必须有实际可见提示，且已有内容保留',
     );
-    expect(find.byKey(StudioDriverKeys.timelineRow('only')), findsOneWidget);
+    expect(
+      find.byKey(
+        StudioDriverKeys.timelineRow(lease.presentationFor('only')!.id),
+      ),
+      findsOneWidget,
+    );
     expect(find.byKey(StudioDriverKeys.timelineRetryConnection), findsNothing);
 
     // failed：可见错误 + retry；点 retry 只重试连接，代次与内容不变。
@@ -3083,51 +2930,86 @@ void main() {
     await tester.pumpAndSettle();
     expect(retries, 1);
     expect(lease.generation, 1, reason: '连接重试不得换代');
-    expect(find.byKey(StudioDriverKeys.timelineRow('only')), findsOneWidget);
+    expect(
+      find.byKey(
+        StudioDriverKeys.timelineRow(lease.presentationFor('only')!.id),
+      ),
+      findsOneWidget,
+    );
   });
 }
 
-// Feed input and synchronization only: the SDK validates the patch, and its
-// existing owner observer applies it before this state waiter can complete.
+final _fixtures = Expando<(TimelineSessionOwner, _DetailTransport)>();
+
+Future<void> _appendCompleted(
+  WidgetTester tester,
+  TimelineDisplayLease lease,
+  List<ConversationItem> items,
+) async {
+  final (owner, transport) = _fixtures[lease]!;
+  final connection = transport.connections.last;
+  final from = lease.completedCursor!.appendSeq;
+  final through = items.last.header.appendSeq;
+  expect(items.map((item) => item.header.appendSeq), [
+    for (var seq = from + 1; seq <= through; seq++) seq,
+  ]);
+  connection.emit(
+    ConversationBatch(
+      subscriptionId: connection.subscriptionId,
+      timelineEpoch: lease.timelineEpoch,
+      fromSeq: from,
+      throughSeq: through,
+      items: items,
+    ),
+  );
+  await pumpClientUntil(
+    tester,
+    () => lease.completedCursor?.appendSeq == through,
+    'completed atoms accepted by Flyer',
+  );
+  await pumpClientUntil(
+    tester,
+    () => connection.acknowledgements.contains(connection.deliveredFrames),
+    'completion credit acknowledged',
+  );
+  expect(owner.lease('thread'), same(lease));
+  expect(lease.completedCursor?.appendSeq, through);
+}
+
 Future<void> _emitTailAdditions(
   WidgetTester tester, {
   required TimelineSessionOwner owner,
   required TimelineDisplayLease lease,
   required _DetailConnection connection,
-  required int from,
-  required int to,
   required List<ConversationItem> items,
 }) async {
   expect(lease.loadedCount, 32);
-  expect(lease.appliedVersion, from);
-  expect(items, hasLength(8));
-  await tester.runAsync(() async {
-    connection.emit(
-      ConversationPatch(
-        subscriptionId: connection.subscriptionId,
-        from: from,
-        to: to,
-        priority: ConversationPriority.immediate,
-        changes: [for (final item in items) ConversationAdd(item)],
-      ),
-    );
-    await lease.content.state.waitFor(
-      (state) =>
-          lease.appliedVersion == to ||
-          state is ChatReconnecting<ConversationContentFrame> ||
-          state is ChatFailed<ConversationContentFrame> ||
-          state is ChatClosed<ConversationContentFrame>,
-    );
-  });
+  final from = lease.completedCursor!.appendSeq;
+  final through = items.last.header.appendSeq;
+  expect(items.map((item) => item.header.appendSeq), [
+    for (var seq = from + 1; seq <= through; seq++) seq,
+  ]);
+  connection.emit(
+    ConversationBatch(
+      subscriptionId: connection.subscriptionId,
+      timelineEpoch: lease.timelineEpoch,
+      fromSeq: from,
+      throughSeq: through,
+      items: items,
+    ),
+  );
+  await pumpClientUntil(
+    tester,
+    () => lease.completedCursor?.appendSeq == through,
+    'completion batch presented',
+  );
+  await pumpClientUntil(
+    tester,
+    () => connection.acknowledgements.contains(connection.deliveredFrames),
+    'batch credit acknowledged',
+  );
   expect(owner.lease('thread'), same(lease));
-  expect(lease.appliedVersion, to);
   expect(lease.loadedCount, 40);
-  final frame = lease.content.lastDeliveredFrame;
-  expect(frame, isA<ConversationPatchFrame>());
-  final patch = (frame! as ConversationPatchFrame).patch;
-  expect(patch.subscriptionId, connection.subscriptionId);
-  expect(patch.from, from);
-  expect(patch.to, to);
 }
 
 // The Client/owner are constructed by the widget test, while their first feed
@@ -3160,34 +3042,44 @@ _openDetailSession(
   _DetailTransport? backend,
 }) async {
   final transport = backend ?? _DetailTransport(baseline: baseline);
-  final client = AnyworkClient(transport: transport, clientId: 'd4a-viewer');
-  final owner = TimelineSessionOwner(client: client);
-  // Keep cleanup registered even if a behavior assertion fails with a gate open.
-  // Settle backend gates, close the real route, then unmount and join its owners.
+  final accounts = _UnusedTimelineAccountPorts();
+  final graph = AppGraph(
+    transport: transport,
+    statisticsFeed: const TestStatisticsFeedPort(),
+    clientId: 'timeline-widget',
+    accountFeed: accounts,
+    accountConfiguration: accounts,
+    accountModels: accounts,
+    accountUsage: accounts,
+    acpPort: accounts,
+  );
+  final client = graph.client;
+  final owner = graph.timeline;
   addTearDown(() async {
     transport.releasePending();
     await _unmountTimeline(tester);
-    final deadline = DateTime.now().add(const Duration(seconds: 5));
-    await _closeDetailSession(tester, owner, client, deadline);
+    final report = await pumpClientFuture(
+      tester,
+      graph.close(deadline: DateTime.now().add(const Duration(seconds: 5))),
+      'widget AppGraph close',
+    );
+    expect(report.unresolved, isEmpty);
     expect(client.budget.usage, isEmpty);
   });
-  await tester.runAsync(() async {
-    client.selection.markOpened();
-    client.threadDirectory.applyBaseline(
-      ThreadDirectoryPage(threads: [_thread()], revision: 1),
-      revision: 1,
-    );
-    client.selection.selectThread(threadId: 'thread', projectId: 'project');
-    client.conversations.setVisibleThread('thread');
-    owner.select('thread');
-    await client.conversations.session('thread').content.ready;
-    await owner.source.waitFor(
-      (state) =>
-          state != null &&
-          state.generation > 0 &&
-          state.connection == TimelineConnectionPhase.ready,
-    );
-  });
+  graph.setConversationPageVisible(true, threadId: 'thread');
+  await pumpClientFuture(
+    tester,
+    client.conversations.session('thread').content.ready,
+    'SDK baseline ready after owner acceptance',
+  );
+  expect(owner.source.value?.connection, TimelineConnectionPhase.ready);
+  await pumpClientUntil(
+    tester,
+    () => transport.connections.single.acknowledgements.contains(
+      transport.connections.single.deliveredFrames,
+    ),
+    'baseline credit acknowledged',
+  );
   return (client, owner, transport);
 }
 
@@ -3204,24 +3096,28 @@ StudioThread _thread() => StudioThread(
 
 /// Typed baseline facts; no old ThreadItem shell or duplicate detail metadata.
 ConversationBaseline _detailBaseline() => componentBaseline([
-  componentText('big', ordinal: 1, body: '预览', totalBytes: 13),
+  componentText('big', appendSeq: 1, body: '预览', totalBytes: 13),
 ]);
 
-// Only the Driver scenario uses this feed baseline. Its last eight rows arrive
-// through a real patch; a tail's initial frame is bounded to 32, not page's 100.
+// The Driver projection receives a small baseline followed by a real completion
+// batch. It does not seed a second history mirror or bypass owner acceptance.
 ConversationBaseline _longBaseline() => componentBaseline(
   [
     for (var index = 0; index < 32; index++)
-      componentText('line-$index', ordinal: index, body: '第 $index 段静态正文' * 6),
+      componentText(
+        'line-$index',
+        appendSeq: index + 1,
+        body: '第 $index 段静态正文' * 6,
+      ),
   ],
   before: 'cursor',
   hasOlder: true,
 );
 
 ConversationBaseline _selectionBaseline() => componentBaseline([
-  componentText('before', ordinal: 1, body: '前段canonical正文'),
-  componentText('big', ordinal: 2, body: '截断前的preview', totalBytes: 40),
-  componentText('after', ordinal: 3, body: '后段canonical正文'),
+  componentText('before', appendSeq: 1, body: '前段canonical正文'),
+  componentText('big', appendSeq: 2, body: '截断前的preview', totalBytes: 40),
+  componentText('after', appendSeq: 3, body: '后段canonical正文'),
 ]);
 
 ConversationBaseline _twoFieldBaseline() => componentBaseline([
@@ -3269,23 +3165,42 @@ final Uint8List _onePixelPng = Uint8List.fromList(const <int>[
   0x42, 0x60, 0x82,
 ]);
 
-final class _DetailTransport implements StudioTransport {
+class _DetailTransport extends RecordingDemoTransport {
   _DetailTransport({ConversationBaseline? baseline})
     : baseline = baseline ?? _detailBaseline();
   ConversationBaseline baseline;
   final List<_DetailConnection> connections = [];
+  final List<_DetailReader> readers = [];
   int openCalls = 0;
   Object? openFailure;
-  int get queryAdmissions => connections.fold(
-    0,
-    (count, connection) =>
-        count + connection.pageCalls.length + connection.detailCalls.length,
-  );
+  int get readerOpens => readers.length;
+  int get queryAdmissions => pageCalls.length + detailCalls.length;
+  final List<
+    ({
+      ConversationQueryCursor? before,
+      int? limit,
+      Completer<ConversationPage> reply,
+    })
+  >
+  pageCalls = [];
+  final List<
+    ({
+      String itemId,
+      ConversationDetailQuery query,
+      Completer<ConversationDetailChunk> reply,
+    })
+  >
+  detailCalls = [];
+  final List<Completer<void>> _pageAdmissions = [];
   final List<Completer<_DetailConnection>> _opened = [];
-  bool holdNextOpen = false;
   bool holdNextInitial = false;
-  Completer<void>? _held;
   Completer<void>? _initialGate;
+  Future<void> pageEntered(int count) {
+    while (_pageAdmissions.length < count) {
+      _pageAdmissions.add(Completer<void>());
+    }
+    return _pageAdmissions[count - 1].future;
+  }
 
   Future<_DetailConnection> opened(int count) {
     while (_opened.length < count) {
@@ -3295,31 +3210,32 @@ final class _DetailTransport implements StudioTransport {
   }
 
   @override
-  Future<ConversationFeed> openConversationFeed(String threadId) async {
+  Future<ConversationFeed> openConversationFeed(
+    String threadId, {
+    ConversationCompletionCursor? resumeAfter,
+  }) async {
     openCalls++;
     final failure = openFailure;
     if (failure != null) throw failure;
     final gate = holdNextInitial ? (_initialGate = Completer<void>()) : null;
     holdNextInitial = false;
     final connection = _DetailConnection(
-      baseline: baseline,
+      baseline: () => baseline,
       serial: connections.length + 1,
       initialGate: gate,
+      resumed: resumeAfter != null,
     );
     connections.add(connection);
     opened(connections.length);
     _opened[connections.length - 1].complete(connection);
-    if (holdNextOpen) {
-      holdNextOpen = false;
-      final held = _held = Completer<void>();
-      await held.future;
-    }
     return connection;
   }
 
-  void releaseHeld() {
-    _held!.complete();
-    _held = null;
+  @override
+  Future<ConversationHistoryReader> openHistoryReader(String threadId) async {
+    final reader = _DetailReader(this, threadId, baseline.timelineEpoch);
+    readers.add(reader);
+    return reader;
   }
 
   void releaseInitial() {
@@ -3328,46 +3244,40 @@ final class _DetailTransport implements StudioTransport {
   }
 
   void releasePending() {
-    final held = _held;
-    if (held != null && !held.isCompleted) held.complete();
-    final initial = _initialGate;
-    if (initial != null && !initial.isCompleted) initial.complete();
-    for (final connection in connections) {
-      for (final call in connection.pageCalls) {
-        if (!call.reply.isCompleted) {
-          call.reply.completeError(const StaleConversationScope());
-        }
+    final gate = _initialGate;
+    if (gate != null && !gate.isCompleted) gate.complete();
+    for (final call in pageCalls) {
+      if (!call.reply.isCompleted) {
+        call.reply.completeError(const StaleConversationScope());
       }
-      for (final call in connection.detailCalls) {
-        if (!call.reply.isCompleted) {
-          call.reply.completeError(const StaleConversationScope());
-        }
+    }
+    for (final call in detailCalls) {
+      if (!call.reply.isCompleted) {
+        call.reply.completeError(const StaleConversationScope());
       }
     }
   }
-
-  @override
-  dynamic noSuchMethod(Invocation invocation) => throw UnsupportedError(
-    'Unused transport capability: ${invocation.memberName}',
-  );
 }
 
-/// Backend gates only: all scope admission, attempts, reducers and permits are SDK-owned.
 final class _DetailConnection extends ScriptedConversationFeed {
   _DetailConnection({
-    required ConversationBaseline baseline,
+    required ConversationBaseline Function() baseline,
     required int serial,
     this.initialGate,
+    required this.resumed,
   }) : super(
          threadId: 'thread',
          subscriptionId: 'detail-$serial',
-         baseline: () => ConversationBaseline(
-           subscriptionId: 'detail-$serial',
-           version: baseline.version,
-           items: baseline.items,
-           before: baseline.before,
-           hasOlder: baseline.hasOlder,
-         ),
+         baseline: () {
+           final value = baseline();
+           return componentBaseline(
+             value.items,
+             before: value.before?.token,
+             hasOlder: value.hasOlder,
+             timelineEpoch: value.timelineEpoch,
+             subscriptionId: 'detail-$serial',
+           );
+         },
          state: () => ThreadSnapshotFrame(
            workspace: ThreadWorkspace(
              thread: _thread(),
@@ -3387,39 +3297,55 @@ final class _DetailConnection extends ScriptedConversationFeed {
          ),
        );
   final Completer<void>? initialGate;
-  final List<({String? before, int? limit, Completer<ConversationPage> reply})>
-  pageCalls = [];
-  final List<Completer<void>> _pageAdmissions = [];
-  Future<void> pageEntered(int count) {
-    while (_pageAdmissions.length < count) {
-      _pageAdmissions.add(Completer<void>());
-    }
-    return _pageAdmissions[count - 1].future;
-  }
-
-  final List<
-    ({
-      String itemId,
-      ConversationDetailQuery query,
-      Completer<ConversationDetailChunk> reply,
-    })
-  >
-  detailCalls = [];
-
+  final bool resumed;
   @override
   Stream<ConversationFrame> get events async* {
-    final source = super.events;
     if (initialGate != null) await initialGate!.future;
-    yield* source;
+    await for (final frame in super.events) {
+      if ((resumed, frame.event) case (
+        true,
+        ConversationBaselineEvent(:final baseline),
+      )) {
+        yield ConversationFrame(
+          threadId: frame.threadId,
+          subscriptionId: frame.subscriptionId,
+          deliverySequence: frame.deliverySequence,
+          event: ConversationUpdateEvent(update: ConversationReset(baseline)),
+        );
+      } else {
+        yield frame;
+      }
+    }
+  }
+}
+
+/// An independent native reader fixture, never a feed or a completion consumer.
+final class _DetailReader implements ConversationHistoryReader {
+  _DetailReader(this.transport, this.threadId, this.timelineEpoch);
+  final _DetailTransport transport;
+  @override
+  final String threadId;
+  @override
+  final String timelineEpoch;
+  final List<Future<void>> _pending = [];
+  bool closing = false;
+  bool closed = false;
+  Future<T> _record<T>(Completer<T> reply) {
+    if (closing) throw StateError('Reader is closing');
+    _pending.add(
+      reply.future.then<void>((_) {}, onError: (Object _, StackTrace _) {}),
+    );
+    return reply.future;
   }
 
   @override
-  Future<ConversationPage> page({String? before, int? limit}) {
+  Future<ConversationPage> page({ConversationQueryCursor? before, int? limit}) {
     final reply = Completer<ConversationPage>();
-    pageCalls.add((before: before, limit: limit, reply: reply));
-    pageEntered(pageCalls.length);
-    _pageAdmissions[pageCalls.length - 1].complete();
-    return reply.future;
+    final result = _record(reply);
+    transport.pageCalls.add((before: before, limit: limit, reply: reply));
+    transport.pageEntered(transport.pageCalls.length);
+    transport._pageAdmissions[transport.pageCalls.length - 1].complete();
+    return result;
   }
 
   @override
@@ -3428,29 +3354,21 @@ final class _DetailConnection extends ScriptedConversationFeed {
     required ConversationDetailQuery query,
   }) {
     final reply = Completer<ConversationDetailChunk>();
-    detailCalls.add((itemId: itemId, query: query, reply: reply));
-    return reply.future;
+    final result = _record(reply);
+    transport.detailCalls.add((itemId: itemId, query: query, reply: reply));
+    return result;
+  }
+
+  @override
+  void requestClose() {
+    closing = true;
   }
 
   @override
   Future<void> close() async {
     requestClose();
-    // A stopped producer cannot forget already accepted backend reads.
-    for (final call in pageCalls) {
-      try {
-        await call.reply.future;
-      } catch (_) {
-        /* delivered to the SDK caller */
-      }
-    }
-    for (final call in detailCalls) {
-      try {
-        await call.reply.future;
-      } catch (_) {
-        /* delivered to the SDK caller */
-      }
-    }
-    await super.close();
+    await Future.wait(_pending);
+    closed = true;
   }
 }
 
@@ -3459,12 +3377,15 @@ ConversationDetailChunk _chunk({
   String? text,
   int totalBytes = 13,
 }) => ConversationDetailChunk(
+  threadId: 'thread',
+  timelineEpoch: 'component-epoch',
   itemId: 'big',
   field: const ThreadTextFieldView(),
-  revision: 1,
   text: text ?? (continuation == null ? '甲🐱\n乙\r\n' : '甲🐱\n'),
   totalBytes: totalBytes,
-  continuation: continuation,
+  continuation: continuation == null
+      ? null
+      : ConversationQueryCursor(continuation),
 );
 
 Finder _imageConnector(String toolId) => find.byWidgetPredicate(

@@ -532,203 +532,26 @@ class _Footer extends StatelessWidget {
   }
 }
 
-/// 固定活动条的接线点。
-///
-/// 阶段/摘要/存储/交互来自当前已打开会话。展开详情是 host 的 ephemeral 状态：
-/// 按活动身份按需读取，不写入 store，也不成为第二份 canonical。
-class _ConversationActivityHost extends ConsumerStatefulWidget {
+/// 仅观察 SDK 当前活动。展开、滚动和计时状态由活动栏自身持有。
+class _ConversationActivityHost extends ConsumerWidget {
   const _ConversationActivityHost({required this.threadId});
 
   final String threadId;
 
   @override
-  ConsumerState<_ConversationActivityHost> createState() =>
-      _ConversationActivityHostState();
-}
-
-class _ConversationActivityHostState
-    extends ConsumerState<_ConversationActivityHost> {
-  String? _expandedIdentity;
-  var _detail = const ThreadActivityDetailState();
-  Future<void>? _inFlight;
-  String? _inFlightIdentity;
-  var _refreshQueued = false;
-  var _loadScheduled = false;
-  var _generation = 0;
-
-  bool _isExpandedFor(ThreadActivityView? activity) =>
-      activity != null && _expandedIdentity == activity.identity;
-
-  @override
-  void didUpdateWidget(covariant _ConversationActivityHost oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (oldWidget.threadId == widget.threadId) return;
-    _clearDetail();
-  }
-
-  void _clearDetail() {
-    _generation++;
-    _expandedIdentity = null;
-    _refreshQueued = false;
-    _detail = const ThreadActivityDetailState();
-    _inFlight = null;
-    _inFlightIdentity = null;
-  }
-
-  void _expand() {
-    final activity = ref
-        .read(conversationActivityInputProvider(widget.threadId))
-        ?.activity;
-    if (activity == null) return;
-    _expandedIdentity = activity.identity;
-    if (_detail.matches(activity.identity) && _detail.error != null) {
-      _detail = const ThreadActivityDetailState();
-    }
-    if (!_covers(activity)) {
-      _requestLoad();
-    }
-  }
-
-  void _collapse() {
-    _expandedIdentity = null;
-    _refreshQueued = false;
-  }
-
-  void _requestLoad() {
-    if (_loadScheduled) return;
-    _loadScheduled = true;
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _loadScheduled = false;
-      if (mounted) unawaited(_load());
-    });
-  }
-
-  bool _covers(ThreadActivityView activity) {
-    return _detail.covers(activity.identity, activity.revision) &&
-        _detail.revision >= activity.revision;
-  }
-
-  bool _needsDetail(ThreadActivityView? activity) {
-    if (activity == null) return false;
-    return _isExpandedFor(activity) ||
-        activity.kind == ThreadActivityKind.responding;
-  }
-
-  Future<void> _load() async {
-    if (!mounted) return;
-    final activity = ref
-        .read(conversationActivityInputProvider(widget.threadId))
-        ?.activity;
-    if (!_needsDetail(activity)) return;
-    if (_covers(activity!)) return;
-    if (_inFlight != null && _inFlightIdentity == activity.identity) {
-      _refreshQueued = true;
-      return;
-    }
-    final generation = _generation;
-    final threadId = widget.threadId;
-    _inFlightIdentity = activity.identity;
-    setState(() {
-      _detail = _detail.copyWith(
-        identity: activity.identity,
-        revision: activity.revision,
-        loading: true,
-        error: null,
-      );
-    });
-    final request = _perform(threadId, activity, generation);
-    _inFlight = request;
-    await request;
-    if (identical(_inFlight, request)) {
-      _inFlight = null;
-      _inFlightIdentity = null;
-    }
-    final latestAfter = mounted
-        ? ref.read(conversationActivityInputProvider(widget.threadId))?.activity
-        : null;
-    if (_refreshQueued &&
-        mounted &&
-        _needsDetail(latestAfter) &&
-        generation == _generation) {
-      _refreshQueued = false;
-      unawaited(_load());
-    }
-  }
-
-  Future<void> _perform(
-    String threadId,
-    ThreadActivityView activity,
-    int generation,
-  ) async {
-    try {
-      // 活动详情没有命令 lane。展开或流式回复时直接读 data source，不写入 store。
-      final detail = await ref
-          .read(anyworkClientProvider)
-          .readThreadActivityDetail(threadId, activity.identity);
-      if (!mounted || generation != _generation) return;
-      final latest = ref
-          .read(conversationActivityInputProvider(threadId))
-          ?.activity;
-      if (!_needsDetail(latest)) return;
-      if (latest != null && latest.identity != activity.identity) return;
-      setState(() {
-        _detail = ThreadActivityDetailState(
-          identity: activity.identity,
-          revision: activity.revision,
-          detail: detail,
-        );
-      });
-    } on Object catch (error) {
-      if (!mounted || generation != _generation) return;
-      final latest = ref
-          .read(conversationActivityInputProvider(threadId))
-          ?.activity;
-      if (!_needsDetail(latest)) return;
-      if (latest != null && latest.identity != activity.identity) return;
-      setState(() {
-        _detail = ThreadActivityDetailState(
-          identity: activity.identity,
-          revision: activity.revision,
-          error: error.toString(),
-        );
-      });
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final input = ref.watch(conversationActivityInputProvider(widget.threadId));
-    final activity = input?.activity;
-    if (activity == null &&
-        (_detail.identity != null ||
-            _inFlightIdentity != null ||
-            _expandedIdentity != null)) {
-      _clearDetail();
-    }
-    if (_needsDetail(activity) && !_covers(activity!)) {
-      _requestLoad();
-    }
-    final matches = activity != null && _detail.matches(activity.identity);
+  Widget build(BuildContext context, WidgetRef ref) {
+    final input = ref.watch(conversationActivityInputProvider(threadId));
     final view = input == null
         ? null
         : projectConversationActivity(
-            activity: activity,
+            current: input.currentActivity,
             storage: input.storage,
             interaction: input.interaction,
-            detail: matches ? _detail.detail : null,
-            detailsLoading: matches && _detail.loading,
-            detailsError: matches ? _detail.error : null,
           );
-    if (view == null) {
-      StudioDriverState.publishConversationActivity(null);
-      return const SizedBox.shrink();
-    }
     StudioDriverState.publishConversationActivity(view);
+    if (view == null) return const SizedBox.shrink();
     return ConversationActivityBar(
       view: view,
-      onExpand: _expand,
-      onCollapse: _collapse,
-      // Driver 可观察的是“实际展开态”，不是 `expandable` 的“可展开能力”。
       onExpandedChanged: StudioDriverState.publishActivityExpanded,
     );
   }

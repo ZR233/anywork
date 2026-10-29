@@ -1157,9 +1157,12 @@ class _WorkflowScenarioTransport extends DemoStudioTransport {
       );
 
   @override
-  Future<ConversationFeed> openConversationFeed(String threadId) async {
+  Future<ConversationFeed> openConversationFeed(
+    String threadId, {
+    ConversationCompletionCursor? resumeAfter,
+  }) async {
     return MappedConversationFeed(
-      await super.openConversationFeed(threadId),
+      await super.openConversationFeed(threadId, resumeAfter: resumeAfter),
       (frame) => switch (frame) {
         ThreadSnapshotFrame(:final workspace) => ThreadSnapshotFrame(
           workspace: workspace.copyWith(runtime: _runtime(workspace.runtime)),

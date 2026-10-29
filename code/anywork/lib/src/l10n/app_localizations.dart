@@ -4182,6 +4182,18 @@ abstract class AppLocalizations {
   /// **'Approved'**
   String get interactionPlanApproved;
 
+  /// No description provided for @planDetailDrafting.
+  ///
+  /// In en, this message translates to:
+  /// **'Drafting'**
+  String get planDetailDrafting;
+
+  /// No description provided for @planDetailRevisionRequested.
+  ///
+  /// In en, this message translates to:
+  /// **'Changes requested'**
+  String get planDetailRevisionRequested;
+
   /// No description provided for @statusPlanEntry.
   ///
   /// In en, this message translates to:
@@ -7133,6 +7145,12 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'No answer provided'**
   String get timelineUserInputNoAnswer;
+
+  /// No description provided for @timelineUserInputOptions.
+  ///
+  /// In en, this message translates to:
+  /// **'Options'**
+  String get timelineUserInputOptions;
 
   /// No description provided for @timelineUserInputSecretHidden.
   ///
