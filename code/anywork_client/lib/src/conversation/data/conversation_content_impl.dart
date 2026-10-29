@@ -90,6 +90,7 @@ final class ConversationContentImpl implements ConversationContent {
     final waiter = _consumerAvailable;
     _consumerAvailable = null;
     if (waiter != null && !waiter.isCompleted) waiter.complete();
+    if (_demand && _current == null) _open();
     return lease;
   }
 
@@ -97,9 +98,16 @@ final class ConversationContentImpl implements ConversationContent {
     if (!identical(_consumer, lease)) return;
     _consumer = null;
     _cursor = null;
+    _demandVersion++;
+    _retryTimer?.cancel();
+    _retryTimer = null;
+    _availability?.cancel();
+    _availability = null;
     final current = _current;
     if (current != null) _retire(current);
-    if (_demand && !_closed) _open();
+    if (!_closed && _consumer == null && _current == null) {
+      _state.publish(ChatIdle<bool>(threadId));
+    }
   }
 
   void setDemand(bool value) {
@@ -185,9 +193,10 @@ final class ConversationContentImpl implements ConversationContent {
       if (!_live(a)) return;
       onAttempt(a.id);
       if (!_live(a)) return;
+      a.resumeAfter = _cursor;
       final feed = await _transport.openConversationFeed(
         threadId,
-        resumeAfter: _cursor,
+        resumeAfter: a.resumeAfter,
       );
       a.feed = feed;
       if (!_live(a)) return;
@@ -294,6 +303,7 @@ final class ConversationContentImpl implements ConversationContent {
 
   Future<void> _process(_Attempt a, ConversationEvent event) async {
     if (!_live(a)) return;
+    var establishesReady = false;
     switch (event) {
       case ConversationBaselineEvent(:final baseline):
         if (_cursor != null)
@@ -301,8 +311,10 @@ final class ConversationContentImpl implements ConversationContent {
             'unexpected baseline during resume',
           );
         await _deliver(a, ConversationBaselineFrame(baseline));
+        establishesReady = true;
       case ConversationUpdateEvent(:final update):
         await _deliver(a, _toFrame(update));
+        establishesReady = true;
       case ConversationActivityContentEvent(:final frame, :final completed):
         if (frame is! ActivityCommit) {
           if (completed != null)
@@ -315,15 +327,20 @@ final class ConversationContentImpl implements ConversationContent {
           if (completed != null) await _deliver(a, _toFrame(completed));
           if (!_live(a)) return;
           _activity.publish(prepared);
+          establishesReady = completed != null || a.resumeAfter != null;
         }
       case ConversationStateEvent() ||
           ConversationFailureEvent() ||
           ConversationClosedEvent():
         throw const ConversationContinuityError('unexpected event');
     }
-    if (_live(a) && _state.value is! ChatReady<bool>)
+    if (establishesReady &&
+        _live(a) &&
+        _cursor != null &&
+        _consumer != null &&
+        _state.value is! ChatReady<bool>)
       _state.publish(ChatReady<bool>(threadId, true));
-    _retries = 0;
+    if (establishesReady && _live(a)) _retries = 0;
   }
 
   ConversationContentFrame _toFrame(ConversationUpdate update) =>
@@ -528,15 +545,28 @@ final class ConversationContentImpl implements ConversationContent {
     } catch (e) {
       error = e;
     }
-    try {
-      await a.subscription?.cancel();
-    } catch (e) {
-      error ??= e;
+    if (!a.feedClosed) {
+      try {
+        await a.feed?.close();
+        a.feedClosed = true;
+      } catch (e) {
+        error ??= e;
+        a.error = error;
+        a.cleanupFinished = true;
+        a.permit.mark(ResourcePhase.unresolved);
+        return;
+      }
     }
-    try {
-      await a.feed?.close();
-    } catch (e) {
-      error ??= e;
+    final subscription = a.subscription;
+    if (subscription != null) {
+      final cancel = a.subscriptionCancel ??= Future<void>.sync(
+        subscription.cancel,
+      );
+      try {
+        await cancel;
+      } catch (e) {
+        error ??= e;
+      }
     }
     await Future.wait(
       List.of(
@@ -629,7 +659,7 @@ final class ConversationContentImpl implements ConversationContent {
       }
     }
     final reports = await Future.wait([
-      _join(deadline: deadline),
+      _join(deadline: deadline, retiredOnly: !_closed),
       for (final scope in _scopes)
         if (!scope.isActive) scope.close(deadline: deadline),
     ]);
@@ -644,10 +674,13 @@ final class _Attempt {
   final AttemptId id;
   final ResourcePermit permit;
   final int demandVersion;
+  ConversationCompletionCursor? resumeAfter;
   ConversationFeed? feed;
   // The attempt owns this subscription until _cleanup joins cancel.
   // ignore: cancel_subscriptions
   StreamSubscription<ConversationFrame>? subscription;
+  Future<void>? subscriptionCancel;
+  bool feedClosed = false;
   Future<void>? task;
   final Completer<void> stopped = Completer<void>();
   final Map<int, bool> ledger = {};

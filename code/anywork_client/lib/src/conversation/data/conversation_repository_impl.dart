@@ -231,8 +231,15 @@ final class ConversationRepositoryImpl
   }
 
   @override
-  Future<CloseReport> close({DateTime? deadline}) =>
-      _closing ??= _close(deadline);
+  Future<CloseReport> close({DateTime? deadline}) {
+    final existing = _closing;
+    if (existing != null) return existing;
+    final completion = Completer<CloseReport>();
+    _closing = completion.future;
+    completion.complete(Future<CloseReport>.sync(() => _close(deadline)));
+    return completion.future;
+  }
+
   Future<CloseReport> _close(DateTime? deadline) async {
     _closed = true;
     _requestedVisibleThread = null;
