@@ -103,6 +103,7 @@ final class TimelineItemFacts {
     List<TimelineAttachmentFacts> attachments = const [],
     this.tool,
     this.userInput,
+    this.plan,
   }) : details = List.unmodifiable(details),
        attachments = List.unmodifiable(attachments);
 
@@ -125,6 +126,27 @@ final class TimelineItemFacts {
   final List<TimelineAttachmentFacts> attachments;
   final TimelineToolFacts? tool;
   final TimelineUserInputFacts? userInput;
+  final TimelinePlanFacts? plan;
+}
+
+/// 已完成 Plan 自己的身份和有界字段预览，不读取或回填当前 Plan。
+/// 完整字段长度仍由同一 item 的 details 给出；缺失来源保持 null。
+final class TimelinePlanFacts {
+  const TimelinePlanFacts({
+    required this.interactionId,
+    required this.decision,
+    required this.documentVersion,
+    required this.contentHash,
+    required this.document,
+    required this.feedback,
+  });
+
+  final String interactionId;
+  final String decision;
+  final int? documentVersion;
+  final String? contentHash;
+  final String? document;
+  final String? feedback;
 }
 
 /// 一条工具调用的预览诊断：不展开全文，也不为 Driver 额外读取详情。
@@ -1306,6 +1328,15 @@ abstract final class StudioDriverState {
                 // 计划确认是 typed 判别事实：任何问答都给出真实 bool 与权威决定。
                 'isPlanConfirmation': userInput.isPlanConfirmation,
                 'planDecision': userInput.planDecision,
+              },
+            if (item.plan case final plan?)
+              'plan': {
+                'interactionId': plan.interactionId,
+                'decision': plan.decision,
+                'documentVersion': plan.documentVersion,
+                'contentHash': plan.contentHash,
+                'document': plan.document,
+                'feedback': plan.feedback,
               },
           },
       ],

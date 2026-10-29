@@ -404,6 +404,16 @@ TimelineItemFacts _timelineItemFacts(ConversationItem item) {
             isPlanConfirmation: receipt != null,
             planDecision: receipt?.decision.name,
           ),
+    plan: descriptor is! ConversationPlanDescriptor
+        ? null
+        : TimelinePlanFacts(
+            interactionId: descriptor.interactionId,
+            decision: descriptor.decision.name,
+            documentVersion: descriptor.documentVersion,
+            contentHash: descriptor.contentHash,
+            document: item.fieldFor(const ThreadPlanDocumentFieldView())?.text,
+            feedback: item.fieldFor(const ThreadPlanFeedbackFieldView())?.text,
+          ),
   );
 }
 

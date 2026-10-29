@@ -24,6 +24,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'support/recording_demo_transport.dart';
+import '../../test_driver/timeline_observation.dart' as observation;
 
 final class _UnusedTransport extends UnusedAccountPorts
     implements StudioTransport {
@@ -1072,6 +1073,21 @@ void main() {
       PlanConfirmationDecisionView.approved,
     );
     expect(userInputOf('plan-approved'), isNull);
+    final approved = itemOf('plan-approved')['plan'];
+    expect(approved, {
+      'interactionId': 'approved',
+      'decision': 'approved',
+      'documentVersion': 7,
+      'contentHash': 'recorded-approved-hash',
+      'document': '# Approved plan',
+      'feedback': '  historical feedback\n',
+    });
+    final typed = observation.TimelineObservation.parse(json);
+    expect(typed.item('plan-approved')!.plan!.toJson(), approved);
+    expect(typed.item('plan-approved')!.frozenFields()['plan'], approved);
+    expect(typed.item('plan-cancelled')!.plan!.documentVersion, isNull);
+    expect(typed.item('plan-cancelled')!.plan!.contentHash, isNull);
+    expect(typed.item('qa-plan-legacy')!.plan, isNull);
     final timelineJson = json['timeline'] as Map<String, dynamic>;
     expect(timelineJson['timelineEpoch'], 'facts-epoch');
     expect(timelineJson['completedThrough'], 8);
@@ -1620,8 +1636,13 @@ ConversationBaseline _factsBaseline() => ConversationBaseline(
       descriptor: const ConversationPlanDescriptor(
         interactionId: 'approved',
         decision: ConversationPlanDecision.approved,
+        documentVersion: 7,
+        contentHash: 'recorded-approved-hash',
       ),
-      fields: {const ThreadPlanDocumentFieldView(): '# Approved plan'},
+      fields: {
+        const ThreadPlanDocumentFieldView(): '# Approved plan',
+        const ThreadPlanFeedbackFieldView(): '  historical feedback\n',
+      },
     ),
     _toolItem(
       'qa-plan-legacy',

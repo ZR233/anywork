@@ -553,6 +553,7 @@ final class TimelineItemObservation {
     required this.attachments,
     required this.tool,
     required this.userInput,
+    required this.plan,
   });
 
   static TimelineItemObservation _parse(Map<String, dynamic> map) {
@@ -586,11 +587,15 @@ final class TimelineItemObservation {
     }
     final tool = map['tool'];
     final userInput = map['userInput'];
+    final plan = map['plan'];
     final kind = _string(map, 'kind', 'timeline item');
     final channel = _requiredStringOrNull(map, 'channel', 'timeline item');
     // 频道必须与 canonical kind 对应：文本条目的权威频道不能缺失或被猜成
     // finalAnswer，非文本条目不允许带频道；未知 kind 直接拒绝而不是放行。
     _requireChannelForKind(kind, channel);
+    if ((kind == 'plan') != (plan is Map)) {
+      throw StateError('timeline Plan facts do not match the typed item kind');
+    }
     return TimelineItemObservation._(
       id: _string(map, 'id', 'timeline item'),
       appendSeq: _int(map, 'appendSeq', 'timeline item'),
@@ -610,6 +615,9 @@ final class TimelineItemObservation {
           ? TimelineUserInputObservation._parse(
               userInput.cast<String, dynamic>(),
             )
+          : null,
+      plan: plan is Map
+          ? TimelinePlanObservation._parse(plan.cast<String, dynamic>())
           : null,
     );
   }
@@ -633,6 +641,7 @@ final class TimelineItemObservation {
   final List<TimelineAttachmentObservation> attachments;
   final TimelineToolObservation? tool;
   final TimelineUserInputObservation? userInput;
+  final TimelinePlanObservation? plan;
 
   int get textBytes => utf8.encode(text).length;
 
@@ -710,6 +719,54 @@ final class TimelineItemObservation {
             'isPlanConfirmation': userInput!.isPlanConfirmation,
             'planDecision': userInput!.planDecision,
           },
+    'plan': plan?.toJson(),
+  };
+}
+
+final class TimelinePlanObservation {
+  const TimelinePlanObservation._({
+    required this.interactionId,
+    required this.decision,
+    required this.documentVersion,
+    required this.contentHash,
+    required this.document,
+    required this.feedback,
+  });
+
+  static TimelinePlanObservation _parse(Map<String, dynamic> map) {
+    final decision = _string(map, 'decision', 'timeline plan');
+    if (!const {
+      'approved',
+      'revisionRequested',
+      'cancelled',
+      'resolved',
+    }.contains(decision)) {
+      throw StateError('unknown completed Plan decision: $decision');
+    }
+    return TimelinePlanObservation._(
+      interactionId: _string(map, 'interactionId', 'timeline plan'),
+      decision: decision,
+      documentVersion: _intOrNull(map, 'documentVersion', 'timeline plan'),
+      contentHash: _requiredStringOrNull(map, 'contentHash', 'timeline plan'),
+      document: _requiredStringOrNull(map, 'document', 'timeline plan'),
+      feedback: _requiredStringOrNull(map, 'feedback', 'timeline plan'),
+    );
+  }
+
+  final String interactionId;
+  final String decision;
+  final int? documentVersion;
+  final String? contentHash;
+  final String? document;
+  final String? feedback;
+
+  Map<String, Object?> toJson() => {
+    'interactionId': interactionId,
+    'decision': decision,
+    'documentVersion': documentVersion,
+    'contentHash': contentHash,
+    'document': document,
+    'feedback': feedback,
   };
 }
 
@@ -1189,6 +1246,7 @@ void _requireChannelForKind(String kind, String? channel) {
     case 'toolCall':
     case 'agent':
     case 'turn':
+    case 'plan':
     case 'inference':
     case 'skill':
     case 'file':

@@ -6,6 +6,7 @@ import 'package:flutter_driver/flutter_driver.dart';
 
 import 'flutter_driver_session.dart';
 import 'sidebar_navigation.dart';
+import 'timeline_observation.dart';
 import 'window_control.dart';
 // Public snapshot helpers shared with the realtime/history journeys: this
 // journey reads the same Driver projection and must not fork a second reading.
@@ -314,6 +315,7 @@ class PlanRecoveryJourney {
     // attached card Turn keeps proving the submission drove the model Turn.
     checks['firstCardTurnAttached'] = (turnId(card)?.isNotEmpty) ?? false;
     final interaction = activeInteractionOf(card)!;
+    final plan = _currentPlan(card);
     checks['firstCardIsUserInput'] = interaction['kind'] == 'userInput';
     checks['firstCardBodyMatchesPlan'] = interaction['body'] == _approvePlan;
     counts['approveThreadId'] = threadId;
@@ -328,6 +330,8 @@ class PlanRecoveryJourney {
         'interactionId': interaction['id'],
         'planMarkdown': interaction['body'],
         'turnId': interaction['turnId'],
+        'documentVersion': plan['documentVersion'],
+        'contentHash': plan['contentHash'],
       },
     });
     await mark('plan_recovery_first_card');
@@ -347,6 +351,7 @@ class PlanRecoveryJourney {
       'restart_approve',
       _approvePlan,
       expectedInteractionId: expectedInteractionId,
+      expectedPlan: branch,
     );
     final interaction = activeInteractionOf(card)!;
     checks['approveIdentityRestored'] =
@@ -387,7 +392,10 @@ class PlanRecoveryJourney {
       expectedMarkdown: _approvePlan,
     );
     // 已回答的计划必须留下可展开的历史回执，而不是只靠当前 Plan 正文。
-    await _planReceiptContract('restart_approved');
+    await _planReceiptContract(
+      'restart_approved',
+      expectedPlans: [_expectedPlan(branch, decision: 'approved')],
+    );
 
     // Stage the Revise branch: a second session with its own pending Plan, so
     // the second normal shutdown also happens while a confirmation is pending.
@@ -413,6 +421,7 @@ class PlanRecoveryJourney {
     checks['reviseCardTurnAttached'] =
         (turnId(reviseCard)?.isNotEmpty) ?? false;
     final reviseInteraction = activeInteractionOf(reviseCard)!;
+    final revisePlan = _currentPlan(reviseCard);
     checks['reviseCardBodyMatchesPlan'] =
         reviseInteraction['body'] == _revisePlan;
     checks['reviseInteractionDistinct'] =
@@ -428,6 +437,8 @@ class PlanRecoveryJourney {
         'interactionId': reviseInteraction['id'],
         'planMarkdown': reviseInteraction['body'],
         'turnId': reviseInteraction['turnId'],
+        'documentVersion': revisePlan['documentVersion'],
+        'contentHash': revisePlan['contentHash'],
       },
     });
     await mark('plan_recovery_revise_card');
@@ -450,6 +461,7 @@ class PlanRecoveryJourney {
       'recheck_revise',
       _revisePlan,
       expectedInteractionId: expectedInteractionId,
+      expectedPlan: branch,
     );
     final interaction = activeInteractionOf(card)!;
     checks['reviseIdentityRestored'] =
@@ -520,8 +532,25 @@ class PlanRecoveryJourney {
       expectedMarkdown: _revisedPlan,
     );
     // 修改意见必须作为历史回执保留原始全文，而不是只留在已消失的反馈栏里。
+    final revisedPlan = _currentPlan(revisedCard);
+    final revisedReceipts = <Map<String, Object?>>[
+      _expectedPlan(
+        branch,
+        decision: 'revisionRequested',
+        feedback: _revisionFeedback,
+      ),
+      <String, Object?>{
+        'interactionId': revisedInteraction['id'],
+        'decision': 'approved',
+        'documentVersion': revisedPlan['documentVersion'],
+        'contentHash': revisedPlan['contentHash'],
+        'document': _revisedPlan,
+        'feedback': null,
+      },
+    ];
     await _planReceiptContract(
       'recheck_revised_approved',
+      expectedPlans: revisedReceipts,
       expectedReply: _revisionFeedback,
     );
 
@@ -532,7 +561,15 @@ class PlanRecoveryJourney {
         activeInteractionOf(approveThread) == null;
     observations['recheckApproveThreadFinal'] = summarize(approveThread);
     // 重开旧会话后，已批准计划的历史回执仍可读。
-    await _planReceiptContract('recheck_approve_receipt');
+    await _planReceiptContract(
+      'recheck_approve_receipt',
+      expectedPlans: [
+        _expectedPlan(
+          _branchOf(observed, 'approveBranch'),
+          decision: 'approved',
+        ),
+      ],
+    );
     await _openApprovedPlanFromOverflow(
       'recheck_approve_reopen',
       expectedMarkdown: _approvePlan,
@@ -542,6 +579,11 @@ class PlanRecoveryJourney {
     checks['answeredRevisePlanNotRepop'] =
         activeInteractionOf(reviseThread) == null;
     observations['recheckReviseThreadFinal'] = summarize(reviseThread);
+    await _planReceiptContract(
+      'recheck_revise_receipt',
+      expectedPlans: revisedReceipts,
+      expectedReply: _revisionFeedback,
+    );
     await shot('recheck-no-repop');
     await mark('plan_recovery_recheck_complete');
   }
@@ -778,6 +820,7 @@ class PlanRecoveryJourney {
     String label,
     String expectedMarkdown, {
     String? expectedInteractionId,
+    Map<String, dynamic>? expectedPlan,
   }) async {
     await driver.waitFor(
       find.byValueKey('plan-summary'),
@@ -796,48 +839,73 @@ class PlanRecoveryJourney {
     final card = await waitFor(
       (snapshot) {
         final interaction = activeInteractionOf(snapshot);
+        final plan = snapshot['plan'];
         return interaction != null &&
             interaction['body'] == expectedMarkdown &&
             (expectedInteractionId == null ||
                 interaction['id'] == expectedInteractionId) &&
+            plan is Map &&
+            plan['state'] == 'awaitingConfirmation' &&
+            plan['markdown'] == expectedMarkdown &&
+            (expectedPlan == null ||
+                (plan['documentVersion'] == expectedPlan['documentVersion'] &&
+                    plan['contentHash'] == expectedPlan['contentHash'])) &&
             planCardSettled(snapshot);
       },
       '${label}_card_settled',
       timeout: const Duration(seconds: 180),
       abort: threadFaulted,
     );
-    // 待确认期间只有尾部唯一摘要入口：**当前 pending 计划行**不得渲染历史回执，
-    // 但上一轮已回答的旧计划回执必须仍在（修订会连续产生多条计划行）。
-    final planRows = _planRows(card);
-    final pendingRows = planRows.where((row) => row.pending).toList();
-    final resolvedRows = planRows.where((row) => !row.pending).toList();
-    var pendingTiles = 0;
-    for (final row in pendingRows) {
-      if (await _widgetHoldsByKey(
-        find.byValueKey('timeline-plan-receipt-${row.id}'),
-      )) {
-        pendingTiles++;
+    final interaction = activeInteractionOf(card);
+    final plan = _currentPlan(card);
+    final currentTurn = turnId(card);
+    checks['${label}CurrentPlanDockUnique'] =
+        await _readRect('plan-summary') != null;
+    checks['${label}CurrentPlanAwaitingConfirmation'] =
+        plan['state'] == 'awaitingConfirmation' &&
+        plan['markdown'] == expectedMarkdown;
+    checks['${label}CurrentPlanVersionRestored'] =
+        expectedPlan == null ||
+        plan['documentVersion'] == expectedPlan['documentVersion'];
+    checks['${label}CurrentPlanHashRestored'] =
+        expectedPlan == null ||
+        plan['contentHash'] == expectedPlan['contentHash'];
+    checks['${label}CurrentInteractionIdentityBound'] =
+        interaction != null &&
+        interaction['kind'] == 'userInput' &&
+        interaction['id'] is String &&
+        (interaction['id'] as String).isNotEmpty &&
+        interaction['turnId'] is String &&
+        interaction['turnId'] == currentTurn &&
+        interaction['body'] == expectedMarkdown;
+    final planItems = _planItems(card);
+    checks['${label}PendingInteractionAbsentFromHistory'] =
+        interaction != null &&
+        planItems.every(
+          (item) => item.plan!.interactionId != interaction['id'],
+        );
+    var historyReceipts = 0;
+    for (final item in planItems) {
+      final facts = item.plan!;
+      final receiptPresent = await _widgetHoldsByKey(
+        find.byValueKey('timeline-plan-receipt-${item.id}'),
+      );
+      if (receiptPresent) historyReceipts++;
+      if (facts.decision == 'approved' ||
+          facts.decision == 'revisionRequested' ||
+          facts.decision == 'cancelled' ||
+          facts.decision == 'resolved') {
+        continue;
       }
+      checks['${label}HistoryPlansCompletedOnly'] = false;
     }
-    var resolvedTiles = 0;
-    for (final row in resolvedRows) {
-      if (await _widgetHoldsByKey(
-        find.byValueKey('timeline-plan-receipt-${row.id}'),
-      )) {
-        resolvedTiles++;
-      }
-    }
-    checks['${label}PendingPlanRowUnique'] = pendingRows.length == 1;
-    checks['${label}PendingHidesPlanReceipt'] =
-        pendingRows.length == 1 && pendingTiles == 0;
-    checks['${label}ResolvedPlanReceiptsKept'] =
-        resolvedTiles == resolvedRows.length;
-    counts['${label}PendingPlanRows'] = pendingRows.length;
-    counts['${label}ResolvedPlanRows'] = resolvedRows.length;
-    counts['${label}ResolvedPlanReceiptTiles'] = resolvedTiles;
-    observations['${label}PlanRows'] = [
-      for (final row in planRows)
-        {'id': row.id, 'pending': row.pending, 'decision': row.decision},
+    checks.putIfAbsent('${label}HistoryPlansCompletedOnly', () => true);
+    checks['${label}CompletedPlanReceiptsKept'] =
+        historyReceipts == planItems.length;
+    counts['${label}CompletedPlanItems'] = planItems.length;
+    counts['${label}CompletedPlanReceiptTiles'] = historyReceipts;
+    observations['${label}PlanItems'] = [
+      for (final item in planItems) item.frozenFields(),
     ];
     // The normal composer must be replaced while the Plan is pending.
     try {
@@ -1653,32 +1721,50 @@ class PlanRecoveryJourney {
   /// 已回答计划的回执：先待确认不出现第二张卡，回答后出现可展开的原回复。
   Future<void> _planReceiptContract(
     String label, {
+    required List<Map<String, Object?>> expectedPlans,
     String? expectedReply,
   }) async {
-    final Map<String, dynamic> current = await snapshot();
-    final rows = [
-      for (final row in _planRows(current))
-        if (!row.pending) row.id,
-    ];
-    if (rows.isEmpty) {
-      checks['${label}PlanReceiptRow'] = false;
-      return;
-    }
+    final current = await snapshot();
+    final items = _planItems(current);
+    final expectedById = <String, Map<String, Object?>>{
+      for (final expected in expectedPlans)
+        expected['interactionId']! as String: expected,
+    };
+    final actualById = <String, TimelineItemObservation>{
+      for (final item in items) item.plan!.interactionId: item,
+    };
+    checks['${label}PlanReceiptItemsExact'] =
+        actualById.length == items.length &&
+        actualById.length == expectedById.length &&
+        actualById.keys.toSet().containsAll(expectedById.keys);
     var tiles = 0;
     var replyFound = expectedReply == null;
-    for (final rowId in rows) {
-      final tile = find.byValueKey('timeline-plan-receipt-$rowId');
-      if (!await _widgetHoldsByKey(
-        find.byValueKey('timeline-plan-receipt-$rowId'),
-      )) {
+    var frozenFactsMatch = actualById.length == expectedById.length;
+    for (final entry in expectedById.entries) {
+      final item = actualById[entry.key];
+      if (item == null) {
+        frozenFactsMatch = false;
+        continue;
+      }
+      final expected = entry.value;
+      final plan = item.plan!;
+      var frozenMatch =
+          plan.interactionId == expected['interactionId'] &&
+          plan.decision == expected['decision'] &&
+          plan.documentVersion == expected['documentVersion'] &&
+          plan.contentHash == expected['contentHash'];
+      final tile = find.byValueKey('timeline-plan-receipt-${item.id}');
+      if (!await _widgetHoldsByKey(tile)) {
+        frozenFactsMatch = false;
         continue;
       }
       tiles++;
-      final reply = find.byValueKey('timeline-plan-receipt-reply-$rowId');
+      final details = find.byValueKey('timeline-user-input-details-${item.id}');
+      final reply = find.byValueKey('timeline-plan-receipt-reply-${item.id}');
       // 展开同样按当前可见状态决定：已经展开就不再点（再点会收起并让后置断言超时）。
       var expanded = false;
       try {
-        await driver.waitFor(reply, timeout: const Duration(seconds: 2));
+        await driver.waitFor(details, timeout: const Duration(seconds: 2));
         expanded = true;
         counts['${label}ReceiptAlreadyExpanded'] = true;
       } on Object {
@@ -1688,10 +1774,26 @@ class PlanRecoveryJourney {
         await driver.rawTap(tile, timeout: const Duration(seconds: 30));
       }
       try {
-        await driver.waitFor(reply, timeout: const Duration(seconds: 10));
+        await driver.waitFor(details, timeout: const Duration(seconds: 10));
       } on Object {
+        frozenFactsMatch = false;
         continue;
       }
+      frozenMatch =
+          frozenMatch &&
+          await _frozenPlanValueMatches(
+            item,
+            detailField: 'plan-document',
+            value: plan.document,
+            expected: expected['document'] as String?,
+          ) &&
+          await _frozenPlanValueMatches(
+            item,
+            detailField: 'plan-feedback',
+            value: plan.feedback,
+            expected: expected['feedback'] as String?,
+          );
+      if (!frozenMatch) frozenFactsMatch = false;
       if (expectedReply != null &&
           !replyFound &&
           await _widgetHoldsByKey(
@@ -1700,43 +1802,141 @@ class PlanRecoveryJourney {
         replyFound = true;
       }
     }
-    // 有已回答的计划行就必须渲染计划专用回执；退回普通问答或什么都不显示都会失败。
-    checks['${label}PlanReceiptRow'] = tiles > 0;
+    checks['${label}PlanReceiptFrozenFacts'] = frozenFactsMatch;
+    checks['${label}PlanReceiptRows'] = tiles == expectedPlans.length;
     checks['${label}PlanReceiptReplies'] = replyFound;
     counts['${label}PlanReceiptTiles'] = tiles;
-    counts['${label}PlanReceiptRows'] = rows.length;
-    observations['${label}PlanReceiptRows'] = rows;
+    counts['${label}PlanReceiptRows'] = items.length;
+    observations['${label}PlanReceiptRows'] = [
+      for (final item in items) item.frozenFields(),
+    ];
     if (expectedReply != null) {
       checks['${label}PlanReceiptKeepsFeedback'] = replyFound;
     }
     await shot('$label-plan-receipt');
   }
 
-  /// 快照里的计划确认行（driver 只读 typed 投影）。
-  ///
-  /// `pending` 来自 canonical 交互状态（`userInput.state == 'pending'`），不是从工具
-  /// arguments/result 或当前 Plan 反推；`decision` 是已回答回执的权威决定。驱动据此
-  /// 只对「当前待确认行」断言不出现历史回执，同时要求旧 resolved 回执仍然存在。
-  List<({String id, bool pending, String? decision})> _planRows(
-    Map<String, dynamic> snapshot,
-  ) {
-    final rows = <({String id, bool pending, String? decision})>[];
-    for (final row in timelineRows(snapshot)) {
-      final id = row['id'];
-      final userInput = row['userInput'];
-      if (row['type'] != 'userInput' ||
-          id is! String ||
-          userInput is! Map<String, dynamic> ||
-          userInput['isPlanConfirmation'] != true) {
-        continue;
-      }
-      rows.add((
-        id: id,
-        pending: userInput['state'] == 'pending',
-        decision: userInput['planDecision'] as String?,
-      ));
+  /// 历史 Plan 只来自 canonical typed Plan item；pending 不属于 Timeline。
+  List<TimelineItemObservation> _planItems(Map<String, dynamic> snapshot) {
+    final timeline = TimelineObservation.optional(snapshot);
+    if (timeline == null) return const <TimelineItemObservation>[];
+    return [
+      for (final item in timeline.items)
+        if (item.kind == 'plan') item,
+    ];
+  }
+
+  Map<String, Object?> _currentPlan(Map<String, dynamic> snapshot) {
+    final plan = snapshot['plan'];
+    if (plan is! Map ||
+        plan['state'] != 'awaitingConfirmation' ||
+        (plan['documentVersion'] != null && plan['documentVersion'] is! int) ||
+        (plan['contentHash'] != null && plan['contentHash'] is! String) ||
+        plan['markdown'] is! String) {
+      throw StateError(
+        'plan-recovery: current Plan projection is not an awaiting '
+        'confirmation with a complete document: $plan',
+      );
     }
-    return rows;
+    return plan.cast<String, Object?>();
+  }
+
+  Map<String, Object?> _expectedPlan(
+    Map<String, dynamic> branch, {
+    required String decision,
+    String? feedback,
+  }) => <String, Object?>{
+    'interactionId': branch['interactionId'],
+    'decision': decision,
+    'documentVersion': branch['documentVersion'],
+    'contentHash': branch['contentHash'],
+    'document': branch['planMarkdown'],
+    'feedback': feedback,
+  };
+
+  Future<bool> _frozenPlanValueMatches(
+    TimelineItemObservation item, {
+    required String detailField,
+    required String? value,
+    required String? expected,
+  }) async {
+    final detail = item.detail(detailField);
+    if (expected == null) return value == null && detail == null;
+    if (value == null || detail == null) return false;
+    final expectedBytes = utf8.encode(expected).length;
+    if (detail.totalBytes != expectedBytes ||
+        detail.previewBytes != utf8.encode(value).length ||
+        detail.previewBytes > detail.totalBytes) {
+      return false;
+    }
+    if (detail.previewBytes == detail.totalBytes) return value == expected;
+    // A bounded preview is not the document. Prove its exact prefix and byte
+    // metadata before checking the complete mounted detail below.
+    if (!expected.startsWith(value)) return false;
+    return _readTruncatedPlanField(
+      itemId: item.id,
+      detailField: detailField,
+      expected: expected,
+      expectedBytes: expectedBytes,
+    );
+  }
+
+  /// Reads a truncated canonical field through its existing detail viewer port.
+  Future<bool> _readTruncatedPlanField({
+    required String itemId,
+    required String detailField,
+    required String expected,
+    required int expectedBytes,
+  }) async {
+    await _tap('timeline-detail-open-$itemId-$detailField');
+    try {
+      await driver.waitFor(
+        find.byValueKey('timeline-detail-dialog'),
+        timeout: const Duration(seconds: 10),
+      );
+      final expectedHash = _fnv1a64Hex(expected);
+      final deadline = DateTime.now().add(const Duration(seconds: 30));
+      while (DateTime.now().isBefore(deadline)) {
+        final decoded = jsonDecode(
+          await driver.requestData(
+            'timeline-detail-text',
+            timeout: const Duration(seconds: 15),
+          ),
+        );
+        observations['planDetail-$itemId-$detailField'] = decoded;
+        if (decoded is! Map ||
+            decoded['ok'] != true ||
+            decoded['open'] != true ||
+            decoded['bytes'] is! int) {
+          return false;
+        }
+        final bytes = decoded['bytes'] as int;
+        if (bytes > expectedBytes) return false;
+        if (bytes == expectedBytes) {
+          return decoded['hash'] == expectedHash &&
+              decoded['characters'] == expected.length;
+        }
+        // The dialog mounts before its existing owner finishes reading chunks.
+        // Wait for the full expected length, not merely for a mounted widget.
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+      }
+      return false;
+    } finally {
+      await _tap('timeline-detail-close');
+      await driver.waitForAbsent(
+        find.byValueKey('timeline-detail-dialog'),
+        timeout: const Duration(seconds: 10),
+      );
+    }
+  }
+
+  String _fnv1a64Hex(String value) {
+    var hash = 0xcbf29ce484222325;
+    for (var index = 0; index < value.length; index++) {
+      hash ^= value.codeUnitAt(index);
+      hash = hash * 0x100000001b3;
+    }
+    return hash.toRadixString(16);
   }
 
   Future<bool> _widgetHoldsByKey(SerializableFinder finder) async {
