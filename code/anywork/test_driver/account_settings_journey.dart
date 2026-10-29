@@ -343,13 +343,19 @@ class _Recorder {
     await waitPresentation(_hasAccountList, 'details returned to list');
     await driver.mouseTap(menu);
     await driver.mouseTap(find.text(await label('delete')));
-    await driver.waitFor(find.byType('SimpleDialog'));
-    await capture('list-delete-requires-replacement', await readSnapshot());
+    await driver.waitFor(
+      find.byType('AccountDeleteDialog'),
+      timeout: const Duration(seconds: 15),
+    );
+    await capture('list-delete-confirmation', await readSnapshot());
     await driver.pressKey(0x10000001b, 0x70029);
-    await driver.waitForAbsent(find.byType('SimpleDialog'));
+    await driver.waitForAbsent(
+      find.byType('AccountDeleteDialog'),
+      timeout: const Duration(seconds: 15),
+    );
     if (!_accounts(await readSnapshot())
         .any((account) => account['id'] == id)) {
-      throw StateError('cancelled replacement removed the default account');
+      throw StateError('cancelled deletion removed the fixture account');
     }
     await waitPresentation(_hasAccountList, 'cancelled deletion kept the list');
   }
