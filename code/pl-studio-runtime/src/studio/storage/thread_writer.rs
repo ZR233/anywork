@@ -39,6 +39,11 @@ use crate::studio::storage::history::{
 };
 use crate::studio::thread_projection::PreparedEffect;
 
+#[cfg(feature = "benchmarks")]
+pub(crate) mod benchmark;
+#[cfg(feature = "benchmarks")]
+use super::calls::observation::Metric as BenchMetric;
+
 /// How long one writer incarnation may keep retrying a transient storage conflict before it must
 /// report it.
 ///
@@ -1227,6 +1232,12 @@ async fn refresh_call_watermark(
     let id = inner.thread.id.clone();
     let store = inner.store.clone();
     drop(inner);
+    #[cfg(feature = "benchmarks")]
+    calls
+        .observation()
+        .increment(BenchMetric::ObserverWatermarkReadSql);
+    #[cfg(feature = "benchmarks")]
+    let observed_ticket = calls.durable_ticket();
     match calls.durable_effect_sequence(&id).await {
         Ok(sequence) => {
             let Some(inner) = observer.upgrade() else {
@@ -1238,8 +1249,16 @@ async fn refresh_call_watermark(
                 progress.calls_admitted = progress.calls_admitted.max(sequence);
                 report(&inner, &progress);
             }
+            #[cfg(feature = "benchmarks")]
+            calls
+                .observation()
+                .observer_refreshed(&id, observed_ticket, Ok(sequence));
         }
         Err(error) => {
+            #[cfg(feature = "benchmarks")]
+            calls
+                .observation()
+                .observer_refreshed(&id, observed_ticket, Err(error.to_string()));
             calls.mark_statistics_gap();
             tracing::warn!(thread_id = id, %error, "call watermark could not be read");
             store.thread_persistence().report_calls(calls.metrics());
@@ -1321,6 +1340,12 @@ async fn publish_accounting(
     inner: &Inner,
     history: &crate::studio::storage::history::HistoryStore,
 ) {
+    #[cfg(feature = "benchmarks")]
+    inner
+        .store
+        .calls()
+        .observation()
+        .increment(BenchMetric::AccountingRead);
     match history.accounting().await {
         Ok(Some(accounting)) => {
             use super::calls::{PurposeUsageProjection, SessionUsageProjection};
@@ -1376,6 +1401,12 @@ async fn persist_effect(
     let referenced = crate::studio::thread_projection::referenced_attachment_ids(&checkpoint.state);
     {
         let mut progress = lock_progress(inner);
+        #[cfg(feature = "benchmarks")]
+        inner
+            .store
+            .calls()
+            .observation()
+            .increment(BenchMetric::EffectEncode);
         progress.in_flight_bytes = encoded_bytes(&write.effect);
         progress.saving_revision = checkpoint.state_revision;
         report(inner, &progress);
@@ -1398,7 +1429,15 @@ async fn persist_effect(
                 rolled_back_turns: &rolled_back_turns(&write.checkpoint.state),
                 identities: &durable_input_identities(&inner.thread.id, &write.checkpoint.state),
                 messages: &admitted_message_identities(&write.effect),
-                receipts: &fact_receipts(&write.effect, projected)?,
+                receipts: &{
+                    #[cfg(feature = "benchmarks")]
+                    inner
+                        .store
+                        .calls()
+                        .observation()
+                        .increment(BenchMetric::ReceiptExtraction);
+                    fact_receipts(&write.effect, projected)?
+                },
                 tasks: &write.effect.tasks,
                 deliveries: &write.effect.deliveries,
                 delivery_repairs: &write.effect.delivery_repairs,
@@ -1715,6 +1754,12 @@ impl ColdStore for ThreadStorageSink {
             });
         }
         let sequence = write.effect.sequence;
+        #[cfg(feature = "benchmarks")]
+        self.0
+            .store
+            .calls()
+            .observation()
+            .increment(BenchMetric::EffectEncode);
         let bytes = encoded_bytes(&write.effect);
         let mut progress = lock_progress(&self.0);
         if progress.stopped {

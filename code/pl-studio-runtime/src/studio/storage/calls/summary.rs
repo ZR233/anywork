@@ -33,9 +33,14 @@ const UNPRICED_CURRENCY: &str = "";
 pub(super) async fn replace(
     db: &DatabaseTransaction,
     projection: &SessionUsageProjection,
+    #[cfg(feature = "benchmarks")] observation: Option<&observation::Observation>,
 ) -> Result<()> {
     let revision = integer(projection.revision)?;
     let tx = db.begin().await?;
+    #[cfg(feature = "benchmarks")]
+    if let Some(observation) = observation {
+        observation.increment(observation::Metric::SummaryRevisionSql);
+    }
     let current = tx
         .query_one_raw(statement(
             "SELECT MAX(revision) AS revision FROM call_usage_summary
@@ -52,7 +57,15 @@ pub(super) async fn replace(
         .unwrap_or(0);
     if revision <= current && current != 0 {
         tx.rollback().await?;
+        #[cfg(feature = "benchmarks")]
+        if let Some(observation) = observation {
+            observation.increment(observation::Metric::SummarySkipped);
+        }
         return Ok(());
+    }
+    #[cfg(feature = "benchmarks")]
+    if let Some(observation) = observation {
+        observation.increment(observation::Metric::SummaryWriteSql);
     }
     tx.execute_raw(statement(
         "DELETE FROM call_usage_summary WHERE root_thread_id=? AND thread_id=?",
@@ -63,11 +76,19 @@ pub(super) async fn replace(
     ))
     .await?;
     if projection.purpose_costs.is_empty() {
+        #[cfg(feature = "benchmarks")]
+        if let Some(observation) = observation {
+            observation.increment(observation::Metric::SummaryWriteSql);
+        }
         insert_row(&tx, projection, "", UNPRICED_CURRENCY, 0.0, revision).await?;
     }
     for purpose in &projection.purpose_costs {
         let purpose_key = purpose.purpose.clone().unwrap_or_default();
         if purpose.estimated_costs.is_empty() {
+            #[cfg(feature = "benchmarks")]
+            if let Some(observation) = observation {
+                observation.increment(observation::Metric::SummaryWriteSql);
+            }
             insert_row(
                 &tx,
                 projection,
@@ -80,6 +101,10 @@ pub(super) async fn replace(
             continue;
         }
         for cost in &purpose.estimated_costs {
+            #[cfg(feature = "benchmarks")]
+            if let Some(observation) = observation {
+                observation.increment(observation::Metric::SummaryWriteSql);
+            }
             insert_row(
                 &tx,
                 projection,
@@ -92,6 +117,10 @@ pub(super) async fn replace(
         }
     }
     tx.commit().await?;
+    #[cfg(feature = "benchmarks")]
+    if let Some(observation) = observation {
+        observation.increment(observation::Metric::SummaryReplaced);
+    }
     Ok(())
 }
 
@@ -159,8 +188,13 @@ pub(super) async fn migrate_from_legacy(db: &impl ConnectionTrait) -> Result<()>
 }
 
 /// 按 root/purpose 聚合调用库的累计摘要。
-pub(super) async fn read_rollups(db: &DatabaseConnection) -> Result<Vec<SessionCostRollup>> {
+pub(super) async fn read_rollups(
+    db: &DatabaseConnection,
+    #[cfg(feature = "benchmarks")] observation: &observation::Observation,
+) -> Result<Vec<SessionCostRollup>> {
     let mut rollups: Vec<SessionCostRollup> = Vec::new();
+    #[cfg(feature = "benchmarks")]
+    observation.increment(observation::Metric::SummaryReadSql);
     let roots = db
         .query_all_raw(statement(
             "SELECT root_thread_id, MAX(has_unpriced_usage) AS unpriced
@@ -178,6 +212,8 @@ pub(super) async fn read_rollups(db: &DatabaseConnection) -> Result<Vec<SessionC
             has_unpriced_usage: row.try_get::<i64>("", "unpriced")? != 0,
         });
     }
+    #[cfg(feature = "benchmarks")]
+    observation.increment(observation::Metric::SummaryReadSql);
     let costs = db
         .query_all_raw(statement(
             "SELECT root_thread_id, purpose, cost_currency, SUM(amount) AS amount

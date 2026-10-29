@@ -60,6 +60,8 @@ struct SegmentInfo {
 
 /// 单个逻辑 writer 持有的滚动日志。
 pub(super) struct CallLog {
+    #[cfg(feature = "benchmarks")]
+    pub(super) observation: Arc<observation::Observation>,
     dir: PathBuf,
     current: Option<Segment>,
     total_bytes: u64,
@@ -99,6 +101,9 @@ impl CallLog {
                 && !location.segment.contains(['/', '\\']),
             "invalid diagnostic location"
         );
+        #[cfg(feature = "benchmarks")]
+        self.observation
+            .increment(observation::Metric::JsonlReadOpen);
         let mut file = match tokio::fs::File::open(self.dir.join(&location.segment)).await {
             Ok(file) => file,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -145,6 +150,8 @@ impl CallLog {
                 }
                 tracing::warn!(%error, "调用日志不可用，会话仍可运行");
                 return Ok(Self {
+                    #[cfg(feature = "benchmarks")]
+                    observation: Arc::default(),
                     dir,
                     current: None,
                     total_bytes: 0,
@@ -161,6 +168,8 @@ impl CallLog {
             .max()
             .unwrap_or(0);
         let mut log = Self {
+            #[cfg(feature = "benchmarks")]
+            observation: Arc::default(),
             dir,
             current: None,
             total_bytes,
@@ -256,7 +265,11 @@ impl CallLog {
         }
         segment.bytes = offset + len;
         self.total_bytes = self.total_bytes.saturating_add(len);
+        #[cfg(feature = "benchmarks")]
+        self.observation.increment(observation::Metric::JsonlFlush);
         segment.file.flush().await?;
+        #[cfg(feature = "benchmarks")]
+        self.observation.increment(observation::Metric::JsonlSync);
         segment.file.sync_data().await?;
         if let Some(previous) = self.degraded.take() {
             tracing::info!(error = previous, "调用日志已从先前的失败中恢复");
@@ -411,6 +424,9 @@ impl CallLog {
         self.next_sequence = self.next_sequence.saturating_add(1);
         let name = format!("{SEGMENT_PREFIX}{day:010}-{seq:06}{SEGMENT_SUFFIX}");
         let path = self.dir.join(&name);
+        #[cfg(feature = "benchmarks")]
+        self.observation
+            .increment(observation::Metric::JsonlSegmentOpen);
         let file = tokio::fs::OpenOptions::new()
             .create_new(true)
             .append(true)

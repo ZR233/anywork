@@ -27,6 +27,9 @@ pub mod resource_store;
 pub mod statistics;
 mod studio;
 pub use studio::accounts;
+#[cfg(feature = "benchmarks")]
+#[doc(hidden)]
+pub use studio::benchmark;
 pub mod thread_assembler;
 mod updater;
 mod worker_assets;

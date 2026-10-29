@@ -40,6 +40,8 @@ use crate::hash::merge_costs;
 
 mod event;
 mod log;
+#[cfg(feature = "benchmarks")]
+pub(crate) mod observation;
 mod performance;
 mod schema;
 mod summary;
@@ -218,6 +220,8 @@ struct QueuePressure {
 /// 单一逻辑 writer 的共享状态：唯一 SQLite 连接、唯一滚动日志、唯一队列与水位。
 struct CallsWriter {
     db: DatabaseConnection,
+    #[cfg(feature = "benchmarks")]
+    observation: Arc<observation::Observation>,
     log: tokio::sync::Mutex<CallLog>,
     queue: Mutex<VecDeque<QueuedCallMutation>>,
     work_notify: Notify,
@@ -356,6 +360,8 @@ impl CallsStore {
         let (durable_ticket, _) = watch::channel(0u64);
         let writer = Arc::new(CallsWriter {
             db,
+            #[cfg(feature = "benchmarks")]
+            observation: log.observation.clone(),
             log: tokio::sync::Mutex::new(log),
             queue: Mutex::new(VecDeque::new()),
             work_notify: Notify::new(),
@@ -380,6 +386,11 @@ impl CallsStore {
         if task.is_none() {
             *task = Some(tokio::spawn(supervise_writer(self.writer.clone())));
         }
+    }
+
+    #[cfg(feature = "benchmarks")]
+    pub(crate) fn observation(&self) -> &Arc<observation::Observation> {
+        &self.writer.observation
     }
 
     pub(crate) async fn close(&self) -> Result<()> {
@@ -428,6 +439,10 @@ impl CallsStore {
                 bytes,
                 mutation,
             });
+            #[cfg(feature = "benchmarks")]
+            self.writer
+                .observation
+                .queue(queue.len(), queue_bytes(&queue));
         }
         self.writer.work_notify.notify_one();
         Ok(())
@@ -485,6 +500,10 @@ impl CallsStore {
 
     /// Reads the committed effect watermark for one Thread, independently of global queue tickets.
     pub(crate) async fn durable_effect_sequence(&self, thread_id: &str) -> Result<u64> {
+        #[cfg(feature = "benchmarks")]
+        self.writer
+            .observation
+            .increment(observation::Metric::WatermarkReadSql);
         let row = self
             .writer
             .db
@@ -580,6 +599,10 @@ impl CallsStore {
                     bytes,
                     mutation,
                 });
+                #[cfg(feature = "benchmarks")]
+                self.writer
+                    .observation
+                    .queue(queue.len(), queue_bytes(&queue));
                 true
             }
         };
@@ -632,6 +655,10 @@ impl CallsStore {
                 bytes,
                 mutation,
             });
+            #[cfg(feature = "benchmarks")]
+            self.writer
+                .observation
+                .queue(queue.len(), queue_bytes(&queue));
             ticket
         };
         self.writer.work_notify.notify_one();
@@ -710,7 +737,12 @@ impl CallsStore {
     }
 
     pub(crate) async fn session_cost_rollups(&self) -> Result<Vec<SessionCostRollup>> {
-        summary::read_rollups(&self.writer.db).await
+        summary::read_rollups(
+            &self.writer.db,
+            #[cfg(feature = "benchmarks")]
+            &self.writer.observation,
+        )
+        .await
     }
 
     /// 调用明细只读取仍在保留期的日志；性能摘要的 3000 条上限不决定明细生命周期。
@@ -718,7 +750,20 @@ impl CallsStore {
         &self,
         limit: u32,
     ) -> Result<Vec<PerformanceSampleRow>> {
+        #[cfg(feature = "benchmarks")]
+        self.writer.observation.recent_read_started();
+        #[cfg(feature = "benchmarks")]
+        let lock_started = std::time::Instant::now();
         let log = self.writer.log.lock().await;
+        #[cfg(feature = "benchmarks")]
+        {
+            self.writer
+                .observation
+                .lock_acquired(true, lock_started.elapsed());
+            self.writer
+                .observation
+                .increment(observation::Metric::RecentIndexSql);
+        }
         let rows = self
             .writer
             .db
@@ -781,6 +826,10 @@ impl CallsStore {
     /// 旧样本不进入任何已知账号模型汇总。只取成对有效的 output/response 正数样本：
     /// 首字可缺失，缺失时它既不冒充零也不参与首字均值；缺失不是 0。
     pub(crate) async fn performance_summary_rows(&self) -> Result<Vec<PerformanceSummaryRow>> {
+        #[cfg(feature = "benchmarks")]
+        self.writer
+            .observation
+            .increment(observation::Metric::PerformanceSummarySql);
         let rows = self
             .writer
             .db
@@ -952,7 +1001,13 @@ async fn apply_batch(
     shared: &CallsWriter,
     pending: &VecDeque<QueuedCallMutation>,
 ) -> Result<(usize, Vec<String>, Option<BatchFailure>)> {
+    #[cfg(feature = "benchmarks")]
+    let lock_started = std::time::Instant::now();
     let mut log = shared.log.lock().await;
+    #[cfg(feature = "benchmarks")]
+    shared
+        .observation
+        .lock_acquired(false, lock_started.elapsed());
     let tx = shared.db.begin().await?;
     let mut completed = 0;
     let mut failures = Vec::new();
@@ -972,8 +1027,16 @@ async fn apply_batch(
         }
         completed += 1;
     }
+    #[cfg(feature = "benchmarks")]
+    shared
+        .observation
+        .increment(observation::Metric::PerformanceTrimSql);
     performance::trim(&tx).await?;
     tx.commit().await?;
+    #[cfg(feature = "benchmarks")]
+    shared
+        .observation
+        .increment(observation::Metric::BatchCommit);
     Ok((completed, failures, deferred))
 }
 
@@ -1086,7 +1149,15 @@ async fn apply_mutation(
             records,
         } => apply_effect(log, db, thread_id, *sequence, records).await,
         CallMutation::Billing(record) => apply_billing(log, db, record).await,
-        CallMutation::Summary(projection) => summary::replace(db, projection).await,
+        CallMutation::Summary(projection) => {
+            summary::replace(
+                db,
+                projection,
+                #[cfg(feature = "benchmarks")]
+                Some(&log.observation),
+            )
+            .await
+        }
     };
     result.map_err(classify_failure)
 }
@@ -1108,6 +1179,9 @@ async fn apply_effect(
     records: &[CallLogRecord],
 ) -> Result<()> {
     let tx = db.begin().await?;
+    #[cfg(feature = "benchmarks")]
+    log.observation
+        .increment(observation::Metric::WatermarkReadSql);
     let current = tx
         .query_one_raw(statement(
             "SELECT durable_write_seq FROM call_watermarks WHERE thread_id=?",
@@ -1124,6 +1198,9 @@ async fn apply_effect(
     for record in records {
         apply_attempt(&tx, log, record).await?;
     }
+    #[cfg(feature = "benchmarks")]
+    log.observation
+        .increment(observation::Metric::WatermarkWriteSql);
     tx.execute_raw(statement(
         "INSERT INTO call_watermarks(thread_id,admitted_write_seq,durable_write_seq)
          VALUES(?,?,?)
@@ -1169,8 +1246,14 @@ async fn apply_billing(
     db: &DatabaseTransaction,
     record: &CallLogRecord,
 ) -> Result<()> {
+    #[cfg(feature = "benchmarks")]
+    log.observation
+        .increment(observation::Metric::BillingEncode);
     let (line, _) = event::encode_record(record)?;
     let content_hash = pl_core::context::content_hash(line.as_bytes());
+    #[cfg(feature = "benchmarks")]
+    log.observation
+        .increment(observation::Metric::BillingIdentitySql);
     let existing = db
         .query_one_raw(statement(
             "SELECT content_hash FROM call_log_index WHERE thread_id=? AND call_id=? AND kind=?",
@@ -1199,6 +1282,9 @@ async fn apply_billing(
     if record.status == CallStatus::Committed.as_str()
         && let Some(sample) = performance::sample_from_record(record)
     {
+        #[cfg(feature = "benchmarks")]
+        log.observation
+            .increment(observation::Metric::PerformanceWriteSql);
         performance::record(db, &sample).await?;
     }
     Ok(())
@@ -1214,11 +1300,17 @@ async fn append_record(
     if now.saturating_sub(record.recorded_at) >= log::LOG_RETENTION_SECONDS {
         return Ok(());
     }
+    #[cfg(feature = "benchmarks")]
+    log.observation
+        .increment(observation::Metric::LogRecordEncode);
     let (line, truncated) = event::encode_record(record)?;
     let outcome = log
         .append(event::record_day(record.recorded_at), now, &line)
         .await?;
     prune_index(db, &outcome.removed).await?;
+    #[cfg(feature = "benchmarks")]
+    log.observation
+        .increment(observation::Metric::LogIndexWriteSql);
     index_record(db, record, &line, &outcome.record, truncated).await
 }
 

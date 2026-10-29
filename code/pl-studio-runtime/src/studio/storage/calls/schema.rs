@@ -1098,6 +1098,8 @@ mod storage_fault_tests {
                     }],
                 }],
             },
+            #[cfg(feature = "benchmarks")]
+            None,
         )
         .await?;
         tx.commit().await?;

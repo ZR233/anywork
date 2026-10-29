@@ -807,6 +807,11 @@ impl ModelPerformanceOwner {
     ///
     /// 全局与作用域在同一次锁内采用；锁内不 send/await，发布事实全部在锁外发出。
     async fn publish_locked_projection(&self) {
+        #[cfg(feature = "benchmarks")]
+        self.store
+            .calls()
+            .observation()
+            .increment(crate::studio::storage::calls::observation::Metric::MaterializedRefresh);
         match self.read_projection().await {
             Ok(projection) => {
                 let flags = (
