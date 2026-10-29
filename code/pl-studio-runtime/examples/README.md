@@ -1,5 +1,7 @@
 # 真实任务人工观察
 
+本文说明可选观察入口、参数及采集结果的含义，不规定开发任务的测试顺序或必跑场景。
+
 更新器可通过 `updater_observe` 显式观察，不启动安装器：`state ARTIFACT_DIR` 在隔离 home
 将设置文件设为只读并取消一次更新检查，保存 canonical 状态和文件未改写证据；
 `download ARTIFACT_DIR [CANCEL_AFTER_BYTES]` 下载真实稳定 Release，可在指定进度取消。
@@ -176,7 +178,7 @@ directory 已为 Closed、且无 active/activity/execution/pending interaction�
 `taskCompletedObserved` 仅表示 canonical 完成已被观察；`evidenceComplete` 还要求导出完整、
 无具体未知/错误且 runtime 正常关闭。历史失败、退役欠账、关闭产物与审核结果仍由人工判断。
 simple 的空闲终态只代表该观察结束，不能证明任务成功。任何不完整采集返回非零状态，
-即使正常收集结束也必须由人工/reviewer 根据完整证据独立验收。
+正常收集结束只证明采集器完成；业务结论来自对实际证据的判断，不由退出码或指定审查角色自动产生。
 
 场景时长只解析一次，在异步准备前建立同一个绝对 deadline，覆盖准备 Git、运行前取证、初始化和实际观察；
 小量 rev-parse 输出也最多读取 64 KiB，完整原文仍受 Evidence 总预算约束。每次新观察、

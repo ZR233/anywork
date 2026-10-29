@@ -6,8 +6,8 @@ description: Use when implementing, registering, or testing a 糊来帮 tool thr
 # 添加或迁移工具
 
 具体工具归 `pl-tool`，Plan/workflow 等产品工具归 Studio。core 只定义通用契约与 Thread 执行机制，
-不依赖工具实现、pl-model 或 pl-protocol。先阅读 `design/16-core-contracts.md`、
-`design/09-tool-runtime.md` 和同类现役工具，再沿以下边界修改。
+不依赖工具实现、pl-model 或 pl-protocol。相关契约见 `design/16-core-contracts.md`、
+`design/09-tool-runtime.md`，同类现役工具可提供实现参考。
 
 ## 实现与注册
 
@@ -56,5 +56,5 @@ MCP executor 固定 server 租约、raw name 与声明；媒体先归档精确�
 注册、请求冻结、重装配和调用交接，并断言实际 ToolOutcome，而非只看 Turn 完成。
 人工 fixture 必须区分快速结果与后台 accepted 回执；后者按精确任务身份等待终态及实际正文，
 不能靠固定延时、把受理视为成功或强制生产工具前台化来通过验收。
-公共接口迁移在同批更新消费者、文档和生成输入。检查与交付遵循根 AGENTS.md，独立 core
-配置还需无默认 feature 与显式 sqlite 两种组合；live provider 仅显式 opt-in。
+公共接口、消费者、文档和生成输入保持一致。无默认 feature 与显式 sqlite 是不同编译配置，
+单一配置结果不证明另一配置通过；工程入口见 AGENTS.md，真实 provider 操作仍需显式授权。

@@ -81,7 +81,7 @@ impl ThreadBuiltin {
             ),
             Self::Discover => schema::<crate::discovery::SearchInput>(
                 "discover_tools",
-                "Find tool IDs by name and reveal matching deferred declarations for the next model step.",
+                "Reveal up to 20 tool IDs matching query as one case-insensitive literal ID substring (surrounding whitespace is trimmed). Use an exact ID or a fragment such as 'delegation'; not a natural-language request, description search, or space-separated list. An empty query returns only the first 20 matches, not the full catalog. No match means this substring did not match the current Thread catalog, not that a capability is globally unavailable.",
             ),
             Self::Task(TaskControlKind::Wait) => schema::<crate::task_control::WaitTasksInput>(
                 "wait",
