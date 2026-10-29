@@ -267,73 +267,66 @@ pub(super) async fn read_rollups(
     db: &impl ConnectionTrait,
     #[cfg(feature = "benchmarks")] observation: &observation::Observation,
 ) -> Result<Vec<SessionCostRollup>> {
-    let mut rollups = std::collections::BTreeMap::<String, SessionCostRollup>::new();
-    let mut purposes =
-        std::collections::BTreeMap::<(String, Option<String>), Vec<RuntimeCostAmount>>::new();
+    let mut rollups: Vec<SessionCostRollup> = Vec::new();
     #[cfg(feature = "benchmarks")]
     observation.increment(observation::Metric::SummaryReadSql);
-    let roots = db
+    let rows = db
         .query_all_raw(statement(
-            "SELECT root_thread_id, MAX(has_unpriced_usage) AS unpriced
+            "SELECT root_thread_id,purpose,cost_currency,SUM(amount) AS amount,
+                    MAX(has_unpriced_usage) AS unpriced
              FROM call_usage_summary
-             GROUP BY root_thread_id
-             ORDER BY root_thread_id",
+             GROUP BY root_thread_id,purpose,cost_currency
+             ORDER BY root_thread_id,purpose,cost_currency",
             vec![],
         ))
         .await?;
-    for row in &roots {
-        let root: String = row.try_get("", "root_thread_id")?;
-        rollups.insert(
-            root.clone(),
-            SessionCostRollup {
-                root_thread_id: root,
-                estimated_costs: Vec::new(),
-                purpose_costs: Vec::new(),
-                has_unpriced_usage: row.try_get::<i64>("", "unpriced")? != 0,
-            },
-        );
-    }
-    #[cfg(feature = "benchmarks")]
-    observation.increment(observation::Metric::SummaryReadSql);
-    let costs = db
-        .query_all_raw(statement(
-            "SELECT root_thread_id, purpose, cost_currency, SUM(amount) AS amount
-             FROM call_usage_summary
-             WHERE cost_currency <> ?
-             GROUP BY root_thread_id, purpose, cost_currency
-             ORDER BY root_thread_id, purpose, cost_currency",
-            vec![UNPRICED_CURRENCY.into()],
-        ))
-        .await?;
-    for row in &costs {
+    for row in rows {
         let root_thread_id: String = row.try_get("", "root_thread_id")?;
+        // SQL keeps each root/purpose contiguous. Append instead of constructing
+        // another pair of keyed maps or searching all preceding roots.
+        if rollups
+            .last()
+            .is_none_or(|rollup| rollup.root_thread_id != root_thread_id)
+        {
+            rollups.push(SessionCostRollup {
+                root_thread_id,
+                ..Default::default()
+            });
+        }
+        let rollup = rollups.last_mut().expect("root group started");
+        rollup.has_unpriced_usage |= row.try_get::<i64>("", "unpriced")? != 0;
+        let currency: String = row.try_get("", "cost_currency")?;
+        // Empty-currency groups still establish their root and its unpriced flag.
+        // They are provenance placeholders, not zero-valued monetary contributions.
+        if currency == UNPRICED_CURRENCY {
+            continue;
+        }
         let purpose_raw: String = row.try_get("", "purpose")?;
         let purpose = (!purpose_raw.is_empty()).then_some(purpose_raw);
         let cost = RuntimeCostAmount {
-            currency: row.try_get("", "cost_currency")?,
+            currency,
             amount: row.try_get("", "amount")?,
         };
-        let rollup = rollups
-            .entry(root_thread_id.clone())
-            .or_insert_with(|| SessionCostRollup {
-                root_thread_id: root_thread_id.clone(),
+        // Preserve the previous purpose/currency accumulation order for f64 totals.
+        merge_costs(&mut rollup.estimated_costs, std::slice::from_ref(&cost));
+        if rollup
+            .purpose_costs
+            .last()
+            .is_none_or(|entry| entry.purpose != purpose)
+        {
+            rollup.purpose_costs.push(PurposeCostRollup {
+                purpose,
                 ..Default::default()
             });
-        merge_costs(&mut rollup.estimated_costs, std::slice::from_ref(&cost));
-        purposes
-            .entry((root_thread_id, purpose))
-            .or_default()
+        }
+        rollup
+            .purpose_costs
+            .last_mut()
+            .expect("purpose group started")
+            .estimated_costs
             .push(cost);
     }
-    for ((root, purpose), estimated_costs) in purposes {
-        let rollup = rollups.get_mut(&root).context("missing grouped root")?;
-        rollup.purpose_costs.push(PurposeCostRollup {
-            purpose,
-            estimated_costs,
-            has_unpriced_usage: rollup.has_unpriced_usage,
-        });
-    }
-    for rollup in rollups.values_mut() {
+    for rollup in &mut rollups {
         for entry in &mut rollup.purpose_costs {
             entry.has_unpriced_usage = rollup.has_unpriced_usage;
         }
@@ -347,5 +340,214 @@ pub(super) async fn read_rollups(
             });
         }
     }
-    Ok(rollups.into_values().collect())
+    Ok(rollups)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn purpose(name: Option<&str>, costs: &[(&str, f64)]) -> PurposeUsageProjection {
+        PurposeUsageProjection {
+            purpose: name.map(str::to_owned),
+            estimated_costs: costs
+                .iter()
+                .map(|(currency, amount)| RuntimeCostAmount {
+                    currency: (*currency).to_owned(),
+                    amount: *amount,
+                })
+                .collect(),
+        }
+    }
+
+    fn cost_rows(costs: &[RuntimeCostAmount]) -> Vec<(&str, f64)> {
+        costs
+            .iter()
+            .map(|cost| (cost.currency.as_str(), cost.amount))
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn rollups_preserve_ordered_costs_zeroes_and_unpriced_roots() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let store = CallsStore::prepare(&temp.path().join("calls.sqlite")).await?;
+        let empty = store
+            .read_statistics(StatisticsReadRequest {
+                costs: true,
+                performance: false,
+            })
+            .await?;
+        assert!(empty.costs.expect("costs requested").is_empty());
+        assert!(empty.history.is_none());
+        assert!(empty.summary.is_none());
+
+        let mut progress = store.subscribe_materials();
+        for (root, thread, unpriced, purpose_costs) in [
+            (
+                "root-alpha",
+                "alpha-priced-a",
+                false,
+                vec![
+                    purpose(Some("final"), &[("USD", 4.0)]),
+                    purpose(Some("analysis"), &[("USD", 1.25), ("EUR", 2.0)]),
+                    purpose(None, &[("USD", 0.0)]),
+                ],
+            ),
+            (
+                "root-alpha",
+                "alpha-priced-b",
+                false,
+                vec![purpose(Some("analysis"), &[("USD", 2.75)])],
+            ),
+            // This group sorts after all priced purposes. It must still mark the
+            // root and every earlier priced purpose, without inventing its own cost.
+            (
+                "root-alpha",
+                "alpha-unpriced",
+                true,
+                vec![purpose(Some("zz-unpriced"), &[])],
+            ),
+            (
+                "root-beta",
+                "beta-priced",
+                false,
+                vec![purpose(Some("analysis"), &[("USD", 11.0), ("EUR", 9.0)])],
+            ),
+            ("root-empty", "empty", false, vec![]),
+            (
+                "root-rounding",
+                "rounding",
+                false,
+                vec![
+                    purpose(Some("c"), &[("USD", 1.0)]),
+                    purpose(Some("a"), &[("USD", 1e16)]),
+                    purpose(Some("b"), &[("USD", 1.0)]),
+                ],
+            ),
+            (
+                "root-unpriced",
+                "unpriced",
+                true,
+                vec![purpose(Some("unknown-price"), &[])],
+            ),
+            (
+                "root-zero",
+                "zero",
+                false,
+                vec![purpose(Some("free"), &[("USD", 0.0)])],
+            ),
+        ] {
+            store.replace_session_usage(SessionUsageProjection {
+                root_thread_id: root.into(),
+                thread_id: thread.into(),
+                revision: 1,
+                has_unpriced_usage: unpriced,
+                purpose_costs,
+            })?;
+        }
+        let ticket = store.admitted_ticket();
+        store.start().await;
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if progress.borrow_and_update().processed_ticket >= ticket {
+                    return Ok::<_, anyhow::Error>(());
+                }
+                progress.changed().await?;
+            }
+        })
+        .await??;
+        assert!(progress.borrow().last_error.is_none());
+        assert!(!progress.borrow().statistics_gap);
+
+        let read = store
+            .read_statistics(StatisticsReadRequest {
+                costs: true,
+                performance: false,
+            })
+            .await?;
+        let roots = read.costs.expect("costs requested");
+        assert_eq!(
+            roots
+                .iter()
+                .map(|root| (root.root_thread_id.as_str(), root.has_unpriced_usage))
+                .collect::<Vec<_>>(),
+            [
+                ("root-alpha", true),
+                ("root-beta", false),
+                ("root-empty", false),
+                ("root-rounding", false),
+                ("root-unpriced", true),
+                ("root-zero", false),
+            ]
+        );
+        assert_eq!(
+            cost_rows(&roots[0].estimated_costs),
+            [("EUR", 2.0), ("USD", 8.0)]
+        );
+        assert_eq!(
+            roots[0]
+                .purpose_costs
+                .iter()
+                .map(|entry| (
+                    entry.purpose.as_deref(),
+                    cost_rows(&entry.estimated_costs),
+                    entry.has_unpriced_usage,
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                (None, vec![("USD", 0.0)], true),
+                (Some("analysis"), vec![("EUR", 2.0), ("USD", 4.0)], true),
+                (Some("final"), vec![("USD", 4.0)], true),
+            ]
+        );
+        assert_eq!(
+            cost_rows(&roots[1].estimated_costs),
+            [("EUR", 9.0), ("USD", 11.0)]
+        );
+        assert_eq!(roots[1].purpose_costs.len(), 1);
+        assert_eq!(
+            roots[1].purpose_costs[0].purpose.as_deref(),
+            Some("analysis")
+        );
+        assert_eq!(
+            cost_rows(&roots[1].purpose_costs[0].estimated_costs),
+            [("EUR", 9.0), ("USD", 11.0)]
+        );
+        assert!(!roots[1].purpose_costs[0].has_unpriced_usage);
+        assert!(roots[2].estimated_costs.is_empty());
+        assert!(
+            roots[2].purpose_costs.is_empty(),
+            "an unflagged placeholder has no fallback purpose"
+        );
+        // Keep the previous left-to-right purpose order: (1e16 + 1) + 1 is 1e16,
+        // not the 1e16 + 2 obtained by accumulating the smaller purposes first.
+        assert_eq!(cost_rows(&roots[3].estimated_costs), [("USD", 1e16)]);
+        assert_eq!(
+            roots[3]
+                .purpose_costs
+                .iter()
+                .map(|entry| (entry.purpose.as_deref(), cost_rows(&entry.estimated_costs),))
+                .collect::<Vec<_>>(),
+            vec![
+                (Some("a"), vec![("USD", 1e16)]),
+                (Some("b"), vec![("USD", 1.0)]),
+                (Some("c"), vec![("USD", 1.0)]),
+            ]
+        );
+        assert!(roots[4].estimated_costs.is_empty());
+        assert_eq!(roots[4].purpose_costs.len(), 1);
+        assert_eq!(roots[4].purpose_costs[0].purpose, None);
+        assert!(roots[4].purpose_costs[0].estimated_costs.is_empty());
+        assert!(roots[4].purpose_costs[0].has_unpriced_usage);
+        assert_eq!(cost_rows(&roots[5].estimated_costs), [("USD", 0.0)]);
+        assert_eq!(roots[5].purpose_costs.len(), 1);
+        assert_eq!(roots[5].purpose_costs[0].purpose.as_deref(), Some("free"));
+        assert_eq!(
+            cost_rows(&roots[5].purpose_costs[0].estimated_costs),
+            [("USD", 0.0)]
+        );
+        assert!(!roots[5].purpose_costs[0].has_unpriced_usage);
+        store.close().await?;
+        Ok(())
+    }
 }
