@@ -23,6 +23,7 @@ import 'package:anywork/src/features/conversation/timeline/widgets/timeline_mark
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/presentation/providers/client_provider.dart';
 import 'package:anywork/src/presentation/view_models/timeline_session_owner.dart';
+import 'package:anywork/src/shared/studio_code_block.dart';
 import 'package:anywork/src/shared/studio_driver_key_values.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
 import 'package:anywork/src/shared/studio_driver_projection.dart';
@@ -31,12 +32,14 @@ import 'package:anywork_client/accounts_ports.dart';
 import 'package:anywork_client/studio_client.dart';
 import 'package:flutter/gestures.dart' show PointerDeviceKind;
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_chat_core/flutter_chat_core.dart';
 import 'package:flutter_chat_ui/flutter_chat_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flyer_chat_image_message/flyer_chat_image_message.dart';
+import 'package:gpt_markdown/gpt_markdown.dart';
 
 import '../../client/support/conversation_fixtures.dart';
 import '../../client/support/mapped_conversation_feed.dart';
@@ -220,6 +223,287 @@ void main() {
 
     // 已释放的代次明确拒绝再次挂载，而不是把已销毁 controller 交给子树。
     expect(lease.bind, throwsStateError);
+  });
+
+  testWidgets('Timeline Markdown 标题保留主题字号层级，不退化为正文', (tester) async {
+    late TextTheme textTheme;
+    await tester.pumpWidget(
+      host(
+        Builder(
+          builder: (context) {
+            textTheme = Theme.of(context).textTheme;
+            return SingleChildScrollView(
+              child: TimelineMarkdown(
+                id: 'headings',
+                text: '# 一级标题\n\n## 二级标题\n\n### 三级标题\n\n普通正文',
+                onLink: (_) => fail('没有链接'),
+                isSafeLink: (_) => false,
+                imageBuilder: (_, _) => throw StateError('没有图片'),
+              ),
+            );
+          },
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    for (final (label, style) in [
+      ('一级标题', textTheme.headlineLarge!),
+      ('二级标题', textTheme.headlineMedium!),
+      ('三级标题', textTheme.headlineSmall!),
+    ]) {
+      final heading = tester.renderObject<RenderParagraph>(
+        find.byWidgetPredicate(
+          (widget) =>
+              widget is RichText && widget.text.toPlainText().startsWith(label),
+        ),
+      );
+      final span = heading.text.getSpanForPosition(
+        const TextPosition(offset: 0),
+      )!;
+      expect(span.style?.fontSize, style.fontSize, reason: '$label 必须使用标题字号');
+      expect(heading.size.height, greaterThan(textTheme.bodyMedium!.fontSize!));
+      expect(heading.didExceedMaxLines, isFalse);
+    }
+  });
+
+  for (final terminal in [false, true]) {
+    testWidgets('Timeline Markdown ${terminal ? '已完成' : '流式'}文本识别单行分隔线', (
+      tester,
+    ) async {
+      final lease = leaseFor(
+        tester,
+        items: [textItem('rule', ordinal: 1, body: '---', terminal: terminal)],
+      );
+      await tester.pumpWidget(
+        host(
+          componentTimeline(
+            threadId: 'thread',
+            view: viewState(),
+            lease: lease,
+            onLoadOlder: () async {},
+            onRetryOlder: () async {},
+            onReturnLive: () async {},
+            onEnterHistory: () {},
+            onRetryConnection: () async {},
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      final rule = find.byType(GptMarkdown);
+      expect(rule, findsOneWidget);
+      expect(tester.getSize(rule).height, greaterThan(0));
+      expect(find.text('---', findRichText: true), findsNothing);
+      expect(
+        tester.widget<TimelineMarkdown>(find.byType(TimelineMarkdown)).text,
+        '---',
+      );
+      expect(tester.takeException(), isNull);
+    });
+  }
+
+  testWidgets('Timeline Markdown 流式追加与终态复用正文展示并随窗口自然折行', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(360, 700));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final plain = List.filled(6, '流式文本需要按阅读列宽度自动换行').join(' ');
+    final lease = leaseFor(
+      tester,
+      items: [textItem('response', ordinal: 1, body: plain, terminal: false)],
+    );
+    var enteredHistory = 0;
+    await tester.pumpWidget(
+      host(
+        componentTimeline(
+          threadId: 'thread',
+          view: viewState(),
+          lease: lease,
+          onLoadOlder: () async {},
+          onRetryOlder: () async {},
+          onReturnLive: () async {},
+          onEnterHistory: () => enteredHistory++,
+          onRetryConnection: () async {},
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    RenderParagraph paragraph() => tester.renderObject<RenderParagraph>(
+      find.byWidgetPredicate(
+        (widget) => widget is RichText && widget.text.toPlainText() == plain,
+      ),
+    );
+    int lines() => paragraph()
+        .getBoxesForSelection(
+          TextSelection(baseOffset: 0, extentOffset: plain.length),
+        )
+        .map((box) => box.top)
+        .toSet()
+        .length;
+
+    expect(find.byType(TimelineMarkdown), findsOneWidget);
+    expect(lines(), greaterThan(1), reason: '无语法纯文本也必须实际折行');
+    expect(paragraph().didExceedMaxLines, isFalse);
+    expect(find.byType(GptMarkdown), findsNothing);
+
+    final markdown = '**$plain**\n\n- 新增的列表项\n';
+    var revision = 0;
+    void update({required bool terminal}) {
+      expect(
+        lease.applyPatch(
+          ConversationPatch(
+            subscriptionId: 'test',
+            from: revision,
+            to: ++revision,
+            priority: ConversationPriority.immediate,
+            changes: [
+              ConversationAdd(
+                componentText(
+                  'response',
+                  ordinal: 1,
+                  revision: revision + 1,
+                  body: markdown,
+                  terminal: terminal,
+                ),
+              ),
+            ],
+          ),
+        ),
+        isTrue,
+      );
+    }
+
+    update(terminal: false);
+    await tester.pumpAndSettle();
+    expect(lease.controller.messages.single, isA<TextStreamMessage>());
+    expect(tester.widget<GptMarkdown>(find.byType(GptMarkdown)).data, markdown);
+    expect(find.text('新增的列表项', findRichText: true), findsOneWidget);
+    final narrowLines = lines();
+    expect(narrowLines, greaterThan(1));
+    expect(paragraph().didExceedMaxLines, isFalse);
+
+    await tester.binding.setSurfaceSize(const Size(640, 700));
+    await tester.pumpAndSettle();
+    expect(lines(), lessThan(narrowLines), reason: '改窗后由原生布局重新折行');
+    expect(enteredHistory, 0);
+
+    update(terminal: true);
+    await tester.pumpAndSettle();
+    expect(lease.controller.messages.single, isA<TextMessage>());
+    expect(tester.widget<GptMarkdown>(find.byType(GptMarkdown)).data, markdown);
+    expect(
+      tester.widget<TimelineMarkdown>(find.byType(TimelineMarkdown)).text,
+      markdown,
+    );
+    expect(paragraph().text.toPlainText(), plain, reason: '软换行不插入字符');
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('Timeline Markdown 长链接、行内代码、代码块和表格在窄列折行且保留原文', (tester) async {
+    final token = 'LongUnbrokenValue' * 10;
+    final code = '  final value = "$token";\n  print(value);';
+    final markdown =
+        '# 标题\n\n'
+        '**强调文字**\n\n'
+        '[$token](https://fixture.invalid/readme)\n\n'
+        '`$token`\n\n'
+        '```dart\n$code\n```\n\n'
+        '| 第一列 | 第二列 |\n'
+        '| --- | --- |\n'
+        '| `$token` | [$token](https://fixture.invalid/readme) |\n';
+
+    Widget surface(double width, String text) => host(
+      Center(
+        child: SizedBox(
+          width: width,
+          child: SingleChildScrollView(
+            child: DefaultTextStyle.merge(
+              softWrap: false,
+              child: TimelineMarkdown(
+                id: 'rich-body',
+                text: text,
+                onLink: (_) => fail('未点击链接不应启动外部动作'),
+                isSafeLink: (_) => true,
+                imageBuilder: (_, _) => throw StateError('没有图片'),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpWidget(surface(320, markdown));
+    await tester.pumpAndSettle();
+    expect(find.text('强调文字', findRichText: true), findsOneWidget);
+    expect(find.text('第二列', findRichText: true), findsOneWidget);
+    expect(find.byType(StudioCodeBlock), findsOneWidget);
+    expect(
+      tester.widget<SelectableText>(find.byType(SelectableText)).data,
+      code,
+      reason: '代码块保留原始字符、缩进和换行',
+    );
+    expect(tester.widget<GptMarkdown>(find.byType(GptMarkdown)).data, markdown);
+
+    final narrowHeight = tester.getSize(find.byType(TimelineMarkdown)).height;
+    for (final element
+        in find
+            .descendant(
+              of: find.byType(TimelineMarkdown),
+              matching: find.byWidgetPredicate((widget) => widget is RichText),
+            )
+            .evaluate()) {
+      final paragraph = element.renderObject! as RenderParagraph;
+      final text = paragraph.text.toPlainText();
+      expect(paragraph.didExceedMaxLines, isFalse);
+      for (final box in paragraph.getBoxesForSelection(
+        TextSelection(baseOffset: 0, extentOffset: text.length),
+      )) {
+        expect(box.right, lessThanOrEqualTo(paragraph.size.width + .5));
+      }
+    }
+    final codeRender = tester
+        .state<EditableTextState>(
+          find.descendant(
+            of: find.byType(SelectableText),
+            matching: find.byType(EditableText),
+          ),
+        )
+        .renderEditable;
+    expect(
+      codeRender
+          .getBoxesForSelection(
+            TextSelection(baseOffset: 0, extentOffset: code.length),
+          )
+          .map((box) => box.top)
+          .toSet()
+          .length,
+      greaterThan(1),
+      reason: '代码必须真实折行，不是横向滚动或裁剪',
+    );
+    expect(tester.takeException(), isNull);
+
+    await tester.pumpWidget(surface(640, markdown));
+    await tester.pumpAndSettle();
+    expect(
+      tester.getSize(find.byType(TimelineMarkdown)).height,
+      lessThan(narrowHeight),
+    );
+
+    // 同一展示入口的纯文本分支也不继承外层禁止换行的样式。
+    await tester.pumpWidget(surface(320, token));
+    await tester.pumpAndSettle();
+    final plain = tester.renderObject<RenderParagraph>(find.byType(RichText));
+    expect(
+      plain
+          .getBoxesForSelection(
+            TextSelection(baseOffset: 0, extentOffset: token.length),
+          )
+          .map((box) => box.top)
+          .toSet()
+          .length,
+      greaterThan(1),
+    );
+    expect(plain.text.toPlainText(), token);
+    expect(tester.takeException(), isNull);
   });
 
   testWidgets('只有真实用户滚动离开底端才进入 History，改窗不误判', (tester) async {
@@ -1744,7 +2028,12 @@ void main() {
       final topSummaryFinder = find.byKey(
         StudioDriverKeys.timelineActivitySummary(group.id),
       );
-      final topRow = tester.widget<TimelineActivityRow>(topSummaryFinder);
+      final topRow = tester.widget<TimelineActivityRow>(
+        find.descendant(
+          of: topSummaryFinder,
+          matching: find.byType(TimelineActivityRow),
+        ),
+      );
       expect(topRow.icon, isNull, reason: '顶层总折叠行去掉左侧图标');
       expect(topRow.label, 'Worked for 3s', reason: '顶层总折叠行显示整组工作时长');
 
@@ -1954,15 +2243,19 @@ void main() {
     expect(find.byTooltip('/workspace/src/target.dart'), findsOneWidget);
     final bodies = find.descendant(
       of: block,
-      matching: find.byType(TimelineMarkdown),
+      matching: find.byType(StudioCodeBlock),
     );
     expect(bodies, findsNothing, reason: '点击前不得构建工具参数/结果正文');
     await tester.tap(row);
     await tester.pumpAndSettle();
     expect(
-      tester.widgetList<TimelineMarkdown>(bodies).map((body) => body.text),
-      ['{"path":"/workspace/src/target.dart"}', 'ok'],
-      reason: '点击后按原文展示参数和结果，不依赖旧私有代码块形状',
+      tester.widgetList<StudioCodeBlock>(bodies).map((body) => body.text),
+      ['{\n  "path": "/workspace/src/target.dart"\n}', 'ok'],
+      reason: '参数沿用现有 JSON 缩进，输出逐字保留，两者均不交给 Markdown 渲染器',
+    );
+    expect(
+      find.descendant(of: block, matching: find.byType(TimelineMarkdown)),
+      findsNothing,
     );
     await _unmountTimeline(tester);
     await tester.pumpAndSettle();

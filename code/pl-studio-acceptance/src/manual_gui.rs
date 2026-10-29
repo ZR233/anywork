@@ -3855,15 +3855,19 @@ fn wait_for_vm(
 
 /// Extracts the VM service URL a GUI launcher published in its log.
 ///
-/// The Flutter launch tool prints `available at:`; a directly launched
-/// debug/profile artifact prints the engine's own `The Dart VM service is
-/// listening on`. Either is the real VM service for the running host.
+/// The Flutter launch tool names the Dart VM Service; its DevTools URL can use
+/// the same host and port but is not a VM endpoint. A directly launched
+/// debug/profile artifact prints the engine's own listening announcement.
 fn vm_service_url(log: &str) -> Option<String> {
     log.lines()
         .filter_map(|line| {
-            line.split("available at: http://127.0.0.1:")
+            line.split("A Dart VM Service on ")
                 .nth(1)
-                .or_else(|| line.split("listening on http://127.0.0.1:").nth(1))
+                .and_then(|line| line.split(" is available at: http://127.0.0.1:").nth(1))
+                .or_else(|| {
+                    line.split("The Dart VM service is listening on http://127.0.0.1:")
+                        .nth(1)
+                })
                 .map(|tail| {
                     format!(
                         "http://127.0.0.1:{}",
@@ -6986,4 +6990,31 @@ fn failure_reason(line: &str) -> Option<String> {
     }
     let sanitized = redact_loopback_ports(&redact_loopback_urls(reason));
     Some(sanitized.chars().take(480).collect())
+}
+
+#[cfg(test)]
+mod vm_service_url_tests {
+    use super::vm_service_url;
+
+    #[test]
+    fn selects_vm_announcements_not_the_devtools_page() {
+        let devtools = "The Flutter DevTools debugger and profiler on Linux is available at: \
+            http://127.0.0.1:12345/devtools/?uri=ws://127.0.0.1:12345/ws";
+        let launch = format!(
+            "[        ] A Dart VM Service on Linux is available at: http://127.0.0.1:12345/\n\
+             [        ] {devtools}\n"
+        );
+        assert_eq!(
+            vm_service_url(&launch).as_deref(),
+            Some("http://127.0.0.1:12345/")
+        );
+        assert_eq!(vm_service_url(devtools), None);
+        assert_eq!(
+            vm_service_url(&format!(
+                "{launch}The Dart VM service is listening on http://127.0.0.1:12346/auth-token=/\n"
+            ))
+            .as_deref(),
+            Some("http://127.0.0.1:12346/auth-token=/")
+        );
+    }
 }
