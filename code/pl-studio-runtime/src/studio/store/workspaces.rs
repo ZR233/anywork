@@ -3,18 +3,19 @@
 //! 旧 `projects` 表属于旧会话版本，v2 不导入；普通目录读取只访问本文件。
 //! 写路径与 catalog 一样使用单锁读取-修改-原子替换，`revision` 单调递增并保证同内容幂等。
 
-use std::path::{Path, PathBuf};
+mod schema;
+
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
 
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Result, bail, ensure};
 use pl_protocol::studio::WorkspaceKind;
+use version_migrate::Versioned;
 
 use crate::studio::records::ProjectRecord;
 use crate::studio::store::StudioStore;
 use crate::studio::store::directory::DirectoryDelta;
 use crate::studio::toml_store::{self, RevisionedDocument};
-
-pub(in crate::studio) const WORKSPACES_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -46,16 +47,20 @@ impl WorkspaceEntry {
     }
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct WorkspacesDocument {
-    schema_version: u32,
     revision: u64,
     workspaces: Vec<WorkspaceEntry>,
 }
 
+impl Versioned for WorkspacesDocument {
+    const VERSION: &'static str = <schema::WorkspacesV2 as Versioned>::VERSION;
+}
+
 impl RevisionedDocument for WorkspacesDocument {
     const KIND: &'static str = "Studio workspaces";
+    const VERSION_KEY: &'static str = schema::SCHEMA_KEY;
 
     fn revision_mut(&mut self) -> &mut u64 {
         &mut self.revision
@@ -72,20 +77,19 @@ impl WorkspaceStore {
     pub(in crate::studio) async fn load(path: PathBuf) -> Result<Self> {
         let document = match tokio::fs::read_to_string(&path).await {
             Ok(content) => {
-                let (document, migrated) =
-                    decode_loaded(&path, &content).map_err(crate::studio::startup::data_error)?;
-                if migrated {
-                    let contents = toml::to_string_pretty(&document)?;
+                let loaded = schema::load_document(&path, &content)?;
+                if loaded.migrated {
+                    let contents =
+                        crate::toml_schema::encode(&loaded.document, schema::SCHEMA_KEY)?;
                     let target = path.clone();
                     tokio::task::spawn_blocking(move || {
                         pl_tool::workspace::write_file_atomically(&target, contents.as_bytes())
                     })
                     .await??;
                 }
-                document
+                loaded.document
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => WorkspacesDocument {
-                schema_version: WORKSPACES_SCHEMA_VERSION,
                 revision: 1,
                 workspaces: Vec::new(),
             },
@@ -140,38 +144,6 @@ impl WorkspaceStore {
                 closed: record.closed,
             })
             .collect::<Vec<_>>();
-        {
-            let document = self.lock();
-            for entry in &upserts {
-                if entry.kind == WorkspaceKind::Standalone {
-                    ensure!(
-                        entry.ssh_alias.is_none()
-                            && !entry.closed
-                            && document.workspaces.iter().all(|existing| {
-                                existing.kind != WorkspaceKind::Standalone
-                                    || existing.id == entry.id
-                            }),
-                        "Studio workspaces contain an invalid standalone owner"
-                    );
-                }
-                if let Some(existing) = document
-                    .workspaces
-                    .iter()
-                    .find(|existing| existing.id == entry.id)
-                {
-                    ensure_identity_stable(existing, entry)?;
-                }
-            }
-            for removal in &delta.project_removals {
-                ensure!(
-                    document.workspaces.iter().all(|existing| {
-                        existing.id != removal.project_id
-                            || existing.kind != WorkspaceKind::Standalone
-                    }),
-                    "the standalone workspace cannot be archived"
-                );
-            }
-        }
         let removals = delta
             .project_removals
             .iter()
@@ -180,48 +152,47 @@ impl WorkspaceStore {
         self.mutate(move |document| {
             let mut changed = false;
             for entry in upserts {
-                match document
+                if let Some(existing) = document
                     .workspaces
                     .iter_mut()
                     .find(|existing| existing.id == entry.id)
                 {
-                    Some(existing)
-                        if existing.path == entry.path && existing.ssh_alias == entry.ssh_alias =>
-                    {
-                        let next = WorkspaceEntry {
-                            created_at: existing.created_at,
-                            ..entry
-                        };
-                        if *existing != next {
-                            *existing = next;
-                            changed = true;
-                        }
-                    }
-                    Some(_) => {}
-                    None => {
-                        document.workspaces.push(entry);
+                    ensure_identity_stable(existing, &entry)?;
+                    let next = WorkspaceEntry {
+                        created_at: existing.created_at,
+                        ..entry
+                    };
+                    if *existing != next {
+                        *existing = next;
                         changed = true;
                     }
+                } else {
+                    document.workspaces.push(entry);
+                    changed = true;
                 }
             }
             for (id, closed_at) in removals {
                 if let Some(existing) = document.workspaces.iter_mut().find(|entry| entry.id == id)
-                    && (!existing.closed || existing.updated_at < closed_at)
                 {
-                    existing.closed = true;
-                    existing.updated_at = existing.updated_at.max(closed_at);
-                    changed = true;
+                    ensure!(
+                        existing.kind != WorkspaceKind::Standalone,
+                        "the standalone workspace cannot be archived"
+                    );
+                    if !existing.closed || existing.updated_at < closed_at {
+                        existing.closed = true;
+                        existing.updated_at = existing.updated_at.max(closed_at);
+                        changed = true;
+                    }
                 }
             }
-            changed
+            schema::validate(document)?;
+            Ok(changed)
         })
         .await
     }
 
     /// 把当前内存文档写入 canonical 文件；文件已存在时不覆盖。
-    ///
-    /// 只有 migration 边界使用，用来补齐旧发布遗留的空缺文档；正常运行写入都经
-    /// [`Self::apply_delta`]。
+    /// 只有 migration 边界使用，用来补齐旧发布遗留的空缺文档；正常运行写入都经 apply_delta。
     pub(in crate::studio) async fn persist_if_absent(&self) -> Result<()> {
         let inner = self.inner.clone();
         let path = self.path.clone();
@@ -230,7 +201,7 @@ impl WorkspaceStore {
 
     async fn mutate(
         &self,
-        change: impl FnOnce(&mut WorkspacesDocument) -> bool + Send + 'static,
+        change: impl FnOnce(&mut WorkspacesDocument) -> Result<bool> + Send + 'static,
     ) -> Result<()> {
         let inner = self.inner.clone();
         let path = self.path.clone();
@@ -241,72 +212,6 @@ impl WorkspaceStore {
     fn lock(&self) -> std::sync::MutexGuard<'_, WorkspacesDocument> {
         self.inner.lock().unwrap_or_else(PoisonError::into_inner)
     }
-}
-
-/// The sole schema-1 decoding boundary; ordinary decoding requires an explicit kind.
-fn decode_loaded(path: &Path, content: &str) -> Result<(WorkspacesDocument, bool)> {
-    let mut value: toml::Table = toml::from_str(content)
-        .with_context(|| format!("invalid Studio workspaces {}", path.display()))?;
-    if value.get("schemaVersion").and_then(toml::Value::as_integer) != Some(1) {
-        return decode(path, content).map(|document| (document, false));
-    }
-    let entries = value
-        .get_mut("workspaces")
-        .and_then(toml::Value::as_array_mut)
-        .context("legacy Studio workspaces has no workspace array")?;
-    for entry in entries {
-        let entry = entry.as_table_mut().context("invalid legacy workspace")?;
-        ensure!(
-            !entry.contains_key("kind"),
-            "legacy workspace contains kind"
-        );
-        entry.insert("kind".into(), toml::Value::String("project".into()));
-    }
-    value.insert("schemaVersion".into(), toml::Value::Integer(2));
-    let mut document = decode(path, &toml::to_string(&value)?)?;
-    document.revision = document
-        .revision
-        .checked_add(1)
-        .context("Studio workspaces revision overflow")?;
-    Ok((document, true))
-}
-
-fn decode(path: &Path, content: &str) -> Result<WorkspacesDocument> {
-    let document: WorkspacesDocument = toml::from_str(content)
-        .with_context(|| format!("invalid Studio workspaces {}", path.display()))?;
-    ensure!(
-        document.schema_version == WORKSPACES_SCHEMA_VERSION,
-        "unsupported Studio workspaces schema in {}",
-        path.display()
-    );
-    ensure!(
-        document.revision >= 1,
-        "Studio workspaces revision is invalid"
-    );
-    let mut seen = std::collections::BTreeSet::new();
-    for entry in &document.workspaces {
-        ensure!(
-            !entry.id.is_empty() && !entry.path.is_empty(),
-            "Studio workspace identity is incomplete"
-        );
-        ensure!(
-            seen.insert(entry.id.as_str()),
-            "Studio workspaces contain a duplicate Project identity"
-        );
-    }
-    let standalone = document
-        .workspaces
-        .iter()
-        .filter(|entry| entry.kind == WorkspaceKind::Standalone)
-        .collect::<Vec<_>>();
-    ensure!(
-        standalone.len() <= 1
-            && standalone
-                .iter()
-                .all(|entry| entry.ssh_alias.is_none() && !entry.closed),
-        "Studio workspaces contain an invalid standalone owner"
-    );
-    Ok(document)
 }
 
 impl StudioStore {
@@ -333,6 +238,84 @@ fn ensure_identity_stable(existing: &WorkspaceEntry, next: &WorkspaceEntry) -> R
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::studio::store::directory::{ProjectDirectoryRecord, ProjectRemoval};
+    use crate::toml_schema::{self, DocumentMigrationFailed};
+
+    fn current_entry() -> WorkspaceEntry {
+        WorkspaceEntry {
+            id: "project-a".into(),
+            kind: WorkspaceKind::Project,
+            name: "A".into(),
+            path: "/tmp/a".into(),
+            ssh_alias: Some("host".into()),
+            created_at: 1,
+            updated_at: 2,
+            last_opened_at: Some(3),
+            closed: false,
+        }
+    }
+
+    fn project_upsert(id: &str, kind: WorkspaceKind) -> ProjectDirectoryRecord {
+        ProjectDirectoryRecord {
+            id: id.into(),
+            kind,
+            name: id.into(),
+            path: format!("/workspaces/{id}"),
+            ssh_alias: None,
+            created_at: 1,
+            updated_at: 2,
+            last_opened_at: None,
+            closed: false,
+        }
+    }
+
+    fn empty_store_bytes(revision: u64) -> String {
+        toml_schema::encode(
+            &WorkspacesDocument {
+                revision,
+                workspaces: Vec::new(),
+            },
+            schema::SCHEMA_KEY,
+        )
+        .expect("encode empty workspaces")
+    }
+
+    #[tokio::test]
+    async fn current_bytes_are_not_rewritten() {
+        let dir = tempfile::tempdir().expect("temp");
+        let path = dir.path().join("workspaces.toml");
+        let document = WorkspacesDocument {
+            revision: 5,
+            workspaces: vec![current_entry()],
+        };
+        let encoded = toml_schema::encode(&document, schema::SCHEMA_KEY).expect("encode");
+        tokio::fs::write(&path, &encoded).await.expect("write");
+        let store = WorkspaceStore::load(path.clone())
+            .await
+            .expect("load current");
+        assert_eq!(store.lock().revision, 5);
+        assert_eq!(
+            tokio::fs::read_to_string(&path).await.expect("read"),
+            encoded
+        );
+    }
+
+    #[tokio::test]
+    async fn incomplete_identity_leaves_original_bytes() {
+        let dir = tempfile::tempdir().expect("temp");
+        let path = dir.path().join("workspaces.toml");
+        let raw = "schemaVersion = 1\nrevision = 1\n\n[[workspaces]]\nid = \"\"\nname = \"A\"\npath = \"/tmp/a\"\ncreatedAt = 1\nupdatedAt = 1\n";
+        tokio::fs::write(&path, raw).await.expect("write");
+        let error = WorkspaceStore::load(path.clone())
+            .await
+            .err()
+            .expect("invalid identity");
+        assert!(error.is::<DocumentMigrationFailed>());
+        assert_eq!(
+            tokio::fs::read_to_string(&path).await.expect("unchanged"),
+            raw
+        );
+    }
 
     #[tokio::test]
     async fn workspace_schema_one_migrates_all_fields_and_is_idempotent() -> Result<()> {
@@ -363,64 +346,141 @@ closed = true
 "#;
         tokio::fs::write(&path, old).await?;
         let store = WorkspaceStore::load(path.clone()).await?;
+        assert_eq!(store.lock().revision, 17);
         assert_eq!(store.entries().len(), 2);
-        assert!(
-            store
-                .entries()
-                .iter()
-                .all(|entry| entry.kind == WorkspaceKind::Project)
-        );
-        let contents = tokio::fs::read_to_string(&path).await?;
-        let mut upgraded: toml::Table = toml::from_str(&contents)?;
-        assert_eq!(upgraded["schemaVersion"].as_integer(), Some(2));
-        assert_eq!(upgraded["revision"].as_integer(), Some(18));
-        upgraded.insert("schemaVersion".into(), toml::Value::Integer(1));
-        upgraded.insert("revision".into(), toml::Value::Integer(17));
-        for entry in upgraded["workspaces"].as_array_mut().unwrap() {
-            assert_eq!(
-                entry
-                    .as_table_mut()
-                    .unwrap()
-                    .remove("kind")
-                    .unwrap()
-                    .as_str(),
-                Some("project")
-            );
+        let entries = store.entries();
+        assert_eq!(entries[0].kind, WorkspaceKind::Project);
+        assert_eq!(entries[0].id, "open");
+        assert_eq!(entries[0].name, "保留项目");
+        assert_eq!(entries[0].path, "/projects/kept");
+        assert_eq!(entries[0].created_at, 3);
+        assert_eq!(entries[0].updated_at, 8);
+        assert_eq!(entries[0].last_opened_at, Some(7));
+        assert!(!entries[0].closed);
+        assert_eq!(entries[1].kind, WorkspaceKind::Project);
+        assert_eq!(entries[1].ssh_alias.as_deref(), Some("remote"));
+        assert_eq!(entries[1].last_opened_at, Some(9));
+        assert!(entries[1].closed);
+        let migrated_bytes = tokio::fs::read(&path).await?;
+        let migrated_text = std::str::from_utf8(&migrated_bytes)?;
+        let migrated: toml::Table = toml::from_str(migrated_text)?;
+        assert_eq!(migrated["schemaVersion"].as_integer(), Some(2));
+        assert_eq!(migrated["revision"].as_integer(), Some(17));
+        let mut expected: toml::Table = toml::from_str(old)?;
+        expected.insert("schemaVersion".into(), toml::Value::Integer(2));
+        for entry in expected["workspaces"].as_array_mut().expect("workspaces") {
+            entry
+                .as_table_mut()
+                .expect("workspace entry")
+                .insert("kind".into(), toml::Value::String("project".into()));
         }
-        assert_eq!(upgraded, toml::from_str::<toml::Table>(old)?);
+        assert_eq!(migrated, expected);
         let reopened = WorkspaceStore::load(path.clone()).await?;
-        assert_eq!(reopened.entries(), store.entries());
-        assert_eq!(tokio::fs::read_to_string(path).await?, contents);
+        assert_eq!(reopened.entries(), entries);
+        assert_eq!(tokio::fs::read(&path).await?, migrated_bytes);
         Ok(())
     }
 
-    #[test]
-    fn workspace_schema_two_requires_known_kind_and_unique_local_standalone() -> Result<()> {
-        let path = Path::new("workspaces.toml");
-        let header = "schemaVersion = 2\nrevision = 1\n";
-        let entry = r#"
-[[workspaces]]
-id = "owner"
-kind = "standalone"
-name = "anywork"
-path = "/documents/anywork"
-createdAt = 1
-updatedAt = 2
-"#;
-        let valid = format!("{header}{entry}");
-        assert_eq!(
-            decode(path, &valid)?.workspaces[0].kind,
-            WorkspaceKind::Standalone
-        );
-        for invalid in [
-            valid.replace("kind = \"standalone\"\n", ""),
-            valid.replace("\"standalone\"", "\"unknown\""),
-            format!("{valid}closed = true\n"),
-            format!("{valid}sshAlias = \"remote\"\n"),
-            format!("{valid}{}", entry.replace("\"owner\"", "\"other\"")),
-        ] {
-            assert!(decode(path, &invalid).is_err(), "{invalid}");
+    #[tokio::test]
+    async fn apply_delta_rejects_invalid_candidates_without_publishing() -> Result<()> {
+        let cases = [
+            DirectoryDelta {
+                project_upserts: vec![
+                    project_upsert("standalone-a", WorkspaceKind::Standalone),
+                    project_upsert("standalone-b", WorkspaceKind::Standalone),
+                ],
+                ..Default::default()
+            },
+            DirectoryDelta {
+                project_upserts: vec![
+                    project_upsert("same-id", WorkspaceKind::Project),
+                    project_upsert("same-id", WorkspaceKind::Standalone),
+                ],
+                ..Default::default()
+            },
+            DirectoryDelta {
+                project_upserts: vec![project_upsert(
+                    "created-standalone",
+                    WorkspaceKind::Standalone,
+                )],
+                project_removals: vec![ProjectRemoval {
+                    project_id: "created-standalone".into(),
+                    thread_ids: Vec::new(),
+                    closed_at: 3,
+                }],
+                ..Default::default()
+            },
+        ];
+
+        for delta in cases {
+            let dir = tempfile::tempdir()?;
+            let path = dir.path().join("workspaces.toml");
+            let original = empty_store_bytes(9);
+            tokio::fs::write(&path, &original).await?;
+            let store = WorkspaceStore::load(path.clone()).await?;
+
+            assert!(store.apply_delta(&delta).await.is_err());
+            assert!(store.entries().is_empty());
+            assert_eq!(store.lock().revision, 9);
+            assert_eq!(tokio::fs::read_to_string(path).await?, original);
         }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn concurrent_standalone_upserts_commit_at_most_one_owner() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("workspaces.toml");
+        tokio::fs::write(&path, empty_store_bytes(1)).await?;
+        let store = WorkspaceStore::load(path.clone()).await?;
+        let barrier = Arc::new(tokio::sync::Barrier::new(3));
+
+        let first = {
+            let store = store.clone();
+            let barrier = barrier.clone();
+            tokio::spawn(async move {
+                barrier.wait().await;
+                store
+                    .apply_delta(&DirectoryDelta {
+                        project_upserts: vec![project_upsert(
+                            "standalone-a",
+                            WorkspaceKind::Standalone,
+                        )],
+                        ..Default::default()
+                    })
+                    .await
+            })
+        };
+        let second = {
+            let store = store.clone();
+            let barrier = barrier.clone();
+            tokio::spawn(async move {
+                barrier.wait().await;
+                store
+                    .apply_delta(&DirectoryDelta {
+                        project_upserts: vec![project_upsert(
+                            "standalone-b",
+                            WorkspaceKind::Standalone,
+                        )],
+                        ..Default::default()
+                    })
+                    .await
+            })
+        };
+
+        barrier.wait().await;
+        let results = [first.await?, second.await?];
+        assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+        let entries = store.entries();
+        assert_eq!(
+            entries
+                .iter()
+                .filter(|entry| entry.kind == WorkspaceKind::Standalone)
+                .count(),
+            1
+        );
+        let reopened = WorkspaceStore::load(path.clone()).await?;
+        assert_eq!(reopened.entries(), entries);
         Ok(())
     }
 }

@@ -9,10 +9,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::{PureError, Result};
 
 use super::credential::{CredentialStore, MemoryCredentialStore, SystemCredentialStore};
-use super::{
-    ROOT_AGENT_ROUTE_KEY, STUDIO_CONFIG_DIR_NAME, STUDIO_CONFIG_FILE_NAME, StudioConfig,
-    root_agent_route_id,
-};
+use super::{STUDIO_CONFIG_DIR_NAME, STUDIO_CONFIG_FILE_NAME, StudioConfig};
+#[cfg(test)]
 use pl_protocol::ThreadModeId;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -169,75 +167,25 @@ impl ConfigStore {
     pub(crate) fn load_for_startup(
         &self,
     ) -> std::result::Result<StudioConfig, super::ConfigRuntimeError> {
-        if self.config_absent()? {
-            let mut config = StudioConfig::default_config()?;
-            self.hydrate_credentials(&mut config)?;
-            return Ok(config);
-        }
         // 中断的迁移必须先接续同一操作，不能先按当前结构解析后发布新旧混合状态。
-        if let Some(resumed) =
-            super::schema_migration::resume(&self.paths, self.credentials.as_ref()).map_err(
-                |error| super::ConfigRuntimeError::Migration(self.config_path_error(error)),
-            )?
-        {
-            // 旧目标（23–26）的待续操作已按其原候选、摘要与提交步骤完成；这里从该**已提交版本**
-            // 继续升级到当前 schema，不改写旧目标、不伪造摘要，也不发布中间配置。
-            return self.continue_resumed_migration(resumed);
-        }
-        let content = fs::read(self.paths.config_file())
-            .map_err(|error| self.config_path_error(error.into()))?;
-        // Version dispatch precedes the strict parse so every supported older schema
-        // (`OLDEST_SUPPORTED_SCHEMA..=PREVIOUS_CONFIG_SCHEMA`) reaches its data-preserving
-        // migration instead of failing current-schema validation.
-        #[derive(serde::Deserialize)]
-        struct Version {
-            schema_version: u32,
-        }
-        if let Some(version) = std::str::from_utf8(&content)
-            .ok()
-            .and_then(|text| toml::from_str::<Version>(text).ok())
-            .map(|version| version.schema_version)
-            .filter(|version| {
-                (super::schema_migration::OLDEST_SUPPORTED_SCHEMA
-                    ..=super::schema_migration::PREVIOUS_CONFIG_SCHEMA)
-                    .contains(version)
-            })
-        {
-            return self
-                .migrate_legacy_config_for_startup(&content, version)
-                .map_err(|error| {
-                    super::ConfigRuntimeError::Migration(self.config_path_error(error))
-                });
-        }
-        // Unknown/future versions, malformed TOML and current-schema validation failures
-        // all fail closed here: the original bytes stay on disk untouched.
-        let mut config =
-            parse_startup_config(&content).map_err(|error| self.config_path_error(error))?;
+        super::schema_migration::resume_for_startup(&self.paths, self.credentials.as_ref())
+            .map_err(super::ConfigRuntimeError::Migration)?;
+        let content = if self.config_absent()? {
+            None
+        } else {
+            Some(fs::read(self.paths.config_file()).map_err(PureError::from)?)
+        };
+        let mut config = super::schema_migration::prepare_for_startup(
+            &self.paths,
+            self.credentials.as_ref(),
+            content.as_deref(),
+            &|path, bytes| {
+                pl_tool::workspace::write_file_atomically(path, bytes).map_err(Into::into)
+            },
+        )
+        .map_err(super::ConfigRuntimeError::Migration)?;
         self.hydrate_credentials(&mut config)?;
         Ok(config)
-    }
-
-    /// 接续一个已完成的中断迁移操作。
-    ///
-    /// 目标就是当前 schema 时只补凭据、不重做迁移；旧目标（23–26）表示该操作已按它自己的候选、
-    /// 摘要与步骤提交完成，此时从盘上的**已提交版本**继续升级到当前 schema——复用既有版本分派、
-    /// 备份、候选校验与原子提交，不改写旧日志目标、不伪造摘要，也不返回中间版本。
-    fn continue_resumed_migration(
-        &self,
-        resumed: super::schema_migration::ResumedOperation,
-    ) -> std::result::Result<StudioConfig, super::ConfigRuntimeError> {
-        match resumed.config {
-            Some(mut config) => {
-                // 已经是当前 schema：只补凭据，不重做任何迁移（错误类别保持 `Core`）。
-                self.hydrate_credentials(&mut config)?;
-                Ok(config)
-            }
-            None => {
-                let content = fs::read(self.paths.config_file()).map_err(PureError::from)?;
-                self.migrate_legacy_config_for_startup(&content, resumed.target_version)
-                    .map_err(super::ConfigRuntimeError::Migration)
-            }
-        }
     }
 
     /// 为配置文件错误附上 `config.toml` 路径以便定位。保持 `Io` 类别不变，只消化
@@ -259,83 +207,29 @@ impl ConfigStore {
         }
     }
 
-    fn migrate_legacy_config_for_startup(
-        &self,
-        original: &[u8],
-        source_version: u32,
-    ) -> Result<StudioConfig> {
-        self.migrate_legacy_config_for_startup_with(original, source_version, |path, content| {
-            pl_tool::workspace::write_file_atomically(path, content).map_err(Into::into)
-        })
-    }
-
+    #[cfg(test)]
     fn migrate_legacy_config_for_startup_with(
         &self,
         original: &[u8],
         source_version: u32,
         replace: impl Fn(&Path, &[u8]) -> Result<()>,
     ) -> Result<StudioConfig> {
-        let text = std::str::from_utf8(original).map_err(|error| {
-            PureError::ConfigError(format!("invalid schema {source_version} UTF-8: {error}"))
-        })?;
-        // 18..22 先完成各自的既有转换，再统一执行 Provider/Preset → Account/AccountTemplate；
-        // 23 补出空 ACP 集合，24→25 退役 ACP 旧执行字段；25→26 退役账号估算开关；
-        // 26→27 将模型禁用集合转换为明确关闭覆盖。
-        // 所有路径保留计费覆盖、路由、Profile 与凭据关联，不把旧 disabled 解释成不计费。
-        let mut inline_tokens = std::collections::BTreeMap::new();
-        let rewritten = if source_version <= super::schema_migration::LEGACY_ACCOUNT_SCHEMA {
-            let rewritten = rewrite_legacy_deepseek_standalone_dialect(text)?;
-            let rewritten = migrate_model_identifiers(&rewritten)?;
-            super::schema_migration::rewrite_account_document(&rewritten, &mut inline_tokens)?
-        } else {
-            text.to_string()
-        };
-        let rewritten = super::schema_migration::retire_legacy_config_fields_document(&rewritten)?;
-        let mut config = parse_typed_config(&rewritten)?;
-        reject_inline_credentials(&config)?;
-        match source_version {
-            18 => {
-                config.disabled_system_agents.remove(ROOT_AGENT_ROUTE_KEY);
-                migrate_legacy_planner_route(&mut config, source_version)?;
-            }
-            19 => migrate_legacy_planner_route(&mut config, source_version)?,
-            20..=super::schema_migration::LEGACY_ACCOUNT_SCHEMA => {}
-            23..=super::schema_migration::PREVIOUS_CONFIG_SCHEMA => {}
-            other => {
-                return Err(PureError::ConfigError(format!(
-                    "unsupported Studio config schema version: {other}"
-                )));
-            }
-        }
-        config.schema_version = super::STUDIO_CONFIG_SCHEMA_VERSION;
-        // 23 及更早没有 delegation / 模型启用 / 计费类别意图：这些字段全部是 serde(default) 的可选
-        // 字段，缺失时按当前缺省解码（profile/balanced、空启用覆盖、无计费覆盖）。这里**不能**
-        // 无条件写回 `DelegationSettings::default()`：那会把 24 及以上配置里显式保存的
-        // mode/preference（以及未来可选字段）覆盖成默认值，属于字段级缺省替换显式意图。
-        config.validate_declarations()?;
-        let persisted = serialize_persisted_config(&config)?;
-        let backup = write_config_backup(self.paths.config_file(), original, "migrated")?;
-        // 主配置与（确实需要改键的旧版本的）用户 Profile 在同一可恢复操作内准备、校验、复制
-        // 凭据并逐资源提交；是否重排 Profile 由 schema_migration 按源版本统一判定，
-        // 只前进版本（如 23→24）保留 Profile 原字节与注释。
-        let mut config = super::schema_migration::migrate(
+        let text = std::str::from_utf8(original)
+            .map_err(|error| PureError::ConfigError(error.to_string()))?;
+        let loaded = super::document_migration::load_main(self.paths.config_file(), text)
+            .map_err(|error| PureError::ConfigError(error.to_string()))?;
+        assert_eq!(loaded.source_version, source_version);
+        let mut config = super::schema_migration::prepare_for_startup(
             &self.paths,
             self.credentials.as_ref(),
-            super::schema_migration::MigrationSource {
-                original,
-                source_version,
-                candidate: persisted.into_bytes(),
-                inline_tokens,
-            },
+            Some(original),
             &replace,
-        )?;
+        )
+        .map_err(|error| match error.downcast::<PureError>() {
+            Ok(error) => error,
+            Err(error) => PureError::ConfigError(error.to_string()),
+        })?;
         self.hydrate_credentials(&mut config)?;
-        tracing::info!(
-            backup_path = %backup.display(),
-            source_version,
-            target_version = super::STUDIO_CONFIG_SCHEMA_VERSION,
-            "migrated Studio config"
-        );
         Ok(config)
     }
 
@@ -456,269 +350,31 @@ impl ConfigStore {
     }
 }
 
-fn rewrite_legacy_deepseek_standalone_dialect(text: &str) -> Result<String> {
-    let mut table: toml::Table = toml::from_str(text).map_err(|error| {
-        PureError::ConfigError(format!(
-            "invalid Studio config TOML{}",
-            toml_error_location(text, &error)
-        ))
-    })?;
-    rewrite_legacy_web_search_standalone(&mut table);
-    toml::to_string(&table).map_err(|error| {
-        PureError::ConfigError(format!(
-            "failed to rewrite Studio config dialect token: {error}"
-        ))
-    })
-}
-
-fn rewrite_legacy_web_search_standalone(table: &mut toml::Table) {
-    let Some(toml::Value::Table(models)) = table.get_mut("models") else {
-        return;
-    };
-    let Some(toml::Value::Table(accounts)) = models.get_mut("accounts") else {
-        return;
-    };
-    let account_ids: Vec<String> = accounts.keys().cloned().collect();
-    for account_id in account_ids {
-        let Some(toml::Value::Table(account)) = accounts.get_mut(&account_id) else {
-            continue;
-        };
-        // Design/token path is `service_capabilities`; persisted AccountConfig uses `capabilities`.
-        for field in ["service_capabilities", "capabilities"] {
-            rewrite_legacy_web_search_standalone_token(account.get_mut(field));
-        }
-    }
-}
-
-fn rewrite_legacy_web_search_standalone_token(capabilities: Option<&mut toml::Value>) {
-    let Some(toml::Value::Table(capabilities)) = capabilities else {
-        return;
-    };
-    let Some(toml::Value::Table(web_search)) = capabilities.get_mut("web_search") else {
-        return;
-    };
-    let Some(toml::Value::String(standalone)) = web_search.get_mut("standalone") else {
-        return;
-    };
-    if standalone == "deep_seek_anthropic_messages" {
-        *standalone = "deep_seek_tools_api".to_string();
-    }
-}
-
-fn migrate_legacy_planner_route(config: &mut StudioConfig, source_version: u32) -> Result<()> {
-    let planner_route = config
-        .models
-        .routes
-        .remove(&root_agent_route_id())
-        .ok_or_else(|| {
-            PureError::ConfigError(format!(
-                "schema {source_version} config is missing planner model route"
-            ))
-        })?;
-    config.mode_model_routes = std::collections::BTreeMap::from([
-        (ThreadModeId::simple(), planner_route.clone()),
-        (ThreadModeId::task(), planner_route),
-    ]);
-    Ok(())
-}
-
 fn parse_current_config(content: &str) -> Result<StudioConfig> {
     parse_config(content)
 }
 
-fn parse_startup_config(content: &[u8]) -> Result<StudioConfig> {
-    let content = std::str::from_utf8(content).map_err(|error| {
-        PureError::ConfigError(format!("failed to parse Studio config as UTF-8: {error}"))
-    })?;
-    parse_config(content)
-}
-
 fn parse_config(content: &str) -> Result<StudioConfig> {
-    let config = parse_typed_config(content)?;
-    reject_inline_credentials(&config)?;
-    config.validate_declarations()?;
-    reject_retired_model_access_keys(content)?;
-    Ok(config)
+    let document =
+        super::document_migration::load_current_main(Path::new(STUDIO_CONFIG_FILE_NAME), content)
+            .map_err(|error| PureError::ConfigError(error.to_string()))?;
+    document
+        .into_config()
+        .map_err(|error| PureError::ConfigError(error.to_string()))
 }
 
-/// 当前 schema 拒绝已退役的模型接入键：正常读写只消费账户/模板结构。
-///
-/// 这里只做键路径判定，不解释值，也不为旧键保留 serde alias 或运行期双轨解析；旧版本
-/// 配置在迁移边界转换后才可能到达该检查。
-fn reject_retired_model_access_keys(content: &str) -> Result<()> {
-    let Ok(value) = toml::from_str::<toml::Value>(content) else {
-        return Ok(());
-    };
-    let Some(models) = value.get("models").and_then(toml::Value::as_table) else {
-        return Ok(());
-    };
-    if models.contains_key("providers") {
-        return Err(retired_key("models.providers"));
-    }
-    if models.contains_key("presets") {
-        return Err(retired_key("models.presets"));
-    }
-    if let Some(routes) = models.get("routes").and_then(toml::Value::as_table) {
-        reject_retired_route_keys("models.routes", routes)?;
-    }
-    if let Some(mode_routes) = value
-        .get("mode_model_routes")
-        .and_then(toml::Value::as_table)
-    {
-        reject_retired_route_keys("mode_model_routes", mode_routes)?;
-    }
-    if let Some(accounts) = models.get("accounts").and_then(toml::Value::as_table) {
-        for (id, account) in accounts {
-            let Some(account) = account.as_table() else {
-                continue;
-            };
-            for retired in ["preset", "adapter", "disabled_models"] {
-                if account.contains_key(retired) {
-                    return Err(retired_key(&format!("models.accounts.{id}.{retired}")));
-                }
-            }
-        }
-    }
-    Ok(())
-}
-
-fn reject_retired_route_keys(prefix: &str, routes: &toml::Table) -> Result<()> {
-    for (role, route) in routes {
-        let Some(route) = route.as_table() else {
-            continue;
-        };
-        for retired in ["provider", "model"] {
-            if route.contains_key(retired) {
-                return Err(retired_key(&format!("{prefix}.{role}.{retired}")));
-            }
-        }
-    }
-    Ok(())
-}
-
-fn retired_key(path: &str) -> PureError {
-    PureError::ConfigError(format!(
-        "Studio config uses the retired model access key `{path}`; expected accounts/account_id/model_id"
-    ))
-}
-
-fn parse_typed_config(content: &str) -> Result<StudioConfig> {
-    // 第一遍只做 TOML 语法解析；语法诊断由解析器生成，不含文档内容。
-    if let Err(error) = toml::from_str::<toml::Table>(content) {
-        return Err(PureError::ConfigError(format!(
-            "invalid Studio config TOML{}",
-            toml_error_location(content, &error)
-        )));
-    }
-    // 第二遍做结构/类型解码；serde 诊断可能回显字段值，因此只保留类别与行/列位置。
-    toml::from_str(content).map_err(|error| {
-        PureError::ConfigError(format!(
-            "Studio config TOML does not match the current schema{}",
-            toml_error_location(content, &error)
-        ))
-    })
-}
-
-/// 迁移候选的 typed 校验：结构、禁用内联凭据与期望声明完整性。
+#[cfg(test)]
 pub(super) fn parse_migrated_config(content: &[u8]) -> Result<StudioConfig> {
-    parse_migration_candidate(content, super::STUDIO_CONFIG_SCHEMA_VERSION)
+    let text =
+        std::str::from_utf8(content).map_err(|error| PureError::ConfigError(error.to_string()))?;
+    parse_current_config(text)
 }
 
-pub(super) fn parse_migration_candidate(content: &[u8], target: u32) -> Result<StudioConfig> {
-    let text = std::str::from_utf8(content).map_err(|error| {
-        PureError::ConfigError(format!("migrated Studio config is not UTF-8: {error}"))
-    })?;
-    let config = parse_typed_config(text)?;
-    reject_inline_credentials(&config)?;
-    if config.schema_version != target {
-        return Err(PureError::ConfigError(
-            "migration candidate schema does not match its journal".into(),
-        ));
-    }
-    let mut validation = config.clone();
-    validation.schema_version = super::STUDIO_CONFIG_SCHEMA_VERSION;
-    validation.validate_declarations()?;
-    Ok(config)
-}
-
-/// 仅按错误的字节 span 计算 1-based 行/列用于定位；刻意不回显任何原文或字段值。
-fn toml_error_location(content: &str, error: &toml::de::Error) -> String {
-    let Some(span) = error.span() else {
-        return String::new();
-    };
-    let Some(prefix) = content.get(..span.start) else {
-        return String::new();
-    };
-    let line = prefix.bytes().filter(|byte| *byte == b'\n').count() + 1;
-    let column = prefix
-        .rfind('\n')
-        .map_or(prefix.len(), |newline| prefix.len() - newline - 1)
-        + 1;
-    format!(" at line {line}, column {column}")
-}
-
-fn reject_inline_credentials(config: &StudioConfig) -> Result<()> {
-    if config
-        .models
-        .accounts
-        .values()
-        .any(|account| account.bearer_token.is_some())
-    {
-        return Err(PureError::ConfigError(
-            "current schema forbids inline account bearer_token; use the Studio credential store"
-                .to_string(),
-        ));
-    }
-    Ok(())
-}
-
-/// Decode legacy identifiers only at the migration boundary. Never rewrite arbitrary vendor bodies.
-fn migrate_model_identifiers(text: &str) -> Result<String> {
-    let mut value: toml::Value =
-        toml::from_str(text).map_err(|_| PureError::ConfigError("invalid legacy config".into()))?;
-    if let Some(models) = value.get_mut("models").and_then(toml::Value::as_table_mut) {
-        // 21 及更早版本把模型接入实例写在 `providers` 下；两种表名都只转换 `slug`。
-        for table in ["accounts", "providers"] {
-            if let Some(accounts) = models.get_mut(table).and_then(toml::Value::as_table_mut) {
-                migrate_account_model_identifiers(accounts)?;
-            }
-        }
-    }
-    toml::to_string(&value)
-        .map_err(|_| PureError::ConfigError("could not encode migrated config".into()))
-}
-
-fn migrate_account_model_identifiers(accounts: &mut toml::Table) -> Result<()> {
-    {
-        for (_, account) in accounts.iter_mut() {
-            if let Some(catalog) = account.get_mut("catalog") {
-                for key in ["models", "additional_models"] {
-                    if let Some(models) = catalog.get_mut(key).and_then(toml::Value::as_array_mut) {
-                        for model in models {
-                            let table = model.as_table_mut().ok_or_else(|| {
-                                PureError::ConfigError("invalid legacy model declaration".into())
-                            })?;
-                            if let Some(legacy) = table.remove("slug") {
-                                if table
-                                    .get("model_id")
-                                    .is_some_and(|current| current != &legacy)
-                                {
-                                    return Err(PureError::ConfigError(
-                                        "conflicting model identifiers in legacy config".into(),
-                                    ));
-                                }
-                                table.insert("model_id".into(), legacy);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-    Ok(())
-}
-
-fn write_config_backup(config_path: &Path, content: &[u8], kind: &str) -> Result<PathBuf> {
+pub(super) fn write_config_backup(
+    config_path: &Path,
+    content: &[u8],
+    kind: &str,
+) -> Result<PathBuf> {
     let stamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_nanos())
@@ -772,9 +428,11 @@ fn config_backup_path(config_path: &Path, kind: &str, stamp: u128, collision: u3
 pub(super) fn serialize_persisted_config(config: &StudioConfig) -> Result<String> {
     let mut persisted = config.clone();
     clear_inline_credentials(&mut persisted);
-    toml::to_string_pretty(&persisted).map_err(|error| {
-        PureError::ConfigError(format!("failed to serialize Studio config: {error}"))
-    })
+    super::document_migration::MainV27::from_config(&persisted)
+        .and_then(|document| document.encode())
+        .map_err(|error| {
+            PureError::ConfigError(format!("failed to serialize Studio config: {error}"))
+        })
 }
 
 fn clear_inline_credentials(config: &mut StudioConfig) {
@@ -1339,11 +997,11 @@ mod tests {
 
         let path = store.paths.config_file();
         let mut table = read_table(path);
-        table.insert("schema_version".into(), toml::Value::Integer(20));
+        downgrade_to_legacy_document(&mut table, 20, true);
         let accounts = table
             .get_mut("models")
             .and_then(toml::Value::as_table_mut)
-            .and_then(|models| models.get_mut("accounts"))
+            .and_then(|models| models.get_mut("providers"))
             .and_then(toml::Value::as_table_mut)
             .expect("accounts table");
         let deepseek = accounts
@@ -1446,7 +1104,7 @@ mod tests {
         store.save(&config).expect("save current schema");
         let path = store.paths.config_file();
         let mut table = read_table(path);
-        table.insert("schema_version".into(), toml::Value::Integer(20));
+        downgrade_to_legacy_document(&mut table, 20, true);
         write_table(path, &table);
 
         let loaded = store
@@ -1485,6 +1143,7 @@ mod tests {
         let agents = store.paths.agents_dir();
         fs::create_dir_all(&agents).expect("agents directory");
         let profile = concat!(
+            "schema_version = 1\n",
             "display_name = \"Verify\"\n",
             "description = \"Checks conversions\"\n",
             "when_to_use = \"after a migration\"\n",
@@ -1540,10 +1199,7 @@ mod tests {
             .load_for_startup()
             .expect_err("future schema must fail closed");
         assert!(
-            matches!(
-                error,
-                super::super::ConfigRuntimeError::Core(PureError::ConfigError(_))
-            ),
+            matches!(error, super::super::ConfigRuntimeError::Migration(_)),
             "future schema is a config error: {error}"
         );
         assert_eq!(fs::read(path).expect("reread config"), original);
@@ -1565,7 +1221,7 @@ mod tests {
         store.save(&config).expect("save current schema");
         let path = store.paths.config_file();
         let mut table = read_table(path);
-        table.insert("schema_version".into(), toml::Value::Integer(20));
+        downgrade_to_legacy_document(&mut table, 20, true);
         let routes = table
             .get_mut("models")
             .and_then(toml::Value::as_table_mut)
@@ -1577,7 +1233,7 @@ mod tests {
             .and_then(toml::Value::as_table_mut)
             .expect("explorer route");
         explorer.insert(
-            "account_id".into(),
+            "provider".into(),
             toml::Value::String("missing-account".into()),
         );
         write_table(path, &table);
@@ -1587,10 +1243,7 @@ mod tests {
             .load_for_startup()
             .expect_err("invalid schema 20 must not migrate");
         assert!(
-            matches!(
-                error,
-                super::super::ConfigRuntimeError::Migration(PureError::ConfigError(_))
-            ),
+            matches!(error, super::super::ConfigRuntimeError::Migration(_)),
             "migration failure is a config error: {error}"
         );
         assert_eq!(fs::read(path).expect("reread config"), original);

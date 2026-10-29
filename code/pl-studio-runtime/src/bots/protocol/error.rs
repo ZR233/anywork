@@ -1,15 +1,35 @@
 use pl_protocol::studio::{BotDiagnostic, StudioError, StudioErrorCode};
 
 /// 飞书协议失败。保留安全类别与平台错误码，不携带 secret、正文或票据 URL。
-#[derive(Debug, Clone, thiserror::Error)]
+#[derive(Debug, Clone)]
 pub enum FeishuError {
-    #[error("{kind:?}: {message}")]
     Protocol {
         kind: FeishuErrorKind,
         message: String,
         retryable: bool,
         platform_code: Option<String>,
+        source: Option<std::sync::Arc<dyn std::error::Error + Send + Sync>>,
     },
+}
+
+impl std::fmt::Display for FeishuError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Protocol { kind, message, .. } => write!(formatter, "{kind:?}: {message}"),
+        }
+    }
+}
+
+impl std::error::Error for FeishuError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            // Return the Arc's pointee, not Arc's own Error implementation (which would
+            // skip the underlying root error when enumerating source()).
+            Self::Protocol { source, .. } => source
+                .as_deref()
+                .map(|source| source as &(dyn std::error::Error + 'static)),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -38,7 +58,19 @@ impl FeishuError {
             message: message.into(),
             retryable,
             platform_code,
+            source: None,
         }
+    }
+
+    /// Retains storage/decoder causes without exposing them through the public diagnostic DTO.
+    pub fn with_source(mut self, source: impl Into<anyhow::Error>) -> Self {
+        let Self::Protocol { source: slot, .. } = &mut self;
+        *slot = Some(std::sync::Arc::from(
+            source
+                .into()
+                .reallocate_into_boxed_dyn_error_without_backtrace(),
+        ));
+        self
     }
 
     pub fn retryable(&self) -> bool {
@@ -81,6 +113,7 @@ impl FeishuError {
                 message,
                 retryable,
                 platform_code,
+                ..
             } => BotDiagnostic {
                 code: kind.label().to_string(),
                 message: message.clone(),
@@ -152,5 +185,30 @@ impl FeishuErrorKind {
             Self::Unavailable => Some("retryOrWaitAdminReview"),
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod source_tests {
+    use super::*;
+    use std::error::Error;
+
+    #[test]
+    fn retained_cause_is_typed_cloneable_and_not_in_the_diagnostic() {
+        let error = FeishuError::new(
+            FeishuErrorKind::Protocol,
+            "invalid bot document",
+            false,
+            None,
+        )
+        .with_source(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "private-input",
+        ));
+        let cloned = error.clone();
+        let source = cloned.source().expect("typed cause survives cloning");
+        assert!(source.is::<std::io::Error>());
+        assert_eq!(cloned.diagnostic().message, "invalid bot document");
+        assert!(!cloned.to_string().contains("private-input"));
     }
 }
