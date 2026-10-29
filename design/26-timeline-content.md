@@ -44,6 +44,8 @@ pending 的条数和实际字节沿用可靠队列预算。保存失败保留已
 
 历史查询通过 thread 与不透明原子 cursor 独立执行，不挂在 feed、ACK credit 或订阅 attempt 上。整个请求持有注册的同一 Session 与 epoch，不跨 await 重解析目标。显式存储 preparation 完成后才发布当前 reader；冷历史不激活模型、工具或执行所有者，不创建缺失历史库，不重放副作用。准入、身份和 durable checkpoint 栅栏继续归存储所有者；迁移失败、损坏、Busy 和真实空页不可混淆。
 
+独立查询 scope 持有同一注册 reader 的强引用，覆盖分页、详情及在途打开；不能仅在单次 Future 内保留引用，让冷 Session 在两次查询之间被回收并更换 epoch。FRB 只提供该 reader 的薄句柄，关闭先封闭查询准入，再通过 Tokio 的任务跟踪能力等待已受理读取结算并释放引用，不另建历史缓存、读取队列或通用生命周期框架。
+
 分页只支持 Latest 与 Before，返回升序原子 items、`beforeCursor`、`hasOlder` 和 epoch；默认 32 项，显式 limit 为 1..=100。游标绑定 Thread、epoch 和严格完成序号，不按 offset、展示组或 Chat Message 数推进。短页不自动等于 EOF；字节预算截页仍保留真实更早边界。客户端首屏由事件 Baseline 自带小页，不先 query 再 subscribe。
 
 普通完整文本、结果说明与必要元数据直接随页面和完成事件交付，不让每条普通消息再读正文。超大日志、附件、明确折叠扩展或超预算正文可用冻结预览、准确总字节数与稳定详情引用。第一版允许存一份冻结展示快照；不能指向可 upsert 的执行行或会被覆盖的临时文件后宣称不可变。
@@ -77,6 +79,10 @@ SDK 不保留 recent tail 或历史镜像；传输仅保留 credit 范围内未�
 SDK 的唯一消费 owner 准备整帧，唯一 presentation consumer 接纳完成原子，当前态 Repository 提交，再公开更新和标记 ready；各 owner 只写自己的数据。live 结束不能先公开、再异步等待历史查询。提交回合不等待数据库、Markdown 绘制或动画。连续 ACK、两帧窗口、分块 snapshot 和主动取消见 [07](./07-streaming.md)。presentation detach 必须取消未完成交付并退订，不能提前 ACK 或永久占 credit。
 
 实时 long text 的 Append/Replace/Remove 与 generation/revision 仅由 SDK 对应 Repository 归约；失配从所属域事件 snapshot 恢复，不调用详情 query。完成历史完全不使用该可变协议。
+
+活动正文只共享当前运行成员的 canonical `ContentBlock`，摘要不变但正文增长也须通知；已完成成员退出须与所依赖的完成上界协调交付，不回填已提交正文。工具输出沿原始 part 身份与顺序逐段传递：区域键为真实 `(call_id, part_id)`，元数据声明每段字节数，SDK 保留同形分段值，Flutter 用标准布局逐段展示；不得在每次变化时将多个 part 物化为累计全文或另存合并镜像。无输出事实与已观察到空输出保持区别。
+
+活动来源可早于 Turn：以真实 `ActiveExecution.id` 标识准备、存储等待、准入等待与停止，`execution_id` 和 `turn_id` 分别按真实可用性填写，Turn 尚未建立时 `turn_id` 为未知，不借上一 Turn 或占位字符串伪造。进入 Turn 后仍引用同一 execution；跨 Turn 后台工具和待决交互用自身已知 Turn 事实。准备与存储等待不冒充等待 API，停止须来自真实取消事实。实时活动没有历史完成序号。
 
 ## 26.7 Flutter 两端纯展示投影
 
