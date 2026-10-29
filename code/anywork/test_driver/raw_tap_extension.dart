@@ -5,7 +5,8 @@
 // overlays, then dispatches a tap. An optional second stable target proves rapid
 // session switching without inserting an artificial backend delay. A target can
 // still be blocked by a departing dialog's modal barrier.
-import 'package:flutter/gestures.dart' show PointerDeviceKind;
+import 'package:flutter/gestures.dart'
+    show PointerDeviceKind, kPrimaryButton, kSecondaryButton;
 import 'package:flutter/rendering.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter_driver/driver_extension.dart';
@@ -46,6 +47,10 @@ class RawTapCommandExtension extends CommandExtension {
       RawTapKind.touch => PointerDeviceKind.touch,
       RawTapKind.mouse => PointerDeviceKind.mouse,
     };
+    final buttons = switch (request.button) {
+      RawTapButton.primary => kPrimaryButton,
+      RawTapButton.secondary => kSecondaryButton,
+    };
     final following = followingTap == null
         ? null
         : finderFactory.createFinder(followingTap!);
@@ -76,6 +81,7 @@ class RawTapCommandExtension extends CommandExtension {
         await prober.tapAt(
           next.center,
           kind: pointerKind,
+          buttons: buttons,
           view: next.view.flutterView,
         );
         if (nextFollowing != null) {
@@ -83,6 +89,7 @@ class RawTapCommandExtension extends CommandExtension {
           await prober.tapAt(
             nextFollowing.center,
             kind: pointerKind,
+            buttons: buttons,
             view: nextFollowing.view.flutterView,
           );
         }

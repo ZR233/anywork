@@ -72,7 +72,7 @@ The default app path initializes the native FRB runtime and subscribes only to t
 - `previews/accounts_previews.dart` 展示账号整页与状态场景。
 - `previews/account_template_previews.dart` 展示 8 个 Native 模板及 Antigravity 的
   List、Details、Editor 状态。
-- `previews/account_component_previews.dart` 按生产职责分组提供 53 个组件预览入口，直接实例化生产组件，
+- `previews/account_component_previews.dart` 按生产职责分组提供组件预览入口，直接实例化生产组件，
   覆盖身份与 Native/ACP 列表项、额度/用量/状态、模板选择器的 true/false/unknown usage，
   Native 连接与凭据/计费字段、编辑器默认值和手动模型焦点、菜单的两种触发方式、显式保存的
   Models 列表、模型规格/价格/缺失价格、评价筛选与卡片/摘要、ACP 面板与确认对话框、资料页三标签。

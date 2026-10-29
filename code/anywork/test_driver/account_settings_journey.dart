@@ -7,6 +7,8 @@ import 'package:anywork/src/features/settings/accounts/state/account_view_key_va
 
 import 'driver_observation.dart';
 import 'flutter_driver_session.dart';
+import 'key_press.dart';
+import 'raw_tap.dart';
 
 /// Real-bridge manual journey for explicit model threshold saves.
 /// Run with cargo xtask manual-gui --scenario gui, then:
@@ -48,6 +50,7 @@ Future<void> main(List<String> args) async {
             as String;
     await recorder.openAccounts();
     await recorder.assertAccountListRedacted(id, model);
+    await recorder.inspectListMenu(id);
     await recorder.openDetails(id);
     final baseline = await recorder.waitLimit(
       id,
@@ -81,6 +84,12 @@ Future<void> main(List<String> args) async {
       'model-template-default',
       await recorder.readSnapshot(),
     );
+    await recorder.copyThresholdReading(
+      id,
+      model,
+      automatic['effective'] as int,
+    );
+    await recorder.copyAdvancedIdentity(id);
 
     await recorder.setCompactInput(id, model, '18000');
     await recorder.capture('input-pending', await recorder.readSnapshot());
@@ -208,14 +217,14 @@ Future<void> main(List<String> args) async {
     // save must preserve it rather than replay a stale account card.
     final billingMenu = find.byValueKey('account-billing-menu');
     await recorder.revealDetails(id, billingMenu);
-    await driver.rawTap(billingMenu);
-    await driver.rawTap(find.byValueKey('account-billing-noCharge'));
+    await driver.mouseTap(billingMenu);
+    await driver.mouseTap(find.byValueKey('account-billing-noCharge'));
     await recorder.capture(
       'no-charge-canonical',
       await recorder.waitBilling(id, 'noCharge', 'noCharge'),
     );
     await driver.scrollBy(await recorder.detailsScroll(id), 10000);
-    await driver.tap(find.byValueKey('account-edit'));
+    await driver.mouseTap(find.byValueKey('account-edit'));
     await driver.waitFor(
       find.byValueKey('account-save'),
       timeout: FlutterDriverSession.tapDeadline,
@@ -233,7 +242,7 @@ Future<void> main(List<String> args) async {
     );
     const editedName = 'Account connection edit journey';
     await recorder.setEditorName(id, editedName);
-    await driver.tap(find.byValueKey('account-save'));
+    await driver.mouseTap(find.byValueKey('account-save'));
     await driver.waitForAbsent(find.byValueKey('account-save'));
     await recorder.waitAccountName(id, editedName);
     await recorder.waitPresentation(
@@ -265,7 +274,7 @@ Future<void> main(List<String> args) async {
       matching: find.text(await recorder.label('restore')),
     );
     await recorder.revealDetails(id, resetBilling);
-    await driver.tap(resetBilling);
+    await driver.mouseTap(resetBilling);
     await recorder.capture(
       'no-charge-off-restores-auto',
       await recorder.waitBilling(id, '${fixture['billingKind']}', null),
@@ -275,13 +284,13 @@ Future<void> main(List<String> args) async {
     // Restore the isolated fixture's name so later journeys see the same
     // account identity/label; this is a new UI intent, not replaying Save.
     await driver.scrollBy(await recorder.detailsScroll(id), 10000);
-    await driver.tap(find.byValueKey('account-edit'));
+    await driver.mouseTap(find.byValueKey('account-edit'));
     await driver.waitFor(
       find.byValueKey('account-save'),
       timeout: FlutterDriverSession.tapDeadline,
     );
     await recorder.setEditorName(id, originalName);
-    await driver.tap(find.byValueKey('account-save'));
+    await driver.mouseTap(find.byValueKey('account-save'));
     await driver.waitForAbsent(find.byValueKey('account-save'));
     await recorder.waitAccountName(id, originalName);
     await recorder.waitBilling(id, '${fixture['billingKind']}', null);
@@ -291,8 +300,12 @@ Future<void> main(List<String> args) async {
         'restoring the connection form replayed a cleared threshold',
       );
     }
+    await recorder.discardConnectionEdit(id, originalName);
+    await driver.mouseTap(find.text('Back to chat'));
+    await driver.waitForAbsent(find.byValueKey('settings-page'));
+    await driver.waitFor(find.byValueKey('settings-open'));
     await File('${output.path}/account-journey-summary.json').writeAsString(
-      '${const JsonEncoder.withIndent('  ').convert({'fixtureAccountId': id, 'model': model, 'unknownModel': unknown, 'explicitSave': true, 'unsavedDraftNotPersisted': true, 'modelDetailsThreeTabsRetainDraft': true, 'backendPolicy': true, 'restoreDefault': true, 'invalidNotPersisted': true, 'aboveSafeClamped': true, 'latestIntent': true, 'siblingsUnchanged': true, 'secondEditorEntryAbsent': true, 'noChargeCanonical': true, 'connectionEditPreservesBilling': true, 'noChargeOffClearsOverride': true, 'humanVerdict': 'pending'})}\n',
+      '${const JsonEncoder.withIndent('  ').convert({'fixtureAccountId': id, 'model': model, 'unknownModel': unknown, 'mouseInput': true, 'listMenuDoesNotOpenDetails': true, 'listMenuEdit': true, 'listDeleteCancellation': true, 'backToChat': true, 'selectableReadingKeyboardCopy': true, 'advancedIdentityContextMenuCopy': true, 'dirtyCancelAndDiscard': true, 'explicitSave': true, 'unsavedDraftNotPersisted': true, 'modelDetailsThreeTabsRetainDraft': true, 'backendPolicy': true, 'restoreDefault': true, 'invalidNotPersisted': true, 'aboveSafeClamped': true, 'latestIntent': true, 'siblingsUnchanged': true, 'secondEditorEntryAbsent': true, 'noChargeCanonical': true, 'connectionEditPreservesBilling': true, 'noChargeOffClearsOverride': true, 'humanVerdict': 'pending'})}\n',
     );
     stdout.writeln('Account journey captured; human verdict pending.');
   } finally {
@@ -305,6 +318,139 @@ class _Recorder {
   final Directory output;
   final FlutterDriverSession driver;
   int _captureIndex = 0;
+
+  Future<void> inspectListMenu(String id) async {
+    // The isolated gui fixture uses English localization.
+    final menu = find.byValueKey(AccountViewKeyValues.rowMenu('native', id));
+    await driver.mouseTap(menu);
+    await driver.waitFor(find.text('Edit account'));
+    if (!_hasAccountList((await usage())['presentation'] as Map)) {
+      throw StateError('opening the account menu navigated to details');
+    }
+    await capture('list-menu-mouse', await readSnapshot());
+    await driver.pressKey(0x10000001b, 0x70029);
+    await driver.waitForAbsent(find.byType('MenuItemButton'));
+    await driver.mouseTap(menu);
+    await driver.mouseTap(find.text('Edit account'));
+    await waitEditorId(id);
+    await capture('list-menu-edit', await readSnapshot());
+    await driver.mouseTap(find.byValueKey('account-cancel'));
+    await waitPresentation(
+      (value) => _hasAccountDetails(value, 'native', id),
+      'clean edit returned to its typed parent details',
+    );
+    await driver.mouseTap(find.byValueKey('account-back'));
+    await waitPresentation(_hasAccountList, 'details returned to list');
+    await driver.mouseTap(menu);
+    await driver.mouseTap(find.text(await label('delete')));
+    await driver.waitFor(find.byType('SimpleDialog'));
+    await capture('list-delete-requires-replacement', await readSnapshot());
+    await driver.pressKey(0x10000001b, 0x70029);
+    await driver.waitForAbsent(find.byType('SimpleDialog'));
+    if (!_accounts(await readSnapshot())
+        .any((account) => account['id'] == id)) {
+      throw StateError('cancelled replacement removed the default account');
+    }
+    await waitPresentation(_hasAccountList, 'cancelled deletion kept the list');
+  }
+
+  Future<void> copyThresholdReading(
+    String id,
+    String model,
+    int effective,
+  ) async {
+    final tile = await revealCompact(id, model);
+    final expected = 'Effective · $effective';
+    final text = find.descendant(of: tile, matching: find.text(expected));
+    await revealDetails(id, text);
+    await driver.mouseTap(text);
+    await driver.sendCommand(
+      KeyPress(0x200000100, 0x700e0, phase: KeyPressPhase.down),
+    );
+    try {
+      await driver.pressKey(0x61, 0x70004);
+      await driver.pressKey(0x63, 0x70006);
+    } finally {
+      await driver.sendCommand(
+        KeyPress(0x200000100, 0x700e0, phase: KeyPressPhase.up),
+      );
+    }
+    final clipboard = jsonDecode(
+      await driver.requestData(
+        jsonEncode({'cmd': 'clipboard-text', 'full': true}),
+      ),
+    ) as Map;
+    if (clipboard['text'] != expected) {
+      throw StateError(
+        'SelectableText Copy did not reach the native clipboard',
+      );
+    }
+    await capture('selectable-reading-copied', await readSnapshot());
+  }
+
+  Future<void> copyAdvancedIdentity(String id) async {
+    final advanced = find.descendant(
+      of: _detailsView,
+      matching: find.text('Advanced information'),
+    );
+    await revealDetails(id, advanced);
+    await driver.mouseTap(advanced);
+    final text = find.descendant(of: _detailsView, matching: find.text(id));
+    await revealDetails(id, text);
+    await driver.mouseTap(text);
+    await driver.sendCommand(
+      KeyPress(0x200000100, 0x700e0, phase: KeyPressPhase.down),
+    );
+    try {
+      await driver.pressKey(0x61, 0x70004);
+    } finally {
+      await driver.sendCommand(
+        KeyPress(0x200000100, 0x700e0, phase: KeyPressPhase.up),
+      );
+    }
+    await driver.sendCommand(
+      RawTap(
+        text,
+        pointerKind: RawTapKind.mouse,
+        button: RawTapButton.secondary,
+      ),
+    );
+    await driver.waitFor(find.text('Copy'));
+    await capture('advanced-identity-context-menu', await readSnapshot());
+    await driver.mouseTap(find.text('Copy'));
+    final clipboard = jsonDecode(
+      await driver.requestData(
+        jsonEncode({'cmd': 'clipboard-text', 'full': true}),
+      ),
+    ) as Map;
+    if (clipboard['text'] != id) {
+      throw StateError(
+        'context-menu Copy did not copy the selected account ID',
+      );
+    }
+    await capture('advanced-identity-copied', await readSnapshot());
+  }
+
+  Future<void> discardConnectionEdit(String id, String originalName) async {
+    await driver.scrollBy(await detailsScroll(id), 10000);
+    await driver.mouseTap(find.byValueKey('account-edit'));
+    await setEditorName(id, '$originalName discarded draft');
+    await driver.mouseTap(find.byValueKey('account-cancel'));
+    await driver.waitFor(find.byType('AccountUnsavedChangesDialog'));
+    await capture('dirty-leave-confirmation', await readSnapshot());
+    await driver.mouseTap(find.text('Keep editing'));
+    await driver.waitForAbsent(find.byType('AccountUnsavedChangesDialog'));
+    await waitEditorId(id);
+    await driver.mouseTap(find.byValueKey('account-cancel'));
+    await driver.mouseTap(find.text(await label('discard')));
+    await driver.waitForAbsent(find.byType('AccountUnsavedChangesDialog'));
+    await waitPresentation(
+      (value) => _hasAccountDetails(value, 'native', id),
+      'discard returned to the original account',
+    );
+    await waitAccountName(id, originalName);
+    await capture('dirty-draft-discarded', await readSnapshot());
+  }
 
   Future<Map<String, dynamic>> readSnapshot() => driver.readSnapshot();
 
@@ -553,9 +699,9 @@ class _Recorder {
       find.byValueKey('settings-open'),
       timeout: const Duration(seconds: 60),
     );
-    await driver.tap(find.byValueKey('settings-open'));
+    await driver.mouseTap(find.byValueKey('settings-open'));
     await driver.waitFor(find.byValueKey('settings-page'));
-    await driver.tap(find.byValueKey('settings-tab-accounts'));
+    await driver.mouseTap(find.byValueKey('settings-tab-accounts'));
     await driver.waitFor(find.byValueKey('account-add'));
     await waitPresentation(_hasAccountList, 'committed account list');
   }
@@ -575,7 +721,7 @@ class _Recorder {
       dyScroll: -180,
       timeout: FlutterDriverSession.tapDeadline,
     );
-    await driver.tap(row);
+    await driver.mouseTap(row);
     await driver.waitFor(find.byValueKey('account-edit'));
     await waitPresentation(
       (value) => _hasAccountDetails(value, 'native', id),
@@ -754,7 +900,7 @@ class _Recorder {
       of: view,
       matching: find.byValueKey('account-save'),
     );
-    await driver.tap(field, timeout: remaining());
+    await driver.mouseTap(field, timeout: remaining());
     await driver.enterText(value).timeout(remaining());
     while (true) {
       final editor = await readCurrentEditor();
@@ -811,7 +957,7 @@ class _Recorder {
       ),
     );
     if (!_compactBodyExpanded(body)) {
-      await driver.tap(header);
+      await driver.mouseTap(header);
     }
     // Expansion changes the body's heightFactor. EnsureVisible must measure
     // settled geometry, not an intermediate frame of that animation. This
@@ -835,7 +981,7 @@ class _Recorder {
   Future<void> setCompactInput(String id, String modelId, String value) async {
     final tile = await revealCompact(id, modelId);
     final input = _compactInputFinder(tile);
-    await driver.tap(input);
+    await driver.mouseTap(input);
     await driver.enterText(value);
   }
 
@@ -854,7 +1000,7 @@ class _Recorder {
     await driver.sendCommand(
       WaitForTappable(save, timeout: FlutterDriverSession.geometryDeadline),
     );
-    await driver.rawTap(save);
+    await driver.mouseTap(save);
   }
 
   Future<void> visitModelDetails(
@@ -866,14 +1012,14 @@ class _Recorder {
       AccountViewKeyValues.modelReadout('native', id, modelId),
     );
     await revealDetails(id, readout);
-    await driver.rawTap(readout);
+    await driver.mouseTap(readout);
     await driver.waitFor(find.byType('AccountModelDetailsView'));
     for (final (tab, routeTab, content) in const [
       ('specs', 'specifications', 'AccountModelSpecifications'),
       ('prices', 'pricing', 'AccountModelPricing'),
       ('evaluations', 'evaluations', 'AccountEvaluationsView'),
     ]) {
-      await driver.rawTap(find.byValueKey('account-model-$tab-tab'));
+      await driver.mouseTap(find.byValueKey('account-model-$tab-tab'));
       await driver.waitForNoPendingFrame(
         timeout: FlutterDriverSession.geometryDeadline,
       );
@@ -891,7 +1037,7 @@ class _Recorder {
       );
       await capture('model-details-$tab', await readSnapshot());
     }
-    await driver.rawTap(find.byValueKey('account-model-back'));
+    await driver.mouseTap(find.byValueKey('account-model-back'));
     await driver.waitForAbsent(find.byType('AccountModelDetailsView'));
     await driver.waitForNoPendingFrame(
       timeout: FlutterDriverSession.geometryDeadline,
@@ -918,7 +1064,7 @@ class _Recorder {
       dyScroll: -180,
       timeout: FlutterDriverSession.tapDeadline,
     );
-    await driver.rawTap(reset);
+    await driver.mouseTap(reset);
   }
 }
 
@@ -1132,3 +1278,12 @@ bool _hasAccountList(Map? value) =>
     value?['resourceStatus']?['list'] == 'observed' &&
     value?['list']?['phase'] == 'ready' &&
     value?['mountedViews']?['list']?['visible'] == true;
+
+// Keep this manual desktop journey on the real mouse gesture path.
+extension _AccountMouseInput on FlutterDriverSession {
+  Future<void> mouseTap(SerializableFinder finder, {Duration? timeout}) async {
+    await sendCommand(
+      RawTap(finder, pointerKind: RawTapKind.mouse, timeout: timeout),
+    );
+  }
+}
