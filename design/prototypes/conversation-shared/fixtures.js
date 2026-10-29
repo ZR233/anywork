@@ -89,7 +89,9 @@
   };
   const scenarios = [
     { id: 'workgroup', label: '活跃工作组', hint: '组内有已完成与进行中的工具。整组结束后才进入历史。', live: 'workGroup' },
-    { id: 'text', label: '实时文本', hint: '正文只在实时区增长；结束后整段进入历史。', live: 'textOutput' },
+    { id: 'thinking', label: '思考中', hint: '尚无工作信息或正文，只显示不可展开的「思考中」。收到信息后切换到工作组。', waiting: true },
+    { id: 'after-text', label: '文本结束后等待', hint: '完整正文已进入历史，轮次尚未结束。等待模型响应时显示不可展开的「思考中」。', waiting: true, afterText: true },
+    { id: 'text', label: '实时文本', hint: '正文结束后整段进入历史；轮次仍在等待响应时，实时区切换为「思考中」。', live: 'textOutput' },
     { id: 'compacting', label: '正在压缩', hint: '成功后，历史追加一行「已完成压缩」。', live: 'compacting' },
     { id: 'questions', label: '等待回答', hint: '待处理问题在停靠区，回答后变成只读回执。', pending: questions },
     { id: 'stopped', label: '已停止', hint: '停止记录以折叠行保留在历史中，输入区原主按钮切换为继续图标。', outcome: 'stopped' },
@@ -104,12 +106,24 @@
       ({ type: 'appendText', text: text.slice(offset + index * 32, offset + (index + 1) * 32) }));
   }
 
+  function responseEvents(waitId, offset = 0) {
+    return [
+      ...textEvents(offset),
+      { type: 'finishText' },
+      { type: 'waitForModel', id: waitId },
+      { type: 'tick' }, { type: 'tick' },
+      { type: 'finishTurn' }
+    ];
+  }
+
   function story(id) {
     const active = group(id);
     active.elapsed = 1;
     active.members.forEach(member => { member.status = 'running'; member.elapsed = 0; });
     const complete = active.members.map(member => ({ type: 'memberDone', id: member.id }));
     return [
+      { type: 'waitForModel', id },
+      { type: 'tick' }, { type: 'tick' },
       { type: 'startGroup', group: active },
       { type: 'memberDone', id: id + '-thinking' },
       { type: 'memberDone', id: id + '-read' },
@@ -119,11 +133,10 @@
       ...complete,
       { type: 'finishGroup' },
       { type: 'startText', id: id + '-text' },
-      ...textEvents(),
-      { type: 'finishText' },
-      { type: 'finishTurn' }
+      { type: 'tick' },
+      ...responseEvents(id + '-after-text')
     ];
   }
 
-  app.fixtures = { text, group, history, questions, scenarios, textEvents, story };
+  app.fixtures = { text, group, history, questions, scenarios, textEvents, responseEvents, story };
 })();

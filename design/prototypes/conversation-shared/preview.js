@@ -1,7 +1,7 @@
 (() => {
   'use strict';
   const app = window.AnyworkConversation;
-  const { node, icon, icons, button, escape, MarkdownView, WorkGroupView, PendingView, historyItem, selectedInside } = app.ui;
+  const { node, icon, activityIndicator, icons, button, escape, MarkdownView, WorkGroupView, PendingView, historyItem, selectedInside } = app.ui;
   let instanceSequence = 0;
 
   class ConversationPreview {
@@ -76,7 +76,7 @@
           <progress aria-label="演示进度"></progress><div class="cv-demo-state"></div><div class="cv-demo-failure"></div>
           <div class="cv-guide"><h3>清楚区分，连贯阅读</h3>
             <div class="cv-guide-row"><span class="cv-guide-mark"></span><div><b>Timeline · 已确定的历史</b><p>完整文本、完整工作组和压缩完成记录。展开细节，结果与耗时保持不变。</p></div></div>
-            <div class="cv-guide-row"><span class="cv-guide-mark cv-active"></span><div><b>实时区 · 当前正在发生</b><p>工作组、文本输出、正在压缩，三种整体状态互斥展示。</p></div></div>
+            <div class="cv-guide-row"><span class="cv-guide-mark cv-active"></span><div><b>实时区 · 当前正在发生</b><p>工作组、文本输出、正在压缩，三种整体状态互斥展示。尚无信息时，仅显示不可展开的「思考中」。</p></div></div>
             <div class="cv-stats"><div class="cv-stats-line"><span>历史记录</span><strong class="cv-history-count"></strong></div>
               <div class="cv-stats-line"><span>当前整体状态</span><strong class="cv-live-label"></strong></div></div>
           </div>
@@ -223,16 +223,19 @@
       const state = this.controller.state;
       const live = state.live;
       if (!live) { this.liveHost.replaceChildren(); this.liveView = null; return; }
-      if (this.liveView?.id !== live.id) {
+      const kind = app.isWaitingForModel(live) ? 'thinking' : live.kind;
+      if (this.liveView?.id !== live.id || this.liveView.kind !== kind) {
         this.liveHost.replaceChildren();
-        const surface = node(`<section class="cv-live" data-live-kind="${escape(live.kind)}" aria-label="当前实时状态"></section>`);
+        const surface = node(`<section class="cv-live" data-live-kind="${escape(live.kind)}" data-live-phase="${escape(kind)}" aria-label="当前实时状态"></section>`);
         this.liveHost.append(surface);
-        this.liveView = { id: live.id, kind: live.kind, surface };
-        if (live.kind === 'workGroup') {
+        this.liveView = { id: live.id, kind, surface };
+        if (kind === 'thinking') {
+          surface.append(node(`<div class="cv-thinking-header">${activityIndicator()}<span role="status">思考中</span><span class="cv-tabular" aria-hidden="true"></span></div>`));
+        } else if (kind === 'workGroup') {
           this.liveView.group = new WorkGroupView(live, 'live', this.actions, !state.pending);
           surface.append(this.liveView.group.node);
-        } else if (live.kind === 'textOutput') {
-          surface.append(node(`<div class="cv-response-header"><span class="cv-live-dot" aria-hidden="true"></span><span>正在输出</span><span class="cv-tabular"></span></div>`));
+        } else if (kind === 'textOutput') {
+          surface.append(node(`<div class="cv-response-header">${activityIndicator()}<span>正在输出</span><span class="cv-tabular"></span></div>`));
           const scroll = node('<div class="cv-response-scroll" tabindex="0" role="region" aria-label="实时文本输出"></div>');
           surface.append(scroll);
           this.liveView.scroll = scroll;
@@ -251,15 +254,14 @@
             this.updateTextFollow();
           }, { passive: true });
         } else {
-          surface.append(node(`<div class="cv-compressing-header"><span class="cv-live-dot" aria-hidden="true"></span><span>正在压缩</span><span class="cv-tabular"></span></div>`),
-            node('<div class="cv-compressing-description">正在整理历史上下文，已有记录保持不变。</div>'));
+          surface.append(node(`<div class="cv-compressing-header">${activityIndicator()}<span>正在压缩</span><span class="cv-tabular"></span></div>`));
         }
         icons(surface);
       }
-      if (live.kind === 'workGroup') this.liveView.group.update(live);
+      if (kind === 'workGroup') this.liveView.group.update(live);
       else {
         this.liveView.surface.querySelector('.cv-tabular').textContent = live.elapsed + 's';
-        if (live.kind === 'textOutput') {
+        if (kind === 'textOutput') {
           if (selectedInside(this.liveView.markdown.node)) this.followText = false;
           this.liveView.markdown.update(live.text);
           if (this.followText) this.liveView.scroll.scrollTop = this.liveView.scroll.scrollHeight;
@@ -339,7 +341,7 @@
       progress.value = state.cursor;
       this.root.querySelector('.cv-demo-state').textContent = state.pending ? '等待你的决定' : state.playing ? '正在播放 · 可随时暂停' : available ? '演示已暂停 · 可以单步查看' : '演示结束 · 可以重置或发送新消息';
       this.root.querySelector('.cv-history-count').textContent = state.history.length + ' 条';
-      this.root.querySelector('.cv-live-label').textContent = ({ workGroup: '活跃工作组', textOutput: '文本输出', compacting: '正在压缩' })[state.live?.kind] || '空闲';
+      this.root.querySelector('.cv-live-label').textContent = ({ thinking: '思考中', workGroup: '活跃工作组', textOutput: '文本输出', compacting: '正在压缩' })[this.liveView?.kind] || '空闲';
       if (this.followHistory) { this.scrollHistory(); this.lastRead = state.history.length; }
       else this.history.scrollTop = oldTop;
       this.updateUnread();

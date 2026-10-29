@@ -197,6 +197,17 @@ class AccountModelListItem extends StatelessWidget {
         initiallyExpanded: initiallyExpanded,
         maintainState: true,
         controlAffinity: ListTileControlAffinity.leading,
+        leading: Builder(
+          builder: (context) {
+            final controller = ExpansibleController.of(context);
+            return ListenableBuilder(
+              listenable: controller,
+              builder: (context, _) => Icon(
+                controller.isExpanded ? Icons.expand_more : Icons.chevron_right,
+              ),
+            );
+          },
+        ),
         tilePadding: const EdgeInsetsDirectional.only(start: 8, end: 12),
         childrenPadding: const EdgeInsets.fromLTRB(20, 0, 20, 16),
         title: Text(value.name, style: Theme.of(context).textTheme.titleSmall),

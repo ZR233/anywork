@@ -8,10 +8,15 @@
 ## anthropics/skills
 
 - 上游:<https://github.com/anthropics/skills>
-- 最近同步 revision:`3b3fad96af16a10759d930941b4520ba0c40edae`
+- 固定 revision:`ca45fc496a3436251f191354091d557da31c15b5`
 - 技能:`canvas-design`、`frontend-design`
+- 来源目录:`skills/canvas-design/`、`skills/frontend-design/`。
 - 许可:Apache License 2.0,Copyright Anthropic, PBC。各技能目录自带
   `LICENSE.txt`,同步拷贝时原样保留。
+- 本地适配:`frontend-design/SKILL.md` 采用固定提交的上游原文；
+  `canvas-design/SKILL.md` 保留设计理念、画布创作和检查精修流程，精简重复修饰，
+  移除特定模型、虚构用户要求及默认下载授权，按当前会话约定定位资源、临时文件
+  与交付物。两项技能的许可证和既有字体资源不变；字体仍适用随资源保留的各自许可。
 - 注意:同仓库的 `pdf`、`docx`、`pptx`、`xlsx` 使用 Anthropic 专有
   source-available 许可(禁止再分发),**不得**加入预置集合。
 

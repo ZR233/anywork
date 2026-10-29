@@ -8,6 +8,7 @@ import 'package:flutter_driver/flutter_driver.dart';
 import 'package:anywork/src/features/settings/accounts/state/account_view_key_values.dart';
 
 import 'flutter_driver_session.dart';
+import 'raw_tap.dart';
 import 'realtime_journey.dart'
     show isDurableSettled, timelineRows, turnId, turnStatus;
 
@@ -903,6 +904,31 @@ class _Probe {
     );
     await revealDetails(detailsUsage);
     await capture('plan-quota-low');
+    final snapshot = await driver.readSnapshot();
+    final plan = (snapshot['settings']['accounts'] as List)
+        .cast<Map>()
+        .singleWhere((account) => account['id'] == addedPlan);
+    final modelId =
+        (plan['modelDetails'] as List).cast<Map>().first['modelId'] as String;
+    final model = find.byValueKey(
+      AccountViewKeyValues.modelItem('native', addedPlan, modelId),
+    );
+    final header = find.descendant(
+      of: model,
+      matching: find.byType('ListTile'),
+    );
+    await revealDetails(header);
+    await capture('model-collapsed');
+    await driver.sendCommand(RawTap(header, pointerKind: RawTapKind.mouse));
+    await driver.waitForNoPendingFrame(
+      timeout: FlutterDriverSession.geometryDeadline,
+    );
+    await revealDetails(header);
+    await capture('model-expanded');
+    await driver.sendCommand(RawTap(header, pointerKind: RawTapKind.mouse));
+    await driver.waitForNoPendingFrame(
+      timeout: FlutterDriverSession.geometryDeadline,
+    );
     stages.add({
       'stage': 'plan-credential-and-dual-quota',
       'accountId': addedPlan,
