@@ -118,6 +118,9 @@ class DemoStudioTransport extends StudioTransport
   void _stopDemoBusiness() {
     if (_runtimeExiting) return;
     _runtimeExiting = true;
+    for (final feed in _ownedConversationFeeds.toList()) {
+      feed.requestClose();
+    }
     _lspActivityTimer?.cancel();
     _lspActivityTimer = null;
     for (final entry in _acpInstallTimers.entries.toList()) {
@@ -161,6 +164,26 @@ class DemoStudioTransport extends StudioTransport
     final deadline = DateTime.now().add(Duration(milliseconds: budgetMs));
     final issues = <StudioShutdownIssue>[];
     await Future.wait([
+      () async {
+        try {
+          final remaining = deadline.difference(DateTime.now());
+          await _joinDemoConversations().timeout(
+            remaining > Duration.zero
+                ? remaining
+                : const Duration(microseconds: 1),
+          );
+        } catch (_) {
+          issues.add(
+            const StudioShutdownIssue(
+              stage: 'demo-conversation',
+              code: 'closeFailed',
+              message: 'Demo conversation handles did not close',
+              retryable: true,
+              correlationId: 'demo-conversation-close',
+            ),
+          );
+        }
+      }(),
       () async {
         try {
           final remaining = deadline.difference(DateTime.now());
@@ -671,15 +694,53 @@ class DemoStudioTransport extends StudioTransport
   int _productEventSequence = 0;
   int _threadDirectoryRevision = 0;
   int _agentProfilesRevision = 0;
-  final _threadEvents = StreamController<ThreadStreamFrame>.broadcast();
+  final Map<String, Set<_DemoConversationFeed>> _conversationFeeds = {};
+  // 受管句柄不等于 GUI demand：未监听句柄和迟到 factory 也有真实关闭责任。
+  final Set<ConversationFeed> _ownedConversationFeeds =
+      Set<ConversationFeed>.identity();
+  final Set<Future<void>> _openingConversationFeeds = {};
+  final Map<ConversationFeed, Future<void>> _conversationCloses =
+      Map<ConversationFeed, Future<void>>.identity();
+
+  Future<void> _closeDemoConversation(ConversationFeed feed) {
+    final existing = _conversationCloses[feed];
+    if (existing != null) return existing;
+    final joined = Completer<void>();
+    _conversationCloses[feed] = joined.future;
+    Future<void> closeOwned() async {
+      try {
+        feed.requestClose();
+        await feed.close();
+        _ownedConversationFeeds.remove(feed);
+        joined.complete();
+      } catch (error, stack) {
+        // 失败 owner 仍留在 owned；只清本轮 in-flight，允许下次真实重试。
+        joined.completeError(error, stack);
+      } finally {
+        _conversationCloses.remove(feed);
+      }
+    }
+
+    unawaited(closeOwned());
+    return joined.future;
+  }
+
+  Future<void> _joinDemoConversations() async {
+    await Future.wait([
+      for (final feed in _ownedConversationFeeds.toList())
+        _closeDemoConversation(feed),
+      ..._openingConversationFeeds,
+    ]);
+    // 迟到 factory 自己汇合其返回的 owner。失败 owner 留在集合供下次 cleanup。
+    if (_ownedConversationFeeds.isNotEmpty) {
+      throw StateError('Demo conversation close still has unresolved owners');
+    }
+  }
+
   final _shutdownEvents = StreamController<StudioShutdownProgress>.broadcast();
 
-  /// 内容变更信号：条目变化时唤醒在途的 `next()`，正文只经内容连接交付。
-  final Map<String, int> _chatChangeSeq = {};
-  final Map<String, List<Completer<void>>> _chatWaiters = {};
-
   /// 每个 Thread 的内存条目：正文不属于 Thread 状态，只由内容连接按页/尾部交付。
-  final Map<String, List<ThreadItemView>> _threadItems = {};
+  final Map<String, List<ConversationItem>> _threadItems = {};
 
   /// 每个 Thread 自己的内容版本；与 Thread 状态 revision、持久化水位无关。
   final Map<String, int> _contentVersions = {};
@@ -1418,14 +1479,14 @@ class DemoStudioTransport extends StudioTransport
         threadId: thread.id,
         turnId: 'turn-demo',
         ordinal: 0,
-        kind: ThreadItemKind.userMessage,
+        channel: ThreadTextChannel.user,
         text:
             '用 Flutter 重构 anywork。\n\n'
             '- timeline 要像 Web 版一样即时渲染 Markdown\n'
             '- streaming 中的代码块和表格不要抖动',
         createdAt: userCreatedAt,
       ),
-      ThreadItemView(
+      _demoItem(
         id: 'turn-demo:reasoning',
         threadId: thread.id,
         turnId: 'turn-demo',
@@ -1433,13 +1494,13 @@ class DemoStudioTransport extends StudioTransport
         revision: 0,
         createdAt: agentCreatedAt,
         updatedAt: agentCreatedAt,
-        state: ThreadThinkingItemStateView(
+        content: _demoThinking(
           summary: const ['## 判断\n\nUI 只消费当前 Thread 的高频通知。'],
           content: const [],
           lifecycle: CompletedThreadContentView(agentCreatedAt),
         ),
       ),
-      ThreadItemView(
+      _demoItem(
         id: 'turn-demo:tool',
         threadId: thread.id,
         turnId: 'turn-demo',
@@ -1447,20 +1508,16 @@ class DemoStudioTransport extends StudioTransport
         revision: 0,
         createdAt: agentCreatedAt,
         updatedAt: agentCreatedAt,
-        state: ThreadToolItemStateView(
-          invocation: const ThreadToolInvocationView(
+        content: _demoTool(
+          invocation: const ConversationToolInvocation(
             toolCallId: 'turn-demo:tool-call',
             name: 'cargo test -p pl-studio-bridge',
-            arguments: '',
           ),
-          lifecycle: SucceededThreadToolView(
-            agentCreatedAt,
-            const ThreadToolOutputView(
-              result: '1 passed; bridge envelope uses typed payload.',
-              attachments: [],
-              outputArtifacts: [],
-            ),
+          lifecycle: ConversationToolSucceeded(
+            completedAt: agentCreatedAt,
+            output: const ConversationToolOutputDescriptor(attachments: []),
           ),
+          result: '1 passed; bridge envelope uses typed payload.',
         ),
       ),
       _messageItem(
@@ -1468,8 +1525,7 @@ class DemoStudioTransport extends StudioTransport
         threadId: thread.id,
         turnId: 'turn-demo',
         ordinal: 4,
-        kind: ThreadItemKind.agentMessage,
-        channel: AgentMessageChannel.finalAnswer,
+        channel: ThreadTextChannel.finalAnswer,
         text:
             '### Streaming Markdown preview\n\n'
             '正文、**加粗**、`inline code` 和链接都按 GFM 渲染。',
@@ -1532,8 +1588,7 @@ class DemoStudioTransport extends StudioTransport
         threadId: thread.id,
         turnId: '${thread.id}:turn',
         ordinal: 0,
-        kind: ThreadItemKind.agentMessage,
-        channel: AgentMessageChannel.finalAnswer,
+        channel: ThreadTextChannel.finalAnswer,
         text: text,
         createdAt: createdAt,
       ),
@@ -3726,39 +3781,6 @@ class DemoStudioTransport extends StudioTransport
   }
 
   @override
-  Stream<ThreadStreamFrame> subscribeThread(String threadId) {
-    StreamSubscription<ThreadStreamFrame>? observation;
-    late final StreamController<ThreadStreamFrame> controller;
-    controller = StreamController<ThreadStreamFrame>(
-      onListen: () {
-        // Register before taking the current value, so no update can fall
-        // between the baseline and observing future owner notifications.
-        observation = _threadEvents.stream
-            .where(
-              (frame) => switch (frame) {
-                ThreadSnapshotFrame(:final workspace) =>
-                  workspace.thread.id == threadId,
-                ThreadNotificationFrame(threadId: final id) => id == threadId,
-                ThreadResyncRequiredFrame(threadId: final id) => id == threadId,
-              },
-            )
-            .listen(controller.add, onError: controller.addError);
-        try {
-          controller.add(
-            ThreadSnapshotFrame(
-              workspace: _snapshotOf(_demoWorkspace(threadId)),
-            ),
-          );
-        } catch (error, stack) {
-          controller.addError(error, stack);
-        }
-      },
-      onCancel: () => observation?.cancel(),
-    );
-    return controller.stream;
-  }
-
-  @override
   Future<StudioThread> readThread(String threadId) async =>
       _demoWorkspace(threadId).thread;
 
@@ -3769,72 +3791,109 @@ class DemoStudioTransport extends StudioTransport
 
   /// 内容连接：正文（含流式）只经它交给 UI，与状态流相互独立。
   @override
-  Future<StudioTimelineConnection> openTimeline(String threadId) async {
+  Future<ConversationFeed> openConversationFeed(String threadId) async {
+    _ensureDemoRunning();
     if (!_workspaces.containsKey(threadId)) {
-      throw StateError('unknown demo thread $threadId');
+      throw const StudioFailure(
+        code: StudioFailureCode.notFound,
+        message: 'Unknown Demo conversation',
+        retryable: false,
+        correlationId: 'demo-conversation-not-found',
+      );
     }
-    final connection = _DemoTimelineConnection(this, threadId);
-    final factory = _timelineFactory;
-    // 工厂拿到的是真实连接：注入者只包装故障点，不会再次回到 openTimeline。
-    return factory == null ? connection : factory(threadId, connection);
+    final connection = _DemoConversationFeed(this, threadId);
+    _ownedConversationFeeds.add(connection);
+    final factory = _conversationFeedFactory;
+    // 工厂拿到的是真实连接：注入者只包装故障点，不会再次回到 openConversationFeed。
+    if (factory == null) return connection;
+    final opening = Completer<void>();
+    _openingConversationFeeds.add(opening.future);
+    try {
+      final feed = await factory(threadId, connection);
+      _ownedConversationFeeds.add(feed);
+      if (_runtimeExiting) {
+        await _closeDemoConversation(feed);
+        await connection.close();
+        throw _conversationClosedFailure;
+      }
+      return feed;
+    } catch (_) {
+      await connection.close();
+      rethrow;
+    } finally {
+      opening.complete();
+      _openingConversationFeeds.remove(opening.future);
+    }
   }
 
   /// 测试专用：包装内容连接，用于故障注入（首帧失败、增量失败、EOF、慢打开）。
   ///
   /// 收到的是 demo 的真实连接，只替换故障点；状态流、目录与正文事实仍是 demo 的实现，
   /// 因此注入的是生命周期交错而不是另一套业务状态。
-  Future<StudioTimelineConnection> Function(
+  Future<ConversationFeed> Function(
     String threadId,
-    StudioTimelineConnection connection,
+    ConversationFeed connection,
   )?
-  _timelineFactory;
+  _conversationFeedFactory;
 
   @visibleForTesting
-  set timelineFactory(
-    Future<StudioTimelineConnection> Function(
+  set conversationFeedFactory(
+    Future<ConversationFeed> Function(
       String threadId,
-      StudioTimelineConnection connection,
+      ConversationFeed connection,
     )?
     factory,
   ) {
-    _timelineFactory = factory;
+    _conversationFeedFactory = factory;
   }
 
   /// 测试夹具：把 demo 的 canonical 内存条目写成给定内容。
   ///
   /// 真实运行时这些条目由脚本化的 prompt 流程写入；这里只准备内存条目，内容仍然只经
-  /// [openTimeline] 的连接（有界尾部 + 页 + 详情）交付，不绕过内容契约。
+  /// [openConversationFeed] 的连接（有界尾部 + 页 + 详情）交付，不绕过内容契约。
   @visibleForTesting
-  void seedTimelineItems(String threadId, Iterable<ThreadItemView> items) {
+  void seedConversationItems(
+    String threadId,
+    Iterable<ConversationItem> items,
+  ) {
     for (final item in items) {
       _upsertChatItem(threadId, item);
     }
   }
 
+  /// 通过 Demo 自身权威发布点准备状态事实；没有 GUI demand 时也继续更新业务。
+  @visibleForTesting
+  ThreadWorkspace seedConversationState(
+    String threadId,
+    ThreadWorkspaceUpdate update,
+  ) {
+    _ensureDemoRunning();
+    _demoWorkspace(threadId);
+    _emitThreadUpdate(threadId, update);
+    return _demoWorkspace(threadId);
+  }
+
   /// 测试夹具：撤下一条 demo canonical 条目（真实 `Remove` 的环境准备）。
   ///
-  /// 与 [seedTimelineItems] 同一环境准备 seam：只改 demo 的 canonical 内存条目与通知，
-  /// 发布仍只经 [openTimeline] 的连接，不新增业务删除 API。
+  /// 与 [seedConversationItems] 同一环境准备 seam：只改 demo 的 canonical 内存条目与通知，
+  /// 发布仍只经 [openConversationFeed] 的连接，不新增业务删除 API。
   @visibleForTesting
-  void retractTimelineItem(String threadId, String itemId) {
+  void retractConversationItem(String threadId, String itemId) {
     final items = [...?_threadItems[threadId]];
     final index = items.indexWhere((item) => item.id == itemId);
     if (index < 0) return;
     items.removeAt(index);
     _threadItems[threadId] = items;
     _notifyItemsChanged(threadId);
-    _lastItemChange[threadId] = _DemoItemChange(
-      version: _contentVersionOf(threadId),
-      itemId: itemId,
-      removed: true,
+    _publishContent(
+      threadId,
+      _DemoItemChange(
+        version: _contentVersionOf(threadId),
+        itemId: itemId,
+        removed: true,
+      ),
     );
   }
-
-  /// 最近一次内容变更的 typed 事实：身份 + 该条目的预览值（或删除）。
-  _DemoItemChange? _lastItemChangeOf(String threadId) =>
-      _lastItemChange[threadId];
-
-  final Map<String, _DemoItemChange> _lastItemChange = {};
 
   /// 按活动身份读取完整详情。demo 没有独立的正文投影，活动本身即为可用事实。
   @override
@@ -3972,7 +4031,7 @@ class DemoStudioTransport extends StudioTransport
         threadId: threadId,
         turnId: turnId,
         ordinal: _nextOrdinal(threadId),
-        kind: ThreadItemKind.userMessage,
+        channel: ThreadTextChannel.user,
         text: trimmed,
         createdAt: now,
         attachments: [
@@ -4044,7 +4103,7 @@ class DemoStudioTransport extends StudioTransport
         'The account is folding summary and raw reasoning independently.';
     _upsertChatItem(
       threadId,
-      ThreadItemView(
+      _demoItem(
         id: reasoningId,
         threadId: threadId,
         turnId: turnId,
@@ -4052,7 +4111,7 @@ class DemoStudioTransport extends StudioTransport
         revision: 0,
         createdAt: startedAt,
         updatedAt: startedAt,
-        state: const ThreadThinkingItemStateView(
+        content: _demoThinking(
           summary: [],
           content: [],
           lifecycle: StreamingThreadContentView(),
@@ -4097,10 +4156,11 @@ class DemoStudioTransport extends StudioTransport
     final reasoningCompletedAt = DateTime.now();
     _upsertChatItem(
       threadId,
-      liveReasoning.copyWith(
+      _demoRevise(
+        liveReasoning,
         revision: 4,
         updatedAt: reasoningCompletedAt,
-        state: ThreadThinkingItemStateView(
+        content: _demoThinking(
           summary: const [reasoningSummary],
           content: const [reasoningContent],
           lifecycle: CompletedThreadContentView(reasoningCompletedAt),
@@ -4110,7 +4170,7 @@ class DemoStudioTransport extends StudioTransport
     final commentaryId = '$turnId:commentary';
     _upsertChatItem(
       threadId,
-      ThreadItemView(
+      _demoItem(
         id: commentaryId,
         threadId: threadId,
         turnId: turnId,
@@ -4118,7 +4178,7 @@ class DemoStudioTransport extends StudioTransport
         revision: 0,
         createdAt: startedAt,
         updatedAt: startedAt,
-        state: const ThreadTextItemStateView(
+        content: _demoText(
           channel: ThreadTextChannel.commentary,
           text: '',
           attachments: [],
@@ -4147,10 +4207,11 @@ class DemoStudioTransport extends StudioTransport
         .firstWhere((item) => item.id == commentaryId);
     _upsertChatItem(
       threadId,
-      liveCommentary.copyWith(
+      _demoRevise(
+        liveCommentary,
         revision: 3,
         updatedAt: commentaryCompletedAt,
-        state: ThreadTextItemStateView(
+        content: _demoText(
           channel: ThreadTextChannel.commentary,
           text: '正在逐段核对 Timeline 的 typed delta。',
           attachments: const [],
@@ -4184,7 +4245,7 @@ class DemoStudioTransport extends StudioTransport
     final toolId = '$turnId:tool';
     _upsertChatItem(
       threadId,
-      ThreadItemView(
+      _demoItem(
         id: toolId,
         threadId: threadId,
         turnId: turnId,
@@ -4192,13 +4253,12 @@ class DemoStudioTransport extends StudioTransport
         revision: 0,
         createdAt: startedAt,
         updatedAt: startedAt,
-        state: ThreadToolItemStateView(
-          invocation: ThreadToolInvocationView(
+        content: _demoTool(
+          invocation: ConversationToolInvocation(
             toolCallId: '$turnId:tool-call',
             name: 'exec',
-            arguments: '',
           ),
-          lifecycle: const StartedThreadToolView(),
+          lifecycle: const ConversationToolStarted(),
         ),
       ),
     );
@@ -4220,15 +4280,20 @@ class DemoStudioTransport extends StudioTransport
     );
     final streamedTool = _itemsOf(threadId)
         .firstWhere((item) => item.id == toolId);
-    final streamedToolState = streamedTool.state as ThreadToolItemStateView;
+    final streamedToolState =
+        streamedTool.descriptor as ConversationToolDescriptor;
     _upsertChatItem(
       threadId,
-      streamedTool.copyWith(
+      _demoRevise(
+        streamedTool,
         revision: 3,
         updatedAt: DateTime.now(),
-        state: ThreadToolItemStateView(
+        content: _demoTool(
           invocation: streamedToolState.invocation,
-          lifecycle: const RunningThreadToolView(''),
+          arguments: streamedTool
+              .fieldFor(const ThreadToolArgumentsFieldView())!
+              .text,
+          lifecycle: const ConversationToolRunning(),
         ),
       ),
     );
@@ -4250,33 +4315,32 @@ class DemoStudioTransport extends StudioTransport
     );
     final runningTool = _itemsOf(threadId)
         .firstWhere((item) => item.id == toolId);
-    final runningToolState = runningTool.state as ThreadToolItemStateView;
+    final runningToolState =
+        runningTool.descriptor as ConversationToolDescriptor;
     final toolCompletedAt = DateTime.now();
     _upsertChatItem(
       threadId,
-      runningTool.copyWith(
+      _demoRevise(
+        runningTool,
         revision: 6,
         updatedAt: toolCompletedAt,
-        state: ThreadToolItemStateView(
+        content: _demoTool(
           invocation: runningToolState.invocation,
-          lifecycle: SucceededThreadToolView(
-            toolCompletedAt,
-            const ThreadToolOutputView(
-              result:
-                  'running widget tests...\n'
-                  '[stderr] analyzer warnings: 0\n'
-                  'All widget tests passed.',
-              attachments: [],
-              outputArtifacts: [],
-            ),
+          lifecycle: ConversationToolSucceeded(
+            completedAt: toolCompletedAt,
+            output: const ConversationToolOutputDescriptor(attachments: []),
           ),
+          arguments: runningTool
+              .fieldFor(const ThreadToolArgumentsFieldView())!
+              .text,
+          result: 'running widget tests...\n[stderr] analyzer warnings: 0\nAll widget tests passed.',
         ),
       ),
     );
     final finalId = '$turnId:final';
     _upsertChatItem(
       threadId,
-      ThreadItemView(
+      _demoItem(
         id: finalId,
         threadId: threadId,
         turnId: turnId,
@@ -4284,7 +4348,7 @@ class DemoStudioTransport extends StudioTransport
         revision: 0,
         createdAt: startedAt,
         updatedAt: startedAt,
-        state: const ThreadTextItemStateView(
+        content: _demoText(
           channel: ThreadTextChannel.finalAnswer,
           text: '',
           attachments: [],
@@ -4314,10 +4378,11 @@ class DemoStudioTransport extends StudioTransport
         .firstWhere((item) => item.id == finalId);
     _upsertChatItem(
       threadId,
-      liveFinal.copyWith(
+      _demoRevise(
+        liveFinal,
         revision: 3,
         updatedAt: finalCompletedAt,
-        state: ThreadTextItemStateView(
+        content: _demoText(
           channel: ThreadTextChannel.finalAnswer,
           text: 'Demo response for: **$trimmedPrompt**$finalSuffix',
           attachments: const [],
@@ -5634,31 +5699,21 @@ class DemoStudioTransport extends StudioTransport
     return selected;
   }
 
-  /// 通知某 Thread 的内容连接：条目发生真实变化（正文只由内容尾部交给消费方）。
   void _notifyItemsChanged(String threadId) {
-    // 每次内容变化推进该 Thread 自己的内容版本；Thread 状态 revision 不受影响。
     _contentVersions[threadId] = _contentVersionOf(threadId) + 1;
-    _chatChangeSeq[threadId] = (_chatChangeSeq[threadId] ?? 0) + 1;
-    final waiters = _chatWaiters.remove(threadId);
-    if (waiters == null) return;
-    for (final waiter in waiters) {
-      if (!waiter.isCompleted) waiter.complete();
-    }
   }
 
-  Future<void> _awaitItemsChanged(String threadId, int from) async {
-    while ((_chatChangeSeq[threadId] ?? 0) == from) {
-      final waiter = Completer<void>();
-      (_chatWaiters[threadId] ??= []).add(waiter);
-      await waiter.future;
+  void _publishContent(String threadId, _DemoItemChange change) {
+    for (final feed in [...?_conversationFeeds[threadId]]) {
+      feed._contentChanged(change);
     }
   }
 
   /// demo 模拟一次 Thread 状态更新。
   ///
   /// 状态流只承载 Turn / 活动 / 交互 / 运行时——与生产投影同一契约；**条目与正文不在
-  /// 这里**，它们写进内存条目，并由 Timeline 内容连接（`openTimeline` →
-  /// `_DemoTimelineConnection`）按同一有界尾部契约交付。
+  /// 这里**，它们写进内存条目，并由 Timeline 内容连接（`openConversationFeed` →
+  /// `_DemoConversationFeed`）按同一有界尾部契约交付。
   void _emitThreadUpdate(String threadId, ThreadWorkspaceUpdate update) {
     if (_runtimeExiting) return;
     final workspace = _workspaces[threadId];
@@ -5701,13 +5756,17 @@ class DemoStudioTransport extends StudioTransport
         _demoUpdateInteraction(workspace, revision, interaction, pending),
     };
     _workspaces[threadId] = updated;
-    _threadEvents.add(
-      ThreadNotificationFrame(
+    final receivers = _conversationFeeds[threadId];
+    if (receivers != null && receivers.isNotEmpty) {
+      final frame = ThreadNotificationFrame(
         threadId: threadId,
         revision: revision,
         update: update,
-      ),
-    );
+      );
+      for (final feed in receivers.toList()) {
+        feed._stateChanged(frame);
+      }
+    }
     // The stop target is an execution identity and the continue target is a
     // continuation point, so the runtime projection carries both: derive them
     // from the canonical facts and publish them as their own facts.
@@ -5733,27 +5792,25 @@ class DemoStudioTransport extends StudioTransport
           .firstOrNull;
       _upsertChatItem(
         threadId,
-        ThreadItemView(
+        _demoItem(
           id: id,
           threadId: threadId,
           turnId: turn.turnId,
-          ordinal: previous?.ordinal ?? _nextOrdinal(threadId),
+          ordinal: previous?.header.ordinal ?? _nextOrdinal(threadId),
           revision: turn.revision,
-          createdAt: previous?.createdAt ?? turn.updatedAt,
+          createdAt: previous?.header.createdAt ?? turn.updatedAt,
           updatedAt: turn.updatedAt,
-          state: ThreadTurnItemStateView(turn.state, inputId: turn.inputId),
+          content: _demoTurn(turn.state, inputId: turn.inputId),
         ),
       );
     }
   }
 
   /// 把一条条目写入内存内容：条目只属于内容连接，不推进线程状态水位。
-  void _upsertChatItem(String threadId, ThreadItemView item) {
+  void _upsertChatItem(String threadId, ConversationItem item) {
     if (!_workspaces.containsKey(threadId)) return;
     // demo 的内存条目没有独立的执行终态事件：状态进入终态即视为内容终态。
-    final entry = item.executionTerminal
-        ? item
-        : item.copyWith(executionTerminal: item.isTerminal);
+    final entry = item;
     final items = [...?_threadItems[threadId]];
     final index = items.indexWhere((existing) => existing.id == entry.id);
     if (index < 0) {
@@ -5761,19 +5818,27 @@ class DemoStudioTransport extends StudioTransport
     } else {
       items[index] = entry;
     }
-    items.sort(_compareThreadItems);
+    items.sort(
+      (a, b) => _DemoConversationFeed._compareKeys(
+        _DemoConversationFeed._keyOf(a),
+        _DemoConversationFeed._keyOf(b),
+      ),
+    );
     _threadItems[threadId] = items;
     _notifyItemsChanged(threadId);
     // 通知携带本次 typed 变更的身份与预览值：内容连接无需扫描全历史就能表达差量。
-    _lastItemChange[threadId] = _DemoItemChange(
-      version: _contentVersionOf(threadId),
-      itemId: entry.id,
-      item: entry,
+    _publishContent(
+      threadId,
+      _DemoItemChange(
+        version: _contentVersionOf(threadId),
+        itemId: entry.id,
+        item: entry,
+      ),
     );
   }
 
-  List<ThreadItemView> _itemsOf(String threadId) =>
-      _threadItems[threadId] ?? const <ThreadItemView>[];
+  List<ConversationItem> _itemsOf(String threadId) =>
+      _threadItems[threadId] ?? const <ConversationItem>[];
 
   int _contentVersionOf(String threadId) => _contentVersions[threadId] ?? 0;
 
@@ -5784,29 +5849,39 @@ class DemoStudioTransport extends StudioTransport
     String threadId, {
     required String itemId,
     required int revision,
-    required List<ThreadFieldUpdateView> fields,
+    required List<ConversationFieldUpdate> fields,
   }) {
     if (!_workspaces.containsKey(threadId)) return;
     final items = [...?_threadItems[threadId]];
     final index = items.indexWhere((item) => item.id == itemId);
     if (index < 0) return;
     final current = items[index];
-    final next = current.applyFieldUpdates(
-      fields: fields,
-      expectedRevision: current.revision,
-      revision: revision,
-      omittedUnits: current.bodyOmittedUnits,
-      saved: current.saved,
-      terminal: current.executionTerminal,
-    );
-    if (next == null) return;
+    final values = {
+      for (final field in current.fields) field.field: field.text,
+    };
+    for (final field in fields) {
+      switch (field.change) {
+        case UnchangedThreadFieldChangeView():
+          break;
+        case AppendThreadFieldChangeView(:final text):
+          values[field.field] = (values[field.field] ?? '') + text;
+        case ReplaceThreadFieldChangeView(:final text):
+          values[field.field] = text;
+        case RemoveThreadFieldChangeView():
+          values.remove(field.field);
+      }
+    }
+    final next = _demoRevise(current, revision: revision, fields: values);
     items[index] = next;
     _threadItems[threadId] = items;
     _notifyItemsChanged(threadId);
-    _lastItemChange[threadId] = _DemoItemChange(
-      version: _contentVersionOf(threadId),
-      itemId: next.id,
-      item: next,
+    _publishContent(
+      threadId,
+      _DemoItemChange(
+        version: _contentVersionOf(threadId),
+        itemId: next.id,
+        item: next,
+      ),
     );
   }
 
@@ -5818,14 +5893,22 @@ class DemoStudioTransport extends StudioTransport
     required ThreadContentFieldView field,
     required String text,
   }) {
+    final previous = _itemsOf(threadId)
+        .where((item) => item.id == itemId)
+        .firstOrNull
+        ?.fieldFor(field)
+        ?.text;
+    final bytes = utf8.encode('${previous ?? ''}$text').length;
     _applyChatFieldUpdates(
       threadId,
       itemId: itemId,
       revision: revision,
       fields: [
-        ThreadFieldUpdateView(
+        ConversationFieldUpdate(
           field: field,
           change: AppendThreadFieldChangeView(text),
+          totalBytes: bytes,
+          previewBytes: bytes,
         ),
       ],
     );
@@ -5865,7 +5948,7 @@ class DemoStudioTransport extends StudioTransport
     return items.isEmpty
         ? 0
         : items
-                  .map((item) => item.ordinal)
+                  .map((item) => item.header.ordinal)
                   .reduce((left, right) => left > right ? left : right) +
               1;
   }
@@ -5930,1527 +6013,34 @@ final class _DemoItemChange {
 
   final int version;
   final String itemId;
-  final ThreadItemView? item;
+  final ConversationItem? item;
   final bool removed;
 }
 
-/// 一条已封顶预览：预览条目、逐字段账目、合成后的省略字节数与本次保守计量总量
-/// （不可缩结构 + 实际保留正文）。
-typedef _DemoPreview = ({
-  ThreadItemView item,
-  List<StudioTimelineDetailRef> details,
-  int omitted,
-  int accountedBytes,
-});
-
-/// 一条**已成功计量**的分页条目：完整 canonical 条目与它的有界预览。
-final class _DemoStagedItem {
-  const _DemoStagedItem(this.full, this.preview);
-
-  final ThreadItemView full;
-  final _DemoPreview preview;
-}
-
-/// 一次页/基线查询的暂存结果。
-///
-/// 预览与计量全部成功后才由连接提交到自己的连续性副本：中途 `Overloaded` 不会留下
-/// 半清空的副本，也不会推进已交付水位（design/26 §预算计量边界）。
-final class _DemoPageStage {
-  const _DemoPageStage({
-    required this.items,
-    required this.before,
-    required this.hasOlder,
-  });
-
-  /// 按 canonical 顺序升序排列，最早一条是 `before` 指向的边界。
-  final List<_DemoStagedItem> items;
-  final String? before;
-  final bool hasOlder;
-}
-
-/// 单条预览无法容纳不可省略事实时的 typed 失败。
-///
-/// 结构、稳定身份与权威判别标记都不允许截断或删除，因此只能明确报告资源限制；
-/// 这不是 EOF，也不是可重试的瞬时压力（design/26 §预算计量边界）。
-StudioFailure _timelineBudgetExceeded() => const StudioFailure(
-  code: StudioFailureCode.overloaded,
-  message: 'The timeline item cannot fit the preview budget',
-  retryable: false,
-  correlationId: 'demo-timeline-item-overloaded',
-);
-
-/// 单条条目的预览字节额度：正文（含问答、推理、原始记录）共享一份，工具参数/结果从中
-/// 各取至多 4 KiB。额度耗尽只会让对应预览变空，不会让字段消失。
-final class _PreviewBudget {
-  _PreviewBudget(this.remaining);
-  int remaining;
-
-  /// 申请 [max] 字节额度并返回实际交付的预览：**只按实际保留的 UTF-8 字节计费**，
-  /// 短字段用不完的额度留给后续字段（design/26 §26.5）。
-  String cap(String text, int max) {
-    if (remaining <= 0 || max <= 0) return '';
-    final granted = max < remaining ? max : remaining;
-    final bytes = utf8.encode(text);
-    if (bytes.length <= granted) {
-      remaining -= bytes.length;
-      return text;
-    }
-    var end = granted;
-    while (end > 0 && (bytes[end] & 0xC0) == 0x80) {
-      end -= 1;
-    }
-    if (end == 0) return '';
-    remaining -= end;
-    return utf8.decode(bytes.sublist(0, end));
-  }
-
-  /// 为小的固定判别标记预留字节：判别事实优先于自由正文。
-  ///
-  /// 预留是硬约束：额度不足时直接报告资源限制，绝不静默回落到 0 之后又把标记原样
-  /// 交付成超预算内容（design/26 §预算计量边界）。
-  void reserve(int bytes) {
-    if (bytes <= 0) return;
-    if (bytes > remaining) throw _timelineBudgetExceeded();
-    remaining -= bytes;
-  }
-}
-
-/// demo 的内容连接：正文完全来自内存条目，变化由 [_DemoTimelineConnection.next] 唤醒。
-///
-/// 交付形状与原生连接一致：首帧是**一致基线**，之后按身份交付 `Add`/`UpdateItem`/`Remove`
-/// 差量；无法用差量表达的条目变化退回显式 `Resync`，绝不在客户端的基线之外伪造窗口。
-/// 页与详情是自包含查询：预览按产品预算封顶（正文 32 KiB，工具参数/结果各 4 KiB，
-/// 判别标记优先），详情按 UTF-8 边界切块并给出绑定 Thread/item/field/revision 的不透明
-/// continuation，让客户端走真实的多块路径。
-class _DemoTimelineConnection implements StudioTimelineConnection {
-  _DemoTimelineConnection(this._api, this._threadId)
-    : _subscriptionId = 'demo-${newStudioCorrelationId()}';
-
-  static const int _pageSize = 32;
-  static const int _continuityLimit = 100;
-
-  /// 单条预览总量上限（不可缩结构 + 实际保留正文）。
-  static const int _itemPreviewLimitBytes = 256 * 1024;
-
-  /// 一次页/基线查询的总量上限；按最新端累计，提前截页时保留真实更早游标。
-  static const int _pageLimitBytes = 2 * 1024 * 1024;
-
-  /// 连续性副本的总量上限；与条数上限同时生效。
-  static const int _continuityLimitBytes = 8 * 1024 * 1024;
-
-  /// 详情块的默认大小与硬上界：默认 64 KiB，显式允许 4..262144 字节（design/26 §26.2）。
-  static const int _defaultDetailBytes = 64 * 1024;
-  static const int _maxDetailBytes = 256 * 1024;
-
-  final DemoStudioTransport _api;
-  final String _threadId;
-  final String _subscriptionId;
-
-  /// 已交付给消费者的**预览**条目（≤ [_continuityLimit] 条）：本连接自己的连续性副本。
-  final Map<String, ThreadItemView> _delivered = {};
-
-  /// 已交付条目的逐字段预览账目（只有长度数字，不含正文）。
-  final Map<String, List<StudioTimelineDetailRef>> _deliveredDetails = {};
-
-  /// 已交付预览的保守计量（结构 + 保留正文）：连续性副本只用这份数字账目，
-  /// 不额外保存整页正文或第二份正文模型。
-  final Map<String, int> _deliveredBytes = {};
-
-  /// 因有界副本滑出而不再持有的身份（有界）：它们的后续事实变化无法用差量表达。
-  final Set<String> _evicted = {};
-  bool _evictedOverflow = false;
-
-  /// 已交付范围的最早/最新 canonical 键；范围只随交付单调外扩。
-  (int, String)? _floor;
-  (int, String)? _ceiling;
-
-  int? _deliveredVersion;
-  bool _firstFrameConsumed = false;
-  bool _closed = false;
-
-  List<ThreadItemView> get _items => _api._itemsOf(_threadId);
-  int get _version => _api._contentVersionOf(_threadId);
-
-  static (int, String) _keyOf(ThreadItemView item) => (item.ordinal, item.id);
-
-  static int _compareKeys((int, String) left, (int, String) right) {
-    final byOrdinal = left.$1.compareTo(right.$1);
-    return byOrdinal != 0 ? byOrdinal : left.$2.compareTo(right.$2);
-  }
-
-  @override
-  Future<StudioTimelineBaseline> initial() async {
-    // 关闭优先于首帧状态：关闭后的调用一律是 typed Cancelled，不是裸 StateError。
-    if (_closed) throw _cancelled();
-    if (_firstFrameConsumed) {
-      throw const StudioFailure(
-        code: StudioFailureCode.conflict,
-        message: 'The timeline first frame was already delivered',
-        retryable: false,
-        correlationId: 'demo-timeline-initial-consumed',
-      );
-    }
-    _firstFrameConsumed = true;
-    return _baseline();
-  }
-
-  StudioTimelineBaseline _baseline() {
-    final version = _version;
-    // 先完整计量再提交：候选失败（例如中途 Overloaded）不半发布连接副本。
-    final stage = _stagePage(_items, _pageSize);
-    _commit(stage, version);
-    return StudioTimelineBaseline(
-      subscriptionId: _subscriptionId,
-      version: version,
-      items: List.unmodifiable([
-        for (final entry in stage.items)
-          _timelineItem(entry.full, entry.preview),
-      ]),
-      before: stage.before,
-      hasOlder: stage.hasOlder,
-    );
-  }
-
-  /// 用一次已成功计量的页替换本连接的连续性副本。
-  ///
-  /// 页预算（2 MiB）不超过副本预算（8 MiB），因此提交后无需立即淘汰。
-  void _commit(_DemoPageStage stage, int version) {
-    _delivered.clear();
-    _deliveredDetails.clear();
-    _deliveredBytes.clear();
-    for (final entry in stage.items) {
-      _delivered[entry.full.id] = entry.preview.item;
-      _deliveredDetails[entry.full.id] = entry.preview.details;
-      _deliveredBytes[entry.full.id] = entry.preview.accountedBytes;
-    }
-    _deliveredVersion = version;
-    _evicted.clear();
-    _evictedOverflow = false;
-    _floor = stage.items.isEmpty ? null : _keyOf(stage.items.first.full);
-    _ceiling = stage.items.isEmpty ? null : _keyOf(stage.items.last.full);
-  }
-
-  @override
-  Future<StudioTimelineUpdate?> next() async {
-    while (true) {
-      if (_closed) throw _cancelled();
-      if (_deliveredVersion == null) {
-        // 首帧尚未移交：与公共契约一致用 typed Conflict，不给 demo 另立例外。
-        throw const StudioFailure(
-          code: StudioFailureCode.conflict,
-          message: 'The timeline first frame has not been consumed yet',
-          retryable: false,
-          correlationId: 'demo-timeline-next-before-initial',
-        );
-      }
-      final seen = _api._chatChangeSeq[_threadId] ?? 0;
-      await _api._awaitItemsChanged(_threadId, seen);
-      // 关闭先拒绝新调用并取消，取消优先于任何「正常结束」。
-      if (_closed) throw _cancelled();
-      final delivered = _deliveredVersion!;
-      final version = _version;
-      if (version <= delivered) continue;
-      // 只有通知里能证明的**单次连续变化**才用差量表达；跨过的多次变化无法证明，
-      // 直接给出最新小页基线（design/26 §26.8）。
-      final change = _api._lastItemChangeOf(_threadId);
-      final single =
-          version == delivered + 1 &&
-              change != null &&
-              change.version == version
-          ? change
-          : null;
-      final expressed = single == null ? null : _express(single);
-      if (expressed == null) {
-        return StudioTimelineResync(
-          subscriptionId: _subscriptionId,
-          reason: StudioTimelineResyncReason.lagging,
-          baseline: _baseline(),
-        );
-      }
-      _deliveredVersion = version;
-      return StudioTimelinePatch(
-        subscriptionId: _subscriptionId,
-        from: delivered,
-        to: version,
-        changes: List.unmodifiable(expressed),
-        priority: StudioTimelinePriority.coalesced,
-      );
-    }
-  }
-
-  /// 把通知里的单次变化表达成 typed 差量；null 表示无法证明连续。
-  List<StudioTimelineChange>? _express(_DemoItemChange change) {
-    final id = change.itemId;
-    if (change.removed) {
-      // 真实删除按身份自包含：即使从未交付或已滑出副本也照常交付，
-      // 接收者本来没有该身份时为空操作。
-      _delivered.remove(id);
-      _deliveredDetails.remove(id);
-      _deliveredBytes.remove(id);
-      _evicted.remove(id);
-      return [StudioTimelineRemove(id)];
-    }
-    final item = change.item;
-    if (item == null) return null;
-    final previous = _delivered[id];
-    if (previous != null) {
-      final preview = _previewOf(item);
-      final update = _itemUpdate(
-        previous,
-        _deliveredDetails[id]!,
-        preview,
-        item,
-      );
-      if (update == null) return null;
-      final changed =
-          update.fields.isNotEmpty ||
-          update.expectedRevision != update.revision ||
-          previous.saved != preview.item.saved ||
-          previous.executionTerminal != preview.item.executionTerminal ||
-          update.itemShell != null;
-      _delivered[id] = preview.item;
-      _deliveredDetails[id] = preview.details;
-      // 更新后的总量与正文账目原子同步：只留数字，不留第二份正文。
-      _deliveredBytes[id] = preview.accountedBytes;
-      _prune(id);
-      return changed ? [update] : const [];
-    }
-    final key = _keyOf(item);
-    final floor = _floor;
-    if (floor != null && _compareKeys(key, floor) < 0) {
-      // 更早且从未交付：不插入、不缓存正文；后续页读取当时的权威值。
-      // 但它若曾在本连接副本里被淘汰，这次事实变化就无法证明 → 显式重同步。
-      if (_evicted.contains(id) || _evictedOverflow) return null;
-      return const [];
-    }
-    final ceiling = _ceiling;
-    if (ceiling != null && _compareKeys(key, ceiling) <= 0) {
-      // 落在已交付范围内部的**新**身份：无法证明与本连接连续。
-      return null;
-    }
-    final preview = _previewOf(item);
-    _delivered[id] = preview.item;
-    _deliveredDetails[id] = preview.details;
-    _deliveredBytes[id] = preview.accountedBytes;
-    _ceiling = key;
-    _prune(id);
-    return [StudioTimelineAdd(_timelineItem(item, preview))];
-  }
-
-  /// 有界副本：同时受 [_continuityLimit] 条与 [_continuityLimitBytes] 字节约束，
-  /// 只保留最新的已交付预览；淘汰不是删除通知（design/26 §26.8）。
-  void _prune(String newest) {
-    while (_delivered.length > _continuityLimit ||
-        _deliveredBytesTotal() > _continuityLimitBytes) {
-      if (_delivered.length <= 1) break;
-      final oldest = _delivered.keys
-          .where((id) => id != newest)
-          .reduce(
-            (left, right) =>
-                _compareKeys(
-                      _keyOf(_delivered[left]!),
-                      _keyOf(_delivered[right]!),
-                    ) <=
-                    0
-                ? left
-                : right,
-          );
-      _delivered.remove(oldest);
-      _deliveredDetails.remove(oldest);
-      _deliveredBytes.remove(oldest);
-      if (_evicted.length >= _continuityLimit) {
-        _evicted.remove(_evicted.first);
-        _evictedOverflow = true;
-      }
-      _evicted.add(oldest);
-    }
-    if (_delivered.isEmpty) return;
-    _floor = _delivered.values
-        .map(_keyOf)
-        .reduce((left, right) => _compareKeys(left, right) <= 0 ? left : right);
-    _ceiling = _delivered.values
-        .map(_keyOf)
-        .reduce((left, right) => _compareKeys(left, right) >= 0 ? left : right);
-  }
-
-  /// 已交付预览的保守计量总量（只有数字账目，不扫描正文）。
-  int _deliveredBytesTotal() {
-    var total = 0;
-    for (final bytes in _deliveredBytes.values) {
-      total += bytes;
-    }
-    return total;
-  }
-
-  StudioFailure _cancelled() => const StudioFailure(
-    code: StudioFailureCode.cancelled,
-    message: 'The timeline connection is closed',
-    retryable: false,
-    correlationId: 'demo-timeline-cancelled',
-  );
-
-  /// 产品预览预算（design/26 §26.5）：正文预览 32 KiB，工具参数/结果各 4 KiB。
-  static const int _bodyPreviewBytes = 32 * 1024;
-  static const int _toolPreviewBytes = 4 * 1024;
-
-  StudioTimelineItem _timelineItem(ThreadItemView full, _DemoPreview preview) {
-    return StudioTimelineItem(
-      item: preview.item,
-      saved: full.saved,
-      lifecycle: full.executionTerminal
-          ? StudioTimelineLifecycle.terminal
-          : StudioTimelineLifecycle.streaming,
-      omittedBytes: preview.omitted,
-      details: preview.details,
-    );
-  }
-
-  /// 条目预览值：只交付**有界预览**，完整正文留在 canonical 条目里由详情读取。
-  ///
-  /// 逐字段账目由这一对（完整正文、预览正文）的 UTF-8 字节差直接算出，不用某个输入
-  /// 声明的整体省略量代替合成结果（design/26 §26.7）。
-  ///
-  /// 单条总量是「不可缩结构 + 实际保留正文」：结构先占额度，剩余额度再由正文取
-  /// [_bodyPreviewBytes] 与「单条上限减结构」的交集。结构自身已经超限时报告 typed
-  /// `Overloaded`，不删字段、不截身份，也不回退到完整载荷（design/26 §预算计量边界）。
-  _DemoPreview _previewOf(ThreadItemView item) {
-    final full = _fieldsOf(item);
-    final structure = _structureBytes(item, full);
-    if (structure > _itemPreviewLimitBytes) throw _timelineBudgetExceeded();
-    final room = _itemPreviewLimitBytes - structure;
-    final budget = _PreviewBudget(
-      room < _bodyPreviewBytes ? room : _bodyPreviewBytes,
-    );
-    final capped = _withCappedFields(item, budget);
-    final preview = _fieldsOf(capped);
-    final details = <StudioTimelineDetailRef>[
-      for (final entry in full.entries)
-        StudioTimelineDetailRef(
-          field: entry.key,
-          revision: item.revision,
-          totalBytes: _byteLength(entry.value),
-          previewBytes: _byteLength(preview[entry.key] ?? ''),
-        ),
-    ];
-    var omitted = 0;
-    var kept = 0;
-    for (final ref in details) {
-      omitted += ref.totalBytes - ref.previewBytes;
-      kept += ref.previewBytes;
-    }
-    return (
-      item: capped.copyWith(bodyOmittedUnits: omitted),
-      details: List.unmodifiable(details),
-      omitted: omitted,
-      accountedBytes: structure + kept,
-    );
-  }
-
-  /// 以最新端为起点累计同一总量，按条数与页字节预算提前截页。
-  ///
-  /// 截页后的 `before` 是**实际交付的最早条目**，`hasOlder` 只看是否真的还有更早条目：
-  /// 不把预算截页伪装成 EOF，也不让游标越过被截掉的条目（design/26 §26.2）。
-  /// 只计量本次候选范围，不为分页预热历史。
-  _DemoPageStage _stagePage(List<ThreadItemView> older, int limit) {
-    final staged = <_DemoStagedItem>[];
-    var total = 0;
-    for (
-      var index = older.length - 1;
-      index >= 0 && staged.length < limit;
-      index--
-    ) {
-      final item = older[index];
-      final preview = _previewOf(item);
-      if (staged.isNotEmpty &&
-          total + preview.accountedBytes > _pageLimitBytes) {
-        break;
-      }
-      total += preview.accountedBytes;
-      staged.add(_DemoStagedItem(item, preview));
-    }
-    final items = List<_DemoStagedItem>.unmodifiable(staged.reversed);
-    final oldest = items.isEmpty ? null : items.first.full;
-    return _DemoPageStage(
-      items: items,
-      before: oldest == null ? null : _cursor(oldest.ordinal),
-      hasOlder: _hasOlderThan(oldest?.ordinal),
-    );
-  }
-
-  // ---- 保守结构计量（design/26 §预算计量边界） ----
-  //
-  // demo 没有 core 的 `meta` 编码，这里按自身 typed 表示做确定性的资源准入估算：
-  // 实际静态字符串的 UTF-8 字节 + 各 typed 容器/字段声明的固定壳。它不是 FRB wire
-  // 长度，也不等于分配器 heap 或 RSS；两个宿主的估算无需逐字节相等，但单条 256 KiB、
-  // 页 2 MiB、连续性副本 8 MiB 的口径与错误分类必须相同。
-  //
-  // 固定系数只需要覆盖 typed 容器的结构性成本（长度头、槽位、判别与引用），取整数值；
-  // 它们属于实现细节，不成为 wire 或持久化字段。
-
-  /// 条目固定壳：ordinal/revision/时间戳/枚举/标记等不可缩元数据。
-  static const int _itemShellBytes = 128;
-
-  /// 每个字符串的长度头与槽位。
-  static const int _stringSlotBytes = 8;
-
-  /// 每个内容字段的身份 + total/preview 声明 + 详情引用槽位。
-  static const int _contentFieldSlotBytes = 24;
-
-  /// 列表/载荷/分块/选项/答案等容器元素的固定成本。
-  static const int _containerSlotBytes = 16;
-
-  /// 附件条目的 id/mediaType/filename 头与尺寸字段。
-  static const int _attachmentSlotBytes = 24;
-
-  int _stringBytes(String? value) =>
-      value == null ? 0 : _stringSlotBytes + _byteLength(value);
-
-  /// 一条条目的不可缩结构成本。
-  ///
-  /// 覆盖 `ThreadItemStateView` 的全部封闭分支：稳定身份（item/Thread/Turn、工具调用、
-  /// 推理、技能、文件路径、问答问题 id 与答案身份）与生命周期错误原因都原样交付，
-  /// 因此完整计入；字段**声明**（含空正文、空选项、空分块、空载荷）按字段槽位计费，
-  /// 不因为正文为空就免费。
-  int _structureBytes(
-    ThreadItemView item,
-    Map<ThreadContentFieldView, String> fields,
-  ) {
-    var total = _itemShellBytes;
-    total += _stringBytes(item.id);
-    total += _stringBytes(item.threadId);
-    total += _stringBytes(item.turnId);
-    total += fields.length * _contentFieldSlotBytes;
-    switch (item.state) {
-      case ThreadTextItemStateView(:final attachments, :final lifecycle):
-        total += _attachmentBytes(attachments);
-        total += _contentLifecycleBytes(lifecycle);
-      case ThreadThinkingItemStateView(
-        :final summary,
-        :final content,
-        :final lifecycle,
-      ):
-        total += (summary.length + content.length) * _containerSlotBytes;
-        total += _contentLifecycleBytes(lifecycle);
-      case ThreadSkillItemStateView(
-        :final name,
-        :final source,
-        :final providerId,
-        :final resourceBase,
-        :final cause,
-      ):
-        total += _stringBytes(name);
-        total += _stringBytes(source);
-        total += _stringBytes(providerId);
-        total += _stringBytes(resourceBase.value);
-        total += _stringBytes(cause.id);
-      case ThreadToolItemStateView(
-        :final invocation,
-        :final lifecycle,
-        :final userInput,
-        :final wait,
-      ):
-        total += _stringBytes(invocation.toolCallId);
-        total += _stringBytes(invocation.callId);
-        total += _stringBytes(invocation.providerItemId);
-        total += _stringBytes(invocation.name);
-        total += _stringBytes(invocation.workingDirectory);
-        total += _stringBytes(invocation.taskId);
-        total += _toolLifecycleBytes(lifecycle);
-        total += _userInputBytes(userInput);
-        total += _waitBytes(wait);
-      case ThreadAgentItemStateView(:final identity, :final lifecycle):
-        total += _stringBytes(identity.id);
-        total += _stringBytes(identity.path);
-        total += _stringBytes(identity.parentPath);
-        total += _stringBytes(identity.role);
-        total += _stringBytes(identity.task);
-        total += switch (lifecycle) {
-          SucceededThreadAgentView(:final summary) => _stringBytes(summary),
-          DeniedThreadAgentView(:final reason) => _stringBytes(reason),
-          CancelledThreadAgentView(:final reason) => _stringBytes(reason),
-          FailedThreadAgentView(:final error) => _stringBytes(error),
-          QueuedThreadAgentView() || RunningThreadAgentView() => 0,
-        };
-      case ThreadTurnItemStateView(:final state, :final inputId):
-        total += _stringBytes(inputId);
-        total += _turnStateBytes(state);
-      case ThreadInferenceItemStateView(
-        :final inferenceId,
-        :final model,
-        :final lifecycle,
-      ):
-        total += _stringBytes(inferenceId);
-        total += _stringBytes(model);
-        total += switch (lifecycle) {
-          FailedThreadInferenceView(:final error) => _stringBytes(error),
-          CancelledThreadInferenceView(:final reason) => _stringBytes(reason),
-          RunningThreadInferenceView() || CompletedThreadInferenceView() => 0,
-        };
-      case ThreadRawItemStateView(:final payloads, :final notice):
-        // `notice` 是 canonical 静态原文，不是可裁的正文域：完整计入不可缩结构，
-        // 不裁空、不挪成动态字段，也不改变它的详情契约。
-        total += _stringBytes(notice);
-        for (final payload in payloads) {
-          total += _stringBytes(payload.format);
-        }
-      case ThreadFileItemStateView(:final path, :final mediaType):
-        total += _stringBytes(path);
-        total += _stringBytes(mediaType);
-      case ThreadContextCompactionItemStateView():
-        break;
-    }
-    return total;
-  }
-
-  int _contentLifecycleBytes(ThreadContentLifecycleView lifecycle) =>
-      switch (lifecycle) {
-        FailedThreadContentView(:final error) => _stringBytes(error),
-        CancelledThreadContentView(:final reason) => _stringBytes(reason),
-        StreamingThreadContentView() || CompletedThreadContentView() => 0,
-      };
-
-  /// Turn 状态的不可缩原文。
-  ///
-  /// [StudioTurnState.reason] 是派生串（失败 message / 取消原因 / 预算种类），而失败分类的
-  /// `category`/`providerKind`/`code` 与预算回滚的 [RolloverFailed.error] 都是**任意
-  /// String**，它们原样随条目交付，固定壳覆盖不了，必须按实际字节计入。`reason` 已经包含
-  /// 失败 `message` 与 `CoalescedTurnCancellation.targetTurnId` 的派生串，因此这两处不重复
-  /// 计费；其余原文一个都不省略。
-  int _turnStateBytes(StudioTurnState state) {
-    var total = _stringBytes(state.reason);
-    total += switch (state) {
-      FailedStudioTurnState(:final failure) =>
-        _stringBytes(failure.category) +
-            _stringBytes(failure.providerKind) +
-            _stringBytes(failure.code),
-      BudgetLimitedStudioTurnState(:final rollover) => switch (rollover) {
-        RolloverFailed(:final error) => _stringBytes(error),
-        RolloverNotAttempted() || RolloverSucceeded() => 0,
-      },
-      QueuedStudioTurnState() ||
-      RunningStudioTurnState() ||
-      CompletedStudioTurnState() ||
-      CancelledStudioTurnState() => 0,
-    };
-    return total;
-  }
-
-  int _attachmentBytes(List<ThreadAttachmentView> attachments) {
-    var total = 0;
-    for (final attachment in attachments) {
-      total += _attachmentSlotBytes;
-      total += _stringBytes(attachment.id);
-      total += _stringBytes(attachment.mediaType);
-      total += _stringBytes(attachment.filename);
-    }
-    return total;
-  }
-
-  int _toolLifecycleBytes(ThreadToolLifecycleView lifecycle) =>
-      switch (lifecycle) {
-        InterruptedThreadToolView(:final reason) => _stringBytes(reason),
-        DeniedThreadToolView(:final reason) => _stringBytes(reason),
-        CancelledThreadToolView(:final reason) => _stringBytes(reason),
-        FailedThreadToolView(:final failure, :final output) =>
-          _stringBytes(failure.message) + _toolOutputBytes(output),
-        SucceededThreadToolView(:final output) => _toolOutputBytes(output),
-        QueuedThreadToolView() ||
-        CancellingThreadToolView() ||
-        StartedThreadToolView() ||
-        StreamingThreadToolView() ||
-        AwaitingApprovalThreadToolView() ||
-        ApprovedThreadToolView() ||
-        RunningThreadToolView() => 0,
-      };
-
-  int _toolOutputBytes(ThreadToolOutputView? output) {
-    if (output == null) return 0;
-    // 预览里的产物数组恒为空：名字/路径等原文属于独立的 `toolOutputArtifacts` 字段
-    // （已有字段声明 + 详情引用）与详情读取。计量只针对**实际保留的预览表示**，
-    // 因此这里是一个空数组的固定壳，不随原始元素数增长，也不能把已经移出预览的
-    // 动态原文误判成不可缩结构。
-    return _attachmentBytes(output.attachments) + _containerSlotBytes;
-  }
-
-  /// 问答投影的结构成本：交互与问题身份、选项容器、答案身份与答案容器。
-  ///
-  /// 空选项与空答案仍然各有容器与字段声明成本，因此不会被当免费内容；
-  /// 这里也不为字段数量设 hardcap，成本始终按结构字节计。
-  ///
-  /// 没有对应问题的答案值（`questionId` 找不到匹配问题）不属于任何可寻址内容域：它既
-  /// 不会成为内容字段，也无法按字段读详情，只能原样随预览交付，因此按实际字节计入
-  /// 不可缩结构，不能让固定壳替任意 String 免单。有匹配问题的答案值仍只经该字段的
-  /// 正文额度、total 与详情引用计费，不在这里重复计。
-  int _waitBytes(ThreadWaitPresentationView? wait) {
-    if (wait == null) return 0;
-    var total = _containerSlotBytes;
-    switch (wait.intent) {
-      case ThreadWaitEventsIntentView(:final targets):
-        for (final target in targets) {
-          total += _stringBytes(target.taskId);
-          total += _stringBytes(target.toolName);
-          total += _stringBytes(target.summary);
-        }
-      case ThreadWaitTimerIntentView():
-        total += _containerSlotBytes;
-    }
-    return total;
-  }
-
-  int _userInputBytes(ThreadToolUserInputView? userInput) {
-    if (userInput == null) return 0;
-    var total = _containerSlotBytes + _stringBytes(userInput.interactionId);
-    for (final question in userInput.questions) {
-      total += _containerSlotBytes;
-      total += _stringBytes(question.id);
-      total += question.options.length * _containerSlotBytes;
-    }
-    for (final answer in userInput.answers) {
-      total += _containerSlotBytes;
-      total += _stringBytes(answer.questionId);
-      total += answer.answers.length * _containerSlotBytes;
-      if (userInput.questionIndex(answer.questionId) == null) {
-        for (final value in answer.answers) {
-          total += _stringBytes(value);
-        }
-      }
-    }
-    return total;
-  }
-
-  /// 按产品预览预算截断各内容字段；完整正文仍留在 demo 的 canonical 条目里。
-  ///
-  /// 正文（含问答与原始记录）共享 32 KiB；工具参数与结果各最多 4 KiB，且都从同一份额度里
-  /// 取。字段**存在性**与结构（chunk 身份、问答位置、判别字段）不因没额度而消失：
-  /// 只留下空预览占位 + 真实 total，正文按需读详情（design/26 §26.5）。
-  ThreadItemView _withCappedFields(ThreadItemView item, _PreviewBudget budget) {
-    switch (item.state) {
-      case ThreadTextItemStateView(
-        :final channel,
-        :final text,
-        :final attachments,
-        :final lifecycle,
-      ):
-        return item.copyWith(
-          state: ThreadTextItemStateView(
-            channel: channel,
-            text: budget.cap(text, _bodyPreviewBytes),
-            attachments: attachments,
-            lifecycle: lifecycle,
-          ),
-        );
-      case ThreadThinkingItemStateView(
-        :final summary,
-        :final content,
-        :final lifecycle,
-        :final summaryChunkBase,
-        :final contentChunkBase,
-      ):
-        return item.copyWith(
-          state: ThreadThinkingItemStateView(
-            summary: _cappedChunks(summary, budget),
-            content: _cappedChunks(content, budget),
-            lifecycle: lifecycle,
-            summaryChunkBase: summaryChunkBase,
-            contentChunkBase: contentChunkBase,
-          ),
-        );
-      case ThreadToolItemStateView(
-        :final invocation,
-        :final lifecycle,
-        :final userInput,
-        :final wait,
-      ):
-        return item.copyWith(
-          state: ThreadToolItemStateView(
-            invocation: invocation.withArguments(
-              budget.cap(invocation.arguments, _toolPreviewBytes),
-            ),
-            lifecycle: _cappedToolLifecycle(lifecycle, budget),
-            userInput: _cappedUserInput(userInput, budget),
-            wait: wait,
-          ),
-        );
-      case ThreadRawItemStateView(
-        :final payloads,
-        :final notice,
-        :final recordedAt,
-        :final origin,
-      ):
-        return item.copyWith(
-          state: ThreadRawItemStateView(
-            [
-              for (final payload in payloads)
-                // 每段都是独立的稳定身份：没额度时保留空预览占位，不丢段。
-                RawHistoryPayload(
-                  payload.format,
-                  payload.version,
-                  budget.cap(payload.content, _bodyPreviewBytes),
-                ),
-            ],
-            notice,
-            recordedAt,
-            origin: origin,
-          ),
-        );
-      default:
-        return item;
-    }
-  }
-
-  /// 问答正文（含计划确认在公开 typed 字段里的反馈）与普通正文共享同一份预算。
-  ///
-  /// 计划确认的**后端权威决定标记**是判别事实：先为这些小的固定标记预留字节，再按剩余
-  /// 预算裁剪自由正文，避免长正文把批准/请求修改标记挤掉而降级成普通“已回答”
-  /// （design/26 §26.5）。标记字节仍计入该字段的总量与详情引用，不隐藏反馈。
-  ThreadToolUserInputView? _cappedUserInput(
-    ThreadToolUserInputView? userInput,
-    _PreviewBudget budget,
-  ) {
-    if (userInput == null) return null;
-    for (final answer in userInput.answers) {
-      for (final value in answer.answers) {
-        if (value == agentSessionPlanApproveAnswer ||
-            value == agentSessionPlanReviseAnswer) {
-          budget.reserve(_byteLength(value));
-        }
-      }
-    }
-    var capped = userInput;
-    for (var index = 0; index < userInput.questions.length; index++) {
-      capped = capped
-          .withText(
-            index,
-            const ThreadUserInputHeaderFieldPartView(),
-            budget.cap(userInput.headerText(index), _bodyPreviewBytes),
-          )
-          .withText(
-            index,
-            const ThreadUserInputQuestionFieldPartView(),
-            budget.cap(userInput.questionText(index), _bodyPreviewBytes),
-          );
-      final options = userInput.questions[index].options.length;
-      for (var option = 0; option < options; option++) {
-        capped = capped
-            .withText(
-              index,
-              ThreadUserInputOptionLabelFieldPartView(option),
-              budget.cap(
-                userInput.optionLabel(index, option),
-                _bodyPreviewBytes,
-              ),
-            )
-            .withText(
-              index,
-              ThreadUserInputOptionDescriptionFieldPartView(option),
-              budget.cap(
-                userInput.optionDescription(index, option),
-                _bodyPreviewBytes,
-              ),
-            );
-      }
-    }
-    for (final answer in userInput.answers) {
-      final index = userInput.questionIndex(answer.questionId);
-      if (index == null) continue;
-      for (var value = 0; value < answer.answers.length; value++) {
-        final text = userInput.answerText(index, value);
-        // 判别标记原样交付（已预留额度），自由反馈仍受剩余预算约束。
-        final keepVerbatim =
-            text == agentSessionPlanApproveAnswer ||
-            text == agentSessionPlanReviseAnswer;
-        capped = capped.withText(
-          index,
-          ThreadUserInputAnswerFieldPartView(value),
-          keepVerbatim ? text : budget.cap(text, _bodyPreviewBytes),
-        );
-      }
-    }
-    return capped;
-  }
-
-  ThreadToolLifecycleView _cappedToolLifecycle(
-    ThreadToolLifecycleView lifecycle,
-    _PreviewBudget budget,
-  ) {
-    return switch (lifecycle) {
-      RunningThreadToolView(:final streamedOutput) => RunningThreadToolView(
-        budget.cap(streamedOutput, _toolPreviewBytes),
-      ),
-      CancellingThreadToolView(:final streamedOutput) =>
-        CancellingThreadToolView(budget.cap(streamedOutput, _toolPreviewBytes)),
-      SucceededThreadToolView(:final completedAt, :final output) =>
-        SucceededThreadToolView(completedAt, _cappedToolOutput(output, budget)),
-      FailedThreadToolView(:final failedAt, :final failure, :final output) =>
-        FailedThreadToolView(
-          failedAt,
-          failure,
-          output == null ? null : _cappedToolOutput(output, budget),
-        ),
-      _ => lifecycle,
-    };
-  }
-
-  ThreadToolOutputView _cappedToolOutput(
-    ThreadToolOutputView output,
-    _PreviewBudget budget,
-  ) => ThreadToolOutputView(
-    result: budget.cap(output.result, _toolPreviewBytes),
-    attachments: output.attachments,
-    // 产物正文是独立内容字段：预览数组可以为空，完整原文只经详情读取。
-    outputArtifacts: const [],
-    exitCode: output.exitCode,
-  );
-
-  /// 分块预览：**每个 canonical chunk 都保留**（顺序即身份），只把没额度的块截成空串。
-  /// 这样字段存在性不会因为预算耗尽而变成“被删除”。
-  List<String> _cappedChunks(List<String> chunks, _PreviewBudget budget) => [
-    for (final chunk in chunks) budget.cap(chunk, _bodyPreviewBytes),
-  ];
-
-  StudioTimelineUpdateItem? _itemUpdate(
-    ThreadItemView previous,
-    List<StudioTimelineDetailRef> previousDetails,
-    _DemoPreview next,
-    ThreadItemView full,
-  ) {
-    final fields = _fieldUpdates(previous, previousDetails, next, full);
-    if (fields == null) return null;
-    return StudioTimelineUpdateItem(
-      itemId: full.id,
-      expectedRevision: previous.revision,
-      revision: full.revision,
-      omittedBytes: next.omitted,
-      saved: full.saved,
-      lifecycle: full.executionTerminal
-          ? StudioTimelineLifecycle.terminal
-          : StudioTimelineLifecycle.streaming,
-      itemShell:
-          previous.state.runtimeType != next.item.state.runtimeType ||
-              previous.updatedAt != full.updatedAt ||
-              previous.isTerminal != full.isTerminal
-          ? next.item
-          : null,
-      fields: fields,
-    );
-  }
-
-  /// 两个**已封顶预览**之间的 typed 字段变化；完整正文只用来提供字段总字节数。
-  ///
-  /// 字段**存在性**由完整 canonical 字段集合决定（不以裁剪后的预览是否有字符串判定）：
-  /// 没额度的字段以空预览 + 真实 total 交付，只有 canonical 字段真的消失才发 `Remove`。
-  /// 字段身份直接用 SDK 的值语义（判别分支 + 逻辑索引）。
-  List<StudioFieldUpdateView>? _fieldUpdates(
-    ThreadItemView previous,
-    List<StudioTimelineDetailRef> previousDetails,
-    _DemoPreview next,
-    ThreadItemView full,
-  ) {
-    final previousFields = _fieldsOf(previous);
-    final fullFields = _fieldsOf(full);
-    final previewFields = _fieldsOf(next.item);
-    final previousTotals = {
-      for (final ref in previousDetails) ref.field: ref.totalBytes,
-    };
-    final changes = <StudioFieldUpdateView>[];
-    for (final entry in fullFields.entries) {
-      final field = entry.key;
-      final previewText = previewFields[field] ?? '';
-      final total = _byteLength(entry.value);
-      final previewBytes = _byteLength(previewText);
-      final previousText = previousFields[field];
-      final previousTotal = previousTotals[field] ?? 0;
-      if (previousText != null &&
-          previewBytes < _byteLength(previousText) &&
-          total >= previousTotal) {
-        // 原文没有变短却把预览挤短：这是预算重新分配，无法用连续差量证明 → 显式重同步。
-        return null;
-      }
-      if (previousText == null) {
-        // 新字段：即使预览为空也要建立该字段（空预览占位 + 真实 total），不能当成缺失。
-        changes.add(
-          StudioFieldUpdateView(
-            field: field,
-            change: AppendThreadFieldChangeView(previewText),
-            totalBytes: total,
-            previewBytes: previewBytes,
-          ),
-        );
-        continue;
-      }
-      if (previousText == previewText) {
-        // 预览已封顶而正文继续增长：仍要推进逐字段元数据（与生产 producer 同形状）。
-        if (previousTotal != total) {
-          changes.add(
-            StudioFieldUpdateView(
-              field: field,
-              change: const UnchangedThreadFieldChangeView(),
-              totalBytes: total,
-              previewBytes: previewBytes,
-            ),
-          );
-        }
-        continue;
-      }
-      changes.add(
-        StudioFieldUpdateView(
-          field: field,
-          change: previewText.startsWith(previousText)
-              ? AppendThreadFieldChangeView(
-                  previewText.substring(previousText.length),
-                )
-              : ReplaceThreadFieldChangeView(previewText),
-          totalBytes: total,
-          previewBytes: previewBytes,
-        ),
-      );
-    }
-    for (final entry in previousFields.entries) {
-      // 只有 canonical 字段真的消失才是 Remove。
-      if (fullFields.containsKey(entry.key)) continue;
-      changes.add(
-        StudioFieldUpdateView(
-          field: entry.key,
-          change: const RemoveThreadFieldChangeView(),
-          totalBytes: 0,
-          previewBytes: 0,
-        ),
-      );
-    }
-    return changes;
-  }
-
-  /// 工具生命周期里的结果正文（与 `tool.result` 字段对应）。
-  String _toolResultText(ThreadToolLifecycleView lifecycle) {
-    return switch (lifecycle) {
-      RunningThreadToolView(:final streamedOutput) => streamedOutput,
-      CancellingThreadToolView(:final streamedOutput) => streamedOutput,
-      SucceededThreadToolView(:final output) => output.result,
-      FailedThreadToolView(:final output) => output?.result ?? '',
-      _ => '',
-    };
-  }
-
-  /// 工具产物正文（与 `toolOutputArtifacts` 字段对应）：只在 canonical 边界编码。
-  String _toolArtifactsText(ThreadToolLifecycleView lifecycle) {
-    final output = switch (lifecycle) {
-      SucceededThreadToolView(:final output) => output,
-      FailedThreadToolView(:final output) => output,
-      _ => null,
-    };
-    if (output == null || output.outputArtifacts.isEmpty) return '';
-    return jsonEncode(output.outputArtifacts);
-  }
-
-  /// 无状态历史页：`before` 是绑定 Thread 的不透明顺序边界。
-  @override
-  Future<StudioTimelinePage> page({String? before, int? limit}) async {
-    if (_closed) throw _cancelled();
-    final size = limit ?? _pageSize;
-    if (size < 1 || size > 100) {
-      throw const StudioFailure(
-        code: StudioFailureCode.invalidArgument,
-        message: 'Timeline page limit must be within 1..100',
-        retryable: false,
-        correlationId: 'demo-timeline-page-limit',
-      );
-    }
-    final items = _items;
-    final boundary = before == null ? null : _ordinalFromCursor(before);
-    final older = boundary == null
-        ? items
-        : items
-              .where((item) => item.ordinal < boundary)
-              .toList(growable: false);
-    // 页是自包含查询：与首帧/重同步基线使用同一份总量与截页规则。
-    final stage = _stagePage(older, size);
-    return StudioTimelinePage(
-      items: List.unmodifiable([
-        for (final entry in stage.items)
-          _timelineItem(entry.full, entry.preview),
-      ]),
-      before: stage.before,
-      hasOlder: stage.hasOlder,
-    );
-  }
-
-  /// 按 item/field/revision 读取完整正文；continuation 是不透明的 UTF-8 字节游标。
-  @override
-  Future<StudioTimelineDetailChunk> readDetail({
-    required String itemId,
-    required StudioTimelineDetailQuery query,
-  }) async {
-    if (_closed) throw _cancelled();
-    final maxBytes = query.maxBytes ?? _defaultDetailBytes;
-    if (maxBytes < _minDetailBytes || maxBytes > _maxDetailBytes) {
-      throw const StudioFailure(
-        code: StudioFailureCode.invalidArgument,
-        message: 'Timeline detail block size must be within 4..262144 bytes',
-        retryable: false,
-        correlationId: 'demo-timeline-detail-block',
-      );
-    }
-    final item = _items.where((entry) => entry.id == itemId).firstOrNull;
-    if (item == null) {
-      throw StudioFailure(
-        code: StudioFailureCode.notFound,
-        message: 'The timeline item is no longer available',
-        retryable: false,
-        correlationId: 'demo-timeline-detail-not-found',
-      );
-    }
-    if (item.revision != query.revision) {
-      throw StudioFailure(
-        code: StudioFailureCode.staleRevision,
-        message: 'The timeline item revision changed',
-        retryable: false,
-        correlationId: 'demo-timeline-detail-stale',
-      );
-    }
-    final body = _fieldText(item, query.field);
-    if (body == null) {
-      throw StudioFailure(
-        code: StudioFailureCode.notFound,
-        message: 'The timeline field is not available',
-        retryable: false,
-        correlationId: 'demo-timeline-detail-field',
-      );
-    }
-    final bytes = utf8.encode(body);
-    var start = 0;
-    final continuation = query.continuation;
-    if (continuation != null) {
-      final parsed = _parseDetailContinuation(continuation);
-      // continuation 绑定 Thread、item、字段与 revision：跨 scope 复用一律拒绝。
-      if (parsed.threadId != _threadId ||
-          parsed.itemId != itemId ||
-          parsed.field != query.field) {
-        throw _invalidDetailCursor();
-      }
-      if (parsed.revision != query.revision) {
-        throw const StudioFailure(
-          code: StudioFailureCode.staleRevision,
-          message: 'The timeline detail cursor belongs to another revision',
-          retryable: false,
-          correlationId: 'demo-timeline-detail-cursor-revision',
-        );
-      }
-      if (parsed.offset > bytes.length) throw _invalidDetailCursor();
-      // offset 必须落在合法 UTF-8 起始字节上：落在续字节上会让后续 decode 泄 FormatException。
-      if (parsed.offset < bytes.length &&
-          (bytes[parsed.offset] & 0xC0) == 0x80) {
-        throw _invalidDetailCursor();
-      }
-      start = parsed.offset;
-    }
-    var end = start + maxBytes;
-    if (end > bytes.length) end = bytes.length;
-    if (end < bytes.length) {
-      // 只在合法 UTF-8 边界切块：不跨多字节字符（maxBytes ≥ 4 保证至少推进一个码点）。
-      while (end > start && (bytes[end] & 0xC0) == 0x80) {
-        end -= 1;
-      }
-      if (end == start) throw _invalidDetailCursor();
-    }
-    final String text;
-    try {
-      text = utf8.decode(bytes.sublist(start, end));
-    } on FormatException {
-      // 任何损坏的游标/边界都统一成 typed invalidArgument，不把解码异常泄给上层。
-      throw _invalidDetailCursor();
-    }
-    return StudioTimelineDetailChunk(
-      itemId: item.id,
-      field: query.field,
-      revision: item.revision,
-      text: text,
-      totalBytes: bytes.length,
-      continuation: end < bytes.length
-          ? _detailContinuationToken(
-              itemId: item.id,
-              field: query.field,
-              revision: item.revision,
-              offset: end,
-            )
-          : null,
-    );
-  }
-
-  static const int _minDetailBytes = 4;
-
-  StudioFailure _invalidDetailCursor() => const StudioFailure(
-    code: StudioFailureCode.invalidArgument,
-    message: 'The timeline detail cursor is invalid',
-    retryable: false,
-    correlationId: 'demo-timeline-detail-cursor',
-  );
-
-  /// 不透明 continuation：版本化 JSON + base64url，绑定 Thread/item/field/revision 与
-  /// 合法 UTF-8 字节偏移。字段用一个私有 typed 编码表达（Dart record 不是 JSON 可直接
-  /// 编码的对象，也不能拿 `toString` 当稳定 codec）。
-  String _detailContinuationToken({
-    required String itemId,
-    required ThreadContentFieldView field,
-    required int revision,
-    required int offset,
-  }) {
-    final payload = <String, Object?>{
-      'v': 1,
-      't': _threadId,
-      'i': itemId,
-      'f': _fieldToWire(field),
-      'r': revision,
-      'o': offset,
-    };
-    return base64Url.encode(utf8.encode(jsonEncode(payload)));
-  }
-
-  ({
-    String threadId,
-    String itemId,
-    ThreadContentFieldView field,
-    int revision,
-    int offset,
-  })
-  _parseDetailContinuation(String token) {
-    Object? decoded;
-    try {
-      decoded = jsonDecode(utf8.decode(base64Url.decode(token)));
-    } catch (_) {
-      throw _invalidDetailCursor();
-    }
-    if (decoded is! Map<String, Object?>) throw _invalidDetailCursor();
-    final version = decoded['v'];
-    final threadId = decoded['t'];
-    final itemId = decoded['i'];
-    final revision = decoded['r'];
-    final offset = decoded['o'];
-    final field = _fieldFromWire(decoded['f']);
-    if (version != 1 ||
-        threadId is! String ||
-        itemId is! String ||
-        revision is! int ||
-        offset is! int ||
-        revision < 0 ||
-        offset < 0 ||
-        field == null) {
-      throw _invalidDetailCursor();
-    }
-    return (
-      threadId: threadId,
-      itemId: itemId,
-      field: field,
-      revision: revision,
-      offset: offset,
-    );
-  }
-
-  Map<String, Object?> _fieldToWire(ThreadContentFieldView field) =>
-      switch (field) {
-        ThreadTextFieldView() => {'k': 'text'},
-        ThreadThinkingSummaryFieldView(:final chunkIndex) => {
-          'k': 'summary',
-          'i': chunkIndex,
-        },
-        ThreadThinkingContentFieldView(:final chunkIndex) => {
-          'k': 'content',
-          'i': chunkIndex,
-        },
-        ThreadToolArgumentsFieldView() => {'k': 'args'},
-        ThreadToolResultFieldView() => {'k': 'result'},
-        ThreadToolOutputArtifactsFieldView() => {'k': 'artifacts'},
-        ThreadRawPayloadFieldView(:final payloadIndex) => {
-          'k': 'raw',
-          'i': payloadIndex,
-        },
-        ThreadToolUserInputFieldView(:final questionIndex, :final part) => {
-          'k': 'input',
-          'q': questionIndex,
-          'p': _partToWire(part),
-        },
-      };
-
-  Map<String, Object?> _partToWire(ThreadUserInputFieldPartView part) =>
-      switch (part) {
-        ThreadUserInputHeaderFieldPartView() => {'k': 'header'},
-        ThreadUserInputQuestionFieldPartView() => {'k': 'question'},
-        ThreadUserInputAnswerFieldPartView(:final answerIndex) => {
-          'k': 'answer',
-          'i': answerIndex,
-        },
-        ThreadUserInputOptionLabelFieldPartView(:final optionIndex) => {
-          'k': 'label',
-          'i': optionIndex,
-        },
-        ThreadUserInputOptionDescriptionFieldPartView(:final optionIndex) => {
-          'k': 'description',
-          'i': optionIndex,
-        },
-      };
-
-  ThreadContentFieldView? _fieldFromWire(Object? value) {
-    if (value is! Map<String, Object?>) return null;
-    final index = value['i'];
-    switch (value['k']) {
-      case 'text':
-        return const ThreadTextFieldView();
-      case 'summary':
-        return index is int ? ThreadThinkingSummaryFieldView(index) : null;
-      case 'content':
-        return index is int ? ThreadThinkingContentFieldView(index) : null;
-      case 'args':
-        return const ThreadToolArgumentsFieldView();
-      case 'result':
-        return const ThreadToolResultFieldView();
-      case 'artifacts':
-        return const ThreadToolOutputArtifactsFieldView();
-      case 'raw':
-        return index is int ? ThreadRawPayloadFieldView(index) : null;
-      case 'input':
-        final questionIndex = value['q'];
-        final part = _partFromWire(value['p']);
-        if (questionIndex is! int || part == null) return null;
-        return ThreadToolUserInputFieldView(
-          questionIndex: questionIndex,
-          part: part,
-        );
-      default:
-        return null;
-    }
-  }
-
-  ThreadUserInputFieldPartView? _partFromWire(Object? value) {
-    if (value is! Map<String, Object?>) return null;
-    final index = value['i'];
-    switch (value['k']) {
-      case 'header':
-        return const ThreadUserInputHeaderFieldPartView();
-      case 'question':
-        return const ThreadUserInputQuestionFieldPartView();
-      case 'answer':
-        return index is int ? ThreadUserInputAnswerFieldPartView(index) : null;
-      case 'label':
-        return index is int
-            ? ThreadUserInputOptionLabelFieldPartView(index)
-            : null;
-      case 'description':
-        return index is int
-            ? ThreadUserInputOptionDescriptionFieldPartView(index)
-            : null;
-      default:
-        return null;
-    }
-  }
-
-  /// 字段身份 → 完整正文（demo 只有这些 typed 字段域）。
-  String? _fieldText(ThreadItemView item, ThreadContentFieldView field) {
-    return _fieldsOf(item)[field];
-  }
-
-  Map<ThreadContentFieldView, String> _fieldsOf(ThreadItemView item) {
-    final fields = <ThreadContentFieldView, String>{};
-    switch (item.state) {
-      case ThreadTextItemStateView(:final text):
-        fields[const ThreadTextFieldView()] = text;
-      case ThreadThinkingItemStateView(
-        :final summary,
-        :final content,
-        :final summaryChunkBase,
-        :final contentChunkBase,
-      ):
-        for (var index = 0; index < summary.length; index++) {
-          fields[ThreadThinkingSummaryFieldView(summaryChunkBase + index)] =
-              summary[index];
-        }
-        for (var index = 0; index < content.length; index++) {
-          fields[ThreadThinkingContentFieldView(contentChunkBase + index)] =
-              content[index];
-        }
-      case ThreadToolItemStateView(
-        :final invocation,
-        :final lifecycle,
-        :final userInput,
-        wait: _,
-      ):
-        fields[const ThreadToolArgumentsFieldView()] = invocation.arguments;
-        fields[const ThreadToolResultFieldView()] = _toolResultText(lifecycle);
-        fields[const ThreadToolOutputArtifactsFieldView()] = _toolArtifactsText(
-          lifecycle,
-        );
-        if (userInput != null) {
-          for (var index = 0; index < userInput.questions.length; index++) {
-            fields[ThreadToolUserInputFieldView(
-              questionIndex: index,
-              part: const ThreadUserInputHeaderFieldPartView(),
-            )] = userInput.headerText(
-              index,
-            );
-            fields[ThreadToolUserInputFieldView(
-              questionIndex: index,
-              part: const ThreadUserInputQuestionFieldPartView(),
-            )] = userInput.questionText(
-              index,
-            );
-            final options = userInput.questions[index].options.length;
-            for (var option = 0; option < options; option++) {
-              fields[ThreadToolUserInputFieldView(
-                questionIndex: index,
-                part: ThreadUserInputOptionLabelFieldPartView(option),
-              )] = userInput.optionLabel(
-                index,
-                option,
-              );
-              fields[ThreadToolUserInputFieldView(
-                questionIndex: index,
-                part: ThreadUserInputOptionDescriptionFieldPartView(option),
-              )] = userInput.optionDescription(
-                index,
-                option,
-              );
-            }
-          }
-          for (final answer in userInput.answers) {
-            final questionIndex = userInput.questionIndex(answer.questionId);
-            if (questionIndex == null) continue;
-            for (var value = 0; value < answer.answers.length; value++) {
-              fields[ThreadToolUserInputFieldView(
-                    questionIndex: questionIndex,
-                    part: ThreadUserInputAnswerFieldPartView(value),
-                  )] =
-                  answer.answers[value];
-            }
-          }
-        }
-      case ThreadRawItemStateView(:final payloads):
-        for (var index = 0; index < payloads.length; index++) {
-          fields[ThreadRawPayloadFieldView(index)] = payloads[index].content;
-        }
-      default:
-        break;
-    }
-    return fields;
-  }
-
-  bool _hasOlderThan(int? ordinal) {
-    if (ordinal == null) return false;
-    return _items.any((item) => item.ordinal < ordinal);
-  }
-
-  String _cursor(int ordinal) =>
-      'dtl1.${base64Url.encode(utf8.encode(_threadId))}.$ordinal';
-
-  int _ordinalFromCursor(String token) {
-    final parts = token.split('.');
-    if (parts.length != 3 || parts[0] != 'dtl1') {
-      throw const StudioFailure(
-        code: StudioFailureCode.invalidArgument,
-        message: 'The timeline page cursor is invalid',
-        retryable: false,
-        correlationId: 'demo-timeline-page-cursor',
-      );
-    }
-    String threadId;
-    try {
-      threadId = utf8.decode(base64Url.decode(parts[1]));
-    } catch (_) {
-      throw const StudioFailure(
-        code: StudioFailureCode.invalidArgument,
-        message: 'The timeline page cursor is invalid',
-        retryable: false,
-        correlationId: 'demo-timeline-page-cursor',
-      );
-    }
-    final ordinal = int.tryParse(parts[2]);
-    if (threadId != _threadId || ordinal == null || ordinal < 0) {
-      throw const StudioFailure(
-        code: StudioFailureCode.invalidArgument,
-        message: 'The timeline page cursor is invalid',
-        retryable: false,
-        correlationId: 'demo-timeline-page-cursor',
-      );
-    }
-    return ordinal;
-  }
-
-  int _byteLength(String value) => utf8.encode(value).length;
-
-  @override
-  void requestClose() {
-    if (_closed) return;
-    _closed = true;
-    // 关闭即释放正文与数字账目：连接不再持有任何预览副本。
-    _delivered.clear();
-    _deliveredDetails.clear();
-    _deliveredBytes.clear();
-    _evicted.clear();
-    _floor = null;
-    _ceiling = null;
-    // 与原生连接对齐：close 必须打断挂起的 next 等待，否则内容泵永久泄漏。
-    _api._notifyItemsChanged(_threadId);
-  }
-
-  @override
-  Future<void> close() async {
-    requestClose();
-  }
-}
-
-ThreadItemView _messageItem({
+ConversationItem _messageItem({
   required String id,
   required String threadId,
   required String turnId,
   required int ordinal,
-  required ThreadItemKind kind,
+  required ThreadTextChannel channel,
   required String text,
   required DateTime createdAt,
-  AgentMessageChannel? channel,
   List<ThreadAttachmentView> attachments = const [],
-}) {
-  return ThreadItemView(
-    id: id,
-    threadId: threadId,
-    turnId: turnId,
-    ordinal: ordinal,
-    revision: 0,
-    createdAt: createdAt,
-    updatedAt: createdAt,
-    state: switch (kind) {
-      ThreadItemKind.userMessage => ThreadTextItemStateView(
-        channel: ThreadTextChannel.user,
-        text: text,
-        attachments: attachments,
-        lifecycle: CompletedThreadContentView(createdAt),
-      ),
-      ThreadItemKind.parentAgentMessage => ThreadTextItemStateView(
-        channel: ThreadTextChannel.parentAgent,
-        text: text,
-        attachments: attachments,
-        lifecycle: CompletedThreadContentView(createdAt),
-      ),
-      ThreadItemKind.agentMessage => ThreadTextItemStateView(
-        channel: channel == AgentMessageChannel.commentary
-            ? ThreadTextChannel.commentary
-            : ThreadTextChannel.finalAnswer,
-        text: text,
-        attachments: const [],
-        lifecycle: CompletedThreadContentView(createdAt),
-      ),
-      ThreadItemKind.reasoning ||
-      ThreadItemKind.toolCall ||
-      ThreadItemKind.agent ||
-      ThreadItemKind.turn ||
-      ThreadItemKind.inference ||
-      ThreadItemKind.skill ||
-      ThreadItemKind.file ||
-      ThreadItemKind.raw ||
-      ThreadItemKind.contextCompaction => throw ArgumentError.value(
-        kind,
-        'kind',
-        'demo message helper only accepts text and plan items',
-      ),
-    },
-  );
-}
+}) => _demoItem(
+  id: id,
+  threadId: threadId,
+  turnId: turnId,
+  ordinal: ordinal,
+  revision: 0,
+  createdAt: createdAt,
+  updatedAt: createdAt,
+  content: _demoText(
+    channel: channel,
+    text: text,
+    attachments: attachments,
+    lifecycle: CompletedThreadContentView(createdAt),
+  ),
+);
 
 AttachmentDraftView _demoAttachmentDraft(
   AttachmentDraftSource source,
@@ -7590,7 +6180,7 @@ class DriverDemoStudioTransport extends DemoStudioTransport {
         final now = DateTime.now();
         _upsertChatItem(
           threadId,
-          ThreadItemView(
+          _demoItem(
             id: '$turnId:connection-retry-$attempt',
             threadId: threadId,
             turnId: turnId,
@@ -7598,7 +6188,7 @@ class DriverDemoStudioTransport extends DemoStudioTransport {
             revision: 0,
             createdAt: now,
             updatedAt: now,
-            state: ThreadTextItemStateView(
+            content: _demoText(
               channel: ThreadTextChannel.commentary,
               text: '连接中断，正在重试（$attempt/5）。',
               attachments: const [],

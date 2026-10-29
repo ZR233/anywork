@@ -1,4 +1,4 @@
-//! 入站受理后的正式自动回复：状态流只唤醒，结局从持久 canonical 事实重建。
+//! 入站受理后的正式自动回复：同源增量维护 Final，结局从可靠 canonical 事实核对。
 //!
 //! 首次进入、Lagged、观察重开与进程重启共用同一条恢复链：durable 输入路由/消费
 //! 身份 → 原目标 Turn 的 typed 状态 → 交互终局事实。没有 active Turn 不等于原输入
@@ -7,16 +7,16 @@
 //! （保留未决、释放认领为 pending），失租是 LostClaim（停止旧观察与新副作用）；
 //! canonical Turn 的取消（含 Interrupted 原因）仍按真实取消结局收束。
 
-use super::content::{FinalError, FinalText, collect_complete_turn_text, collect_preview};
+use super::content::{FinalError, FinalText, collect_complete_turn_text};
 use super::watch::ReplyWatch;
 
 use crate::bots::InboundWorkOutcome;
 use crate::bots::owner::BotRuntime;
-use crate::bots::protocol::error::{FeishuError, FeishuErrorKind};
+use crate::bots::protocol::error::FeishuError;
 use crate::bots::storage::card::{CardBinding, CardLifecycle, CardOperationStatus, CardStream};
 use crate::bots::storage::{ClaimLease, FrozenInbound};
 use crate::bots::{BotInputRead, BotTurnRead};
-use crate::studio::StudioRuntime;
+use crate::studio::{StudioRuntime, TimelineContentReader};
 use pl_core::thread::input::{InputDelivery, InputState};
 use pl_protocol::{TurnCompletion, TurnState};
 use std::collections::BTreeSet;
@@ -74,6 +74,12 @@ pub(super) enum Step {
 pub(super) enum ClaimGuard {
     Held,
     Lost,
+}
+
+struct ReplyContent<'a> {
+    reader: &'a TimelineContentReader,
+    preview: Option<&'a str>,
+    observed: Option<TurnState>,
 }
 
 /// The target is supplied by canonical input facts, never inferred from an old card.
@@ -158,8 +164,11 @@ impl BotRuntime {
             inbound.message_id.clone(),
         );
         let heartbeat_worker = worker_id.to_string();
+        // Keep the reply state out of this select's stack frame. Pinning does not
+        // create another task, so heartbeat loss still drops the same owned work.
+        let reply = Box::pin(self.run_reply(inbound, worker_id, cancel.clone()));
         tokio::select! {
-        outcome = self.run_reply(inbound, worker_id, cancel.clone()) => outcome,
+        outcome = reply => outcome,
         // heartbeat 只会因失租完成；cancel 后它保持挂起，不误报 runtime 停止。
         _ = heartbeat_claims(self.clone(), heartbeat_keys, heartbeat_worker, cancel.clone()) => {
                 InboundWorkOutcome::LostClaim
@@ -276,36 +285,72 @@ impl BotRuntime {
                 return closed_card_outcome(card.lifecycle);
             }
         }
-        let mut watch = match ReplyWatch::open(&runtime, &run.thread_id).await {
-            Ok(watch) => watch,
-            Err(error) => return classify_send_error(error),
+        let opened = tokio::select! {
+            _ = cancel.cancelled() => return InboundWorkOutcome::Interrupted,
+            opened = ReplyWatch::open(&runtime, &run.thread_id) => opened,
         };
-        loop {
+        let mut watch = match opened {
+            Ok(watch) => watch,
+            Err(error) => return content_failure(error),
+        };
+        let outcome = loop {
             if cancel.is_cancelled() || self.inner.sealed.load(Ordering::SeqCst) != 0 {
-                return InboundWorkOutcome::Interrupted;
+                break InboundWorkOutcome::Interrupted;
             }
-            tokio::select! {
-                _ = cancel.cancelled() => return InboundWorkOutcome::Interrupted,
-                _ = tokio::time::sleep_until(run.next_observation) => {}
+            let observed = tokio::select! {
+                _ = cancel.cancelled() => break InboundWorkOutcome::Interrupted,
+                event = watch.receive() => Some(event),
+                _ = tokio::time::sleep_until(run.next_observation) => None,
+            };
+            if let Some(observed) = observed {
+                if let Err(error) = observed {
+                    break content_failure(error);
+                }
+                continue;
             }
+            let renewed = tokio::select! {
+                _ = cancel.cancelled() => break InboundWorkOutcome::Interrupted,
+                renewed = watch.during(self.renew_claim(&run), None) => renewed,
+            };
+            match renewed {
+                (ClaimGuard::Lost, _) => break InboundWorkOutcome::LostClaim,
+                (_, Some(error)) => break content_failure(error),
+                (ClaimGuard::Held, None) => {}
+            }
+            // Cancellation is checked inside each action before intent; a
+            // committed HTTP request is drained and confirmed even on shutdown.
+            // The heap boundary keeps the nested action state out of this long-lived
+            // owner future without changing its cancellation or drop behavior.
+            let step = Box::pin(self.advance(&runtime, &mut run, &mut watch, &cancel)).await;
+            // Sending and receiving have independent clocks. Pending updates are
+            // reduced throughout the window, including waits inside advance.
             run.next_observation = tokio::time::Instant::now() + PREVIEW_INTERVAL;
-            match self.renew_claim(&run).await {
-                ClaimGuard::Held => {}
-                ClaimGuard::Lost => return InboundWorkOutcome::LostClaim,
-            }
-            match self.advance(&runtime, &mut run, &cancel).await {
-                Step::Done(outcome) => return outcome,
-                Step::Continue => continue,
-                Step::Wait => {
-                    if let Err(error) = watch.ensure_alive(&runtime, &run.thread_id).await {
-                        return classify_send_error(error);
-                    }
-                    if let Step::Done(outcome) = watch.wait(&cancel).await {
-                        return outcome;
+            match step {
+                Step::Done(outcome) => break outcome,
+                Step::Continue => {
+                    // A continuation invalidates the old projection immediately;
+                    // the next canonical input receipt selects its actual Turn.
+                    let reset = tokio::select! {
+                        _ = cancel.cancelled() => break InboundWorkOutcome::Interrupted,
+                        reset = watch.select_target(&runtime, &run.watch_input, None) => reset,
+                    };
+                    if let Err(error) = reset {
+                        break content_failure(error);
                     }
                 }
+                Step::Wait => {}
             }
+        };
+        if let Err(error) = watch.close().await {
+            if !matches!(
+                outcome,
+                InboundWorkOutcome::LostClaim | InboundWorkOutcome::Interrupted
+            ) {
+                return content_failure(error);
+            }
+            tracing::warn!("reply observation close failed during owner retirement");
         }
+        outcome
     }
 
     pub(super) async fn renew_claim(&self, run: &ReplyRun) -> ClaimGuard {
@@ -328,12 +373,25 @@ impl BotRuntime {
         &self,
         runtime: &StudioRuntime,
         run: &mut ReplyRun,
+        watch: &mut ReplyWatch,
         cancel: &CancellationToken,
     ) -> Step {
-        let input = match runtime
-            .bot_input_fact(&run.thread_id, &run.watch_input)
-            .await
-        {
+        let covered = tokio::select! {
+            _ = cancel.cancelled() => return Step::Done(InboundWorkOutcome::Interrupted),
+            covered = watch.ensure_coverage() => covered,
+        };
+        if let Err(error) = covered {
+            return Step::Done(content_failure(error));
+        }
+        let input = tokio::select! {
+            _ = cancel.cancelled() => return Step::Done(InboundWorkOutcome::Interrupted),
+            input = Box::pin(watch.during(runtime.bot_input_fact(&run.thread_id, &run.watch_input), None)) => input,
+        };
+        let input = match input {
+            (_, Some(error)) => return Step::Done(content_failure(error)),
+            (input, None) => input,
+        };
+        let input = match input {
             Ok(input) => input,
             Err(error) => {
                 return Step::Done(recoverable(format!(
@@ -346,7 +404,15 @@ impl BotRuntime {
             BotInputRead::Ready { delivery, state } => (delivery, state),
             BotInputRead::Absent => {
                 if run.watching_original() {
-                    return self.submit_original(runtime, run, cancel).await;
+                    let action_cancel = cancel.child_token();
+                    return observed_step(
+                        Box::pin(watch.during(
+                            self.submit_original(runtime, run, &action_cancel),
+                            Some(&action_cancel),
+                        ))
+                        .await,
+                        cancel,
+                    );
                 }
                 // continuation 输入尚未持久化：事实未定，保持待定等待。
                 return Step::Wait;
@@ -358,16 +424,51 @@ impl BotRuntime {
             }
             (InputDelivery::NextTurn, InputState::Pending) => Step::Wait,
             (InputDelivery::NextTurn, InputState::Discarded) => {
-                self.finish_known_card(
-                    run,
-                    ReplyTarget::Unconsumed,
-                    CardLifecycle::InteractionEnded,
+                let action_cancel = cancel.child_token();
+                observed_step(
+                    Box::pin(watch.during(
+                        self.finish_known_card(
+                            run,
+                            ReplyTarget::Unconsumed,
+                            CardLifecycle::InteractionEnded,
+                            &action_cancel,
+                        ),
+                        Some(&action_cancel),
+                    ))
+                    .await,
                     cancel,
                 )
-                .await
             }
             (InputDelivery::NextTurn, InputState::Consumed { turn_id, .. }) => {
-                self.advance_turn(runtime, run, &turn_id, cancel).await
+                let selected = tokio::select! {
+                    _ = cancel.cancelled() => return Step::Done(InboundWorkOutcome::Interrupted),
+                    selected = watch.select_target(runtime, &run.watch_input, Some(&turn_id)) => selected,
+                };
+                if let Err(error) = selected {
+                    return Step::Done(content_failure(error));
+                }
+                let reader = watch.reader();
+                let preview = watch.preview();
+                let observed = watch.observed_state(&turn_id);
+                let action_cancel = cancel.child_token();
+                observed_step(
+                    Box::pin(watch.during(
+                        self.advance_turn(
+                            runtime,
+                            run,
+                            &turn_id,
+                            ReplyContent {
+                                reader: &reader,
+                                preview: preview.as_deref(),
+                                observed,
+                            },
+                            &action_cancel,
+                        ),
+                        Some(&action_cancel),
+                    ))
+                    .await,
+                    cancel,
+                )
             }
         }
     }
@@ -438,6 +539,7 @@ impl BotRuntime {
         runtime: &StudioRuntime,
         run: &mut ReplyRun,
         turn_id: &str,
+        content: ReplyContent<'_>,
         cancel: &CancellationToken,
     ) -> Step {
         // The caller already verified the canonical consumed-input -> Turn
@@ -449,7 +551,16 @@ impl BotRuntime {
         {
             return Step::Done(outcome);
         }
-        let turn = match runtime.bot_turn_fact(&run.thread_id, turn_id).await {
+        // A typed live observation can keep an executing Turn current. Terminal
+        // decisions still require canonical input/Turn/save coverage, never a
+        // content frame or the card's previously bound Turn.
+        let turn = match content.observed {
+            Some(state @ (TurnState::Queued(_) | TurnState::Running(_))) => {
+                Ok(BotTurnRead::Ready(state))
+            }
+            _ => runtime.bot_turn_fact(&run.thread_id, turn_id).await,
+        };
+        let turn = match turn {
             Ok(turn) => turn,
             Err(error) => {
                 return Step::Done(recoverable(format!(
@@ -472,24 +583,11 @@ impl BotRuntime {
                     Step::Done(outcome) => return Step::Done(outcome),
                     Step::Continue => {}
                 }
-                let preview = tokio::select! {
-                    _ = cancel.cancelled() => return Step::Done(InboundWorkOutcome::Interrupted),
-                    preview = collect_preview(runtime, &run.thread_id, turn_id) => preview,
-                };
-                let preview = match preview {
-                    Ok(preview) => preview,
-                    // A concurrent revision advance is expected while streaming;
-                    // skip this preview and rebuild from canonical on the next wake.
-                    Err(FinalError::Retryable(_)) => None,
-                    Err(FinalError::Attention(diagnostic)) => {
-                        return Step::Done(attention(diagnostic));
-                    }
-                };
                 if let Err(outcome) = self
                     .progress_card(
                         run,
                         ReplyTarget::Consumed(turn_id),
-                        preview.as_deref(),
+                        content.preview,
                         CardLifecycle::Streaming,
                         cancel,
                     )
@@ -501,11 +599,11 @@ impl BotRuntime {
             }
             TurnState::Completed(state) => match state.completion() {
                 TurnCompletion::Normal => {
-                    self.finish_with_final_text(runtime, run, turn_id, cancel)
+                    self.finish_with_final_text(runtime, run, turn_id, content.reader, cancel)
                         .await
                 }
                 TurnCompletion::InteractionRequested => {
-                    self.advance_interactions(runtime, run, turn_id, cancel)
+                    self.advance_interactions(runtime, run, turn_id, content.reader, cancel)
                         .await
                 }
             },
@@ -545,11 +643,12 @@ impl BotRuntime {
         runtime: &StudioRuntime,
         run: &mut ReplyRun,
         turn_id: &str,
+        reader: &TimelineContentReader,
         cancel: &CancellationToken,
     ) -> Step {
         let collected = tokio::select! {
             _ = cancel.cancelled() => return Step::Done(InboundWorkOutcome::Interrupted),
-            collected = collect_complete_turn_text(runtime, &run.thread_id, turn_id) => collected,
+            collected = collect_complete_turn_text(runtime, reader, turn_id) => collected,
         };
         let text = match collected {
             Ok(FinalText::CompleteText(text)) => text,
@@ -765,11 +864,22 @@ pub(super) fn binding_failure(context: &str, error: FeishuError) -> InboundWorkO
     }
 }
 
-pub(super) fn watch_error(context: &str, error: &str) -> FeishuError {
-    FeishuError::new(
-        FeishuErrorKind::Unavailable,
-        format!("{context}: {error}"),
-        true,
-        None,
-    )
+pub(super) fn content_failure(error: FinalError) -> InboundWorkOutcome {
+    match error {
+        FinalError::Retryable(diagnostic) => recoverable(diagnostic),
+        FinalError::Attention(diagnostic) => attention(diagnostic),
+    }
+}
+
+fn observed_step((step, failure): (Step, Option<FinalError>), cancel: &CancellationToken) -> Step {
+    if matches!(step, Step::Done(InboundWorkOutcome::LostClaim)) {
+        return step;
+    }
+    if cancel.is_cancelled() {
+        return Step::Done(InboundWorkOutcome::Interrupted);
+    }
+    match failure {
+        Some(error) => Step::Done(content_failure(error)),
+        None => step,
+    }
 }

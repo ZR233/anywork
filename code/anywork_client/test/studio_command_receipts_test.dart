@@ -1,3 +1,5 @@
+import 'support/conversation_delivery.dart';
+
 import 'dart:async';
 
 import 'package:anywork_client/accounts.dart' show NativeAccountIdentity;
@@ -8,6 +10,9 @@ import 'package:test/test.dart';
 
 import 'support/accounts_test_runtime.dart';
 import 'support/timeline_transport.dart';
+
+// The native fixture identity used before the SDK conversation migration.
+const _epoch = 'native-runtime-one';
 
 final class _ModeCall {
   _ModeCall(this.operationId, this.threadId, this.mode);
@@ -122,6 +127,8 @@ final class _Transport extends AccountsTestTransport {
   int continuationReadCalls = 0;
   List<ChildInteractionSummary> childInteractions = const [];
   int childInteractionReads = 0;
+  Future<List<ChildInteractionSummary>> Function(String)?
+  childInteractionsReply;
   int stopCalls = 0;
   int continueCalls = 0;
   int interactionCalls = 0;
@@ -157,15 +164,11 @@ final class _Transport extends AccountsTestTransport {
   }
 
   @override
-  Stream<ThreadStreamFrame> subscribeThread(String threadId) {
-    final binding = StreamController<ThreadStreamFrame>.broadcast(sync: true);
-    threadBindings.add(binding);
-    return binding.stream;
+  Future<ConversationFeed> openConversationFeed(String threadId) async {
+    final states = StreamController<ThreadStreamFrame>.broadcast(sync: true);
+    threadBindings.add(states);
+    return ScriptedConversationFeed(threadId: threadId, states: states.stream);
   }
-
-  @override
-  Future<StudioTimelineConnection> openTimeline(String threadId) async =>
-      TestTimelineConnection(initial: baseline(1));
 
   @override
   Future<void> compactThread(String threadId) {
@@ -271,6 +274,8 @@ final class _Transport extends AccountsTestTransport {
     String threadId,
   ) async {
     childInteractionReads++;
+    final reply = childInteractionsReply;
+    if (reply != null) return reply(threadId);
     return childInteractions;
   }
 
@@ -310,8 +315,29 @@ final class _Transport extends AccountsTestTransport {
       throw UnsupportedError('Unused transport: ${invocation.memberName}');
 }
 
+final class _RouteConflictFeed extends ScriptedConversationFeed {
+  _RouteConflictFeed({
+    required super.threadId,
+    required super.initial,
+    required super.states,
+    required this.onClose,
+  });
+
+  final Future<void> Function() onClose;
+  Future<void>? _closing;
+
+  @override
+  Future<void> close() => _closing ??= _close();
+
+  Future<void> _close() async {
+    // A feed owns cleanup even if retired before its events getter is consumed.
+    await onClose();
+    await super.close();
+  }
+}
+
 final class _RouteConflictTransport extends _Transport {
-  _RouteConflictTransport({this.onRuntimeCancel}) {
+  _RouteConflictTransport({this.onFeedClose}) {
     addTearDown(() async {
       for (final binding in bindings) {
         await binding.close();
@@ -320,30 +346,31 @@ final class _RouteConflictTransport extends _Transport {
   }
 
   final List<StreamController<ThreadStreamFrame>> bindings = [];
-  final Future<void> Function(int index)? onRuntimeCancel;
+  final Future<void> Function(int index)? onFeedClose;
   final List<_RouteCall> attempts = [];
   final refreshEntered = Completer<void>();
-  final window = _RouteConflictConnection();
   int windowOpens = 0;
 
   @override
-  Stream<ThreadStreamFrame> subscribeThread(String threadId) {
+  Future<ConversationFeed> openConversationFeed(String threadId) async {
     final index = bindings.length;
-    final binding = StreamController<ThreadStreamFrame>(
-      sync: true,
-      onCancel: () => onRuntimeCancel?.call(index),
-    );
+    // Frames may have no consumer when opening is retired immediately.
+    final binding = StreamController<ThreadStreamFrame>.broadcast(sync: true);
     bindings.add(binding);
-    if (bindings.length == 2 && !refreshEntered.isCompleted) {
-      refreshEntered.complete();
-    }
-    return binding.stream;
-  }
-
-  @override
-  Future<StudioTimelineConnection> openTimeline(String threadId) async {
     windowOpens++;
-    return window;
+    final feed = _RouteConflictFeed(
+      threadId: threadId,
+      initial: baseline(
+        300,
+        subscriptionId: 'route-conflict-$index',
+        items: const [],
+      ),
+      states: binding.stream,
+      onClose: () => onFeedClose?.call(index) ?? Future<void>.value(),
+    );
+    if (bindings.length == 2 && !refreshEntered.isCompleted)
+      refreshEntered.complete();
+    return feed;
   }
 
   @override
@@ -390,52 +417,6 @@ final class _RouteConflictTransport extends _Transport {
   }
 }
 
-final class _RouteConflictConnection implements StudioTimelineConnection {
-  Completer<StudioTimelineUpdate?>? _pending;
-  bool _closed = false;
-  int requestCloseCalls = 0;
-
-  @override
-  Future<StudioTimelineBaseline> initial() async =>
-      const StudioTimelineBaseline(
-        subscriptionId: 'route-conflict',
-        version: 300,
-        items: [],
-        before: null,
-        hasOlder: false,
-      );
-
-  @override
-  Future<StudioTimelineUpdate?> next() {
-    if (_closed) return Future.value(null);
-    return (_pending ??= Completer<StudioTimelineUpdate?>()).future;
-  }
-
-  @override
-  Future<StudioTimelinePage> page({String? before, int? limit}) => Future.value(
-    const StudioTimelinePage(items: [], before: null, hasOlder: false),
-  );
-
-  @override
-  Future<StudioTimelineDetailChunk> readDetail({
-    required String itemId,
-    required StudioTimelineDetailQuery query,
-  }) => Future.error(UnsupportedError('route test has no detail body'));
-
-  @override
-  void requestClose() {
-    requestCloseCalls++;
-    _closed = true;
-    if (_pending case final pending? when !pending.isCompleted) {
-      pending.complete(null);
-    }
-  }
-
-  @override
-  Future<void> close() async => requestClose();
-}
-
-const _epoch = 'native-runtime-one';
 const _project = StudioProject(
   id: 'project',
   name: 'Project',
@@ -614,9 +595,12 @@ ContinuationView _continuation({
   claimed: claimed,
 );
 
-void _applyOwnerUpdate(AnyworkClient client, ThreadWorkspaceUpdate update) {
-  final session = client.session('thread');
-  session.applyNotification(
+Future<void> _applyOwnerUpdate(
+  AnyworkClient client,
+  ThreadWorkspaceUpdate update,
+) async {
+  final session = client.conversations.session('thread');
+  await session.deliverNotification(
     ThreadNotificationFrame(
       threadId: 'thread',
       revision: session.state.revision + 1,
@@ -709,10 +693,10 @@ StudioBootstrap _bootstrap(String epoch, SettingsStateSnapshot settings) =>
       persistenceState: const PersistenceStateSnapshot.ready(),
     );
 
-AnyworkClient _client(
+Future<AnyworkClient> _client(
   _Transport transport, {
   void Function(AccountsTestRuntime)? onRuntime,
-}) {
+}) async {
   transport.epoch = _epoch;
   final runtime = AccountsTestRuntime(transport, clientId: 'client');
   runtime.seed(_settings(1));
@@ -726,8 +710,10 @@ AnyworkClient _client(
     threadId: 'thread',
     needsOpen: true,
   );
-  client.session('thread').applySnapshot(_workspace());
+  client.conversations.setVisibleThread('thread');
+  await client.conversations.session('thread').deliverWorkspace(_workspace());
   addTearDown(runtime.close);
+  client.conversations.setVisibleThread('thread');
   return client;
 }
 
@@ -878,7 +864,10 @@ void main() {
   test('reentrant settings reply routing retains its receipt but stops old target frames after reconnect', () async {
     final transport = _Transport()..settingsReply = (call) => call.reply.future;
     late AccountsTestRuntime runtime;
-    final client = _client(transport, onRuntime: (value) => runtime = value);
+    final client = await _client(
+      transport,
+      onRuntime: (value) => runtime = value,
+    );
     client.applyBootstrap(_bootstrap('old', _settings(99)));
     transport.epoch = 'old';
     runtime.seed(_settings(99));
@@ -970,7 +959,7 @@ void main() {
           final transport = _Transport()
             ..settingsReply = (call) => call.reply.future;
           late AccountsTestRuntime runtime;
-          final client = _client(
+          final client = await _client(
             transport,
             onRuntime: (value) => runtime = value,
           );
@@ -1107,7 +1096,7 @@ void main() {
         transport.settingsRead = () => read.future;
         AccountsTestRuntime? runtime;
         final client = withDomains
-            ? _client(transport, onRuntime: (value) => runtime = value)
+            ? await _client(transport, onRuntime: (value) => runtime = value)
             : AnyworkClient(transport: transport, clientId: 'reentrant-read');
         if (!withDomains) addTearDown(client.close);
         client.applyBootstrap(_bootstrap('old', _settings(99)));
@@ -1161,7 +1150,10 @@ void main() {
     final read = Completer<SettingsStateSnapshot>();
     transport.settingsRead = () => read.future;
     late AccountsTestRuntime runtime;
-    final client = _client(transport, onRuntime: (value) => runtime = value);
+    final client = await _client(
+      transport,
+      onRuntime: (value) => runtime = value,
+    );
     client.applyBootstrap(_bootstrap('old', _settings(99)));
     transport.epoch = 'old';
     runtime.seed(_settings(99));
@@ -1228,7 +1220,7 @@ void main() {
 
   test('settings owner change back to the same epoch name cannot revive an old queued intent', () async {
     final transport = _Transport();
-    final client = _client(transport);
+    final client = await _client(transport);
     client.applyBootstrap(_bootstrap('old', _settings(99)));
     final entered = Completer<void>();
     final release = Completer<void>();
@@ -1258,7 +1250,7 @@ void main() {
 
   test('settings owner change rejects a queued intent before transport and admits the new low revision', () async {
     final transport = _Transport();
-    final client = _client(transport);
+    final client = await _client(transport);
     client.applyBootstrap(_bootstrap('old', _settings(99)));
     final entered = Completer<void>();
     final release = Completer<void>();
@@ -1297,7 +1289,7 @@ void main() {
     final transport = _Transport();
     final read = Completer<SettingsStateSnapshot>();
     transport.settingsRead = () => read.future;
-    final client = _client(transport);
+    final client = await _client(transport);
     client.applyBootstrap(
       _bootstrap(
         'loading-old',
@@ -1348,7 +1340,7 @@ void main() {
       correlationId: 'owner-conflict',
     );
     transport.settingsReply = (_) => Future.error(conflict);
-    final client = _client(transport);
+    final client = await _client(transport);
     client.applyBootstrap(_bootstrap('old', _settings(99)));
     final old = client.settingsCommands.applySettingsField(
       const InstructionUserCommand('old-owner-input'),
@@ -1381,7 +1373,7 @@ void main() {
 
   test('settings owner change joins a sent RPC but cannot apply its late response to the new owner', () async {
     final transport = _Transport()..settingsReply = (call) => call.reply.future;
-    final client = _client(transport);
+    final client = await _client(transport);
     client.applyBootstrap(_bootstrap('old', _settings(99)));
     final old = client.settingsCommands.applySettingsField(
       const InstructionUserCommand('old-owner-input'),
@@ -1451,7 +1443,10 @@ void main() {
     final transport = _Transport()
       ..routeReply = (_) => Future.error(_probeRejection);
     late AccountsTestRuntime runtime;
-    final client = _client(transport, onRuntime: (value) => runtime = value);
+    final client = await _client(
+      transport,
+      onRuntime: (value) => runtime = value,
+    );
     client.applyBootstrap(_bootstrap('old', _settings(99)));
     transport.epoch = 'old';
     runtime.seed(_settings(99));
@@ -1494,7 +1489,10 @@ void main() {
     final read = Completer<SettingsStateSnapshot>();
     transport.settingsRead = () => read.future;
     late AccountsTestRuntime runtime;
-    final client = _client(transport, onRuntime: (value) => runtime = value);
+    final client = await _client(
+      transport,
+      onRuntime: (value) => runtime = value,
+    );
     client.applyBootstrap(_bootstrap('old', _settings(99)));
     transport.epoch = 'old';
     runtime.seed(_settings(99));
@@ -1526,7 +1524,10 @@ void main() {
   test('thread route owner change joins the sent response without applying old settings or warnings', () async {
     final transport = _Transport();
     late AccountsTestRuntime runtime;
-    final client = _client(transport, onRuntime: (value) => runtime = value);
+    final client = await _client(
+      transport,
+      onRuntime: (value) => runtime = value,
+    );
     client.applyBootstrap(_bootstrap('old', _settings(99)));
     transport.epoch = 'old';
     runtime.seed(_settings(99));
@@ -1599,15 +1600,14 @@ void main() {
   test('thread route owner change while joining runtime resync prevents another CAS attempt', () async {
     final transport = _RouteConflictTransport();
     late AccountsTestRuntime runtime;
-    final client = _client(transport, onRuntime: (value) => runtime = value);
-    client.selection.markOpened();
-    final session = client.existingSession('thread')!;
-    transport.bindings.first.add(
-      ThreadSnapshotFrame(
-        workspace: _workspace(revision: 40, routeRevision: 2),
-      ),
+    final client = await _client(
+      transport,
+      onRuntime: (value) => runtime = value,
     );
-    await session.timeline.ready;
+    client.selection.markOpened();
+    final session = client.conversations.existingSession('thread')!;
+    await session.deliverWorkspace(_workspace(revision: 40, routeRevision: 2));
+    await session.content.ready;
     final failure = expectLater(
       client.threadCommands.setThreadModelRoute(
         threadId: 'thread',
@@ -1620,11 +1620,7 @@ void main() {
     client.applyBootstrap(_bootstrap('next', _settings(1)));
     transport.epoch = 'next';
     runtime.seed(_settings(1));
-    transport.bindings.last.add(
-      ThreadSnapshotFrame(
-        workspace: _workspace(revision: 80, routeRevision: 3),
-      ),
-    );
+    await session.deliverWorkspace(_workspace(revision: 80, routeRevision: 3));
     await failure;
     expect(transport.attempts, hasLength(1));
     expect(client.settings.state.settingsRevision, 1);
@@ -1638,7 +1634,7 @@ void main() {
   test('thread route rechecks recovery after queueing and does not confuse execution or unrelated access with its own access gate', () async {
     final transport = _Transport()
       ..routeReply = (_) => Future.error(_probeRejection);
-    final client = _client(transport);
+    final client = await _client(transport);
     final entered = Completer<void>();
     final release = Completer<void>();
     final blocking = client.settingsWrites.enqueue(() async {
@@ -1726,15 +1722,12 @@ void main() {
         if (checkpoint == 'settings refresh') {
           transport.settingsRead = () => read.future;
         }
-        final client = _client(transport);
+        final client = await _client(transport);
         client.selection.markOpened();
-        final session = client.existingSession('thread')!;
-        transport.bindings.single.add(
-          ThreadSnapshotFrame(
-            workspace: _workspace(revision: 40, routeRevision: 3),
-          ),
+        final session = client.conversations.existingSession('thread')!;
+        await session.deliverWorkspace(
+          _workspace(revision: 40, routeRevision: 3),
         );
-        await session.timeline.ready;
         final rejected = expectLater(
           client.threadCommands.setThreadModelRoute(
             threadId: 'thread',
@@ -1763,10 +1756,8 @@ void main() {
         if (checkpoint == 'settings refresh') {
           read.complete(_settings(2));
         } else {
-          transport.bindings.last.add(
-            ThreadSnapshotFrame(
-              workspace: _workspace(revision: 80, routeRevision: 4),
-            ),
+          await session.deliverWorkspace(
+            _workspace(revision: 80, routeRevision: 4),
           );
         }
         await rejected;
@@ -1796,7 +1787,7 @@ void main() {
 
   test('issued thread route transport failure remains unknown after access recovery changes', () async {
     final transport = _Transport();
-    final client = _client(transport);
+    final client = await _client(transport);
     final lostReceipt = StateError('Route response was lost');
     final entered = transport.routes.stream.first;
     final failed = expectLater(
@@ -1831,9 +1822,8 @@ void main() {
       'archive preserves the real ${scope.name} access blocker and the live session',
       () async {
         final transport = _Transport();
-        final client = _client(transport);
-        final session = client.existingSession('thread')!;
-        session.start();
+        final client = await _client(transport);
+        final session = client.conversations.existingSession('thread')!;
         final issue = StudioRecoveryIssue(
           id: 'archive-access-unavailable',
           scope: scope,
@@ -1870,7 +1860,7 @@ void main() {
 
   test('archive accepts a blocked repository-recovery root and releases its session', () async {
     final transport = _Transport();
-    final client = _client(transport);
+    final client = await _client(transport);
     client.applyBootstrap(
       StudioBootstrap(
         ownerEpoch: _epoch,
@@ -1928,8 +1918,7 @@ void main() {
       threadId: 'thread',
       needsOpen: true,
     );
-    final session = client.session('thread')..applySnapshot(_workspace());
-    session.start();
+    final session = client.conversations.session('thread');
     expect(session.isActive, isTrue);
 
     final archive = client.threadCommands.archiveThread('thread');
@@ -1964,7 +1953,7 @@ void main() {
 
   test('manual compaction waits for its owner, rejects duplicate dispatch and exposes failure', () async {
     final transport = _Transport();
-    final client = _client(transport);
+    final client = await _client(transport);
     final pending = client.threadCommands.compactThread('thread');
     await Future<void>.delayed(Duration.zero);
     expect(
@@ -1996,18 +1985,14 @@ void main() {
     );
   });
 
-  test('route conflict resync replaces only its runtime binding and preserves ChatView', () async {
+  test('route conflict resync replaces its combined feed and awaits the new baseline', () async {
     final transport = _RouteConflictTransport();
-    final client = _client(transport);
+    final client = await _client(transport);
     client.selection.markOpened();
-    final session = client.existingSession('thread')!;
-    transport.bindings.first.add(
-      ThreadSnapshotFrame(
-        workspace: _workspace(revision: 40, routeRevision: 2),
-      ),
-    );
-    await session.timeline.ready;
-    transport.bindings.first.add(
+    final session = client.conversations.existingSession('thread')!;
+    await session.deliverWorkspace(_workspace(revision: 40, routeRevision: 2));
+    await session.content.ready;
+    await session.deliverNotification(
       ThreadNotificationFrame(
         threadId: 'thread',
         epoch: 1,
@@ -2032,9 +2017,7 @@ void main() {
       hasLength(1),
       reason: 'await the replacement baseline',
     );
-    transport.bindings.last.add(
-      ThreadSnapshotFrame(workspace: _workspace(revision: 7, routeRevision: 4)),
-    );
+    await session.deliverWorkspace(_workspace(revision: 7, routeRevision: 4));
     await changing;
     expect(transport.attempts, hasLength(2));
     expect(
@@ -2067,14 +2050,14 @@ void main() {
         ),
       ),
     );
+    await session.source.waitFor((state) => state.revision == 8);
     expect(session.state.revision, 8);
     expect(session.state.runtime!.modelId, 'alpha');
     expect(session.state.sync.phase, DomainSyncPhase.ready);
-    final delivered = session.timeline.lastDeliveredFrame;
-    final history = (delivered! as StudioTimelineBaselineFrame).baseline;
-    expect(history.version, 300);
-    expect(transport.windowOpens, 1);
-    expect(transport.window.requestCloseCalls, 0);
+    final delivered = session.content.lastDeliveredFrame;
+    expect((delivered! as ConversationBaselineFrame).baseline.version, 300);
+    expect(transport.windowOpens, 2);
+    expect(transport.bindings, hasLength(2));
   });
 
   for (final closeClient in [false, true]) {
@@ -2084,24 +2067,22 @@ void main() {
         final cancelEntered = Completer<void>();
         final cleanup = Completer<void>();
         final transport = _RouteConflictTransport(
-          onRuntimeCancel: (index) {
+          onFeedClose: (index) {
             if (index != 1) return Future.value();
             cancelEntered.complete();
             return cleanup.future;
           },
         );
-        final client = _client(transport);
+        final client = await _client(transport);
         addTearDown(() {
           if (!cleanup.isCompleted) cleanup.complete();
         });
         client.selection.markOpened();
-        final session = client.existingSession('thread')!;
-        transport.bindings.single.add(
-          ThreadSnapshotFrame(
-            workspace: _workspace(revision: 40, routeRevision: 3),
-          ),
+        final session = client.conversations.existingSession('thread')!;
+        await session.deliverWorkspace(
+          _workspace(revision: 40, routeRevision: 3),
         );
-        await session.timeline.ready;
+        await session.content.ready;
         final changing = client.threadCommands.setThreadModelRoute(
           threadId: 'thread',
           accountId: 'account',
@@ -2122,7 +2103,7 @@ void main() {
         expect(transport.attempts, hasLength(1));
         final closing = closeClient
             ? client.close()
-            : session.retire(deadline: DateTime.utc(2000));
+            : client.conversations.close(deadline: DateTime.utc(2000));
         await cancelEntered.future;
         await rejected;
         expect(
@@ -2130,30 +2111,31 @@ void main() {
           hasLength(1),
           reason: 'Retired observation cannot replay even a known conflict',
         );
+        final retiring = client.budget.usage
+            .where((resource) => resource.owner.startsWith('thread:'))
+            .toList();
+        expect(retiring, isNotEmpty);
         expect(
-          client.budget.usage
-              .where((resource) => resource.owner.startsWith('runtime:thread:'))
-              .single
-              .phase,
-          ResourcePhase.retiring,
+          retiring.map((resource) => resource.phase),
+          everyElement(ResourcePhase.retiring),
         );
         if (!closeClient) {
           final report = await closing;
           expect(report.complete, isFalse);
           expect(
             report.unresolved.map((resource) => resource.owner),
-            contains('runtime:thread'),
+            contains('thread'),
           );
         }
         cleanup.complete();
         if (closeClient) {
           expect((await closing).complete, isTrue);
         } else {
-          expect((await session.retryCleanup()).complete, isTrue);
+          expect((await client.conversations.retryCleanup()).complete, isTrue);
         }
         expect(
           client.budget.usage.where(
-            (resource) => resource.owner.startsWith('runtime:thread:'),
+            (resource) => resource.owner.startsWith('thread:'),
           ),
           isEmpty,
         );
@@ -2167,24 +2149,22 @@ void main() {
       final cancelEntered = Completer<void>();
       final cleanup = Completer<void>();
       final transport = _RouteConflictTransport(
-        onRuntimeCancel: (index) {
+        onFeedClose: (index) {
           if (index != 0) return Future.value();
           cancelEntered.complete();
           return cleanup.future;
         },
       );
-      final client = _client(transport);
+      final client = await _client(transport);
       addTearDown(() {
         if (!cleanup.isCompleted) cleanup.complete();
       });
       client.selection.markOpened();
-      final session = client.existingSession('thread')!;
-      transport.bindings.single.add(
-        ThreadSnapshotFrame(
-          workspace: _workspace(revision: 40, routeRevision: 3),
-        ),
+      final session = client.conversations.existingSession('thread')!;
+      await session.deliverWorkspace(
+        _workspace(revision: 40, routeRevision: 3),
       );
-      await session.timeline.ready;
+      await session.content.ready;
       final changing = client.threadCommands.setThreadModelRoute(
         threadId: 'thread',
         accountId: 'account',
@@ -2192,28 +2172,29 @@ void main() {
       );
       final rejected = expectLater(changing, throwsA(isA<StudioFailure>()));
       await cancelEntered.future;
-      expect(transport.bindings, hasLength(1));
-      expect(transport.refreshEntered.isCompleted, isFalse);
+      expect(transport.bindings, hasLength(2));
+      expect(transport.refreshEntered.isCompleted, isTrue);
       final closing = client.close();
       await rejected;
       expect(transport.attempts, hasLength(1));
+      final retiring = client.budget.usage
+          .where((resource) => resource.owner.startsWith('thread:'))
+          .toList();
+      expect(retiring, isNotEmpty);
       expect(
-        client.budget.usage
-            .where((resource) => resource.owner.startsWith('runtime:thread:'))
-            .single
-            .phase,
-        ResourcePhase.retiring,
+        retiring.map((resource) => resource.phase),
+        everyElement(ResourcePhase.retiring),
       );
       cleanup.complete();
       expect((await closing).complete, isTrue);
       expect(
         transport.bindings,
-        hasLength(1),
-        reason: 'close prevents replacement',
+        hasLength(2),
+        reason: 'close prevents any further replacement',
       );
       expect(
         client.budget.usage.where(
-          (resource) => resource.owner.startsWith('runtime:thread:'),
+          (resource) => resource.owner.startsWith('thread:'),
         ),
         isEmpty,
       );
@@ -2222,10 +2203,10 @@ void main() {
 
   test('execution recovery does not gate an explicit stop request', () async {
     final transport = _Transport();
-    final client = _client(transport);
-    client
+    final client = await _client(transport);
+    await client.conversations
         .session('thread')
-        .applySnapshot(
+        .deliverWorkspace(
           _workspace(activeTurn: _turn(), execution: _execution()),
         );
     client.recovery.apply(
@@ -2270,16 +2251,22 @@ void main() {
         'actual stop targets the captured execution identity (framesFirst=$framesFirst, stopped=$stopped)',
         () async {
           final transport = _Transport();
-          final client = _client(transport);
-          client
+          final client = await _client(transport);
+          await client.conversations
               .session('thread')
-              .applySnapshot(
+              .deliverWorkspace(
                 _workspace(activeTurn: _turn(), execution: _execution()),
               );
-          final baselineObservers = client.budget.used(ResourceKind.observer);
           final entered = transport.stops.stream.first;
           final stopping = client.threadCommands.stop('thread');
           final operation = client.mutations.latest('stop:thread')!;
+          int commandObservers() => client.budget.usage
+              .where(
+                (resource) =>
+                    resource.kind == ResourceKind.observer &&
+                    resource.owner == 'command:${operation.id.value}',
+              )
+              .length;
           expect(
             operation.state.value.receipt,
             isNull,
@@ -2293,20 +2280,22 @@ void main() {
             'execution-1',
             reason: 'The stop target is the canonical execution identity',
           );
-          expect(
-            client.budget.used(ResourceKind.observer),
-            baselineObservers + 1,
-          );
+          expect(commandObservers(), 1);
           client.selection.restoreStartup(
             projectId: 'project',
             threadId: 'another-thread',
             needsOpen: true,
           );
           if (framesFirst) {
-            client
+            await client.conversations
                 .session('thread')
-                .applySnapshot(_workspace(revision: 2, activeTurn: null));
+                .deliverWorkspace(_workspace(revision: 2, activeTurn: null));
           }
+          expect(
+            commandObservers(),
+            1,
+            reason: 'Canonical facts alone cannot release the receipt barrier',
+          );
           call.reply.complete(
             StopThreadCommandReply(
               threadId: call.threadId,
@@ -2356,7 +2345,7 @@ void main() {
               client.threadCommands.state.commands['stop:thread']?.phase,
               CommandPhase.pending,
             );
-            _applyOwnerUpdate(
+            await _applyOwnerUpdate(
               client,
               ThreadRuntimeUpdate(
                 runtime: _runtime(execution: _execution()),
@@ -2368,9 +2357,10 @@ void main() {
               isFalse,
               reason: 'Unrelated owner facts do not confirm the execution end',
             );
-            client
+            expect(commandObservers(), 1);
+            await client.conversations
                 .session('thread')
-                .applySnapshot(_workspace(revision: 2, activeTurn: null));
+                .deliverWorkspace(_workspace(revision: 2, activeTurn: null));
           }
           expect(operation.state.value.observed, isTrue);
           expect(operation.state.value.effective, isTrue);
@@ -2379,7 +2369,11 @@ void main() {
             client.threadCommands.state.commands,
             isNot(contains('stop:thread')),
           );
-          expect(client.budget.used(ResourceKind.observer), baselineObservers);
+          expect(
+            commandObservers(),
+            0,
+            reason: 'Only this operation owns its command observer permit; selection changes topic permits independently',
+          );
         },
       );
     }
@@ -2388,11 +2382,11 @@ void main() {
       'actual interaction waits for owner removal (framesFirst=$framesFirst)',
       () async {
         final transport = _Transport();
-        final client = _client(transport);
+        final client = await _client(transport);
         final interaction = _interaction();
-        client
+        await client.conversations
             .session('thread')
-            .applySnapshot(_workspace(interactions: [interaction]));
+            .deliverWorkspace(_workspace(interactions: [interaction]));
         final entered = transport.interactions.stream.first;
         final resolving = client.threadCommands.resolveActiveInteraction(
           'thread',
@@ -2407,7 +2401,7 @@ void main() {
         expect(call.expectedRevision, 0);
         expect(call.resolution, same(_resolution));
         if (framesFirst) {
-          _applyOwnerUpdate(
+          await _applyOwnerUpdate(
             client,
             ThreadInteractionUpdate(interaction: interaction, pending: false),
           );
@@ -2430,7 +2424,11 @@ void main() {
             reason: 'Effect and canonical observation remain independent',
           );
           expect(
-            client.session('thread').state.interactions.map((item) => item.id),
+            client.conversations
+                .session('thread')
+                .state
+                .interactions
+                .map((item) => item.id),
             contains(interaction.id),
             reason: 'The response never deletes canonical facts',
           );
@@ -2438,7 +2436,7 @@ void main() {
             client.threadCommands.state.commands['interaction:thread']?.phase,
             CommandPhase.pending,
           );
-          _applyOwnerUpdate(
+          await _applyOwnerUpdate(
             client,
             ThreadInteractionUpdate(
               interaction: _interaction('unrelated'),
@@ -2446,7 +2444,7 @@ void main() {
             ),
           );
           expect(operation.state.value.observed, isFalse);
-          _applyOwnerUpdate(
+          await _applyOwnerUpdate(
             client,
             ThreadInteractionUpdate(interaction: interaction, pending: false),
           );
@@ -2465,7 +2463,7 @@ void main() {
     'queued interaction rechecks Recovery before transport invocation',
     () async {
       final transport = _Transport();
-      final client = _client(transport);
+      final client = await _client(transport);
       const projectIssue = StudioRecoveryIssue(
         id: 'project-preparation-unavailable',
         scope: RecoveryIssueScope.project,
@@ -2483,9 +2481,9 @@ void main() {
       await transport.compactEntered.future;
 
       final interaction = _interaction();
-      client
+      await client.conversations
           .session('thread')
-          .applySnapshot(_workspace(interactions: [interaction]));
+          .deliverWorkspace(_workspace(interactions: [interaction]));
       final resolving = client.threadCommands.resolveActiveInteraction(
         'thread',
         interaction.id,
@@ -2536,10 +2534,12 @@ void main() {
 
   test('old interaction ACK cannot clear a newer interaction intent', () async {
     final transport = _Transport();
-    final client = _client(transport);
+    final client = await _client(transport);
     final x = _interaction('x');
     final y = _interaction('y');
-    client.session('thread').applySnapshot(_workspace(interactions: [x]));
+    await client.conversations
+        .session('thread')
+        .deliverWorkspace(_workspace(interactions: [x]));
     final enteredX = transport.interactions.stream.first;
     final resolvingX = client.threadCommands.resolveActiveInteraction(
       'thread',
@@ -2547,11 +2547,11 @@ void main() {
       _resolution,
     );
     final callX = await enteredX;
-    _applyOwnerUpdate(
+    await _applyOwnerUpdate(
       client,
       ThreadInteractionUpdate(interaction: x, pending: false),
     );
-    _applyOwnerUpdate(
+    await _applyOwnerUpdate(
       client,
       ThreadInteractionUpdate(interaction: y, pending: true),
     );
@@ -2592,7 +2592,7 @@ void main() {
       client.threadCommands.state.commands['interaction:thread']?.target.label,
       y.id,
     );
-    _applyOwnerUpdate(
+    await _applyOwnerUpdate(
       client,
       ThreadInteractionUpdate(interaction: y, pending: false),
     );
@@ -2620,9 +2620,12 @@ void main() {
       'actual mode command preserves overlay until all target frames (framesFirst=$framesFirst)',
       () async {
         final transport = _Transport();
-        final client = _client(transport);
+        final client = await _client(transport);
         final entered = transport.modes.stream.first;
-        final changing = client.threadCommands.setThreadMode(ThreadModeId.task);
+        final changing = client.threadCommands.setThreadMode(
+          ThreadModeId.task,
+          threadId: 'thread',
+        );
         final call = await entered;
         expect(call.operationId, client.mutations.latest('mode:thread')!.id);
         final receipt = _receipt(call.operationId, [
@@ -2631,7 +2634,9 @@ void main() {
         ]);
 
         if (framesFirst) {
-          client.session('thread').applySnapshot(_workspace(revision: 2));
+          await client.conversations
+              .session('thread')
+              .deliverWorkspace(_workspace(revision: 2));
           client.threadDirectory.applyDelta(
             revision: 2,
             upserted: [_thread(mode: ThreadModeId.task)],
@@ -2673,7 +2678,9 @@ void main() {
             reason: 'Every target and owner epoch must match',
           );
           expect(client.threadCommands.state.commands, contains('mode:thread'));
-          client.session('thread').applySnapshot(_workspace(revision: 2));
+          await client.conversations
+              .session('thread')
+              .deliverWorkspace(_workspace(revision: 2));
         }
         expect(operation.state.value.observed, isTrue);
         expect(operation.state.value.durable, isFalse);
@@ -2689,7 +2696,7 @@ void main() {
     'actual route X late acknowledgement cannot clear Y pending overlay',
     () async {
       final transport = _Transport();
-      final client = _client(transport);
+      final client = await _client(transport);
       final enteredX = transport.routes.stream.first;
       final changingX = client.threadCommands.setThreadModelRoute(
         threadId: 'thread',
@@ -2708,9 +2715,9 @@ void main() {
         'beta',
       );
 
-      client
+      await client.conversations
           .session('thread')
-          .applySnapshot(_workspace(revision: 2, routeRevision: 2));
+          .deliverWorkspace(_workspace(revision: 2, routeRevision: 2));
       x.reply.complete(
         ThreadModelRouteCommandReply(
           runtime: _runtime(routeRevision: 2),
@@ -2757,13 +2764,18 @@ void main() {
         'beta',
       );
       expect(
-        client.session('thread').state.runtime?.modelRoute?.modelId,
+        client.conversations
+            .session('thread')
+            .state
+            .runtime
+            ?.modelRoute
+            ?.modelId,
         'alpha',
         reason: 'A control response does not write the Thread mirror',
       );
-      client
+      await client.conversations
           .session('thread')
-          .applySnapshot(
+          .deliverWorkspace(
             _workspace(revision: 3, modelId: 'beta', routeRevision: 3),
           );
       expect(
@@ -2777,11 +2789,41 @@ void main() {
     },
   );
 
+  test(
+    'a captured mode action keeps its target after selection changes',
+    () async {
+      final transport = _Transport();
+      final client = await _client(transport);
+      final oldAction = () => client.threadCommands.setThreadMode(
+        ThreadModeId.task,
+        threadId: 'thread',
+      );
+      client.selection.selectThread(projectId: 'project', threadId: 'other');
+      final entered = transport.modes.stream.first;
+      final changing = oldAction();
+      final call = await entered;
+      expect(call.threadId, 'thread');
+      expect(client.mutations.latest('mode:other'), isNull);
+      call.reply.complete(
+        ThreadModeCommandReply(
+          receipt: _receipt(call.operationId, [
+            _stamp('thread-state:thread', 1),
+            _stamp('thread-directory', 1),
+          ], disposition: CommitDisposition.noChange),
+        ),
+      );
+      await changing;
+    },
+  );
+
   test('actual mode command preserves explicit NoChange with equal resource versions', () async {
     final transport = _Transport();
-    final client = _client(transport);
+    final client = await _client(transport);
     final entered = transport.modes.stream.first;
-    final changing = client.threadCommands.setThreadMode(ThreadModeId.task);
+    final changing = client.threadCommands.setThreadMode(
+      ThreadModeId.task,
+      threadId: 'thread',
+    );
     final call = await entered;
     call.reply.complete(
       ThreadModeCommandReply(
@@ -2811,9 +2853,12 @@ void main() {
     'actual command close seals admission and joins an in-flight response',
     () async {
       final transport = _Transport();
-      final client = _client(transport);
+      final client = await _client(transport);
       final entered = transport.modes.stream.first;
-      final changing = client.threadCommands.setThreadMode(ThreadModeId.task);
+      final changing = client.threadCommands.setThreadMode(
+        ThreadModeId.task,
+        threadId: 'thread',
+      );
       final call = await entered;
       var settled = false;
       final closing = client.threadCommands.close().then((_) {
@@ -2821,7 +2866,10 @@ void main() {
       });
       expect(settled, isFalse);
       expect(
-        () => client.threadCommands.setThreadMode(ThreadModeId.task),
+        () => client.threadCommands.setThreadMode(
+          ThreadModeId.task,
+          threadId: 'thread',
+        ),
         throwsStateError,
       );
       call.reply.complete(
@@ -2840,25 +2888,24 @@ void main() {
 
   test('a replaced execution makes the frozen stop target obsolete, not successful', () async {
     final transport = _Transport();
-    final client = _client(transport);
-    client
+    final client = await _client(transport);
+    await client.conversations
         .session('thread')
-        .applySnapshot(
+        .deliverWorkspace(
           _workspace(activeTurn: _turn(), execution: _execution()),
         );
+    final feedCount = transport.threadBindings.length;
+    final blockerEntered = transport.stops.stream.first;
+    final blocking = client.threadCommands.stop(
+      'blocker-thread',
+      expectedExecutionId: 'blocker-execution',
+    );
+    final blocker = await blockerEntered;
+    expect(blocker.threadId, 'blocker-thread');
+    expect(blocker.executionId, 'blocker-execution');
     final stopping = client.threadCommands.stop('thread');
-    // The canonical owner publishes a successor execution before the queued stop
-    // reaches it: the captured identity is stale and must never stop its successor.
-    client
-        .session('thread')
-        .applySnapshot(
-          _workspace(
-            revision: 2,
-            activeTurn: _turn(turnId: 'turn-2'),
-            execution: _execution(id: 'execution-2', turnId: 'turn-2'),
-          ),
-        );
-    await expectLater(
+    final operation = client.mutations.latest('stop:thread')!;
+    final rejected = expectLater(
       stopping,
       throwsA(
         isA<StudioFailure>()
@@ -2870,16 +2917,55 @@ void main() {
             .having((error) => error.code, 'code', StudioFailureCode.conflict),
       ),
     );
+    // The in-flight explicit target holds the real stop lane. Deliver the
+    // successor through the visible feed before releasing that lane, rather
+    // than depending on an async delivery winning a microtask race.
+    await client.conversations
+        .session('thread')
+        .deliverWorkspace(
+          _workspace(
+            revision: 2,
+            activeTurn: _turn(turnId: 'turn-2'),
+            execution: _execution(id: 'execution-2', turnId: 'turn-2'),
+          ),
+        );
+    expect(transport.stopCalls, 1);
+    expect(operation.state.value.receipt, isNull);
+    expect(operation.state.value.observed, isFalse);
+    blocker.reply.complete(
+      StopThreadCommandReply(
+        threadId: blocker.threadId,
+        executionId: blocker.executionId,
+        stopped: true,
+        receipt: _identityReceipt(blocker.operationId),
+      ),
+    );
+    expect(await blocking, isA<StopRequested>());
+    await rejected;
+    expect(
+      transport.stopCalls,
+      1,
+      reason: 'The obsolete target and its successor must never be dispatched',
+    );
+    expect(
+      transport.threadBindings,
+      hasLength(feedCount),
+      reason: 'The explicit blocker target must not create a hidden feed',
+    );
+    expect(operation.state.value.receipt, isNull);
+    expect(operation.state.value.observed, isFalse);
+    expect(operation.state.value.effective, isFalse);
     final status = client.threadCommands.state.commands['stop:thread'];
     expect(status?.phase, CommandPhase.failed);
     expect(status?.error?.reason, StudioFailureReason.staleExecution);
+    expect(status?.target.label, 'execution-1');
   });
 
   test(
     'child row stop uses the directory execution without selecting the member',
     () async {
       final transport = _Transport();
-      final client = _client(transport);
+      final client = await _client(transport);
       client.threadDirectory.applyDelta(
         revision: 2,
         upserted: [_childThread()],
@@ -2910,7 +2996,7 @@ void main() {
         reason: 'Stopping a row never selects or opens the member',
       );
       expect(
-        client.sessionStates.map((state) => state.threadId),
+        client.conversations.sessionStates.map((state) => state.threadId),
         isNot(contains('child')),
         reason: 'A row stop opens no session and no content subscription',
       );
@@ -2963,7 +3049,7 @@ void main() {
         reason: 'The same row confirming no execution settles the stop',
       );
       expect(
-        client.sessionStates.map((state) => state.threadId),
+        client.conversations.sessionStates.map((state) => state.threadId),
         isNot(contains('child')),
       );
     },
@@ -2971,7 +3057,7 @@ void main() {
 
   test('a child row without a stop qualification is not sent and an unloaded page is not an end', () async {
     final transport = _Transport();
-    final client = _client(transport);
+    final client = await _client(transport);
     client.project.applyAgentDirectory(
       AgentDirectoryState(
         revision: 2,
@@ -3006,10 +3092,12 @@ void main() {
 
   test('a stop without a canonical execution reports that nothing was sent', () async {
     final transport = _Transport();
-    final client = _client(transport);
+    final client = await _client(transport);
     // The interface may still hold a stale "busy" view; the canonical owner has
     // no execution, so no request may be fabricated for it.
-    client.session('thread').applySnapshot(_workspace(activeTurn: _turn()));
+    await client.conversations
+        .session('thread')
+        .deliverWorkspace(_workspace(activeTurn: _turn()));
     expect(
       await client.threadCommands.stop('thread'),
       isA<StopNoExecution>()
@@ -3024,10 +3112,10 @@ void main() {
 
   test('the command board distinguishes "in flight" from "accepted, waiting for canonical"', () async {
     final transport = _Transport();
-    final client = _client(transport);
-    client
+    final client = await _client(transport);
+    await client.conversations
         .session('thread')
-        .applySnapshot(
+        .deliverWorkspace(
           _workspace(activeTurn: _turn(), execution: _execution()),
         );
     final entered = transport.stops.stream.first;
@@ -3059,9 +3147,9 @@ void main() {
       reason: 'The acceptance receipt is readable after an interface rebuild',
     );
     // Canonical convergence settles the command: the entry disappears.
-    client
+    await client.conversations
         .session('thread')
-        .applySnapshot(_workspace(revision: 2, activeTurn: null));
+        .deliverWorkspace(_workspace(revision: 2, activeTurn: null));
     expect(
       client.threadCommands.state.commands,
       isNot(contains('stop:thread')),
@@ -3072,10 +3160,10 @@ void main() {
     'a stop rejected before acceptance never claims an accepted receipt',
     () async {
       final transport = _Transport();
-      final client = _client(transport);
-      client
+      final client = await _client(transport);
+      await client.conversations
           .session('thread')
-          .applySnapshot(
+          .deliverWorkspace(
             _workspace(activeTurn: _turn(), execution: _execution()),
           );
       final entered = transport.stops.stream.first;
@@ -3105,10 +3193,10 @@ void main() {
     'a repeated stop keeps one in-flight request plus one queued retry',
     () async {
       final transport = _Transport();
-      final client = _client(transport);
-      client
+      final client = await _client(transport);
+      await client.conversations
           .session('thread')
-          .applySnapshot(
+          .deliverWorkspace(
             _workspace(activeTurn: _turn(), execution: _execution()),
           );
       final entered = transport.stops.stream.first;
@@ -3201,10 +3289,10 @@ void main() {
 
   test('stop flights are per execution and per thread, never merged across targets', () async {
     final transport = _Transport();
-    final client = _client(transport);
-    client
+    final client = await _client(transport);
+    await client.conversations
         .session('thread')
-        .applySnapshot(
+        .deliverWorkspace(
           _workspace(activeTurn: _turn(), execution: _execution()),
         );
     final received = <String>[];
@@ -3260,9 +3348,10 @@ void main() {
       threadId: 'thread',
       needsOpen: true,
     );
-    client
+    client.conversations.setVisibleThread('thread');
+    await client.conversations
         .session('thread')
-        .applySnapshot(
+        .deliverWorkspace(
           _workspace(activeTurn: _turn(), execution: _execution()),
         );
     final entered = transport.stops.stream.first;
@@ -3301,19 +3390,48 @@ void main() {
         startedAtMs: 1700000000000,
       ),
     );
+    await client.conversations
+        .session('thread')
+        .deliverWorkspace(
+          _workspace(
+            revision: 2,
+            activeTurn: _turn(turnId: 'turn-2'),
+            execution: _execution(id: 'execution-2', turnId: 'turn-2'),
+          ),
+        );
     clock += 5000;
-    final failed = client.threadCommands.state.commands['stop:thread']!
-        .withAccepted();
-    expect(failed.startedAtMs, accepted.startedAtMs);
+    final failedStartedAt = clock;
+    final retryEntered = transport.stops.stream.first;
+    final retrying = client.threadCommands.stop('thread');
+    final rejected = expectLater(retrying, throwsA(same(_probeRejection)));
+    expect(
+      client.threadCommands.state.commands['stop:thread']?.startedAtMs,
+      failedStartedAt,
+    );
+    final retry = await retryEntered;
+    expect(retry.executionId, 'execution-2');
+    clock += 5000;
+    retry.reply.completeError(_probeRejection);
+    await rejected;
+    final failed = client.threadCommands.state.commands['stop:thread']!;
+    expect(failed.phase, CommandPhase.failed);
+    expect(failed.error, same(_probeRejection));
+    expect(failed.accepted, isFalse);
+    expect(
+      failed.startedAtMs,
+      failedStartedAt,
+      reason: 'Failure preserves this attempt’s registration time, not the failure time or the previous attempt’s start',
+    );
+    expect(accepted.startedAtMs, 1700000000000);
   });
 
   test('a frozen expected execution is sent as-is and the server owns the staleness verdict', () async {
     final transport = _Transport();
-    final client = _client(transport);
+    final client = await _client(transport);
     // The interface rendered execution-1; canonical already moved to execution-2.
-    client
+    await client.conversations
         .session('thread')
-        .applySnapshot(
+        .deliverWorkspace(
           _workspace(
             activeTurn: _turn(turnId: 'turn-2'),
             execution: _execution(id: 'execution-2', turnId: 'turn-2'),
@@ -3364,8 +3482,10 @@ void main() {
     'a frozen expected execution is still sent when canonical publishes none',
     () async {
       final transport = _Transport();
-      final client = _client(transport);
-      client.session('thread').applySnapshot(_workspace(activeTurn: _turn()));
+      final client = await _client(transport);
+      await client.conversations
+          .session('thread')
+          .deliverWorkspace(_workspace(activeTurn: _turn()));
       final entered = transport.stops.stream.first;
       final stopping = client.threadCommands.stop(
         'thread',
@@ -3402,7 +3522,7 @@ void main() {
 
   test('a frozen expected execution on a qualified row skips the directory target recheck', () async {
     final transport = _Transport();
-    final client = _client(transport);
+    final client = await _client(transport);
     client.project.applyAgentDirectory(
       AgentDirectoryState(
         revision: 2,
@@ -3448,79 +3568,257 @@ void main() {
     expect(transport.stopCalls, 1);
   });
 
-  test('continue is admitted once, observed as a new Turn and re-read by identity instead of resent', () async {
+  for (final ordering in [
+    'receipt first',
+    'observation first',
+    'new intent during acceptance',
+    'synchronous synchronization failure',
+  ]) {
+    test(
+      'continue is admitted once, observed as a new Turn and re-read by identity instead of resent ($ordering)',
+      () async {
+        final framesFirst = ordering == 'observation first';
+        final reenter = ordering == 'new intent during acceptance';
+        final syncFailure = ordering == 'synchronous synchronization failure';
+        final transport = _Transport();
+        final client = await _client(transport);
+        client.conversations.setVisibleThread('thread');
+        await client.conversations
+            .session('thread')
+            .deliverWorkspace(_workspace());
+        final entered = transport.continues.stream.first;
+        final continuing = client.threadCommands.continueThread(
+          'thread',
+          _continuation(),
+          expectedModelRouteRevision: 1,
+        );
+        // A second click on the same intent while the first is in flight joins it.
+        final repeated = client.threadCommands.continueThread(
+          'thread',
+          _continuation(),
+          expectedModelRouteRevision: 1,
+        );
+        expect(identical(repeated, continuing), isTrue);
+        final operation = client.mutations.latest('continue:thread')!;
+        final call = await entered;
+        expect(call.operationId, operation.id);
+        expect(call.threadId, 'thread');
+        expect(call.continuationId, 'continuation-1');
+        expect(call.expectedModelRouteRevision, 1);
+        expect(transport.continueCalls, 1);
+        expect(
+          client.threadCommands.state.commands['continue:thread']?.accepted,
+          isFalse,
+        );
+        Future<_ContinueCall>? newerEntered;
+        Future<ContinueThreadCommandReply>? newerContinuing;
+        OperationHandle? newerOperation;
+        final failure = StateError(
+          'continuation acceptance synchronization failed',
+        );
+        var failedSync = false;
+        final acceptance = operation.state.watch((next) {
+          if (next.receipt == null) return;
+          if (syncFailure && !failedSync) {
+            failedSync = true;
+            operation.syncFailed(failure);
+            return;
+          }
+          if (!reenter || newerContinuing != null) return;
+          newerEntered = transport.continues.stream.first;
+          newerContinuing = client.threadCommands.continueThread(
+            'thread',
+            _continuation(id: 'continuation-2'),
+            expectedModelRouteRevision: 1,
+          );
+          newerOperation = client.mutations.latest('continue:thread');
+        });
+        addTearDown(acceptance.cancel);
+        final newTurn = _workspace(
+          revision: 2,
+          activeTurn: _turn(turnId: 'turn-continued'),
+          execution: _execution(
+            id: 'execution-continued',
+            turnId: 'turn-continued',
+          ),
+        );
+        if (framesFirst) {
+          await client.conversations
+              .session('thread')
+              .deliverWorkspace(newTurn);
+          expect(operation.state.value.observed, isFalse);
+          expect(
+            client.threadCommands.state.commands['continue:thread']?.accepted,
+            isFalse,
+            reason: 'Canonical facts cannot replace the acceptance receipt',
+          );
+        }
+        final reply = ContinueThreadCommandReply(
+          threadId: 'thread',
+          inputId: operation.id.value,
+          continuationId: 'continuation-1',
+          cursor: 4,
+          receipt: _identityReceipt(operation.id),
+        );
+        call.reply.complete(reply);
+        expect(await continuing, same(reply));
+        acceptance.cancel();
+        expect(operation.state.value.receipt!.operationId, call.operationId);
+        expect(
+          operation.state.value.phase,
+          syncFailure
+              ? OperationPhase.syncFailed
+              : framesFirst
+              ? OperationPhase.effective
+              : OperationPhase.awaitingObservation,
+          reason: 'Admission does not prove a Turn started',
+        );
+        expect(
+          operation.state.value.effective,
+          framesFirst,
+          reason: 'Continue acceptance alone is not effective',
+        );
+        final command = client.threadCommands.state.commands['continue:thread'];
+        if (framesFirst) {
+          expect(
+            command,
+            isNull,
+            reason: 'Acceptance must not revive a cleared continuation command',
+          );
+        } else {
+          expect(command?.phase, CommandPhase.pending);
+          expect(command?.accepted, !reenter);
+          expect(
+            command?.target.label,
+            reenter ? 'continuation-2' : 'continuation-1',
+          );
+        }
+        if (syncFailure) {
+          expect(operation.state.value.error, same(failure));
+          expect(operation.state.value.observed, isFalse);
+        }
+        if (reenter) {
+          expect(newerOperation, isNotNull);
+          expect(newerOperation!.id, isNot(operation.id));
+          expect(newerOperation!.state.value.receipt, isNull);
+          expect(
+            client.mutations.latest('continue:thread'),
+            same(newerOperation),
+          );
+          final newerCall = await newerEntered!;
+          expect(newerCall.operationId, newerOperation!.id);
+          expect(newerCall.threadId, 'thread');
+          expect(newerCall.continuationId, 'continuation-2');
+          expect(newerCall.expectedModelRouteRevision, 1);
+          final newerReply = ContinueThreadCommandReply(
+            threadId: 'thread',
+            inputId: newerCall.operationId.value,
+            continuationId: 'continuation-2',
+            cursor: 5,
+            receipt: _identityReceipt(newerCall.operationId),
+          );
+          newerCall.reply.complete(newerReply);
+          expect(await newerContinuing!, same(newerReply));
+          expect(
+            client.threadCommands.state.commands['continue:thread']?.accepted,
+            isTrue,
+            reason:
+                'Only the newer continuation receipt accepts the newer intent',
+          );
+          expect(newerOperation!.state.value.observed, isFalse);
+        }
+        // The canonical new Turn is what proves the continuation became effective.
+        if (!framesFirst) {
+          await client.conversations
+              .session('thread')
+              .deliverWorkspace(newTurn);
+        }
+        // retainUntilSettled：带回执的 syncFailed 同样保留原 identity 观察，
+        // canonical Turn 到达后观察完成并生效，无例外。
+        expect(operation.state.value.observed, isTrue);
+        expect(operation.state.value.effective, isTrue);
+        if (syncFailure) {
+          expect(operation.state.value.phase, OperationPhase.syncFailed);
+          expect(
+            operation.state.value.receipt,
+            isNotNull,
+            reason: 'Synchronization failure cannot erase a valid receipt',
+          );
+        }
+        expect(
+          client.threadCommands.state.commands,
+          isNot(contains('continue:thread')),
+        );
+        if (reenter) expect(newerOperation!.state.value.observed, isTrue);
+        expect(
+          transport.continueCalls,
+          reenter ? 2 : 1,
+          reason: 'Exactly one request per distinct continuation intent',
+        );
+
+        // A lost receipt is reconciled by the original identity, never resent.
+        transport.continuationReadReply = ContinuationOperationView(
+          threadId: 'thread',
+          operationId: operation.id.value,
+          inputId: operation.id.value,
+          continuationId: 'continuation-1',
+          acceptedSequence: 4,
+          state: ConsumedContinuation('turn-continued'),
+          durable: true,
+          receipt: _identityReceipt(operation.id),
+        );
+        final reread = await client.threadCommands.continueThread(
+          'thread',
+          _continuation(),
+          expectedModelRouteRevision: 1,
+        );
+        expect(reread.inputId, operation.id.value);
+        expect(transport.continuationReads, hasLength(1));
+        final view = await client.threadCommands.readContinuationOperation(
+          'thread',
+          operation.id.value,
+        );
+        expect(view.state, const ConsumedContinuation('turn-continued'));
+        expect(view.durable, isTrue);
+        expect(
+          client.mutations.operations.where(
+            (value) => value.target == 'continue:thread',
+          ),
+          hasLength(reenter ? 2 : 1),
+          reason: 'Re-reading never allocates a second operation',
+        );
+        expect(transport.continueCalls, reenter ? 2 : 1);
+        expect(
+          client.threadCommands.state.commands,
+          isNot(contains('continue:thread')),
+        );
+      },
+    );
+  }
+
+  test('execution-blocked continuation still reconciles the original identity without resending', () async {
     final transport = _Transport();
-    final client = _client(transport);
-    client.session('thread').applySnapshot(_workspace());
+    final client = await _client(transport);
+    client.conversations.setVisibleThread('thread');
+    await client.conversations.session('thread').deliverWorkspace(_workspace());
     final entered = transport.continues.stream.first;
     final continuing = client.threadCommands.continueThread(
       'thread',
       _continuation(),
       expectedModelRouteRevision: 1,
     );
-    // A second click on the same intent while the first is in flight joins it.
-    final repeated = client.threadCommands.continueThread(
-      'thread',
-      _continuation(),
-      expectedModelRouteRevision: 1,
-    );
-    expect(identical(repeated, continuing), isTrue);
-    final operation = client.mutations.latest('continue:thread')!;
     final call = await entered;
-    expect(call.operationId, operation.id);
-    expect(call.threadId, 'thread');
-    expect(call.continuationId, 'continuation-1');
-    expect(call.expectedModelRouteRevision, 1);
-    expect(transport.continueCalls, 1);
     call.reply.complete(
       ContinueThreadCommandReply(
         threadId: 'thread',
-        inputId: operation.id.value,
+        inputId: call.operationId.value,
         continuationId: 'continuation-1',
         cursor: 4,
-        receipt: _identityReceipt(operation.id),
+        receipt: _identityReceipt(call.operationId),
       ),
     );
     await continuing;
-    expect(
-      operation.state.value.phase,
-      OperationPhase.awaitingObservation,
-      reason: 'Admission does not prove a Turn started',
-    );
-    expect(
-      operation.state.value.effective,
-      isFalse,
-      reason: 'Continue acceptance alone is not effective',
-    );
-    expect(
-      client.threadCommands.state.commands['continue:thread']?.phase,
-      CommandPhase.pending,
-    );
-    // The canonical new Turn is what proves the continuation became effective.
-    client
-        .session('thread')
-        .applySnapshot(
-          _workspace(
-            revision: 2,
-            activeTurn: _turn(turnId: 'turn-continued'),
-            execution: _execution(
-              id: 'execution-continued',
-              turnId: 'turn-continued',
-            ),
-          ),
-        );
-    expect(operation.state.value.observed, isTrue);
-    expect(operation.state.value.effective, isTrue);
-    expect(
-      client.threadCommands.state.commands,
-      isNot(contains('continue:thread')),
-    );
-    expect(
-      transport.continueCalls,
-      1,
-      reason: 'Exactly one continue request was dispatched',
-    );
-
+    final operation = client.mutations.latest('continue:thread')!;
     client.recovery.apply(
       RecoveryStateSnapshot(
         revision: 2,
@@ -3538,9 +3836,9 @@ void main() {
         ],
       ),
     );
-    client
+    await client.conversations
         .session('thread')
-        .applySnapshot(
+        .deliverWorkspace(
           _workspace(
             revision: 3,
             activeTurn: _turn(turnId: 'turn-continued'),
@@ -3556,7 +3854,8 @@ void main() {
           ),
         );
 
-    // A lost receipt is reconciled by the original identity, never resent.
+    // A lost receipt is reconciled by the original identity, never resent:
+    // execution/storage 暂停不禁止这个只读回查。
     transport.continuationReadReply = ContinuationOperationView(
       threadId: 'thread',
       operationId: operation.id.value,
@@ -3591,11 +3890,334 @@ void main() {
     );
   });
 
+  test('a lost continue receipt resends the frozen input under the original identity', () async {
+    final transport = _Transport();
+    final client = await _client(transport);
+    final entered = transport.continues.stream.first;
+    final first = client.threadCommands.continueThread(
+      'thread',
+      _continuation(),
+      expectedModelRouteRevision: 1,
+    );
+    final call = await entered;
+    final operation = client.mutations.latest('continue:thread')!;
+    call.reply.completeError(StateError('continue response was lost'));
+    await expectLater(first, throwsA(isA<StateError>()));
+    expect(operation.state.value.phase, OperationPhase.unknownOutcome);
+
+    // 后续点击传不同 route：仍按原身份回查；回查 NotFound 证明从未受理后，
+    // 以冻结的原 route CAS 与同一 OperationId 再发。
+    transport.continuationReadReply = null;
+    final second = client.threadCommands.continueThread(
+      'thread',
+      _continuation(),
+      expectedModelRouteRevision: 9,
+    );
+    final resent = await transport.continues.stream.first;
+    expect(resent.operationId, call.operationId);
+    expect(resent.expectedModelRouteRevision, 1);
+    expect(resent.continuationId, call.continuationId);
+    expect(transport.continuationReadCalls, 1);
+    resent.reply.complete(
+      ContinueThreadCommandReply(
+        threadId: 'thread',
+        inputId: resent.operationId.value,
+        continuationId: resent.continuationId,
+        cursor: 6,
+        receipt: _identityReceipt(resent.operationId),
+      ),
+    );
+    final reply = await second;
+    expect(reply.inputId, resent.operationId.value);
+    expect(transport.continueCalls, 2);
+    expect(
+      client.mutations.operations.where(
+        (value) => value.target == 'continue:thread',
+      ),
+      hasLength(1),
+      reason: '原身份再发不分配第二个操作',
+    );
+    expect(operation.state.value.receipt, isNotNull);
+    expect(operation.state.value.failurePhase, isNull);
+  });
+
+  test(
+    'a budget-exceeded continue begin fails closed without dangling joins',
+    () async {
+      final budget = ResourceBudget(
+        capacities: {
+          ...ResourceBudget().capacities,
+          ResourceKind.pendingOperation: 0,
+        },
+      );
+      final transport = _Transport();
+      final client = AnyworkClient(
+        transport: transport,
+        clientId: 'budget-join',
+        budget: budget,
+      );
+      addTearDown(client.close);
+      // The first click gets the explicit typed rejection through its shared
+      // join instead of a dangling future that later clicks await forever.
+      final first = client.threadCommands.continueThread(
+        'thread',
+        _continuation(),
+        expectedModelRouteRevision: 1,
+      );
+      await expectLater(first, throwsA(isA<ResourceBudgetExceeded>()));
+      // The same intent re-clicks: the failed setup released the frozen
+      // identity, so a retry walks the fresh path and fails equally closed.
+      final second = client.threadCommands.continueThread(
+        'thread',
+        _continuation(),
+        expectedModelRouteRevision: 1,
+      );
+      await expectLater(second, throwsA(isA<ResourceBudgetExceeded>()));
+      expect(client.mutations.latest('continue:thread'), isNull);
+      expect(budget.used(ResourceKind.pendingOperation), 0);
+      expect(transport.continueCalls, 0);
+    },
+  );
+
+  test('a determined rejection after NotFound resends nothing and keeps the identity', () async {
+    final transport = _Transport();
+    final client = await _client(transport);
+    final entered = transport.continues.stream.first;
+    final first = client.threadCommands.continueThread(
+      'thread',
+      _continuation(),
+      expectedModelRouteRevision: 1,
+    );
+    final call = await entered;
+    final operation = client.mutations.latest('continue:thread')!;
+    // A typed conflict from the transport is a determined rejection: the
+    // intent keeps its frozen identity but never dispatches again.
+    final conflict = StudioFailure(
+      code: StudioFailureCode.conflict,
+      message: 'The continuation point is already claimed',
+      retryable: false,
+      correlationId: 'client-test-conflict',
+      reason: StudioFailureReason.continuationClaimed,
+    );
+    call.reply.completeError(conflict);
+    await expectLater(first, throwsA(same(conflict)));
+    expect(operation.state.value.failurePhase, OperationPhase.rejected);
+
+    transport.continuationReadReply = null;
+    final blocked = client.threadCommands.continueThread(
+      'thread',
+      _continuation(),
+      expectedModelRouteRevision: 1,
+    );
+    await expectLater(blocked, throwsA(same(conflict)));
+    expect(transport.continuationReadCalls, 1);
+    expect(transport.continueCalls, 1);
+    expect(operation.state.value.failurePhase, OperationPhase.rejected);
+    expect(
+      client.mutations.operations.where(
+        (value) => value.target == 'continue:thread',
+      ),
+      hasLength(1),
+      reason: 'A determined rejection never re-begins or re-sends',
+    );
+  });
+
+  for (final blocked in ['execution', 'closed', 'storage']) {
+    test(
+      'a resend blocked after NotFound keeps the unknown identity ($blocked)',
+      () async {
+        final transport = _Transport();
+        final client = await _client(transport);
+        final entered = transport.continues.stream.first;
+        final first = client.threadCommands.continueThread(
+          'thread',
+          _continuation(),
+          expectedModelRouteRevision: 1,
+        );
+        final call = await entered;
+        final operation = client.mutations.latest('continue:thread')!;
+        call.reply.completeError(StateError('response lost while blocked'));
+        await expectLater(first, throwsA(isA<StateError>()));
+        expect(operation.state.value.phase, OperationPhase.unknownOutcome);
+        transport.continuationReadReply = null;
+
+        if (blocked == 'execution') {
+          client.recovery.apply(
+            RecoveryStateSnapshot(
+              revision: 2,
+              values: const [
+                StudioRecoveryIssue(
+                  id: 'resend-execution-paused',
+                  scope: RecoveryIssueScope.thread,
+                  category: RecoveryIssueCategory.storage,
+                  impact: RecoveryIssueImpact.executionBlocked,
+                  availableActions: [],
+                  projectId: 'project',
+                  threadId: 'thread',
+                  detail: 'Execution is paused before the resend',
+                ),
+              ],
+            ),
+          );
+        } else if (blocked == 'closed') {
+          client.threadDirectory.applyWindow(
+            ThreadDirectoryWindow(
+              threads: [_thread().copyWith(status: ThreadStatusView.closing)],
+              revision: 2,
+            ),
+          );
+        } else {
+          await client.conversations
+              .session('thread')
+              .deliverWorkspace(
+                _workspace(
+                  revision: 2,
+                  storage: const ThreadStorageStateView(
+                    execution: ThreadStorageExecution.paused,
+                    resumeRequired: true,
+                    lastError: 'writer paused before the resend',
+                  ),
+                ),
+              );
+        }
+
+        // 回查仍允许（只读），但再发被 guard 阻断：原 typed 错误返回调用方，
+        // 意图、原 unknown 操作与观察责任保持不变，零新发送。
+        final blockedClick = client.threadCommands.continueThread(
+          'thread',
+          _continuation(),
+          expectedModelRouteRevision: 1,
+        );
+        Object? failure;
+        try {
+          await blockedClick;
+        } on Object catch (error) {
+          failure = error;
+        }
+        expect(failure, isA<StudioFailure>());
+        expect(transport.continuationReadCalls, 1);
+        expect(transport.continueCalls, 1);
+        expect(operation.state.value.phase, OperationPhase.unknownOutcome);
+        // The blocked resend leaves the original unknown disposition intact:
+        // phase comes from failurePhase, so both must stay unknownOutcome.
+        expect(
+          operation.state.value.failurePhase,
+          OperationPhase.unknownOutcome,
+        );
+        expect(
+          client.mutations.operations.where(
+            (value) => value.target == 'continue:thread',
+          ),
+          hasLength(1),
+        );
+
+        if (blocked == 'execution') {
+          client.recovery.apply(
+            RecoveryStateSnapshot(revision: 3, values: const []),
+          );
+        } else if (blocked == 'closed') {
+          client.threadDirectory.applyWindow(
+            ThreadDirectoryWindow(threads: [_thread()], revision: 3),
+          );
+        } else {
+          await client.conversations
+              .session('thread')
+              .deliverWorkspace(_workspace(revision: 3));
+        }
+        // 解除后下一次点击仍先回查原身份；再次 NotFound 才以同 ID 再发。
+        final retry = client.threadCommands.continueThread(
+          'thread',
+          _continuation(),
+          expectedModelRouteRevision: 4,
+        );
+        final resent = await transport.continues.stream.first;
+        expect(resent.operationId, call.operationId);
+        expect(
+          resent.expectedModelRouteRevision,
+          1,
+          reason: '冻结的原 route CAS 不被后续点击覆盖',
+        );
+        expect(
+          transport.continuationReadCalls,
+          2,
+          reason: '不缓存 NotFound：每次点击都先回查',
+        );
+        resent.reply.complete(
+          ContinueThreadCommandReply(
+            threadId: 'thread',
+            inputId: resent.operationId.value,
+            continuationId: resent.continuationId,
+            cursor: 7,
+            receipt: _identityReceipt(resent.operationId),
+          ),
+        );
+        await retry;
+        expect(transport.continueCalls, 2);
+      },
+    );
+  }
+
+  test('continuation reentry shares one future and close releases the retained observer', () async {
+    final transport = _Transport();
+    final client = await _client(transport);
+    var reentered = false;
+    Future<ContinueThreadCommandReply>? reentrantJoin;
+    final observation = client.threadCommands.source.watch((state) {
+      if (state.commands.containsKey('continue:thread') && !reentered) {
+        reentered = true;
+        reentrantJoin = client.threadCommands.continueThread(
+          'thread',
+          _continuation(),
+          expectedModelRouteRevision: 1,
+        );
+      }
+    });
+    final first = client.threadCommands.continueThread(
+      'thread',
+      _continuation(),
+      expectedModelRouteRevision: 1,
+    );
+    observation.cancel();
+    expect(reentered, isTrue);
+    expect(
+      identical(reentrantJoin, first),
+      isTrue,
+      reason: '首次 begin 发布中的同步重入共享同一个 future',
+    );
+    final joined = client.threadCommands.continueThread(
+      'thread',
+      _continuation(),
+      expectedModelRouteRevision: 1,
+    );
+    expect(identical(joined, first), isTrue);
+    final entered = transport.continues.stream.first;
+    final call = await entered;
+    final operation = client.mutations.latest('continue:thread')!;
+    expect(transport.continueCalls, 1);
+    call.reply.completeError(StateError('lost before observation'));
+    await expectLater(first, throwsA(isA<StateError>()));
+    expect(operation.state.value.phase, OperationPhase.unknownOutcome);
+    int observers() => client.budget.usage
+        .where(
+          (resource) =>
+              resource.kind == ResourceKind.observer &&
+              resource.owner == 'command:${operation.id.value}',
+        )
+        .length;
+    expect(observers(), 1, reason: 'unknown 期间保留原 identity 观察');
+    await client.close();
+    expect(
+      observers(),
+      0,
+      reason: 'client.close 精确取消 retained binding，无第二个观察泄漏',
+    );
+  });
+
   test(
     'access recovery prevents re-reading an existing continuation identity',
     () async {
       final transport = _Transport();
-      final client = _client(transport);
+      final client = await _client(transport);
       final entered = transport.continues.stream.first;
       final continuing = client.threadCommands.continueThread(
         'thread',
@@ -3667,7 +4289,7 @@ void main() {
 
   test('a not-found continue identity cannot send a new request through storage pause', () async {
     final transport = _Transport();
-    final client = _client(transport);
+    final client = await _client(transport);
     final entered = transport.continues.stream.first;
     final continuing = client.threadCommands.continueThread(
       'thread',
@@ -3687,9 +4309,9 @@ void main() {
     await continuing;
     expect(transport.continueCalls, 1);
 
-    client
+    await client.conversations
         .session('thread')
-        .applySnapshot(
+        .deliverWorkspace(
           _workspace(
             revision: 2,
             storage: const ThreadStorageStateView(
@@ -3726,7 +4348,7 @@ void main() {
 
   test('a storage gate discovered while continue waits in the lane rejects the unsent identity', () async {
     final transport = _Transport();
-    final client = _client(transport);
+    final client = await _client(transport);
     final compacting = client.threadCommands.compactThread('thread');
     await transport.compactEntered.future;
 
@@ -3736,9 +4358,9 @@ void main() {
       expectedModelRouteRevision: 1,
     );
     final unsentOperation = client.mutations.latest('continue:thread')!;
-    client
+    await client.conversations
         .session('thread')
-        .applySnapshot(
+        .deliverWorkspace(
           _workspace(
             revision: 2,
             storage: const ThreadStorageStateView(
@@ -3768,7 +4390,9 @@ void main() {
     expect(transport.continueCalls, 0);
     expect(transport.continuationReadCalls, 0);
 
-    client.session('thread').applySnapshot(_workspace(revision: 3));
+    await client.conversations
+        .session('thread')
+        .deliverWorkspace(_workspace(revision: 3));
     final entered = transport.continues.stream.first;
     final retry = client.threadCommands.continueThread(
       'thread',
@@ -3793,7 +4417,7 @@ void main() {
 
   test('a post-transport storage failure remains unknown and re-reads the original identity', () async {
     final transport = _Transport();
-    final client = _client(transport);
+    final client = await _client(transport);
     final entered = transport.continues.stream.first;
     final continuing = client.threadCommands.continueThread(
       'thread',
@@ -3831,9 +4455,9 @@ void main() {
         ],
       ),
     );
-    client
+    await client.conversations
         .session('thread')
-        .applySnapshot(
+        .deliverWorkspace(
           _workspace(
             revision: 2,
             storage: const ThreadStorageStateView(
@@ -3873,9 +4497,11 @@ void main() {
 
   test('the canonical continuation projection feeds continue and a claimed point sends nothing', () async {
     final transport = _Transport();
-    final client = _client(transport);
+    final client = await _client(transport);
     final published = _continuation();
-    client.session('thread').applySnapshot(_workspace(continuation: published));
+    await client.conversations
+        .session('thread')
+        .deliverWorkspace(_workspace(continuation: published));
     expect(
       client.threadCommands.continuation('thread'),
       published,
@@ -3900,9 +4526,9 @@ void main() {
     );
     await continuing;
     // The canonical new Turn proves the accepted continuation took effect.
-    client
+    await client.conversations
         .session('thread')
-        .applySnapshot(
+        .deliverWorkspace(
           _workspace(
             revision: 2,
             activeTurn: _turn(turnId: 'turn-continued'),
@@ -3919,9 +4545,9 @@ void main() {
     );
     // A point another acceptance already claimed never dispatches a request.
     final claimed = _continuation(id: 'continuation-2', claimed: true);
-    client
+    await client.conversations
         .session('thread')
-        .applySnapshot(
+        .deliverWorkspace(
           _workspace(
             revision: 3,
             activeTurn: _turn(turnId: 'turn-continued'),
@@ -3952,8 +4578,8 @@ void main() {
       reason: 'A claimed continuation sends nothing',
     );
     // An older increment cannot replace the newer continuation projection.
-    final session = client.session('thread');
-    session.applyNotification(
+    final session = client.conversations.session('thread');
+    await session.deliverNotification(
       ThreadNotificationFrame(
         threadId: 'thread',
         revision: session.state.revision,
@@ -3970,9 +4596,9 @@ void main() {
       reason: 'A lowered frame revision never rewrites the projection',
     );
     // The consumed Turn clears the point: nothing local is offered afterwards.
-    client
+    await client.conversations
         .session('thread')
-        .applySnapshot(
+        .deliverWorkspace(
           _workspace(
             revision: 4,
             activeTurn: _turn(turnId: 'turn-continued'),
@@ -3991,7 +4617,7 @@ void main() {
 
   test('continue is rejected for a child Thread before any request', () async {
     final transport = _Transport();
-    final client = _client(transport);
+    final client = await _client(transport);
 
     expect(
       client.threadDirectory.mergeOverlayThreads([_childThread()]),
@@ -4014,57 +4640,294 @@ void main() {
     expect(transport.continueCalls, 0);
   });
 
-  test('a child decision is routed through the hosting main session with its revision', () async {
-    final transport = _Transport();
-    final client = _client(transport);
-    final summary = _childSummary(revision: 3);
-    transport.childInteractions = [summary];
-    await client.threadCommands.readChildInteractions('thread');
-    expect(transport.childInteractionReads, 1);
-    expect(
-      client.childInteractions.state.items.single.interactionId,
-      'child-interaction',
+  test(
+    'child cards require a successful read in the current display generation',
+    () async {
+      final transport = _Transport();
+      final client = await _client(transport);
+      final summary = _childSummary(revision: 3);
+      final oldReply = Completer<List<ChildInteractionSummary>>();
+      transport.childInteractionsReply = (_) => oldReply.future;
+      final initialGeneration =
+          client.childInteractions.state.displayGeneration;
+      var notifications = 0;
+      final observation = client.childInteractions.source.watch((_) {
+        notifications++;
+      });
+      addTearDown(observation.cancel);
+      client.conversations.setVisibleThread('thread');
+      expect(notifications, 0, reason: 'The same visible target is a no-op');
+      final oldRead = client.threadCommands.readChildInteractions('thread');
+      client.conversations.setVisibleThread('other');
+      client.conversations.setVisibleThread('thread');
+      expect(notifications, 2);
+      expect(
+        client.childInteractions.state.displayGeneration,
+        initialGeneration + 2,
+      );
+      oldReply.complete([summary]);
+      expect(await oldRead, [summary]);
+      expect(client.childInteractions.state.items, [summary]);
+      expect(
+        client.childInteractions.state.readDisplayGeneration,
+        initialGeneration,
+      );
+      expect(client.childInteractions.state.visibleItems, isEmpty);
+
+      final failure = StateError('current read failed');
+      transport.childInteractionsReply = (_) => Future.error(failure);
+      await expectLater(
+        client.threadCommands.readChildInteractions('thread'),
+        throwsA(same(failure)),
+      );
+      expect(client.childInteractions.state.items, [summary]);
+      expect(client.childInteractions.state.visibleItems, isEmpty);
+
+      final refreshed = _childSummary(revision: 4);
+      transport.childInteractionsReply = null;
+      transport.childInteractions = [refreshed];
+      await client.threadCommands.readChildInteractions('thread');
+      expect(client.childInteractions.state.visibleItems, [refreshed]);
+      final generation = client.childInteractions.state.displayGeneration;
+      client.selection.selectThread(projectId: 'project', threadId: 'other');
+      expect(client.childInteractions.state.displayGeneration, generation);
+      expect(client.childInteractions.state.visibleItems, [refreshed]);
+      client.conversations.setVisibleThread(null);
+      expect(client.childInteractions.state.visibleItems, isEmpty);
+      expect(client.childInteractions.state.items, [refreshed]);
+    },
+  );
+
+  test(
+    'a newer child read intent blocks an older result before either publishes',
+    () async {
+      final transport = _Transport();
+      final client = await _client(transport);
+      final baseline = _childSummary(revision: 1);
+      transport.childInteractions = [baseline];
+      await client.threadCommands.readChildInteractions('thread');
+      final sequence = client.childInteractions.state.sequence;
+      final oldReply = Completer<List<ChildInteractionSummary>>();
+      final newReply = Completer<List<ChildInteractionSummary>>();
+      transport.childInteractionsReply = (_) => oldReply.future;
+      final oldRead = client.threadCommands.readChildInteractions('thread');
+      transport.childInteractionsReply = (_) => newReply.future;
+      final newRead = client.threadCommands.readChildInteractions('thread');
+      final stale = _childSummary(revision: 2);
+      oldReply.complete([stale]);
+      expect(await oldRead, [stale]);
+      expect(client.childInteractions.state.sequence, sequence);
+      expect(client.childInteractions.state.items, [baseline]);
+      final current = _childSummary(revision: 3);
+      newReply.complete([current]);
+      expect(await newRead, [current]);
+      expect(client.childInteractions.state.sequence, sequence + 2);
+      expect(client.childInteractions.state.visibleItems, [current]);
+    },
+  );
+
+  test(
+    'client close revokes child cards synchronously but joins the old query',
+    () async {
+      final transport = _Transport();
+      final client = await _client(transport);
+      final summary = _childSummary(revision: 3);
+      transport.childInteractions = [summary];
+      await client.threadCommands.readChildInteractions('thread');
+      expect(client.childInteractions.state.visibleItems, [summary]);
+      final generation = client.childInteractions.state.displayGeneration;
+      final reply = Completer<List<ChildInteractionSummary>>();
+      transport.childInteractionsReply = (_) => reply.future;
+      final reading = client.threadCommands.readChildInteractions('thread');
+      var commandsClosed = false;
+      final commandsClosing = client.threadCommands.close().then((_) {
+        commandsClosed = true;
+      });
+      await Future<void>.value();
+      expect(commandsClosed, isFalse, reason: 'The query still owns its gate');
+      var closed = false;
+      final closing = client.close().then((report) {
+        closed = true;
+        return report;
+      });
+      expect(client.childInteractions.state.visibleHostThreadId, isNull);
+      expect(client.childInteractions.state.displayGeneration, generation + 1);
+      expect(client.childInteractions.state.visibleItems, isEmpty);
+      client.conversations.setVisibleThread(null);
+      expect(client.childInteractions.state.displayGeneration, generation + 1);
+      await Future<void>.value();
+      expect(closed, isFalse);
+      reply.complete([summary]);
+      expect(await reading, [summary]);
+      await commandsClosing;
+      expect(commandsClosed, isTrue);
+      await closing;
+      expect(closed, isTrue);
+      expect(client.childInteractions.state.visibleItems, isEmpty);
+    },
+  );
+
+  for (final ordering in [
+    'receipt first',
+    'observation first',
+    'new intent during acceptance',
+  ]) {
+    test(
+      'a child decision is routed through the hosting main session with its revision ($ordering)',
+      () async {
+        final framesFirst = ordering == 'observation first';
+        final reenter = ordering == 'new intent during acceptance';
+        final transport = _Transport();
+        final client = await _client(transport);
+        final summary = _childSummary(revision: 3);
+        transport.childInteractions = [summary];
+        await client.threadCommands.readChildInteractions('thread');
+        expect(transport.childInteractionReads, 1);
+        expect(
+          client.childInteractions.state.items.single.interactionId,
+          'child-interaction',
+        );
+        final entered = transport.interactions.stream.first;
+        final resolving = client.threadCommands.resolveChildInteraction(
+          'thread',
+          summary,
+          _resolution,
+        );
+        final operation = client.mutations.latest('interaction:thread')!;
+        expect(
+          client.threadCommands.state.commands['interaction:thread']?.accepted,
+          isFalse,
+        );
+        final call = await entered;
+        expect(call.operationId, operation.id);
+        expect(call.hostThreadId, 'thread');
+        expect(call.interactionId, 'child-interaction');
+        expect(call.expectedRevision, 3);
+        expect(call.resolution, same(_resolution));
+        Future<_InteractionCall>? newerEntered;
+        Future<OperationHandle>? newerResolving;
+        OperationHandle? newerOperation;
+        final acceptance = operation.state.watch((next) {
+          if (!reenter || next.receipt == null || newerResolving != null)
+            return;
+          newerEntered = transport.interactions.stream.first;
+          newerResolving = client.threadCommands.resolveChildInteraction(
+            'thread',
+            _childSummary(revision: 4),
+            _resolution,
+          );
+          newerOperation = client.mutations.latest('interaction:thread');
+        });
+        addTearDown(acceptance.cancel);
+        if (framesFirst) {
+          transport.childInteractions = const [];
+          await client.threadCommands.readChildInteractions('thread');
+          expect(operation.state.value.observed, isFalse);
+          expect(
+            client
+                .threadCommands
+                .state
+                .commands['interaction:thread']
+                ?.accepted,
+            isFalse,
+            reason: 'Canonical evidence alone is not an acceptance receipt',
+          );
+        }
+        call.reply.complete(
+          InteractionCommandReply(
+            interaction: summary.interaction,
+            receipt: _identityReceipt(call.operationId),
+          ),
+        );
+        expect(await resolving, same(operation));
+        acceptance.cancel();
+        expect(operation.id, call.operationId);
+        expect(operation, same(client.mutations.lookup(call.operationId)));
+        expect(operation.state.value.receipt!.operationId, call.operationId);
+        expect(operation.state.value.observed, framesFirst);
+        expect(
+          operation.state.value.phase,
+          framesFirst
+              ? OperationPhase.effective
+              : OperationPhase.awaitingObservation,
+        );
+        final command =
+            client.threadCommands.state.commands['interaction:thread'];
+        if (framesFirst) {
+          expect(
+            command,
+            isNull,
+            reason: 'Acceptance must not revive a cleared command',
+          );
+        } else {
+          expect(command?.phase, CommandPhase.pending);
+          expect(command?.accepted, !reenter);
+          expect(command?.target.label, summary.interactionId);
+        }
+        if (reenter) {
+          expect(newerOperation, isNotNull);
+          expect(newerOperation!.id, isNot(operation.id));
+          expect(newerOperation!.state.value.receipt, isNull);
+          expect(
+            client.mutations.latest('interaction:thread'),
+            same(newerOperation),
+          );
+          final newerCall = await newerEntered!;
+          expect(newerCall.operationId, newerOperation!.id);
+          expect(newerCall.hostThreadId, 'thread');
+          expect(newerCall.interactionId, summary.interactionId);
+          expect(newerCall.expectedRevision, 4);
+          newerCall.reply.complete(
+            InteractionCommandReply(
+              interaction: _childSummary(revision: 4).interaction,
+              receipt: _identityReceipt(newerCall.operationId),
+            ),
+          );
+          expect(await newerResolving!, same(newerOperation));
+          expect(
+            client
+                .threadCommands
+                .state
+                .commands['interaction:thread']
+                ?.accepted,
+            isTrue,
+            reason: 'Only the newer operation’s own receipt marks its command accepted',
+          );
+          expect(newerOperation!.state.value.observed, isFalse);
+        }
+        expect(
+          client.childInteractions.state.visibleItems,
+          framesFirst ? isEmpty : [summary],
+        );
+        client.conversations.setVisibleThread('other');
+        client.conversations.setVisibleThread('thread');
+        expect(client.childInteractions.state.visibleItems, isEmpty);
+        expect(
+          client.childInteractions.state.items,
+          framesFirst ? isEmpty : [summary],
+        );
+        expect(
+          operation.state.value.observed,
+          framesFirst,
+          reason:
+              'Navigation only revokes presentation, not the pending decision',
+        );
+        // The projection stops offering the interaction: the decision took effect.
+        transport.childInteractions = const [];
+        await client.threadCommands.readChildInteractions('thread');
+        expect(operation.state.value.observed, isTrue);
+        if (reenter) expect(newerOperation!.state.value.observed, isTrue);
+        expect(
+          client.threadCommands.state.commands,
+          isNot(contains('interaction:thread')),
+        );
+      },
     );
-    final entered = transport.interactions.stream.first;
-    final resolving = client.threadCommands.resolveChildInteraction(
-      'thread',
-      summary,
-      _resolution,
-    );
-    final call = await entered;
-    expect(call.hostThreadId, 'thread');
-    expect(call.interactionId, 'child-interaction');
-    expect(call.expectedRevision, 3);
-    expect(call.resolution, same(_resolution));
-    call.reply.complete(
-      InteractionCommandReply(
-        interaction: summary.interaction,
-        receipt: _identityReceipt(call.operationId),
-      ),
-    );
-    await resolving;
-    expect(
-      client.mutations.latest('interaction:thread')!.state.value.observed,
-      isFalse,
-      reason:
-          'The original child interaction is still pending in the projection',
-    );
-    // The projection stops offering the interaction: the decision took effect.
-    transport.childInteractions = const [];
-    await client.threadCommands.readChildInteractions('thread');
-    expect(
-      client.mutations.latest('interaction:thread')!.state.value.observed,
-      isTrue,
-    );
-    expect(
-      client.threadCommands.state.commands,
-      isNot(contains('interaction:thread')),
-    );
-  });
+  }
 
   test('a child session cannot host its own decision', () async {
     final transport = _Transport();
-    final client = _client(transport);
+    final client = await _client(transport);
     expect(
       client.threadDirectory.mergeOverlayThreads([_childThread()]),
       isTrue,

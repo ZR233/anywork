@@ -514,8 +514,9 @@ class _Footer extends StatelessWidget {
             fit: FlexFit.loose,
             child: _ConversationActivityHost(threadId: threadId),
           ),
-          _ComposerHost(compact: compact),
-          _StatusBarHost(
+          ComposerDockConnector(threadId: threadId, compact: compact),
+          ThreadStatusConnector(
+            threadId: threadId,
             showTodo: showTodo,
             todoExpanded: todoExpanded,
             onToggleTodo: onToggleTodo,
@@ -562,6 +563,10 @@ class _ConversationActivityHostState
   void didUpdateWidget(covariant _ConversationActivityHost oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.threadId == widget.threadId) return;
+    _clearDetail();
+  }
+
+  void _clearDetail() {
     _generation++;
     _expandedIdentity = null;
     _refreshQueued = false;
@@ -576,6 +581,9 @@ class _ConversationActivityHostState
         ?.activity;
     if (activity == null) return;
     _expandedIdentity = activity.identity;
+    if (_detail.matches(activity.identity) && _detail.error != null) {
+      _detail = const ThreadActivityDetailState();
+    }
     if (!_covers(activity)) {
       _requestLoad();
     }
@@ -661,7 +669,7 @@ class _ConversationActivityHostState
       final latest = ref
           .read(conversationActivityInputProvider(threadId))
           ?.activity;
-      if (!_needsDetail(latest ?? activity)) return;
+      if (!_needsDetail(latest)) return;
       if (latest != null && latest.identity != activity.identity) return;
       setState(() {
         _detail = ThreadActivityDetailState(
@@ -675,7 +683,7 @@ class _ConversationActivityHostState
       final latest = ref
           .read(conversationActivityInputProvider(threadId))
           ?.activity;
-      if (!_needsDetail(latest ?? activity)) return;
+      if (!_needsDetail(latest)) return;
       if (latest != null && latest.identity != activity.identity) return;
       setState(() {
         _detail = ThreadActivityDetailState(
@@ -691,6 +699,12 @@ class _ConversationActivityHostState
   Widget build(BuildContext context) {
     final input = ref.watch(conversationActivityInputProvider(widget.threadId));
     final activity = input?.activity;
+    if (activity == null &&
+        (_detail.identity != null ||
+            _inFlightIdentity != null ||
+            _expandedIdentity != null)) {
+      _clearDetail();
+    }
     if (_needsDetail(activity) && !_covers(activity!)) {
       _requestLoad();
     }
@@ -717,48 +731,5 @@ class _ConversationActivityHostState
       // Driver 可观察的是“实际展开态”，不是 `expandable` 的“可展开能力”。
       onExpandedChanged: StudioDriverState.publishActivityExpanded,
     );
-  }
-}
-
-class _StatusBarHost extends ConsumerWidget {
-  const _StatusBarHost({
-    required this.showTodo,
-    required this.todoExpanded,
-    required this.onToggleTodo,
-    this.showPlanEntry = false,
-    this.onOpenPlan,
-  });
-
-  final bool showTodo;
-  final bool todoExpanded;
-  final VoidCallback? onToggleTodo;
-  final bool showPlanEntry;
-  final VoidCallback? onOpenPlan;
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final threadId = ref.watch(shellSelectionProvider).selectedThreadId;
-    if (threadId == null) return const SizedBox.shrink();
-    return ThreadStatusConnector(
-      threadId: threadId,
-      showTodo: showTodo,
-      todoExpanded: todoExpanded,
-      onToggleTodo: onToggleTodo,
-      showPlanEntry: showPlanEntry,
-      onOpenPlan: onOpenPlan,
-    );
-  }
-}
-
-class _ComposerHost extends ConsumerWidget {
-  const _ComposerHost({required this.compact});
-
-  final bool compact;
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final threadId = ref.watch(shellSelectionProvider).selectedThreadId;
-    if (threadId == null) return const SizedBox.shrink();
-    return ComposerDock(threadId: threadId, compact: compact);
   }
 }

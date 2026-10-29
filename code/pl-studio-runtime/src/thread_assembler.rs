@@ -17,6 +17,7 @@ mod interaction_key;
 mod user_input;
 pub use user_input::{UserInteractionError, project_user_input};
 mod interaction_router;
+pub(crate) use interaction_key::encode as encode_interaction_key;
 pub use interaction_key::{InteractionKeyError, decode_interaction_key};
 pub use interaction_router::{StudioInteractionError, project_thread_interaction};
 mod approval;

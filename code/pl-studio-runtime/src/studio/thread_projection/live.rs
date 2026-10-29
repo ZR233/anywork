@@ -23,14 +23,16 @@ use pl_core::{
         AggregateChannel, ContentBlock, ModelTextChannel, ObservedItemKind, ObservedPart,
         ObservedPartIdentity, ObservedPartKind,
     },
-    thread::{ThreadEffectBatch, ThreadSnapshot, TurnRecord, TurnState},
+    thread::{ThreadEffectBatch, ThreadSnapshot, TurnState},
 };
 use pl_protocol::{
-    InteractionRequest, SkillActivationCause, SkillActivationResourceBase, ThreadAgentItem,
-    ThreadAgentState, ThreadAttachment, ThreadContentLifecycle, ThreadInferenceItem,
-    ThreadInferenceState, ThreadItem, ThreadItemState, ThreadRawItem, ThreadSkillItem,
-    ThreadTextChannel, ThreadTextItem, ThreadThinkingItem, ThreadToolItem, ThreadToolOutput,
-    ThreadToolState, Turn, TurnPhase,
+    InteractionContent, InteractionContinuationMessage, InteractionPurpose, InteractionRequest,
+    SkillActivationCause, SkillActivationResourceBase, ThreadAgentItem, ThreadAgentState,
+    ThreadAttachment, ThreadContentLifecycle, ThreadInferenceItem, ThreadInferenceState,
+    ThreadItem, ThreadItemState, ThreadRawItem, ThreadSkillItem, ThreadTextChannel, ThreadTextItem,
+    ThreadThinkingItem, ThreadToolItem, ThreadToolOutput, ThreadToolState, ToolApprovalState, Turn,
+    TurnCancellationCause, TurnPhase, TurnRolloverOutcome, UserInputAnswer, UserInputState,
+    UserQuestion, UserQuestionOption,
 };
 
 use super::ProjectionError;
@@ -90,6 +92,39 @@ pub(in crate::studio) enum TurnEvent {
 pub(in crate::studio) enum LiveEvent {
     Turn { turn: Turn, event: TurnEvent },
     Interaction(Box<InteractionRequest>),
+}
+
+impl LiveEvent {
+    /// Conservative retained-memory estimate of this one status-feed event.
+    ///
+    /// The estimate covers the event's own shell (`size_of::<LiveEvent>()`, an interaction's `Box`
+    /// pointer included) plus the independently owned variable-length bodies it carries: a Turn's
+    /// identities and its state's diagnostics, an interaction's scope, purpose, questions,
+    /// accepted answers, approval request, continuation and lifecycle reasons. It follows the same
+    /// style as the free `retained_bytes` item estimate below: every body is walked in place,
+    /// nothing is serialized or cloned into a `ThreadItem`, every keyed entry pays a fixed
+    /// [`RETAINED_ENTRY_OVERHEAD`] shell, and all arithmetic saturates. Content bodies are
+    /// deliberately absent from this vocabulary (see [`LiveEvent`]), so no event charges bytes the
+    /// content window owns, and the items a commit also produced are charged by
+    /// [`PreparedEffect::retained_bytes`] — a status-feed event is a separate resident fact, never
+    /// the shared `Arc` of a prepared batch.
+    ///
+    /// Shell contract: the value includes the element's own shell, so a caller holding a
+    /// `Vec<LiveEvent>` charges only its spare capacity on top — `(capacity - len) *
+    /// size_of::<LiveEvent>()` — instead of re-charging the shells of the elements it already
+    /// holds; an empty list therefore adds no dynamic budget.
+    pub(in crate::studio) fn retained_bytes(&self) -> u64 {
+        match self {
+            Self::Turn { turn, .. } => (std::mem::size_of::<Self>() as u64)
+                .saturating_add(turn.id.len() as u64)
+                .saturating_add(turn.thread_id.len() as u64)
+                .saturating_add(optional_bytes(turn.input_id.as_deref()))
+                .saturating_add(turn_state_bytes(&turn.state)),
+            Self::Interaction(interaction) => (std::mem::size_of::<Self>() as u64)
+                .saturating_add(std::mem::size_of::<InteractionRequest>() as u64)
+                .saturating_add(interaction_request_bytes(interaction)),
+        }
+    }
 }
 
 /// One in-flight streaming preview's resident fact.
@@ -278,6 +313,48 @@ fn review_delivery_facts(
     Ok(facts)
 }
 
+impl PreparedEffect {
+    /// Cheap retained-memory estimate of this prepared batch, owner-provided for the reliable
+    /// budget.
+    ///
+    /// This is the batch's one estimate — the very value the writer's reliable queue has always
+    /// charged at handoff — moved next to the content it sizes, so the projection owner that
+    /// builds a batch and the writer that budgets it can never drift into two formulas for one
+    /// fact. It stays the established conservative estimate rather than a claim of exact physical
+    /// memory: the items are summed by the free `retained_bytes` item estimate below (every
+    /// variable-length body plus each item's fixed shell), and each report-like message is charged as
+    /// `content * 2 + id + 256` — its context carries a second copy of the same content text, and the
+    /// fixed term covers the message shell and short identity fields. A parent report already held by
+    /// `terminal_retention` is excluded here because that managed owner carries its one charge.
+    /// Nothing is serialized, no second budget account is created, and the arithmetic saturates.
+    ///
+    /// Shell contract: the value includes each item's and the report's own shell, but not the
+    /// `items` vector's allocation — a caller holding that vector charges only its spare capacity
+    /// (`(capacity - len) * size_of::<ThreadItem>()`) on top of this method; an empty batch
+    /// without a report still estimates at zero.
+    pub(in crate::studio) fn retained_bytes(&self) -> u64 {
+        let parent_report = self.parent_report.as_ref().map_or(0, |message| {
+            if self.terminal_retention.is_some() {
+                0
+            } else {
+                (message.payload.content().len() as u64)
+                    .saturating_mul(2)
+                    .saturating_add(message.id.len() as u64)
+                    .saturating_add(256)
+            }
+        });
+        let review_delivery = self.review_delivery.iter().fold(0_u64, |bytes, fact| {
+            bytes
+                .saturating_add((fact.message.payload.content().len() as u64).saturating_mul(2))
+                .saturating_add(fact.message.id.len() as u64)
+                .saturating_add(256)
+        });
+        retained_bytes(&self.items)
+            .saturating_add(parent_report)
+            .saturating_add(review_delivery)
+    }
+}
+
 /// Cheap retained-memory estimate of one prepared batch.
 ///
 /// Every variable-length body a retained item can carry is summed — text, reasoning, tool
@@ -425,28 +502,36 @@ fn wait_bytes(wait: &pl_protocol::ThreadWaitPresentation) -> u64 {
     }
 }
 
+/// Question bodies of one user-input request, shared by every owner of [`UserQuestion`].
+///
+/// Both owners of the same questions — the tool item's typed history projection and the status
+/// feed's interaction event — score them with this one formula: header, question and option bodies
+/// plus a fixed entry shell per question and per option. A pending question's id is not charged;
+/// an accepted answer names it by id and that answer entry is charged on resolution, which is the
+/// split the tool-item estimate has always used.
+fn user_questions_bytes(questions: &[UserQuestion]) -> u64 {
+    questions.iter().fold(0_u64, |total, question| {
+        total
+            .saturating_add(question.header.len() as u64)
+            .saturating_add(question.question.len() as u64)
+            .saturating_add(question.options.as_ref().map_or(0, |options| {
+                options.iter().fold(0_u64, |total, option| {
+                    total
+                        .saturating_add(option.label.len() as u64)
+                        .saturating_add(option.description.len() as u64)
+                        .saturating_add(RETAINED_ENTRY_OVERHEAD)
+                })
+            }))
+            .saturating_add(RETAINED_ENTRY_OVERHEAD)
+    })
+}
+
 /// Questions and accepted answers of one user-input history projection.
 ///
 /// The question bodies and the answer values are resident here and in the content fields the window
 /// delivers, so the residency estimate charges every one of them exactly once per item.
 fn user_input_bytes(user_input: &pl_protocol::ThreadToolUserInput) -> u64 {
-    let questions = user_input
-        .questions()
-        .iter()
-        .fold(0_u64, |total, question| {
-            total
-                .saturating_add(question.header.len() as u64)
-                .saturating_add(question.question.len() as u64)
-                .saturating_add(question.options.as_ref().map_or(0, |options| {
-                    options.iter().fold(0_u64, |total, option| {
-                        total
-                            .saturating_add(option.label.len() as u64)
-                            .saturating_add(option.description.len() as u64)
-                            .saturating_add(RETAINED_ENTRY_OVERHEAD)
-                    })
-                }))
-                .saturating_add(RETAINED_ENTRY_OVERHEAD)
-        });
+    let questions = user_questions_bytes(user_input.questions());
     user_input
         .answers()
         .iter()
@@ -561,6 +646,209 @@ fn skill_bytes(skill: &ThreadSkillItem) -> u64 {
         SkillActivationResourceBase::Url { url } => url.len() as u64,
         SkillActivationResourceBase::Opaque { description } => description.len() as u64,
     })
+}
+
+/// Variable-length diagnostics one Turn lifecycle state holds beyond its inline scalars.
+///
+/// The state's scalar shell is already part of `Turn`'s inline layout, so only owned strings are
+/// charged: a failed Turn's structured failure, a coalesced cancellation's target identity and a
+/// budget rollover's error. Every other variant carries only timestamps and copied discriminants.
+fn turn_state_bytes(state: &pl_protocol::TurnState) -> u64 {
+    match state {
+        pl_protocol::TurnState::Queued(_) | pl_protocol::TurnState::Running(_) => 0,
+        pl_protocol::TurnState::Completed(_) => 0,
+        pl_protocol::TurnState::Cancelled(state) => match state.cause() {
+            TurnCancellationCause::Coalesced { target_turn_id } => target_turn_id.len() as u64,
+            TurnCancellationCause::Unspecified
+            | TurnCancellationCause::UserRequested
+            | TurnCancellationCause::RuntimeShutdown
+            | TurnCancellationCause::AgentClosed
+            | TurnCancellationCause::Interrupted
+            | TurnCancellationCause::Recovery => 0,
+        },
+        pl_protocol::TurnState::Failed(state) => {
+            let failure = state.failure();
+            optional_bytes(failure.code.as_deref()).saturating_add(failure.message.len() as u64)
+        }
+        pl_protocol::TurnState::BudgetLimited(state) => match state.rollover() {
+            TurnRolloverOutcome::Failed { error } => error.len() as u64,
+            TurnRolloverOutcome::NotAttempted | TurnRolloverOutcome::Succeeded => 0,
+        },
+    }
+}
+
+/// Variable-length bodies one interaction aggregate holds beyond its inline shells.
+///
+/// The interaction is boxed inside [`LiveEvent`], so its heap shell is charged separately by
+/// [`LiveEvent::retained_bytes`]; this walks only the owned strings, the question and answer bodies
+/// and the opaque approval arguments.
+fn interaction_request_bytes(interaction: &InteractionRequest) -> u64 {
+    let scope = &interaction.scope;
+    let mut bytes = (interaction.interaction_id.len() as u64)
+        .saturating_add(scope.thread_id.len() as u64)
+        .saturating_add(scope.turn_id.len() as u64)
+        .saturating_add(optional_bytes(scope.item_id.as_deref()))
+        .saturating_add(optional_bytes(scope.tool_id.as_deref()))
+        .saturating_add(optional_bytes(scope.agent_path.as_deref()))
+        .saturating_add(interaction_purpose_bytes(&scope.purpose))
+        .saturating_add(interaction_content_bytes(&interaction.content));
+    if let Some(continuation) = &interaction.continuation {
+        bytes = bytes.saturating_add(match &continuation.message {
+            InteractionContinuationMessage::Resolution => 0,
+            InteractionContinuationMessage::Question { question_id } => question_id.len() as u64,
+        });
+    }
+    bytes
+}
+
+/// Owned identity strings one interaction purpose carries; the general purpose carries none.
+fn interaction_purpose_bytes(purpose: &InteractionPurpose) -> u64 {
+    match purpose {
+        InteractionPurpose::General => 0,
+        InteractionPurpose::AgentSessionPlanConfirmation(purpose) => (purpose.operation_id.len()
+            as u64)
+            .saturating_add(purpose.argument_hash.len() as u64)
+            .saturating_add(purpose.plan_hash.len() as u64),
+    }
+}
+
+/// Event-only estimate of one user-input request's questions.
+///
+/// Unlike the shared history formula ([`user_questions_bytes`]), a status-feed
+/// event keeps every question — pending or resolved — resident on its own, so
+/// each question's id is charged here. The slice arrives through a borrowed
+/// `&[UserQuestion]`, whose capacity is not public; the element shells are
+/// therefore a logical estimate over the initialized elements, and each public
+/// `String`/`Vec` body is charged by its visible capacity plus element shells.
+/// Inline `String`/`Vec` stack shells are already part of
+/// `size_of::<UserQuestion>()` and are never charged twice.
+fn event_user_questions_bytes(questions: &[UserQuestion]) -> u64 {
+    let mut bytes =
+        (std::mem::size_of::<UserQuestion>() as u64).saturating_mul(questions.len() as u64);
+    for question in questions {
+        bytes = bytes
+            .saturating_add(question.id.capacity() as u64)
+            .saturating_add(question.header.capacity() as u64)
+            .saturating_add(question.question.capacity() as u64);
+        if let Some(options) = &question.options {
+            bytes = bytes.saturating_add(
+                (std::mem::size_of::<UserQuestionOption>() as u64)
+                    .saturating_mul(options.capacity() as u64),
+            );
+            for option in options {
+                bytes = bytes
+                    .saturating_add(option.label.capacity() as u64)
+                    .saturating_add(option.description.capacity() as u64);
+            }
+        }
+    }
+    bytes
+}
+
+/// Event-only recursive heap estimate of one opaque JSON body.
+///
+/// Scalars carry no heap of their own; a string charges its visible capacity,
+/// an array charges its capacity in `Value` shells plus each element's dynamic
+/// bodies, and an object charges one logical entry shell per visible
+/// `(key, value)` pair plus both sides' dynamic bodies. This intentionally does
+/// not guess private map-node or allocator metadata, which the budget contract
+/// already documents as out of scope.
+fn event_json_heap_bytes(value: &serde_json::Value) -> u64 {
+    match value {
+        serde_json::Value::Null | serde_json::Value::Bool(_) | serde_json::Value::Number(_) => 0,
+        serde_json::Value::String(text) => text.capacity() as u64,
+        serde_json::Value::Array(values) => {
+            let mut bytes = (std::mem::size_of::<serde_json::Value>() as u64)
+                .saturating_mul(values.capacity() as u64);
+            for value in values {
+                bytes = bytes.saturating_add(event_json_heap_bytes(value));
+            }
+            bytes
+        }
+        serde_json::Value::Object(entries) => {
+            let entry_shell = (std::mem::size_of::<String>() as u64)
+                .saturating_add(std::mem::size_of::<serde_json::Value>() as u64);
+            let mut bytes = 0_u64;
+            for (key, value) in entries {
+                bytes = bytes
+                    .saturating_add(entry_shell)
+                    .saturating_add(key.capacity() as u64)
+                    .saturating_add(event_json_heap_bytes(value));
+            }
+            bytes
+        }
+    }
+}
+
+/// Questions, answers and approval bodies of one interaction's typed content.
+///
+/// This is the status-feed event path: questions use [`event_user_questions_bytes`]
+/// (every pending id is charged) and approval arguments use the event-only JSON
+/// heap walk, keeping the shared history formula untouched.
+fn interaction_content_bytes(content: &InteractionContent) -> u64 {
+    match content {
+        InteractionContent::UserInput(user_input) => {
+            event_user_questions_bytes(user_input.questions())
+                .saturating_add(user_input_state_bytes(user_input.state()))
+        }
+        InteractionContent::ToolApproval(tool_approval) => {
+            let request = tool_approval.request();
+            (request.name.len() as u64)
+                .saturating_add(event_json_heap_bytes(&request.arguments))
+                .saturating_add(optional_bytes(request.working_directory.as_deref()))
+                .saturating_add(optional_bytes(request.parent_agent_id.as_deref()))
+                .saturating_add(tool_approval_state_bytes(tool_approval.state()))
+        }
+    }
+}
+
+/// Operation identities, accepted answers and cancellation reasons of one user-input interaction.
+///
+/// Event-path estimate: every public `String` charges its visible capacity, the
+/// resolved answer map pays one logical entry shell per visible `(key, value)`
+/// pair (the private hash node stays uncharged), and each answer's `Vec` pays
+/// its capacity in `String` shells plus the strings' own dynamic bodies. Inline
+/// stack shells already sit inside the entry shell and are never re-charged.
+fn user_input_state_bytes(state: &UserInputState) -> u64 {
+    match state {
+        UserInputState::Pending(state) => state.operation_id().len() as u64,
+        UserInputState::Resolved(state) => {
+            let entry_shell = (std::mem::size_of::<String>() as u64)
+                .saturating_add(std::mem::size_of::<UserInputAnswer>() as u64);
+            let mut bytes = state.operation_id().len() as u64;
+            for (question_id, answer) in state.answers() {
+                bytes = bytes
+                    .saturating_add(entry_shell)
+                    .saturating_add(question_id.capacity() as u64)
+                    .saturating_add(
+                        (std::mem::size_of::<String>() as u64)
+                            .saturating_mul(answer.answers.capacity() as u64),
+                    );
+                for value in &answer.answers {
+                    bytes = bytes.saturating_add(value.capacity() as u64);
+                }
+            }
+            bytes
+        }
+        UserInputState::Cancelled(state) => {
+            (state.operation_id().len() as u64).saturating_add(state.reason().len() as u64)
+        }
+        UserInputState::Expired(state) => state.operation_id().len() as u64,
+    }
+}
+
+/// Operation identities and decision reasons of one tool-approval interaction.
+fn tool_approval_state_bytes(state: &ToolApprovalState) -> u64 {
+    match state {
+        ToolApprovalState::Pending(state) => state.operation_id().len() as u64,
+        ToolApprovalState::Resolved(state) => {
+            (state.operation_id().len() as u64).saturating_add(optional_bytes(state.reason()))
+        }
+        ToolApprovalState::Cancelled(state) => {
+            (state.operation_id().len() as u64).saturating_add(state.reason().len() as u64)
+        }
+        ToolApprovalState::Expired(state) => state.operation_id().len() as u64,
+    }
 }
 
 /// The facts a parent/child report and the directory summary need from one Turn.
@@ -945,6 +1233,9 @@ impl LiveProjection {
     /// save queue, so "the writer confirmed this identity" always means "the session already holds
     /// it": there is no save-before-publish interleaving and no hidden confirmation table.
     ///
+    /// `deliver` controls only outward frame materialization. Phase, hidden-input and Turn identity
+    /// maintenance, session publication and the reliable prepared batch never depend on demand.
+    ///
     /// # Errors
     /// Returns a projection failure when the effect references facts this projection cannot resolve
     /// from memory. The caller reports it, so the durable barrier fails closed with the real reason
@@ -955,7 +1246,8 @@ impl LiveProjection {
         thread: &pl_protocol::Thread,
         effect: &ThreadEffectBatch,
         state: &ThreadSnapshot,
-    ) -> Result<(Vec<LiveEvent>, Arc<PreparedEffect>), ProjectionError> {
+        deliver: bool,
+    ) -> Result<(Option<Vec<LiveEvent>>, Arc<PreparedEffect>), ProjectionError> {
         let prepared = self.project(chat, thread, effect, state)?;
         for item in &prepared.items {
             chat.publish(
@@ -964,10 +1256,12 @@ impl LiveProjection {
             )
             .map_err(|error| ProjectionError::History(error.to_string()))?;
         }
-        let mut events = Vec::new();
+        let mut events = deliver.then(Vec::new);
         self.emit_frames(thread, effect, state, &mut events)?;
-        if let Some(canonical) = super::prepared_terminal_turn(&prepared) {
-            for event in &mut events {
+        if let Some(events) = events.as_mut()
+            && let Some(canonical) = super::prepared_terminal_turn(&prepared)
+        {
+            for event in events {
                 if let LiveEvent::Turn { turn, .. } = event
                     && turn.id == canonical.id
                 {
@@ -1145,7 +1439,7 @@ impl LiveProjection {
                         previous.updated_at,
                     )
                 });
-            let changed = self.content_changed(item.id.as_str(), item, &existing);
+            let changed = self.content_changed(item.id.as_str(), item, &existing)?;
             item.revision = match (self.revisions.get(item.id.as_str()).copied(), changed) {
                 (Some(current), false) => current,
                 _ => self.bump_content_revision(&item.id),
@@ -1544,7 +1838,8 @@ impl LiveProjection {
                     LivePreview {
                         fields: crate::studio::runtime::chat_item::content_fields(
                             committed.state(),
-                        ),
+                        )
+                        .map_err(|error| ProjectionError::History(error.to_string()))?,
                         // A tool-output preview is keyed by the call identity, not by a provider
                         // observation, so it never enters the provider observation index.
                         observed: None,
@@ -1677,27 +1972,29 @@ impl LiveProjection {
         id: &str,
         item: &ThreadItem,
         existing: &BTreeMap<String, ThreadItem>,
-    ) -> bool {
-        let candidate_fields = crate::studio::runtime::chat_item::content_fields(item.state());
+    ) -> Result<bool, ProjectionError> {
+        let candidate_fields = crate::studio::runtime::chat_item::content_fields(item.state())
+            .map_err(|error| ProjectionError::History(error.to_string()))?;
         let candidate_shape = static_state(item.state());
         if let Some(preview) = self.previews.get(id) {
-            return preview.shape != candidate_shape
-                || !fields_equal(&candidate_fields, &preview.fields);
+            return Ok(preview.shape != candidate_shape
+                || !fields_equal(&candidate_fields, &preview.fields));
         }
         // A committed fact resident in memory wins; on cold recovery the canonical fact resolved by
         // this pass is compared the same way, so a payload identical to the stored one is not treated
         // as a first delivery and does not raise the version for nothing.
-        match self.items.get(id).or_else(|| existing.get(id)) {
+        Ok(match self.items.get(id).or_else(|| existing.get(id)) {
             Some(previous) => {
                 previous.turn_id != item.turn_id
                     || static_state(previous.state()) != candidate_shape
                     || !fields_equal(
                         &candidate_fields,
-                        &crate::studio::runtime::chat_item::content_fields(previous.state()),
+                        &crate::studio::runtime::chat_item::content_fields(previous.state())
+                            .map_err(|error| ProjectionError::History(error.to_string()))?,
                     )
             }
             None => true,
-        }
+        })
     }
 
     /// Resolves one effect's identities: canonical payloads this projection holds, plus the orders a
@@ -1809,7 +2106,7 @@ impl LiveProjection {
         }
     }
 
-    /// Emits the Turn and interaction frames one committed effect produced.
+    /// Maintains lifecycle continuity and optionally emits this effect's Turn and interaction frames.
     ///
     /// The frames are derived from the same effect-matched state the content was projected from, so
     /// a live subscriber and durable history describe one commit rather than two drifting views.
@@ -1818,7 +2115,7 @@ impl LiveProjection {
         thread: &pl_protocol::Thread,
         effect: &ThreadEffectBatch,
         state: &ThreadSnapshot,
-        events: &mut Vec<LiveEvent>,
+        events: &mut Option<Vec<LiveEvent>>,
     ) -> Result<(), ProjectionError> {
         if let Some(record) = &effect.turn {
             let event = if record.state == TurnState::Running {
@@ -1831,14 +2128,6 @@ impl LiveProjection {
                 self.turns_seen.insert(record.turn_id.clone());
                 TurnEvent::Completed
             };
-            let turn = super::turns::project_turn(
-                &thread.id,
-                state,
-                record,
-                effect.committed_at,
-                effect.committed_at,
-                effect.sequence,
-            )?;
             if record.state == TurnState::Running {
                 self.turn_phases.insert(
                     record.turn_id.clone(),
@@ -1847,45 +2136,67 @@ impl LiveProjection {
             } else {
                 self.turn_phases.remove(&record.turn_id);
             }
-            events.push(LiveEvent::Turn { turn, event });
+            if let Some(events) = events.as_mut() {
+                let turn = super::turns::project_turn(
+                    &thread.id,
+                    state,
+                    record,
+                    effect.committed_at,
+                    effect.committed_at,
+                    effect.sequence,
+                )?;
+                events.push(LiveEvent::Turn { turn, event });
+            }
         }
         // A Turn record is only committed when a Turn starts or finishes, but a task start, a tool
         // completion or a model attempt commit changes the running Turn's derived phase. Publishing
         // each real phase transition keeps the activity row on the canonical phase instead of the
         // phase captured at Turn start. The frame carries the same revision as the item updates of
         // this effect, so a late busy frame can never outrank the terminal Turn.
-        for record in self.phase_advances(state) {
+        for record in state.turns.iter() {
+            if record.state != TurnState::Running {
+                continue;
+            }
+            let phase = super::turns::phase(state, &record.turn_id);
+            if self.turn_phases.get(&record.turn_id) == Some(&phase) {
+                continue;
+            }
+            self.turn_phases.insert(record.turn_id.clone(), phase);
             let event = if self.turns_seen.insert(record.turn_id.clone()) {
                 TurnEvent::Started
             } else {
                 TurnEvent::Updated
             };
-            let turn = super::turns::project_turn(
-                &thread.id,
-                state,
-                &record,
-                effect.committed_at,
-                effect.committed_at,
-                effect.sequence,
-            )?;
-            events.push(LiveEvent::Turn { turn, event });
-        }
-        for record in effect.interactions.iter() {
-            if let Ok(Some(interaction)) = crate::thread_assembler::project_thread_interaction(
-                &thread.id,
-                &record.request.id,
-                state,
-            ) {
-                events.push(LiveEvent::Interaction(Box::new(interaction)));
+            if let Some(events) = events.as_mut() {
+                let turn = super::turns::project_turn(
+                    &thread.id,
+                    state,
+                    record,
+                    effect.committed_at,
+                    effect.committed_at,
+                    effect.sequence,
+                )?;
+                events.push(LiveEvent::Turn { turn, event });
             }
         }
-        for permission in effect.permissions.iter() {
-            if let Ok(Some(interaction)) = crate::thread_assembler::project_thread_interaction(
-                &thread.id,
-                &permission.id,
-                state,
-            ) {
-                events.push(LiveEvent::Interaction(Box::new(interaction)));
+        if let Some(events) = events.as_mut() {
+            for record in effect.interactions.iter() {
+                if let Ok(Some(interaction)) = crate::thread_assembler::project_thread_interaction(
+                    &thread.id,
+                    &record.request.id,
+                    state,
+                ) {
+                    events.push(LiveEvent::Interaction(Box::new(interaction)));
+                }
+            }
+            for permission in effect.permissions.iter() {
+                if let Ok(Some(interaction)) = crate::thread_assembler::project_thread_interaction(
+                    &thread.id,
+                    &permission.id,
+                    state,
+                ) {
+                    events.push(LiveEvent::Interaction(Box::new(interaction)));
+                }
             }
         }
         let mut active_inputs = state
@@ -1901,23 +2212,6 @@ impl LiveProjection {
         self.hidden_inputs
             .retain(|id| active_inputs.contains(id.as_str()));
         Ok(())
-    }
-
-    /// Running Turns whose canonical phase changed since the last published Turn frame.
-    fn phase_advances(&mut self, state: &ThreadSnapshot) -> Vec<TurnRecord> {
-        let mut advanced = Vec::new();
-        for record in state.turns.iter() {
-            if record.state != TurnState::Running {
-                continue;
-            }
-            let phase = super::turns::phase(state, &record.turn_id);
-            if self.turn_phases.get(&record.turn_id) == Some(&phase) {
-                continue;
-            }
-            self.turn_phases.insert(record.turn_id.clone(), phase);
-            advanced.push(record.clone());
-        }
-        advanced
     }
 
     /// Records one projected payload and keeps its revision strictly monotonic.

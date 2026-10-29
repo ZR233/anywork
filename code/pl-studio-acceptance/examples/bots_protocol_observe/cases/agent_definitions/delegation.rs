@@ -215,7 +215,7 @@ impl Observation<'_> {
 
     async fn assert_child_completed(&self, child: &str, turn_id: &str) -> Result<()> {
         let page = self.session.http()?.read_timeline(child, 100).await?;
-        ensure!(page.items.iter().any(|item| item.preview.turn_id == turn_id && matches!(item.preview.state(), pl_protocol::ThreadItemState::Turn(turn) if matches!(turn.state(), pl_protocol::TurnState::Completed(_)))), "original child Turn {turn_id} did not complete successfully");
+        ensure!(page.items.iter().any(|item| item.header.turn_id == turn_id && matches!(&item.descriptor, pl_protocol::TimelineDescriptor::Turn(turn) if matches!(turn.state(), pl_protocol::TurnState::Completed(_)))), "original child Turn {turn_id} did not complete successfully");
         Ok(())
     }
 
@@ -232,11 +232,15 @@ impl Observation<'_> {
             if page
                 .items
                 .iter()
-                .filter_map(|item| item.preview.tool())
+                .filter_map(|item| match &item.descriptor {
+                    pl_protocol::TimelineDescriptor::Tool(tool) => Some(tool),
+                    _ => None,
+                })
                 .any(|tool| {
-                    tool.invocation().tool_call_id() == call_id
+                    tool.invocation.tool_call_id == call_id
                         && tool
-                            .wait()
+                            .wait
+                            .as_ref()
                             .is_some_and(|wait| wait.state() == ThreadWaitState::Waiting)
                 })
             {

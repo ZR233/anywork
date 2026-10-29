@@ -5,15 +5,20 @@
 
 import '../../../frb_generated.dart';
 import 'attachment.dart';
+import 'chat/descriptor.dart';
+import 'delegation.dart';
+import 'error.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'package:freezed_annotation/freezed_annotation.dart' hide protected;
 
+import 'runtime.dart';
+import 'thread_activity.dart';
 import 'thread_stream.dart';
 import 'thread_stream/item.dart';
 part 'chat.freezed.dart';
 
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
 
 @freezed
 sealed class BridgeContentField with _$BridgeContentField {
@@ -41,6 +46,58 @@ sealed class BridgeContentField with _$BridgeContentField {
   /// 原始记录的一段正文：它在原记录里的顺序。
   const factory BridgeContentField.rawPayload({required int payloadIndex}) =
       BridgeContentField_RawPayload;
+}
+
+@freezed
+sealed class BridgeConversationEvent with _$BridgeConversationEvent {
+  const BridgeConversationEvent._();
+
+  const factory BridgeConversationEvent.state({
+    required BridgeThreadSubscriptionUpdate update,
+  }) = BridgeConversationEvent_State;
+  const factory BridgeConversationEvent.contentBaseline({
+    required BridgeTimelineBaseline baseline,
+  }) = BridgeConversationEvent_ContentBaseline;
+  const factory BridgeConversationEvent.contentUpdate({
+    required BridgeTimelineUpdate update,
+  }) = BridgeConversationEvent_ContentUpdate;
+  const factory BridgeConversationEvent.failure({required BridgeError error}) =
+      BridgeConversationEvent_Failure;
+  const factory BridgeConversationEvent.closed() =
+      BridgeConversationEvent_Closed;
+}
+
+/// Transport sequence is independent of both domain watermarks. Terminal events reuse the last
+/// data sequence (zero before the first data frame) and never consume credit.
+class BridgeConversationFrame {
+  final String threadId;
+  final String subscriptionId;
+  final BigInt deliverySequence;
+  final BridgeConversationEvent event;
+
+  const BridgeConversationFrame({
+    required this.threadId,
+    required this.subscriptionId,
+    required this.deliverySequence,
+    required this.event,
+  });
+
+  @override
+  int get hashCode =>
+      threadId.hashCode ^
+      subscriptionId.hashCode ^
+      deliverySequence.hashCode ^
+      event.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeConversationFrame &&
+          runtimeType == other.runtimeType &&
+          threadId == other.threadId &&
+          subscriptionId == other.subscriptionId &&
+          deliverySequence == other.deliverySequence &&
+          event == other.event;
 }
 
 @freezed
@@ -121,12 +178,10 @@ sealed class BridgeTimelineChange with _$BridgeTimelineChange {
     required String itemId,
     required BigInt expectedRevision,
     required BigInt revision,
-
-    /// 条目级省略量：全部字段完整长度与本次预览字节数之差的合计。
-    required BigInt omittedBytes,
     required bool saved,
     required BridgeTimelineLifecycle lifecycle,
-    BridgeThreadItem? itemShell,
+    BridgeTimelineItemHeader? header,
+    BridgeTimelineDescriptor? descriptor,
     required List<BridgeTimelineFieldUpdate> fields,
   }) = BridgeTimelineChange_UpdateItem;
 
@@ -209,42 +264,6 @@ class BridgeTimelineDetailQuery {
           maxBytes == other.maxBytes;
 }
 
-/// 一个内容字段的详情引用：完整正文按 `(item, field, revision)` 读取。
-class BridgeTimelineDetailRef {
-  final BridgeContentField field;
-  final BigInt revision;
-
-  /// 该字段完整正文的 UTF-8 字节数。
-  final BigInt totalBytes;
-
-  /// 本次预览实际携带的字节数。
-  final BigInt previewBytes;
-
-  const BridgeTimelineDetailRef({
-    required this.field,
-    required this.revision,
-    required this.totalBytes,
-    required this.previewBytes,
-  });
-
-  @override
-  int get hashCode =>
-      field.hashCode ^
-      revision.hashCode ^
-      totalBytes.hashCode ^
-      previewBytes.hashCode;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is BridgeTimelineDetailRef &&
-          runtimeType == other.runtimeType &&
-          field == other.field &&
-          revision == other.revision &&
-          totalBytes == other.totalBytes &&
-          previewBytes == other.previewBytes;
-}
-
 @freezed
 sealed class BridgeTimelineFieldChange with _$BridgeTimelineFieldChange {
   const BridgeTimelineFieldChange._();
@@ -264,6 +283,30 @@ sealed class BridgeTimelineFieldChange with _$BridgeTimelineFieldChange {
   /// 该字段已从条目移除。
   const factory BridgeTimelineFieldChange.remove() =
       BridgeTimelineFieldChange_Remove;
+}
+
+class BridgeTimelineFieldPreview {
+  final BridgeContentField field;
+  final String text;
+  final BigInt totalBytes;
+
+  const BridgeTimelineFieldPreview({
+    required this.field,
+    required this.text,
+    required this.totalBytes,
+  });
+
+  @override
+  int get hashCode => field.hashCode ^ text.hashCode ^ totalBytes.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeTimelineFieldPreview &&
+          runtimeType == other.runtimeType &&
+          field == other.field &&
+          text == other.text &&
+          totalBytes == other.totalBytes;
 }
 
 /// 同一 item 的一个字段变化。
@@ -304,44 +347,46 @@ class BridgeTimelineFieldUpdate {
 
 /// 一条时间线条目的预览值。
 class BridgeTimelineItem {
-  final BridgeThreadItem item;
+  final BridgeTimelineItemHeader header;
+  final BigInt revision;
+  final BridgeTimelineDescriptor descriptor;
   final BridgeTimelineItemSource source;
   final bool saved;
   final BridgeTimelineLifecycle lifecycle;
-
-  /// 预览省略的正文总字节数；零表示所有字段都是完整正文。
-  final BigInt omittedBytes;
-  final List<BridgeTimelineDetailRef> details;
+  final List<BridgeTimelineFieldPreview> fields;
 
   const BridgeTimelineItem({
-    required this.item,
+    required this.header,
+    required this.revision,
+    required this.descriptor,
     required this.source,
     required this.saved,
     required this.lifecycle,
-    required this.omittedBytes,
-    required this.details,
+    required this.fields,
   });
 
   @override
   int get hashCode =>
-      item.hashCode ^
+      header.hashCode ^
+      revision.hashCode ^
+      descriptor.hashCode ^
       source.hashCode ^
       saved.hashCode ^
       lifecycle.hashCode ^
-      omittedBytes.hashCode ^
-      details.hashCode;
+      fields.hashCode;
 
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
       other is BridgeTimelineItem &&
           runtimeType == other.runtimeType &&
-          item == other.item &&
+          header == other.header &&
+          revision == other.revision &&
+          descriptor == other.descriptor &&
           source == other.source &&
           saved == other.saved &&
           lifecycle == other.lifecycle &&
-          omittedBytes == other.omittedBytes &&
-          details == other.details;
+          fields == other.fields;
 }
 
 @freezed

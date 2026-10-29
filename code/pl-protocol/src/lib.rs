@@ -106,11 +106,16 @@ pub use observed_state::{
 };
 pub use permission::PermissionLevel;
 pub use timeline_content::{
-    ThreadContentField, ThreadUserInputFieldPart, TimelineChange, TimelineDetailChunk,
-    TimelineDetailCursor, TimelineDetailQuery, TimelineDetailRef, TimelineFieldChange,
-    TimelineFieldUpdate, TimelineItem, TimelineItemSource, TimelineLifecycle, TimelinePage,
-    TimelinePageCursor, TimelinePageQuery, TimelinePriority, TimelineRecoveryNotice,
-    TimelineResyncReason, TimelineTailBaseline, TimelineTailUpdate,
+    ThreadContentField, ThreadUserInputFieldPart, TimelineAnswerDescriptor, TimelineChange,
+    TimelineDescriptor, TimelineDetailChunk, TimelineDetailCursor, TimelineDetailQuery,
+    TimelineDetailRef, TimelineFieldChange, TimelineFieldPreview, TimelineFieldUpdate,
+    TimelineItem, TimelineItemHeader, TimelineItemSource, TimelineLifecycle, TimelinePage,
+    TimelinePageCursor, TimelinePageQuery, TimelinePriority, TimelineQuestionDescriptor,
+    TimelineRawDescriptor, TimelineRawPayloadDescriptor, TimelineRecoveryNotice,
+    TimelineResyncReason, TimelineTailBaseline, TimelineTailUpdate, TimelineTextDescriptor,
+    TimelineThinkingDescriptor, TimelineToolDescriptor, TimelineToolInvocation,
+    TimelineToolOutputDescriptor, TimelineToolState, TimelineUserInputDescriptor,
+    TimelineUserInputState,
 };
 // 持久化观测契约（队列压力、逐 Thread 水位）同时由 runtime 协调器与其上层
 // bridge/HTTP 适配器命名，因此在 crate 根重导出，消费方无需再拼 `studio::` 路径。

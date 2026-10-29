@@ -171,7 +171,7 @@ impl Inputs {
             };
             git_value(
                 evidence,
-                &workspace,
+                workspace,
                 "git/preparation/head",
                 &["rev-parse", "--verify", "HEAD"],
                 scene,
@@ -186,7 +186,7 @@ impl Inputs {
             ] {
                 let output = git_value(
                     evidence,
-                    &workspace,
+                    workspace,
                     &format!("git/preparation/{name}"),
                     &args,
                     scene,

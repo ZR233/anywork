@@ -7,7 +7,9 @@
 //! 这里不缓存第二份正文，也不重建客户端基线。
 
 mod field;
+pub(super) mod meta;
 pub(crate) mod preview;
+pub(super) mod restore;
 
 use anyhow::Result;
 use pl_core::chat::{
@@ -21,10 +23,10 @@ use pl_protocol::{
 };
 
 use super::StudioRuntime;
-use super::chat_item::item_shell;
 use field::{
     core_field, detail_cursor, encode_detail_cursor, encode_page_cursor, page_cursor, wire_field,
 };
+use meta::TimelineMeta;
 use preview::timeline_item;
 
 /// 一个 Thread 的内容句柄：捕获同一共享 `Session` 与 Thread 身份。
@@ -42,6 +44,18 @@ impl TimelineContentReader {
     /// 本句柄所属的 Thread 身份。
     pub fn thread_id(&self) -> &str {
         &self.thread.id
+    }
+
+    /// 复核本句柄的恢复读准入：与分页、详情和尾部建立共用同一 Registry 决策。
+    ///
+    /// 组合观察在交付已捕获的基线或已就绪事件前调用它——仍使用原已登记接收者与原捕获
+    /// 基线，不为检查重新订阅或重读正文。`AccessBlocked` 拒绝读取，执行阻塞与 advisory
+    /// 不额外禁止健康历史；失败保留原类型化错误。
+    ///
+    /// # Errors
+    /// 传播 [`crate::studio::StudioRecoveryRegistry::ensure_thread_read_access`] 的类型化失败。
+    pub(crate) fn ensure_read_access(&self) -> Result<()> {
+        self.recovery.ensure_thread_read_access(&self.thread)
     }
 
     /// 读一页最新或更旧的 keyset 页。
@@ -228,7 +242,7 @@ impl TimelineTailStream {
                 item_id,
                 expected_revision,
                 revision,
-                omitted_bytes,
+                omitted_bytes: _,
                 saved,
                 lifecycle,
                 meta,
@@ -246,17 +260,24 @@ impl TimelineTailStream {
                         preview_bytes: update.preview_bytes,
                     });
                 }
+                let meta = meta.as_deref().map(TimelineMeta::decode).transpose()?;
+                let (header, descriptor) = match meta {
+                    Some(meta) => {
+                        if meta.header.id != item_id {
+                            return self.protocol_gap();
+                        }
+                        (Some(meta.header), Some(Box::new(meta.descriptor)))
+                    }
+                    None => (None, None),
+                };
                 TimelineChange::UpdateItem {
                     item_id,
                     expected_revision,
                     revision,
-                    omitted_bytes,
                     saved,
                     lifecycle: lifecycle_of(lifecycle),
-                    item_shell: meta
-                        .as_deref()
-                        .map(|bytes| item_shell(bytes, revision).map(Box::new))
-                        .transpose()?,
+                    header,
+                    descriptor,
                     fields: converted,
                 }
             }
@@ -292,12 +313,14 @@ fn field_change(change: FieldChange) -> TimelineFieldChange {
 impl StudioRuntime {
     /// 打开一个 Thread 的内容句柄：捕获同一共享 `Session` 与 Thread 身份。
     ///
-    /// 建立句柄前显式准备已有历史结构与检查点表示，再只读校验 durable checkpoint 栅栏：栅栏未
-    /// 满足时类型化 `Busy` 失败闭锁，绝不返回落后行、也绝不因此激活 owner／flush writer／触发恢复。
+    /// 建立句柄时由存储所有者显式准备当前历史格式并校验 durable checkpoint 栅栏；之后页与详情纯读。
+    /// 准备不创建缺失历史库、不激活执行 owner、不 flush writer，也不重放副作用。
     ///
     /// # Errors
-    /// 未知 Thread 身份，或 history 落后于 durable checkpoint 栅栏（`Busy`）。
+    /// 未知 Thread、存储/迁移失败，或 history 落后于 durable checkpoint 栅栏（`Busy`）。
     pub async fn timeline_reader(&self, thread_id: &str) -> Result<TimelineContentReader> {
+        // 该入口由存储重构提供，负责 prepare_history_access + 只读 checkpoint fence；
+        // 不在读取映射复制迁移或为旧结构保留 fallback。
         self.prepare_timeline_history(thread_id).await?;
         self.timeline_projection_reader(thread_id).await
     }
@@ -343,7 +366,7 @@ impl StudioRuntime {
         item_id: &str,
         query: &TimelineDetailQuery,
     ) -> Result<TimelineDetailChunk> {
-        self.timeline_projection_reader(thread_id)
+        self.timeline_reader(thread_id)
             .await?
             .read_detail(item_id, query)
             .await

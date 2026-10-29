@@ -77,6 +77,9 @@ struct LiveSubscription {
     /// Owner state captured right after receiver registration and before the persistence barrier;
     /// the first frame reports it so effects committed past it are still delivered as notifications.
     baseline: Option<ThreadSnapshot>,
+    /// The first snapshot already represents these live owner/catalog facts.
+    baseline_observation_revision: u64,
+    baseline_catalog_revision: u64,
     pending: VecDeque<ThreadSubscriptionUpdate>,
     /// Deadline of the current display-throttle window for a queue of only-coalescable frames.
     observation_due: Option<Instant>,
@@ -147,6 +150,7 @@ impl LiveSubscription {
             .baseline
             .take()
             .unwrap_or_else(|| self.handle.snapshot());
+        self.baseline_observation_revision = state.observation_revision;
         self.applied = state.commit_sequence;
         self.revision = state.commit_sequence;
         let usage = runtime
@@ -159,7 +163,7 @@ impl LiveSubscription {
             &usage,
             persistence.as_ref(),
         )?;
-        runtime.annotate_model_route(&mut snapshot)?;
+        self.baseline_catalog_revision = runtime.annotate_model_route(&mut snapshot)?;
         runtime.annotate_mode_availability(&mut snapshot);
         // The first frame carries the authoritative activity and the owner's typed storage state;
         // later frames only carry them when they really changed. Reading the owner's own value here
@@ -385,7 +389,19 @@ impl LiveSubscription {
                     self.push(change);
                 }
             }
-            ThreadLiveEvent::Runtime { runtime } => {
+            ThreadLiveEvent::Runtime {
+                observation_revision,
+                catalog_revision,
+                runtime,
+            } => {
+                // A newer catalog may change availability without a new owner
+                // publication, but old owner facts must never overwrite the baseline.
+                if observation_revision < self.baseline_observation_revision
+                    || (observation_revision == self.baseline_observation_revision
+                        && catalog_revision <= self.baseline_catalog_revision)
+                {
+                    return;
+                }
                 if self.runtime.as_ref() == Some(runtime.as_ref()) {
                     return;
                 }
@@ -394,7 +410,13 @@ impl LiveSubscription {
                     runtime: Box::new((*runtime).clone()),
                 });
             }
-            ThreadLiveEvent::Activity { activity } => {
+            ThreadLiveEvent::Activity {
+                observation_revision,
+                activity,
+            } => {
+                if observation_revision <= self.baseline_observation_revision {
+                    return;
+                }
                 if activity.as_deref() != self.activity.as_ref() {
                     self.activity = activity.as_deref().cloned();
                     self.enqueue(ThreadNotification::ActivityChanged {
@@ -774,6 +796,8 @@ impl StudioRuntime {
                     thread: thread.clone(),
                     feed,
                     baseline: Some(baseline.clone()),
+                    baseline_observation_revision: baseline.observation_revision,
+                    baseline_catalog_revision: 0,
                     pending: VecDeque::new(),
                     observation_due: None,
                     ready_frames: 0,
@@ -1023,14 +1047,280 @@ impl StudioRuntime {
         Ok(checkpoint.state)
     }
 
-    fn annotate_model_route(&self, snapshot: &mut pl_protocol::ThreadSnapshot) -> Result<()> {
+    fn annotate_model_route(&self, snapshot: &mut pl_protocol::ThreadSnapshot) -> Result<u64> {
+        let (config, catalog) = self.config_runtime.read_with_catalog()?;
         if let Some(runtime) = snapshot.runtime.as_mut() {
             crate::studio::model_route::annotate_availability(
                 runtime,
                 &snapshot.thread,
-                &self.config_runtime.read()?.config,
+                &config.config,
             )?;
         }
+        Ok(catalog.revision)
+    }
+}
+
+#[cfg(test)]
+mod storage_fault_tests {
+    use super::*;
+    use pl_core::context::ContextContent;
+
+    /// Inject delayed status frames after a real persisted Thread is reopened.
+    /// Its first snapshot must stand even if the projection worker was behind
+    /// the core publication when a new receiver registered.
+    #[tokio::test]
+    async fn history_reopen_baseline_rejects_older_live_observations() -> Result<()> {
+        use crate::config::{ConfigPaths, ConfigStore, StudioConfig};
+        use pl_model::config::{AccountConfig, AccountId, ModelRouteConfig};
+        use pl_model::model::ModelInfo;
+        use pl_model::protocol::ProtocolEndpoint;
+
+        let temp = tempfile::tempdir()?;
+        let home = temp.path().join("home");
+        let workspace = temp.path().join("workspace");
+        tokio::fs::create_dir_all(&workspace).await?;
+        // Anonymous loopback route, never called by this storage-only scenario.
+        let endpoint = std::net::TcpListener::bind("127.0.0.1:0")?;
+        let account_id = AccountId::new("observation-reopen")?;
+        let route = ModelRouteConfig {
+            account_id: account_id.clone(),
+            model_id: "storage-model".into(),
+            effort: None,
+        };
+        let mut config = StudioConfig::default_config()?;
+        config.models.accounts.clear();
+        config.models.accounts.insert(
+            account_id,
+            AccountConfig::from_explicit_models(
+                ProtocolEndpoint::compatible(
+                    "Storage fixture",
+                    format!("http://{}", endpoint.local_addr()?),
+                ),
+                vec![ModelInfo::compatible(&route.model_id)],
+            ),
+        );
+        for selected in config
+            .models
+            .routes
+            .values_mut()
+            .chain(config.mode_model_routes.values_mut())
+        {
+            *selected = route.clone();
+        }
+        ConfigStore::new(ConfigPaths::from_config_dir(&home)).save(&config)?;
+        let options = || crate::StudioRuntimeOptions {
+            studio_home: Some(home.clone()),
+            host: crate::StudioHostKind::Test,
+            ..crate::StudioRuntimeOptions::desktop()
+        };
+        let runtime = StudioRuntime::initialize(options()).await?;
+        let project = runtime.open_project(&workspace).await?;
+        let thread = runtime
+            .create_thread(&project.id, "observation baseline")
+            .await?;
+        runtime
+            .synchronize_thread_observation(&thread.id)
+            .await
+            .context("settle stored thread")?;
+        runtime
+            .shutdown_runtime()
+            .await
+            .context("history observer shutdown")?;
+
+        let runtime = StudioRuntime::initialize(options()).await?;
+        let mut subscription = runtime
+            .subscribe_thread(pl_protocol::ThreadSubscriptionRequest {
+                thread_id: thread.id.clone(),
+            })
+            .await
+            .context("cold history subscribe")?;
+        let (events, receiver) = broadcast::channel(16);
+        let (original_feed, baseline_revision, baseline) = match &mut subscription.source {
+            SubscriptionSource::Live(live) => (
+                live.feed.replace(receiver),
+                live.baseline
+                    .as_ref()
+                    .context("cold baseline")?
+                    .observation_revision,
+                live.baseline.as_ref().context("cold baseline")?.clone(),
+            ),
+            SubscriptionSource::Retired(_) => anyhow::bail!("expected a live root"),
+        };
+        let catalog_revision = runtime.config_runtime.model_catalog_revision()?;
+        let mut obsolete = crate::studio::thread_projection::project_runtime(
+            &thread.id,
+            &baseline,
+            0,
+            &baseline.usage_summary,
+        )?;
+        obsolete.progress = Some("obsolete before baseline".into());
+        // These frames are queued before the first recv, at the exact boundary
+        // already covered by its atomic source snapshot (including activity=None).
+        events.send(ThreadLiveEvent::Runtime {
+            observation_revision: baseline_revision,
+            catalog_revision,
+            runtime: Arc::new(obsolete),
+        })?;
+        events.send(ThreadLiveEvent::Activity {
+            observation_revision: baseline_revision,
+            activity: Some(Arc::new(pl_protocol::ThreadActivity {
+                thread_id: thread.id.clone(),
+                identity: "old-activity".into(),
+                revision: 9,
+                turn_id: "old-turn".into(),
+                input_id: None,
+                attempt_id: None,
+                kind: pl_protocol::ThreadActivityKind::Thinking,
+                summary: "obsolete before baseline".into(),
+                summary_truncated: false,
+                thinking_summary: None,
+                thinking_seconds: None,
+                tools: Default::default(),
+            })),
+        })?;
+        let first = subscription
+            .recv()
+            .await?
+            .context("first reopened snapshot")?;
+        let ThreadSubscriptionUpdate::Snapshot { snapshot } = first else {
+            anyhow::bail!("first status frame was not a snapshot");
+        };
+        let initial = snapshot.runtime.context("runtime in first frame")?;
+        assert!(
+            initial
+                .model_route
+                .as_ref()
+                .context("cold saved route")?
+                .available
+        );
+        assert!(snapshot.active_turn.is_none());
+        assert!(snapshot.activity.is_none());
+        assert!(initial.progress.is_none());
+        let handle = runtime
+            .threads
+            .thread(&thread.id)
+            .context("reopened owner")?;
+        let mut publications = handle.subscribe();
+        let before = publications.next().await.context("owner baseline")?;
+        handle
+            .patch_runtime_facts(vec![pl_core::thread::RuntimeFact {
+                source_id: "storage-observation".into(),
+                content: vec![ContextContent::Text {
+                    text: Arc::from("new stored fact"),
+                }],
+            }])
+            .await?;
+        let after = tokio::time::timeout(Duration::from_secs(5), publications.next())
+            .await
+            .context("stored fact publication")?
+            .context("owner remains open")?;
+        assert!(after.observation_revision > before.observation_revision);
+        let mut current = initial;
+        current.progress = Some("new observation".into());
+        events.send(ThreadLiveEvent::Runtime {
+            observation_revision: after.observation_revision,
+            catalog_revision,
+            runtime: Arc::new(current),
+        })?;
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let frame = subscription.recv().await?.context("status stream ended")?;
+                if let ThreadSubscriptionUpdate::Notification { notification } = frame {
+                    match notification.notification {
+                        ThreadNotification::ThreadRuntimeUpdated { runtime } => {
+                            assert_ne!(
+                                runtime.progress.as_deref(),
+                                Some("obsolete before baseline")
+                            );
+                            if runtime.progress.as_deref() == Some("new observation") {
+                                break;
+                            }
+                        }
+                        ThreadNotification::ActivityChanged { activity } => {
+                            assert_ne!(
+                                activity.as_deref().map(|a| a.identity.as_str()),
+                                Some("old-activity")
+                            );
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            Ok::<_, anyhow::Error>(())
+        })
+        .await
+        .context("delayed baseline frames")??;
+        // Restore the real owner feed retained throughout the injection.
+        if let SubscriptionSource::Live(live) = &mut subscription.source {
+            live.feed = original_feed;
+        }
+        drop(subscription);
+        handle.flush().await?;
+        runtime.synchronize_thread_observation(&thread.id).await?;
+        let mut subscription = runtime
+            .subscribe_thread(pl_protocol::ThreadSubscriptionRequest {
+                thread_id: thread.id.clone(),
+            })
+            .await?;
+        let owner_revision = match &subscription.source {
+            SubscriptionSource::Live(live) => {
+                live.baseline
+                    .as_ref()
+                    .context("reconnected baseline")?
+                    .observation_revision
+            }
+            SubscriptionSource::Retired(_) => anyhow::bail!("expected live reconnect"),
+        };
+        let first = subscription.recv().await?.context("reconnected snapshot")?;
+        let ThreadSubscriptionUpdate::Snapshot { snapshot } = first else {
+            anyhow::bail!("reconnect baseline missing");
+        };
+        assert!(
+            snapshot
+                .runtime
+                .context("reconnected runtime")?
+                .model_route
+                .context("saved route")?
+                .available
+        );
+        assert_eq!(handle.snapshot().observation_revision, owner_revision);
+        let configured = runtime.config_runtime.read()?;
+        runtime.set_account_model_enabled(pl_protocol::studio::SetAccountModelEnabledRequest {
+            operation_id: "observation-disable-model".into(),
+            expected_revision: configured.revision,
+            account_id: route.account_id.to_string(),
+            model_id: route.model_id.clone(),
+            enabled: false,
+        })?;
+        assert!(runtime.config_runtime.model_catalog_revision()? > catalog_revision);
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if let Some(ThreadSubscriptionUpdate::Notification { notification }) =
+                    subscription.recv().await?
+                    && let ThreadNotification::ThreadRuntimeUpdated { runtime } =
+                        notification.notification
+                    && runtime
+                        .model_route
+                        .as_ref()
+                        .is_some_and(|route| !route.available)
+                {
+                    break;
+                }
+            }
+            Ok::<_, anyhow::Error>(())
+        })
+        .await
+        .context("catalog-only availability notification")??;
+        assert_eq!(handle.snapshot().observation_revision, owner_revision);
+        drop(subscription);
+        runtime
+            .shutdown_runtime()
+            .await
+            .context("history observer shutdown")?;
+        endpoint.set_nonblocking(true)?;
+        assert!(
+            matches!(endpoint.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock)
+        );
         Ok(())
     }
 }

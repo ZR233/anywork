@@ -286,6 +286,29 @@ Future<void> main(List<String> args) async {
             .requestData('shutdown', timeout: const Duration(seconds: 90))
             .timeout(const Duration(seconds: 95)),
       );
+      if (shutdown is Map) {
+        report['shutdownDetails'] = <String, Object?>{
+          'outcome': shutdown['outcome'],
+          'persistence': shutdown['persistence'],
+          'clientCloseObserved': shutdown['clientCloseObserved'],
+          'clientCloseResources': shutdown['clientCloseResources'],
+          'issues': switch (shutdown['issues']) {
+            final List issues => [
+              for (final issue in issues)
+                if (issue is Map)
+                  <String, Object?>{
+                    'stage': issue['stage'],
+                    'code': issue['code'],
+                    'retryable': issue['retryable'],
+                    'correlationId': issue['correlationId'],
+                  }
+                else
+                  <String, Object?>{'malformed': true},
+            ],
+            _ => null,
+          },
+        };
+      }
       if (shutdown is! Map || shutdown['shutdown'] != 'completed') {
         report['shutdown'] = 'degraded';
       } else {
@@ -304,8 +327,11 @@ Future<void> main(List<String> args) async {
       // A completed shutdown must not keep the acceptance process open.
     }
   }
-  if (report['pass'] != true) {
-    throw StateError('timeline-history $phase failed: ${report['paging']}');
+  if (report['pass'] != true || report['shutdown'] != 'completed') {
+    throw StateError(
+      'timeline-history $phase failed: pagingOk=${report['pagingOk']}, '
+      'shutdown=${report['shutdown']}; details=${report['shutdownDetails']}',
+    );
   }
 }
 

@@ -1,6 +1,6 @@
 //! Studio 订阅句柄与任务注册表：按订阅种类拆分到同目录子模块。
 //!
-//! - `thread`：Thread 状态流（Turn/活动/交互/运行时；内容走 Timeline 内容源）。
+//! - `conversation_registry`：组合会话句柄的真实 owner 与关闭汇合（推送实现位于 handlers/chat）。
 //! - `product_topic`：typed 产品 topic 订阅（首帧基线 + 该领域事件）。
 //! - `shutdown`：关机进度广播。
 //! - `startup`：pre-active 启动进度 watch，独立于 installed bridge。
@@ -9,15 +9,14 @@
 //! 的具体 producer/sink 在对应子模块构造。不存在无作用域的 GUI 全事件订阅：GUI transport
 //! 必须使用 typed topic 订阅。
 
+mod conversation_registry;
 pub(crate) mod product_topic;
 pub(crate) mod shutdown;
 pub(crate) mod startup;
-pub(crate) mod thread;
 
 pub use product_topic::create_product_topic_subscription;
 pub use shutdown::subscribe_shutdown_progress;
 pub use startup::subscribe_startup_progress;
-pub use thread::subscribe_thread;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -37,26 +36,15 @@ use crate::api::studio::accounts::{
 };
 use crate::api::studio::bridge_runtime::current_bridge;
 use crate::api::studio::handlers::StartupFrame;
+use crate::api::studio::handlers::chat::ConversationOwner;
 use crate::api::studio::statistics::{
     BridgeStatisticsFeedInner, PendingStatisticsFeedCancellation, StatisticsFeedRegistry,
 };
 use crate::api::studio::types::{
     BridgeError, BridgeProductTopicStreamEnvelope, BridgeShutdownIssue,
-    BridgeThreadSubscriptionUpdate,
 };
+use conversation_registry::{ConversationRegistry, PendingConversations};
 use pl_studio_runtime::StudioShutdownProgress;
-
-/// Thread 状态流的交付信封。
-#[derive(Debug, Clone)]
-pub enum BridgeThreadStreamEnvelope {
-    Data {
-        update: Box<BridgeThreadSubscriptionUpdate>,
-    },
-    Failure {
-        error: BridgeError,
-    },
-    Closed,
-}
 
 /// Shared completion of one owned subscription task.
 ///
@@ -191,7 +179,6 @@ pub(crate) struct BridgeSubscriptionInner {
     cancel: CancellationToken,
     producer_task: Mutex<Option<SubscriptionCompletion>>,
     sink_task: Mutex<Option<SubscriptionCompletion>>,
-    thread_receiver: Mutex<Option<mpsc::Receiver<BridgeThreadStreamEnvelope>>>,
     product_topic_receiver: Mutex<Option<mpsc::Receiver<BridgeProductTopicStreamEnvelope>>>,
     shutdown_receiver: Mutex<Option<tokio::sync::broadcast::Receiver<StudioShutdownProgress>>>,
     startup_receiver: Mutex<Option<tokio::sync::watch::Receiver<StartupFrame>>>,
@@ -202,9 +189,6 @@ pub(crate) struct BridgeSubscriptionInner {
 
 #[derive(Debug, Clone)]
 pub(crate) enum BridgeSubscriptionKind {
-    Thread {
-        thread_id: String,
-    },
     ProductTopic {
         topic: crate::api::studio::types::BridgeProductTopic,
     },
@@ -269,9 +253,6 @@ impl BridgeSubscriptionInner {
     /// the shared deadline.
     fn signal_cancel(&self) {
         match &self.kind {
-            BridgeSubscriptionKind::Thread { thread_id } => {
-                tracing::trace!(subscription_id = self.id, %thread_id, "cancelling Studio Thread subscription");
-            }
             BridgeSubscriptionKind::ProductTopic { topic } => {
                 tracing::trace!(
                     subscription_id = self.id,
@@ -354,6 +335,7 @@ pub(crate) struct BridgeTaskRegistry {
     subscriptions: Mutex<HashMap<u64, Arc<BridgeSubscriptionInner>>>,
     statistics_feeds: StatisticsFeedRegistry,
     account_observations: AccountObservationRegistry,
+    conversations: ConversationRegistry,
 }
 
 /// Live bridge-owned content subscriptions captured by the broadcast phase and joined later within
@@ -363,9 +345,18 @@ pub(crate) struct PendingSubscriptionCancellation {
     issues: Vec<BridgeShutdownIssue>,
     statistics: PendingStatisticsFeedCancellation,
     accounts: PendingAccountObservations,
+    conversations: PendingConversations,
 }
 
 impl BridgeTaskRegistry {
+    pub(crate) fn register_conversation(
+        &'static self,
+        owner: &Arc<ConversationOwner>,
+        shutdown: &CancellationToken,
+    ) -> Result<(), BridgeError> {
+        self.conversations.register(owner, shutdown)
+    }
+
     pub(crate) fn register_account_observation(
         &self,
         owner: &Arc<BridgeAccountObservationInner>,
@@ -384,6 +375,7 @@ impl BridgeTaskRegistry {
             subscriptions: Mutex::new(HashMap::new()),
             statistics_feeds: StatisticsFeedRegistry::new(),
             account_observations: AccountObservationRegistry::default(),
+            conversations: ConversationRegistry::default(),
         }
     }
 
@@ -425,7 +417,7 @@ impl BridgeTaskRegistry {
     /// Signals every registered, bridge-owned content subscription **without joining** any of them.
     ///
     /// The exit contract requires a real ACK for every owner before the runtime finalizes. The
-    /// bridge-owned content streams (Thread/product topic) are signalled here; the caller-owned
+    /// bridge-owned conversation feeds and product topic streams are signalled here; the caller-owned
     /// shutdown-progress stream is deliberately absent: it uses a self-held token that the early
     /// broadcast must not end, and the caller (Dart) cancels it and reports any unconfirmed ACK
     /// through `external_issues`. Its ACK still gates `Clean` because those external issues are
@@ -440,6 +432,7 @@ impl BridgeTaskRegistry {
         deadline: Instant,
     ) -> PendingSubscriptionCancellation {
         let accounts = self.account_observations.broadcast_cancel();
+        let conversations = self.conversations.broadcast_cancel();
         let mut issues = Vec::new();
         // Bound the registry lock by the shared exit deadline; a lock timeout must not stall exit.
         let subscriptions = {
@@ -470,6 +463,7 @@ impl BridgeTaskRegistry {
             issues,
             statistics,
             accounts,
+            conversations,
         }
     }
 
@@ -487,14 +481,17 @@ impl BridgeTaskRegistry {
             issues,
             statistics,
             accounts,
+            conversations,
         } = pending;
-        let (mut subscription_issues, statistics_issues, account_issues) = tokio::join!(
+        let (mut subscription_issues, statistics_issues, account_issues, conversation_issues) = tokio::join!(
             self.join_subscription_cancellations(owners, issues, deadline),
             self.statistics_feeds.join_cancelled(statistics, deadline),
             self.account_observations.join_cancelled(accounts, deadline),
+            self.conversations.join_cancelled(conversations, deadline),
         );
         subscription_issues.extend(statistics_issues);
         subscription_issues.extend(account_issues);
+        subscription_issues.extend(conversation_issues);
         subscription_issues
     }
 

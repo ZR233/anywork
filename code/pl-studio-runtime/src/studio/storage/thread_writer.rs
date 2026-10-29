@@ -585,25 +585,10 @@ impl HistoryChannel {
     /// this same queue — so an unknown or already durable sequence is refused rather than stored in a
     /// second, unordered slot. Returns whether the batch was attached.
     pub(in crate::studio) fn prepare(&self, prepared: Arc<PreparedEffect>) -> bool {
-        // Measure before taking the lock: the batch is immutable, and sizing it walks text lengths
-        // instead of encoding a payload inside the critical section.
-        let bytes = crate::studio::thread_projection::retained_bytes(&prepared.items)
-            .saturating_add(prepared.parent_report.as_ref().map_or(0, |message| {
-                if prepared.terminal_retention.is_some() {
-                    0
-                } else {
-                    (message.payload.content().len() as u64)
-                        .saturating_mul(2)
-                        .saturating_add(message.id.len() as u64)
-                        .saturating_add(256)
-                }
-            }))
-            .saturating_add(prepared.review_delivery.iter().fold(0_u64, |bytes, fact| {
-                bytes
-                    .saturating_add(fact.message.payload.content().len() as u64 * 2)
-                    .saturating_add(fact.message.id.len() as u64)
-                    .saturating_add(256)
-            }));
+        // Measure before taking the lock: the batch is immutable, and the owner's one estimate
+        // (see `PreparedEffect::retained_bytes`) walks text lengths instead of encoding a payload
+        // inside the critical section.
+        let bytes = prepared.retained_bytes();
         let sequence = prepared.sequence;
         let mut progress = self
             .progress
@@ -3115,7 +3100,7 @@ pub(crate) mod storage_fault_tests {
             };
             drop(previous);
             wake.notify_one();
-            waiting.recv_timeout(Duration::from_secs(5))?;
+            tokio::time::timeout(Duration::from_secs(5), waiting).await??;
             drop(write_gate);
             let replacement = tokio::time::timeout(
                 Duration::from_secs(5),
@@ -4424,8 +4409,13 @@ pub(crate) mod storage_fault_tests {
             .channel
             .next_unprojected()
             .context("the admitted fact is owed a projection")?;
-        let (_, prepared) =
-            projection.advance(chat, &sink.0.thread, &write.effect, &write.checkpoint.state)?;
+        let (_, prepared) = projection.advance(
+            chat,
+            &sink.0.thread,
+            &write.effect,
+            &write.checkpoint.state,
+            true,
+        )?;
         assert!(sink.0.channel.prepare(prepared));
         Ok(())
     }
@@ -4568,6 +4558,7 @@ pub(crate) mod storage_fault_tests {
             &sink.0.thread,
             &accepted.effect,
             &accepted.checkpoint.state,
+            true,
         )?;
         assert_eq!(
             shown_item(&chat, &item_id).await.revision,

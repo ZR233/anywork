@@ -1,15 +1,26 @@
-import 'package:anywork_client/studio_client.dart' show ComposerThreadState;
+import 'package:anywork_client/models.dart' show ComposerThreadState;
 import 'package:riverpod_annotation/riverpod_annotation.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'client_provider.dart';
 import 'observe_client.dart';
+import 'thread_session_store.dart';
 
 part 'composer_draft_controller.g.dart';
 
 /// This observer borrows the Client's logical draft across routes.
 @riverpod
 ComposerThreadState composerDraftController(Ref ref, String threadId) {
-  final owner = ref.read(anyworkClientProvider).existingComposer(threadId);
+  // The application admits a draft once this destination has canonical identity.
+  // Re-read that registry after first load; this observer never creates an owner.
+  ref.watch(
+    threadSessionStoreProvider(threadId)
+        .select((state) => state.workspace?.thread),
+  );
+  final owner = ref
+      .read(anyworkClientProvider)
+      .drafts
+      .existingComposer(threadId);
   if (owner != null) {
     return observeClient(ref, owner.source, (_) => ref.invalidateSelf());
   }

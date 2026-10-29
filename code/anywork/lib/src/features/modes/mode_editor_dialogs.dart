@@ -20,8 +20,11 @@ enum _UnsavedChoice { save, discard, cancel }
 /// Returns true when the current draft may be left.
 ///
 /// A failed save keeps the caller on the page and exposes the owner error.
-Future<bool> confirmLeaveModeEditor(BuildContext context, WidgetRef ref) async {
-  final owner = ref.read(anyworkClientProvider).modeEditor;
+Future<bool> confirmLeaveModeEditor(BuildContext context) async {
+  final owner = ProviderScope.containerOf(
+    context,
+    listen: false,
+  ).read(anyworkClientProvider).modeEditor;
   if (owner.state.busy) return false;
   if (!owner.state.dirty) return true;
   final l10n = context.l10n;

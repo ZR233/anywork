@@ -181,7 +181,7 @@ final class RuntimeEventEvidenceRecorder {
         'a finished run is never reused; create a new recorder',
       );
     }
-    final session = _client.existingSession(threadId);
+    final session = _client.conversations.existingSession(threadId);
     if (session == null) {
       return _rejection(
         'runtime-evidence-start',

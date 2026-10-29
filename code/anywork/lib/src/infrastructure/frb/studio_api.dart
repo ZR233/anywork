@@ -11,6 +11,11 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart'
 import '../../domain/models/studio_models.dart';
 
 import 'package:anywork_client/studio_ports.dart';
+import 'package:anywork_client/conversation.dart';
+import 'package:anywork_client/conversation_ports.dart';
+
+import '../../rust/api/studio/types/chat/descriptor.dart' as frb_descriptor;
+
 import 'package:anywork_client/accounts.dart';
 import 'package:anywork_client/accounts_ports.dart';
 import 'package:anywork_client/model_directory.dart';
@@ -23,7 +28,6 @@ import 'studio_bridge_api.dart' as frb;
 import '../../rust/api/studio/subscription/product_topic.dart' as frb_topic_sub;
 import '../../rust/api/studio/subscription/shutdown.dart' as frb_shutdown_sub;
 import '../../rust/api/studio/subscription/startup.dart' as frb_startup_sub;
-import '../../rust/api/studio/subscription/thread.dart' as frb_thread_sub;
 import '../../rust/api/studio/types/product_topic.dart' as frb_topic_types;
 import '../../rust/api/studio/handlers/chat.dart' as frb_chat;
 import '../../rust/api/studio/handlers/mode_editor.dart' as frb_mode_editor;
@@ -47,7 +51,10 @@ import '../demo/accounts/demo_account_observation.dart';
 
 part 'studio_thread_stream.dart';
 part 'studio_thread_preparation.dart';
-part 'studio_timeline.dart';
+part 'studio_conversation.dart';
+part 'studio_conversation_descriptor.dart';
+part 'studio_conversation_tool.dart';
+part 'studio_demo_conversation.dart';
 part 'studio_api_contract.dart';
 part 'studio_frb_converters.dart';
 part 'studio_state_converters.dart';
@@ -107,7 +114,31 @@ int? _frbNullableInt(Object? value) {
 }
 
 DateTime _dateFromUnix(Object seconds) {
-  return DateTime.fromMillisecondsSinceEpoch(_frbInt(seconds) * 1000);
+  final value = switch (seconds) {
+    final BigInt value => value,
+    final int value => BigInt.from(value),
+    _ => throw const StudioFailure(
+      code: StudioFailureCode.internal,
+      message: 'The bridge timestamp is not an integer',
+      retryable: false,
+      correlationId: 'client-timestamp-type',
+    ),
+  };
+  final milliseconds = value * BigInt.from(1000);
+  final converted = milliseconds.toInt();
+  if (BigInt.from(converted) == milliseconds) {
+    try {
+      return DateTime.fromMillisecondsSinceEpoch(converted);
+    } on ArgumentError {
+      // A valid native timestamp must not wrap into another instant.
+    }
+  }
+  throw const StudioFailure(
+    code: StudioFailureCode.overloaded,
+    message: 'The bridge timestamp cannot be represented exactly',
+    retryable: false,
+    correlationId: 'client-timestamp-range',
+  );
 }
 
 ThreadRuntimeView _emptyRuntimeView() {

@@ -150,7 +150,7 @@ struct Inner {
     #[cfg(test)]
     release_gate: Mutex<
         Option<(
-            std::sync::mpsc::SyncSender<()>,
+            tokio::sync::oneshot::Sender<()>,
             std::sync::mpsc::Receiver<()>,
         )>,
     >,
@@ -261,8 +261,11 @@ impl ThreadPersistenceCoordinator {
     #[cfg(test)]
     pub(crate) fn arm_release_gate(
         &self,
-    ) -> (std::sync::mpsc::Receiver<()>, std::sync::mpsc::Sender<()>) {
-        let (entered, waiting) = std::sync::mpsc::sync_channel(1);
+    ) -> (
+        tokio::sync::oneshot::Receiver<()>,
+        std::sync::mpsc::Sender<()>,
+    ) {
+        let (entered, waiting) = tokio::sync::oneshot::channel();
         let (release, released) = std::sync::mpsc::channel();
         *self.0.release_gate.lock().unwrap() = Some((entered, released));
         (waiting, release)
@@ -652,7 +655,11 @@ impl ThreadPersistenceCoordinator {
             let gate = self.0.release_gate.lock().unwrap().take();
             if let Some((entered, release)) = gate {
                 let _ = entered.send(());
-                let _ = release.recv();
+                // This deliberate synchronous Drop gate must not occupy a Tokio
+                // worker while the test awaits the replacement incarnation.
+                tokio::task::block_in_place(|| {
+                    let _ = release.recv();
+                });
             }
         }
         if unavailable {

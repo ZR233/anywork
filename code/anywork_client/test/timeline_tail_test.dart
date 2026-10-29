@@ -1,527 +1,441 @@
-import 'package:anywork_client/anywork_client.dart';
-import 'package:anywork_client/models.dart';
+import 'package:anywork_client/studio_client.dart';
 import 'package:test/test.dart';
 
 import 'support/timeline_transport.dart';
 
-typedef _Ready = ({
-  StudioTimelineChannel channel,
-  TestTimelineConnection connection,
-});
+ConversationUpdateItem update({
+  int expected = 1,
+  int revision = 2,
+  bool saved = false,
+  ConversationLifecycle lifecycle = ConversationLifecycle.streaming,
+  List<ConversationFieldUpdate> fields = const [],
+  ConversationItemHeader? header,
+  ConversationDescriptor? descriptor,
+}) => ConversationUpdateItem(
+  itemId: 'item',
+  expectedRevision: expected,
+  revision: revision,
+  saved: saved,
+  lifecycle: lifecycle,
+  fields: fields,
+  header: header,
+  descriptor: descriptor,
+);
+ConversationFieldUpdate textUpdate(
+  ThreadFieldChangeView change, {
+  required int total,
+  required int preview,
+}) => ConversationFieldUpdate(
+  field: const ThreadTextFieldView(),
+  change: change,
+  totalBytes: total,
+  previewBytes: preview,
+);
 
-/// 尾部差量 reducer 的缺陷敏感度：不可证明连续就必须显式失败（重同步），
-/// 绝不能猜删除、拼接跨 revision 正文或把错误当成正常结束。
 void main() {
-  Future<_Ready> open(
-    TestTimelineTransport transport, {
-    StudioTimelineBaseline? initial,
-    StudioTimelineChannel? channel,
+  Future<Object> reject(
+    ConversationEvent event, {
+    int? sequence,
+    String? frameThread,
+    String? frameSubscription,
   }) async {
-    final owner = channel ?? timelineChannel(transport);
-    owner.start();
-    final connection = TestTimelineConnection(initial: initial ?? baseline(3));
-    transport.opens.single.complete(connection);
-    await owner.ready;
-    await connection.nextStarted.future;
-    return (channel: owner, connection: connection);
-  }
-
-  Future<Object> nextFailure(
-    StudioTimelineChannel channel,
-    TestTimelineConnection connection,
-    StudioTimelineUpdate? update,
-  ) async {
-    final failed = channel.state.waitFor(
-      (state) => state is ChatFailed<StudioTimelineFrame>,
+    final fixture = ConversationFixture();
+    final feed = await fixture.open();
+    final content = fixture.session().content;
+    final failure = content.state.waitFor(
+      (state) =>
+          state is ChatReconnecting<ConversationContentFrame> ||
+          state is ChatFailed<ConversationContentFrame>,
     );
-    connection.emit(update);
-    return ((await failed) as ChatFailed<StudioTimelineFrame>).error;
-  }
-
-  test('patch 必须从已交付版本继续', () async {
-    final transport = TestTimelineTransport();
-    final ready = await open(transport);
-    expect(
-      await nextFailure(ready.channel, ready.connection, patch(9, 10)),
-      isA<TimelineContinuityError>(),
+    feed.send(
+      event,
+      sequence: sequence,
+      frameThread: frameThread,
+      frameSubscription: frameSubscription,
     );
-    await ready.channel.close();
-  });
-
-  test('patch 版本必须前进', () async {
-    final transport = TestTimelineTransport();
-    final ready = await open(transport);
+    final result = await failure;
+    expect(feed.acknowledgements, [1]);
     expect(
-      await nextFailure(ready.channel, ready.connection, patch(3, 3)),
-      isA<TimelineContinuityError>(),
-    );
-    await ready.channel.close();
-  });
-
-  test('跨订阅身份的 patch 不能被当作连续增量', () async {
-    final transport = TestTimelineTransport();
-    final ready = await open(transport);
-    expect(
-      await nextFailure(
-        ready.channel,
-        ready.connection,
-        patch(3, 4, subscriptionId: 'other'),
+      content.lastDeliveredFrame,
+      isA<ConversationBaselineFrame>().having(
+        (frame) => frame.baseline.version,
+        'last committed version',
+        1,
       ),
-      isA<TimelineContinuityError>(),
     );
-    await ready.channel.close();
-  });
+    await fixture.close();
+    return switch (result) {
+      ChatReconnecting(:final error) || ChatFailed(:final error) => error,
+      _ => throw StateError('Expected an explicit sync failure'),
+    };
+  }
 
-  test('同 item 的 expectedRevision 不匹配即重同步', () async {
-    final transport = TestTimelineTransport();
-    final ready = await open(
-      transport,
-      initial: baseline(3, items: [timelineItem(7, id: 'stable')]),
+  test(
+    'a batch over 8 MiB fails atomically before copying otherwise valid items',
+    () async {
+      final notice = List.filled(200 * 1024, 'x').join();
+      final changes = List<ConversationChange>.generate(
+        50,
+        (index) => ConversationAdd(
+          ConversationItem(
+            header: timelineItem(index + 2, id: 'raw-$index').header,
+            revision: 1,
+            descriptor: ConversationRawDescriptor(
+              origin: ThreadRawItemOrigin.stored,
+              payloads: const [],
+              notice: notice,
+              recordedAt: DateTime.utc(2026),
+            ),
+            saved: true,
+            lifecycle: ConversationLifecycle.terminal,
+            fields: const [],
+          ),
+        ),
+      );
+      expect(
+        await reject(
+          ConversationUpdateEvent(update: patch(1, 2, changes: changes)),
+        ),
+        isA<ConversationContinuityError>(),
+      );
+    },
+  );
+
+  test(
+    'subscription, thread, delivery prefix and content version are independent',
+    () async {
+      for (final event in [
+        ConversationUpdateEvent(update: patch(9, 10)),
+        ConversationUpdateEvent(update: patch(1, 1)),
+        ConversationUpdateEvent(update: patch(1, 2, subscriptionId: 'other')),
+      ]) {
+        expect(await reject(event), isA<ConversationContinuityError>());
+      }
+      expect(
+        await reject(ConversationUpdateEvent(update: patch(1, 2)), sequence: 3),
+        isA<ConversationContinuityError>(),
+      );
+      expect(
+        await reject(
+          ConversationUpdateEvent(update: patch(1, 2)),
+          frameThread: 'other',
+        ),
+        isA<ConversationContinuityError>(),
+      );
+      expect(
+        await reject(
+          ConversationUpdateEvent(update: patch(1, 2)),
+          frameSubscription: 'other',
+        ),
+        isA<ConversationContinuityError>(),
+      );
+    },
+  );
+
+  test('whole item update validates on a candidate and commits no partial field or revision', () async {
+    final fixture = ConversationFixture();
+    final content = fixture.session().content;
+    final initial = timelineItem(1, body: '中', totalBytes: 3);
+    final candidate = update(
+      fields: [
+        textUpdate(
+          const AppendThreadFieldChangeView('文'),
+          total: 6,
+          preview: 6,
+        ),
+        const ConversationFieldUpdate(
+          field: ThreadThinkingSummaryFieldView(0),
+          change: AppendThreadFieldChangeView('bad'),
+          totalBytes: 3,
+          previewBytes: 3,
+        ),
+      ],
     );
     expect(
-      await nextFailure(
-        ready.channel,
-        ready.connection,
-        patch(
-          3,
-          4,
-          changes: [
-            StudioTimelineUpdateItem(
-              itemId: 'stable',
-              expectedRevision: 6,
-              revision: 8,
-              omittedBytes: 0,
-              saved: false,
-              lifecycle: StudioTimelineLifecycle.streaming,
-              fields: const [],
+      () => content.reduceItem(initial, candidate),
+      throwsA(isA<ConversationContinuityError>()),
+    );
+    expect(initial.revision, 1);
+    expect(initial.fieldFor(const ThreadTextFieldView())!.text, '中');
+    final next = content.reduceItem(
+      initial,
+      update(
+        fields: [
+          textUpdate(
+            const AppendThreadFieldChangeView('文\n'),
+            total: 7,
+            preview: 7,
+          ),
+        ],
+      ),
+    );
+    expect(next.revision, 2);
+    expect(next.fieldFor(const ThreadTextFieldView())!.text, '中文\n');
+    expect(next.omittedBytes, 0);
+    expect(next.details.single.previewBytes, 7);
+    await fixture.close();
+  });
+
+  test('same revision completeness, saving and terminal reliable corrections retain exact text', () async {
+    final fixture = ConversationFixture();
+    final content = fixture.session().content;
+    final partial = timelineItem(
+      1,
+      body: 'a',
+      totalBytes: 3,
+      lifecycle: ConversationLifecycle.terminal,
+    );
+    final complete = content.reduceItem(
+      partial,
+      update(
+        revision: 1,
+        lifecycle: ConversationLifecycle.terminal,
+        fields: [
+          textUpdate(
+            const AppendThreadFieldChangeView('b\n'),
+            total: 3,
+            preview: 3,
+          ),
+        ],
+      ),
+    );
+    expect(complete.fieldFor(const ThreadTextFieldView())!.text, 'ab\n');
+    final saved = content.reduceItem(
+      complete,
+      update(
+        revision: 1,
+        saved: true,
+        lifecycle: ConversationLifecycle.terminal,
+      ),
+    );
+    expect(saved.saved, isTrue);
+    final corrected = content.reduceItem(
+      saved,
+      update(
+        saved: false,
+        lifecycle: ConversationLifecycle.terminal,
+        fields: [
+          textUpdate(
+            const ReplaceThreadFieldChangeView('x'),
+            total: 1,
+            preview: 1,
+          ),
+        ],
+      ),
+    );
+    expect(corrected.terminal, isTrue);
+    expect(corrected.saved, isFalse);
+    expect(corrected.fields.single.text, 'x');
+    expect(
+      () => content.reduceItem(
+        saved,
+        update(
+          revision: 1,
+          saved: true,
+          lifecycle: ConversationLifecycle.terminal,
+          fields: [
+            textUpdate(
+              const ReplaceThreadFieldChangeView('a'),
+              total: 3,
+              preview: 1,
             ),
           ],
         ),
       ),
-      isA<TimelineContinuityError>(),
+      throwsA(isA<ConversationContinuityError>()),
     );
-    await ready.channel.close();
-  });
-
-  test('同 revision 的预览补齐经生产 channel 与真实 applier 生效', () async {
-    final transport = TestTimelineTransport();
-    // 预览：正文 abcd（省略 4 字节），canonical revision 3。
-    final preview = ThreadItemView(
-      id: 'stable',
-      threadId: 'thread',
-      turnId: 'turn',
-      ordinal: 7,
-      revision: 3,
-      createdAt: DateTime.utc(2026),
-      updatedAt: DateTime.utc(2026),
-      bodyOmittedUnits: 4,
-      // 预览尚未保存；权威帧的 saved 不得在展示侧凭空回退。
-      saved: false,
-      state: ThreadTextItemStateView(
-        channel: ThreadTextChannel.finalAnswer,
-        text: 'abcd',
-        attachments: const [],
-        lifecycle: const StreamingThreadContentView(),
-      ),
-    );
-    final ready = await open(
-      transport,
-      initial: baseline(
-        3,
-        items: [
-          StudioTimelineItem(
-            item: preview,
-            saved: false,
-            lifecycle: StudioTimelineLifecycle.streaming,
-            omittedBytes: 4,
-            details: const [],
-          ),
-        ],
-      ),
-    );
-    final attempt = ready.channel.currentAttemptId;
-    final delivered = ready.channel.state.waitFor(
-      (state) => state.snapshot is StudioTimelinePatchFrame,
-    );
-    // core 允许预览被权威完整正文在同 revision 补齐：差量可以是 Append。
-    ready.connection.emit(
-      patch(
-        3,
-        4,
-        changes: [
-          StudioTimelineUpdateItem(
-            itemId: 'stable',
-            expectedRevision: 3,
-            revision: 3,
-            omittedBytes: 0,
-            saved: false,
-            lifecycle: StudioTimelineLifecycle.streaming,
-            fields: const [
-              StudioFieldUpdateView(
-                field: ThreadTextFieldView(),
-                change: AppendThreadFieldChangeView('efgh'),
-                totalBytes: 8,
-                previewBytes: 8,
-              ),
-            ],
-          ),
-        ],
-      ),
-    );
-    final frame = (await delivered).snapshot! as StudioTimelinePatchFrame;
-    // 只是尾部版本前进，不是重连：同一 attempt、没有连接关闭。
-    expect(ready.channel.currentAttemptId, same(attempt));
-    expect(ready.connection.closeCalls, 0);
-    expect(frame.patch.from, 3);
-    expect(frame.patch.to, 4);
-    final change = frame.patch.changes.single as StudioTimelineUpdateItem;
-    expect(change.expectedRevision, 3);
-    expect(change.revision, 3);
-    // 真实 applier：内容补齐、省略归零，身份/顺序不变。
-    final applied = preview.applyFieldUpdates(
-      fields: [
-        for (final update in change.fields)
-          ThreadFieldUpdateView(field: update.field, change: update.change),
-      ],
-      expectedRevision: change.expectedRevision,
-      revision: change.revision,
-      omittedUnits: change.omittedBytes,
-      saved: change.saved,
-      terminal: change.lifecycle == StudioTimelineLifecycle.terminal,
-    )!;
-    final text = applied.state as ThreadTextItemStateView;
-    expect(text.text, 'abcdefgh');
-    expect(applied.bodyOmittedUnits, 0);
-    expect(applied.revision, 3);
-    expect(applied.id, 'stable');
-    expect(applied.ordinal, 7);
-    expect(change.fields.single.totalBytes, 8);
-    expect(change.fields.single.previewBytes, 8);
-    await ready.channel.close();
-  });
-
-  test('终态身份接受可靠权威的更高 revision 修订，但不回退终态', () async {
-    final transport = TestTimelineTransport();
-    final terminalItem = ThreadItemView(
-      id: 'stable',
-      threadId: 'thread',
-      turnId: 'turn-a',
-      ordinal: 7,
-      revision: 5,
-      createdAt: DateTime.utc(2026),
-      updatedAt: DateTime.utc(2026),
-      executionTerminal: true,
-      saved: true,
-      state: ThreadTextItemStateView(
-        channel: ThreadTextChannel.finalAnswer,
-        text: 'abc',
-        attachments: const [],
-        lifecycle: CompletedThreadContentView(DateTime.utc(2026)),
-      ),
-    );
-    final ready = await open(
-      transport,
-      initial: baseline(
-        3,
-        items: [
-          StudioTimelineItem(
-            item: terminalItem,
-            saved: true,
-            lifecycle: StudioTimelineLifecycle.terminal,
-            omittedBytes: 0,
-            details: const [],
-          ),
-        ],
-      ),
-    );
-    final delivered = ready.channel.state.waitFor(
-      (state) => state.snapshot is StudioTimelinePatchFrame,
-    );
-    // 可靠权威 terminal 修订：仍然终态，正文扩展，Turn 关联重新绑定（Turn 不是 identity）。
-    ready.connection.emit(
-      patch(
-        3,
-        4,
-        changes: [
-          StudioTimelineUpdateItem(
-            itemId: 'stable',
-            expectedRevision: 5,
-            revision: 6,
-            omittedBytes: 0,
-            saved: false,
-            lifecycle: StudioTimelineLifecycle.terminal,
-            itemShell: terminalItem.copyWith(turnId: 'turn-b', revision: 6),
-            fields: const [
-              StudioFieldUpdateView(
-                field: ThreadTextFieldView(),
-                change: AppendThreadFieldChangeView('def'),
-                totalBytes: 6,
-                previewBytes: 6,
-              ),
-            ],
-          ),
-        ],
-      ),
-    );
-    final frame = (await delivered).snapshot! as StudioTimelinePatchFrame;
-    final change = frame.patch.changes.single as StudioTimelineUpdateItem;
-    final applied = terminalItem.applyFieldUpdates(
-      fields: [
-        for (final update in change.fields)
-          ThreadFieldUpdateView(field: update.field, change: update.change),
-      ],
-      expectedRevision: change.expectedRevision,
-      revision: change.revision,
-      omittedUnits: change.omittedBytes,
-      saved: change.saved,
-      terminal: true,
-      itemShell: change.itemShell,
-    )!;
-    expect((applied.state as ThreadTextItemStateView).text, 'abcdef');
-    expect(applied.revision, 6);
-    expect(applied.executionTerminal, isTrue);
-    expect(applied.turnId, 'turn-b');
-    expect(applied.saved, isFalse, reason: '新 revision 的保存水位独立推进');
-
-    // 同一 revision 的保存确认随后合法到达。
-    final confirm = applied.applyFieldUpdates(
-      fields: const [],
-      expectedRevision: 6,
-      revision: 6,
-      omittedUnits: 0,
-      saved: true,
-      terminal: true,
-    )!;
-    expect(confirm.saved, isTrue);
-    expect(confirm.revision, 6);
-    await ready.channel.close();
-  });
-
-  test('终态回退成 streaming、错 expectedRev 与版本倒退仍被拒', () async {
-    final terminalItem = ThreadItemView(
-      id: 'stable',
-      threadId: 'thread',
-      turnId: 'turn',
-      ordinal: 7,
-      revision: 5,
-      createdAt: DateTime.utc(2026),
-      updatedAt: DateTime.utc(2026),
-      executionTerminal: true,
-      saved: true,
-      state: ThreadTextItemStateView(
-        channel: ThreadTextChannel.finalAnswer,
-        text: 'abc',
-        attachments: const [],
-        lifecycle: CompletedThreadContentView(DateTime.utc(2026)),
-      ),
-    );
-    // terminal -> streaming。
     expect(
-      terminalItem.applyFieldUpdates(
-        fields: const [],
-        expectedRevision: 5,
-        revision: 6,
-        omittedUnits: 0,
-        saved: false,
-        terminal: false,
-      ),
-      isNull,
+      () => content.reduceItem(saved, update(revision: 0, saved: true)),
+      throwsA(isA<ConversationContinuityError>()),
     );
-    // expected revision 不匹配。
     expect(
-      terminalItem.applyFieldUpdates(
-        fields: const [],
-        expectedRevision: 4,
-        revision: 6,
-        omittedUnits: 0,
-        saved: false,
-        terminal: true,
-      ),
-      isNull,
+      () => content.reduceItem(saved, update(saved: true)),
+      throwsA(isA<ConversationContinuityError>()),
     );
-    // 版本倒退。
-    expect(
-      terminalItem.applyFieldUpdates(
-        fields: const [],
-        expectedRevision: 5,
-        revision: 4,
-        omittedUnits: 0,
-        saved: false,
-        terminal: true,
-      ),
-      isNull,
-    );
-    // 同 revision 回退已保存事实 / 省略量回升。
-    expect(
-      terminalItem.applyFieldUpdates(
-        fields: const [],
-        expectedRevision: 5,
-        revision: 5,
-        omittedUnits: 0,
-        saved: false,
-        terminal: true,
-      ),
-      isNull,
-    );
-    final previewed = terminalItem.copyWith(bodyOmittedUnits: 1);
-    expect(
-      previewed.applyFieldUpdates(
-        fields: const [],
-        expectedRevision: 5,
-        revision: 5,
-        omittedUnits: 4,
-        saved: true,
-        terminal: true,
-      ),
-      isNull,
-    );
+    await fixture.close();
   });
 
-  test('同 revision 的保存确认是合法更新', () async {
-    final transport = TestTimelineTransport();
-    final ready = await open(
-      transport,
-      initial: baseline(3, items: [timelineItem(7, id: 'stable')]),
-    );
-    final delivered = ready.channel.state.waitFor(
-      (state) => state.snapshot is StudioTimelinePatchFrame,
-    );
-    // 保存确认不伪造正文 revision：expected == 已知 7，revision 仍前进到 8 但字段全部
-    // Unchanged；这里是「仅版本推进」的合法形状。
-    ready.connection.emit(
-      patch(
-        3,
-        4,
-        changes: [
-          StudioTimelineUpdateItem(
-            itemId: 'stable',
-            expectedRevision: 7,
-            revision: 8,
-            omittedBytes: 0,
-            saved: true,
-            lifecycle: StudioTimelineLifecycle.streaming,
-            fields: const [
-              StudioFieldUpdateView(
-                field: ThreadTextFieldView(),
-                change: UnchangedThreadFieldChangeView(),
-                totalBytes: 4,
-                previewBytes: 4,
-              ),
-            ],
-          ),
-        ],
-      ),
-    );
-    final frame = (await delivered).snapshot! as StudioTimelinePatchFrame;
-    final change = frame.patch.changes.single as StudioTimelineUpdateItem;
-    expect(change.saved, isTrue);
-    expect(change.fields.single.totalBytes, 4);
-    await ready.channel.close();
-  });
+  test(
+    'UTF-8 lengths, duplicate fields and all four patch operations are strict',
+    () async {
+      final fixture = ConversationFixture();
+      final content = fixture.session().content;
+      final initial = timelineItem(1, body: 'é');
+      for (final invalid in [
+        update(expected: 0),
+        update(
+          fields: [
+            textUpdate(
+              const AppendThreadFieldChangeView('!'),
+              total: 2,
+              preview: 2,
+            ),
+          ],
+        ),
+        update(
+          fields: [
+            textUpdate(
+              const UnchangedThreadFieldChangeView(),
+              total: 1,
+              preview: 1,
+            ),
+          ],
+        ),
+        update(
+          fields: [
+            textUpdate(
+              const RemoveThreadFieldChangeView(),
+              total: 1,
+              preview: 0,
+            ),
+          ],
+        ),
+        update(
+          fields: [
+            textUpdate(
+              const UnchangedThreadFieldChangeView(),
+              total: 2,
+              preview: 2,
+            ),
+            textUpdate(
+              const UnchangedThreadFieldChangeView(),
+              total: 2,
+              preview: 2,
+            ),
+          ],
+        ),
+      ]) {
+        expect(
+          () => content.reduceItem(initial, invalid),
+          throwsA(isA<ConversationContinuityError>()),
+        );
+      }
+      final unchanged = content.reduceItem(
+        initial,
+        update(
+          fields: [
+            textUpdate(
+              const UnchangedThreadFieldChangeView(),
+              total: 2,
+              preview: 2,
+            ),
+          ],
+        ),
+      );
+      expect(unchanged.fields.single.text, 'é');
+      final removed = content.reduceItem(
+        unchanged,
+        update(
+          expected: 2,
+          revision: 3,
+          fields: [
+            textUpdate(
+              const RemoveThreadFieldChangeView(),
+              total: 0,
+              preview: 0,
+            ),
+          ],
+        ),
+      );
+      expect(removed.fields, isEmpty);
+      expect(removed.omittedBytes, 0);
+      await fixture.close();
+    },
+  );
 
-  test('真实 remove 即使不在连续性副本里也必须交付', () async {
-    final transport = TestTimelineTransport();
-    final ready = await open(
-      transport,
-      initial: baseline(3, items: [timelineItem(1, id: 'kept')]),
-    );
-    final delivered = ready.channel.state.waitFor(
-      (state) => state.snapshot is StudioTimelinePatchFrame,
-    );
-    // 该身份从未出现在本连接的基线里（消费者可能通过页查询加载过它）。
-    ready.connection.emit(
-      patch(3, 4, changes: const [StudioTimelineRemove('paged-only')]),
-    );
-    final frame = (await delivered).snapshot! as StudioTimelinePatchFrame;
-    final change = frame.patch.changes.single as StudioTimelineRemove;
-    expect(change.itemId, 'paged-only');
-    await ready.channel.close();
-  });
-
-  test('同连接重同步保留订阅身份并交付新基线', () async {
-    final transport = TestTimelineTransport();
-    final ready = await open(transport);
-    final delivered = ready.channel.state.waitFor(
-      (state) =>
-          state.snapshot is StudioTimelineBaselineFrame &&
-          (state.snapshot! as StudioTimelineBaselineFrame).isResync,
-    );
-    ready.connection.emit(
-      StudioTimelineResync(
-        subscriptionId: 'sub',
-        reason: StudioTimelineResyncReason.lagging,
-        baseline: baseline(11, items: [timelineItem(11, id: 'fresh')]),
-      ),
-    );
-    final frame = (await delivered).snapshot! as StudioTimelineBaselineFrame;
-    final history = frame.baseline;
-    expect(history.version, 11);
-    expect(history.items.single.id, 'fresh');
-    expect(frame.resyncReason, StudioTimelineResyncReason.lagging);
-    // 重同步后的补丁以新基线版本为 from。
-    final next = ready.channel.state.waitFor(
-      (state) => state.snapshot is StudioTimelinePatchFrame,
-    );
-    ready.connection.emit(
-      patch(11, 12, changes: [StudioTimelineAdd(timelineItem(1, id: 'added'))]),
-    );
-    final patchFrame = (await next).snapshot! as StudioTimelinePatchFrame;
-    expect(patchFrame.patch.from, 11);
-    expect(patchFrame.patch.to, 12);
-    await ready.channel.close();
-  });
-
-  test('新基线不能替换旧订阅身份', () async {
-    final transport = TestTimelineTransport();
-    final ready = await open(transport);
-    expect(
-      await nextFailure(
-        ready.channel,
-        ready.connection,
-        StudioTimelineResync(
-          subscriptionId: 'sub',
-          reason: StudioTimelineResyncReason.unavailable,
-          baseline: baseline(2, subscriptionId: 'other'),
+  test('Add updates known identity; old-order Add and untracked Remove are delivered, not guessed away', () async {
+    final fixture = ConversationFixture();
+    final feed = await fixture.open();
+    final content = fixture.session().content;
+    await feed.deliver(
+      ConversationUpdateEvent(
+        update: patch(
+          1,
+          2,
+          changes: [
+            ConversationAdd(timelineItem(2, body: 'replacement')),
+            ConversationAdd(timelineItem(1, id: 'earlier', ordinal: 0)),
+            const ConversationRemove('loaded-only-in-history'),
+          ],
         ),
       ),
-      isA<TimelineContinuityError>(),
     );
-    await ready.channel.close();
+    final frame = content.lastDeliveredFrame as ConversationPatchFrame;
+    expect(frame.patch.changes, hasLength(3));
+    // The next update proves the SDK committed Add's revision, rather than
+    // waiting for an unpromised later replacement from the producer.
+    await feed.deliver(
+      ConversationUpdateEvent(
+        update: patch(
+          2,
+          3,
+          changes: [update(expected: 2, revision: 3, saved: true)],
+        ),
+      ),
+    );
+    expect(feed.acknowledgements, [1, 2, 3]);
+    await fixture.close();
   });
 
-  test('空批次也推进交付版本', () async {
-    final transport = TestTimelineTransport();
-    final ready = await open(transport);
-    final delivered = ready.channel.state.waitFor(
-      (state) => state.snapshot is StudioTimelinePatchFrame,
-    );
-    ready.connection.emit(patch(3, 4));
-    final frame = (await delivered).snapshot! as StudioTimelinePatchFrame;
-    expect(frame.patch.changes, isEmpty);
-    expect(frame.patch.to, 4);
-    await ready.channel.close();
-  });
+  test(
+    'explicit Resync adopts a new baseline on the same subscription only',
+    () async {
+      final fixture = ConversationFixture();
+      final feed = await fixture.open();
+      await feed.deliver(
+        ConversationUpdateEvent(
+          update: ConversationResync(
+            subscriptionId: 'sub',
+            reason: ConversationResyncReason.lagging,
+            baseline: baseline(50),
+          ),
+        ),
+      );
+      final frame =
+          fixture.session().content.lastDeliveredFrame
+              as ConversationBaselineFrame;
+      expect(frame.isResync, isTrue);
+      expect(frame.baseline.version, 50);
+      await feed.deliver(ConversationUpdateEvent(update: patch(50, 51)));
+      // 重同步后的补丁以新基线版本为 from：新基线已被真正采纳。
+      final updated =
+          fixture.session().content.lastDeliveredFrame
+              as ConversationPatchFrame;
+      expect(updated.patch.from, 50);
+      expect(updated.patch.to, 51);
+      await fixture.close();
+      expect(
+        await reject(
+          ConversationUpdateEvent(
+            update: ConversationResync(
+              subscriptionId: 'sub',
+              reason: ConversationResyncReason.lagging,
+              baseline: baseline(3, subscriptionId: 'other'),
+            ),
+          ),
+        ),
+        isA<ConversationContinuityError>(),
+      );
+    },
+  );
 
-  test('EOF 不是正常结束，错误不会被吞成失败以外的形态', () async {
-    final transport = TestTimelineTransport();
-    final ready = await open(transport);
+  test('Failure/Closed terminal envelopes repeat the last data sequence without ACK', () async {
+    const failure = StudioFailure(
+      code: StudioFailureCode.busy,
+      message: 'producer unavailable',
+      retryable: true,
+      correlationId: 'terminal',
+    );
     expect(
-      await nextFailure(ready.channel, ready.connection, null),
-      isA<TimelineStreamEnded>(),
+      await reject(
+        const ConversationFailureEvent(failure: failure),
+        sequence: 1,
+      ),
+      same(failure),
     );
-    await ready.channel.close();
-  });
-
-  test('transport 抛出的错误保持原样到达观察者', () async {
-    final transport = TestTimelineTransport();
-    final ready = await open(transport);
-    final failed = ready.channel.state.waitFor(
-      (state) => state is ChatFailed<StudioTimelineFrame>,
+    expect(
+      await reject(const ConversationClosedEvent(), sequence: 1),
+      isA<ConversationStreamEnded>(),
     );
-    final error = StateError('bridge failure');
-    ready.connection.emitError(error);
-    final state = (await failed) as ChatFailed<StudioTimelineFrame>;
-    expect(state.error, same(error));
-    await ready.channel.close();
   });
 }

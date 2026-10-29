@@ -275,3 +275,25 @@ async fn a_late_preview_below_an_evicted_terminal_floor_is_rejected() {
         .publish(identified("item-1", 1, 10, "extended", true))
         .unwrap();
 }
+
+#[tokio::test]
+async fn a_save_flag_cannot_replace_the_body_at_the_same_revision() {
+    let session = Session::new(Stored::default());
+    session.publish(item(1, 2, "authoritative", false)).unwrap();
+    let mut altered = item(1, 2, "different", false);
+    altered.saved = true;
+    assert!(matches!(
+        session.publish(altered),
+        Err(ChatError::Conflict(_))
+    ));
+    let kept = visible_item(&session, "item-1").await.unwrap();
+    assert_eq!(body_text(&kept), "authoritative");
+    assert!(
+        !kept.is_saved(),
+        "a refused replacement acknowledges no data"
+    );
+    session.confirm_saved("item-1", 2);
+    let saved = visible_item(&session, "item-1").await.unwrap();
+    assert!(saved.is_saved());
+    assert_eq!(body_text(&saved), "authoritative");
+}

@@ -47,51 +47,44 @@ class ScrollbarDragCommandExtension extends CommandExtension {
           ),
         )
         .first;
-    // RawScrollbar intentionally fades a stationary thumb and Flutter rejects
-    // pointer hits while its painter opacity is zero. A real wheel signal wakes
-    // the standard ScrollNotification/fade path immediately before hit testing;
-    // the one-pixel request keeps this setup input minimal and never writes the
-    // ScrollPosition directly.
-    GestureBinding.instance.handlePointerEvent(
-      PointerScrollEvent(
-        position: prober.getCenter(target),
-        scrollDelta: const Offset(0, -1),
-        kind: PointerDeviceKind.mouse,
-      ),
-    );
-    SchedulerBinding.instance.scheduleFrame();
-    await SchedulerBinding.instance.endOfFrame;
-
-    // Query the SDK's actual interactive painter hit test on each frame. This
-    // handles its native fade-in without guessing an animation duration; the
-    // monotonic deadline keeps a missing/hidden thumb a real failure.
-    final wait = Stopwatch()..start();
-    List<Offset> interactiveThumbHits() {
-      final paint = prober.widget<CustomPaint>(paintFinder);
-      final painter = paint.foregroundPainter! as ScrollbarPainter;
+    // A desktop user first moves the mouse over the scrollbar. Drive that
+    // standard hover path to reveal the SDK thumb, including at an extent where
+    // a wheel request would have no effect. Do not move ScrollPosition directly.
+    Offset trackCenter() {
+      final painter =
+          prober.widget<CustomPaint>(paintFinder).foregroundPainter!
+              as ScrollbarPainter;
       final box = paintFinder.evaluate().single.renderObject! as RenderBox;
-      final hits = <Offset>[];
-      for (double y = 0; y < box.size.height; y += 2) {
-        final point = box.localToGlobal(Offset(box.size.width - 6, y));
-        if (painter.hitTestOnlyThumbInteractive(
-          box.globalToLocal(point),
-          PointerDeviceKind.mouse,
-        )) {
-          hits.add(point);
-        }
-      }
-      return hits;
+      final padding = painter.padding.resolve(painter.textDirection);
+      return box.localToGlobal(
+        Offset(
+          box.size.width -
+              painter.thickness / 2 -
+              painter.crossAxisMargin -
+              padding.right,
+          box.size.height / 2,
+        ),
+      );
     }
 
-    var hits = interactiveThumbHits();
-    while (hits.isEmpty && wait.elapsed < const Duration(seconds: 2)) {
-      SchedulerBinding.instance.scheduleFrame();
-      await SchedulerBinding.instance.endOfFrame;
-      await Future<void>.delayed(const Duration(milliseconds: 16));
-      hits = interactiveThumbHits();
+    // Use the painter's public hit test, at the interior of its actual track.
+    // In particular, do not assume that a fixed x lies inside a six-pixel thumb.
+    List<Offset> interactiveThumbHits() {
+      final painter =
+          prober.widget<CustomPaint>(paintFinder).foregroundPainter!
+              as ScrollbarPainter;
+      final box = paintFinder.evaluate().single.renderObject! as RenderBox;
+      final x = box.globalToLocal(trackCenter()).dx;
+      return [
+        for (double y = 0; y < box.size.height; y += 2)
+          if (painter.hitTestOnlyThumbInteractive(
+            Offset(x, y),
+            PointerDeviceKind.mouse,
+          ))
+            box.localToGlobal(Offset(x, y)),
+      ];
     }
-    if (hits.isEmpty) throw StateError('No painted timeline scrollbar thumb');
-    final start = hits[hits.length ~/ 2];
+
     final samples = <Object?>[];
     void sample() {
       samples.add(
@@ -99,11 +92,25 @@ class ScrollbarDragCommandExtension extends CommandExtension {
       );
     }
 
-    sample();
     final gesture = await prober.createGesture(kind: PointerDeviceKind.mouse);
-    await gesture.addPointer(location: start);
-    await gesture.down(start);
+    await gesture.addPointer(location: trackCenter());
+    var pressed = false;
     try {
+      await gesture.moveTo(trackCenter());
+      final wait = Stopwatch()..start();
+      var hits = interactiveThumbHits();
+      while (hits.isEmpty && wait.elapsed < const Duration(seconds: 2)) {
+        SchedulerBinding.instance.scheduleFrame();
+        await SchedulerBinding.instance.endOfFrame;
+        await Future<void>.delayed(const Duration(milliseconds: 16));
+        hits = interactiveThumbHits();
+      }
+      if (hits.isEmpty) throw StateError('No painted timeline scrollbar thumb');
+      final start = hits[hits.length ~/ 2];
+      await gesture.moveTo(start);
+      sample();
+      await gesture.down(start);
+      pressed = true;
       for (var step = 1; step <= 24; step++) {
         await gesture.moveTo(start + Offset(0, drag.dy * step / 24));
         SchedulerBinding.instance.scheduleFrame();
@@ -112,7 +119,7 @@ class ScrollbarDragCommandExtension extends CommandExtension {
         sample();
       }
     } finally {
-      await gesture.up();
+      if (pressed) await gesture.up();
       await gesture.removePointer();
     }
     return _DragResult(samples);

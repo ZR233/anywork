@@ -8,7 +8,6 @@ import 'package:anywork_client/studio_client.dart'
         isValidModeId;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:go_router/go_router.dart';
 
 import '../../../app/theme/studio_tokens.dart';
 import '../../../l10n/studio_l10n.dart';
@@ -17,6 +16,7 @@ import '../../../presentation/providers/mode_catalog_store.dart';
 import '../../settings/settings_scope.dart';
 import '../mode_editor_dialogs.dart';
 import '../mode_editor_support.dart';
+import '../../../app/routing/app_route.dart';
 
 /// 设置页「工作模式」tab：模式目录列表，点击进入全屏工作区。
 ///
@@ -242,7 +242,7 @@ class _ModeCatalogTabState extends ConsumerState<ModeCatalogTab> {
     final owner = ref.read(anyworkClientProvider).modeEditor;
     final same = owner.state.document?.definition.id == id;
     if (!same) {
-      if (!await confirmLeaveModeEditor(context, ref) || !mounted) return;
+      if (!await confirmLeaveModeEditor(context) || !mounted) return;
       final opened = await owner.open(id);
       if (!mounted) return;
       if (!opened) {
@@ -255,7 +255,7 @@ class _ModeCatalogTabState extends ConsumerState<ModeCatalogTab> {
       }
     }
     if (!mounted) return;
-    context.pushNamed('mode-workspace', pathParameters: {'modeId': id});
+    ModeWorkspaceRoute(modeId: id).push(context);
   }
 
   Future<void> _createMode(List<ThreadModeDescriptorView> catalog) async {
@@ -264,7 +264,7 @@ class _ModeCatalogTabState extends ConsumerState<ModeCatalogTab> {
       existingIds: catalog.map((mode) => mode.id).toSet(),
     );
     if (result == null || !mounted) return;
-    if (!await confirmLeaveModeEditor(context, ref) || !mounted) return;
+    if (!await confirmLeaveModeEditor(context) || !mounted) return;
     final l10n = context.l10n;
     final owner = ref.read(anyworkClientProvider).modeEditor;
     var order = 10;
@@ -287,7 +287,7 @@ class _ModeCatalogTabState extends ConsumerState<ModeCatalogTab> {
       ),
     );
     if (!mounted) return;
-    context.pushNamed('mode-workspace', pathParameters: {'modeId': result.id});
+    ModeWorkspaceRoute(modeId: result.id).push(context);
   }
 
   Future<void> _importMode(List<ThreadModeDescriptorView> catalog) async {
@@ -322,7 +322,7 @@ class _ModeCatalogTabState extends ConsumerState<ModeCatalogTab> {
       _showError(l10n.modeEditorBuiltInCannotOverwrite);
       return;
     }
-    if (!await confirmLeaveModeEditor(context, ref) || !mounted) return;
+    if (!await confirmLeaveModeEditor(context) || !mounted) return;
     final owner = ref.read(anyworkClientProvider).modeEditor;
     if (existing == null) {
       owner.create(
@@ -338,7 +338,7 @@ class _ModeCatalogTabState extends ConsumerState<ModeCatalogTab> {
     owner.editJson(raw);
     await owner.applyJson();
     if (!mounted) return;
-    context.pushNamed('mode-workspace', pathParameters: {'modeId': id});
+    ModeWorkspaceRoute(modeId: id).push(context);
   }
 
   void _showError(String message) {

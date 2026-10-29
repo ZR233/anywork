@@ -1,7 +1,7 @@
 //! Paginated export: never aggregate complete Turn histories or content bodies in memory.
 use super::super::evidence::{Evidence, MAX_ITEMS, Manifest, ThreadExport};
 use anyhow::{Context, Result};
-use pl_protocol::{TimelineDetailQuery, TimelinePageQuery};
+use pl_protocol::{TimelineDescriptor, TimelineDetailQuery, TimelinePageQuery, TimelineToolState};
 use pl_studio_runtime::StudioRuntime;
 use std::io::Write;
 
@@ -77,21 +77,27 @@ pub(super) async fn thread(
         #[derive(serde::Serialize)]
         #[serde(rename_all = "camelCase")]
         struct NonterminalTool<'a> {
+            turn_id: &'a str,
             item_id: &'a str,
-            call_id: &'a str,
+            tool_call_id: &'a str,
+            call_id: Option<&'a str>,
             task_id: Option<&'a str>,
-            state: &'a pl_protocol::ThreadToolState,
+            state: &'a TimelineToolState,
         }
         let nonterminal: Vec<_> = page
             .items
             .iter()
             .filter_map(|item| {
-                let tool = item.preview.tool()?;
-                (!tool.state().is_terminal()).then(|| NonterminalTool {
-                    item_id: &item.preview.id,
-                    call_id: tool.invocation().tool_call_id(),
-                    task_id: tool.invocation().task_id(),
-                    state: tool.state(),
+                let TimelineDescriptor::Tool(tool) = &item.descriptor else {
+                    return None;
+                };
+                (!tool_state_is_terminal(&tool.state)).then(|| NonterminalTool {
+                    turn_id: &item.header.turn_id,
+                    item_id: &item.header.id,
+                    tool_call_id: &tool.invocation.tool_call_id,
+                    call_id: tool.invocation.call_id.as_deref(),
+                    task_id: tool.invocation.task_id.as_deref(),
+                    state: &tool.state,
                 })
             })
             .collect();
@@ -107,11 +113,13 @@ pub(super) async fn thread(
         for (item_index, item) in page.items.iter().enumerate() {
             budget.check()?;
             manifest.timeline_items += 1;
-            for (field_index, detail) in item.details.iter().enumerate() {
+            let item_id = item.header.id.as_str();
+            let turn_id = item.header.turn_id.as_str();
+            for (field_index, detail) in item.details().enumerate() {
                 let relative = format!(
                     "{prefix}/details/{page_index:05}-{item_index:03}-{field_index:03}.txt"
                 );
-                let mut file = evidence.create(&relative, &item.preview.id)?;
+                let mut file = evidence.create(&relative, item_id)?;
                 let result: Result<()> = async {
                     let mut continuation = None;
                     let mut bytes = 0u64;
@@ -119,7 +127,7 @@ pub(super) async fn thread(
                         let chunk = budget
                             .read(runtime.read_timeline_detail(
                                 id,
-                                &item.preview.id,
+                                item_id,
                                 &TimelineDetailQuery {
                                     field: detail.field,
                                     revision: detail.revision,
@@ -130,7 +138,7 @@ pub(super) async fn thread(
                             .await?;
                         anyhow::ensure!(
                             chunk.thread_id == id
-                                && chunk.item_id == item.preview.id
+                                && chunk.item_id == item_id
                                 && chunk.field == detail.field
                                 && chunk.revision == detail.revision
                                 && chunk.total_bytes == detail.total_bytes,
@@ -179,16 +187,18 @@ pub(super) async fn thread(
                 struct DetailMapping<'a> {
                     thread_id: &'a str,
                     item_id: &'a str,
+                    turn_id: &'a str,
                     detail: &'a pl_protocol::TimelineDetailRef,
                     file: &'a str,
                 }
                 evidence.json(
                     &format!("{relative}.ref.json"),
-                    &item.preview.id,
+                    item_id,
                     &DetailMapping {
                         thread_id: id,
-                        item_id: &item.preview.id,
-                        detail,
+                        item_id,
+                        turn_id,
+                        detail: &detail,
                         file: &relative,
                     },
                 )?;
@@ -211,4 +221,15 @@ pub(super) async fn thread(
     }
     manifest.thread_exports[export_index].complete = true;
     Ok(())
+}
+
+fn tool_state_is_terminal(state: &TimelineToolState) -> bool {
+    matches!(
+        state,
+        TimelineToolState::Interrupted { .. }
+            | TimelineToolState::Succeeded { .. }
+            | TimelineToolState::Failed { .. }
+            | TimelineToolState::Denied { .. }
+            | TimelineToolState::Cancelled { .. }
+    )
 }

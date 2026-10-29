@@ -8,14 +8,14 @@ use std::collections::BTreeSet;
 use anyhow::{Result, anyhow};
 use pl_core::chat::{CHAT_ITEM_PREVIEW_BYTES, ChatError, ChatField, ChatItem, ChatLifecycle};
 use pl_protocol::{
-    AGENT_SESSION_PLAN_CONFIRMATION_QUESTION_ID, TimelineDetailRef, TimelineItem,
-    TimelineLifecycle, studio::StudioError, studio::StudioErrorCode,
+    AGENT_SESSION_PLAN_CONFIRMATION_QUESTION_ID, TimelineDescriptor, TimelineFieldPreview,
+    TimelineItem, TimelineLifecycle, studio::StudioError, studio::StudioErrorCode,
 };
 
+use super::meta::TimelineMeta;
 use crate::plan_tool::TOOL_PLAN_SUBMIT;
 use crate::studio::runtime::chat_item::{
-    TOOL_ARGUMENTS_FIELD, TOOL_RESULT_FIELD, TOOL_USER_INPUT_FIELD, canonical_item, item_shell,
-    user_input_option_label_field,
+    TOOL_ARGUMENTS_FIELD, TOOL_RESULT_FIELD, TOOL_USER_INPUT_FIELD, user_input_option_label_field,
 };
 use crate::studio::runtime::timeline_content::field::wire_field;
 
@@ -41,7 +41,7 @@ pub(crate) fn bounded(item: &ChatItem) -> Result<ChatItem, ChatError> {
     // 计划确认的权威选项 label 与真正的决定答案先占用真实字节额度：它们是判别事实，不能因为正文剩余
     // 额度变小而被裁成空串或前缀，否则界面会显示“已解决但决定缺失”。自由修改反馈与普通问答答案都是
     // 自由正文，照常参与裁剪（完整文本仍可按身份读详情），不会单独触发硬资源限制。
-    let marks = plan_marks(item);
+    let marks = plan_marks(item)?;
     let keep_whole = |field: &ChatField| marks.contains(field);
     let reserved = item
         .field_previews()
@@ -101,9 +101,8 @@ fn exceeds_budget(
 ///
 /// Two things count, both taken from this item's **own content regions**:
 ///
-/// - the plan confirmation question's own option label fields — `Approve`／`Revise` as the plan tool
-///   published them. The static shell cannot supply them: it clears every dynamic string, so it only
-///   says *where* the question is and how many options it declares;
+/// - the plan confirmation question's own option label fields, as the plan tool published them;
+///   the descriptor declares only question identity and option count, never label text;
 /// - the recorded answers of that question whose complete value is exactly one of those labels.
 ///
 /// Everything else recorded on the same question (revision feedback, an `is_other` free answer, any
@@ -122,50 +121,52 @@ impl PlanMarks {
     }
 }
 
-/// Collects the protected decision facts of one item, decoding the canonical static shell only when the
+/// Collects the protected decision facts of one item, decoding its independent descriptor only when the
 /// item carries typed Q&A content at all.
 ///
 /// Such an item publishes its question and answers a handful of times, never once per streamed token, so
-/// the ordinary text hot path never reaches the decode. The shell is used for structure only — which
+/// the ordinary text hot path never reaches the decode. The descriptor supplies structure only — which
 /// question is the plan confirmation and how many options it declares — while every label value comes
 /// from this item's label fields, so bounding the item again never loses the decision basis. A pending
 /// confirmation protects its labels too: the options are the decision the user is asked to make.
-fn plan_marks(item: &ChatItem) -> PlanMarks {
+fn plan_marks(item: &ChatItem) -> Result<PlanMarks, ChatError> {
     if !item.fields.keys().any(is_user_input_field) {
-        return PlanMarks::default();
+        return Ok(PlanMarks::default());
     }
-    let Ok(shell) = item_shell(&item.meta, item.revision) else {
-        return PlanMarks::default();
+    let meta = TimelineMeta::decode(&item.meta)?;
+    let TimelineDescriptor::Tool(tool) = meta.descriptor else {
+        return Ok(PlanMarks::default());
     };
-    let Some(tool) = shell.tool() else {
-        return PlanMarks::default();
-    };
-    if tool.invocation().name() != TOOL_PLAN_SUBMIT {
-        return PlanMarks::default();
+    if tool.invocation.name != TOOL_PLAN_SUBMIT {
+        return Ok(PlanMarks::default());
     }
-    let Some(user_input) = tool.user_input() else {
-        return PlanMarks::default();
+    let Some(user_input) = tool.user_input else {
+        return Ok(PlanMarks::default());
     };
     let Some((position, question)) = user_input
-        .questions()
+        .questions
         .iter()
         .enumerate()
         .find(|(_, question)| question.id == AGENT_SESSION_PLAN_CONFIRMATION_QUESTION_ID)
     else {
-        return PlanMarks::default();
+        return Ok(PlanMarks::default());
     };
     let mut protected = BTreeSet::new();
     let mut labels = Vec::new();
-    // The shell's `options` list keeps its length with every label cleared, so it says how many label
-    // fields exist without providing any of their text.
-    for option in 0..question.options.as_ref().map_or(0, Vec::len) {
+    // 描述只声明位置和数量；标签与答案值只从当前条目的字段读取。
+    for option in 0..question.option_count.unwrap_or(0) as usize {
         let field = user_input_option_label_field(position, option);
         let Some(preview) = item.fields.get(&field) else {
-            continue;
+            return Err(ChatError::History(Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "plan confirmation option label is missing",
+            ))));
         };
-        // Only a complete label can prove a decision; a truncated or empty one is never guessed.
+        // 已失去完整判别标签时不能再把它当自由正文继续裁剪或猜测决定。
         if !preview.is_complete() {
-            continue;
+            return Err(ChatError::Overloaded(
+                "plan confirmation label is incomplete".into(),
+            ));
         }
         labels.push(preview.block.text());
         protected.insert(field);
@@ -184,7 +185,7 @@ fn plan_marks(item: &ChatItem) -> PlanMarks {
             protected.insert(field.clone());
         }
     }
-    PlanMarks { protected }
+    Ok(PlanMarks { protected })
 }
 
 /// `(question position, answer index)` of one recorded answer field, if this is one.
@@ -200,7 +201,7 @@ fn answer_position(field: &ChatField) -> Option<(usize, usize)> {
 
 /// Whether this field belongs to the typed Q&A / plan-confirmation content domain at all.
 ///
-/// This is the cheap gate in front of the canonical-shell decode: only such an item can carry a plan
+/// This is the cheap gate in front of the descriptor decode: only such an item can carry a plan
 /// confirmation, and it publishes its question and answers a handful of times rather than once per
 /// streamed token.
 fn is_user_input_field(field: &ChatField) -> bool {
@@ -222,9 +223,11 @@ fn field_cap(field: &ChatField) -> usize {
     }
 }
 
-/// 一条 core 条目 → wire 预览值（含逐字段详情引用）。
+/// 一条 core 条目 → 独立读取 DTO，不重建持久化正文。
 pub(crate) fn timeline_item(item: &ChatItem) -> Result<TimelineItem> {
-    let mut details = Vec::new();
+    let meta = TimelineMeta::for_item(item)?;
+    let mut fields = Vec::with_capacity(item.fields.len());
+    let mut identities = BTreeSet::new();
     for (field, preview) in item.field_previews() {
         let Some(field) = wire_field(field) else {
             return Err(anyhow!(StudioError::new(
@@ -233,22 +236,31 @@ pub(crate) fn timeline_item(item: &ChatItem) -> Result<TimelineItem> {
                 false,
             )));
         };
-        details.push(TimelineDetailRef {
+        if !identities.insert(field.token_label())
+            || preview.block.len() as u64 > preview.total_bytes
+        {
+            return Err(anyhow!(StudioError::new(
+                StudioErrorCode::Protocol,
+                "timeline item carries duplicate fields or invalid UTF-8 byte lengths",
+                false,
+            )));
+        }
+        fields.push(TimelineFieldPreview {
             field,
-            revision: item.revision,
+            text: preview.block.text(),
             total_bytes: preview.total_bytes,
-            preview_bytes: preview.block.len() as u64,
         });
     }
     Ok(TimelineItem {
         source: crate::studio::thread_projection::order::timeline_source(&item.item_id),
-        preview: canonical_item(item)?,
+        header: meta.header,
+        revision: item.revision,
+        descriptor: meta.descriptor,
         saved: item.saved,
         lifecycle: match item.lifecycle {
             ChatLifecycle::Streaming => TimelineLifecycle::Streaming,
             ChatLifecycle::Terminal => TimelineLifecycle::Terminal,
         },
-        omitted_bytes: item.omitted_bytes(),
-        details,
+        fields,
     })
 }

@@ -494,20 +494,12 @@ Future<void> main(List<String> args) async {
   Future<TimelinePresentationObservation> presentationFor(String id) async =>
       TimelineObservation.parse(await snapshot()).presentationFor(id);
 
-  SerializableFinder headerOf(SerializableFinder summary) => find.ancestor(
-    of: summary,
-    matching: find.byType('ListTile'),
-    firstMatchOnly: true,
-  );
-
   Future<void> revealItem(String id) async {
     final group = await presentationFor(id);
     await place(find.byValueKey('timeline-row-${group.id}'), 100);
     if (group.kind != 'single' && !group.expanded) {
       await driver.sendCommand(
-        RawTap(
-          headerOf(find.byValueKey('timeline-activity-summary-${group.id}')),
-        ),
+        RawTap(find.byValueKey('timeline-activity-summary-${group.id}')),
       );
     }
   }
@@ -533,7 +525,7 @@ Future<void> main(List<String> args) async {
       leadingInset: 0,
     );
     await driver.sendCommand(
-      RawTap(find.byValueKey('history-attachment-$sentImageId')),
+      RawTap(find.byValueKey('view-image-thumbnail-$sentImageId')),
     );
     await driver.waitFor(find.byValueKey('timeline-image-dialog-$sentImageId'));
     await File('${output.path}/sent-image-dialog.png')
@@ -682,7 +674,7 @@ Future<void> main(List<String> args) async {
           'attachments=${attachments.length}',
         );
       }
-      imageEntries.add('${tool.callId}:${attachments.single.id}');
+      imageEntries.add('${item.id}:${attachments.single.id}');
     }
     final imageItem = imageItems.first;
     final imageEntryFirst = imageEntries.first;
@@ -704,7 +696,7 @@ Future<void> main(List<String> args) async {
       'timeline-activity-summary-${imageGroup.id}',
     );
     final thumbnail = find.byValueKey('view-image-thumbnail-$imageEntryFirst');
-    await driver.sendCommand(RawTap(headerOf(toggle)));
+    await driver.sendCommand(RawTap(toggle));
     await driver.waitFor(thumbnail, timeout: const Duration(seconds: 10));
     // In the stock reversed list, an expanded row grows toward earlier content.
     // Explicitly scroll its header back into view before observing or clicking the gallery.
@@ -927,7 +919,7 @@ Future<void> main(List<String> args) async {
     await File('${output.path}/agent-read-image-recycled.png')
         .writeAsBytes(await driver.screenshot());
     // 同一组的真实 collapse 必须同时隐藏所有连续读取的缩略图。
-    await driver.sendCommand(RawTap(headerOf(toggle)));
+    await driver.sendCommand(RawTap(toggle));
     await driver.waitForAbsent(thumbnail, timeout: const Duration(seconds: 10));
     final collapsed = !mountedOf(await probe(thumbnail, 'observe'));
     final otherStillCollapsed = !mountedOf(
@@ -1139,17 +1131,19 @@ Future<void> main(List<String> args) async {
       } else {
         await revealItem(toolItem.id);
       }
-      final tile = find.byValueKey('timeline-tool-details:${toolItem.id}');
+      final tile = find.byValueKey('timeline-block-${toolItem.id}');
       await place(tile, 125);
       final expanded = await probe(tile, 'tap');
+      await File('${output.path}/case-$index-tool-expanded.json')
+          .writeAsString(jsonEncode(expanded));
       await File('${output.path}/case-$index-tool-expanded.png')
           .writeAsBytes(await driver.screenshot());
       final nested = (expanded['samples'] as List).last['nested'] as List;
       Map<String, dynamic>? inside;
       if (nested.any((s) => s['axis'] == 'vertical' && (s['max'] as num) > 0)) {
-        // Move the output into the viewport; the tool title may now be above it.
-        await place(tile, 80);
+        await probe(tile, 'revealInner');
         inside = await probe(tile, 'wheelInner', dy: 60);
+        await probe(tile, 'revealHeader');
         await place(tile, 125);
       }
       // 收起前必须把真实 header 重新带回可点区域：展开后标题可能已被原生反向布局
@@ -1254,22 +1248,25 @@ Future<void> main(List<String> args) async {
       await File('${output.path}/case-$index-collapsed.png')
           .writeAsBytes(await driver.screenshot());
     }
-    // Leave one tool open, visit a later tool, then return to the earlier tile
-    // and expand it after its row has been recycled.
+    // Leave one tool open, recycle its row, and return within the same lease.
+    // The presentation owner retains expansion intent independently of widgets.
     stdout.writeln('tool_scroll_reverse');
     TimelineItemObservation toolFor(String callId) => toolsByCallId[callId]!;
     final earlierTile = find.byValueKey(
-      'timeline-tool-details:${toolFor('scroll-call-medium').id}',
+      'timeline-block-${toolFor('scroll-call-medium').id}',
     );
     final laterTile = find.byValueKey(
-      'timeline-tool-details:${toolFor('scroll-call-arguments').id}',
+      'timeline-block-${toolFor('scroll-call-arguments').id}',
     );
     // 逆序复测必须从真实的 collapsed 准备态开始：先读公开 `expanded` flag；若它仍
     // 展开，先用一次真实点击收起，再进入“离开→返回→重新展开→收起”的序列。
     await place(earlierTile, 125);
     final earlierPrepared = await probe(earlierTile, 'observe');
     final earlierExpandedBefore =
-        (earlierPrepared['samples'] as List).last['expanded'] == true;
+        (earlierPrepared['samples'] as List).last['expanded'];
+    if (earlierExpandedBefore is! bool) {
+      throw StateError('reverse expansion: initial expansion state is unknown');
+    }
     if (earlierExpandedBefore) {
       await place(earlierTile, 125);
       final prepared = await probe(earlierTile, 'tap');
@@ -1280,9 +1277,45 @@ Future<void> main(List<String> args) async {
       }
     }
     await place(earlierTile, 125);
-    await probe(earlierTile, 'tap');
+    final openedBeforeLeave = await probe(earlierTile, 'tap');
+    final openedSamples = openedBeforeLeave['samples'] as List;
+    if (openedSamples.first['expanded'] != false ||
+        openedSamples.last['expanded'] != true) {
+      throw StateError('reverse expansion: initial open did not settle');
+    }
     await place(laterTile, 125);
     await probe(laterTile, 'tap');
+    final whileAway = await probe(earlierTile, 'observe');
+    if ((whileAway['samples'] as List).last['mounted'] != false) {
+      throw StateError('reverse expansion: earlier row was not recycled');
+    }
+    await place(earlierTile, 125);
+    final returned = await probe(earlierTile, 'observe');
+    final returnedSample = (returned['samples'] as List).last as Map;
+    final originalScroll = openedSamples.last['scroll'] as Map;
+    final reverseReturnedScroll = returnedSample['scroll'] as Map;
+    final retained =
+        returnedSample['expanded'] == true &&
+        reverseReturnedScroll['threadId'] == originalScroll['threadId'] &&
+        reverseReturnedScroll['generation'] == originalScroll['generation'];
+    if (!retained) {
+      throw StateError('reverse expansion: same-lease open intent was lost');
+    }
+    // Establish a real collapsed preparation state after proving retention.
+    // The following expansion/collapse geometry oracles remain unchanged.
+    final collapsedAfterReturn = await probe(earlierTile, 'tap');
+    final preparedSamples = collapsedAfterReturn['samples'] as List;
+    if (preparedSamples.first['expanded'] != true ||
+        preparedSamples.last['expanded'] != false) {
+      throw StateError('reverse expansion: returned collapse did not settle');
+    }
+    evidence['reverseRecycling'] = {
+      'openedBeforeLeave': openedBeforeLeave,
+      'whileAway': whileAway,
+      'returned': returned,
+      'collapsedAfterReturn': collapsedAfterReturn,
+      'pass': retained,
+    };
     await place(earlierTile, 125);
     evidence['reverseExpansion'] = await probe(earlierTile, 'tap');
     await File('${output.path}/reverse-expanded.png')
@@ -1290,7 +1323,7 @@ Future<void> main(List<String> args) async {
     await place(earlierTile, 125);
     evidence['reverseCollapse'] = await probe(earlierTile, 'tap');
     final imageTool = imageItems.first.tool!;
-    final imageId = '${imageTool.callId}:${imageTool.attachments.first.id}';
+    final imageId = '${imageItems.first.id}:${imageTool.attachments.first.id}';
     final originalThread = (s['navigation'] as Map)['selectedThreadId'];
     final previousGeneration = loadedTimeline.generation;
     await driver.sendCommand(RawTap(find.byValueKey('sidebar-new-session')));
@@ -1336,11 +1369,7 @@ Future<void> main(List<String> args) async {
     final reopenedGroup = await presentationFor(imageItem.id);
     await place(find.byValueKey('timeline-row-${reopenedGroup.id}'), 120);
     await driver.sendCommand(
-      RawTap(
-        headerOf(
-          find.byValueKey('timeline-activity-summary-${reopenedGroup.id}'),
-        ),
-      ),
+      RawTap(find.byValueKey('timeline-activity-summary-${reopenedGroup.id}')),
     );
     await driver.waitFor(
       find.byValueKey('view-image-thumbnail-$imageId'),
@@ -1356,7 +1385,7 @@ Future<void> main(List<String> args) async {
       leadingInset: 0,
     );
     await driver.sendCommand(
-      RawTap(find.byValueKey('history-attachment-$sentImageId')),
+      RawTap(find.byValueKey('view-image-thumbnail-$sentImageId')),
     );
     await driver.waitFor(find.byValueKey('timeline-image-dialog-$sentImageId'));
     await File('${output.path}/sent-image-reopened.png')
@@ -1595,6 +1624,7 @@ Future<void> main(List<String> args) async {
         'collapsed': evidence['reverseCollapse'],
       }),
     };
+    checks.add((evidence['reverseRecycling'] as Map)['pass'] == true);
     // 详情读取/复制的真实结果并入终局判定：残缺、晚到或复制错误都硬失败。
     final detailPasses = detailReads.cast<Map<String, Object?>>().every(
       (read) => read['pass'] == true,

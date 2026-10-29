@@ -1,9 +1,12 @@
+import 'dart:convert';
+
 import 'package:anywork/src/app/theme/material3_theme.dart';
-import 'package:anywork/src/features/timeline/conversation_activity_bar.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/conversation_activity_bar.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork_client/studio_client.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:gpt_markdown/gpt_markdown.dart';
 
 class _CustomDeployState {
   const _CustomDeployState({
@@ -391,6 +394,205 @@ void main() {
           find.byKey(const ValueKey('conversation-activity-sticky-summary')),
           findsOneWidget,
         );
+      });
+
+      test('活动详情正文按源顺序保留首尾空白和分片边界', () {
+        const activity = ThreadActivityView(
+          threadId: 'thread-1',
+          identity: 'activity:response-parts',
+          revision: 1,
+          turnId: 'turn-1',
+          kind: ThreadActivityKind.responding,
+          summary: '',
+        );
+        final projected = projectConversationActivity(
+          activity: activity,
+          detail: const CurrentThreadActivityDetail(
+            activity: activity,
+            response: [
+              ThreadActivityContentPart(
+                itemId: 'a',
+                complete: false,
+                text: '\n first ',
+              ),
+              ThreadActivityContentPart(
+                itemId: 'b',
+                complete: false,
+                text: ' \n',
+              ),
+              ThreadActivityContentPart(
+                itemId: 'c',
+                complete: false,
+                text: 'second\n\n',
+              ),
+            ],
+          ),
+        );
+        expect(projected?.responseText, '\n first  \nsecond\n\n');
+      });
+
+      test('现役文件和待办工具使用专用状态与真实路径', () {
+        for (final name in [
+          'write_file',
+          'create_directory',
+          'delete_path',
+          'copy_path',
+          'move_path',
+        ]) {
+          final copy = name == 'copy_path' || name == 'move_path';
+          final entry = ThreadActivityToolEntry(
+            callId: name,
+            name: name,
+            summary: name,
+            arguments: ThreadActivityArgumentsKind.opaque,
+            state: ThreadActivityToolState.running,
+          );
+          final message =
+              ConversationLiveStatusAdapter.createToolStartedMessage(
+                entry,
+                detail: ThreadActivityToolDetail(
+                  callId: name,
+                  name: name,
+                  state: ThreadActivityToolState.running,
+                  arguments: copy
+                      ? '{"from":"source.txt","to":"target.txt"}'
+                      : '{"path":"source.txt"}',
+                ),
+              );
+          expect(
+            message,
+            isA<
+              ConversationLiveToolStartedMessage<
+                FileLiveToolState,
+                FileLiveToolEvent
+              >
+            >(),
+            reason: name,
+          );
+          final state =
+              (message
+                      as ConversationLiveToolStartedMessage<
+                        FileLiveToolState,
+                        FileLiveToolEvent
+                      >)
+                  .initialState;
+          expect(state.path, 'source.txt', reason: name);
+          expect(
+            state.destinationPath,
+            copy ? 'target.txt' : null,
+            reason: name,
+          );
+        }
+        final todo = ConversationLiveStatusAdapter.createToolStartedMessage(
+          const ThreadActivityToolEntry(
+            callId: 'todo',
+            name: 'update_todo_list',
+            summary: '',
+            arguments: ThreadActivityArgumentsKind.opaque,
+            state: ThreadActivityToolState.running,
+          ),
+        );
+        expect(
+          todo,
+          isA<
+            ConversationLiveToolStartedMessage<
+              PlanWorkflowLiveToolState,
+              PlanWorkflowLiveToolEvent
+            >
+          >(),
+        );
+      });
+
+      testWidgets('stdin 空白输入与首尾字符在状态及实际详情中保真', (tester) async {
+        for (final input in ['\n', '   ', '  input  \n']) {
+          final message =
+              ConversationLiveStatusAdapter.createToolStartedMessage(
+                const ThreadActivityToolEntry(
+                  callId: 'stdin',
+                  name: 'write_stdin',
+                  summary: 'write_stdin',
+                  arguments: ThreadActivityArgumentsKind.opaque,
+                  state: ThreadActivityToolState.running,
+                ),
+                detail: ThreadActivityToolDetail(
+                  callId: 'stdin',
+                  name: 'write_stdin',
+                  state: ThreadActivityToolState.running,
+                  arguments: jsonEncode({
+                    'taskId': 'task:exec',
+                    'chars': input,
+                  }),
+                ),
+              ) as ConversationLiveToolStartedMessage<
+                CommandLiveToolState,
+                CommandLiveToolEvent
+              >;
+          expect(message.initialState.stdinInput, input);
+          await tester.pumpWidget(
+            _wrapWithApp(
+              Builder(
+                builder: (context) => message.spec.buildExpandedDetails(
+                  context,
+                  message.initialState,
+                  elapsedSeconds: 1,
+                ),
+              ),
+            ),
+          );
+          expect(
+            tester
+                .widgetList<RichText>(find.byType(RichText))
+                .map((text) => text.text.toPlainText())
+                .where((text) => text.startsWith('stdin  ')),
+            ['stdin  $input'],
+          );
+        }
+      });
+
+      testWidgets('工具流式详情保留输出首尾空白', (tester) async {
+        const output = '\n  tool output  \n';
+        await tester.pumpWidget(
+          _wrapWithApp(
+            Builder(
+              builder: (context) =>
+                  const CommandLiveToolSpec().buildExpandedDetails(
+                    context,
+                    const CommandLiveToolState(
+                      command: 'printf',
+                      stdout: output,
+                    ),
+                    elapsedSeconds: 1,
+                  ),
+            ),
+          ),
+        );
+        expect(find.text(output), findsOneWidget);
+      });
+
+      testWidgets('状态栏保留回复原文且不自动加载 Markdown 外部图片', (tester) async {
+        const url = 'https://fixture.invalid/status-image.png';
+        const body = '\n![external]($url)\n\n正常文字。\n';
+        final controller = ConversationLiveStatusController();
+        addTearDown(controller.dispose);
+        controller.ingestAll([
+          const ConversationLivePhaseMessage(
+            identity: 'activity:image-boundary',
+            phase: ConversationLivePhase.responding,
+          ),
+          const ConversationLiveResponseStreamMessage.replace(body),
+        ]);
+        await tester.pumpWidget(
+          _wrapWithApp(
+            ConversationActivityBar.fromController(controller: controller),
+          ),
+        );
+        await tester.pump();
+
+        expect(controller.responseStreamText, body);
+        expect(tester.widget<GptMarkdown>(find.byType(GptMarkdown)).data, body);
+        expect(find.text(url), findsOneWidget);
+        expect(find.byType(Image), findsNothing);
+        expect(tester.takeException(), isNull);
       });
 
       testWidgets('文本输出（responding）直接流式展示全部内容，随内容动态增高，达最大高度可滚动，且不可展开', (

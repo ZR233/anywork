@@ -50,7 +50,7 @@ class PageSwitchCommandExtension extends CommandExtension {
     var pendingAtTap = 0;
     var pendingAtSwitch = 0;
     String? destination;
-    StudioThreadSession? opening;
+    ConversationSession? opening;
     int? openingAttempt;
     var openingAtReturn = false;
     var openingReleased = false;
@@ -60,14 +60,19 @@ class PageSwitchCommandExtension extends CommandExtension {
             ? ByValueKey('thread-row-${request.threadId}')
             : null,
         onBeforeFollowingTap: () {
-          opening = client().activeSession;
-          final timeline = opening?.timeline;
-          openingAttempt = timeline?.currentAttemptId?.value;
+          final currentClient = client();
+          final selectedThreadId =
+              currentClient.selection.state.selectedThreadId;
+          opening = selectedThreadId == null
+              ? null
+              : currentClient.conversations.existingSession(selectedThreadId);
+          final content = opening?.content;
+          openingAttempt = content?.currentAttemptId?.value;
           openingAtReturn =
               opening?.threadId == request.destinationThreadId &&
-              timeline?.state.value is ChatOpening<StudioTimelineFrame> &&
+              content?.state.value is ChatOpening<ConversationContentFrame> &&
               openingAttempt != null &&
-              timeline!.ownedAttemptCount > 0;
+              content!.ownedAttemptCount > 0;
           if (!openingAtReturn) {
             throw StateError('Rapid return did not overlap the real open');
           }
@@ -109,9 +114,9 @@ class PageSwitchCommandExtension extends CommandExtension {
         if (client().selection.state.selectedThreadId != request.threadId) {
           throw StateError('Rapid return did not select the original thread');
         }
-        final retired = await opening!.timeline.joinRetired();
+        final retired = await opening!.content.joinRetired();
         openingReleased =
-            retired.complete && opening!.timeline.ownedAttemptCount == 0;
+            retired.complete && opening!.content.ownedAttemptCount == 0;
         if (!openingReleased) {
           throw StateError('The abandoned opening attempt did not release');
         }

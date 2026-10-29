@@ -59,4 +59,4 @@ final class StartSessionControllerProvider
 }
 
 String _$startSessionControllerHash() =>
-    r'1b98101e23a92c0aee343cf0a42632381b596eac';
+    r'e47d9b82b5de02c27b1f714ed739de49c49d4fff';

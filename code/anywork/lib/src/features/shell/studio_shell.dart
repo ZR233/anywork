@@ -5,7 +5,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter/gestures.dart' show DragStartBehavior;
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:go_router/go_router.dart';
 import 'package:multi_split_view/multi_split_view.dart';
 
 import '../../app/app_graph.dart';
@@ -34,16 +33,17 @@ import '../settings/settings_common.dart';
 import '../settings/settings_ssh_password_dialog.dart';
 import '../settings/settings_ssh_server_dialog.dart';
 import '../settings/settings_remote_directory_dialog.dart';
-import '../interaction/composer_dock.dart';
-import '../interaction/composer_view.dart';
+import '../conversation/composer/connectors/composer_dock_connector.dart';
+import '../conversation/composer/view_models/composer_view_model.dart';
 import '../status/thread_status_bar.dart';
-import '../timeline/conversation_activity_bar.dart';
-import '../timeline/timeline_view.dart';
-import '../timeline/timeline_connector.dart';
-import '../timeline/timeline_session_view.dart';
+import '../conversation/timeline/widgets/conversation_activity_bar.dart';
+import '../conversation/timeline/connectors/timeline_connector.dart';
+import '../conversation/timeline/connectors/plan_detail_connector.dart';
+import '../conversation/timeline/view_models/timeline_view_model.dart';
 import '../todo/todo_panel.dart';
 import 'shell_view.dart';
 import 'thread_preparation_card.dart';
+import '../../app/routing/app_route.dart';
 
 part 'studio_sidebar.dart';
 part 'add_project_dialog.dart';
@@ -200,6 +200,7 @@ class _StudioShellState extends ConsumerState<StudioShell> {
               ? _StudioFatalError(error: startup.error!)
               : const _StudioStartup();
         }
+        final selection = ref.watch(shellSelectionProvider);
         final chrome = ref.watch(shellChromeViewProvider);
         final sidebar = ref.watch(sidebarViewProvider);
         final header = ref.watch(headerViewProvider);
@@ -390,7 +391,12 @@ class _StudioShellState extends ConsumerState<StudioShell> {
                               ),
                             const RecoveryCheckStatus(showChecking: false),
                             const Divider(height: 1),
-                            const Expanded(child: AgentWorkspacePane()),
+                            Expanded(
+                              child: AgentWorkspacePane(
+                                threadId: selection.selectedThreadId,
+                                needsOpen: selection.needsOpen,
+                              ),
+                            ),
                           ],
                         ),
                       ),

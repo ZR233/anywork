@@ -109,6 +109,7 @@ final class ComposerFailureBlocker extends ComposerBlocker {
       reason == other.reason &&
       recoveryIssue?.id == other.recoveryIssue?.id &&
       recoveryIssue?.scope == other.recoveryIssue?.scope &&
+      recoveryIssue?.category == other.recoveryIssue?.category &&
       recoveryIssue?.impact == other.recoveryIssue?.impact &&
       recoveryIssue?.projectId == other.recoveryIssue?.projectId &&
       recoveryIssue?.threadId == other.recoveryIssue?.threadId &&
@@ -123,6 +124,7 @@ final class ComposerFailureBlocker extends ComposerBlocker {
     reason,
     recoveryIssue?.id,
     recoveryIssue?.scope,
+    recoveryIssue?.category,
     recoveryIssue?.impact,
     recoveryIssue?.projectId,
     recoveryIssue?.threadId,

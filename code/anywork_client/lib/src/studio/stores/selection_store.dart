@@ -77,7 +77,7 @@ class SelectionStore extends ReadModel<SelectionStoreState> {
   }
 
   void _assign(SelectionStoreState next) {
-    // Direct route/store changes and canonical removal also retire pending
+    // Direct selection changes and canonical removal also retire pending
     // navigation, including explicit selection of an already selected value.
     beginNavigation();
     if (next == state) return;

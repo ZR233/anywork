@@ -736,3 +736,37 @@ async fn a_same_revision_preview_is_completed_without_a_revision_bump() {
     assert_eq!(item.omitted_bytes(), 0);
     assert!(item.is_saved(), "the durable row's save watermark is kept");
 }
+
+#[tokio::test]
+async fn a_revision_evicted_during_a_page_read_cannot_reintroduce_the_old_row() {
+    let mut old = item(1, 1, "durable-before", true);
+    old.saved = true;
+    let mut history = GatedHistory::new(Stored::with([old]));
+    let gate = Arc::new(HistoryGate::new());
+    history.page_gate = Some(gate.clone());
+    let session = Session::new(history);
+    let read = tokio::spawn({
+        let session = session.clone();
+        async move {
+            session
+                .page(ChatPageRequest::before(ChatCursor::new(2, "item-2")))
+                .await
+        }
+    });
+    gate.entered().await;
+    let mut updated = item(1, 2, "durable-after", true);
+    updated.saved = true;
+    session.publish(updated).unwrap();
+    // These are committed, saved facts: evicting the older hot entry must not
+    // authorize the old read snapshot to republish its predecessor.
+    for order in 2..=151 {
+        let mut later = item(order, 1, "later", true);
+        later.saved = true;
+        session.publish(later).unwrap();
+    }
+    gate.release();
+    assert!(matches!(
+        read.await.unwrap(),
+        Err(ChatError::ReadInvalidated)
+    ));
+}

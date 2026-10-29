@@ -343,13 +343,8 @@ ConversationActivityView _typedActivity(
 }
 
 String? _joinContentParts(List<ThreadActivityContentPart> parts) {
-  final chunks = <String>[];
-  for (final part in parts) {
-    final trimmed = part.text.trim();
-    if (trimmed.isNotEmpty) chunks.add(trimmed);
-  }
-  if (chunks.isEmpty) return null;
-  return chunks.join('\n\n');
+  if (parts.isEmpty) return null;
+  return parts.map((part) => part.text).join();
 }
 
 /// 该活动是否有可展开的完整内容：工具（含并行多条）或推理正文；
