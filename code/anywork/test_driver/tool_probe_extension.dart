@@ -134,6 +134,24 @@ class ToolProbeExtension extends CommandExtension {
                   (e.widget as Text).textSpan?.toPlainText() ??
                   '',
           ],
+        // Live output uses the production SelectableText, not the ordinary
+        // labels covered by readText. Keep that existing observation separate.
+        if (probe.action == 'readSelectableText') ...{
+          'visibleHeight': _visibleInViewports(box).height
+              .clamp(0.0, double.infinity),
+          'texts': [
+            for (final e
+                in find
+                    .descendant(
+                      of: target,
+                      matching: find.byType(SelectableText),
+                    )
+                    .evaluate())
+              (e.widget as SelectableText).data ??
+                  (e.widget as SelectableText).textSpan?.toPlainText() ??
+                  '',
+          ],
+        },
         'scroll': scroll,
         // 展示模式来自同一次只读快照，供宿主断言“同 Thread/gen/History”。
         'mode': timeline is Map ? timeline['mode'] : null,
@@ -153,7 +171,9 @@ class ToolProbeExtension extends CommandExtension {
     }
 
     final samples = <Object?>[sample()];
-    if (probe.action == 'readText') return _ProbeResult(samples);
+    if (probe.action == 'readText' || probe.action == 'readSelectableText') {
+      return _ProbeResult(samples);
+    }
     final box = target.evaluate().single.renderObject! as RenderBox;
     final top = box.localToGlobal(Offset.zero);
     if (probe.action == 'hover') {

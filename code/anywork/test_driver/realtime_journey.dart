@@ -630,8 +630,10 @@ class RealtimeJourney {
       (snapshot) {
         final diagnostics = snapshot['driverDiagnostics'] as Map?;
         final stream = diagnostics?['stateStream'] as Map?;
-        return turnId(snapshot) != null &&
-            turnId(snapshot) != context.priorTurnId &&
+        final turn = turnId(snapshot);
+        return turn != null &&
+            turn != context.priorTurnId &&
+            !_liveTextPresent(snapshot, turn, 'responseParts') &&
             assistantContentCount(snapshot) == context.priorContent &&
             stream?['threadId'] ==
                 TimelineObservation.optional(snapshot)?.threadId &&
@@ -647,19 +649,26 @@ class RealtimeJourney {
     // 不新增 sleep、不改后端 pacing、也不发模型请求。必须在 observe/shot
     // 之前注册，否则截图会吃掉 delayed 窗口，只剩 baseline。
     await _startRuntimePublishEvidence(waiting);
-    await observe('delayed_waiting', waiting);
-    await shot('delayed-waiting');
-    // First content is a new assistant row appearing while the Turn is live; a
-    // terminal (not-busy) snapshot must never be read as the first token.
-    final firstContent = await waitFor(
+    // Running text belongs to activity, not an unfinished history row. Start
+    // this bounded read-only observation before screenshot work can miss it.
+    final firstContentObservation = waitFor(
       (snapshot) =>
           turnId(snapshot) == turn &&
-          assistantContentCount(snapshot) > context.priorContent,
+          isBusy(snapshot) &&
+          _liveTextPresent(snapshot, turn, 'responseParts') &&
+          assistantContentCount(snapshot) == context.priorContent,
       'delayed_first_content',
       timeout: const Duration(seconds: 30),
       abort: threadFaulted,
-    );
-    final firstContentAt = DateTime.now().millisecondsSinceEpoch;
+    ).then((snapshot) => (snapshot, DateTime.now().millisecondsSinceEpoch));
+    await Future.wait<void>([
+      firstContentObservation.then<void>((_) {}),
+      () async {
+        await observe('delayed_waiting', waiting);
+        await shot('delayed-waiting');
+      }(),
+    ]);
+    final (firstContent, firstContentAt) = await firstContentObservation;
     await observe('delayed_first_content', firstContent);
     await shot('delayed-streaming');
     final terminal = await awaitTerminal(turn, 'delayed');
@@ -694,7 +703,8 @@ class RealtimeJourney {
       (snapshot) =>
           turnId(snapshot) == turn &&
           isBusy(snapshot) &&
-          reasoningCount(snapshot) > context.priorReasoning &&
+          _liveTextPresent(snapshot, turn, 'reasoningParts') &&
+          reasoningCount(snapshot) == context.priorReasoning &&
           answerCount(snapshot) == context.priorAnswers,
       'reasoning_in_progress',
       timeout: const Duration(seconds: 30),
@@ -702,7 +712,7 @@ class RealtimeJourney {
     );
     await observe('reasoning_in_progress', reasoning);
     await shot('reasoning-in-progress');
-    // The reasoning row is this turn's first content, so the time-to-first-content
+    // The live reasoning is this turn's first content, so the time-to-first-content
     // stamp is taken here, before the activity-bar contract spends time observing.
     final firstContentAt = DateTime.now().millisecondsSinceEpoch;
     // The activity bar is exercised while reasoning is really running: only a
@@ -748,6 +758,17 @@ class RealtimeJourney {
   }
 
   Future<void> _longCommand() async {
+    // Hold this independent feed before submitting new work, not inside the
+    // finite real-tool output sampling window.
+    final creditThread = TimelineObservation.optional(await snapshot())
+        ?.threadId;
+    if (creditThread == null) {
+      throw StateError('real long-command Thread has no timeline observation');
+    }
+    counts['frbCreditHeld'] = await _creditProbe(
+      'open',
+      threadId: creditThread,
+    );
     final context = await submitPrompt('Realtime long command', 'long_command');
     final running = await awaitNewTurn(context, 'long_command');
     final turn = turnId(running)!;
@@ -797,6 +818,17 @@ class RealtimeJourney {
     final settledAt = DateTime.now().millisecondsSinceEpoch;
     await observe('long_command_continuation', settled);
     await shot('long-command-continuation');
+    // This separate real FRB subscription has not acknowledged either initial
+    // frame while the normal UI/provider completed the command and saved it.
+    counts['frbCreditIndependentQuery'] = await _creditProbe('query');
+    counts['frbCreditAfterOneAck'] = await _creditProbe('ack-one');
+    final creditClosed = await _creditProbe('close');
+    counts['frbCreditClosed'] = creditClosed;
+    checks['frbTwoFrameCreditAndIndependentQuery'] =
+        creditClosed['joined'] == true &&
+        creditClosed['failure'] == null &&
+        creditClosed['acknowledged'] == 1 &&
+        (creditClosed['frames'] as List).length == 3;
 
     final result = execTools(settled)
         .map((tool) => tool['result'] as String? ?? '')
@@ -830,6 +862,27 @@ class RealtimeJourney {
         answerContains(settled, _answers['longCommand']!);
   }
 
+  Future<Map<String, dynamic>> _creditProbe(
+    String action, {
+    String? threadId,
+  }) async {
+    final result = jsonDecode(
+      await driver.requestData(
+        jsonEncode({
+          'cmd': 'conversation-credit-$action',
+          'threadId': ?threadId,
+        }),
+        timeout: const Duration(seconds: 30),
+      ),
+    );
+    if (result is! Map<String, dynamic> ||
+        result['source'] != 'real-frb-conversation-feed' ||
+        result['failure'] != null) {
+      throw StateError('real FRB credit observation failed: $result');
+    }
+    return result;
+  }
+
   /// One immediate, unified live-window loop for the long command.
   ///
   /// It starts from the first running snapshot — never after a screenshot — and
@@ -859,7 +912,9 @@ class RealtimeJourney {
     var activityDetailGrowth = false;
     int? previousDetailLines;
     final activityDetailSamples = <Map<String, Object?>>[];
-    final activityToolDetails = find.byValueKey('live-tool-details-$callId');
+    final activityToolOutput = find.byValueKey(
+      'live-tool-output-$callId-command-output',
+    );
     Map<String, Object?>? previous;
     var latest = first;
     final deadline = DateTime.now().add(const Duration(seconds: 40));
@@ -890,6 +945,13 @@ class RealtimeJourney {
       if (sample != null) {
         samples.add(<String, Object?>{
           'at': DateTime.now().millisecondsSinceEpoch,
+          'activeToolCount': activity?['activeToolCount'],
+          'toolCallIds': [
+            for (final tool
+                in (activity?['toolDetails'] as List? ?? const [])
+                    .whereType<Map>())
+              tool['callId'],
+          ],
           ...sample,
         });
         if (previous != null &&
@@ -904,7 +966,7 @@ class RealtimeJourney {
         }
         previous = sample;
       }
-      final tool = _toolByCallId(snapshot, callId);
+      final tool = _completedExecByCallId(snapshot, callId);
       // Once the call is terminal no further live sample or activity can arrive.
       final toolTerminal =
           tool != null && _terminalToolStatuses.contains(tool['status']);
@@ -913,17 +975,18 @@ class RealtimeJourney {
         activityToolOpened = false;
         previousDetailLines = null;
       }
-      final waitTool = timelineToolByCallId(
+      // Open after this fixture's real foreground wait has appeared. The exec
+      // begins in attempt 0 and its background receipt advances to attempt 1;
+      // an expansion sampled across that identity change is legitimately
+      // retired. Read the exact wait identity, never infer it from a count.
+      final waitTool = _liveToolProgressSample(
         snapshot,
         'realtime-long-wait-call',
       );
-      final stableToolActivity =
-          waitTool != null &&
-          _liveToolStatuses.contains(waitTool.status) &&
-          activity?['activeToolCount'] == 2;
       if (!toolTerminal &&
           !activityToolOpened &&
-          stableToolActivity &&
+          sample != null &&
+          waitTool != null &&
           activity != null &&
           (!wantIdentityReset || identityResetObserved)) {
         if (activity['expanded'] != true) {
@@ -931,10 +994,27 @@ class RealtimeJourney {
         }
         final row = find.byValueKey('live-tool-row-$callId');
         await driver.waitFor(row, timeout: const Duration(seconds: 5));
-        await driver.rawTap(row);
+        final rowState = await driver.sendCommand(ToolProbe(row, 'observe'));
+        final rowSample = (rowState['samples'] as List).last as Map;
+        if (rowSample['expanded'] is! bool) {
+          throw StateError('live tool row exposes no real expansion state');
+        }
+        if (rowSample['expanded'] == false) {
+          // This is still the collapsed header. ToolProbe's historical `tap`
+          // deliberately samples 24 later frames, which can outlive a live
+          // tool; dispatch the existing hit-tested tap without that recording.
+          await driver.rawTap(row, timeout: const Duration(seconds: 5));
+        }
         await driver.waitFor(
-          activityToolDetails,
+          activityToolOutput,
           timeout: const Duration(seconds: 5),
+        );
+        await driver.sendCommand(
+          ScrollIntoView(
+            activityToolOutput,
+            alignment: 1,
+            timeout: const Duration(seconds: 5),
+          ),
         );
         activityToolOpened = true;
         openedActivityIdentity = activityIdentity;
@@ -943,11 +1023,11 @@ class RealtimeJourney {
         final Map<String, dynamic> rendered;
         try {
           rendered = await driver.sendCommand(
-            ToolProbe(activityToolDetails, 'readText'),
+            ToolProbe(activityToolOutput, 'readSelectableText'),
           );
         } on DriverError {
           final retired = await this.snapshot();
-          final retiredTool = _toolByCallId(retired, callId);
+          final retiredTool = _completedExecByCallId(retired, callId);
           if (retiredTool != null &&
               _terminalToolStatuses.contains(retiredTool['status'])) {
             latest = retired;
@@ -955,19 +1035,20 @@ class RealtimeJourney {
           }
           rethrow;
         }
-        final texts =
-            ((rendered['samples'] as List).single as Map)['texts'] as List;
+        final renderedSample = (rendered['samples'] as List).single as Map;
+        final texts = renderedSample['texts'] as List;
         final outputs = texts.whereType<String>().where(
           (text) => text.startsWith('realtime-long-output-line-01'),
         );
         final fresh = await this.snapshot();
-        final freshTool = _toolByCallId(fresh, callId);
+        final freshTool = _liveToolProgressSample(fresh, callId);
         if (outputs.length > 1) {
           throw StateError('ambiguous live activity output for $callId');
         }
         if (outputs.isNotEmpty &&
             freshTool != null &&
-            _liveToolStatuses.contains(freshTool['status'])) {
+            freshTool['activityIdentity'] == openedActivityIdentity &&
+            (renderedSample['visibleHeight'] as num) > 0) {
           final output = outputs.single;
           final lines = RegExp(r'realtime-long-output-line-\d\d')
               .allMatches(output)
@@ -976,6 +1057,7 @@ class RealtimeJourney {
             'at': DateTime.now().millisecondsSinceEpoch,
             'callId': callId,
             'activityIdentity': openedActivityIdentity,
+            'visibleHeight': renderedSample['visibleHeight'],
             'lines': lines,
             'text': output,
           });
@@ -1174,7 +1256,7 @@ class RealtimeJourney {
         }
         previous = sample;
       }
-      final tool = timelineToolByCallId(state, execCallId);
+      final tool = completedToolByCallId(state, execCallId);
       final terminal =
           tool != null && _terminalToolStatuses.contains(tool.status);
       if (growthSeen || terminal) break;
@@ -1195,8 +1277,8 @@ class RealtimeJourney {
     final delivered = await waitFor(
       (snapshot) =>
           turnId(snapshot) == turn &&
-          timelineToolByCallId(snapshot, execCallId)?.status == 'succeeded' &&
-          timelineToolByCallId(snapshot, waitCallId)?.status == 'succeeded',
+          completedToolByCallId(snapshot, execCallId)?.status == 'succeeded' &&
+          completedToolByCallId(snapshot, waitCallId)?.status == 'succeeded',
       'host_cwd_delivered',
       timeout: const Duration(seconds: 120),
       abort: turnFailed,
@@ -1207,8 +1289,8 @@ class RealtimeJourney {
     final terminal = await awaitCompleted(turn, 'host_cwd');
     final settled = await awaitSettled(turn, 'host_cwd');
     await observe('host_cwd_complete', settled);
-    final execTool = timelineToolByCallId(settled, execCallId);
-    final waitTool = timelineToolByCallId(settled, waitCallId);
+    final execTool = completedToolByCallId(settled, execCallId);
+    final waitTool = completedToolByCallId(settled, waitCallId);
     if (execTool == null || waitTool == null) {
       throw StateError(
         'host cwd: the settled timeline lost the exec/wait tool identity',
@@ -1362,6 +1444,7 @@ class RealtimeJourney {
     ({
       String threadId,
       int generation,
+      TimelineObservation retained,
       Map<String, Object?> before,
       Map<String, Object?> history,
       Map<String, Object?>? expansion,
@@ -1422,6 +1505,12 @@ class RealtimeJourney {
       'entered': entered,
       'threadId': historyTimeline.threadId,
       'sameThread': historyTimeline.threadId == beforeTimeline.threadId,
+      'sameEpoch':
+          historyTimeline.timelineEpoch == beforeTimeline.timelineEpoch,
+      'retainsCompletedFacts': _retainsCompletedFacts(
+        beforeTimeline,
+        historyTimeline,
+      ),
       'mode': historyTimeline.mode,
       'generation': historyTimeline.generation,
       'pixels': geometry?.pixels,
@@ -1446,6 +1535,8 @@ class RealtimeJourney {
     if (!entered ||
         !historyTimeline.isHistory ||
         historyTimeline.threadId != beforeTimeline.threadId ||
+        historyTimeline.generation != beforeTimeline.generation ||
+        !_retainsCompletedFacts(beforeTimeline, historyTimeline) ||
         (geometry?.extentBefore ?? 0) <= _minDetachedOffset ||
         geometry?.atLiveEdge != false) {
       throw StateError(
@@ -1456,6 +1547,7 @@ class RealtimeJourney {
     return (
       threadId: beforeTimeline.threadId,
       generation: historyTimeline.generation,
+      retained: historyTimeline,
       before: before,
       history: history,
       expansion: expansion,
@@ -1513,30 +1605,26 @@ class RealtimeJourney {
     };
   }
 
-  /// 发送后：同一 Thread 由新的 Live 代次接管，stock 几何属于该新代次且从 offset 0
-  /// 开始；等生产自己发布空闲几何，不按固定帧或 sleep。
-  Future<Map<String, dynamic>> _awaitDirectSendLive({
-    required String threadId,
-    required int historyGeneration,
+  /// 发送只增加完成事实，保留阅读窗口/代次，滚动继续由 stock 列表负责。
+  Future<Map<String, dynamic>> _awaitDirectSendCurrent({
+    required TimelineObservation retained,
   }) {
     return waitFor(
       (snapshot) {
         final timeline = TimelineObservation.optional(snapshot);
         final scroll = TimelineScrollObservation.optional(snapshot);
         if (timeline == null || scroll == null) return false;
-        return timeline.threadId == threadId &&
-            timeline.isLive &&
-            timeline.generation > historyGeneration &&
+        return timeline.threadId == retained.threadId &&
+            timeline.isHistory &&
+            timeline.generation == retained.generation &&
+            _retainsCompletedFacts(retained, timeline) &&
+            _lastUserItem(timeline)?.text == _providerErrorPrompt &&
+            timeline.hasNewOutput &&
             scroll.laidOut &&
-            !scroll.isScrolling &&
-            scroll.generation == timeline.generation &&
-            scroll.atLiveEdge &&
-            (scroll.pixels ?? 1).abs() <= 0.5 &&
-            (scroll.extentBefore ?? 1).abs() <= 0.5;
+            scroll.generation == timeline.generation;
       },
-      'provider_error_direct_send_live',
+      'provider_error_direct_send_current_window',
       timeout: const Duration(seconds: 30),
-      abort: threadFaulted,
     );
   }
 
@@ -1565,34 +1653,30 @@ class RealtimeJourney {
 
   Future<void> _providerError() async {
     // History 直接发送：先由真实用户意图进入 History（不显式回实时、不分页、不写
-    // pixels），随后用同一 composer 发送这一条既定输入。新代次必须由发送自身建立。
+    // pixels），随后用同一 composer 发送既定输入，不重建呈现窗口或代次。
     final history = await _enterHistoryForDirectSend();
     final context = await submitPrompt(_providerErrorPrompt, 'account_error');
     final running = await awaitNewTurn(context, 'account_error');
-    final afterLive = await _awaitDirectSendLive(
-      threadId: history.threadId,
-      historyGeneration: history.generation,
+    final afterCurrent = await _awaitDirectSendCurrent(
+      retained: history.retained,
     );
-    final liveTimeline = TimelineObservation.parse(afterLive);
-    final liveScroll = TimelineScrollObservation.parse(afterLive);
+    final currentTimeline = TimelineObservation.parse(afterCurrent);
+    final currentScroll = TimelineScrollObservation.parse(afterCurrent);
     final newTurnId = turnId(running);
     final newUserItemId = await _awaitNewUserIdentity(
       threadId: history.threadId,
       previousUserId: history.before['lastUserItemId'] as String?,
       expectedText: _providerErrorPrompt,
     );
-    // 只有真实观察到这些事实才置真：同一 Thread、Live、新代次、非 preparing、
-    // 几何绑定新代次且 offset 0，并且新用户/Turn 身份确实出现。
-    checks['historyDirectSendNewGeneration'] =
-        liveTimeline.threadId == history.threadId &&
-        liveTimeline.isLive &&
-        liveTimeline.generation > history.generation &&
-        liveScroll.generation == liveTimeline.generation &&
-        liveScroll.atLiveEdge &&
-        (liveScroll.pixels ?? 1).abs() <= 0.5 &&
-        (liveScroll.extentBefore ?? 1).abs() <= 0.5 &&
+    // 同一 Thread/epoch/窗口及原冻结项保持，且真实新用户/Turn 已出现。
+    checks['historyDirectSendPreservesWindow'] =
+        currentTimeline.threadId == history.threadId &&
+        currentTimeline.isHistory &&
+        currentTimeline.generation == history.generation &&
+        currentScroll.generation == currentTimeline.generation &&
+        _retainsCompletedFacts(history.retained, currentTimeline) &&
         newTurnId != null;
-    await observe('provider_error_direct_send_live', afterLive);
+    await observe('provider_error_direct_send_current_window', afterCurrent);
     await _writeRequiredJson(
       'realtime-history-direct-send.json',
       <String, Object?>{
@@ -1606,30 +1690,31 @@ class RealtimeJourney {
           'composerSubmitKey': 'composer-submit',
           'submittedAt': context.submittedAt,
         },
-        'afterLive': <String, Object?>{
-          'threadId': liveTimeline.threadId,
-          'mode': liveTimeline.mode,
-          'generation': liveTimeline.generation,
-          'pixels': liveScroll.pixels,
-          'extentBefore': liveScroll.extentBefore,
-          'extentAfter': liveScroll.extentAfter,
-          'atLiveEdge': liveScroll.atLiveEdge,
-          'scrollGeneration': liveScroll.generation,
+        'afterCurrent': <String, Object?>{
+          'threadId': currentTimeline.threadId,
+          'mode': currentTimeline.mode,
+          'generation': currentTimeline.generation,
+          'timelineEpoch': currentTimeline.timelineEpoch,
+          'pixels': currentScroll.pixels,
+          'extentBefore': currentScroll.extentBefore,
+          'extentAfter': currentScroll.extentAfter,
+          'atLiveEdge': currentScroll.atLiveEdge,
+          'scrollGeneration': currentScroll.generation,
           'newTurnId': newTurnId,
           'newUserItemId': newUserItemId,
         },
         'priorTurnId': context.priorTurnId,
         'priorTimelineItemCount': history.before['itemCount'],
         'priorUserItemCount': history.before['userItemCount'],
-        'historyDirectSendNewGeneration':
-            checks['historyDirectSendNewGeneration'],
+        'historyDirectSendPreservesWindow':
+            checks['historyDirectSendPreservesWindow'],
       },
     );
-    if (checks['historyDirectSendNewGeneration'] != true) {
+    if (checks['historyDirectSendPreservesWindow'] != true) {
       final unexpected = await snapshot();
       throw StateError(
-        'history direct send did not establish a new live generation: '
-        'history=${history.history}, afterLive=${summarize(unexpected)}',
+        'history direct send did not preserve its completed window: '
+        'history=${history.history}, afterCurrent=${summarize(unexpected)}',
       );
     }
     final turn = turnId(running)!;
@@ -1673,7 +1758,10 @@ class RealtimeJourney {
     final running = await awaitNewTurn(context, 'cancel');
     final turn = turnId(running)!;
     final streaming = await waitFor(
-      (snapshot) => turnId(snapshot) == turn && isBusy(snapshot),
+      (snapshot) =>
+          turnId(snapshot) == turn &&
+          isBusy(snapshot) &&
+          _liveTextPresent(snapshot, turn, 'responseParts'),
       'cancel_streaming',
       timeout: const Duration(seconds: 30),
       abort: turnFailed,
@@ -1755,7 +1843,30 @@ class RealtimeJourney {
   /// asserted for real. Nothing here fabricates a pass from an unknown field.
   Future<void> _uiContracts() async {
     await mark('ui_contracts');
-    final settled = await snapshot();
+    var settled = await snapshot();
+    final reading = TimelineObservation.optional(settled);
+    if (reading != null && reading.isHistory) {
+      // Earlier sends deliberately kept the History reading intent. Use the
+      // actual explicit control before asserting live-edge geometry.
+      await _tap('timeline-return-live');
+      settled = await waitFor(
+        (snapshot) {
+          final timeline = TimelineObservation.optional(snapshot);
+          final scroll = TimelineScrollObservation.optional(snapshot);
+          return timeline != null &&
+              timeline.isLive &&
+              timeline.generation == reading.generation &&
+              _retainsCompletedFacts(reading, timeline) &&
+              scroll != null &&
+              scroll.laidOut &&
+              !scroll.isScrolling &&
+              scroll.atLiveEdge;
+        },
+        'explicit_return_after_history_send',
+        timeout: const Duration(seconds: 30),
+      );
+      checks['explicitReturnAfterHistorySendPreservesWindow'] = true;
+    }
     checks['modelBindingAvailableAfterCalls'] =
         ((settled['workspace'] as Map?)?['modelRoute'] as Map?)?['available'] ==
         true;
@@ -2214,8 +2325,8 @@ class RealtimeJourney {
   ///
   /// Only a snapshot without the typed `conversationActivity` field is pending (a
   /// baseline gap). Once the field exists, every observation below is asserted
-  /// for real: the activity must expose an identity, be `expandable`, load its
-  /// on-demand details, keep the same identity expanded across a *new* update,
+  /// for real: the activity must expose an identity, be `expandable`, show its
+  /// pushed content, keep the same identity expanded across a *new* update,
   /// collapse to `expanded=false`, and stay collapsed across a further update.
   Future<void> _activityContractDuringBusy(
     String label, {
@@ -2244,10 +2355,13 @@ class RealtimeJourney {
       abort: turnFailed,
     );
     final identity = conversationActivity(live)!['identity'] as String;
+    final activityTurn = turnId(live);
+    if (activityTurn == null) {
+      throw StateError('expandable activity has no running Turn');
+    }
     checks['activityIdentityExposed'] = true;
     checks['activityExpandableDuringActiveTurn'] = true;
-    // `expandable` is the capability that makes the bar tappable; the complete
-    // details are read on demand, so they are only asserted after the tap.
+    // Expansion reveals already-pushed content; it must not query live details.
     await _tap('conversation-activity');
     await driver.waitFor(
       find.byValueKey('conversation-activity-details'),
@@ -2255,17 +2369,14 @@ class RealtimeJourney {
     );
     // `expanded` is the *actual* expand state published by the activity bar;
     // `expandable` is only the capability and is never read as the state. The
-    // details list is populated by the on-expand load, so a non-empty list here
-    // is the real load result.
+    // mounted details container and actual pushed reasoning are checked together.
     final expanded = await waitFor(
       (current) {
         final activity = conversationActivity(current);
-        final details = activity == null ? null : activity['details'];
         return activity != null &&
             activity['identity'] == identity &&
             activity['expanded'] == true &&
-            details is List &&
-            details.isNotEmpty;
+            _liveTextPresent(current, activityTurn, 'reasoningParts');
       },
       '${label}_activity_expanded',
       timeout: const Duration(seconds: 20),
@@ -2390,7 +2501,7 @@ class RealtimeJourney {
   /// drags the pointer in fixed bounded steps — the same fixed-step, live-geometry
   /// mechanism the long-body stress journey uses — until the view has really left
   /// the bottom while a live assistant row is the topmost visible row, then
-  /// 真实上翻进入 History 后，已展示结构必须冻结；新代次只由显式动作建立。
+  /// 真实上翻进入 History 后，原子保持冻结，阅读意图不重建窗口或代次。
   ///
   /// 判定只读当前展示事实：模式、代次、已加载身份与当前标准 controller 几何。这里
   /// 没有 anchor/restore/pin 状态，也不写 pixels。
@@ -2451,7 +2562,11 @@ class RealtimeJourney {
     await shot('history-detached');
     final detachedTimeline = TimelineObservation.parse(current);
     final detached = _leftBottom(geometry) && detachedTimeline.isHistory;
-    checks['historyScrollDetachesBottom'] = detached && steps > 0;
+    checks['historyScrollDetachesBottom'] =
+        detached &&
+        steps > 0 &&
+        detachedTimeline.generation == settledTimeline.generation &&
+        _retainsCompletedFacts(settledTimeline, detachedTimeline);
     counts['historyScrollSteps'] = steps;
     counts['historyMode'] = detachedTimeline.mode;
     counts['historyGeneration'] = detachedTimeline.generation;
@@ -2460,13 +2575,13 @@ class RealtimeJourney {
     counts['historyExtentBefore'] = geometry?.extentBefore;
     counts['historyExtentAfter'] = geometry?.extentAfter;
     counts['historyLoadedItems'] = detachedTimeline.itemCount;
-    // 冻结：后续真实输出只提示，不替换已展示身份，也不换代。
+    // 原子始终冻结；阅读不换代，也不拒绝随后完成事实。
     final after = await snapshot();
     final afterTimeline = TimelineObservation.parse(after);
-    checks['historyStaysFrozen'] =
+    checks['historyRetainsCompletedFacts'] =
         afterTimeline.isHistory &&
         afterTimeline.generation == detachedTimeline.generation &&
-        detachedTimeline.itemIds.every(afterTimeline.itemIds.contains);
+        _retainsCompletedFacts(detachedTimeline, afterTimeline);
     // 回到冻结集合的本地底端仍是同一个 History 代次。
     final bottomDeadline = DateTime.now().add(const Duration(seconds: 20));
     var atBottom =
@@ -2482,11 +2597,12 @@ class RealtimeJourney {
     }
     final frozenBottom = await snapshot();
     final frozenTimeline = TimelineObservation.parse(frozenBottom);
-    checks['historyBottomStaysFrozen'] =
+    checks['historyBottomKeepsWindow'] =
         atBottom &&
         frozenTimeline.isHistory &&
-        frozenTimeline.generation == detachedTimeline.generation;
-    // 显式回到实时才建立新代次。
+        frozenTimeline.generation == detachedTimeline.generation &&
+        _retainsCompletedFacts(detachedTimeline, frozenTimeline);
+    // 显式返回最新只改阅读意图/stock 滚动，不重开窗口。
     final beforeReturn = TimelineObservation.parse(await snapshot());
     await driver.rawTap(find.byValueKey('timeline-return-live'));
     final returnDeadline = DateTime.now().add(const Duration(seconds: 30));
@@ -2497,7 +2613,9 @@ class RealtimeJourney {
       final scroll = TimelineScrollObservation.optional(state);
       if (timeline != null &&
           timeline.isLive &&
-          timeline.generation > beforeReturn.generation &&
+          timeline.generation == beforeReturn.generation &&
+          _retainsCompletedFacts(beforeReturn, timeline) &&
+          _retainsCompletedFacts(detachedTimeline, timeline) &&
           scroll != null &&
           scroll.laidOut &&
           !scroll.isScrolling &&
@@ -2507,7 +2625,7 @@ class RealtimeJourney {
       }
       await Future<void>.delayed(const Duration(milliseconds: 100));
     }
-    checks['explicitReturnLiveNewGeneration'] = resumed;
+    checks['explicitReturnLivePreservesWindow'] = resumed;
   }
 
   /// 视口是否真的离开了视觉底端。
@@ -2776,6 +2894,35 @@ int assistantContentCount(Map<String, dynamic> snapshot) {
 int reasoningCount(Map<String, dynamic> snapshot) =>
     TimelineObservation.optional(snapshot)?.ofKind('reasoning').length ?? 0;
 
+bool _liveTextPresent(
+  Map<String, dynamic> snapshot,
+  String turn,
+  String field,
+) {
+  final activity = conversationActivity(snapshot);
+  if (activity?['turnId'] != turn) return false;
+  final parts = activity?[field];
+  return parts is List &&
+      parts.whereType<Map>().any(
+        (part) =>
+            part['itemId'] is String &&
+            part['text'] is String &&
+            (part['text'] as String).isNotEmpty,
+      );
+}
+
+bool _retainsCompletedFacts(
+  TimelineObservation before,
+  TimelineObservation after,
+) =>
+    before.timelineEpoch == after.timelineEpoch &&
+    before.items.every((item) {
+      final kept = after.item(item.id);
+      return kept != null &&
+          kept.appendSeq == item.appendSeq &&
+          jsonEncode(kept.frozenFields()) == jsonEncode(item.frozenFields());
+    });
+
 /// 已加载时间线里的用户消息条数（evidence 用，不参与判定）。
 int _userItemCount(TimelineObservation timeline) =>
     timeline.items.where((item) => item.kind == 'userMessage').length;
@@ -2862,17 +3009,28 @@ int activeExecCount(Map<String, dynamic> snapshot) =>
     activeExecStatuses(snapshot).length;
 
 List<String?> activeExecStatuses(Map<String, dynamic> snapshot) =>
-    execTools(snapshot)
-        .map((tool) => tool['status'] as String?)
+    _activityExecStatuses(snapshot)
         .where(_activeToolStatuses.contains)
         .toList();
 
 /// Tools whose status proves real execution rather than a scheduled call.
 List<String?> liveExecStatuses(Map<String, dynamic> snapshot) =>
-    execTools(snapshot)
-        .map((tool) => tool['status'] as String?)
-        .where(_liveToolStatuses.contains)
-        .toList();
+    _activityExecStatuses(snapshot).where(_liveToolStatuses.contains).toList();
+
+Iterable<String> _activityExecStatuses(Map<String, dynamic> snapshot) sync* {
+  final activity = conversationActivity(snapshot);
+  if (activity == null) return;
+  final tools = activity['toolDetails'];
+  if (tools is! List) {
+    throw StateError('current activity tool facts are missing');
+  }
+  for (final tool in tools.whereType<Map>()) {
+    if (tool['name'] != 'exec') continue;
+    final state = tool['state'];
+    if (state is! String) throw StateError('current exec state is missing');
+    yield state;
+  }
+}
 
 /// Terminal tool states: no further live sample can ever arrive.
 const _terminalToolStatuses = <String>{
@@ -2883,13 +3041,16 @@ const _terminalToolStatuses = <String>{
   'interrupted',
 };
 
-/// The projected exec tool with [callId], when it exists at all.
-Map<String, dynamic>? _toolByCallId(
+/// The completed exec result, never its immutable background-start receipt.
+Map<String, dynamic>? _completedExecByCallId(
   Map<String, dynamic> snapshot,
   String callId,
 ) {
   for (final tool in execTools(snapshot)) {
-    if (tool['callId'] == callId) return tool;
+    if (tool['callId'] == callId &&
+        _terminalToolStatuses.contains(tool['status'])) {
+      return tool;
+    }
   }
   return null;
 }
@@ -2966,8 +3127,8 @@ bool execDelivered(
       (tool['result'] as String? ?? '').contains(outputNeedle),
 );
 
-/// 当前展示里指定 callId 的工具事实（exec 与 wait 等非 exec 工具都适用）。
-TimelineToolObservation? timelineToolByCallId(
+/// 当前完成历史里指定 callId 的终态结果，不把后台启动收据当作可变结果。
+TimelineToolObservation? completedToolByCallId(
   Map<String, dynamic> snapshot,
   String callId,
 ) {
@@ -2975,7 +3136,11 @@ TimelineToolObservation? timelineToolByCallId(
       in TimelineObservation.optional(snapshot)?.items ??
           const <TimelineItemObservation>[]) {
     final tool = item.tool;
-    if (tool != null && tool.callId == callId) return tool;
+    if (tool != null &&
+        tool.callId == callId &&
+        _terminalToolStatuses.contains(tool.status)) {
+      return tool;
+    }
   }
   return null;
 }

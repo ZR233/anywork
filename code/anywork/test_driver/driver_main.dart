@@ -53,6 +53,7 @@ import 'scrollbar_drag_extension.dart';
 import 'key_press_extension.dart';
 import 'tool_probe_extension.dart';
 import 'runtime_event_evidence.dart';
+import 'conversation_credit_probe.dart';
 import 'page_switch_extension.dart';
 import 'pointer_hover_extension.dart';
 
@@ -164,6 +165,7 @@ void _applyShutdownFaultOverride() {
 late final ProviderContainer _container;
 AnyworkClient get _client => _container.read(appGraphProvider).client;
 Future<StudioShutdownReport>? _shutdownTask;
+ConversationCreditProbe? _conversationCreditProbe;
 
 Future<StatisticsSnapshot> _awaitStatisticsSnapshot() async {
   final repository = _container.read(appGraphProvider).statisticsRepository;
@@ -243,8 +245,8 @@ void _recordFrameTimings(List<FrameTiming> timings) {
 }
 
 Future<String> _handleDriverData(String? message) async {
-  // JSON 命令：只用于请求时的只读几何观察。生产端没有每行测量表，这里是 Driver
-  // 现场遍历已挂载子树，不参与任何滚动/锚点决策。
+  // JSON 命令限定在 Driver 入口：几何观察不参与产品布局；credit probe
+  // 只持有额外的正式 transport feed，不能改变正常 SDK consumer 的 ACK。
   final raw = message?.trim() ?? '';
   if (raw.startsWith('{')) {
     return _handleJsonDriverCommand(raw);
@@ -588,6 +590,37 @@ Future<String> _handleJsonDriverCommand(String raw) async {
   }
   final command = decoded['cmd'];
   switch (command) {
+    case 'conversation-credit-open':
+      if (_client.transport is! FrbStudioTransport) {
+        throw StateError(
+          'credit evidence requires the real native FRB transport',
+        );
+      }
+      if (_conversationCreditProbe != null) {
+        throw StateError('this Driver run already owns its credit probe');
+      }
+      final threadId = decoded['threadId'];
+      if (threadId is! String ||
+          threadId != _client.selection.state.selectedThreadId) {
+        throw StateError('credit probe requires the selected real Thread');
+      }
+      final probe = ConversationCreditProbe(
+        await _client.transport.openConversationFeed(threadId),
+      );
+      _conversationCreditProbe = probe;
+      return jsonEncode(await probe.holdTwo());
+    case 'conversation-credit-query':
+      final probe = _conversationCreditProbe;
+      if (probe == null) throw StateError('credit probe is not open');
+      return jsonEncode(await probe.query(_client.transport));
+    case 'conversation-credit-ack-one':
+      final probe = _conversationCreditProbe;
+      if (probe == null) throw StateError('credit probe is not open');
+      return jsonEncode(await probe.acknowledgeOne());
+    case 'conversation-credit-close':
+      final probe = _conversationCreditProbe;
+      if (probe == null) throw StateError('credit probe is not open');
+      return jsonEncode(await probe.close());
     case 'timeline-geometry':
       final rowIds = decoded['rowIds'];
       if (rowIds != null && rowIds is! List) {
@@ -1752,9 +1785,9 @@ Map<String, Object?> _driverDiagnostics({StudioDriverFacts? observed}) {
       'observationSequence': metricsAvailable
           ? observedUsage.observationSequence
           : null,
-      // 当前展示代次已经应用的内容版本（design/26 §26.9）；没有展示时为 null，
-      // 不用 0 或旧 workspace revision 冒充。
-      'revision': facts.timeline?.appliedVersion,
+      // 当前展示代次已完成的 append 水位；没有 lease/cursor 时保持未知。
+      'timelineEpoch': facts.timeline?.timelineEpoch,
+      'completedThrough': facts.timeline?.completedThrough,
       'contextTokens': contextTokens,
       'contextWindow': contextWindow,
       'totalTokens': totalTokens,
@@ -2253,11 +2286,11 @@ String _redactEndpoint(String endpoint) {
 }
 
 // ---------------------------------------------------------------------------
-// Cross-block text selection acceptance.
+// Native text selection acceptance.
 //
 // The production timeline renders a long plain-text reply through
-// `TimelinePlainText`, which seals the body into bounded chunks that each become a
-// real `RenderParagraph`. This Driver-only bridge lets the acceptance journey
+// `TimelinePlainText`, which delegates layout to Flutter's standard Text. This
+// Driver-only bridge lets the acceptance journey
 // drive the *real* `SelectionArea` selection and the product's own context-menu
 // copy callback, then read the platform clipboard back. It never writes the
 // domain text to the clipboard itself: every observation comes from the live
@@ -2266,10 +2299,8 @@ String _redactEndpoint(String endpoint) {
 // These helpers live only in the Driver entrypoint; the product timeline widget
 // and model are not touched.
 
-/// The key prefixes the production `TimelinePlainText` gives its sealed chunks and
-/// its trailing open chunk.
-const _plainChunkKeyPrefix = 'plain-chunk-';
-const _plainOpenKeyPrefix = 'plain-open-';
+/// The key prefix of the standard Text in the production `TimelinePlainText`.
+const _plainTextKeyPrefix = 'plain-text-';
 
 void _visitElements(Element element, void Function(Element) visit) {
   visit(element);
@@ -2288,8 +2319,7 @@ List<Element> _longBodyTextElements() {
     final key = widget.key;
     if (key is! ValueKey<String>) return;
     final value = key.value;
-    if (value.startsWith(_plainChunkKeyPrefix) ||
-        value.startsWith(_plainOpenKeyPrefix)) {
+    if (value.startsWith(_plainTextKeyPrefix)) {
       element.visitAncestorElements((ancestor) {
         if (ancestor.widget is TimelinePlainText) {
           bodies.putIfAbsent(ancestor, () => <Element>[]).add(element);
