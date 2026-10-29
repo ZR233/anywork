@@ -770,6 +770,7 @@ void main() {
             .models
             .singleWhere((row) => row.key.modelId == 'model')
             .compact!;
+        await _ensureModelExpanded(tester, 'model');
         expect(_compactInput('model'), findsOneWidget);
         h.models.removeWrite = () async => failedVmOperation(
           OperationPhase.rejected,
@@ -847,6 +848,8 @@ void main() {
         h.router.go(details.location);
         await _at(tester, h.router, details.location);
         models = h.container.read(provider.notifier);
+        await _ensureModelExpanded(tester, 'model');
+        expect(_compactInput('model'), findsOneWidget);
         expect(models.hasCompactDrafts(), isFalse);
         expect(models.hasUnconfirmedCompactSave(), isFalse);
 
@@ -1511,7 +1514,67 @@ Future<void> _cancelDeleteIfOpen(WidgetTester tester) async {
   await tester.pumpAndSettle();
 }
 
+Future<void> _ensureModelExpanded(WidgetTester tester, String id) async {
+  final row = _accountModelRow(id);
+  final tile = find.descendant(
+    of: row,
+    matching: find.byKey(
+      PageStorageKey<String>(
+        AccountViewKeyValues.modelDetails(
+          AccountKind.native.name,
+          'native',
+          id,
+        ),
+      ),
+    ),
+  );
+  await pumpClientUntil(
+    tester,
+    () => row.evaluate().length == 1 && tile.evaluate().length == 1,
+    'rendered model expansion $id',
+  );
+  final title = find.descendant(
+    of: tile,
+    matching: find.byWidget(tester.widget<ExpansionTile>(tile).title),
+  );
+  expect(title, findsOneWidget);
+  final controller = ExpansibleController.of(tester.element(title));
+  final allInputs = find.descendant(
+    of: find.descendant(
+      of: row,
+      matching: find.byKey(
+        const ValueKey('account-compact-input'),
+        skipOffstage: false,
+      ),
+      skipOffstage: false,
+    ),
+    matching: find.byType(EditableText, skipOffstage: false),
+    skipOffstage: false,
+  );
+  debugPrint(
+    'model_ui_before: id=$id expanded=${controller.isExpanded} '
+    'allInputs=${allInputs.evaluate().length} '
+    'onstageInputs=${_compactInput(id).evaluate().length}',
+  );
+  if (!controller.isExpanded) {
+    await tester.ensureVisible(title);
+    await tester.tap(title);
+  }
+  await pumpClientUntil(
+    tester,
+    () => controller.isExpanded && _compactInput(id).evaluate().length == 1,
+    'expanded model input $id',
+  );
+  await tester.pumpAndSettle();
+  expect(_compactInput(id), findsOneWidget);
+  debugPrint(
+    'model_ui_ready: id=$id expanded=${controller.isExpanded} '
+    'onstageInputs=${_compactInput(id).evaluate().length}',
+  );
+}
+
 Future<void> _openManualDelete(WidgetTester tester) async {
+  await _ensureModelExpanded(tester, 'manual');
   final row = _accountModelRow('manual');
   expect(row, findsOneWidget);
   final l10n = AppLocalizations.of(tester.element(row));
@@ -1521,6 +1584,24 @@ Future<void> _openManualDelete(WidgetTester tester) async {
   );
   expect(remove, findsOneWidget);
   await tester.ensureVisible(remove);
+  await tester.pump();
+  if (remove.hitTestable().evaluate().length != 1) {
+    final position = Scrollable.of(tester.element(remove)).position;
+    final box = tester.renderObject<RenderBox>(remove);
+    debugPrint(
+      'manual_remove_precondition: pixels=${position.pixels} '
+      'maxScrollExtent=${position.maxScrollExtent} '
+      'viewportDimension=${position.viewportDimension} '
+      'center=${box.localToGlobal(box.size.center(Offset.zero))}',
+    );
+  }
+  expect(
+    remove.hitTestable(),
+    findsOneWidget,
+    reason:
+        'Remove model must be hit-testable in the real 1440x1000 window '
+        'after the details scroll position reaches layout.',
+  );
   await tester.tap(remove);
   await _deleteDialog(tester);
 }
