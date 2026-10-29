@@ -225,6 +225,48 @@ void main() {
     expect(lease.bind, throwsStateError);
   });
 
+  testWidgets('Timeline Markdown 标题保留主题字号层级，不退化为正文', (tester) async {
+    late TextTheme textTheme;
+    await tester.pumpWidget(
+      host(
+        Builder(
+          builder: (context) {
+            textTheme = Theme.of(context).textTheme;
+            return SingleChildScrollView(
+              child: TimelineMarkdown(
+                id: 'headings',
+                text: '# 一级标题\n\n## 二级标题\n\n### 三级标题\n\n普通正文',
+                onLink: (_) => fail('没有链接'),
+                isSafeLink: (_) => false,
+                imageBuilder: (_, _) => throw StateError('没有图片'),
+              ),
+            );
+          },
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    for (final (label, style) in [
+      ('一级标题', textTheme.headlineLarge!),
+      ('二级标题', textTheme.headlineMedium!),
+      ('三级标题', textTheme.headlineSmall!),
+    ]) {
+      final heading = tester.renderObject<RenderParagraph>(
+        find.byWidgetPredicate(
+          (widget) =>
+              widget is RichText && widget.text.toPlainText().startsWith(label),
+        ),
+      );
+      final span = heading.text.getSpanForPosition(
+        const TextPosition(offset: 0),
+      )!;
+      expect(span.style?.fontSize, style.fontSize, reason: '$label 必须使用标题字号');
+      expect(heading.size.height, greaterThan(textTheme.bodyMedium!.fontSize!));
+      expect(heading.didExceedMaxLines, isFalse);
+    }
+  });
+
   for (final terminal in [false, true]) {
     testWidgets('Timeline Markdown ${terminal ? '已完成' : '流式'}文本识别单行分隔线', (
       tester,
