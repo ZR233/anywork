@@ -344,7 +344,7 @@ Studio 产品投影在每次状态副作用提交时生成权威的轮次、时�
 | 主配置 | 18→…→27 | `schema_version` |
 | Catalog | 1→2→3→4 | `schemaVersion` |
 | Settings | 1→2 | `schemaVersion` |
-| Workspaces | 1 | `schemaVersion` |
+| Workspaces | 1→2 | `schemaVersion` |
 | 用户 Profile | 无版本历史导入→1 | `schema_version` |
 | Bot 配置 | 1→2→3 | `schema_version` |
 | Project、Session manifest | 各自为 1 | `schemaVersion` |
@@ -359,6 +359,8 @@ Studio 产品投影在每次状态副作用提交时生成权威的轮次、时�
 文件解析、未知版本、旧 DTO 不匹配或迁移后验证失败保留原始错误 source，并携带文件、文档族、源/目标版本与失败阶段，归入不会自动归档或默认重建的 `Migration`。I/O 和凭据服务故障保持环境错误，链注册错误是内部故障；不改变无关 SQLite 损坏恢复政策。替换前失败保留原字节，替换后同步失败按磁盘与 journal 事实恢复，确认提交前不发布成功快照；不得将所有错误都描述为已回滚。
 
 Settings 根版本 2 接管已知 `observed:accountUsage:v2` value 的演进：无内嵌版本的历史缓存经冻结 DTO 验证后将原 JSON 完整保存在 `legacyUnbound`；旧 `formatVersion=3` 缓存保留观察数据、查询身份、revision、时间与 `legacyUnbound`，移除内嵌版本。未知版本、坏 JSON 或身份冲突使整份候选失败，其他 key/value 原值保留。运行时和该 key 的写入边界只消费当前 payload，不再承担历史格式分派；当前凭据核对和中断查询收束仍是业务恢复。
+
+Workspaces 根版本 2 为每条记录新增必填的 `kind`，明确区分 `project` 与 `standalone`。冻结 V1 不接受该字段，1→2 仅将既有记录映射为 `project`，保留全部字段及业务 revision，不创建非项目归属或目录。当前 V2 必须显式声明已知 kind；`standalone` 归属至多一个、仅限本地且不可关闭，目录身份变更和归档限制继续由原 owner 执行。已存在的 V2 文件直接读取且保持原字节，不因迁移引擎整合再次升版。
 
 本规则不接管 `modes/*.json`、模型目录 JSON 缓存、SQLite schema 或退休的 `state.toml`；既有恢复日志的历史读取仅保留在必要恢复边界。
 
