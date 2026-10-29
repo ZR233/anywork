@@ -8,7 +8,7 @@ use pl_core::{
     context::{ContextContent, ContextSource, OpaquePayload},
     model::{
         ModelError, ModelFailureKind, ModelRequest, ModelStepOutput, ModelToolCall,
-        ModelToolDeclaration,
+        ModelToolCallRejection, ModelToolDeclaration,
     },
 };
 use std::collections::{BTreeMap, BTreeSet};
@@ -588,23 +588,42 @@ fn response_inner(
         .tool_calls
         .iter()
         .map(|call| {
-            let mapped = names.get(&call.name).and_then(|binding| {
-                arguments(call, binding.arguments)
-                    .ok()
-                    .map(|arguments| (binding.id.clone(), arguments))
-            });
-            let (tool_id, arguments) = match mapped {
-                Some(mapped) => mapped,
+            let raw_arguments = || {
+                OpaquePayload::new(
+                    match call.kind() {
+                        pl_protocol::ToolCallKind::Function => "application/json",
+                        pl_protocol::ToolCallKind::Custom => "text/plain",
+                    },
+                    1,
+                    call.payload_text(),
+                )
+                .map_err(|error| failure(ModelFailureKind::InvalidResponse, error))
+            };
+            let (tool_id, arguments, rejection) = match names.get(&call.name) {
+                Some(binding) => match arguments(call, binding.arguments) {
+                    Ok(arguments) => (binding.id.clone(), arguments, None),
+                    Err(error) => (
+                        binding.id.clone(),
+                        raw_arguments()?,
+                        Some(ModelToolCallRejection::InvalidArguments {
+                            name: call.name.clone(),
+                            reason: error.to_string(),
+                        }),
+                    ),
+                },
                 None => (
                     String::new(),
-                    OpaquePayload::new("pl.model.invalid-call", 1, call.payload_text())
-                        .map_err(|error| failure(ModelFailureKind::InvalidResponse, error))?,
+                    raw_arguments()?,
+                    Some(ModelToolCallRejection::UnknownTool {
+                        name: call.name.clone(),
+                    }),
                 ),
             };
             Ok(ModelToolCall {
                 call_id: call.call_id.clone(),
                 tool_id,
                 arguments,
+                rejection,
             })
         })
         .collect::<Result<Vec<_>, ModelError>>()?;

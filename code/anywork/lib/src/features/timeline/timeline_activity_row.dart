@@ -13,8 +13,9 @@ import '../../app/theme/studio_tokens.dart';
 /// 变化都触发以文本为 key 的进出场动画。
 class TimelineActivityRow extends StatelessWidget {
   const TimelineActivityRow({
-    required this.icon,
     required this.label,
+    this.icon,
+    this.labelWidget,
     this.leading,
     this.iconColor,
     this.isIssue = false,
@@ -39,11 +40,14 @@ class TimelineActivityRow extends StatelessWidget {
 
   static const double iconSize = 15;
 
-  /// 类目语义图标；[leading] 存在时仍保留其布局列。
-  final IconData icon;
+  /// 类目语义图标；为空且无 [leading] / [isIssue] 时不渲染前导图标列（例如活动组总折叠行）。
+  final IconData? icon;
 
   /// 单行文案；过长在行内省略，完整内容由 [tooltip] 提供。
   final String label;
+
+  /// 自定义行内富文本组件（例如思考行的行内 Markdown 概要）；为空时使用 [label]。
+  final Widget? labelWidget;
 
   /// 取代语义图标的前导组件（例如等待脉冲），仍落在同一图标列内。
   final Widget? leading;
@@ -75,6 +79,7 @@ class TimelineActivityRow extends StatelessWidget {
             : active
             ? context.statusColors.activeIndicator
             : color.withValues(alpha: .78));
+    final showLeading = leading != null || icon != null || isIssue;
     Widget row = SelectionContainer.disabled(
       child: ConstrainedBox(
         constraints: const BoxConstraints(minHeight: 28),
@@ -83,31 +88,35 @@ class TimelineActivityRow extends StatelessWidget {
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              SizedBox(
-                width: iconColumnWidth,
-                child: Center(
-                  child:
-                      leading ??
-                      Icon(
-                        isIssue ? Icons.error_outline : icon,
-                        size: iconSize,
-                        color: resolvedIconColor,
-                      ),
-                ),
-              ),
-              const SizedBox(width: gap),
-              Flexible(
-                child: Text(
-                  label,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  softWrap: false,
-                  style: context.text.bodySmall?.copyWith(
-                    color: color,
-                    fontWeight: FontWeight.w400,
-                    height: 1.25,
+              if (showLeading) ...[
+                SizedBox(
+                  width: iconColumnWidth,
+                  child: Center(
+                    child:
+                        leading ??
+                        Icon(
+                          isIssue ? Icons.error_outline : icon,
+                          size: iconSize,
+                          color: resolvedIconColor,
+                        ),
                   ),
                 ),
+                const SizedBox(width: gap),
+              ],
+              Flexible(
+                child:
+                    labelWidget ??
+                    Text(
+                      label,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      softWrap: false,
+                      style: context.text.bodySmall?.copyWith(
+                        color: color,
+                        fontWeight: FontWeight.w400,
+                        height: 1.25,
+                      ),
+                    ),
               ),
               if (expandable) const SizedBox(width: 4),
               if (expandable)

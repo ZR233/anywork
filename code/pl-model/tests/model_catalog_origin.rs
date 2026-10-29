@@ -378,7 +378,8 @@ fn bundled_without_overlay_keeps_bundled_origin_and_manual_members() {
 #[tokio::test]
 async fn same_id_manual_model_hides_online_entry() {
     let model_id = "shared-online";
-    let server = Server::json(json!({"data":[{"id": model_id}]})).await;
+    let server =
+        Server::json(json!({"data":[{"id": model_id, "display_name":"Provider display"}]})).await;
     let mut config = openai_provider(&server.url);
     let mut manual = ModelInfo::compatible(model_id);
     manual.display_name = "Authoritative manual".into();
@@ -404,6 +405,20 @@ async fn same_id_manual_model_hides_online_entry() {
     assert_eq!(matches.len(), 1);
     assert_eq!(matches[0].origin, AccountModelOrigin::Manual);
     assert_eq!(matches[0].model.display_name, "Authoritative manual");
+
+    let account_id = pl_model::config::AccountId::new("manual-display").unwrap();
+    let mut canonical = AgentModelConfig {
+        accounts: [(account_id.clone(), config)].into(),
+        routes: Default::default(),
+    };
+    canonical.reconcile_model_catalog().unwrap();
+    let canonical_model = canonical.accounts[&account_id]
+        .effective_models(None)
+        .unwrap()
+        .into_iter()
+        .find(|model| model.model_id == model_id)
+        .unwrap();
+    assert_eq!(canonical_model.display_name, "Authoritative manual");
     server.finish().await;
 }
 
@@ -412,7 +427,13 @@ async fn removing_same_id_manual_restores_online_entry() {
     let definition = bundled_model_definition("openai").unwrap();
     let known = &definition.models[0];
     let model_id = "shared-online";
-    let server = Server::json(json!({"data":[{"id": model_id}, {"id": known.model_id}]})).await;
+    let server = Server::json(json!({
+        "data":[
+            {"id": model_id, "display_name":"Restored provider name"},
+            {"id": known.model_id}
+        ]
+    }))
+    .await;
     let mut config = openai_provider(&server.url);
     let mut manual = ModelInfo::compatible(model_id);
     manual.display_name = "Temporary manual".into();
@@ -438,8 +459,15 @@ async fn removing_same_id_manual_restores_online_entry() {
     assert_eq!(matches.len(), 1);
     assert_eq!(matches[0].origin, AccountModelOrigin::Manual);
 
-    config.remove_manual_model(model_id).unwrap();
-    let after = config.effective_catalog(None).unwrap();
+    let account_id = pl_model::config::AccountId::new("remove-manual").unwrap();
+    let mut canonical = AgentModelConfig {
+        accounts: [(account_id.clone(), config)].into(),
+        routes: Default::default(),
+    };
+    canonical.reconcile_model_catalog().unwrap();
+    let account = canonical.accounts.get_mut(&account_id).unwrap();
+    account.remove_manual_model(model_id).unwrap();
+    let after = account.effective_catalog(None).unwrap();
     let restored = after
         .iter()
         .filter(|entry| entry.model.model_id == model_id)
@@ -451,6 +479,7 @@ async fn removing_same_id_manual_restores_online_entry() {
     // bundled priced model_id below.
     assert_eq!(restored.len(), 1);
     assert_eq!(restored[0].origin, AccountModelOrigin::Online);
+    assert_eq!(restored[0].model.display_name, "Restored provider name");
     assert_eq!(restored[0].model.pricing, ModelPricing::Unknown);
     let priced = after
         .iter()

@@ -11,6 +11,8 @@ use pl_tool::workspace::ToolWorkspace;
 use std::sync::Arc;
 
 pub(super) struct ThreadToolAssembly<'a> {
+    pub workspace_usage: crate::studio::agent_host::worktree_lease::WorkspaceUsageLease,
+    pub assignment: Option<&'a pl_protocol::AgentWorkspaceAssignmentSnapshot>,
     pub thread_id: &'a str,
     pub cancellation: &'a tokio_util::sync::CancellationToken,
     pub config: &'a crate::config::StudioConfig,
@@ -53,6 +55,8 @@ impl StudioThreadFactory {
         assembly.workspace =
             super::session_files::bind_thread_session_files(assembly.workspace, assembly.thread_id);
         let binding = super::tool_bindings::ToolBinding {
+            assignment: assembly.assignment.cloned(),
+            workspace_usage: assembly.workspace_usage.clone(),
             lifetime: Default::default(),
             incarnation: std::sync::Arc::new(()),
             target_invalidated: false,
@@ -118,6 +122,8 @@ impl StudioThreadFactory {
         preparation: CatalogPreparation,
     ) -> Result<PreparedThreadTools, ThreadAssemblyError> {
         let ThreadToolAssembly {
+            assignment: _,
+            workspace_usage,
             thread_id,
             cancellation,
             config,
@@ -169,6 +175,26 @@ impl StudioThreadFactory {
         if cancellation.is_cancelled() {
             return Err(pl_core::thread::ThreadError::Cancelled.into());
         }
+        let identity = match &remote {
+            Some(host) => crate::studio::agent_host::worktree_lease::WorkspaceIdentity::canonical(
+                crate::studio::agent_host::worktree_lease::WorkspaceEndpoint::from_profile(Some(
+                    &host.profile,
+                )),
+                host.files.canonical_path().into(),
+            ),
+            None => {
+                self.resolve_workspace_identity(project, workspace.root())
+                    .await
+            }
+        }
+        .map_err(Self::workspace_usage_error)?;
+        self.services
+            .worktrees
+            .assign_workspace(&workspace_usage, identity.clone())
+            .map_err(Self::workspace_usage_error)?;
+        self.services
+            .worktrees
+            .preserve_workspace_resources(thread_id, identity);
         super::session_files::prepare_bound_session_files(&workspace, remote.as_ref()).await?;
         let environment = remote
             .as_ref()

@@ -3,6 +3,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::studio::StudioStore;
 use crate::studio::store::object::PersistedStudioObject;
+mod identity;
+mod usage;
+pub(in crate::studio) use identity::resolve_physical_workspace;
+pub(crate) use identity::{WorkspaceEndpoint, WorkspaceIdentity};
+pub use usage::WorkspaceUsageLease;
 
 mod migration;
 
@@ -162,45 +167,60 @@ pub(in crate::studio) struct WorktreeLeaseMigrationFailed;
 /// Canonical process-local lease owner. Storage never participates in admission.
 #[derive(Clone)]
 pub(in crate::studio) struct WorktreeLeaseOwner {
-    entries: std::sync::Arc<std::sync::Mutex<std::collections::BTreeMap<String, WorktreeLease>>>,
+    state: std::sync::Arc<std::sync::Mutex<LeaseOwnerState>>,
     /// 进程内「创建中」标记：不持久化，重启后消失。
     ///
     /// 创建路径在记录 `prepared` 之前设置、在创建收束（成功 `active` 或失败 settle 并发布）
     /// 之后清除；标记存续期间该 lease 既不进入 Recovery，也不可被显式清理，即使 owner
     /// Thread 记录尚未发布。
-    creating: std::sync::Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>,
     writer: super::ThreadWriteBehindWriter,
+}
+
+#[derive(Default)]
+struct LeaseOwnerState {
+    entries: std::collections::BTreeMap<String, LeaseEntry>,
+    creating: std::collections::BTreeSet<String>,
+    workspace: usage::WorkspaceAdmission,
+}
+
+/// A receipt is associated with the same admitted revision, never a later global queue snapshot.
+#[derive(Clone)]
+struct LeaseEntry {
+    lease: WorktreeLease,
+    ticket: u64,
 }
 
 impl WorktreeLeaseOwner {
     pub(in crate::studio) fn new(writer: super::ThreadWriteBehindWriter) -> Self {
         Self {
-            entries: Default::default(),
-            creating: Default::default(),
+            state: Default::default(),
             writer,
         }
     }
 
     /// Marks a lease as still being created in this process.
     pub(in crate::studio) fn mark_creating(&self, owner_thread_id: &str) {
-        self.creating
+        self.state
             .lock()
             .expect("worktree creating set lock poisoned")
+            .creating
             .insert(owner_thread_id.to_string());
     }
 
     /// Clears the creating mark once creation converged (active, settled or published).
     pub(in crate::studio) fn clear_creating(&self, owner_thread_id: &str) {
-        self.creating
+        self.state
             .lock()
             .expect("worktree creating set lock poisoned")
+            .creating
             .remove(owner_thread_id);
     }
 
     pub(in crate::studio) fn is_creating(&self, owner_thread_id: &str) -> bool {
-        self.creating
+        self.state
             .lock()
             .expect("worktree creating set lock poisoned")
+            .creating
             .contains(owner_thread_id)
     }
 
@@ -211,55 +231,77 @@ impl WorktreeLeaseOwner {
 
     /// Startup hydration never replaces facts already admitted in this process.
     pub(in crate::studio) fn restore(&self, leases: Vec<WorktreeLease>) {
-        let mut entries = self.entries.lock().expect("worktree lease lock poisoned");
+        let mut state = self.state.lock().expect("worktree lease lock poisoned");
         for mut lease in leases {
+            state.workspace.preserve_legacy_lease(&lease);
+            let explicitly_retiring = state.workspace.is_retiring(&lease.owner_thread_id);
             if let std::collections::btree_map::Entry::Vacant(entry) =
-                entries.entry(lease.owner_thread_id.clone())
+                state.entries.entry(lease.owner_thread_id.clone())
             {
                 // An interrupted process no longer owns an in-flight cleanup operation.
                 // Preserve uncertain physical state for explicit reconciliation.
-                if lease.state == WorktreeLeaseState::CleanupRequested {
+                let ticket = if lease.state == WorktreeLeaseState::CleanupRequested
+                    && !explicitly_retiring
+                {
+                    // A site whose cleanup did not settle also lost the restore window it may still
+                    // have carried: the next settlement starts from scratch, never from an old grant.
                     lease.transition(WorktreeLeaseState::Preserved);
-                    self.writer.record_worktree_lease(lease.clone());
-                }
-                entry.insert(lease);
+                    self.writer.record_worktree_lease(lease.clone())
+                } else {
+                    // Hydrated values have already crossed the product database transaction.
+                    0
+                };
+                entry.insert(LeaseEntry { lease, ticket });
             }
         }
     }
 
     pub(in crate::studio) fn get(&self, owner_thread_id: &str) -> Option<WorktreeLease> {
-        self.entries
+        self.state
             .lock()
             .expect("worktree lease lock poisoned")
+            .entries
             .get(owner_thread_id)
-            .cloned()
+            .map(|entry| entry.lease.clone())
     }
 
     pub(in crate::studio) fn snapshot(&self) -> Vec<WorktreeLease> {
-        self.entries
+        self.state
             .lock()
             .expect("worktree lease lock poisoned")
+            .entries
             .values()
-            .cloned()
+            .map(|entry| entry.lease.clone())
             .collect()
     }
 
-    /// Waits until all admitted lease facts are durably stored before touching physical resources.
-    pub(in crate::studio) async fn flush(&self) -> Result<()> {
-        self.writer.flush().await?;
-        Ok(())
+    pub(in crate::studio) fn is_durable(&self, lease: &WorktreeLease) -> bool {
+        self.state
+            .lock()
+            .expect("worktree lease lock poisoned")
+            .entries
+            .get(&lease.owner_thread_id)
+            .is_some_and(|entry| {
+                entry.lease == *lease && self.writer.saved_watermark() >= entry.ticket
+            })
     }
 
     /// Revision admission and queue order share one short, IO-free critical section.
     pub(in crate::studio) fn record(&self, lease: WorktreeLease) -> Result<()> {
-        let mut entries = self.entries.lock().expect("worktree lease lock poisoned");
+        self.record_ticket(lease).map(|_| ())
+    }
+
+    fn record_ticket(&self, lease: WorktreeLease) -> Result<u64> {
+        let mut state = self.state.lock().expect("worktree lease lock poisoned");
+        let entries = &mut state.entries;
         if let Some(previous) = entries.get(&lease.owner_thread_id) {
-            if previous == &lease {
-                return Ok(());
+            if previous.lease == lease {
+                return Ok(previous.ticket);
             }
             anyhow::ensure!(
                 lease.revision
                     == previous
+                        .lease
                         .revision
                         .checked_add(1)
                         .ok_or_else(|| anyhow::anyhow!("worktree lease revision exhausted"))?,
@@ -272,8 +314,16 @@ impl WorktreeLeaseOwner {
                 "new worktree lease must be prepared"
             );
         }
-        entries.insert(lease.owner_thread_id.clone(), lease.clone());
-        self.writer.record_worktree_lease(lease);
+        let ticket = self.writer.record_worktree_lease(lease.clone());
+        entries.insert(lease.owner_thread_id.clone(), LeaseEntry { lease, ticket });
+        Ok(ticket)
+    }
+
+    /// A destructive phase may start only after its exact lease intent crossed the writer ACK.
+    /// Cancellation stops this waiter, not the already registered write-behind owner.
+    pub(in crate::studio) async fn record_durable(&self, lease: WorktreeLease) -> Result<()> {
+        let ticket = self.record_ticket(lease)?;
+        self.writer.flush_through(ticket).await?;
         Ok(())
     }
 }

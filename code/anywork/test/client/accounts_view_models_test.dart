@@ -380,6 +380,52 @@ class VmModels implements ModelsRepository {
       throw UnsupportedError('${invocation.memberName}');
 }
 
+/// Canonical manual-model input for deletion consumers, not deletion behavior.
+void publishVmManualModel(
+  VmModels models,
+  NativeAccountIdentity identity, {
+  String modelId = 'manual',
+}) {
+  final current = models.state.value;
+  final existing = current.accounts[identity];
+  models.state.publish(
+    ModelDirectoryState(
+      accounts: {
+        ...current.accounts,
+        identity: AccountResource(
+          stamp: existing?.stamp ?? vmStamp,
+          value: AccountModelCatalog(
+            identity: identity,
+            models: [
+              for (final model
+                  in existing?.value?.models ?? <AccountModelView>[])
+                if (model.modelId != modelId) model,
+              AccountModelView(
+                modelId: modelId,
+                displayName: 'Manual model',
+                reasoningEfforts: const [],
+                origin: ModelOrigin.manual,
+                context: const ModelContextView(
+                  unavailable: null,
+                  contextWindow: 2000,
+                  autoCompactLimit: 1000,
+                ),
+              ),
+            ],
+            status: const ModelCatalogStatusView(supported: true),
+          ),
+        ),
+      },
+      configurations: {
+        ...current.configurations,
+        identity:
+            current.configurations[identity] ??
+            AccountResource(stamp: vmStamp, value: AccountModelConfiguration()),
+      },
+    ),
+  );
+}
+
 class VmUsage implements AccountUsageRepository {
   @override
   final LatestValue<
@@ -580,14 +626,13 @@ class AccountsVmHarness {
     return container.read(accountEditorViewModelProvider(key).notifier);
   }
 
-  Future<AccountModelsViewModel> modelOwner() async {
-    _listeners.add(
-      container
-          .listen(accountModelsViewModelProvider(nativeKey), (_, _) {})
-          .close,
-    );
-    await container.read(accountModelsViewModelProvider(nativeKey).future);
-    return container.read(accountModelsViewModelProvider(nativeKey).notifier);
+  Future<AccountModelsViewModel> modelOwner({
+    AccountDisplayKey key = nativeKey,
+  }) async {
+    final provider = accountModelsViewModelProvider(key);
+    _listeners.add(container.listen(provider, (_, _) {}).close);
+    await container.read(provider.future);
+    return container.read(provider.notifier);
   }
 
   Future<AccountDetailsViewModel> details(AccountDisplayKey key) async {
@@ -1199,6 +1244,77 @@ void main() {
       'other',
     ]);
   });
+  test('account removal confirms the same operation and canonical absence in either order', () async {
+    for (final absenceFirst in [true, false]) {
+      final h = AccountsVmHarness();
+      addTearDown(h.dispose);
+      final accounts = await h.listOwner();
+      final models = await h.modelOwner();
+      final modelsProvider = accountModelsViewModelProvider(nativeKey);
+      final token = models.compactLeaveToken();
+      var cleanChecks = 0;
+      final completion = Completer<OperationState>();
+      h.accounts.write = () => completion.future;
+      bool? outcome;
+      final removing = accounts.remove(
+        nativeKey,
+        isCompactClean: () {
+          cleanChecks++;
+          return h.container.exists(modelsProvider) &&
+              identical(h.container.read(modelsProvider.notifier), models) &&
+              models.canRemove(expectedToken: token);
+        },
+      );
+      final observedCompletion = removing.then((value) => outcome = value);
+      expect(cleanChecks, 1);
+      expect(h.accounts.removals, [const NativeAccountIdentity('native')]);
+      expect(accounts.isRemovalBlocked(nativeKey), isTrue);
+      final saved = savedVmOperation(
+        absenceFirst ? 'absence-before-saved' : 'saved-before-absence',
+      );
+      void publishAbsence() {
+        h.accounts.state.publish(
+          AccountsState(
+            stamp: const ResourceStamp(
+              resourceKey: 'test',
+              ownerEpoch: 'owner',
+              revision: 2,
+            ),
+            accounts: const [],
+            templates: h.accounts.state.value.templates,
+          ),
+        );
+      }
+
+      if (absenceFirst) {
+        publishAbsence();
+      } else {
+        completion.complete(saved);
+      }
+      await h.container.pump();
+      expect(outcome, isNull, reason: 'One deletion fact is not success.');
+      expect(accounts.isRemovalBlocked(nativeKey), isTrue);
+      expect(cleanChecks, 1);
+      if (absenceFirst) {
+        completion.complete(saved);
+      } else {
+        publishAbsence();
+      }
+      expect(await removing, isTrue);
+      await observedCompletion;
+      expect(outcome, isTrue);
+      expect(accounts.isRemovalBlocked(nativeKey), isFalse);
+      expect(
+        h.accounts.state.value.account(const NativeAccountIdentity('native')),
+        isNull,
+      );
+      expect(h.accounts.removals, hasLength(1));
+      expect(cleanChecks, 1);
+      expect(h.accounts.creates, isEmpty);
+      expect(h.accounts.patches, isEmpty);
+    }
+  });
+
   test('current Native detail observes default and delete failures outside the filtered list', () async {
     final h = AccountsVmHarness();
     addTearDown(h.dispose);
@@ -1210,7 +1326,10 @@ void main() {
     final provider = accountDetailsViewModelProvider(nativeKey);
     AccountDetailsPresentation current() =>
         h.container.read(provider).requireValue.details;
-    for (final command in [accountsOwner.setDefault, accountsOwner.remove]) {
+    for (final command in <Future<bool> Function(AccountDisplayKey)>[
+      accountsOwner.setDefault,
+      (key) => accountsOwner.remove(key, isCompactClean: () => true),
+    ]) {
       final work = Completer<OperationState>();
       h.accounts.write = () => work.future;
       final saving = command(nativeKey);
@@ -1262,7 +1381,10 @@ void main() {
       final provider = accountDetailsViewModelProvider(vmAcpKey.target);
       final work = Completer<OperationState>();
       h.acp.removeWrite = () => work.future;
-      final deleting = accountsOwner.remove(vmAcpKey.target);
+      final deleting = accountsOwner.remove(
+        vmAcpKey.target,
+        isCompactClean: () => true,
+      );
       expect(h.container.read(provider).requireValue.details.loading, isTrue);
       work.complete(
         failedVmOperation(
@@ -1289,7 +1411,10 @@ void main() {
       );
       expect(active.error, 'Outcome unknown');
       expect(active.loading, isTrue);
-      expect(await accountsOwner.remove(vmAcpKey.target), isFalse);
+      expect(
+        await accountsOwner.remove(vmAcpKey.target, isCompactClean: () => true),
+        isFalse,
+      );
       expect(h.acp.removals, hasLength(1));
       expect(
         (active.content as AcpAccountDetailsContent).value.phase,
@@ -1353,8 +1478,11 @@ void main() {
     );
     expect(h.accounts.defaultCalls, hasLength(1));
   });
-  test('current detail qualifies action feedback by typed target and observed ACP connection', () async {
-    final h = AccountsVmHarness();
+  test('current typed detail retains account deletion responsibility across ACP connection revisions', () async {
+    final board = MutationBoard(clientId: 'typed-detail-delete');
+    final h = AccountsVmHarness(
+      operationLookup: (id) => board.lookup(id)?.state,
+    );
     addTearDown(h.dispose);
     const native = AccountDisplayKey(kind: AccountKind.native, id: 'shared');
     const acp = AccountDisplayKey(kind: AccountKind.acp, id: 'shared');
@@ -1383,14 +1511,20 @@ void main() {
     final accountsOwner = await h.listOwner();
     accountsOwner.setStrings(vmOperationStrings);
     accountsOwner.search('not-a-visible-row');
+    expect(
+      h.container.read(accountsViewModelProvider).requireValue.list.rows,
+      isEmpty,
+    );
     await h.details(acp);
     await h.details(native);
     final provider = accountDetailsViewModelProvider(acp);
     AccountDetailsPresentation current() =>
         h.container.read(provider).requireValue.details;
-    final old = Completer<OperationState>();
-    h.acp.removeWrite = () => old.future;
-    final first = accountsOwner.remove(acp);
+    final completing = Completer<OperationState>();
+    h.acp.removeWrite = () => completing.future;
+    final first = accountsOwner.remove(acp, isCompactClean: () => true);
+    expect(accountsOwner.isRemovalBlocked(acp), isTrue);
+    expect(accountsOwner.isRemovalBlocked(native), isFalse);
     h.accounts.write = () async => failedVmOperation(
       OperationPhase.unknownOutcome,
       id: 'native-only-unknown',
@@ -1411,40 +1545,71 @@ void main() {
       'Outcome unknown',
     );
     expect((current().loading, current().error), (true, null));
+    expect(current().canDelete, isFalse);
     summaries(2);
-    final next = Completer<OperationState>();
-    h.acp.removeWrite = () => next.future;
-    final second = accountsOwner.remove(acp);
-    // A new summary cannot attach its action to the retained old detail.
+    expect(
+      await accountsOwner.remove(acp, isCompactClean: () => true),
+      isFalse,
+    );
+    expect(h.acp.removals, hasLength(1));
+    expect(accountsOwner.isRemovalBlocked(acp), isTrue);
+    // Retained old detail is not yet the newly observed connection.
     expect((current().loading, current().error), (false, null));
     details(2);
-    expect(current().loading, isTrue);
-    old.complete(
-      failedVmOperation(
-        OperationPhase.unknownOutcome,
-        id: 'retired-acp-delete',
-        error: StateError('retired dispatch outcome'),
+    // Once current typed detail arrives, the same account's deletion still owns
+    // its pending feedback; a connection revision did not create a new owner.
+    expect(
+      (current().loading, current().error, current().canDelete),
+      (true, null, false),
+    );
+    final operation = board.begin(target: 'typed-acp-account-delete');
+    operation.accept(
+      CommitReceipt(
+        operationId: operation.id,
+        disposition: CommitDisposition.applied,
+        targets: const [vmStamp],
+        effect: EffectPoint.immediate,
+        durable: true,
       ),
     );
+    operation.syncFailed(
+      const StudioFailure(
+        code: StudioFailureCode.unavailable,
+        message: 'Account deletion observation failed',
+        retryable: true,
+        correlationId: 'delete',
+      ),
+    );
+    completing.complete(operation.state.value);
     expect(await first, isFalse);
-    expect((current().loading, current().error), (true, null));
-    next.complete(
-      failedVmOperation(
-        OperationPhase.syncFailed,
-        id: 'current-acp-delete',
-        error: const StudioFailure(
-          code: StudioFailureCode.unavailable,
-          message: 'Current connection failed',
-          retryable: true,
-          correlationId: 'current',
-        ),
-      ),
+    expect(
+      (current().loading, current().error, current().canDelete),
+      (true, 'Save failed', false),
     );
-    expect(await second, isFalse);
-    expect(current().error, 'Save failed');
-    expect(current().loading, isTrue);
-    expect(await accountsOwner.remove(acp), isFalse);
-    expect(h.acp.removals, hasLength(2));
+    expect(board.lookup(operation.id), same(operation));
+    expect(operation.state.value.failurePhase, OperationPhase.syncFailed);
+    expect(accountsOwner.isRemovalBlocked(acp), isTrue);
+    summaries(3);
+    details(3);
+    expect(
+      (current().loading, current().error, current().canDelete),
+      (true, 'Save failed', false),
+    );
+    expect(
+      await accountsOwner.remove(acp, isCompactClean: () => true),
+      isFalse,
+    );
+    expect(h.acp.removals, hasLength(1));
+    expect(accountsOwner.isRemovalBlocked(native), isFalse);
+    expect(
+      h.container
+          .read(accountDetailsViewModelProvider(native))
+          .requireValue
+          .details
+          .error,
+      'Outcome unknown',
+    );
+    expect(h.accounts.defaultCalls, hasLength(1));
   });
   test('current detail action ownership does not revive after owner epoch A to B to A', () async {
     final h = AccountsVmHarness();
@@ -1739,7 +1904,7 @@ void main() {
     owner.setStrings(vmOperationStrings);
     final deleting = Completer<OperationState>();
     h.acp.removeWrite = () => deleting.future;
-    final removal = owner.remove(acp);
+    final removal = owner.remove(acp, isCompactClean: () => true);
     h.accounts.write = () async => failedVmOperation(
       OperationPhase.unknownOutcome,
       id: 'shared-native-default',
@@ -1787,7 +1952,7 @@ void main() {
     expect(rows[acp]!.operationError, 'Save failed');
     expect(rows[acp]!.actions, isEmpty);
     expect(await owner.setDefault(native), isFalse);
-    expect(await owner.remove(acp), isFalse);
+    expect(await owner.remove(acp, isCompactClean: () => true), isFalse);
     expect(
       h.accounts.defaultCalls.single,
       const NativeAccountIdentity('shared'),
@@ -1905,85 +2070,99 @@ void main() {
     expect((h.models.compactCalls.last.$2 as SetAutoCompactLimit).limit, 700);
     expect(owner.hasCompactDrafts(), isFalse);
   });
-  test('summary-only ACP actions isolate late failure and finally from a rebuilt same-id connection', () async {
-    final h = AccountsVmHarness();
-    addTearDown(h.dispose);
-    const identity = AcpAccountIdentity('acp');
-    const key = AccountDisplayKey(kind: AccountKind.acp, id: 'acp');
-    void publish(int? revision, {bool stale = false, String owner = 'owner'}) =>
-        h.accounts.state.publish(
-          AccountsState(
-            stamp: ResourceStamp(
-              resourceKey: 'test',
-              ownerEpoch: owner,
-              revision: 1,
+  test('summary-only ACP deletion keeps its exact unresolved operation across connection revisions and finally', () async {
+    for (final phase in [
+      OperationPhase.unknownOutcome,
+      OperationPhase.syncFailed,
+    ]) {
+      final board = MutationBoard(clientId: 'summary-delete-${phase.name}');
+      final h = AccountsVmHarness(
+        operationLookup: (id) => board.lookup(id)?.state,
+      );
+      addTearDown(h.dispose);
+      const identity = AcpAccountIdentity('acp');
+      const key = AccountDisplayKey(kind: AccountKind.acp, id: 'acp');
+      void publish(int? revision, {bool stale = false}) =>
+          h.accounts.state.publish(
+            AccountsState(
+              stamp: vmStamp,
+              templates: h.accounts.state.value.templates,
+              accounts: [vmSummary(identity, acpRevision: revision)],
+              stale: stale,
             ),
-            templates: h.accounts.state.value.templates,
-            accounts: [vmSummary(identity, acpRevision: revision)],
-            stale: stale,
+          );
+      AccountRowPresentation row() => h.container
+          .read(accountsViewModelProvider)
+          .requireValue
+          .list
+          .rows
+          .single;
+      publish(1);
+      final accountsOwner = await h.listOwner();
+      accountsOwner.setStrings(vmOperationStrings);
+      final completing = Completer<OperationState>();
+      h.acp.removeWrite = () => completing.future;
+      final first = accountsOwner.remove(key, isCompactClean: () => true);
+      expect(accountsOwner.isRemovalBlocked(key), isTrue);
+      expect(row().operationError, isNull);
+      expect(row().actions, isEmpty);
+      publish(2); // Same account owner, with no intermediate deletion frame.
+      expect(
+        await accountsOwner.remove(key, isCompactClean: () => true),
+        isFalse,
+      );
+      expect(h.acp.removals, hasLength(1));
+      expect(accountsOwner.isRemovalBlocked(key), isTrue);
+      final operation = board.begin(target: 'summary-acp-account-delete');
+      const failure = StudioFailure(
+        code: StudioFailureCode.unavailable,
+        message: 'Account deletion remains unresolved',
+        retryable: true,
+        correlationId: 'delete',
+      );
+      if (phase == OperationPhase.unknownOutcome) {
+        operation.unknownOutcome(failure);
+      } else {
+        operation.accept(
+          CommitReceipt(
+            operationId: operation.id,
+            disposition: CommitDisposition.applied,
+            targets: const [vmStamp],
+            effect: EffectPoint.immediate,
+            durable: true,
           ),
         );
-    publish(1);
-    final accountsOwner = await h.listOwner();
-    accountsOwner.setStrings(vmOperationStrings);
-    final old = Completer<OperationState>();
-    h.acp.removeWrite = () => old.future;
-    final first = accountsOwner.remove(key);
-    publish(2); // No intermediate deletion frame.
-    final current = Completer<OperationState>();
-    h.acp.removeWrite = () => current.future;
-    final second = accountsOwner.remove(key);
-    expect(h.acp.removals, hasLength(2));
-    old.complete(
-      failedVmOperation(
-        OperationPhase.unknownOutcome,
-        id: 'old-connection-delete',
-        error: const StudioFailure(
-          code: StudioFailureCode.unavailable,
-          message: 'Old deletion failed',
-          retryable: true,
-          correlationId: 'old',
-        ),
-      ),
-    );
-    expect(await first, isFalse);
-    var row = h.container
-        .read(accountsViewModelProvider)
-        .requireValue
-        .list
-        .rows
-        .single;
-    expect(row.operationError, isNull);
-    expect(row.actions, isEmpty);
-    current.complete(
-      failedVmOperation(
-        OperationPhase.syncFailed,
-        id: 'rebuilt-connection-delete',
-        error: const StudioFailure(
-          code: StudioFailureCode.unavailable,
-          message: 'Current deletion failed',
-          retryable: true,
-          correlationId: 'new',
-        ),
-      ),
-    );
-    expect(await second, isFalse);
-    row = h.container
-        .read(accountsViewModelProvider)
-        .requireValue
-        .list
-        .rows
-        .single;
-    expect(row.operationError, 'Save failed');
-    expect(row.actions, isEmpty);
-    expect(await accountsOwner.remove(key), isFalse);
-    publish(null);
-    expect(await accountsOwner.remove(key), isFalse);
-    publish(3, stale: true);
-    expect(await accountsOwner.remove(key), isFalse);
-    expect(h.acp.removals, hasLength(2));
-    expect(h.accounts.detailDemands, isEmpty);
-    expect(h.accounts.detailReads, 0);
+        operation.syncFailed(failure);
+      }
+      completing.complete(operation.state.value);
+      expect(await first, isFalse);
+      final message = phase == OperationPhase.unknownOutcome
+          ? 'Outcome unknown'
+          : 'Save failed';
+      // Returning false and running finally settle only this caller's wait.
+      // They do not release this typed account's deletion fence or feedback.
+      expect(row().operationError, message);
+      expect(row().actions, isEmpty);
+      expect(accountsOwner.isRemovalBlocked(key), isTrue);
+      expect(board.lookup(operation.id), same(operation));
+      expect(operation.state.value.failurePhase, phase);
+      expect(operation.state.value.isPending, isTrue);
+      for (final revision in [null, 3, 4]) {
+        publish(revision, stale: revision == 3);
+        expect(
+          await accountsOwner.remove(key, isCompactClean: () => true),
+          isFalse,
+        );
+        expect(accountsOwner.isRemovalBlocked(key), isTrue);
+        expect(row().operationError, message);
+        expect(row().actions, isEmpty);
+        expect(h.acp.removals, hasLength(1));
+        expect(board.lookup(operation.id), same(operation));
+        expect(operation.state.value.failurePhase, phase);
+      }
+      expect(h.accounts.detailDemands, isEmpty);
+      expect(h.accounts.detailReads, 0);
+    }
   });
   test('summary action ownership does not revive when an old owner epoch name returns', () async {
     final h = AccountsVmHarness();
@@ -2007,14 +2186,14 @@ void main() {
     accountsOwner.setStrings(vmOperationStrings);
     final old = Completer<OperationState>();
     h.acp.removeWrite = () => old.future;
-    final first = accountsOwner.remove(key);
+    final first = accountsOwner.remove(key, isCompactClean: () => true);
     publish('owner-A', stale: true);
     publish('owner-B');
     publish('owner-B', stale: true);
     publish('owner-A');
     final current = Completer<OperationState>();
     h.acp.removeWrite = () => current.future;
-    final second = accountsOwner.remove(key);
+    final second = accountsOwner.remove(key, isCompactClean: () => true);
     expect(h.acp.removals, hasLength(2));
     old.complete(savedVmOperation('old'));
     expect(await first, isFalse);
@@ -2051,7 +2230,10 @@ void main() {
           .operationError,
       'Outcome unknown',
     );
-    expect(await accountsOwner.remove(key), isFalse);
+    expect(
+      await accountsOwner.remove(key, isCompactClean: () => true),
+      isFalse,
+    );
     expect(h.accounts.detailDemands, isEmpty);
     expect(h.accounts.detailReads, 0);
   });
@@ -2856,6 +3038,8 @@ void main() {
       expect(await owner.save(), isTrue);
       expect(owner.isSavedModel(row), isTrue);
       expect(h.editorState(key).native!.manualModels.single.canEditId, isFalse);
+      publishVmManualModel(h.models, const NativeAccountIdentity('native'));
+      final models = await h.modelOwner(key: key.target);
       h.models.removeWrite = () async => failedVmOperation(
         OperationPhase.rejected,
         id: 'manual-delete-rejected',
@@ -2866,12 +3050,26 @@ void main() {
           correlationId: 'manual-delete',
         ),
       );
-      expect(await owner.removeModel(row), isFalse);
+      expect(
+        await owner.removeModel(
+          row,
+          modelsOwner: models,
+          expectedCompactToken: models.compactLeaveToken(),
+        ),
+        isFalse,
+      );
       expect(owner.hasUnconfirmedSave(), isFalse);
       expect(h.editorState(key).native!.manualModels.single.editorKey, row);
       h.models.removeWrite = () async =>
           savedVmOperation('manual-delete-saved');
-      expect(await owner.removeModel(row), isTrue);
+      expect(
+        await owner.removeModel(
+          row,
+          modelsOwner: models,
+          expectedCompactToken: models.compactLeaveToken(),
+        ),
+        isTrue,
+      );
       expect(h.models.removed.map((id) => id.modelId), ['manual', 'manual']);
     },
   );
@@ -2909,11 +3107,20 @@ void main() {
       );
       final key = session.currentEditor!;
       final owner = await h.editor(key);
+      publishVmManualModel(h.models, const NativeAccountIdentity('native'));
+      final models = await h.modelOwner(key: key.target);
       owner.setStrings(vmOperationStrings);
       owner.changeField(NativeAccountField.name, 'Local before removal');
       final row = h.editorState(key).native!.manualModels.single.editorKey;
       h.models.removeWrite = () async => failure;
-      expect(await owner.removeModel(row), isFalse);
+      expect(
+        await owner.removeModel(
+          row,
+          modelsOwner: models,
+          expectedCompactToken: models.compactLeaveToken(),
+        ),
+        isFalse,
+      );
       expect(h.editorState(key).native!.manualModels.single.editorKey, row);
       expect(h.editorState(key).native!.name.raw, 'Local before removal');
       expect(h.editorState(key).key, key);
@@ -2931,13 +3138,27 @@ void main() {
             ? 'Outcome unknown'
             : 'Save failed',
       );
-      expect(await owner.removeModel(row), isFalse);
+      expect(
+        await owner.removeModel(
+          row,
+          modelsOwner: models,
+          expectedCompactToken: models.compactLeaveToken(),
+        ),
+        isFalse,
+      );
       expect(await owner.save(), isFalse);
       owner.changeField(
         NativeAccountField.name,
         'New raw cannot replay removal',
       );
-      expect(await owner.removeModel(row), isFalse);
+      expect(
+        await owner.removeModel(
+          row,
+          modelsOwner: models,
+          expectedCompactToken: models.compactLeaveToken(),
+        ),
+        isFalse,
+      );
       expect(await owner.save(), isFalse);
       expect(
         h.editorState(key).native!.name.raw,

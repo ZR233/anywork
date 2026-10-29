@@ -14,7 +14,7 @@ import 'settings_general_tab.dart';
 import 'settings_instructions_tab.dart';
 import 'settings_lsp_tab.dart';
 import 'settings_mcp_tab.dart';
-import 'mode_editor/mode_editor_page.dart';
+import '../modes/modes.dart' show ModeCatalogTab;
 import 'accounts/connectors/accounts_connector.dart';
 import 'settings_scope.dart';
 import 'settings_section.dart';
@@ -319,7 +319,7 @@ class _SettingsScaffold extends ConsumerWidget {
         accountChild: accountChild,
       ),
       const _InstructionsSettingsTab(),
-      ModeEditorTab(tabIndex: SettingsSection.workModes.index),
+      ModeCatalogTab(tabIndex: SettingsSection.workModes.index),
       SkillsTab(tabIndex: SettingsSection.skills.index),
       AgentsTab(tabIndex: SettingsSection.agents.index),
       McpTab(tabIndex: SettingsSection.mcp.index),

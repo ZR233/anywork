@@ -94,6 +94,8 @@ extension StudioLocalizationsX on BuildContext {
     final storage = view.storage;
     return switch (view.kind) {
       ConversationActivityKind.preparing => l10n.conversationActivityPreparing,
+      ConversationActivityKind.compacting =>
+        l10n.conversationActivityCompacting,
       ConversationActivityKind.thinking => l10n.timelineReasoningActive,
       ConversationActivityKind.responding => l10n.statusTurnResponding,
       ConversationActivityKind.planning => l10n.statusTurnPlanning,
@@ -241,11 +243,63 @@ extension StudioLocalizationsX on BuildContext {
     return switch (blocker) {
       ComposerStorageBlocker() => l10n.composerBlockedStorage,
       ComposerModelBlocker() => l10n.composerBlockedModel,
-      ComposerWorkspaceBlocker() => l10n.composerBlockedWorkspace,
-      ComposerFailureBlocker(:final reason) => composerFailureReasonLabel(
-        reason,
-      ),
+      ComposerRecoveryBlocker(:final issue) => recoveryIssueLabel(issue),
+      ComposerFailureBlocker(:final reason, :final recoveryIssue) =>
+        recoveryIssue == null
+            ? composerFailureReasonLabel(reason)
+            : recoveryIssueLabel(recoveryIssue),
     };
+  }
+
+  /// Localized GUI rendering of a typed Recovery issue. SDK diagnostics retain
+  /// canonical IDs, owners, detail and action names independently of this text.
+  String recoveryIssueLabel(StudioRecoveryIssue issue) {
+    final owner = switch (issue.scope) {
+      RecoveryIssueScope.application => l10n.recoveryOwnerApplication,
+      RecoveryIssueScope.project =>
+        issue.projectId == null
+            ? l10n.recoveryUnknownOwner
+            : l10n.recoveryOwnerProject(issue.projectId!),
+      RecoveryIssueScope.thread =>
+        issue.threadId == null
+            ? l10n.recoveryUnknownOwner
+            : l10n.recoveryOwnerThread(
+                issue.threadId!,
+                issue.projectId ?? l10n.recoveryUnknownOwner,
+              ),
+    };
+    final impact = switch (issue.impact) {
+      RecoveryIssueImpact.advisory => l10n.recoveryImpactAdvisory,
+      RecoveryIssueImpact.executionBlocked =>
+        l10n.recoveryImpactExecutionBlocked,
+      RecoveryIssueImpact.accessBlocked => l10n.recoveryImpactAccessBlocked,
+    };
+    final actions = [
+      for (final action in issue.availableActions)
+        switch (action) {
+          RecoveryIssueAction.retry => l10n.runtimeFatalRetry,
+          RecoveryIssueAction.cleanupWorktree => l10n.settingsWorktreeCleanup,
+        },
+    ];
+    return l10n.recoveryDiagnostic(
+      issue.id,
+      owner,
+      impact,
+      issue.detail,
+      actions.isEmpty ? l10n.recoveryNoAvailableActions : actions.join(' · '),
+    );
+  }
+
+  /// Localized display for a typed Client failure without rendering its SDK
+  /// diagnostic message as user-facing UI text.
+  String recoveryIssueFailureLabel(Object error) {
+    final issue = recoveryIssueFromFailure(
+      error is StudioFailure ? error : null,
+    );
+    if (issue == null) {
+      return error.toString();
+    }
+    return recoveryIssueLabel(issue);
   }
 
   /// 后端 typed 失败原因的用户说明。
@@ -340,6 +394,7 @@ extension StudioLocalizationsX on BuildContext {
 extension ConversationActivityKindX on ConversationActivityKind {
   IconData get icon => switch (this) {
     ConversationActivityKind.preparing => Icons.menu_book_outlined,
+    ConversationActivityKind.compacting => Icons.compress_outlined,
     ConversationActivityKind.thinking => Icons.psychology_alt_outlined,
     ConversationActivityKind.responding => Icons.edit_note_outlined,
     ConversationActivityKind.planning => Icons.route_outlined,

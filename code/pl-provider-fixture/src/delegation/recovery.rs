@@ -78,7 +78,7 @@ pub(super) fn run(flow: &Flow<'_>, prompt: &str, environment: &Environment) -> P
     let review_route = select(&models, "-b", SHARED_MODEL)?;
     let executor = flow.spawn(
         "recovery-executor",
-        "executor",
+        "worktree_executor",
         Some(&execution_route),
         "[[delegation:child:recovery-initial]]",
         None,
@@ -178,9 +178,11 @@ fn resumed(flow: &Flow<'_>, environment: &Environment) -> Progress<Decision> {
     require_created(&first)?;
     require_created(&old_review)?;
     require(
-        old_close.target == old_reviewer.agent_id
-            && old_close.lifecycle == Lifecycle::Closed
-            && old_close.workspace_disposition == "preserve",
+        old_close.succeeded_for(&old_reviewer.agent_id)
+            && old_close.agents.iter().any(|agent| {
+                agent.agent_id == old_reviewer.agent_id
+                    && agent.worktree_cleanup == WorktreeCleanup::NotApplicable
+            }),
         "recovery lost the original explicit reviewer close receipt",
     )?;
     let delivery = saved_report(flow, &executor, &first)?;
@@ -304,6 +306,17 @@ fn resumed(flow: &Flow<'_>, environment: &Environment) -> Progress<Decision> {
     require_created(&reviewed)?;
     let reviewer_close = flow.close("recovery-close-resumed-reviewer", &reviewer)?;
     let executor_close = flow.close("recovery-close-executor", &executor)?;
+    require(
+        executor_close.succeeded_for(&executor.agent_id)
+            && executor_close.agents.iter().any(|agent| {
+                agent.agent_id == executor.agent_id
+                    && matches!(
+                        &agent.worktree_cleanup,
+                        WorktreeCleanup::Removed { path } if !path.trim().is_empty()
+                    )
+            }),
+        "recovery executor close did not remove its worktree",
+    )?;
     check_detail(
         flow,
         "recovery-final-executor-detail",
@@ -443,7 +456,7 @@ fn check_detail(
     Ok(())
 }
 
-fn original<T: DeserializeOwned>(flow: &Flow<'_>, label: &str, tool: &str) -> Result<T> {
+fn original<T: DeserializeOwned>(flow: &Flow<'_>, label: &str, tool: &str) -> Progress<T> {
     let (start, _) = flow.request.prompt()?;
     let suffix = format!("-{label}");
     let call = flow.request.input[..start]
@@ -457,15 +470,21 @@ fn original<T: DeserializeOwned>(flow: &Flow<'_>, label: &str, tool: &str) -> Re
                     .is_some_and(|id| id.ends_with(&suffix))
         })
         .context("reopened recovery root lost its original real tool history")?;
-    decode(
-        &flow
-            .request
-            .output(
-                call.call_id
-                    .as_deref()
-                    .context("original recovery call lacks identity")?,
-            )?
-            .context("reopened recovery root lost committed tool output")?,
+    let call_id = call
+        .call_id
+        .as_deref()
+        .context("original recovery call lacks identity")?;
+    let arguments: serde_json::Value = serde_json::from_str(
+        call.arguments
+            .as_deref()
+            .context("original recovery call lacks arguments")?,
+    )
+    .context("decode original recovery call arguments")?;
+    flow.read_call(
+        call_id,
+        tool,
+        arguments,
+        &format!("recovery-history-{label}"),
     )
 }
 

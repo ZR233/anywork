@@ -46,6 +46,34 @@ RouteBase get $studioRoute => GoRouteData.$route(
             ),
           ],
         ),
+        GoRouteData.$route(
+          path: 'modes/:modeId',
+          name: 'mode-workspace',
+          hasOverriddenOnExit: true,
+          factory: $ModeWorkspaceRoute._fromState,
+          routes: [
+            GoRouteData.$route(
+              path: 'details',
+              name: 'mode-detail',
+              hasOverriddenOnExit: false,
+              factory: $ModeDetailRoute._fromState,
+            ),
+          ],
+        ),
+        GoRouteData.$route(
+          path: 'bots/:botId',
+          name: 'bot-details',
+          hasOverriddenOnExit: false,
+          factory: $BotDetailsRoute._fromState,
+          routes: [
+            GoRouteData.$route(
+              path: 'chat',
+              name: 'bot-chat',
+              hasOverriddenOnExit: false,
+              factory: $BotChatRoute._fromState,
+            ),
+          ],
+        ),
       ],
     ),
   ],
@@ -255,6 +283,123 @@ const _$AccountModelTabEnumMap = {
   AccountModelTab.pricing: 'pricing',
   AccountModelTab.evaluations: 'evaluations',
 };
+
+mixin $ModeWorkspaceRoute on GoRouteData {
+  static ModeWorkspaceRoute _fromState(GoRouterState state) =>
+      ModeWorkspaceRoute(modeId: state.pathParameters['modeId']!);
+
+  ModeWorkspaceRoute get _self => this as ModeWorkspaceRoute;
+
+  @override
+  String get location => GoRouteData.$location(
+    '/settings/modes/${Uri.encodeComponent(_self.modeId)}',
+  );
+
+  @override
+  void go(BuildContext context) => context.go(location);
+
+  @override
+  Future<T?> push<T>(BuildContext context) => context.push<T>(location);
+
+  @override
+  void pushReplacement(BuildContext context) =>
+      context.pushReplacement(location);
+
+  @override
+  void replace(BuildContext context) => context.replace(location);
+}
+
+mixin $ModeDetailRoute on GoRouteData {
+  static ModeDetailRoute _fromState(GoRouterState state) => ModeDetailRoute(
+    modeId: state.pathParameters['modeId']!,
+    stage: state.uri.queryParameters['stage'],
+    edge: state.uri.queryParameters['edge'],
+  );
+
+  ModeDetailRoute get _self => this as ModeDetailRoute;
+
+  @override
+  String get location => GoRouteData.$location(
+    '/settings/modes/${Uri.encodeComponent(_self.modeId)}/details',
+    queryParams: {
+      if (_self.stage != null) 'stage': _self.stage,
+      if (_self.edge != null) 'edge': _self.edge,
+    },
+  );
+
+  @override
+  void go(BuildContext context) => context.go(location);
+
+  @override
+  Future<T?> push<T>(BuildContext context) => context.push<T>(location);
+
+  @override
+  void pushReplacement(BuildContext context) =>
+      context.pushReplacement(location);
+
+  @override
+  void replace(BuildContext context) => context.replace(location);
+}
+
+mixin $BotDetailsRoute on GoRouteData {
+  static BotDetailsRoute _fromState(GoRouterState state) => BotDetailsRoute(
+    botId: state.pathParameters['botId']!,
+    chatId: state.uri.queryParameters['chatId'],
+  );
+
+  BotDetailsRoute get _self => this as BotDetailsRoute;
+
+  @override
+  String get location => GoRouteData.$location(
+    '/settings/bots/${Uri.encodeComponent(_self.botId)}',
+    queryParams: {if (_self.chatId != null) 'chatId': _self.chatId},
+  );
+
+  @override
+  void go(BuildContext context) => context.go(location);
+
+  @override
+  Future<T?> push<T>(BuildContext context) => context.push<T>(location);
+
+  @override
+  void pushReplacement(BuildContext context) =>
+      context.pushReplacement(location);
+
+  @override
+  void replace(BuildContext context) => context.replace(location);
+}
+
+mixin $BotChatRoute on GoRouteData {
+  static BotChatRoute _fromState(GoRouterState state) => BotChatRoute(
+    botId: state.pathParameters['botId']!,
+    chatId: state.uri.queryParameters['chatId'] ?? '',
+    title: state.uri.queryParameters['title'],
+  );
+
+  BotChatRoute get _self => this as BotChatRoute;
+
+  @override
+  String get location => GoRouteData.$location(
+    '/settings/bots/${Uri.encodeComponent(_self.botId)}/chat',
+    queryParams: {
+      if (_self.chatId != '') 'chatId': _self.chatId,
+      if (_self.title != null) 'title': _self.title,
+    },
+  );
+
+  @override
+  void go(BuildContext context) => context.go(location);
+
+  @override
+  Future<T?> push<T>(BuildContext context) => context.push<T>(location);
+
+  @override
+  void pushReplacement(BuildContext context) =>
+      context.pushReplacement(location);
+
+  @override
+  void replace(BuildContext context) => context.replace(location);
+}
 
 extension<T extends Enum> on Map<T, String> {
   T? _$fromName(String? value) =>

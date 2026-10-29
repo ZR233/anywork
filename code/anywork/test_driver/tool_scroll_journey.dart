@@ -19,32 +19,76 @@ const _productPreviewBudgetBytes = 32 * 1024;
 /// 工具参数/结果各自的展示预算（`TOOL_FIELD_PREVIEW_BYTES`）。
 const _toolFieldPreviewBudgetBytes = 4 * 1024;
 
-/// 该 journey 在隔离项目里创建的文件数（`scroll-fixture/entry-000..239.txt`）。
-const _fixtureEntryCount = 240;
-
-/// 剧本给 `scroll-call-long` 的 `list_files` limit。
-const _listFilesLimit = 200;
-
 /// 图片行真实回收所需的最大外层滚轮步数（每步 0.8 个视口）。
 ///
 /// 只用于有界收敛：步数用尽仍未从 render/widget 树卸载就如实失败，不靠固定 sleep。
 const _maxImageRecycleSteps = 12;
 
-/// 剧本里的 9 个工具调用身份（`pl-provider-fixture` 的 `gui_tool_scroll_script`）。
+/// 剧本里的 9 个业务调用身份（`pl-provider-fixture` 的 `gui_tool_scroll_script`）。
 ///
 /// 每个 canonical 工具调用都是独立条目：按 callId 精确判定 name/status，既不放过
 /// 漏项，也不接受陌生项；判定不依赖时间线顺序或任何活动分组。
 const _expectedToolCalls = <({String callId, String name, String status})>[
-  (callId: 'scroll-call-short', name: 'read_file', status: 'succeeded'),
-  (callId: 'scroll-call-read-second', name: 'read_file', status: 'succeeded'),
-  (callId: 'scroll-call-medium', name: 'list_files', status: 'succeeded'),
-  (callId: 'scroll-call-long', name: 'list_files', status: 'succeeded'),
+  (callId: 'scroll-call-short', name: 'exec', status: 'succeeded'),
+  (callId: 'scroll-call-read-second', name: 'exec', status: 'succeeded'),
+  (callId: 'scroll-call-medium', name: 'exec', status: 'succeeded'),
+  (callId: 'scroll-call-long', name: 'exec', status: 'succeeded'),
   (callId: 'scroll-call-arguments', name: 'exec', status: 'succeeded'),
   (callId: 'scroll-call-a', name: 'view_image', status: 'succeeded'),
   (callId: 'scroll-call-b', name: 'view_image', status: 'succeeded'),
   (callId: 'scroll-call-c', name: 'view_image', status: 'succeeded'),
-  (callId: 'scroll-call-failed', name: 'list_files', status: 'failed'),
+  (callId: 'scroll-call-failed', name: 'exec', status: 'failed'),
 ];
+
+/// 剧本只在当前 exec 批次仍运行时发出 wait；次数取决于真实完成时序。
+/// 步骤编号包含各批次前的可选标题步骤，图片批次不发出 wait。
+bool _isFixtureWait(TimelineToolObservation tool) {
+  final match = RegExp(r'^scroll-wait-(2|5|8|11|17)-[1-9][0-9]*$')
+      .firstMatch(tool.callId);
+  if (match == null || tool.name != 'wait' || tool.status != 'succeeded') {
+    return false;
+  }
+  final expected = switch (int.parse(match.group(1)!)) {
+    2 => _expectedToolCalls.take(2),
+    5 => [_expectedToolCalls[2]],
+    8 => [_expectedToolCalls[3]],
+    11 => [_expectedToolCalls[4]],
+    17 => [_expectedToolCalls[8]],
+    _ => throw StateError('Unexpected fixture wait step'),
+  };
+  final allowed = {for (final call in expected) 'task:${call.callId}'};
+  final arguments = jsonDecode(tool.arguments);
+  final result = tool.result == null ? null : jsonDecode(tool.result!);
+  if (arguments is! Map ||
+      arguments.length != 2 ||
+      arguments['timeoutMs'] != 300000 ||
+      arguments['taskIds'] is! List ||
+      result is! Map ||
+      result['tasks'] is! List) {
+    return false;
+  }
+  final targets = arguments['taskIds'] as List;
+  final tasks = result['tasks'] as List;
+  return targets.isNotEmpty &&
+      targets.length == targets.toSet().length &&
+      targets.every(allowed.contains) &&
+      tasks.length == targets.length &&
+      tasks.every(
+        (task) =>
+            task is Map &&
+            targets.contains(task['taskId']) &&
+            task['toolId'] == 'exec' &&
+            const {
+              'running',
+              'succeeded',
+              'failed',
+              'cancelled',
+              'timedOut',
+            }.contains(task['status']),
+      ) &&
+      tasks.map((task) => (task as Map)['taskId']).toSet().length ==
+          targets.length;
+}
 
 /// 连续三次图片读取共用一条展示摘要，仍按 a/b/c 的原始调用身份验收。
 const _imageCallIds = <String>[
@@ -53,8 +97,13 @@ const _imageCallIds = <String>[
   'scroll-call-c',
 ];
 
-String _fixtureEntryName(int index) =>
-    'entry-${index.toString().padLeft(3, '0')}.txt';
+String _longReadFixtureText() {
+  final padding = List<String>.filled(48, 'x').join();
+  return List<String>.generate(
+    500,
+    (index) => 'line-${index.toString().padLeft(3, '0')}: $padding\n',
+  ).join();
+}
 
 /// FNV-1a over the code units. Must stay identical to the Driver-side helper.
 int _fnv1a64(String text) {
@@ -66,87 +115,48 @@ int _fnv1a64(String text) {
   return hash;
 }
 
-/// 校验完整复制的 `list_files` 结果：按**真实后端语义**判定，而不是全目录键序。
-///
-/// 该 journey 在隔离项目里创建 `scroll-fixture/entry-000.txt`…`entry-239.txt`，剧本以
-/// `{"path":"scroll-fixture","limit":200}` 调用 `list_files`。真实工具
-/// （`pl-tool/src/workspace_file/local.rs` + `ops.rs`）先**限量遍历**再排序截断，因此
-/// 返回的是某个 bounded traversal 子集内排序后的 200 条，**不保证**是全目录编号最小的
-/// 200 条。这里只断言后端确实提供的性质：完整路径形状、索引范围、严格升序、无重复、
-/// 数量/count 一致，以及真实存在的游标与 hash 字段；不从实际复制内容反推期望。
-Map<String, Object?> _validateLongResult(String text, int expectedBytes) {
+/// 校验完整 exec 结果的 stdout、退出状态和复制的 UTF-8 字节数。
+Map<String, Object?> _validateLongResult(
+  String text,
+  int expectedBytes,
+  String expectedContent,
+) {
   Object? decoded;
   try {
-    decoded = jsonDecode(text);
+    final jsonStart = text.indexOf('{');
+    decoded = jsonDecode(jsonStart < 0 ? text : text.substring(jsonStart));
   } on FormatException catch (error) {
     return <String, Object?>{'valid': false, 'reason': 'invalidJson: $error'};
   }
   if (decoded is! Map) {
     return <String, Object?>{'valid': false, 'reason': 'resultIsNotAnObject'};
   }
-  final files = decoded['files'];
-  final resultHash = decoded['resultHash'];
-  final pathPattern = RegExp(r'^scroll-fixture/entry-(\d{3})\.txt$');
-  final deliveredFiles = <String>[
-    if (files is List)
-      for (final entry in files)
-        if (entry is String) entry,
-  ];
-  var allStrings = files is List && deliveredFiles.length == files.length;
-  var pathShapeOk = allStrings;
-  var indexInFixtureRange = allStrings;
-  var strictlyAscending = allStrings;
-  var duplicateFree = true;
-  final seen = <String>{};
-  for (var index = 0; index < deliveredFiles.length; index += 1) {
-    final file = deliveredFiles[index];
-    final match = pathPattern.firstMatch(file);
-    if (match == null) {
-      pathShapeOk = false;
-      allStrings = false;
-      continue;
-    }
-    final ordinal = int.parse(match.group(1)!);
-    if (ordinal < 0 || ordinal >= _fixtureEntryCount) {
-      indexInFixtureRange = false;
-    }
-    if (!seen.add(file)) duplicateFree = false;
-    if (index > 0 && deliveredFiles[index - 1].compareTo(file) >= 0) {
-      strictlyAscending = false;
-    }
-  }
+  final stdout = decoded['stdout'];
+  final stderr = decoded['stderr'];
+  final content = stdout is Map ? stdout['content'] : null;
+  final state = decoded['state'];
+  final stateData = state is Map ? state['data'] : null;
+  final result = stateData is Map ? stateData['result'] : null;
+  final deliveredBytes = utf8.encode(text).length;
   final checks = <String, Object?>{
-    'filesIsList': files is List,
-    'filesAllStrings': allStrings,
-    'pathOk': decoded['path'] == 'scroll-fixture',
-    'globOk': decoded['glob'] == '*',
-    'includeDirsOk': decoded['includeDirs'] == false,
-    'cursorResetOk': decoded['cursorReset'] == false,
-    'countMatchesFiles': files is List && decoded['count'] == files.length,
-    'countIsLimit': decoded['count'] == _listFilesLimit,
-    'filesIsLimit': files is List && files.length == _listFilesLimit,
-    'pathShapeOk': pathShapeOk,
-    'indexInFixtureRange': indexInFixtureRange,
-    'strictlyAscending': strictlyAscending,
-    'duplicateFree': duplicateFree,
-    // 240 个 fixture 文件 > 200 的 limit，所以下一页游标必须存在。
-    'fixtureLargerThanLimit': _listFilesLimit < _fixtureEntryCount,
-    'hasNextCursor':
-        decoded['nextCursor'] is String &&
-        (decoded['nextCursor'] as String).isNotEmpty,
-    'resultHashWellFormed':
-        resultHash is String &&
-        RegExp(r'^sha256:[0-9a-f]{64}$').hasMatch(resultHash),
-    'lengthMatchesDetail': utf8.encode(text).length == expectedBytes,
+    'currentExecStreams': stdout is Map && stderr is Map,
+    'terminalSuccess':
+        state is Map &&
+        state['kind'] == 'final' &&
+        result is Map &&
+        result['kind'] == 'succeeded',
+    'exitCodeZero': decoded['exitCode'] == 0,
+    'stderrEmpty': stderr is Map && stderr['content'] == '',
+    'fullContentMatchesFixture': content == expectedContent,
+    'lengthMatchesDetail': deliveredBytes == expectedBytes,
+    'fixtureExceedsCaptureChunk': expectedBytes > 6144,
+    'deliveredExceedsCaptureChunk': deliveredBytes > 6144,
   };
   final valid = checks.values.every((value) => value == true);
   return <String, Object?>{
     'valid': valid,
     'expectedBytes': expectedBytes,
-    'deliveredBytes': utf8.encode(text).length,
-    'count': decoded['count'],
-    'deliveredFirstFile': deliveredFiles.isEmpty ? null : deliveredFiles.first,
-    'deliveredLastFile': deliveredFiles.isEmpty ? null : deliveredFiles.last,
+    'deliveredBytes': deliveredBytes,
     'checks': checks,
   };
 }
@@ -218,10 +228,12 @@ Future<void> main(List<String> args) async {
   if (args.length >= 3 && args[2] != '--observe-only') {
     final fixtures = Directory('${args[2]}/scroll-fixture');
     await fixtures.create(recursive: true);
-    for (var i = 0; i < _fixtureEntryCount; i++) {
-      await File('${fixtures.path}/${_fixtureEntryName(i)}')
-          .writeAsString('Tool scrolling fixture\n');
-    }
+    await File('${fixtures.path}/entry-000.txt')
+        .writeAsString('Tool scrolling fixture\n');
+    await File('${fixtures.path}/entry-001.txt')
+        .writeAsString('Tool scrolling fixture\n');
+    await File('${fixtures.path}/long-read.txt')
+        .writeAsString(_longReadFixtureText());
     await File('test_driver/fixtures/tool-image.png')
         .copy('${args[2]}/tool-image.png');
     final git = await Process.run('git', ['init', '-q', args[2]]);
@@ -596,10 +608,14 @@ Future<void> main(List<String> args) async {
       for (final expected in _expectedToolCalls)
         if (!toolsByCallId.containsKey(expected.callId)) expected.callId,
     ];
+    final fixtureWaits = <TimelineItemObservation>[
+      for (final item in toolItems)
+        if (_isFixtureWait(item.tool!)) item,
+    ];
     final unexpectedCallIds = <String>[
       for (final callId in toolsByCallId.keys)
         if (!_expectedToolCalls.any((expected) => expected.callId == callId))
-          callId,
+          if (!fixtureWaits.any((item) => item.tool!.callId == callId)) callId,
     ];
     final mismatchedCallIds = <String>[
       for (final expected in _expectedToolCalls)
@@ -607,19 +623,28 @@ Future<void> main(List<String> args) async {
             toolsByCallId[expected.callId]?.tool?.status != expected.status)
           expected.callId,
     ];
-    if (toolItems.length != _expectedToolCalls.length ||
+    if (toolItems.length != _expectedToolCalls.length + fixtureWaits.length ||
         duplicateCallIds.isNotEmpty ||
         missingCallIds.isNotEmpty ||
         unexpectedCallIds.isNotEmpty ||
         mismatchedCallIds.isNotEmpty) {
       throw StateError(
         'Tool calls do not match the fixture identities: '
-        'count=${toolItems.length} (expected ${_expectedToolCalls.length}), '
+        'count=${toolItems.length} '
+        '(expected ${_expectedToolCalls.length} + ${fixtureWaits.length} waits), '
         'duplicates=$duplicateCallIds, missing=$missingCallIds, '
         'unexpected=$unexpectedCallIds, '
         'nameOrStatusMismatch=$mismatchedCallIds',
       );
     }
+    evidence['fixtureWaits'] = [
+      for (final item in fixtureWaits)
+        {
+          'callId': item.tool!.callId,
+          'arguments': item.tool!.arguments,
+          'result': item.tool!.result,
+        },
+    ];
     final reasoningItems = loadedTimeline.items
         .where((item) => item.kind == 'reasoning')
         .toList();
@@ -1064,6 +1089,25 @@ Future<void> main(List<String> args) async {
           '${tool.name}/${tool.status} for $callId',
         );
       }
+      if (callId == 'scroll-call-short' ||
+          callId == 'scroll-call-read-second' ||
+          callId == 'scroll-call-medium') {
+        final raw = tool.result;
+        final start = raw?.indexOf('{') ?? -1;
+        if (raw == null || start < 0) {
+          throw StateError('Missing exec result for $callId');
+        }
+        final decoded = jsonDecode(raw.substring(start));
+        final expectedText = callId == 'scroll-call-medium'
+            ? '${_longReadFixtureText().split('\n').take(12).join('\n')}\n'
+            : 'Tool scrolling fixture\n';
+        if (decoded is! Map ||
+            decoded['stdout'] is! Map ||
+            decoded['stdout']['content'] != expectedText ||
+            decoded['exitCode'] != 0) {
+          throw StateError('Unexpected exec stdout for $callId: $decoded');
+        }
+      }
       // F2：每个字段的预览都必须落在真实预算内（参数/结果各 4 KiB，正文共享 32 KiB）。
       for (final detail in toolItem.details) {
         // 只有工具参数与工具结果各有 4 KiB 独立额度；output artifacts 与其它
@@ -1136,7 +1180,11 @@ Future<void> main(List<String> args) async {
         detailReads.add(longResult);
         final copied = longResult['clipboardText'];
         final validation = copied is String
-            ? _validateLongResult(copied, detail.totalBytes)
+            ? _validateLongResult(
+                copied,
+                detail.totalBytes,
+                _longReadFixtureText(),
+              )
             : <String, Object?>{
                 'valid': false,
                 'reason': 'clipboardTextMissing',

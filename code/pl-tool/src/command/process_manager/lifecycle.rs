@@ -49,16 +49,19 @@ pub(super) fn spawn_lifecycle_task(
         let wait_result = match outcome {
             LifecycleOutcome::Exited(result) => result,
             LifecycleOutcome::TimedOut => {
+                entry.input_stopped.cancel();
                 apply_transition(&entry, CommandProcessTransition::TimeOut).await;
                 child.cancellation().cancel();
                 child.wait().await
             }
             LifecycleOutcome::Interrupted => {
+                entry.input_stopped.cancel();
                 apply_transition(&entry, CommandProcessTransition::Cancel).await;
                 child.cancellation().cancel();
                 child.wait().await
             }
             LifecycleOutcome::OutputFailed => {
+                entry.input_stopped.cancel();
                 // The read task already recorded the typed reason and applied the terminating
                 // transition before it fired this token; terminate the tree and settle the wait so
                 // the bytes already captured stay readable.
@@ -66,16 +69,18 @@ pub(super) fn spawn_lifecycle_task(
                 child.wait().await
             }
         };
+        entry.input_stopped.cancel();
         // Poll the owned execution through cancellation before taking stdin: an in-flight
         // write may hold this mutex until the physical process closes its read end.
         {
             let mut stdin = entry.stdin.lock().await;
-            stdin.take();
+            stdin.writer.take();
         }
         match wait_result {
             Ok(status) => {
                 {
                     let mut state = entry.state.lock().await;
+                    state.exit = Some(status.clone());
                     let result = match (state.capture_ownership, status.capture) {
                         (crate::command::CommandCaptureOwnership::Producer, Some(receipt)) => {
                             state.complete_producer_capture(receipt)
@@ -95,6 +100,18 @@ pub(super) fn spawn_lifecycle_task(
                         .await;
                         return;
                     }
+                }
+                if let Some(failure) = status.capture_failure {
+                    apply_transition(&entry, CommandProcessTransition::OutputFailed { failure })
+                        .await;
+                }
+                if let Some(error) = status.supervision_failure {
+                    apply_transition(
+                        &entry,
+                        CommandProcessTransition::ProcessWaitFailed { error },
+                    )
+                    .await;
+                    return;
                 }
                 apply_transition(
                     &entry,

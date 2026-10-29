@@ -180,6 +180,7 @@ async fn exercise(
         process_id: "receipt-command".into(), workspace_id: workspace.workspace_id.clone(), program: "/bin/sh".into(),
         arguments: vec!["-c".into(), "printf start >> starts; IFS= read -r line; printf '%s' \"$line\" > stdin-result".into()],
         cwd: ".".into(), remove_environment: vec![], environment: Default::default(), capture: RemoteCapture::None,
+                remaining_timeout_ms: None,
     }), &[]).await?;
     reconnect(executable, attachment).await?;
     let recovered = attachment

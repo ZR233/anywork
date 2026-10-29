@@ -12,6 +12,7 @@ import '../state/account_presentations.dart';
 import '../state/account_view_state.dart';
 import 'account_operation_result.dart';
 import 'account_projection.dart';
+import 'account_models_view_model.dart';
 import 'acp_account_view_model.dart';
 import 'native_account_draft.dart';
 import 'acp_command_notice.dart';
@@ -343,26 +344,53 @@ class AccountEditorViewModel extends _$AccountEditorViewModel {
   String modelName(String editorKey) =>
       _raw?.rows.where((row) => row.editorKey == editorKey).firstOrNull?.name ??
       editorKey;
-  Future<bool> removeModel(String editorKey) async {
+  Future<bool> removeModel(
+    String editorKey, {
+    AccountModelsViewModel? modelsOwner,
+    Object? expectedCompactToken,
+  }) async {
     final row = _raw?.rows
         .where((row) => row.editorKey == editorKey)
         .firstOrNull;
     if (row == null || _saving || _finished || _unknownResult) return false;
     final savedRow = row.savedId != null;
+    final sourceToken = leaveToken();
+    if (savedRow) {
+      // Only compare the captured resource with its existing typed family.
+      // Never create/adopt a latest Models owner to complete an old action.
+      final provider = accountModelsViewModelProvider(_key.target);
+      if (modelsOwner == null ||
+          expectedCompactToken == null ||
+          !modelsOwner.canRemove(expectedToken: expectedCompactToken) ||
+          !ref.exists(provider) ||
+          !identical(ref.read(provider.notifier), modelsOwner)) {
+        return false;
+      }
+    }
     if (savedRow) {
       _saving = true;
       _error = null;
-      _publish();
     }
     try {
       if (savedRow) {
-        final result = await _models.removeManual(
-          AccountModelIdentity(
-            account: NativeAccountIdentity(_key.target.id),
-            modelId: row.savedId!,
-          ),
+        // The unique Models admission installs its deleting qualification before
+        // either owner's notification can re-enter an input handler.
+        final pending = modelsOwner!.removeManual(
+          row.savedId!,
+          expectedToken: expectedCompactToken!,
         );
-        if (!await _accept(result)) return false;
+        _publish();
+        final result = await pending;
+        if (result == null || !_acceptSettled(result)) return false;
+        if (!matchesLeaveToken(sourceToken) ||
+            !identical(
+              _raw?.rows
+                  .where((value) => value.editorKey == editorKey)
+                  .firstOrNull,
+              row,
+            )) {
+          return false;
+        }
         _baseline = _baseline?.withRows([
           for (final value in _baseline!.rows)
             if (value.savedId != row.savedId) value,
@@ -586,7 +614,13 @@ class AccountEditorViewModel extends _$AccountEditorViewModel {
   Future<bool> _accept(OperationState result) async {
     if (!ref.mounted || _finished) return false;
     final settled = await observeAccountOperation(ref, result);
-    if (!ref.mounted || _finished || settled == null) return false;
+    return settled != null && _acceptSettled(settled);
+  }
+
+  // A delegated deletion is already settled once by its admitting Models owner.
+  // Reusing the same acceptance logic must not look up a later board snapshot.
+  bool _acceptSettled(OperationState settled) {
+    if (!ref.mounted || _finished) return false;
     _unknownResult =
         settled.failurePhase == OperationPhase.unknownOutcome ||
         settled.failurePhase == OperationPhase.syncFailed ||

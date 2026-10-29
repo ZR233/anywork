@@ -120,8 +120,30 @@ class _AccountDetailsConnectorState
       data: (_) {
         final owner = ref.read(provider.notifier);
         final accounts = ref.read(accountsViewModelProvider.notifier);
+        final value = owner.presentation(
+          catalog: models?.catalog,
+          acp: acp?.panel,
+        );
+        final modelsProvider = widget.account.kind == AccountKind.native
+            ? accountModelsViewModelProvider(widget.account)
+            : null;
+        final modelsOwner = modelsProvider != null && ref.exists(modelsProvider)
+            ? ref.read(modelsProvider.notifier)
+            : null;
+        final canRemoveModels =
+            modelsProvider == null ||
+            (models != null &&
+                modelsOwner != null &&
+                modelsOwner.canRemove(
+                  expectedToken: modelsOwner.compactLeaveToken(),
+                ));
         return AccountDetailsView(
-          value: owner.presentation(catalog: models?.catalog, acp: acp?.panel),
+          value: value.copyWith(
+            canDelete:
+                value.canDelete &&
+                canRemoveModels &&
+                !accounts.isRemovalBlocked(widget.account),
+          ),
           onBack: () => const SettingsRoute().go(context),
           onEdit: () => AccountEditRoute(
             kind: widget.account.kind,

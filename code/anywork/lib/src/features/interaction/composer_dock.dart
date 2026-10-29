@@ -9,6 +9,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:desktop_drop/desktop_drop.dart';
 
 import '../../app/app_graph.dart';
+import '../../app/routing/app_route.dart' show BotDetailsRoute;
 import '../../app/theme/studio_tokens.dart';
 
 import '../../l10n/studio_l10n.dart';
@@ -16,11 +17,11 @@ import '../../platform/clipboard_image_reader.dart';
 import '../../platform/dropped_attachments.dart';
 import '../../platform/local_file_dialogs.dart';
 import '../../presentation/providers/client_provider.dart';
+import '../../presentation/providers/thread_session_store.dart';
 import '../../shared/studio_chrome.dart';
 import '../../shared/studio_driver_keys.dart';
 import '../../shared/studio_menu_label.dart';
 import '../status/session_selectors.dart';
-import '../settings/settings_bots_tab.dart' show BotDetailsPage;
 import '../../domain/models/composer_primary_action.dart';
 import 'composer_view.dart';
 import 'child_interaction_dock.dart';
@@ -45,9 +46,14 @@ class ComposerDock extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final session = ref.watch(threadSessionStoreProvider(threadId));
     final view = ref.watch(composerDockViewProvider(threadId));
     final thread = view.thread;
     if (thread == null) return const SizedBox.shrink();
+    if (thread.status.blocksNewExecution ||
+        session.workspace?.thread.status.blocksNewExecution == true) {
+      return const SizedBox.shrink();
+    }
     final interaction = view.activeInteraction;
     final additionalDiagnostics = [
       for (final diagnostic in view.additionalDiagnostics)
@@ -203,7 +209,10 @@ class _StartPageComposerBodyState
               textController: _draft,
               targetDiagnostic: target,
               additionalDiagnostics: additional,
-              enabled: projection.canSubmit,
+              enabled: projection.canEdit,
+              blocker: projection.recoveryIssue == null
+                  ? null
+                  : ComposerRecoveryBlocker(projection.recoveryIssue!),
               clipboard: ref.read(clipboardImageReaderProvider),
               selectorBar: Wrap(
                 key: StudioDriverKeys.startPageSelectors,
@@ -252,8 +261,6 @@ class _StartPageComposerBodyState
                       projectId: projectId,
                       enabled: selectorsEnabled,
                     ),
-              showSubmissionError:
-                  projection.preparation?.failure?.toString() != composer.error,
               onChanged: _updateDraft,
               onSubmit: () => unawaited(_submit()),
               inputCapabilities: model?.inputCapabilities ?? const [],
@@ -581,7 +588,12 @@ class _PromptComposerState extends ConsumerState<_PromptComposer> {
               setState(() {
                 _failureBlocker = board?.phase == CommandPhase.failed
                     ? null
-                    : ComposerFailureBlocker(studioFailureReason(error));
+                    : ComposerFailureBlocker(
+                        studioFailureReason(error),
+                        recoveryIssue: recoveryIssueFromFailure(
+                          error is StudioFailure ? error : null,
+                        ),
+                      );
               });
             },
           ),
@@ -637,6 +649,9 @@ class _PromptComposerState extends ConsumerState<_PromptComposer> {
                 _continueAcceptedId = null;
                 _failureBlocker = ComposerFailureBlocker(
                   studioFailureReason(error),
+                  recoveryIssue: recoveryIssueFromFailure(
+                    error is StudioFailure ? error : null,
+                  ),
                 );
               });
             },
@@ -767,11 +782,8 @@ class _PromptComposerState extends ConsumerState<_PromptComposer> {
                         label: Text(
                           '${route?.modelId ?? ''} · ${context.l10n.botsManagedModel}',
                         ),
-                        onPressed: () => Navigator.of(context).push<void>(
-                          MaterialPageRoute(
-                            builder: (_) => BotDetailsPage(botId: botId),
-                          ),
-                        ),
+                        onPressed: () =>
+                            BotDetailsRoute(botId: botId).push(context),
                       )
                     else
                       ..._modelRouteSelectorChildren(
@@ -855,8 +867,46 @@ class _PromptComposerState extends ConsumerState<_PromptComposer> {
 /// 原因区的最大高度：三行文案在窄矮窗口里换行时改在区内滚动，不撑破底栏。
 const double _composerReasonMaxHeight = 84;
 
-/// 单条原因的最大行数：超长文案省略，完整原因仍由 canonical 错误与日志承载。
+/// 非 Recovery 原因的最大行数；Recovery 诊断在受限滚动区域内完整展示。
 const int _composerReasonMaxLines = 3;
+
+StudioRecoveryIssue? _recoveryIssueForBlocker(ComposerBlocker? blocker) {
+  if (blocker is ComposerRecoveryBlocker) return blocker.issue;
+  if (blocker is ComposerFailureBlocker) return blocker.recoveryIssue;
+  return null;
+}
+
+StudioRecoveryIssue? _composerFailureRecoveryIssue(
+  ComposerThreadState composer,
+) {
+  final failure = composer.failure;
+  return recoveryIssueFromFailure(failure is StudioFailure ? failure : null);
+}
+
+bool _sameRecoveryDiagnostic(
+  StudioRecoveryIssue left,
+  StudioRecoveryIssue right,
+) {
+  if (left.id != right.id ||
+      left.scope != right.scope ||
+      left.category != right.category ||
+      left.impact != right.impact ||
+      left.projectId != right.projectId ||
+      left.threadId != right.threadId ||
+      left.detail != right.detail ||
+      left.availableActions.length != right.availableActions.length) {
+    return false;
+  }
+  for (var index = 0; index < left.availableActions.length; index += 1) {
+    if (left.availableActions[index] != right.availableActions[index]) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool _showRawComposerError(ComposerThreadState composer) =>
+    _composerFailureRecoveryIssue(composer) == null;
 
 class _PromptComposerPanel extends StatefulWidget {
   const _PromptComposerPanel({
@@ -888,7 +938,6 @@ class _PromptComposerPanel extends StatefulWidget {
     this.textController,
     this.compact = false,
     this.submissionLocked = false,
-    this.showSubmissionError = true,
   });
 
   final ComposerThreadState composer;
@@ -945,7 +994,6 @@ class _PromptComposerPanel extends StatefulWidget {
 
   /// 起始页在设置 lane 排空前就置位的提交哨兵。线程路径保持 false。
   final bool submissionLocked;
-  final bool showSubmissionError;
 
   @override
   State<_PromptComposerPanel> createState() => _PromptComposerPanelState();
@@ -1081,7 +1129,10 @@ class _PromptComposerPanelState extends State<_PromptComposerPanel> {
   ComposerBlocker? get _stopFailure {
     final command = widget.stopCommand;
     if (command == null || command.phase != CommandPhase.failed) return null;
-    return ComposerFailureBlocker(command.error?.reason);
+    return ComposerFailureBlocker(
+      command.error?.reason,
+      recoveryIssue: recoveryIssueFromFailure(command.error),
+    );
   }
 
   @override
@@ -1207,7 +1258,11 @@ class _PromptComposerPanelState extends State<_PromptComposerPanel> {
   /// 额外的组合状态检查，也不会因组合文本而误提交。
   void _submit() {
     // 空输入继续只能由点击按钮发起：Enter 不触发无内容的继续操作。
-    if (!widget.enabled || !_action.enterSubmits) return;
+    if (!widget.enabled ||
+        !_action.enterSubmits ||
+        (widget.blocker?.blocksSubmission ?? false)) {
+      return;
+    }
     // 中文/日文输入法组词期间的回车由平台确认候选，框架不参与提交。
     if (_controller.value.composing.isValid) return;
     widget.onSubmit();
@@ -1368,7 +1423,7 @@ class _PromptComposerPanelState extends State<_PromptComposerPanel> {
               ),
             ),
           ),
-          if (widget.showSubmissionError && composer.error != null)
+          if (composer.error != null && _showRawComposerError(composer))
             Align(
               alignment: Alignment.centerLeft,
               child: Padding(
@@ -1431,14 +1486,26 @@ class _PromptComposerPanelState extends State<_PromptComposerPanel> {
 
   /// 原因区：canonical 阻塞、typed 失败与中断原因各自成行，一处也不丢弃。
   ///
-  /// 三行文案在窄矮窗口里会换行，因此整体套在受高度约束的滚动容器内，并给每行行数
-  /// 上限：受限尺寸下仍然可见可读，也不把外层 footer 撑出 `RenderFlex` 溢出。
+  /// 整体套在受高度约束的滚动容器内：普通原因限制行数，Recovery 诊断则完整保留四行
+  /// 及长 detail/actions，通过区内滚动访问，不撑破外层 footer。
   Widget? _reasonRegion(
     BuildContext context, {
     required ComposerBlocker? blocker,
     required String? continuationNote,
   }) {
     final stopFailure = _stopFailure;
+    final composerRecoveryIssue = _composerFailureRecoveryIssue(
+      widget.composer,
+    );
+    final recoveryAlreadyDisplayed =
+        composerRecoveryIssue != null &&
+        [
+          _recoveryIssueForBlocker(blocker),
+          _recoveryIssueForBlocker(widget.failure),
+          _recoveryIssueForBlocker(stopFailure),
+        ].whereType<StudioRecoveryIssue>().any(
+          (issue) => _sameRecoveryDiagnostic(issue, composerRecoveryIssue),
+        );
     final lines = <Widget>[
       if (blocker != null)
         _reasonLine(
@@ -1446,6 +1513,9 @@ class _PromptComposerPanelState extends State<_PromptComposerPanel> {
           context.composerBlockerLabel(blocker),
           StudioDriverKeys.composerBlocker,
           emphasized: true,
+          maxLines: _recoveryIssueForBlocker(blocker) == null
+              ? _composerReasonMaxLines
+              : null,
         ),
       // 上一次继续/提交被拒绝或结果未知的原因单独成行：它不改变 canonical 阻塞的
       // 准入判定，也不会因为 canonical 阻塞出现而消失。
@@ -1455,6 +1525,9 @@ class _PromptComposerPanelState extends State<_PromptComposerPanel> {
           context.composerBlockerLabel(failure),
           const ValueKey('composer-failure'),
           emphasized: true,
+          maxLines: _recoveryIssueForBlocker(failure) == null
+              ? _composerReasonMaxLines
+              : null,
         ),
       // 停止被拒绝的原因来自 Client 命令板：它跨重建与切换会话可见，因此单独成行，
       // 既不会掩盖上面的原因，也不会被上面掩盖。
@@ -1464,6 +1537,17 @@ class _PromptComposerPanelState extends State<_PromptComposerPanel> {
           context.composerBlockerLabel(stopFailure),
           const ValueKey('composer-stop-failure'),
           emphasized: true,
+          maxLines: _recoveryIssueForBlocker(stopFailure) == null
+              ? _composerReasonMaxLines
+              : null,
+        ),
+      if (composerRecoveryIssue != null && !recoveryAlreadyDisplayed)
+        _reasonLine(
+          context,
+          context.recoveryIssueLabel(composerRecoveryIssue),
+          const ValueKey('composer-recovery-failure'),
+          emphasized: true,
+          maxLines: null,
         ),
       // 命令板长时间未结算：说明结果未确认，不再无限锁死停止入口。
       if (_stopUnconfirmed)
@@ -1508,13 +1592,14 @@ class _PromptComposerPanelState extends State<_PromptComposerPanel> {
     String text,
     Key key, {
     required bool emphasized,
+    int? maxLines = _composerReasonMaxLines,
   }) {
     final colors = Theme.of(context).colorScheme;
     return Text(
       text,
       key: key,
-      maxLines: _composerReasonMaxLines,
-      overflow: TextOverflow.ellipsis,
+      maxLines: maxLines,
+      overflow: maxLines == null ? null : TextOverflow.ellipsis,
       style: Theme.of(context).textTheme.bodySmall?.copyWith(
         color: emphasized ? colors.error : colors.onSurfaceVariant,
       ),

@@ -29,7 +29,9 @@ fn studio_error_from_ref(error: &anyhow::Error) -> StudioError {
         use crate::agent::worktree::WorktreeError;
         let (code, retryable) = match error {
             WorktreeError::IdentityMismatch(_) => (StudioErrorCode::Conflict, false),
-            WorktreeError::InvalidResource(_) => (StudioErrorCode::InvalidArgument, false),
+            WorktreeError::InvalidResource(_) | WorktreeError::MissingHead => {
+                (StudioErrorCode::InvalidArgument, false)
+            }
             WorktreeError::Missing => (StudioErrorCode::Unavailable, true),
             WorktreeError::LocalIo { .. } => (StudioErrorCode::Storage, true),
             WorktreeError::GitLaunchFailed { .. }

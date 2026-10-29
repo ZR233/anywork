@@ -1,6 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../features/modes/modes.dart'
+    show ModeDetailPage, ModeWorkspacePage, confirmLeaveModeEditor;
 import '../../features/settings/accounts/connectors/account_create_connector.dart';
 import '../../features/settings/accounts/connectors/account_details_connector.dart';
 import '../../features/settings/accounts/connectors/account_edit_connector.dart';
@@ -8,10 +11,12 @@ import '../../features/settings/accounts/connectors/account_model_connector.dart
 import '../../features/settings/accounts/connectors/account_navigation.dart';
 import '../../features/settings/accounts/state/account_presentations.dart';
 import '../../features/settings/accounts/state/account_view_state.dart';
-import '../../features/settings/mode_editor/mode_editor_dialogs.dart';
+import '../../features/settings/settings_bots_chat_page.dart' show BotChatPage;
+import '../../features/settings/settings_bots_tab.dart' show BotDetailsPage;
 import '../../features/settings/settings_page.dart';
 import '../../features/settings/settings_section.dart';
 import '../../features/shell/studio_shell.dart';
+import '../../presentation/providers/client_provider.dart';
 
 part 'app_route.g.dart';
 
@@ -21,6 +26,10 @@ const _accountCreateRouteName = 'settings.account-create';
 const _accountDetailsRouteName = 'settings.account-details';
 const _accountEditRouteName = 'settings.account-edit';
 const _accountModelRouteName = 'settings.account-model';
+const _modeWorkspaceRouteName = 'mode-workspace';
+const _modeDetailRouteName = 'mode-detail';
+const _botDetailsRouteName = 'bot-details';
+const _botChatRouteName = 'bot-chat';
 
 String _encodeSettingsSection(SettingsSection value) =>
     _$SettingsSectionEnumMap[value]!;
@@ -62,6 +71,23 @@ AccountModelTab _decodeAccountModelTab(String value) =>
             ),
           ],
         ),
+        TypedGoRoute<ModeWorkspaceRoute>(
+          path: 'modes/:modeId',
+          name: _modeWorkspaceRouteName,
+          routes: <TypedGoRoute<GoRouteData>>[
+            TypedGoRoute<ModeDetailRoute>(
+              path: 'details',
+              name: _modeDetailRouteName,
+            ),
+          ],
+        ),
+        TypedGoRoute<BotDetailsRoute>(
+          path: 'bots/:botId',
+          name: _botDetailsRouteName,
+          routes: <TypedGoRoute<GoRouteData>>[
+            TypedGoRoute<BotChatRoute>(path: 'chat', name: _botChatRouteName),
+          ],
+        ),
       ],
     ),
   ],
@@ -90,11 +116,15 @@ class SettingsRoute extends GoRouteData with $SettingsRoute {
       confirmLeaveModeEditor(context);
 
   @override
-  Widget build(BuildContext context, GoRouterState state) => SettingsPage(
-    section: section,
-    routeVisible:
-        state.uri.path == Uri.parse(const SettingsRoute().location).path,
-  );
+  Page<void> buildPage(BuildContext context, GoRouterState state) =>
+      MaterialPage<void>(
+        restorationId: 'settings-page',
+        child: SettingsPage(
+          section: section,
+          routeVisible:
+              state.uri.path == Uri.parse(const SettingsRoute().location).path,
+        ),
+      );
 }
 
 class AccountCreateRoute extends GoRouteData with $AccountCreateRoute {
@@ -203,6 +233,93 @@ class AccountModelRoute extends GoRouteData with $AccountModelRoute {
       tab: tab,
     ),
   );
+}
+
+/// Full-screen workspace for one task mode.
+///
+/// The exit guard only decides the already-open editor source whose document
+/// id matches [modeId]; the Settings parent re-checks whatever source is still
+/// unsettled when the whole Settings match is removed.
+class ModeWorkspaceRoute extends GoRouteData with $ModeWorkspaceRoute {
+  const ModeWorkspaceRoute({required this.modeId});
+
+  final String modeId;
+
+  @override
+  Future<bool> onExit(BuildContext context, GoRouterState state) async {
+    final container = ProviderScope.containerOf(context, listen: false);
+    final editingId = container
+        .read(anyworkClientProvider)
+        .modeEditor
+        .state
+        .document
+        ?.definition
+        .id;
+    if (editingId != modeId) return true;
+    return confirmLeaveModeEditor(context);
+  }
+
+  @override
+  Page<void> buildPage(BuildContext context, GoRouterState state) =>
+      MaterialPage<void>(
+        restorationId: 'mode-workspace-page',
+        child: ModeWorkspacePage(modeId: modeId),
+      );
+}
+
+/// Narrow-width detail page for a workspace selection.
+///
+/// The stage/edge selection is local to this page and never opens or resets a
+/// mode editor source for the guard.
+class ModeDetailRoute extends GoRouteData with $ModeDetailRoute {
+  const ModeDetailRoute({required this.modeId, this.stage, this.edge});
+
+  final String modeId;
+  final String? stage;
+  final String? edge;
+
+  @override
+  Page<void> buildPage(BuildContext context, GoRouterState state) =>
+      MaterialPage<void>(
+        restorationId: 'mode-detail-page',
+        child: ModeDetailPage(modeId: modeId, stage: stage, edge: edge),
+      );
+}
+
+class BotDetailsRoute extends GoRouteData with $BotDetailsRoute {
+  const BotDetailsRoute({
+    required this.botId,
+    @TypedQueryParameter(name: 'chatId') this.chatId,
+  });
+
+  final String botId;
+  final String? chatId;
+
+  @override
+  Page<void> buildPage(BuildContext context, GoRouterState state) =>
+      MaterialPage<void>(
+        restorationId: 'bot-details-page',
+        child: BotDetailsPage(botId: botId, chatId: chatId),
+      );
+}
+
+class BotChatRoute extends GoRouteData with $BotChatRoute {
+  const BotChatRoute({
+    required this.botId,
+    @TypedQueryParameter(name: 'chatId') this.chatId = '',
+    this.title,
+  });
+
+  final String botId;
+  final String chatId;
+  final String? title;
+
+  @override
+  Page<void> buildPage(BuildContext context, GoRouterState state) =>
+      MaterialPage<void>(
+        restorationId: 'bot-chat-page',
+        child: BotChatPage(botId: botId, chatId: chatId, title: title),
+      );
 }
 
 enum AccountRoutePage { list, create, details, edit, model, other }
@@ -318,8 +435,9 @@ AccountRouteIdentity _modelIdentity(GoRouterState state) {
 
 /// The settings section represented by a matched typed destination.
 ///
-/// Child account routes are always the Accounts section; SettingsRoute's
-/// generated from-state factory owns query decoding for the settings root.
+/// Child account routes are always the Accounts section, mode workspace
+/// routes are Work Modes, and bot routes are Bots; SettingsRoute's generated
+/// from-state factory owns query decoding for the settings root.
 SettingsSection? settingsSectionForMatchedRoute(GoRouterState state) =>
     switch (state.topRoute?.name) {
       _settingsRouteName => $SettingsRoute._fromState(state).section,
@@ -327,6 +445,9 @@ SettingsSection? settingsSectionForMatchedRoute(GoRouterState state) =>
       _accountDetailsRouteName ||
       _accountEditRouteName ||
       _accountModelRouteName => SettingsSection.accounts,
+      _modeWorkspaceRouteName ||
+      _modeDetailRouteName => SettingsSection.workModes,
+      _botDetailsRouteName || _botChatRouteName => SettingsSection.bots,
       _ => null,
     };
 
@@ -337,6 +458,11 @@ bool currentMatchesSettings(Iterable<RouteMatchBase> matches) => matches.any(
       match.route is GoRoute &&
       (match.route as GoRoute).name == _settingsRouteName,
 );
+
+/// Whether this state's top matched route is the Settings root itself, as
+/// opposed to one of its typed child routes.
+bool isSettingsRootMatch(GoRouterState state) =>
+    state.topRoute?.name == _settingsRouteName;
 
 /// Reuses the old, still-current typed Edit match only when it is the direct
 /// child responsible for this Details route's joint exit decision.

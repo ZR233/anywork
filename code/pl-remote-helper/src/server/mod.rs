@@ -47,11 +47,18 @@ async fn handle_request(
                     .await?;
                 let capture = match &request.capture {
                     pl_protocol::remote::RemoteCapture::None => None,
-                    pl_protocol::remote::RemoteCapture::File { path, .. } => Some(
+                    pl_protocol::remote::RemoteCapture::Files {
+                        stdout_path,
+                        stderr_path,
+                        ..
+                    } => Some((
                         workspaces
-                            .resolve_for_write(&request.workspace_id, path)
+                            .resolve_for_write(&request.workspace_id, stdout_path)
                             .await?,
-                    ),
+                        workspaces
+                            .resolve_for_write(&request.workspace_id, stderr_path)
+                            .await?,
+                    )),
                 };
                 (cwd, capture)
             };

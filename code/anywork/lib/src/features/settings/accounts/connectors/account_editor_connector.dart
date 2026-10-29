@@ -43,6 +43,14 @@ class _AccountEditorConnectorState
     extends ConsumerState<AccountEditorConnector> {
   String? _locale;
   AccountAcpKey? _localizedAcp;
+  AccountModelsViewModel? _localizedModels;
+  String? _modelsLocale;
+  ({
+    AccountDisplayKey target,
+    AccountModelsViewModel owner,
+    void Function() release,
+  })?
+  _createdModels;
   int _selectorRevision = 0;
   @override
   void didChangeDependencies() {
@@ -61,13 +69,15 @@ class _AccountEditorConnectorState
       ref
           .read(accountEditorViewModelProvider(widget.editor).notifier)
           .setStrings(strings);
-      if (widget.editor.target.kind == AccountKind.native &&
-          !widget.editor.creating) {
-        ref
-            .read(accountModelsViewModelProvider(widget.editor.target).notifier)
-            .setStrings(strings);
-      }
     });
+  }
+
+  @override
+  void dispose() {
+    final release = _createdModels?.release;
+    _createdModels = null;
+    release?.call();
+    super.dispose();
   }
 
   bool _hasCurrentSession() {
@@ -264,14 +274,71 @@ class _AccountEditorConnectorState
     final acp = acpKey == null
         ? null
         : ref.watch(acpAccountViewModelProvider(acpKey)).asData?.value;
-    final models =
-        widget.editor.target.kind == AccountKind.native &&
-            !widget.editor.creating
-        ? ref
-              .watch(accountModelsViewModelProvider(widget.editor.target))
-              .asData
-              ?.value
+    final confirmedTarget = state.asData?.value.native?.accountKey;
+    final modelsTarget =
+        confirmedTarget?.kind == AccountKind.native &&
+            confirmedTarget == widget.editor.target
+        ? confirmedTarget
         : null;
+    final modelsProvider = modelsTarget == null
+        ? null
+        : accountModelsViewModelProvider(modelsTarget);
+    final models = modelsProvider == null
+        ? null
+        : ref.watch(modelsProvider).asData?.value;
+    if (modelsProvider != null && modelsTarget != null) {
+      final modelsOwner = ref.read(modelsProvider.notifier);
+      // Edit already has the Details scope. A confirmed Create can remain here
+      // after a follow-up failure, so its actual form owns one finite retention.
+      if (widget.editor.creating && _createdModels == null) {
+        _createdModels = (
+          target: modelsTarget,
+          owner: modelsOwner,
+          release: modelsOwner.retainAccountScope(),
+        );
+      }
+      final l10n = AppLocalizations.of(context);
+      final locale = l10n.localeName;
+      if (!identical(_localizedModels, modelsOwner) ||
+          _modelsLocale != locale) {
+        final strings = accountStrings(l10n);
+        final source = widget.editor;
+        final session = widget.session;
+        scheduleMicrotask(() {
+          if (!_hasCurrentSession() ||
+              _locale != locale ||
+              !identical(widget.session, session) ||
+              widget.editor != source ||
+              !session.isEditorCurrent(source) ||
+              !ref.exists(provider) ||
+              !ref.exists(modelsProvider) ||
+              !identical(ref.read(modelsProvider.notifier), modelsOwner)) {
+            return;
+          }
+          final projection = ref
+              .read(accountEditorSessionViewModelProvider(widget.entry))
+              .asData
+              ?.value;
+          final current = ref.read(provider).asData?.value;
+          if (projection?.ownerId != session.ownerId ||
+              projection?.editor != source ||
+              current?.key != source ||
+              current?.native?.accountKey != modelsTarget ||
+              (source.creating &&
+                  (_createdModels?.target != modelsTarget ||
+                      !identical(_createdModels?.owner, modelsOwner)))) {
+            return;
+          }
+          if (identical(_localizedModels, modelsOwner) &&
+              _modelsLocale == locale) {
+            return;
+          }
+          _localizedModels = modelsOwner;
+          _modelsLocale = locale;
+          modelsOwner.setStrings(strings);
+        });
+      }
+    }
     if (acpKey != null && _localizedAcp != acpKey) {
       _localizedAcp = acpKey;
       final strings = accountStrings(AppLocalizations.of(context));
@@ -369,18 +436,40 @@ class _AccountEditorConnectorState
               final token = owner.leaveToken();
               final session = widget.session;
               if (!_isCurrent(session, source, owner, sourceRoute)) return;
-              if (owner.isSavedModel(key) &&
-                  !await confirmAccountDelete(
+              if (!owner.isSavedModel(key)) {
+                if (_isCurrent(session, source, owner, sourceRoute) &&
+                    owner.matchesLeaveToken(token)) {
+                  await owner.removeModel(key);
+                }
+                return;
+              }
+              final modelsProvider = accountModelsViewModelProvider(
+                source.target,
+              );
+              if (!ref.exists(modelsProvider)) return;
+              final modelsOwner = ref.read(modelsProvider.notifier);
+              final compactToken = modelsOwner.compactLeaveToken();
+              bool canRemoveSaved() =>
+                  _isCurrent(session, source, owner, sourceRoute) &&
+                  owner.matchesLeaveToken(token) &&
+                  owner.isSavedModel(key) &&
+                  ref.exists(modelsProvider) &&
+                  identical(ref.read(modelsProvider.notifier), modelsOwner) &&
+                  modelsOwner.canRemove(expectedToken: compactToken);
+              if (!canRemoveSaved()) return;
+              if (!await confirmAccountDelete(
                     context,
                     owner.modelName(key),
                     manualModel: true,
-                  )) {
+                  ) ||
+                  !canRemoveSaved()) {
                 return;
               }
-              if (_isCurrent(session, source, owner, sourceRoute) &&
-                  owner.matchesLeaveToken(token)) {
-                await owner.removeModel(key);
-              }
+              await owner.removeModel(
+                key,
+                modelsOwner: modelsOwner,
+                expectedCompactToken: compactToken,
+              );
             },
             modelActions: accountModelActions(context, ref),
             onSave: _save,

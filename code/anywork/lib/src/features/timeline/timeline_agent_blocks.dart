@@ -1,7 +1,7 @@
-part of 'timeline_view.dart';
+part of 'timeline_activity_group_views.dart';
 
-class _AgentPart extends StatelessWidget {
-  const _AgentPart({required this.agent});
+class TimelineAgentPart extends StatelessWidget {
+  const TimelineAgentPart({required this.agent, super.key});
   final ThreadAgentItemStateView agent;
   @override
   Widget build(BuildContext context) {
@@ -13,7 +13,7 @@ class _AgentPart extends StatelessWidget {
       CancelledThreadAgentView(:final reason) => ('cancelled', reason),
       FailedThreadAgentView(:final error) => ('failed', error),
     };
-    return _TimelineMetaRow(
+    return TimelineMetaRow(
       icon: Icons.account_tree_outlined,
       title:
           '${context.l10n.timelineAgentSubagent} · ${agent.identity.path} · ${context.toolStatusLabel(status)}',

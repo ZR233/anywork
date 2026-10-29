@@ -22,6 +22,8 @@ pub(crate) fn activity(value: ThreadActivity) -> BridgeThreadActivity {
         kind: activity_kind(value.kind),
         summary: value.summary,
         summary_truncated: value.summary_truncated,
+        thinking_summary: value.thinking_summary,
+        thinking_seconds: value.thinking_seconds,
         tools: BridgeThreadActivityTools {
             count: value.tools.count,
             background: value.tools.background,
@@ -34,6 +36,7 @@ pub(crate) fn activity(value: ThreadActivity) -> BridgeThreadActivity {
 fn activity_kind(value: ThreadActivityKind) -> BridgeThreadActivityKind {
     match value {
         ThreadActivityKind::Preparing => BridgeThreadActivityKind::Preparing,
+        ThreadActivityKind::Compacting => BridgeThreadActivityKind::Compacting,
         ThreadActivityKind::WaitingApi => BridgeThreadActivityKind::WaitingApi,
         ThreadActivityKind::Thinking => BridgeThreadActivityKind::Thinking,
         ThreadActivityKind::Responding => BridgeThreadActivityKind::Responding,

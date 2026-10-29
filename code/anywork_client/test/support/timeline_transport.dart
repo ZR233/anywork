@@ -103,6 +103,7 @@ final class TestTimelineConnection implements StudioTimelineConnection {
   int closeCalls = 0;
   int requestCloseCalls = 0;
   Object? closeFailure;
+  void Function()? onQuery;
 
   @override
   Future<StudioTimelineBaseline> initial() {
@@ -143,6 +144,7 @@ final class TestTimelineConnection implements StudioTimelineConnection {
     // 卡在已完成的 future 上（或抛 Future already completed）。
     final result = Completer<StudioTimelinePage>();
     pageResult = result;
+    onQuery?.call();
     return result.future;
   }
 
@@ -155,6 +157,7 @@ final class TestTimelineConnection implements StudioTimelineConnection {
     // 每次详情读取都是一次独立 RPC：复用同一个 Completer 会让按块续读直接崩。
     final result = Completer<StudioTimelineDetailChunk>();
     detailResult = result;
+    onQuery?.call();
     return result.future;
   }
 

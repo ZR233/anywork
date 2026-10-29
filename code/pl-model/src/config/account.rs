@@ -555,10 +555,18 @@ impl AccountConfig {
                 })
             });
             let observed = enriched.as_ref().unwrap_or(observed);
+            let is_manual =
+                declared.is_some_and(|entry| entry.origin == AccountModelOrigin::Manual);
             let mut model = declared
                 .filter(|entry| entry.origin == AccountModelOrigin::Manual)
                 .map(|entry| entry.model.clone())
                 .unwrap_or_else(|| observed.clone());
+            if !is_manual {
+                model.display_name = crate::model::observation::resolve_display_name(
+                    observed,
+                    declared.map(|entry| &entry.model),
+                );
+            }
             if !matches!(observed.pricing, crate::model::ModelPricing::Unknown) {
                 model.pricing = observed.pricing.clone();
             }
@@ -568,8 +576,7 @@ impl AccountConfig {
                     .map(|entry| entry.model.pricing.clone())
                     .unwrap_or_default();
             }
-            let origin = if declared.is_some_and(|entry| entry.origin == AccountModelOrigin::Manual)
-            {
+            let origin = if is_manual {
                 AccountModelOrigin::Manual
             } else {
                 AccountModelOrigin::Online
@@ -731,6 +738,7 @@ impl AccountConfig {
         }
         // 手工成员被删除后，移除对应的显式启用覆盖。
         self.model_enabled_overrides.remove(model_id);
+        self.resolved_catalog = None;
         Ok(())
     }
 

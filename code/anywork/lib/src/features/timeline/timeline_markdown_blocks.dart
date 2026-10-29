@@ -1,6 +1,6 @@
-part of 'timeline_view.dart';
+part of 'timeline_activity_group_views.dart';
 
-enum _MarkdownSurface { assistant, user, panel, reasoning, error }
+enum TimelineMarkdownSurface { assistant, user, panel, reasoning, error }
 
 // 原始字符串（r''）把 \r \n \\ \[ \] 作为**转义**交给 RegExp，因此这里匹配真实 CR/LF、
 // 反斜杠与 markdown 符号（反引号、* _ [ ] ( ) # > ~ ! |），而不是字母 r/n；含换行的
@@ -8,27 +8,28 @@ enum _MarkdownSurface { assistant, user, panel, reasoning, error }
 // 转义，所以这里必须保持 raw。
 final RegExp _streamingMarkdownSyntax = RegExp(r'[\r\n\\`*_\[\]()#>~!|]');
 
-class _AgentMarkdown extends ConsumerStatefulWidget {
-  const _AgentMarkdown({
+class TimelineAgentMarkdown extends StatefulWidget {
+  const TimelineAgentMarkdown({
     required this.id,
     required this.text,
     required this.surface,
+    super.key,
   });
 
   final String id;
   final String text;
-  final _MarkdownSurface surface;
+  final TimelineMarkdownSurface surface;
 
   @override
-  ConsumerState<_AgentMarkdown> createState() => _AgentMarkdownState();
+  State<TimelineAgentMarkdown> createState() => _TimelineAgentMarkdownState();
 }
 
-class _AgentMarkdownState extends ConsumerState<_AgentMarkdown> {
+class _TimelineAgentMarkdownState extends State<TimelineAgentMarkdown> {
   GptMarkdownThemeData? _headingTheme;
 
   @override
   Widget build(BuildContext context) {
-    final _AgentMarkdown(:id, :text, :surface) = widget;
+    final TimelineAgentMarkdown(:id, :text, :surface) = widget;
     final plainText =
         !_streamingMarkdownSyntax.hasMatch(text) &&
         !text.contains('://') &&
@@ -46,7 +47,7 @@ class _AgentMarkdownState extends ConsumerState<_AgentMarkdown> {
         ? _markdownImageAlts(repaired)
         : const <String, String>{};
     final scheme = Theme.of(context).colorScheme;
-    final onUserSurface = surface == _MarkdownSurface.user;
+    final onUserSurface = surface == TimelineMarkdownSurface.user;
     final headingTheme = GptMarkdownTheme.of(context).copyWith(
       h1: _timelineHeadingStyle(context, surface, 2.0),
       h2: _timelineHeadingStyle(context, surface, 1.5),
@@ -79,10 +80,10 @@ class _AgentMarkdownState extends ConsumerState<_AgentMarkdown> {
           heading: HeadingStyle(
             // 仅做随表面的语义色覆盖；节奏与 H1/H2 分隔线由 headingBuilder 提供。
             textStyle: switch (surface) {
-              _MarkdownSurface.reasoning => TextStyle(
+              TimelineMarkdownSurface.reasoning => TextStyle(
                 color: context.colors.onSurfaceVariant,
               ),
-              _MarkdownSurface.error => TextStyle(color: scheme.error),
+              TimelineMarkdownSurface.error => TextStyle(color: scheme.error),
               _ => null,
             },
           ),
@@ -161,12 +162,38 @@ class _AgentMarkdownState extends ConsumerState<_AgentMarkdown> {
             ),
           );
         },
-        onLinkTap: (url, _) {
-          unawaited(_openTimelineWebLink(context, ref, url));
+        // 不设置全局点击回调，拒绝的目标才能保留为无手势文字。
+        inlineLinkBuilder: (link) {
+          if (safeExternalWebUrl(link.url) == null) {
+            return TextSpan(children: link.labelSpans, style: link.style);
+          }
+          return LinkTextSpan.wrapping(
+            children: link.labelSpans,
+            url: link.url,
+            linkStyle: link.linkStyle,
+            style: link.style,
+            hoverStyle: link.hoverStyle,
+            onTap: () {
+              unawaited(_openTimelineWebLink(context, link.url));
+            },
+          );
         },
-        inlineLinkBuilder: (link) => safeExternalWebUrl(link.url) == null
-            ? TextSpan(children: link.labelSpans, style: link.style)
-            : link.defaultSpan(),
+        inlineSourceTagBuilder: (tag) {
+          final url = tag.url;
+          return SourceTagBuildDetails(
+            context: tag.context,
+            config: tag.config,
+            style: tag.style,
+            id: tag.id,
+            url: url,
+            sourceTagStyle: tag.sourceTagStyle,
+            onTap: url != null && safeExternalWebUrl(url) != null
+                ? () {
+                    unawaited(_openTimelineWebLink(context, url));
+                  }
+                : null,
+          ).defaultSpan();
+        },
         inlineCodeStyle: InlineCodeStyle(
           // 与其他代码表面共用包注册字体，中文缺失字形由系统回退。
           fontFamily: studioCodeFontFamily,
@@ -215,7 +242,7 @@ class _AgentMarkdownState extends ConsumerState<_AgentMarkdown> {
           final codeBackground = onUserSurface
               ? scheme.surfaceContainerHigh
               : scheme.surfaceContainerLow;
-          final bodyStyle = surface == _MarkdownSurface.reasoning
+          final bodyStyle = surface == TimelineMarkdownSurface.reasoning
               ? textTheme.bodySmall
               : textTheme.bodyMedium;
           return StudioCodeBlock(
@@ -227,9 +254,9 @@ class _AgentMarkdownState extends ConsumerState<_AgentMarkdown> {
             borderColor: scheme.outlineVariant,
             borderRadius: const Radius.circular(StudioRadii.sm),
             textStyle: bodyStyle?.copyWith(
-              color: surface == _MarkdownSurface.reasoning
+              color: surface == TimelineMarkdownSurface.reasoning
                   ? context.colors.onSurfaceVariant
-                  : surface == _MarkdownSurface.error
+                  : surface == TimelineMarkdownSurface.error
                   ? scheme.error
                   : scheme.onSurface,
               fontSize: bodyStyle.fontSize ?? 14,
@@ -245,7 +272,7 @@ class _AgentMarkdownState extends ConsumerState<_AgentMarkdown> {
   /// 全部 w600、line-height 1.25；从全局正文字体派生保持家族继承。
   TextStyle? _timelineHeadingStyle(
     BuildContext context,
-    _MarkdownSurface surface,
+    TimelineMarkdownSurface surface,
     double em,
   ) {
     final bodySize = _markdownBodyStyle(context, surface)?.fontSize ?? 14;
@@ -344,7 +371,7 @@ class _PlainBodyText extends StatefulWidget {
 
   final String id;
   final String text;
-  final _MarkdownSurface surface;
+  final TimelineMarkdownSurface surface;
 
   @override
   State<_PlainBodyText> createState() => _PlainBodyTextState();
@@ -629,17 +656,22 @@ class _PlainBodyTextState extends State<_PlainBodyText> {
   static bool _isLowSurrogate(int unit) => unit >= 0xDC00 && unit <= 0xDFFF;
 }
 
-Future<void> _openTimelineWebLink(
-  BuildContext context,
-  WidgetRef ref,
-  String rawUrl,
-) async {
+Future<void> _openTimelineWebLink(BuildContext context, String rawUrl) async {
   final url = safeExternalWebUrl(rawUrl);
   if (url == null) {
     return;
   }
+  ExternalUrlLauncher launcher = openExternalUrl;
   try {
-    await ref.read(externalUrlLauncherProvider)(url);
+    launcher = ProviderScope.containerOf(
+      context,
+      listen: false,
+    ).read(externalUrlLauncherProvider);
+  } on StateError {
+    // Standalone previews and widget tests without ProviderScope use default launcher.
+  }
+  try {
+    await launcher(url);
   } catch (_) {
     if (!context.mounted) {
       return;
@@ -650,16 +682,19 @@ Future<void> _openTimelineWebLink(
   }
 }
 
-TextStyle? _markdownBodyStyle(BuildContext context, _MarkdownSurface surface) {
+TextStyle? _markdownBodyStyle(
+  BuildContext context,
+  TimelineMarkdownSurface surface,
+) {
   final theme = Theme.of(context);
   // VS Code 预览正文行高 22px/14px ≈ 1.57，各阅读表面保持一致节奏。
-  if (surface == _MarkdownSurface.reasoning) {
+  if (surface == TimelineMarkdownSurface.reasoning) {
     return theme.textTheme.bodySmall?.copyWith(
       color: context.colors.onSurfaceVariant,
       height: 1.57,
     );
   }
-  if (surface == _MarkdownSurface.error) {
+  if (surface == TimelineMarkdownSurface.error) {
     return theme.textTheme.bodyMedium?.copyWith(
       color: theme.colorScheme.error,
       height: 1.57,

@@ -29,7 +29,11 @@ class _ProjectTile extends ConsumerWidget {
     final issue = recoveryIssue;
     if (issue != null) {
       // 诊断提示优先：存在 recovery issue 时只保留名称区 Tooltip，不展示详情卡。
-      return _buildRow(context, ref, nameTooltip: issue.detail);
+      return _buildRow(
+        context,
+        ref,
+        nameTooltip: context.recoveryIssueLabel(issue),
+      );
     }
     // 只读详情锚定整行；浮层忽略指针，不挡住新建/更多按钮。
     return _SidebarHoverDetail(
@@ -68,7 +72,7 @@ class _ProjectTile extends ConsumerWidget {
             icon: Icons.add,
             iconSize: 18,
             minTarget: touchMode ? 44 : 32,
-            onPressed: recoveryIssue == null
+            onPressed: recoveryIssue?.blocksAccess != true
                 ? () async {
                     final commands = ref
                         .read(anyworkClientProvider)
@@ -84,7 +88,20 @@ class _ProjectTile extends ConsumerWidget {
             child: _ProjectMenuButton(
               menuKey: StudioDriverKeys.projectMenu(project.id),
               pinned: general.pinnedProjectIds.contains(project.id),
+              recoveryIssueId:
+                  recoveryIssue?.scope == RecoveryIssueScope.project
+                  ? recoveryIssue?.id
+                  : null,
+              canRetryRecovery:
+                  recoveryIssue?.scope == RecoveryIssueScope.project &&
+                  recoveryIssue?.canRetry == true,
               onAction: (action) async {
+                if (action == 'retry') {
+                  await ref
+                      .read(anyworkClientProvider)
+                      .directoryCommands
+                      .retryRecovery();
+                }
                 if (action == 'pin') {
                   await _saveSidebarPreferences(
                     ref,
@@ -112,7 +129,7 @@ class _ProjectTile extends ConsumerWidget {
   Widget _buildProjectNameArea(BuildContext context, WidgetRef ref) {
     final issue = recoveryIssue;
     return InkWell(
-      onTap: issue == null
+      onTap: issue?.blocksAccess != true
           ? () async {
               await ref
                   .read(anyworkClientProvider)
@@ -255,7 +272,14 @@ class _ThreadTile extends ConsumerWidget {
         ),
       if (issue != null)
         statusSlot(
-          Icon(Icons.error_outline, size: 18, color: context.colors.error),
+          Tooltip(
+            message: context.recoveryIssueLabel(issue),
+            child: Icon(
+              Icons.error_outline,
+              size: 18,
+              color: context.colors.error,
+            ),
+          ),
         )
       else if (thread.status != ThreadStatusView.idle)
         statusSlot(_ThreadStatusBadge(status: thread.status)),
@@ -299,8 +323,13 @@ class _ThreadTile extends ConsumerWidget {
           ),
           _ThreadMenuButton(
             thread: thread,
-            canRetryRecovery: issue?.canRetry == true,
-            recoveryIssueId: issue?.id,
+            canRetryRecovery:
+                issue?.scope == RecoveryIssueScope.thread &&
+                issue?.canRetry == true,
+            recoveryIssueId: issue?.scope == RecoveryIssueScope.thread
+                ? issue?.id
+                : null,
+            recoveryIssue: issue,
             pinned: pinned,
             blocked: blocked,
             targetDescription: targetDescription,
@@ -365,7 +394,7 @@ class _ThreadTile extends ConsumerWidget {
                   _threadDetailCard(detailContext),
               child: tile(),
             )
-          : Tooltip(message: issue.detail, child: tile()),
+          : Tooltip(message: context.recoveryIssueLabel(issue), child: tile()),
     );
   }
 
@@ -471,11 +500,15 @@ class _ProjectMenuButton extends StatefulWidget {
   const _ProjectMenuButton({
     required this.menuKey,
     required this.pinned,
+    this.recoveryIssueId,
+    this.canRetryRecovery = false,
     required this.onAction,
   });
 
   final Key menuKey;
   final bool pinned;
+  final String? recoveryIssueId;
+  final bool canRetryRecovery;
   final FutureOr<void> Function(String action) onAction;
 
   @override
@@ -513,6 +546,13 @@ class _ProjectMenuButtonState extends State<_ProjectMenuButton> {
       childFocusNode: _triggerFocus,
       alignmentOffset: const Offset(6, 6),
       menuChildren: [
+        if (widget.canRetryRecovery && widget.recoveryIssueId != null)
+          MenuItemButton(
+            key: ValueKey('project-retry-recovery-${widget.recoveryIssueId}'),
+            overflowAxis: Axis.vertical,
+            onPressed: () => _select('retry'),
+            child: Text(context.l10n.runtimeFatalRetry),
+          ),
         MenuItemButton(
           overflowAxis: Axis.vertical,
           onPressed: () => _select('pin'),
@@ -558,6 +598,7 @@ class _ThreadMenuButton extends StatefulWidget {
     required this.thread,
     required this.canRetryRecovery,
     this.recoveryIssueId,
+    this.recoveryIssue,
     required this.pinned,
     required this.blocked,
     required this.targetDescription,
@@ -571,6 +612,7 @@ class _ThreadMenuButton extends StatefulWidget {
   final StudioThread thread;
   final bool canRetryRecovery;
   final String? recoveryIssueId;
+  final StudioRecoveryIssue? recoveryIssue;
   final bool pinned;
   final bool blocked;
   final String targetDescription;
@@ -610,6 +652,9 @@ class _ThreadMenuButtonState extends State<_ThreadMenuButton> {
   @override
   Widget build(BuildContext context) {
     final thread = widget.thread;
+    final blockReason = widget.recoveryIssue == null
+        ? context.l10n.composerBlockedWorkspace
+        : context.recoveryIssueLabel(widget.recoveryIssue!);
     return SizedBox.square(
       dimension: widget.minTarget,
       child: MenuAnchor(
@@ -671,8 +716,10 @@ class _ThreadMenuButtonState extends State<_ThreadMenuButton> {
                 ),
                 label: context.l10n.sessionOpenInVsCode,
                 targetDescription: widget.targetDescription,
-                available: widget.vsCodeAvailable,
-                unavailableReason: context.l10n.sessionVsCodeUnavailable,
+                available: widget.vsCodeAvailable && !widget.blocked,
+                unavailableReason: widget.blocked
+                    ? blockReason
+                    : context.l10n.sessionVsCodeUnavailable,
                 onActivated: () => _select('open-vscode'),
               ),
               _workspaceMenuEntry(
@@ -683,8 +730,10 @@ class _ThreadMenuButtonState extends State<_ThreadMenuButton> {
                 ),
                 label: context.l10n.sessionOpenInZed,
                 targetDescription: widget.targetDescription,
-                available: widget.zedAvailable,
-                unavailableReason: context.l10n.sessionZedUnavailable,
+                available: widget.zedAvailable && !widget.blocked,
+                unavailableReason: widget.blocked
+                    ? blockReason
+                    : context.l10n.sessionZedUnavailable,
                 onActivated: () => _select('open-zed'),
               ),
               _workspaceMenuEntry(
@@ -695,8 +744,10 @@ class _ThreadMenuButtonState extends State<_ThreadMenuButton> {
                 ),
                 label: context.l10n.sessionOpenInTerminal,
                 targetDescription: widget.targetDescription,
-                available: widget.terminalAvailable,
-                unavailableReason: _terminalUnavailableReason(context),
+                available: widget.terminalAvailable && !widget.blocked,
+                unavailableReason: widget.blocked
+                    ? blockReason
+                    : _terminalUnavailableReason(context),
                 onActivated: () => _select('open-terminal'),
               ),
             ],

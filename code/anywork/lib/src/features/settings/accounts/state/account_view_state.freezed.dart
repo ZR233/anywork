@@ -673,7 +673,7 @@ $AccountTemplateKeyCopyWith<$Res>? get template {
 /// @nodoc
 mixin _$AccountActionPresentation {
 
- String get ownerEpoch; int? get acpConnectionRevision; bool get pending; String? get message;
+ String get ownerEpoch; bool get removing; int? get acpConnectionRevision; bool get pending; String? get message;
 /// Create a copy of AccountActionPresentation
 /// with the given fields replaced by the non-null parameter values.
 @JsonKey(includeFromJson: false, includeToJson: false)
@@ -685,20 +685,20 @@ $AccountActionPresentationCopyWith<AccountActionPresentation> get copyWith => _$
 @override
 bool operator ==(Object other) {
   final _this = this as AccountActionPresentation;
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is AccountActionPresentation&&(identical(other.ownerEpoch, _this.ownerEpoch) || other.ownerEpoch == _this.ownerEpoch)&&(identical(other.acpConnectionRevision, _this.acpConnectionRevision) || other.acpConnectionRevision == _this.acpConnectionRevision)&&(identical(other.pending, _this.pending) || other.pending == _this.pending)&&(identical(other.message, _this.message) || other.message == _this.message));
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is AccountActionPresentation&&(identical(other.ownerEpoch, _this.ownerEpoch) || other.ownerEpoch == _this.ownerEpoch)&&(identical(other.removing, _this.removing) || other.removing == _this.removing)&&(identical(other.acpConnectionRevision, _this.acpConnectionRevision) || other.acpConnectionRevision == _this.acpConnectionRevision)&&(identical(other.pending, _this.pending) || other.pending == _this.pending)&&(identical(other.message, _this.message) || other.message == _this.message));
 }
 
 
 @override
 int get hashCode {
   final _this = this as AccountActionPresentation;
-  return Object.hash(runtimeType,_this.ownerEpoch,_this.acpConnectionRevision,_this.pending,_this.message);
+  return Object.hash(runtimeType,_this.ownerEpoch,_this.removing,_this.acpConnectionRevision,_this.pending,_this.message);
 }
 
 @override
 String toString() {
   final _this = this as AccountActionPresentation;
-  return 'AccountActionPresentation(ownerEpoch: ${_this.ownerEpoch}, acpConnectionRevision: ${_this.acpConnectionRevision}, pending: ${_this.pending}, message: ${_this.message})';
+  return 'AccountActionPresentation(ownerEpoch: ${_this.ownerEpoch}, removing: ${_this.removing}, acpConnectionRevision: ${_this.acpConnectionRevision}, pending: ${_this.pending}, message: ${_this.message})';
 }
 
 
@@ -709,7 +709,7 @@ abstract mixin class $AccountActionPresentationCopyWith<$Res>  {
   factory $AccountActionPresentationCopyWith(AccountActionPresentation value, $Res Function(AccountActionPresentation) _then) = _$AccountActionPresentationCopyWithImpl;
 @useResult
 $Res call({
- String ownerEpoch, int? acpConnectionRevision, bool pending, String? message
+ String ownerEpoch, bool removing, int? acpConnectionRevision, bool pending, String? message
 });
 
 
@@ -726,10 +726,11 @@ class _$AccountActionPresentationCopyWithImpl<$Res>
 
 /// Create a copy of AccountActionPresentation
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') @override $Res call({Object? ownerEpoch = null,Object? acpConnectionRevision = freezed,Object? pending = null,Object? message = freezed,}) {
+@pragma('vm:prefer-inline') @override $Res call({Object? ownerEpoch = null,Object? removing = null,Object? acpConnectionRevision = freezed,Object? pending = null,Object? message = freezed,}) {
   return _then(AccountActionPresentation(
 ownerEpoch: null == ownerEpoch ? _self.ownerEpoch : ownerEpoch // ignore: cast_nullable_to_non_nullable
-as String,acpConnectionRevision: freezed == acpConnectionRevision ? _self.acpConnectionRevision : acpConnectionRevision // ignore: cast_nullable_to_non_nullable
+as String,removing: null == removing ? _self.removing : removing // ignore: cast_nullable_to_non_nullable
+as bool,acpConnectionRevision: freezed == acpConnectionRevision ? _self.acpConnectionRevision : acpConnectionRevision // ignore: cast_nullable_to_non_nullable
 as int?,pending: null == pending ? _self.pending : pending // ignore: cast_nullable_to_non_nullable
 as bool,message: freezed == message ? _self.message : message // ignore: cast_nullable_to_non_nullable
 as String?,
@@ -817,10 +818,10 @@ return $default(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( String ownerEpoch,  int? acpConnectionRevision,  bool pending,  String? message)?  $default,{required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( String ownerEpoch,  bool removing,  int? acpConnectionRevision,  bool pending,  String? message)?  $default,{required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case _AccountActionPresentation() when $default != null:
-return $default(_that.ownerEpoch,_that.acpConnectionRevision,_that.pending,_that.message);case _:
+return $default(_that.ownerEpoch,_that.removing,_that.acpConnectionRevision,_that.pending,_that.message);case _:
   return orElse();
 
 }
@@ -838,10 +839,10 @@ return $default(_that.ownerEpoch,_that.acpConnectionRevision,_that.pending,_that
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( String ownerEpoch,  int? acpConnectionRevision,  bool pending,  String? message)  $default,) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( String ownerEpoch,  bool removing,  int? acpConnectionRevision,  bool pending,  String? message)  $default,) {final _that = this;
 switch (_that) {
 case _AccountActionPresentation():
-return $default(_that.ownerEpoch,_that.acpConnectionRevision,_that.pending,_that.message);case _:
+return $default(_that.ownerEpoch,_that.removing,_that.acpConnectionRevision,_that.pending,_that.message);case _:
   throw StateError('Unexpected subclass');
 
 }
@@ -858,10 +859,10 @@ return $default(_that.ownerEpoch,_that.acpConnectionRevision,_that.pending,_that
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( String ownerEpoch,  int? acpConnectionRevision,  bool pending,  String? message)?  $default,) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( String ownerEpoch,  bool removing,  int? acpConnectionRevision,  bool pending,  String? message)?  $default,) {final _that = this;
 switch (_that) {
 case _AccountActionPresentation() when $default != null:
-return $default(_that.ownerEpoch,_that.acpConnectionRevision,_that.pending,_that.message);case _:
+return $default(_that.ownerEpoch,_that.removing,_that.acpConnectionRevision,_that.pending,_that.message);case _:
   return null;
 
 }
@@ -873,10 +874,11 @@ return $default(_that.ownerEpoch,_that.acpConnectionRevision,_that.pending,_that
 
 
 class _AccountActionPresentation implements AccountActionPresentation {
-  const _AccountActionPresentation({required this.ownerEpoch, this.acpConnectionRevision, this.pending = false, this.message});
+  const _AccountActionPresentation({required this.ownerEpoch, required this.removing, this.acpConnectionRevision, this.pending = false, this.message});
 
 
 @override final  String ownerEpoch;
+@override final  bool removing;
 @override final  int? acpConnectionRevision;
 @override@JsonKey() final  bool pending;
 @override final  String? message;
@@ -891,18 +893,18 @@ _$AccountActionPresentationCopyWith<_AccountActionPresentation> get copyWith => 
 
 @override
 bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is _AccountActionPresentation&&(identical(other.ownerEpoch, ownerEpoch) || other.ownerEpoch == ownerEpoch)&&(identical(other.acpConnectionRevision, acpConnectionRevision) || other.acpConnectionRevision == acpConnectionRevision)&&(identical(other.pending, pending) || other.pending == pending)&&(identical(other.message, message) || other.message == message));
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is _AccountActionPresentation&&(identical(other.ownerEpoch, ownerEpoch) || other.ownerEpoch == ownerEpoch)&&(identical(other.removing, removing) || other.removing == removing)&&(identical(other.acpConnectionRevision, acpConnectionRevision) || other.acpConnectionRevision == acpConnectionRevision)&&(identical(other.pending, pending) || other.pending == pending)&&(identical(other.message, message) || other.message == message));
 }
 
 
 @override
 int get hashCode {
-    return Object.hash(runtimeType,ownerEpoch,acpConnectionRevision,pending,message);
+    return Object.hash(runtimeType,ownerEpoch,removing,acpConnectionRevision,pending,message);
 }
 
 @override
 String toString() {
-    return 'AccountActionPresentation(ownerEpoch: $ownerEpoch, acpConnectionRevision: $acpConnectionRevision, pending: $pending, message: $message)';
+    return 'AccountActionPresentation(ownerEpoch: $ownerEpoch, removing: $removing, acpConnectionRevision: $acpConnectionRevision, pending: $pending, message: $message)';
 }
 
 
@@ -913,7 +915,7 @@ abstract mixin class _$AccountActionPresentationCopyWith<$Res> implements $Accou
   factory _$AccountActionPresentationCopyWith(_AccountActionPresentation value, $Res Function(_AccountActionPresentation) _then) = __$AccountActionPresentationCopyWithImpl;
 @override @useResult
 $Res call({
- String ownerEpoch, int? acpConnectionRevision, bool pending, String? message
+ String ownerEpoch, bool removing, int? acpConnectionRevision, bool pending, String? message
 });
 
 
@@ -930,10 +932,11 @@ class __$AccountActionPresentationCopyWithImpl<$Res>
 
 /// Create a copy of AccountActionPresentation
 /// with the given fields replaced by the non-null parameter values.
-@override @pragma('vm:prefer-inline') $Res call({Object? ownerEpoch = null,Object? acpConnectionRevision = freezed,Object? pending = null,Object? message = freezed,}) {
+@override @pragma('vm:prefer-inline') $Res call({Object? ownerEpoch = null,Object? removing = null,Object? acpConnectionRevision = freezed,Object? pending = null,Object? message = freezed,}) {
   return _then(_AccountActionPresentation(
 ownerEpoch: null == ownerEpoch ? _self.ownerEpoch : ownerEpoch // ignore: cast_nullable_to_non_nullable
-as String,acpConnectionRevision: freezed == acpConnectionRevision ? _self.acpConnectionRevision : acpConnectionRevision // ignore: cast_nullable_to_non_nullable
+as String,removing: null == removing ? _self.removing : removing // ignore: cast_nullable_to_non_nullable
+as bool,acpConnectionRevision: freezed == acpConnectionRevision ? _self.acpConnectionRevision : acpConnectionRevision // ignore: cast_nullable_to_non_nullable
 as int?,pending: null == pending ? _self.pending : pending // ignore: cast_nullable_to_non_nullable
 as bool,message: freezed == message ? _self.message : message // ignore: cast_nullable_to_non_nullable
 as String?,

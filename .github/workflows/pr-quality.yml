@@ -149,6 +149,8 @@ jobs:
 
       - name: Cache Rust build
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          save-if: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
 
       - name: cargo fmt
         run: cargo fmt --all --check
@@ -168,9 +170,14 @@ jobs:
       - name: Test pl-core public API
         run: cargo test -p pl-core --features sqlite
 
+      - name: Test pl-patch semantics
+        run: cargo test -p pl-patch
+
   studio-server-linux:
     name: Studio server (Linux)
     runs-on: ubuntu-latest
+    env:
+      CARGO_INCREMENTAL: "0"
     timeout-minutes: 60
     permissions:
       contents: read
@@ -182,37 +189,6 @@ jobs:
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
         with:
           toolchain: 1.99.1
-
-      # Rust Cache hashes every installed rustup toolchain into its environment key, and
-      # the hosted image's preinstalled `stable` moves independently of the toolchain pinned
-      # in rust-toolchain.toml. Only that unused preinstalled `stable` toolchain is removed
-      # on this temporary runner, so the cache identity follows the compiler this job uses.
-      - name: Remove unused preinstalled stable Rust toolchain
-        shell: bash
-        run: |
-          set -euo pipefail
-          active_listing="$(rustup show active-toolchain)"
-          toolchains="$(rustup toolchain list)"
-          active="${active_listing%%[[:space:]]*}"
-          if [ -z "$active" ]; then
-            echo 'rustup did not report an active toolchain' >&2
-            exit 1
-          fi
-          while IFS= read -r listing; do
-            name="${listing%%[[:space:]]*}"
-            case "$name" in
-              stable-*) ;;
-              *) continue ;;
-            esac
-            if [ "$name" = "$active" ]; then
-              continue
-            fi
-            echo "Removing unused preinstalled toolchain $name"
-            rustup toolchain uninstall "$name"
-          done <<< "$toolchains"
-
-      - name: Cache Rust build
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
 
       - name: Build standalone Studio server
         run: cargo build -p pl-studio-server
@@ -281,6 +257,7 @@ jobs:
       - name: Cache Rust build
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
+          save-if: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
           workspaces: |
             . -> target
             . -> target/xtask

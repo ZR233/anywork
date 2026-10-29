@@ -1745,6 +1745,24 @@ class AppLocalizationsZh extends AppLocalizations {
   }
 
   @override
+  String get timelineGroupWorkedUnderSecond => '工作了不到 1 秒';
+
+  @override
+  String timelineGroupWorkedSeconds(int seconds) {
+    return '工作了 $seconds 秒';
+  }
+
+  @override
+  String timelineGroupWorkedMinutes(int minutes) {
+    return '工作了 $minutes 分';
+  }
+
+  @override
+  String timelineGroupWorkedMinutesSeconds(int minutes, int seconds) {
+    return '工作了 $minutes 分 $seconds 秒';
+  }
+
+  @override
   String get timelineReasoningSummary => '概要';
 
   @override
@@ -1827,13 +1845,13 @@ class AppLocalizationsZh extends AppLocalizations {
   String get timelineViewImageStopped => '已停止读取图片';
 
   @override
-  String get timelineReadFileCompleted => '已读取';
+  String get timelineToolReadCompleted => '已读取';
 
   @override
-  String get timelineReadFileReading => '正在读取';
+  String get timelineToolReadReading => '正在读取';
 
   @override
-  String get timelineReadFileFailed => '读取失败';
+  String get timelineToolReadFailed => '读取失败';
 
   @override
   String get timelineToolEditSucceeded => '已修改';
@@ -3657,6 +3675,9 @@ class AppLocalizationsZh extends AppLocalizations {
   String get conversationActivityPreparing => '准备中';
 
   @override
+  String get conversationActivityCompacting => '正在压缩';
+
+  @override
   String get conversationActivityRunningTool => '执行中';
 
   @override
@@ -4188,6 +4209,26 @@ class AppLocalizationsZh extends AppLocalizations {
   String get modeEditorCollapse => '收起';
 
   @override
+  String get modeEditorDetailStage => '阶段详情';
+
+  @override
+  String get modeEditorDetailTransition => '转换详情';
+
+  @override
+  String get modeEditorFocusAll => '全部';
+
+  @override
+  String get modeEditorFocusSelected => '聚焦所选';
+
+  @override
+  String modeEditorDimmedEdges(int count) {
+    return '已淡化 $count 条无关连线';
+  }
+
+  @override
+  String get modeEditorViewStage => '查看阶段';
+
+  @override
   String get modeEditorNoWorkflowPeriod => '当前模式没有工作流。';
 
   @override
@@ -4219,6 +4260,9 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get modeEditorStageInstructions => '阶段说明';
+
+  @override
+  String get modeEditorCompletionCriteriaTitle => '完成标准';
 
   @override
   String get modeEditorCompletionCriteria => '完成标准（每行一条）';
@@ -5441,4 +5485,43 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get childInteractionDecisionAccepted => '决定已受理，等待会话确认。';
+
+  @override
+  String recoveryDiagnostic(
+    String id,
+    String owner,
+    String impact,
+    String detail,
+    String actions,
+  ) {
+    return '恢复问题 $id\n$owner · $impact\n$detail\n可用恢复操作：$actions';
+  }
+
+  @override
+  String get recoveryOwnerApplication => '应用';
+
+  @override
+  String recoveryOwnerProject(String projectId) {
+    return '项目 $projectId';
+  }
+
+  @override
+  String recoveryOwnerThread(String threadId, String projectId) {
+    return '会话 $threadId · 项目 $projectId';
+  }
+
+  @override
+  String get recoveryUnknownOwner => '未记录';
+
+  @override
+  String get recoveryImpactAdvisory => '需要关注，不影响访问与执行';
+
+  @override
+  String get recoveryImpactExecutionBlocked => '执行受阻，仍可读取安全的历史';
+
+  @override
+  String get recoveryImpactAccessBlocked => '访问与执行受阻';
+
+  @override
+  String get recoveryNoAvailableActions => '当前无可用操作';
 }

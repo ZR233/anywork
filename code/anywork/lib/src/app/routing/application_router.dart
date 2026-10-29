@@ -1,7 +1,7 @@
 import 'package:flutter/widgets.dart';
 import 'package:go_router/go_router.dart';
 
-import '../../features/settings/mode_editor/mode_editor_dialogs.dart';
+import '../../features/modes/modes.dart' show confirmLeaveModeEditor;
 import '../../features/settings/settings_section.dart';
 import 'app_route.dart';
 
@@ -20,6 +20,13 @@ Future<OnEnterResult> _protectModeSectionChange(
 ) async {
   final currentMatches = router.routerDelegate.currentConfiguration.matches;
   if (!currentMatchesSettings(currentMatches)) return const Allow();
+
+  // Only the Settings root's own query-only section change is decided here.
+  // Removing a mode workspace or detail match is a real route removal: it is
+  // decided by ModeWorkspaceRoute.onExit (same-modeId source) with the
+  // Settings parent re-checking the still-unsettled source afterwards. This
+  // onEnter must not pre-decide that workspace draft first.
+  if (!isSettingsRootMatch(currentState)) return const Allow();
 
   final currentSection = settingsSectionForMatchedRoute(currentState);
   if (currentSection != SettingsSection.workModes) return const Allow();

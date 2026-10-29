@@ -3368,6 +3368,30 @@ abstract class AppLocalizations {
   /// **'Thought for {minutes}m {seconds}s'**
   String timelineReasoningElapsedMinutesSeconds(int minutes, int seconds);
 
+  /// No description provided for @timelineGroupWorkedUnderSecond.
+  ///
+  /// In en, this message translates to:
+  /// **'Worked for less than 1s'**
+  String get timelineGroupWorkedUnderSecond;
+
+  /// No description provided for @timelineGroupWorkedSeconds.
+  ///
+  /// In en, this message translates to:
+  /// **'Worked for {seconds}s'**
+  String timelineGroupWorkedSeconds(int seconds);
+
+  /// No description provided for @timelineGroupWorkedMinutes.
+  ///
+  /// In en, this message translates to:
+  /// **'Worked for {minutes}m'**
+  String timelineGroupWorkedMinutes(int minutes);
+
+  /// No description provided for @timelineGroupWorkedMinutesSeconds.
+  ///
+  /// In en, this message translates to:
+  /// **'Worked for {minutes}m {seconds}s'**
+  String timelineGroupWorkedMinutesSeconds(int minutes, int seconds);
+
   /// No description provided for @timelineReasoningSummary.
   ///
   /// In en, this message translates to:
@@ -3492,23 +3516,23 @@ abstract class AppLocalizations {
   /// **'Stopped reading image'**
   String get timelineViewImageStopped;
 
-  /// No description provided for @timelineReadFileCompleted.
+  /// No description provided for @timelineToolReadCompleted.
   ///
   /// In en, this message translates to:
   /// **'Read'**
-  String get timelineReadFileCompleted;
+  String get timelineToolReadCompleted;
 
-  /// No description provided for @timelineReadFileReading.
+  /// No description provided for @timelineToolReadReading.
   ///
   /// In en, this message translates to:
   /// **'Reading'**
-  String get timelineReadFileReading;
+  String get timelineToolReadReading;
 
-  /// No description provided for @timelineReadFileFailed.
+  /// No description provided for @timelineToolReadFailed.
   ///
   /// In en, this message translates to:
   /// **'Unable to read'**
-  String get timelineReadFileFailed;
+  String get timelineToolReadFailed;
 
   /// No description provided for @timelineToolEditSucceeded.
   ///
@@ -6924,6 +6948,12 @@ abstract class AppLocalizations {
   /// **'Preparing'**
   String get conversationActivityPreparing;
 
+  /// No description provided for @conversationActivityCompacting.
+  ///
+  /// In en, this message translates to:
+  /// **'Compacting'**
+  String get conversationActivityCompacting;
+
   /// No description provided for @conversationActivityRunningTool.
   ///
   /// In en, this message translates to:
@@ -7926,6 +7956,42 @@ abstract class AppLocalizations {
   /// **'Collapse'**
   String get modeEditorCollapse;
 
+  /// No description provided for @modeEditorDetailStage.
+  ///
+  /// In en, this message translates to:
+  /// **'Stage details'**
+  String get modeEditorDetailStage;
+
+  /// No description provided for @modeEditorDetailTransition.
+  ///
+  /// In en, this message translates to:
+  /// **'Transition details'**
+  String get modeEditorDetailTransition;
+
+  /// No description provided for @modeEditorFocusAll.
+  ///
+  /// In en, this message translates to:
+  /// **'All'**
+  String get modeEditorFocusAll;
+
+  /// No description provided for @modeEditorFocusSelected.
+  ///
+  /// In en, this message translates to:
+  /// **'Focused'**
+  String get modeEditorFocusSelected;
+
+  /// No description provided for @modeEditorDimmedEdges.
+  ///
+  /// In en, this message translates to:
+  /// **'{count, plural, other{Dimmed {count} unrelated transitions}}'**
+  String modeEditorDimmedEdges(int count);
+
+  /// No description provided for @modeEditorViewStage.
+  ///
+  /// In en, this message translates to:
+  /// **'View stage'**
+  String get modeEditorViewStage;
+
   /// No description provided for @modeEditorNoWorkflowPeriod.
   ///
   /// In en, this message translates to:
@@ -7991,6 +8057,12 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Stage instructions'**
   String get modeEditorStageInstructions;
+
+  /// No description provided for @modeEditorCompletionCriteriaTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Completion criteria'**
+  String get modeEditorCompletionCriteriaTitle;
 
   /// No description provided for @modeEditorCompletionCriteria.
   ///
@@ -10271,6 +10343,66 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'The decision was accepted. Waiting for the session to confirm it.'**
   String get childInteractionDecisionAccepted;
+
+  /// No description provided for @recoveryDiagnostic.
+  ///
+  /// In en, this message translates to:
+  /// **'Recovery issue {id}\n{owner} · {impact}\n{detail}\nAvailable recovery actions: {actions}'**
+  String recoveryDiagnostic(
+    String id,
+    String owner,
+    String impact,
+    String detail,
+    String actions,
+  );
+
+  /// No description provided for @recoveryOwnerApplication.
+  ///
+  /// In en, this message translates to:
+  /// **'Application'**
+  String get recoveryOwnerApplication;
+
+  /// No description provided for @recoveryOwnerProject.
+  ///
+  /// In en, this message translates to:
+  /// **'Project {projectId}'**
+  String recoveryOwnerProject(String projectId);
+
+  /// No description provided for @recoveryOwnerThread.
+  ///
+  /// In en, this message translates to:
+  /// **'Session {threadId} · project {projectId}'**
+  String recoveryOwnerThread(String threadId, String projectId);
+
+  /// No description provided for @recoveryUnknownOwner.
+  ///
+  /// In en, this message translates to:
+  /// **'Not recorded'**
+  String get recoveryUnknownOwner;
+
+  /// No description provided for @recoveryImpactAdvisory.
+  ///
+  /// In en, this message translates to:
+  /// **'Attention required; access and execution remain available'**
+  String get recoveryImpactAdvisory;
+
+  /// No description provided for @recoveryImpactExecutionBlocked.
+  ///
+  /// In en, this message translates to:
+  /// **'Execution is blocked; safe history remains readable'**
+  String get recoveryImpactExecutionBlocked;
+
+  /// No description provided for @recoveryImpactAccessBlocked.
+  ///
+  /// In en, this message translates to:
+  /// **'Access and execution are blocked'**
+  String get recoveryImpactAccessBlocked;
+
+  /// No description provided for @recoveryNoAvailableActions.
+  ///
+  /// In en, this message translates to:
+  /// **'None currently available'**
+  String get recoveryNoAvailableActions;
 }
 
 class _AppLocalizationsDelegate

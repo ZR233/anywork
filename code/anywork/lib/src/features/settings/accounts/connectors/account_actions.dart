@@ -45,6 +45,23 @@ Future<void> deleteAccount(
   final target = initial.account(identity);
   if (!initial.loaded || target == null || !target.capabilities.remove) return;
   final ownerEpoch = initial.stamp?.ownerEpoch;
+  final modelsProvider = key.kind == AccountKind.native
+      ? accountModelsViewModelProvider(key)
+      : null;
+  final modelsOwner = modelsProvider != null && container.exists(modelsProvider)
+      ? container.read(modelsProvider.notifier)
+      : null;
+  final compactToken = modelsOwner?.compactLeaveToken();
+  // This synchronous resource-only predicate is consumed once by Accounts.
+  // An absent owner must remain absent; checking must never create one.
+  bool isCompactClean() {
+    if (modelsProvider == null) return true;
+    if (modelsOwner == null) return !container.exists(modelsProvider);
+    return container.exists(modelsProvider) &&
+        identical(container.read(modelsProvider.notifier), modelsOwner) &&
+        modelsOwner.canRemove(expectedToken: compactToken!);
+  }
+
   bool sourceCurrent() =>
       context.mounted &&
       identical(ModalRoute.of(context), sourceRoute) &&
@@ -56,7 +73,11 @@ Future<void> deleteAccount(
       repository.state.value.loaded &&
       repository.state.value.stamp?.ownerEpoch == ownerEpoch;
   bool targetCurrent() {
-    if (!sourceCurrent()) return false;
+    if (!sourceCurrent() ||
+        accounts.isRemovalBlocked(key) ||
+        !isCompactClean()) {
+      return false;
+    }
     final current = repository.state.value.account(identity);
     return current != null &&
         current.identity == target.identity &&
@@ -65,6 +86,7 @@ Future<void> deleteAccount(
         current.acpConnectionRevision == target.acpConnectionRevision;
   }
 
+  if (!targetCurrent()) return;
   final name = accounts.accountName(key);
   final needsReplacement = accounts.needsReplacement(key);
   AccountDisplayKey? replacement;
@@ -92,7 +114,12 @@ Future<void> deleteAccount(
           !accounts.replacements(key).any((row) => row.key == replacement))) {
     return;
   }
-  final removed = await accounts.remove(key, replacement: replacement);
+  if (!targetCurrent()) return;
+  final removed = await accounts.remove(
+    key,
+    replacement: replacement,
+    isCompactClean: isCompactClean,
+  );
   // An admitted removal remains domain-owned. Only its still-current source
   // may navigate on success, and an already-recreated target is not absence.
   if (removed &&
@@ -159,12 +186,14 @@ AccountModelActions accountModelActions(
             repository.state.value.accounts[account]?.stamp?.ownerEpoch;
         final configOwner =
             repository.state.value.configurations[account]?.stamp?.ownerEpoch;
+        final compactToken = owner.compactLeaveToken();
         bool targetCurrent() {
           if (!context.mounted ||
               !identical(ModalRoute.of(context), sourceRoute) ||
               !sourceRoute.isCurrent ||
               !container.exists(provider) ||
               !identical(container.read(provider.notifier), owner) ||
+              !owner.canRemove(expectedToken: compactToken) ||
               !container.exists(modelsRepositoryProvider) ||
               !identical(
                 container.read(modelsRepositoryProvider),
@@ -201,7 +230,7 @@ AccountModelActions accountModelActions(
               manualModel: true,
             ) &&
             targetCurrent()) {
-          await owner.removeManual(key.modelId);
+          await owner.removeManual(key.modelId, expectedToken: compactToken);
         }
       case AccountModelAction.edit:
         AccountEditRoute(

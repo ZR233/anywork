@@ -34,6 +34,7 @@ abstract class AccountEditorKey with _$AccountEditorKey {
 abstract class AccountActionPresentation with _$AccountActionPresentation {
   const factory AccountActionPresentation({
     required String ownerEpoch,
+    required bool removing,
     int? acpConnectionRevision,
     @Default(false) bool pending,
     String? message,

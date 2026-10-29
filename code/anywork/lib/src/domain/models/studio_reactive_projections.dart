@@ -843,79 +843,15 @@ List<MapEntry<String, Object?>> _sortedJsonMapEntries(Map value) {
   return entries;
 }
 
-bool _storageEquals(
-  ThreadStorageStateView? left,
-  ThreadStorageStateView? right,
-) {
-  if (identical(left, right)) return true;
-  if (left == null || right == null) return false;
-  return left.fault == right.fault &&
-      left.faultGeneration == right.faultGeneration &&
-      left.acceptedSequence == right.acceptedSequence &&
-      left.durableSequence == right.durableSequence &&
-      left.execution == right.execution &&
-      left.pressurePaused == right.pressurePaused &&
-      left.resumeRequired == right.resumeRequired &&
-      left.canResume == right.canResume &&
-      left.lastError == right.lastError;
-}
-
-int? _storageHash(ThreadStorageStateView? storage) {
-  if (storage == null) return null;
-  return Object.hash(
-    storage.fault,
-    storage.faultGeneration,
-    storage.acceptedSequence,
-    storage.durableSequence,
-    storage.execution,
-    storage.pressurePaused,
-    storage.resumeRequired,
-    storage.canResume,
-    storage.lastError,
-  );
-}
-
 bool _conversationActivityEquals(
   ConversationActivityView? left,
   ConversationActivityView? right,
 ) {
   if (identical(left, right)) return true;
   if (left == null || right == null) return false;
-  return left.identity == right.identity &&
-      left.kind == right.kind &&
-      left.summary == right.summary &&
-      left.activeToolCount == right.activeToolCount &&
-      left.backgroundToolCount == right.backgroundToolCount &&
-      left.errorMessage == right.errorMessage &&
-      _listEqualsBy(left.details, right.details, _activityDetailEquals) &&
-      left.detailsLoading == right.detailsLoading &&
-      left.detailsError == right.detailsError &&
-      left.expandable == right.expandable &&
-      _storageEquals(left.storage, right.storage);
+  return left == right;
 }
 
 int? _conversationActivityHash(ConversationActivityView? view) {
-  if (view == null) return null;
-  return Object.hash(
-    view.identity,
-    view.kind,
-    view.summary,
-    view.activeToolCount,
-    view.backgroundToolCount,
-    view.errorMessage,
-    Object.hashAll(view.details.map(_activityDetailHash)),
-    view.detailsLoading,
-    view.detailsError,
-    view.expandable,
-    _storageHash(view.storage),
-  );
+  return view?.hashCode;
 }
-
-bool _activityDetailEquals(
-  ConversationActivityDetail left,
-  ConversationActivityDetail right,
-) =>
-    left.id == right.id && left.title == right.title && left.body == right.body;
-
-int _activityDetailHash(ConversationActivityDetail detail) =>
-    Object.hash(detail.id, detail.title, detail.body);

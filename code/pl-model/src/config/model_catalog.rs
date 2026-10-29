@@ -4,7 +4,7 @@
 //! Online observations, explicit local overrides, names, budgets, capabilities, parameters and
 //! prices are resolved inside the owning account only. An account never borrows a field from
 //! another account that happens to declare the same `model_id`.
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use super::{AccountConfig, AccountModelEntry, AgentModelConfig};
 use crate::model::{
@@ -17,8 +17,10 @@ impl AgentModelConfig {
     /// Rebuild every account's effective catalog from its own declarations and observations.
     ///
     /// No IO, timestamps or credentials are consulted by the merge, and no value crosses an
-    /// account boundary. Field precedence inside one account is: explicit online declaration,
-    /// then that account's explicit local model, then the bundled definition it binds.
+    /// account boundary. Ordinary field precedence inside one account is: explicit online
+    /// declaration, then that account's explicit local model, then the bundled definition it
+    /// binds. Display names are the exception: an existing manual model name wins over online
+    /// names; without one, a nonblank online name wins over the bundled name and model ID.
     ///
     /// # Errors
     /// Invalid local declarations or account transport profiles.
@@ -35,8 +37,13 @@ fn reconcile_account(account: &mut AccountConfig) -> Result<()> {
     let mut local = account.clone();
     local.clear_model_catalog_overlay();
     // The account's own declaration base: bundled members overlaid by its explicit models.
-    let mut merged = local
-        .effective_catalog(None)?
+    let local_entries = local.effective_catalog(None)?;
+    let manual_ids = local_entries
+        .iter()
+        .filter(|entry| entry.origin == crate::config::AccountModelOrigin::Manual)
+        .map(|entry| entry.model.model_id.clone())
+        .collect::<BTreeSet<_>>();
+    let mut merged = local_entries
         .into_iter()
         .map(|entry| (entry.model.model_id.clone(), entry.model))
         .collect::<BTreeMap<_, _>>();
@@ -66,6 +73,11 @@ fn reconcile_account(account: &mut AccountConfig) -> Result<()> {
 
     let mut winners = BTreeMap::new();
     for (order, model_id, field, observed) in observations {
+        // Manual definitions own their display name, while other online fields retain the
+        // existing field-by-field precedence.
+        if field == ModelMetadataField::DisplayName && manual_ids.contains(&model_id) {
+            continue;
+        }
         let Some(target) = merged.get_mut(&model_id) else {
             continue;
         };

@@ -17,9 +17,13 @@ class DirectoryCommands extends ReadModel<DirectoryCommandState> {
 
   Future<void> openProject(String path) {
     return _navigate((intent) async {
+      _throwIfAccessBlocked(projectId: null);
       final project = await _api.openProject(path);
       if (!_ownsNavigation(intent)) return;
-      await _api.activateProject(project.id);
+      _throwIfAccessBlocked(projectId: project.id);
+      if (_shouldActivateProject(project.id)) {
+        await _api.activateProject(project.id);
+      }
       if (!_ownsNavigation(intent)) return;
       _selectProjectDefault(project.id);
     });
@@ -31,19 +35,25 @@ class DirectoryCommands extends ReadModel<DirectoryCommandState> {
     return _lane.enqueue(() async {
       if (!_ownsNavigation(intent)) return false;
       try {
+        _throwIfAccessBlocked(projectId: null);
         var project = await _api.openRemoteProject(alias, path);
         if (!_ownsNavigation(intent)) return false;
+        _throwIfAccessBlocked(projectId: project.id);
         if (name != null && name != project.name) {
           project = await _api.renameProject(project.id, name);
           if (!_ownsNavigation(intent)) return false;
         }
-        await _api.activateProject(project.id);
+        if (_shouldActivateProject(project.id)) {
+          await _api.activateProject(project.id);
+        }
         if (!_ownsNavigation(intent)) return false;
         _selectProjectDefault(project.id);
         final selected = project;
         return selected.id == project.id &&
             selected.sshAlias == alias &&
             selected.path == project.path;
+      } on StudioFailure {
+        rethrow;
       } on Object {
         return false;
       }
@@ -52,11 +62,13 @@ class DirectoryCommands extends ReadModel<DirectoryCommandState> {
 
   Future<void> selectProject(String projectId) {
     return _navigate((intent) async {
+      _throwIfAccessBlocked(projectId: projectId);
       if (_client.selection.state.selectedProjectId == projectId) {
         return;
       }
-      if (_blocksProject(projectId)) return;
-      await _api.activateProject(projectId);
+      if (_shouldActivateProject(projectId)) {
+        await _api.activateProject(projectId);
+      }
       if (!_ownsNavigation(intent)) return;
       _selectProjectDefault(projectId);
     });
@@ -65,7 +77,8 @@ class DirectoryCommands extends ReadModel<DirectoryCommandState> {
   Future<void> selectThread(String threadId) {
     return _navigate((_) async {
       final thread = _directoryThread(threadId);
-      if (thread == null || _blocksThread(threadId)) return;
+      if (thread == null) return;
+      _throwIfAccessBlocked(projectId: thread.projectId, threadId: threadId);
       final selection = _client.selection.state;
       if (selection.selectedThreadId == threadId) {
         _client.selection.markOpened();
@@ -83,8 +96,11 @@ class DirectoryCommands extends ReadModel<DirectoryCommandState> {
   }
 
   Future<void> _selectAgentThread(String threadId, int intent) async {
-    if (_blocksThread(threadId)) return;
     final selected = _client.selection.state;
+    _throwIfAccessBlocked(
+      projectId: selected.selectedProjectId,
+      threadId: threadId,
+    );
     final root = _selectedRootId();
     if (root == null ||
         !_rootMembers(root).any((agent) => agent.threadId == threadId))
@@ -93,7 +109,6 @@ class DirectoryCommands extends ReadModel<DirectoryCommandState> {
         _ownsNavigation(intent) &&
         identical(_client.selection.state, selected) &&
         _selectedRootId() == root &&
-        !_blocksThread(threadId) &&
         _rootMembers(root).any((agent) => agent.threadId == threadId);
     var target = _directoryThread(threadId);
     if (target == null) {
@@ -105,6 +120,14 @@ class DirectoryCommands extends ReadModel<DirectoryCommandState> {
       }
       // A newer intent revokes publication immediately, even before its
       // command reaches the front of the serial lane. Still join this read.
+      if (!_ownsNavigation(intent) ||
+          !identical(_client.selection.state, selected)) {
+        return;
+      }
+      _throwIfAccessBlocked(
+        projectId: selected.selectedProjectId,
+        threadId: threadId,
+      );
       if (!isCurrent()) return;
       if (target.id != threadId ||
           target.effectiveRootThreadId != root ||
@@ -119,9 +142,9 @@ class DirectoryCommands extends ReadModel<DirectoryCommandState> {
       _client.threadDirectory.mergeOverlayThreads([target]);
     }
     if (target.effectiveRootThreadId != root ||
-        target.projectId != selected.selectedProjectId ||
-        _blocksThread(threadId))
+        target.projectId != selected.selectedProjectId)
       return;
+    _throwIfAccessBlocked(projectId: target.projectId, threadId: threadId);
     _client.selection.selectThread(
       projectId: target.projectId,
       threadId: threadId,
@@ -137,7 +160,10 @@ class DirectoryCommands extends ReadModel<DirectoryCommandState> {
       final selection = _client.selection.state;
       final threadId = selection.selectedThreadId;
       if (threadId == null || !selection.needsOpen) return;
-      if (_blocksThread(threadId)) return;
+      _throwIfAccessBlocked(
+        projectId: selection.selectedProjectId,
+        threadId: threadId,
+      );
       if (_directoryThread(threadId) == null) {
         await _selectAgentThread(threadId, intent);
         return;
@@ -151,10 +177,13 @@ class DirectoryCommands extends ReadModel<DirectoryCommandState> {
   Future<void> beginNewThread({String? projectId}) {
     return _navigate((intent) async {
       final target = projectId ?? _client.selection.state.selectedProjectId;
-      if (target == null || _blocksProject(target)) return;
+      if (target == null) return;
+      _throwIfAccessBlocked(projectId: target);
       if (_client.selection.state.selectedProjectId != target) {
-        await _api.activateProject(target);
-        if (!_ownsNavigation(intent)) return;
+        if (_shouldActivateProject(target)) {
+          await _api.activateProject(target);
+          if (!_ownsNavigation(intent)) return;
+        }
       }
       _client.selection.selectProject(target);
     });
@@ -162,8 +191,13 @@ class DirectoryCommands extends ReadModel<DirectoryCommandState> {
 
   Future<void> restoreThread(String threadId) {
     return _navigate((intent) async {
+      _throwIfAccessBlocked(
+        projectId: _projectIdForThread(threadId),
+        threadId: threadId,
+      );
       final thread = await _api.restoreThread(threadId);
       if (!_ownsNavigation(intent)) return;
+      _throwIfAccessBlocked(projectId: thread.projectId, threadId: thread.id);
       _client.selection.selectThread(
         projectId: thread.projectId,
         threadId: thread.id,
@@ -321,6 +355,10 @@ class DirectoryCommands extends ReadModel<DirectoryCommandState> {
     String threadId,
     int faultGeneration,
   ) => _lane.run(() async {
+    _throwIfExecutionBlocked(
+      projectId: _projectIdForThread(threadId),
+      threadId: threadId,
+    );
     return _api.resumeThreadHistory(threadId, faultGeneration);
   });
 
@@ -357,7 +395,16 @@ class DirectoryCommands extends ReadModel<DirectoryCommandState> {
 
   void _selectProjectDefault(String projectId) {
     final threadId = _client.threadDirectory.state.window.threads
-        .where((thread) => thread.isRoot && thread.projectId == projectId)
+        .where(
+          (thread) =>
+              thread.isRoot &&
+              thread.projectId == projectId &&
+              _accessBlocker(
+                    projectId: thread.projectId,
+                    threadId: thread.id,
+                  ) ==
+                  null,
+        )
         .firstOrNull
         ?.id;
     if (threadId == null) {
@@ -405,26 +452,55 @@ class DirectoryCommands extends ReadModel<DirectoryCommandState> {
     return _client.session(threadId).state.activeTurn?.state.isBusy ?? false;
   }
 
-  bool _blocksProject(String projectId) =>
-      _blocks(scope: RecoveryIssueScope.project, projectId: projectId);
+  StudioRecoveryIssue? _accessBlocker({
+    required String? projectId,
+    String? threadId,
+  }) => recoveryIssueBlockingAccess(
+    _client.recovery.state.value?.values ?? const [],
+    projectId: projectId,
+    threadId: threadId,
+  );
 
-  bool _blocksThread(String threadId) =>
-      _blocks(scope: RecoveryIssueScope.thread, threadId: threadId);
+  StudioRecoveryIssue? _executionBlocker({
+    required String? projectId,
+    String? threadId,
+  }) => recoveryIssueBlockingExecution(
+    _client.recovery.state.value?.values ?? const [],
+    projectId: projectId,
+    threadId: threadId,
+  );
 
-  bool _blocks({
-    required RecoveryIssueScope scope,
-    String? projectId,
+  void _throwIfAccessBlocked({required String? projectId, String? threadId}) {
+    final issue = _accessBlocker(projectId: projectId, threadId: threadId);
+    if (issue != null) throw issue.blockedFailure();
+  }
+
+  void _throwIfExecutionBlocked({
+    required String? projectId,
     String? threadId,
   }) {
-    final issues = _client.recovery.state.value?.values ?? const [];
-    return issues.any(
-      (issue) =>
-          issue.blocksAccess &&
-          issue.scope == scope &&
-          (projectId == null || issue.projectId == projectId) &&
-          (threadId == null || issue.threadId == threadId),
-    );
+    final issue = _executionBlocker(projectId: projectId, threadId: threadId);
+    if (issue != null) throw issue.blockedFailure();
   }
+
+  String? _projectIdForThread(String threadId) {
+    final directoryProjectId = _directoryThread(threadId)?.projectId;
+    if (directoryProjectId != null) return directoryProjectId;
+    final workspaceProjectId = _client
+        .existingSession(threadId)
+        ?.state
+        .workspace
+        ?.thread
+        .projectId;
+    if (workspaceProjectId != null) return workspaceProjectId;
+    final selection = _client.selection.state;
+    return selection.selectedThreadId == threadId
+        ? selection.selectedProjectId
+        : null;
+  }
+
+  bool _shouldActivateProject(String projectId) =>
+      _executionBlocker(projectId: projectId) == null;
 
   void _setLoadMoreError(String? message) {
     if (state.loadMoreError == message) return;

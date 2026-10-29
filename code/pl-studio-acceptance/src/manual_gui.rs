@@ -22,7 +22,9 @@ use pl_model::model::{
 };
 use pl_model::protocol::ProtocolEndpoint;
 use pl_protocol::ThreadModeId;
-use pl_studio_runtime::config::{McpServerTransport, StudioConfig, StudioMcpServerEntry};
+use pl_studio_runtime::config::{
+    ConfigPaths, ConfigRuntime, ConfigStore, McpServerTransport, StudioConfig, StudioMcpServerEntry,
+};
 use sea_orm::sqlx::{
     Connection as _,
     sqlite::{SqliteConnectOptions, SqliteConnection},
@@ -723,6 +725,7 @@ impl OwnedProcess {
     }
 
     fn stop(&mut self, report: &Path) -> Result<std::process::ExitStatus> {
+        let started = Instant::now();
         #[cfg(unix)]
         {
             let status = Command::new("kill")
@@ -755,7 +758,30 @@ impl OwnedProcess {
             }
             thread::sleep(Duration::from_millis(100));
         }
-        status.context("fixture did not write requests-file after graceful signal")
+        status = self.child.try_wait()?;
+        let report_visible = report.is_file();
+        let elapsed_ms = started.elapsed().as_millis();
+        let status_text = status.map(|status| status.to_string());
+        let mut stderr = io::stderr().lock();
+        let diagnostic_result = writeln!(
+            stderr,
+            "fixture_stop_deadline elapsed_ms={elapsed_ms} process_status={status_text:?} report_visible={report_visible}"
+        )
+        .context("failed to write fixture stop deadline diagnostic")
+        .and_then(|()| {
+        stderr
+            .flush()
+                .context("failed to flush fixture stop deadline diagnostic")
+        });
+        let deadline_error = anyhow::anyhow!(
+            "fixture stop deadline reached: process exit and requests-file were not both confirmed within the deadline (boundary observation: process_status={status_text:?}, report_visible={report_visible})"
+        );
+        match diagnostic_result {
+            Ok(()) => Err(deadline_error),
+            Err(diagnostic_error) => Err(anyhow::anyhow!(
+                "{deadline_error:#}; stop deadline diagnostic also failed: {diagnostic_error:#}"
+            )),
+        }
     }
 }
 
@@ -846,6 +872,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
                     | "delegation-window"
                     | "delegation-enablement"
                     | "delegation-recovery"
+                    | "delegation-worktree"
             ),
         "--retain-environment is supported by --scenario gui, single-instance, tool-scroll, \
          timeline-history, stress-body-large, wait-events, acp-auto-install and the delegation scenes"
@@ -3274,7 +3301,14 @@ fn copy_closed_home(source: &Path, target: &Path) -> Result<()> {
 }
 
 fn write_copy_fixture_config(home: &Path, ready: &FixtureReady) -> Result<()> {
-    // Parse the desired document directly: never hydrate or rewrite source system credentials.
+    // Run the normal protected startup migration on the isolated copy. ConfigStore::new uses an
+    // in-memory credential store, so this does not hydrate or rewrite system credentials.
+    {
+        let runtime =
+            ConfigRuntime::initialize(ConfigStore::new(ConfigPaths::from_config_dir(home)))?;
+        drop(runtime);
+    }
+    // Read the migrated desired document strictly; never substitute effective runtime config.
     let mut config: StudioConfig = toml::from_str(&fs::read_to_string(home.join("config.toml"))?)?;
     for account in config.models.accounts.values_mut() {
         let models = account
@@ -3496,17 +3530,25 @@ fn write_config_with_lsp_server(
     persist_config(home, &config)
 }
 
-/// Uses the same build/artifact-discovery contract as the xtask launcher, so
-/// Cargo's configured target directory and native executable suffix stay owned
-/// by Cargo rather than being guessed by the readiness loop.
+/// Builds the standalone fixture with Cargo's release profile before service
+/// deadlines; GUI build mode is independent. Cargo owns artifact discovery, so
+/// its configured target directory and native executable suffix are not guessed.
 fn build_fixture_executable(workspace: &Path) -> Result<PathBuf> {
     const PACKAGE: &str = "pl-provider-fixture";
-    let args = ["build", "--locked", "-p", PACKAGE, "--bin", PACKAGE];
+    let args = [
+        "build",
+        "--release",
+        "--locked",
+        "-p",
+        PACKAGE,
+        "--bin",
+        PACKAGE,
+    ];
     let mut build = Command::new("cargo");
     build.current_dir(workspace).args(args);
     process::run_checked(
         &mut build,
-        "cargo build --locked -p pl-provider-fixture --bin pl-provider-fixture",
+        "cargo build --release --locked -p pl-provider-fixture --bin pl-provider-fixture",
     )?;
 
     let discovery = Command::new("cargo")

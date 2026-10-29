@@ -20,6 +20,9 @@ enum ThreadStatusView {
     cancelling => true,
     idle || closing || closed || faulted => false,
   };
+
+  /// Explicit final close is permanent; content remains readable independently.
+  bool get blocksNewExecution => this == closing || this == closed;
 }
 
 class StudioProject {

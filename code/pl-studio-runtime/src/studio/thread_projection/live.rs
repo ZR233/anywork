@@ -240,12 +240,14 @@ fn revision_bytes(id: &str) -> u64 {
 /// Every item carries its own **content version** (never the effect sequence that happens to
 /// commit it). The writer stores that exact version and confirms it back by identity/version, so a
 /// save receipt can never acknowledge a payload it did not write.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(in crate::studio) struct PreparedEffect {
     /// Effect sequence this batch belongs to; the writer matches it against its admission queue.
     pub(in crate::studio) sequence: u64,
     /// The canonical items the effect committed, in the order the durable rows are written.
     pub(in crate::studio) items: Vec<ThreadItem>,
+    /// Exact terminal handoff, committed in the same history transaction as its terminal effect.
+    pub(in crate::studio) parent_report: Option<pl_core::thread::inbox::ThreadMessage>,
 }
 
 /// Cheap retained-memory estimate of one prepared batch.
@@ -1123,6 +1125,7 @@ impl LiveProjection {
         Ok(Arc::new(PreparedEffect {
             sequence: effect.sequence,
             items,
+            parent_report: None,
         }))
     }
 

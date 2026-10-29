@@ -1,14 +1,17 @@
 part of 'studio_shell.dart';
 
-class _Header extends StatelessWidget {
+class _Header extends ConsumerWidget {
   const _Header({required this.state});
 
   final HeaderView state;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final thread = state.selectedRootThread;
     final project = state.selectedProject;
+    final recoveryIssues =
+        ref.watch(recoveryStoreProvider).value?.values ??
+        const <StudioRecoveryIssue>[];
     final projectLabel = project?.name.trim() ?? '';
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
@@ -71,6 +74,7 @@ class _Header extends StatelessWidget {
               AgentSwitcherMenu(
                 agents: state.agents,
                 workspaceThreads: state.workspaceThreads,
+                recoveryIssues: recoveryIssues,
                 selectedThreadId: state.selectedThreadId,
                 pendingInteractionThreadIds: {
                   for (final interaction in state.pendingInteractions)
@@ -543,7 +547,7 @@ class _ConversationActivityHost extends ConsumerStatefulWidget {
 
 class _ConversationActivityHostState
     extends ConsumerState<_ConversationActivityHost> {
-  var _expanded = false;
+  String? _expandedIdentity;
   var _detail = const ThreadActivityDetailState();
   Future<void>? _inFlight;
   String? _inFlightIdentity;
@@ -551,12 +555,15 @@ class _ConversationActivityHostState
   var _loadScheduled = false;
   var _generation = 0;
 
+  bool _isExpandedFor(ThreadActivityView? activity) =>
+      activity != null && _expandedIdentity == activity.identity;
+
   @override
   void didUpdateWidget(covariant _ConversationActivityHost oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.threadId == widget.threadId) return;
     _generation++;
-    _expanded = false;
+    _expandedIdentity = null;
     _refreshQueued = false;
     _detail = const ThreadActivityDetailState();
     _inFlight = null;
@@ -564,19 +571,19 @@ class _ConversationActivityHostState
   }
 
   void _expand() {
-    if (_expanded) {
+    final activity = ref
+        .read(conversationActivityInputProvider(widget.threadId))
+        ?.activity;
+    if (activity == null) return;
+    _expandedIdentity = activity.identity;
+    if (!_covers(activity)) {
       _requestLoad();
-      return;
     }
-    setState(() => _expanded = true);
   }
 
   void _collapse() {
-    if (!_expanded && !_refreshQueued) return;
-    setState(() {
-      _expanded = false;
-      _refreshQueued = false;
-    });
+    _expandedIdentity = null;
+    _refreshQueued = false;
   }
 
   void _requestLoad() {
@@ -593,13 +600,19 @@ class _ConversationActivityHostState
         _detail.revision >= activity.revision;
   }
 
+  bool _needsDetail(ThreadActivityView? activity) {
+    if (activity == null) return false;
+    return _isExpandedFor(activity) ||
+        activity.kind == ThreadActivityKind.responding;
+  }
+
   Future<void> _load() async {
-    if (!_expanded || !mounted) return;
+    if (!mounted) return;
     final activity = ref
         .read(conversationActivityInputProvider(widget.threadId))
         ?.activity;
-    if (activity == null) return;
-    if (_covers(activity)) return;
+    if (!_needsDetail(activity)) return;
+    if (_covers(activity!)) return;
     if (_inFlight != null && _inFlightIdentity == activity.identity) {
       _refreshQueued = true;
       return;
@@ -622,7 +635,13 @@ class _ConversationActivityHostState
       _inFlight = null;
       _inFlightIdentity = null;
     }
-    if (_refreshQueued && mounted && _expanded && generation == _generation) {
+    final latestAfter = mounted
+        ? ref.read(conversationActivityInputProvider(widget.threadId))?.activity
+        : null;
+    if (_refreshQueued &&
+        mounted &&
+        _needsDetail(latestAfter) &&
+        generation == _generation) {
       _refreshQueued = false;
       unawaited(_load());
     }
@@ -634,14 +653,15 @@ class _ConversationActivityHostState
     int generation,
   ) async {
     try {
-      // 活动详情没有命令 lane。展开时直接读 data source，不写入 store。
+      // 活动详情没有命令 lane。展开或流式回复时直接读 data source，不写入 store。
       final detail = await ref
           .read(anyworkClientProvider)
           .readThreadActivityDetail(threadId, activity.identity);
-      if (!mounted || generation != _generation || !_expanded) return;
+      if (!mounted || generation != _generation) return;
       final latest = ref
           .read(conversationActivityInputProvider(threadId))
           ?.activity;
+      if (!_needsDetail(latest ?? activity)) return;
       if (latest != null && latest.identity != activity.identity) return;
       setState(() {
         _detail = ThreadActivityDetailState(
@@ -651,10 +671,11 @@ class _ConversationActivityHostState
         );
       });
     } on Object catch (error) {
-      if (!mounted || generation != _generation || !_expanded) return;
+      if (!mounted || generation != _generation) return;
       final latest = ref
           .read(conversationActivityInputProvider(threadId))
           ?.activity;
+      if (!_needsDetail(latest ?? activity)) return;
       if (latest != null && latest.identity != activity.identity) return;
       setState(() {
         _detail = ThreadActivityDetailState(
@@ -670,7 +691,7 @@ class _ConversationActivityHostState
   Widget build(BuildContext context) {
     final input = ref.watch(conversationActivityInputProvider(widget.threadId));
     final activity = input?.activity;
-    if (_expanded && activity != null && !_covers(activity)) {
+    if (_needsDetail(activity) && !_covers(activity!)) {
       _requestLoad();
     }
     final matches = activity != null && _detail.matches(activity.identity);

@@ -804,6 +804,34 @@
       }
     }
   },
+  "timelineGroupWorkedUnderSecond": "Worked for less than 1s",
+  "timelineGroupWorkedSeconds": "Worked for {seconds}s",
+  "@timelineGroupWorkedSeconds": {
+    "placeholders": {
+      "seconds": {
+        "type": "int"
+      }
+    }
+  },
+  "timelineGroupWorkedMinutes": "Worked for {minutes}m",
+  "@timelineGroupWorkedMinutes": {
+    "placeholders": {
+      "minutes": {
+        "type": "int"
+      }
+    }
+  },
+  "timelineGroupWorkedMinutesSeconds": "Worked for {minutes}m {seconds}s",
+  "@timelineGroupWorkedMinutesSeconds": {
+    "placeholders": {
+      "minutes": {
+        "type": "int"
+      },
+      "seconds": {
+        "type": "int"
+      }
+    }
+  },
   "timelineReasoningSummary": "Summary",
   "timelineReasoningContent": "Content",
   "timelineReasoningBudgetLimited": "Reasoning budget reached",
@@ -899,9 +927,9 @@
   "timelineViewImageReading": "Reading image",
   "timelineViewImageFailed": "Failed to read image",
   "timelineViewImageStopped": "Stopped reading image",
-  "timelineReadFileCompleted": "Read",
-  "timelineReadFileReading": "Reading",
-  "timelineReadFileFailed": "Unable to read",
+  "timelineToolReadCompleted": "Read",
+  "timelineToolReadReading": "Reading",
+  "timelineToolReadFailed": "Unable to read",
   "timelineToolEditSucceeded": "Edited",
   "timelineToolEditRunning": "Editing",
   "timelineToolEditFailed": "Couldn't edit",
@@ -1855,6 +1883,7 @@
   "recoveryCheckFailed": "Conversation and workspace check did not complete",
   "agentRoleRetired": "This subagent role has been retired. History is read-only.",
   "conversationActivityPreparing": "Preparing",
+  "conversationActivityCompacting": "Compacting",
   "conversationActivityRunningTool": "Running",
   "conversationActivitySaveFailed": "Save failed",
   "conversationActivitySavePaused": "Saving paused",
@@ -2129,6 +2158,17 @@
   "modeEditorTransitionGuardHint": "For example: after the user confirms scope",
   "modeEditorGuardRequiredField": "Enter a guard.",
   "modeEditorCollapse": "Collapse",
+  "modeEditorDetailStage": "Stage details",
+  "modeEditorDetailTransition": "Transition details",
+  "modeEditorFocusAll": "All",
+  "modeEditorFocusSelected": "Focused",
+  "modeEditorDimmedEdges": "{count, plural, other{Dimmed {count} unrelated transitions}}",
+  "@modeEditorDimmedEdges": {
+    "placeholders": {
+      "count": { "type": "int" }
+    }
+  },
+  "modeEditorViewStage": "View stage",
   "modeEditorNoWorkflowPeriod": "This mode has no workflow.",
   "modeEditorInspectorSelectHint": "Select a stage or transition on the canvas to edit its fields.",
   "modeEditorRenameId": "Rename id",
@@ -2140,6 +2180,7 @@
   "modeEditorInitialStateLockedHint": "The workflow always keeps one initial state; enable another stage instead.",
   "modeEditorInitialStateHint": "A run starts from this stage.",
   "modeEditorStageInstructions": "Stage instructions",
+  "modeEditorCompletionCriteriaTitle": "Completion criteria",
   "modeEditorCompletionCriteria": "Completion criteria (one per line)",
   "modeEditorAtomicCriteriaRequired": "An atomic stage needs at least one completion criterion; Rust validates on save.",
   "modeEditorOutgoingTransitions": "Outgoing transitions",
@@ -2781,5 +2822,32 @@
     }
   },
   "childInteractionRetry": "Reload",
-  "childInteractionDecisionAccepted": "The decision was accepted. Waiting for the session to confirm it."
+  "childInteractionDecisionAccepted": "The decision was accepted. Waiting for the session to confirm it.",
+  "recoveryDiagnostic": "Recovery issue {id}\n{owner} · {impact}\n{detail}\nAvailable recovery actions: {actions}",
+  "@recoveryDiagnostic": {
+    "placeholders": {
+      "id": { "type": "String" },
+      "owner": { "type": "String" },
+      "impact": { "type": "String" },
+      "detail": { "type": "String" },
+      "actions": { "type": "String" }
+}
+  },
+  "recoveryOwnerApplication": "Application",
+  "recoveryOwnerProject": "Project {projectId}",
+  "@recoveryOwnerProject": {
+    "placeholders": { "projectId": { "type": "String" } }
+  },
+  "recoveryOwnerThread": "Session {threadId} · project {projectId}",
+  "@recoveryOwnerThread": {
+    "placeholders": {
+      "threadId": { "type": "String" },
+      "projectId": { "type": "String" }
+    }
+  },
+  "recoveryUnknownOwner": "Not recorded",
+  "recoveryImpactAdvisory": "Attention required; access and execution remain available",
+  "recoveryImpactExecutionBlocked": "Execution is blocked; safe history remains readable",
+  "recoveryImpactAccessBlocked": "Access and execution are blocked",
+  "recoveryNoAvailableActions": "None currently available"
 }

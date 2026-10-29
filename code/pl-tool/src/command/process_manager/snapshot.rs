@@ -7,41 +7,26 @@ use super::{
 
 /// 一条截断指示行在可见正文里占用的字节上界。
 ///
-pub(super) fn message_for_state(
-    state: &CommandProcessState,
-    process_id: Option<&str>,
-    output_file: &std::path::Path,
-) -> String {
+pub(super) fn message_for_state(state: &CommandProcessState) -> String {
     match &state.lifecycle {
-        CommandProcessLifecycle::Running(_) => format!(
-            "Command is still running. Use wait for completion or write_stdin with taskId '{}' to send input. Read outputFile for complete output.",
-            process_id.unwrap_or_default()
-        ),
+        CommandProcessLifecycle::Running(_) => "Command is running.".into(),
         CommandProcessLifecycle::Terminating(state) => format!(
-            "Command {} and termination is in progress for task '{}'. Use wait for completion. Read outputFile for captured output.",
-            state.reason().message_fragment(),
-            process_id.unwrap_or_default()
+            "Command {}; termination is in progress.",
+            state.reason().message_fragment()
         ),
-        CommandProcessLifecycle::Draining(_) => format!(
-            "Command exited and is draining remaining output for task '{}'. Use wait for completion. Read outputFile for complete output.",
-            process_id.unwrap_or_default()
-        ),
+        CommandProcessLifecycle::Draining(_) => {
+            "Command exited; its owner is draining captured output.".into()
+        }
         CommandProcessLifecycle::Final(state) => match state.result() {
             CommandProcessFinalResult::Succeeded { .. } => {
-            "Command completed successfully. Read outputFile for complete output if needed."
-                .to_string()
+                "Command completed successfully.".to_string()
             }
-            CommandProcessFinalResult::Failed { failure } => format!(
-                "{}. Full command output is available at '{}'.",
-                failure_message(failure),
-                output_file.display()
-            ),
+            CommandProcessFinalResult::Failed { failure } => failure_message(failure),
             CommandProcessFinalResult::TimedOut => {
-            "Command timed out and was terminated. Read outputFile for captured output.".to_string()
+                "Command timed out and was terminated.".to_string()
             }
             CommandProcessFinalResult::Cancelled => {
-            "Command was interrupted and termination was requested. Read outputFile for captured output."
-                .to_string()
+                "Command was interrupted and its process tree was reaped.".to_string()
             }
         },
     }

@@ -5,6 +5,26 @@ import 'package:anywork_client/models.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+const _workspaceRecoveryIssue = StudioRecoveryIssue(
+  id: 'workspace-recovery',
+  scope: RecoveryIssueScope.thread,
+  category: RecoveryIssueCategory.repository,
+  impact: RecoveryIssueImpact.executionBlocked,
+  availableActions: [RecoveryIssueAction.retry],
+  projectId: 'project',
+  threadId: 'thread',
+  detail: 'Workspace root is unavailable',
+);
+
+const _actionlessRecoveryIssue = StudioRecoveryIssue(
+  id: 'application-readonly',
+  scope: RecoveryIssueScope.application,
+  category: RecoveryIssueCategory.repository,
+  impact: RecoveryIssueImpact.executionBlocked,
+  availableActions: [],
+  detail: 'No automated repair is available',
+);
+
 /// 逐一渲染 typed 原因的文案；每种原因各占一个独立的 Text。
 class _LabelProbe extends StatelessWidget {
   const _LabelProbe();
@@ -23,6 +43,10 @@ class _LabelProbe extends StatelessWidget {
           context.composerFailureReasonLabel(null),
           key: const ValueKey('failure-none'),
         ),
+        Text(
+          context.recoveryIssueLabel(_actionlessRecoveryIssue),
+          key: const ValueKey('recovery-no-actions'),
+        ),
         for (final reason in ContinuationReason.values)
           Text(
             context.composerContinuationReasonLabel(reason),
@@ -35,7 +59,7 @@ class _LabelProbe extends StatelessWidget {
         for (final blocker in const <ComposerBlocker>[
           ComposerStorageBlocker(),
           ComposerModelBlocker(),
-          ComposerWorkspaceBlocker(),
+          ComposerRecoveryBlocker(_workspaceRecoveryIssue),
         ])
           Text(
             context.composerBlockerLabel(blocker),
@@ -104,6 +128,10 @@ void main() {
       'The last action could not be confirmed. Check the session state before retrying.',
     );
     expect(
+      _text(tester, const ValueKey('recovery-no-actions')),
+      contains('None currently available'),
+    );
+    expect(
       _text(tester, const ValueKey('continuation-none')),
       'Execution was interrupted',
       reason: '没有已知原因时使用中性说明，不回填用户停止',
@@ -121,8 +149,12 @@ void main() {
       'The current model is unavailable, so continuing is unavailable.',
     );
     expect(
-      _text(tester, ValueKey('blocker-$ComposerWorkspaceBlocker')),
-      'The session workspace is unavailable, so continuing is unavailable.',
+      _text(tester, ValueKey('blocker-$ComposerRecoveryBlocker')),
+      'Recovery issue workspace-recovery\n'
+      'Session thread · project project · '
+      'Execution is blocked; safe history remains readable\n'
+      'Workspace root is unavailable\n'
+      'Available recovery actions: Retry',
     );
     expect(
       labels[StudioFailureReason.threadArchived],
@@ -155,6 +187,10 @@ void main() {
       '上一次操作未能确认，请先核对会话状态再重试。',
     );
     expect(
+      _text(tester, const ValueKey('recovery-no-actions')),
+      contains('当前无可用操作'),
+    );
+    expect(
       _text(tester, const ValueKey('continuation-none')),
       '执行已中断',
       reason: '中性说明不得回填「已被用户停止」',
@@ -163,6 +199,13 @@ void main() {
     expect(
       _text(tester, ValueKey('blocker-$ComposerStorageBlocker')),
       '保存尚未完成，暂时不能继续。',
+    );
+    expect(
+      _text(tester, ValueKey('blocker-$ComposerRecoveryBlocker')),
+      '恢复问题 workspace-recovery\n'
+      '会话 thread · 项目 project · 执行受阻，仍可读取安全的历史\n'
+      'Workspace root is unavailable\n'
+      '可用恢复操作：重试',
     );
     expect(
       _text(tester, const ValueKey('failure-threadArchived')),

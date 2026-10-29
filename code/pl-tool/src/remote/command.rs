@@ -45,22 +45,30 @@ impl RemoteCommandBackend {
             .client
             .shell_argv(&command)
             .map_err(remote_exec_error)?;
-        self.spawn_remote(RemoteSpawnRequest {
-            process_id,
-            workspace_id: self.workspace_id.clone(),
-            program,
-            arguments,
-            remove_environment: vec!["BASH_ENV".into(), "ENV".into()],
-            cwd,
-            environment: BTreeMap::new(),
-            capture: RemoteCapture::None,
-        })
+        self.spawn_remote(
+            RemoteSpawnRequest {
+                process_id,
+                workspace_id: self.workspace_id.clone(),
+                program,
+                arguments,
+                remove_environment: vec!["BASH_ENV".into(), "ENV".into()],
+                cwd,
+                environment: BTreeMap::new(),
+                capture: RemoteCapture::None,
+                remaining_timeout_ms: None,
+            },
+            None,
+        )
         .await
     }
 
-    async fn spawn_remote(&self, request: RemoteSpawnRequest) -> Result<ManagedCommand> {
+    async fn spawn_remote(
+        &self,
+        request: RemoteSpawnRequest,
+        start: Option<crate::command::CommandStartControl>,
+    ) -> Result<ManagedCommand> {
         self.client
-            .spawn_workspace_process(self.lease.clone(), request)
+            .spawn_workspace_process(self.lease.clone(), request, start)
             .await
             .map_err(remote_exec_error)
     }
@@ -107,26 +115,39 @@ impl CommandBackend for RemoteCommandBackend {
     }
 
     async fn spawn(&self, request: CommandSpawnRequest) -> Result<ManagedCommand> {
-        let cwd = self.lease.path.trim_end_matches('/').to_owned() + "/" + &request.cwd;
-        let plan =
-            crate::command::capture_plan(&request.command, &cwd, request.capture_limit_bytes);
         let (program, arguments) = self
             .client
             .shell_argv(&request.command)
             .map_err(remote_exec_error)?;
-        self.spawn_remote(RemoteSpawnRequest {
-            process_id: request.process_id,
-            workspace_id: self.workspace_id.clone(),
-            program,
-            arguments,
-            remove_environment: vec!["BASH_ENV".into(), "ENV".into()],
-            cwd: request.cwd,
-            environment: BTreeMap::new(),
-            capture: RemoteCapture::File {
-                path: path_to_posix(request.output_target.capture_file())?,
-                plan,
+        self.spawn_remote(
+            RemoteSpawnRequest {
+                process_id: request.process_id,
+                workspace_id: self.workspace_id.clone(),
+                program,
+                arguments,
+                remove_environment: vec!["BASH_ENV".into(), "ENV".into()],
+                cwd: request.cwd,
+                environment: BTreeMap::new(),
+                capture: RemoteCapture::Files {
+                    stdout_path: path_to_posix(request.output_target.capture_file())?,
+                    stderr_path: path_to_posix(
+                        request
+                            .output_target
+                            .stream_capture_file(CommandCaptureStream::Stderr),
+                    )?,
+                    limit_bytes: request.capture_limit_bytes,
+                },
+                remaining_timeout_ms: Some(
+                    request
+                        .start_control
+                        .deadline()
+                        .saturating_duration_since(tokio::time::Instant::now())
+                        .as_millis()
+                        .min(u64::MAX as u128) as u64,
+                ),
             },
-        })
+            Some(request.start_control),
+        )
         .await
     }
 

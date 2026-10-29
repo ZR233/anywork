@@ -12689,6 +12689,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  BridgeRecoveryImpact dco_decode_bridge_recovery_impact(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return BridgeRecoveryImpact.values[raw as int];
+  }
+
+  @protected
   BridgeRecoveryIssueAction dco_decode_bridge_recovery_issue_action(
     dynamic raw,
   ) {
@@ -13707,18 +13713,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 8)
-      throw Exception('unexpected arr length: expect 8 but see ${arr.length}');
+    if (arr.length != 9)
+      throw Exception('unexpected arr length: expect 9 but see ${arr.length}');
     return BridgeStudioRecoveryIssueDto(
       id: dco_decode_String(arr[0]),
       scope: dco_decode_bridge_recovery_issue_scope(arr[1]),
       category: dco_decode_bridge_recovery_issue_category(arr[2]),
-      availableActions: dco_decode_list_bridge_recovery_issue_action(arr[3]),
-      projectId: dco_decode_opt_String(arr[4]),
-      threadId: dco_decode_opt_String(arr[5]),
-      detail: dco_decode_String(arr[6]),
+      impact: dco_decode_bridge_recovery_impact(arr[3]),
+      availableActions: dco_decode_list_bridge_recovery_issue_action(arr[4]),
+      projectId: dco_decode_opt_String(arr[5]),
+      threadId: dco_decode_opt_String(arr[6]),
+      detail: dco_decode_String(arr[7]),
       worktree: dco_decode_opt_box_autoadd_bridge_worktree_recovery_preview_dto(
-        arr[7],
+        arr[8],
       ),
     );
   }
@@ -13832,8 +13839,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   BridgeThreadActivity dco_decode_bridge_thread_activity(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 10)
-      throw Exception('unexpected arr length: expect 10 but see ${arr.length}');
+    if (arr.length != 12)
+      throw Exception('unexpected arr length: expect 12 but see ${arr.length}');
     return BridgeThreadActivity(
       threadId: dco_decode_String(arr[0]),
       identity: dco_decode_String(arr[1]),
@@ -13844,7 +13851,9 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       kind: dco_decode_bridge_thread_activity_kind(arr[6]),
       summary: dco_decode_String(arr[7]),
       summaryTruncated: dco_decode_bool(arr[8]),
-      tools: dco_decode_bridge_thread_activity_tools(arr[9]),
+      thinkingSummary: dco_decode_opt_String(arr[9]),
+      thinkingSeconds: dco_decode_opt_box_autoadd_u_64(arr[10]),
+      tools: dco_decode_bridge_thread_activity_tools(arr[11]),
     );
   }
 
@@ -25432,6 +25441,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  BridgeRecoveryImpact sse_decode_bridge_recovery_impact(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var inner = sse_decode_i_32(deserializer);
+    return BridgeRecoveryImpact.values[inner];
+  }
+
+  @protected
   BridgeRecoveryIssueAction sse_decode_bridge_recovery_issue_action(
     SseDeserializer deserializer,
   ) {
@@ -26715,6 +26733,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_id = sse_decode_String(deserializer);
     var var_scope = sse_decode_bridge_recovery_issue_scope(deserializer);
     var var_category = sse_decode_bridge_recovery_issue_category(deserializer);
+    var var_impact = sse_decode_bridge_recovery_impact(deserializer);
     var var_availableActions = sse_decode_list_bridge_recovery_issue_action(
       deserializer,
     );
@@ -26729,6 +26748,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       id: var_id,
       scope: var_scope,
       category: var_category,
+      impact: var_impact,
       availableActions: var_availableActions,
       projectId: var_projectId,
       threadId: var_threadId,
@@ -26928,6 +26948,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_kind = sse_decode_bridge_thread_activity_kind(deserializer);
     var var_summary = sse_decode_String(deserializer);
     var var_summaryTruncated = sse_decode_bool(deserializer);
+    var var_thinkingSummary = sse_decode_opt_String(deserializer);
+    var var_thinkingSeconds = sse_decode_opt_box_autoadd_u_64(deserializer);
     var var_tools = sse_decode_bridge_thread_activity_tools(deserializer);
     return BridgeThreadActivity(
       threadId: var_threadId,
@@ -26939,6 +26961,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       kind: var_kind,
       summary: var_summary,
       summaryTruncated: var_summaryTruncated,
+      thinkingSummary: var_thinkingSummary,
+      thinkingSeconds: var_thinkingSeconds,
       tools: var_tools,
     );
   }
@@ -39162,6 +39186,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_bridge_recovery_impact(
+    BridgeRecoveryImpact self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.index, serializer);
+  }
+
+  @protected
   void sse_encode_bridge_recovery_issue_action(
     BridgeRecoveryIssueAction self,
     SseSerializer serializer,
@@ -40107,6 +40140,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_String(self.id, serializer);
     sse_encode_bridge_recovery_issue_scope(self.scope, serializer);
     sse_encode_bridge_recovery_issue_category(self.category, serializer);
+    sse_encode_bridge_recovery_impact(self.impact, serializer);
     sse_encode_list_bridge_recovery_issue_action(
       self.availableActions,
       serializer,
@@ -40253,6 +40287,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_bridge_thread_activity_kind(self.kind, serializer);
     sse_encode_String(self.summary, serializer);
     sse_encode_bool(self.summaryTruncated, serializer);
+    sse_encode_opt_String(self.thinkingSummary, serializer);
+    sse_encode_opt_box_autoadd_u_64(self.thinkingSeconds, serializer);
     sse_encode_bridge_thread_activity_tools(self.tools, serializer);
   }
 

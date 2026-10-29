@@ -194,18 +194,44 @@ struct WorkerState {
 struct Observation {
     thread: ThreadHandle,
     state: Arc<WorkerState>,
-    task: Mutex<Option<JoinHandle<()>>>,
+    task: tokio::sync::Mutex<Option<JoinHandle<()>>>,
 }
 impl Drop for Observation {
     fn drop(&mut self) {
-        if let Some(task) = self
-            .task
-            .get_mut()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take()
-        {
+        if let Some(task) = self.task.get_mut().take() {
             task.abort();
         }
+    }
+}
+
+impl Observation {
+    async fn join(&self) -> Result<()> {
+        let mut slot = self.task.lock().await;
+        if let Some(task) = slot.as_mut() {
+            let joined = task.await;
+            *slot = None;
+            if let Err(error) = joined {
+                let error = Arc::new(anyhow::Error::new(error));
+                self.state.progress.send_modify(|progress| {
+                    progress.finished = true;
+                    progress.error = Some(error.clone());
+                });
+                bail!("Thread product observer join failed: {error:#}");
+            }
+            if !self.state.progress.borrow().finished {
+                let error = Arc::new(anyhow::anyhow!(
+                    "Thread product observer ended without its final durable projection"
+                ));
+                self.state.progress.send_modify(|progress| {
+                    progress.finished = true;
+                    progress.error = Some(error.clone());
+                });
+            }
+        }
+        if let Some(error) = self.state.progress.borrow().error.as_ref() {
+            bail!("Thread product observer failed: {error:#}");
+        }
+        Ok(())
     }
 }
 #[derive(Clone)]
@@ -251,8 +277,14 @@ impl ThreadObservations {
         thread_factory: crate::studio::thread_factory::StudioThreadFactory,
         rejected_tools: super::rejected_tools::RejectedToolOwners,
     ) -> Result<()> {
+        let rejected_preparations = rejected_tools.clone();
+        self.0
+            .projector
+            .threads
+            .retain_rejected_with(move |thread, tools| rejected_preparations.retain(thread, tools));
         let owner = Arc::downgrade(&self.0);
         let draining = owner.clone();
+        let synchronizing = owner.clone();
         let message_store = self.0.projector.store.clone();
         let closing_factory = thread_factory.clone();
         self.0.projector.threads.observe_assembly(
@@ -278,8 +310,15 @@ impl ThreadObservations {
                                 source: source.into_boxed_dyn_error(),
                             }
                         })?;
+                    if !observations.0.projector.threads.is_report_receiver(&id) {
                     thread_factory.forget_tool_binding(&id);
-                    observations.drain(&id);
+                    }
+                    observations.drain(&id).await.map_err(|source| {
+                        crate::thread_assembler::ThreadAssemblyError::Resource {
+                            operation: "join Thread storage and observation workers",
+                            source: source.into_boxed_dyn_error(),
+                        }
+                    })?;
                     Ok(())
                 })
             },
@@ -337,6 +376,18 @@ impl ThreadObservations {
                     })
                 })
             },
+            move |id| {
+                let owner = synchronizing.clone();
+                Box::pin(async move {
+                    let owner = owner.upgrade().ok_or(crate::thread_assembler::ThreadAssemblyError::Closed)?;
+                    ThreadObservations(owner).synchronize(Some(&id)).await.map_err(|source| {
+                        crate::thread_assembler::ThreadAssemblyError::Resource {
+                            operation: "acknowledge parent report handoff",
+                            source: source.into_boxed_dyn_error(),
+                        }
+                    })
+                })
+            },
         )?;
         Ok(())
     }
@@ -347,19 +398,49 @@ impl ThreadObservations {
     /// registry released the owner would keep every session that was ever activated resident. The
     /// entry is removed once its final projection is durable, so a later re-activation installs a
     /// fresh observation instead of reusing the released handle.
-    fn drain(&self, id: &str) {
+    async fn drain(&self, id: &str) -> Result<()> {
+        let observations = self
+            .0
+            .observations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(id)
+            .cloned()
+            .unwrap_or_default();
+        let feed = self.live_feed(id);
+        for observation in &observations {
+            anyhow::ensure!(
+                observation.thread.snapshot().lifecycle == ThreadLifecycle::Closed,
+                "cannot retire workers of an open Thread"
+            );
+            observation.join().await?;
+            observation.state.channel.stop_and_join().await?;
+        }
         let mut all = self
             .0
             .observations
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        all.remove(id);
+        if let Some(entries) = all.get_mut(id) {
+            entries.retain(|entry| !observations.iter().any(|old| Arc::ptr_eq(entry, old)));
+            if entries.is_empty() {
+                all.remove(id);
+            }
+        }
         drop(all);
-        self.0
+        let mut live = self
+            .0
             .live
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(id);
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if live
+            .get(id)
+            .zip(feed.as_ref())
+            .is_some_and(|(current, old)| Arc::ptr_eq(current, old))
+        {
+            live.remove(id);
+        }
+        Ok(())
     }
 
     fn observe(&self, id: String, thread: ThreadHandle) {
@@ -418,7 +499,7 @@ impl ThreadObservations {
         let observation = Arc::new(Observation {
             thread,
             state,
-            task: Mutex::new(Some(task)),
+            task: tokio::sync::Mutex::new(Some(task)),
         });
         let mut all = self
             .0
@@ -468,10 +549,12 @@ impl ThreadObservations {
                 if state.finished {
                     bail!("Thread {id} product observer ended before commit {target}");
                 }
-                progress
-                    .changed()
-                    .await
-                    .context("Thread product observer progress closed")?;
+                tokio::select! {
+                    changed = progress.changed() => {
+                        changed.context("Thread product observer progress closed")?;
+                    }
+                    joined = observation.join() => joined?,
+                }
             };
             // A settled observation is also durable. Observation no longer flushes history per batch,
             // so this barrier is what keeps "the observer applied commit N" meaning "history holds
@@ -532,22 +615,19 @@ impl ThreadObservations {
                 // An unloaded child has no resident projection, so this repair reads the Turn's
                 // items from durable history: it is the cold path, and the checkpoint cannot carry
                 // the finished Turn's body.
-                let items = services
-                    .store
-                    .history(&child.id)
+                let history = services.store.history(&child.id).await?;
+                let terminal_sequence = history
+                    .terminal_report_sequence(&turn.turn_id)
                     .await?
-                    .items_for_turn(&turn.turn_id)
-                    .await?;
-                reports::publish_terminal(
-                    services,
-                    &child,
-                    &checkpoint.state,
-                    turn,
-                    checkpoint.state_revision,
-                    false,
-                    &crate::studio::thread_projection::TurnResult::from_items(&items),
-                )
-                .await?;
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("terminal report has no committed effect identity")
+                    })?;
+                if let Some(message) = history.parent_report(terminal_sequence).await? {
+                    let _delivery = services
+                        .threads
+                        .notify_parent(parent, message, false)
+                        .await?;
+                }
             }
         }
         Ok(())
@@ -574,19 +654,15 @@ impl ThreadObservations {
                 if state.finished {
                     break;
                 }
-                progress
-                    .changed()
-                    .await
-                    .context("Thread product observer ended without final state")?;
+                tokio::select! {
+                    changed = progress.changed() => {
+                        changed.context("Thread product observer ended without final state")?;
+                    }
+                    joined = observation.join() => joined?,
+                }
             }
-            let task = observation
-                .task
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .take();
-            if let Some(task) = task {
-                task.await.context("Thread product observer join failed")?;
-            }
+            observation.join().await?;
+            observation.state.channel.stop_and_join().await?;
         }
         Ok(())
     }
@@ -740,10 +816,10 @@ impl LiveOwner {
         services: &ObservationServices,
         thread_id: &str,
         write: &ThreadWrite,
-    ) -> Result<()> {
+    ) -> Result<Option<pl_core::thread::inbox::ThreadMessage>> {
         self.seed_durable_targets(services, thread_id, write)
             .await?;
-        self.project_write(write)
+        self.project_write(services, write).await
     }
 
     /// Reads the identities one effect needs but this projection holds no canonical body for.
@@ -783,14 +859,18 @@ impl LiveOwner {
     }
 
     /// Folds one admitted write into the shared session and the reliable save channel.
-    fn project_write(&mut self, write: &ThreadWrite) -> Result<()> {
+    async fn project_write(
+        &mut self,
+        services: &ObservationServices,
+        write: &ThreadWrite,
+    ) -> Result<Option<pl_core::thread::inbox::ThreadMessage>> {
         let effect = &write.effect;
         let projected = (|| {
             crate::studio::thread_projection::fold_effect_accounting(&mut self.usage, effect)?;
             self.projection
                 .advance(&self.chat, &self.thread, effect, &write.checkpoint.state)
         })();
-        let (changes, prepared) = match projected {
+        let (changes, mut prepared) = match projected {
             Ok(projected) => projected,
             Err(error) => {
                 // The writer saves exactly what this owner projects, so a projection this owner cannot
@@ -803,6 +883,9 @@ impl LiveOwner {
                 return Err(anyhow::anyhow!("live Thread projection failed: {error}"));
             }
         };
+        self.prepare_parent_report(services, write, &mut prepared)
+            .await?;
+        let parent_report = prepared.parent_report.clone();
         self.channel.prepare(prepared);
         // Retain the terminal Turn of this commit as the owner's own last-turn fact before the frame
         // is broadcast: `turnCompleted` reaches only the subscribers that exist right now, so the
@@ -818,6 +901,55 @@ impl LiveOwner {
             changes,
         });
         self.publish_retained();
+        Ok(parent_report)
+    }
+
+    async fn prepare_parent_report(
+        &self,
+        services: &ObservationServices,
+        write: &ThreadWrite,
+        prepared: &mut Arc<crate::studio::thread_projection::PreparedEffect>,
+    ) -> Result<()> {
+        let Some(turn) = write.effect.turn.as_ref().filter(|turn| {
+            turn.state != pl_core::thread::TurnState::Running
+                && self.thread.parent_thread_id.is_some()
+        }) else {
+            return Ok(());
+        };
+        let result = if let Some(result) = self.projection.turn_result(&turn.turn_id) {
+            result.clone()
+        } else {
+            await_history_durable(
+                &self.channel,
+                &self.thread.id,
+                self.channel.handoff_ticket(),
+            )
+            .await?;
+            let history = services.store.history(&self.thread.id).await?;
+            let mut items = history
+                .items_for_turn(&turn.turn_id)
+                .await?
+                .into_iter()
+                .map(|item| (item.id.clone(), item))
+                .collect::<std::collections::BTreeMap<_, _>>();
+            for item in prepared
+                .items
+                .iter()
+                .filter(|item| item.turn_id == turn.turn_id)
+            {
+                items.insert(item.id.clone(), item.clone());
+            }
+            let mut items = items.into_values().collect::<Vec<_>>();
+            items.sort_by_key(|item| item.ordinal);
+            crate::studio::thread_projection::TurnResult::from_items(&items)
+        };
+        Arc::make_mut(prepared).parent_report = Some(reports::terminal_message(
+            &self.thread,
+            &write.checkpoint.state,
+            turn,
+            write.effect.sequence,
+            &result,
+        )?);
         Ok(())
     }
 
@@ -842,7 +974,7 @@ impl LiveOwner {
             &write.effect,
             &write.checkpoint.state,
         );
-        let prepared = match projected {
+        let mut prepared = match projected {
             Ok(prepared) => prepared,
             Err(error) => {
                 self.channel.fail_projection(
@@ -852,6 +984,8 @@ impl LiveOwner {
                 return Err(anyhow::anyhow!("live Thread projection failed: {error}"));
             }
         };
+        self.prepare_parent_report(services, write, &mut prepared)
+            .await?;
         if let Some(turn) = crate::studio::thread_projection::prepared_terminal_turn(&prepared) {
             self.feed.publish_last_turn(Arc::new(turn));
         }
@@ -1161,6 +1295,7 @@ async fn run(
                 id: issue_id.clone(),
                 scope: crate::studio::StudioRecoveryIssueScope::Thread,
                 category: crate::studio::StudioRecoveryIssueCategory::ToolCatalog,
+                impact: crate::studio::StudioRecoveryImpact::Advisory,
                 action: crate::studio::StudioRecoveryIssueAction::Retry,
                 project_id: None,
                 thread_id: Some(worker.id.clone()),
@@ -1457,31 +1592,19 @@ impl ProjectionWorker {
                 live.prepare_behind(services, id.as_str(), &write).await?;
                 continue;
             }
-            live.advance(services, id.as_str(), &write).await?;
+            let parent_report = live.advance(services, id.as_str(), &write).await?;
             billing::record(
                 &services.performance,
                 &owner_product.root_thread_id,
                 &write.effect,
             )?;
             newest_commit_at = newest_commit_at.max(write.effect.committed_at);
-            if let Some(turn) = write
-                .effect
-                .turn
-                .as_ref()
-                .filter(|turn| turn.state != pl_core::thread::TurnState::Running)
-            {
-                // The terminal report carries the whole Turn from the reliable in-memory projection:
-                // a long Turn commits its text and tool facts over many effects, so reporting only
-                // the effect that finished it would drop the earlier visible output.
-                let result = turn_result(services, live, &turn.turn_id).await?;
-                reports::publish_terminal(
+            if let Some(message) = parent_report {
+                let _delivery = reports::publish_terminal(
                     services,
                     &owner_product,
-                    snapshot,
-                    turn,
-                    sequence,
+                    message,
                     sequence > recovered_through,
-                    &result,
                 )
                 .await?;
             }
@@ -1594,6 +1717,69 @@ mod storage_fault_tests {
         thread.agent_path = thread_id.to_owned();
         thread.root_thread_id = thread_id.to_owned();
         thread
+    }
+
+    #[tokio::test]
+    async fn observation_join_retains_wait_ownership_and_worker_failure() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let store = StudioStore::open(temp.path().join("studio/v2/studio.sqlite")).await?;
+        let thread = bound_thread("observation-stop-ack");
+        register_test_thread(&store, &thread).await?;
+        let sink = ThreadStorageSink::new(store.clone(), thread.clone(), None).await?;
+        let channel = store.thread_persistence().history_channel(&thread.id);
+        let owner = ThreadHandle::resume_without_model(thread.id.clone(), None)?;
+        owner.close().await?;
+        let (progress, _) = watch::channel(Progress::default());
+        let publication = progress.clone();
+        let (release, released) = tokio::sync::oneshot::channel();
+        let observation = Observation {
+            thread: owner.clone(),
+            state: Arc::new(WorkerState {
+                progress,
+                retry: Notify::new(),
+                channel: channel.clone(),
+            }),
+            task: tokio::sync::Mutex::new(Some(tokio::spawn(async move {
+                let _ = released.await;
+                publication.send_modify(|progress| progress.finished = true);
+            }))),
+        };
+        let mut waiting = Box::pin(observation.join());
+        assert!(futures::poll!(waiting.as_mut()).is_pending());
+        drop(waiting);
+        assert!(
+            observation.task.lock().await.is_some(),
+            "cancellation cannot detach the observer's join handle"
+        );
+        release
+            .send(())
+            .map_err(|_| anyhow::anyhow!("controlled observer lost its owner"))?;
+        observation.join().await?;
+        assert!(observation.task.lock().await.is_none());
+        observation.join().await?;
+
+        let (progress, _) = watch::channel(Progress::default());
+        let failed = Observation {
+            thread: owner,
+            state: Arc::new(WorkerState {
+                progress,
+                retry: Notify::new(),
+                channel: channel.clone(),
+            }),
+            task: tokio::sync::Mutex::new(Some(tokio::spawn(async {
+                panic!("controlled history observation exit");
+            }))),
+        };
+        assert!(failed.join().await.is_err());
+        assert!(failed.state.progress.borrow().finished);
+        assert!(failed.task.lock().await.is_none());
+        assert!(
+            failed.join().await.is_err(),
+            "retry cannot erase the failed observation ACK"
+        );
+        channel.stop_and_join().await?;
+        drop(sink);
+        Ok(())
     }
 
     /// 跨重开的普通问答：回答 effect 只带交互与隐藏 continuation。

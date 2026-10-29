@@ -12,9 +12,9 @@ use std::path::{Path, PathBuf};
 
 const PLATFORM: &str = "windows-x86_64";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug)]
 enum ReleaseGuiStep {
-    Stage,
+    Stage(PathBuf),
     Finalize,
     Verify,
 }
@@ -22,7 +22,7 @@ enum ReleaseGuiStep {
 pub(crate) fn run(options: ReleaseGuiOptions) -> Result<()> {
     let workspace_root = paths::workspace_root()?;
     let (step, raw_version) = match options {
-        ReleaseGuiOptions::Stage { version } => (ReleaseGuiStep::Stage, version),
+        ReleaseGuiOptions::Stage { version, bundle } => (ReleaseGuiStep::Stage(bundle), version),
         ReleaseGuiOptions::Finalize { version } => (ReleaseGuiStep::Finalize, version),
         ReleaseGuiOptions::Verify { version } => (ReleaseGuiStep::Verify, version),
     };
@@ -31,7 +31,9 @@ pub(crate) fn run(options: ReleaseGuiOptions) -> Result<()> {
     let release_dir = release_dir(&workspace_root, &version);
 
     match step {
-        ReleaseGuiStep::Stage => package::stage(&workspace_root, &release_dir, &version),
+        ReleaseGuiStep::Stage(bundle) => {
+            package::stage(&workspace_root, &release_dir, &version, &bundle)
+        }
         ReleaseGuiStep::Finalize => manifest::finalize(&workspace_root, &release_dir, &version),
         ReleaseGuiStep::Verify => manifest::verify(&workspace_root, &release_dir, &version),
     }

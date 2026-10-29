@@ -20,6 +20,11 @@ impl StudioThreadFactory {
         request: ThreadPreparation,
     ) -> Result<StudioThreadSpec, ThreadAssemblyError> {
         let id = &request.identity.id;
+        self.services
+            .store
+            .ensure_agent_execution_allowed(id)
+            .await
+            .map_err(|error| resource_error("check child retirement intent", error))?;
         let thread = self.thread_record(id).await?;
         if thread.parent_thread_id != request.identity.parent_id
             || thread.parent_thread_id.is_none()
@@ -35,6 +40,15 @@ impl StudioThreadFactory {
             ));
         }
         let protocol_thread: pl_protocol::Thread = thread.clone().into();
+        self.ensure_bot_execution_workspace(&protocol_thread, None)
+            .await?;
+        self.verify_execution_workspace(
+            &protocol_thread,
+            None,
+            super::ExecutionWorkspaceCheck::Prepare,
+        )
+        .await
+        .map_err(Self::workspace_usage_error)?;
         let checkpoint =
             super::recovery::load_checkpoint_for_recovery(&self.services.store, &protocol_thread)
                 .await
@@ -52,8 +66,19 @@ impl StudioThreadFactory {
             return Err(ThreadAssemblyError::Closed);
         }
         let mut project = self.project_record(&thread.project_id).await?;
+        let workspace_usage = self
+            .reserve_thread_workspace_use(id, &thread.root_thread_id, &project)
+            .await
+            .map_err(Self::workspace_usage_error)?;
+        request.workspace_owner.retain(&workspace_usage);
         let bot_root = self
-            .bind_bot_project(id, &thread.root_thread_id, &mut project)
+            .bind_bot_project(
+                id,
+                &thread.root_thread_id,
+                &mut project,
+                &workspace_usage,
+                super::root_resources::BotWorkspacePreparation::Existing,
+            )
             .await?;
         let restored = checkpoint.state.clone();
         let saved = restored
@@ -126,40 +151,40 @@ impl StudioThreadFactory {
                 "child project target changed".into(),
             ));
         }
-        // 非 worktree child 的工作区根跟随其根会话；`worktree` child 仍以 Project 仓库
-        // `HEAD` 为 base。
+        // Resolve the actual root once. Existing child worktrees keep their original receipt;
+        // this boundary neither selects a new HEAD nor rebuilds the session checkout.
         let workspace_mode = thread.workspace_mode;
-        let root_thread_id = thread.root_thread_id.clone();
+        let root_thread = self.thread_record(&thread.root_thread_id).await?;
+        if root_thread.workspace_mode != workspace_mode {
+            return Err(ThreadAssemblyError::Identity(
+                "saved child root workspace mode changed".into(),
+            ));
+        }
+        let local_root = bot_root
+            .clone()
+            .unwrap_or_else(|| PathBuf::from(&root_thread.workspace_path));
         let project_copy = project.clone();
-        let worktrees = self.services.worktrees.clone();
-        let (root, session_root) = tokio::task::spawn_blocking(move || {
-            let project_root = match bot_root {
+        let root = tokio::task::spawn_blocking(move || {
+            Ok::<_, anyhow::Error>(match bot_root {
                 Some(root) => root,
                 None => crate::studio::agent_host::workspace_preparation::resolved_project_root(
                     &project_copy,
                 )?,
-            };
-            let session_root =
-                crate::studio::agent_host::workspace_preparation::root_session_workspace_root(
-                    &worktrees,
-                    workspace_mode,
-                    &root_thread_id,
-                    project_root.clone(),
-                )?;
-            Ok::<_, anyhow::Error>((project_root, session_root))
+            })
         })
         .await?
         .map_err(|error| resource_error("resolve restored session workspace", error))?;
-        if workspace_mode == pl_protocol::ThreadWorkspaceMode::Worktree {
-            crate::studio::agent_host::workspace_preparation::verify_root_session_worktree(
+        let session_root =
+            crate::studio::agent_host::workspace_preparation::root_session_workspace_root(
+                &self.services.store,
                 &self.services.worktrees,
                 &self.services.ssh_manager,
+                &root_thread,
                 &project,
-                &thread.root_thread_id,
+                local_root,
             )
             .await
-            .map_err(|error| resource_error("verify restored root session workspace", error))?;
-        }
+            .map_err(|error| resource_error("resolve restored root session workspace", error))?;
         if std::path::Path::new(&assignment.project_root) != root {
             return Err(ThreadAssemblyError::Identity(
                 "saved child workspace has a different project root".into(),
@@ -171,13 +196,8 @@ impl StudioThreadFactory {
                 if std::path::Path::new(&assignment.root) == session_root
                     && assignment.worktree.is_none() => {}
             pl_protocol::AgentWorkspaceMode::Review => {
-                self.ensure_restored_review_workspace(
-                    &assignment,
-                    &thread,
-                    &project,
-                    &session_root,
-                )
-                .await?;
+                self.ensure_restored_review_workspace(&assignment, &thread, &project)
+                    .await?;
             }
             pl_protocol::AgentWorkspaceMode::Worktree => {
                 let receipt = assignment
@@ -217,6 +237,9 @@ impl StudioThreadFactory {
             ));
         }
         let workspace = super::child_resources::assigned_workspace(&assignment, workspace_mode);
+        self.assign_workspace_use(&workspace_usage, &project, workspace.root())
+            .await
+            .map_err(Self::workspace_usage_error)?;
 
         let resources = FileResourceStore::new(
             self.services
@@ -228,6 +251,8 @@ impl StudioThreadFactory {
         );
         let mut prepared = self
             .prepare_thread_tools(ThreadToolAssembly {
+                assignment: Some(&assignment),
+                workspace_usage: workspace_usage.clone(),
                 thread_id: id,
                 cancellation: &request.cancellation,
                 config: &config,
@@ -257,6 +282,7 @@ impl StudioThreadFactory {
         )
         .with_hosted_tools(prepared.hosted);
         let spec = StudioThreadSpec {
+            workspace_usage: Some(workspace_usage),
             preparation_guard: prepared.binding_guard.take(),
             context_preparation: crate::compaction::preparer(
                 &route,
@@ -287,101 +313,34 @@ impl StudioThreadFactory {
         Ok(prepared.tools.install(spec))
     }
 
-    /// 校验 review child 的被审目标工作区仍与冻结收据一致；reviewer 不拥有 lease，
-    /// 因此从不代为重建被审者的工作树，目标缺失或已清理时类型化失败。
+    /// Creation and restoration borrow the same target's full frozen actual assignment. A missing
+    /// lease never means caller session_root, and review of a borrower never transfers ownership.
     async fn ensure_restored_review_workspace(
         &self,
         assignment: &pl_protocol::AgentWorkspaceAssignmentSnapshot,
         thread: &crate::studio::ThreadRecord,
         project: &crate::studio::ProjectRecord,
-        session_root: &std::path::Path,
     ) -> Result<(), ThreadAssemblyError> {
-        use crate::studio::agent_host::worktree_lease::{
-            WorktreeLeaseOwnerKind, WorktreeLeaseState,
-        };
-        let target_id = &assignment
+        let target = assignment
             .review_target
             .as_ref()
-            .ok_or_else(|| {
-                ThreadAssemblyError::Identity(format!(
-                    "child {} review workspace has no review target",
-                    thread.id
-                ))
-            })?
-            .agent_id;
-        let target = self.thread_record(target_id).await?;
-        if target.parent_thread_id != thread.parent_thread_id
-            || target.root_thread_id != thread.root_thread_id
-            || target.project_id != thread.project_id
+            .ok_or_else(|| ThreadAssemblyError::Identity("review target is missing".into()))?;
+        let caller = thread
+            .parent_thread_id
+            .as_deref()
+            .ok_or(ThreadAssemblyError::ChildDepth)?;
+        let parent = self.thread_record(caller).await?;
+        let frozen = self
+            .resolve_review_target(&target.agent_id, caller, &parent, project)
+            .await?;
+        if assignment.root != frozen.assignment.root
+            || assignment.project_root != frozen.assignment.project_root
+            || assignment.worktree != frozen.assignment.worktree
+            || assignment.writable_paths.is_some()
         {
-            return Err(ThreadAssemblyError::Identity(format!(
-                "review target {target_id} is not a sibling of child {}",
-                thread.id
-            )));
-        }
-        match &assignment.worktree {
-            Some(expected) => {
-                // The reviewed directory is the one the assignment names, and it is bound to the same
-                // facts a reused child site is bound to: the review child must not run anywhere the
-                // target's own lease and receipt do not prove.
-                let remote = project.ssh_alias.is_some();
-                if !same_workspace_path(&assignment.root, &expected.path, remote) {
-                    return Err(ThreadAssemblyError::Identity(format!(
-                        "review workspace root is not the reviewed worktree of {target_id}"
-                    )));
-                }
-                let lease = self
-                    .services
-                    .worktrees
-                    .get(target_id)
-                    .filter(|lease| lease.owner_kind == WorktreeLeaseOwnerKind::Child)
-                    .ok_or_else(|| {
-                        ThreadAssemblyError::Identity(format!(
-                            "review target {target_id} no longer owns the reviewed worktree"
-                        ))
-                    })?;
-                if lease.state == WorktreeLeaseState::Cleaned {
-                    return Err(ThreadAssemblyError::Identity(format!(
-                        "review target {target_id} worktree was already cleaned"
-                    )));
-                }
-                if lease.state == WorktreeLeaseState::CleanupRequested {
-                    return Err(ThreadAssemblyError::Identity(format!(
-                        "review target {target_id} worktree is being cleaned up"
-                    )));
-                }
-                let (repository_root, _repository) =
-                    self.restored_child_repository(project).await?;
-                lease
-                    .validate_identity()
-                    .map_err(|error| resource_error("validate reviewed worktree lease", error))?;
-                verify_worktree_declarations(&lease, expected, &target, project, &repository_root)
-                    .map_err(|reason| {
-                        ThreadAssemblyError::Identity(format!(
-                            "review target {target_id} worktree: {reason}"
-                        ))
-                    })?;
-                let manager = crate::studio::agent_host::workspace_preparation::manager_from_lease(
-                    &self.services.ssh_manager,
-                    &lease,
-                )
-                .map_err(|error| resource_error("open reviewed workspace manager", error))?;
-                let handle = crate::agent::worktree::WorktreeHandle {
-                    path: PathBuf::from(&lease.path),
-                    base_commit: lease.base_commit.clone(),
-                };
-                manager
-                    .verify(&handle)
-                    .await
-                    .map_err(|error| resource_error("verify reviewed workspace", error))?;
-            }
-            None => {
-                if std::path::Path::new(&assignment.root) != session_root {
-                    return Err(ThreadAssemblyError::Identity(
-                        "review workspace root does not match the session workspace".into(),
-                    ));
-                }
-            }
+            return Err(ThreadAssemblyError::Identity(
+                "review target actual assignment differs from the original frozen borrow".into(),
+            ));
         }
         Ok(())
     }
@@ -425,9 +384,11 @@ impl StudioThreadFactory {
         verify_worktree_declarations(&lease, receipt, thread, project, &repository_root)
             .map_err(|reason| missing(&reason))?;
         let manager = crate::studio::agent_host::workspace_preparation::manager_from_lease(
+            &self.services.store,
             &self.services.ssh_manager,
             &lease,
         )
+        .await
         .map_err(|error| resource_error("open restored child workspace manager", error))?;
         let handle = crate::agent::worktree::WorktreeHandle {
             path: PathBuf::from(&lease.path),
@@ -457,6 +418,7 @@ impl StudioThreadFactory {
             &project_root,
         )
         .await
+        .map(|(repository, manager, _)| (repository, manager))
         .map_err(|error| resource_error("resolve restored child repository", error))
     }
 }

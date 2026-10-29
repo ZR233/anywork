@@ -8,6 +8,7 @@ mod recovery;
 mod routing;
 mod window;
 mod wire;
+mod worktree;
 
 use super::*;
 use anyhow::ensure;
@@ -23,6 +24,7 @@ pub enum Scenario {
     Window,
     Enablement,
     Recovery,
+    Worktree,
 }
 
 impl Scenario {
@@ -33,6 +35,7 @@ impl Scenario {
             "delegation-window" => Some(Self::Window),
             "delegation-enablement" => Some(Self::Enablement),
             "delegation-recovery" => Some(Self::Recovery),
+            "delegation-worktree" => Some(Self::Worktree),
             _ => None,
         }
     }
@@ -44,6 +47,7 @@ impl Scenario {
             Self::Window => "delegation-window",
             Self::Enablement => "delegation-enablement",
             Self::Recovery => "delegation-recovery",
+            Self::Worktree => "delegation-worktree",
         }
     }
 }
@@ -53,9 +57,18 @@ pub const STATE_PATH: &str = "/delegation/state";
 pub const RELEASE_PATH: &str = "/delegation/release";
 pub const SHARED_MODEL: &str = "delegation-shared";
 pub const OTHER_MODEL: &str = "delegation-other";
-/// Observed model-visible activation wrapper; insufficient without the closed
-/// target, receipt, invocation and no-new-work checks in the scenario flow.
-pub const CLOSED_SEND_ACTIVATION_ERROR: &str = "Agent service failed: Thread activation failed";
+
+const PERMANENTLY_CLOSED_SEND_PREFIX: &str = "Agent service failed: Permanently closed agent cannot execute or receive a new evaluation (correlation id: ";
+
+/// Identifies the persisted permanent-close rejection without interpreting its opaque correlation ID.
+pub fn is_permanently_closed_send_error(error: &str) -> bool {
+    error
+        .strip_prefix(PERMANENTLY_CLOSED_SEND_PREFIX)
+        .and_then(|error| error.strip_suffix(')'))
+        .is_some_and(|correlation_id| {
+            !correlation_id.trim().is_empty() && !correlation_id.chars().any(char::is_control)
+        })
+}
 
 #[derive(Debug, Clone, Default)]
 pub(super) struct Environment {
@@ -534,6 +547,13 @@ pub fn verify_requests(scenario: Scenario, requests: &[RecordedRequest]) -> Resu
             "recovery_child_review_initial",
             "recovery_child_repair",
             "recovery_child_review_resumed",
+        ],
+        Scenario::Worktree => &[
+            "worktree_directory_baseline_complete",
+            "worktree_nested_baseline_complete",
+            "worktree_dirty_admission_complete",
+            "worktree_cleanup_guards_complete",
+            "worktree_reopened_complete",
         ],
     };
     for note in required {

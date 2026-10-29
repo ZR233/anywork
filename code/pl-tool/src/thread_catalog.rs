@@ -61,16 +61,14 @@ impl ThreadBuiltin {
                 "write_file",
                 "Write exact UTF-8 text to a workspace file using create, overwrite, or append mode.",
             ),
-            Self::File(kind) => {
-                ToolSpec::function(kind.name(), kind.description(), kind.input_schema())
-            }
+            Self::File(kind) => kind.to_spec(),
             Self::WriteStdin => schema::<crate::exec::WriteStdinInput>(
                 "write_stdin",
-                "Write nonempty input to an active exec task in this Thread. This does not start another command or wait for completion.",
+                "Write text to the original exec receipt taskId. closeStdin=true sends EOF after text; empty chars is valid only for EOF. A blocked write returns its own task receipt: cancel that input task to stop writing without stopping exec, then query its result. Accepted bytes and remote ACKs are distinct: never resend accepted input after cancellation. Wait for the input task before actions that require completed delivery.",
             ),
             Self::Exec => schema::<crate::exec::ExecInput>(
                 "exec",
-                "Run a shell command in the configured workspace. Completion includes process exit and output drain. Long commands return a task receipt; use wait or get_tool_task to observe completion. Full output is archived as a resource.",
+                "Execute one independent shell (cwd defaults to workspace root). timeoutSeconds is the total admission-to-exit budget and remains active after a task receipt. maxOutputChars caps combined stdout+stderr text at 65536 UTF-8 bytes; metadata, JSON escaping and protocol wrappers are additional. Results distinguish execution, capture and archive facts. stdoutFile/stderrFile are exact workspace-root-relative paths: read them with cwd omitted or set to '.', even when the original command used another cwd. Never reconstruct paths or repeat side effects to recover output; query the original receipt.",
             ),
             Self::FinishTurn => schema::<crate::finish_turn::FinishTurnInput>(
                 "finish_turn",
@@ -94,7 +92,7 @@ impl ThreadBuiltin {
             ),
             Self::Task(TaskControlKind::Query) => schema::<crate::task_control::QueryTaskInput>(
                 "get_tool_task",
-                "Read task status without consuming events. Use resultCursor to page through the immutable complete payload after completion.",
+                "Read this Thread receipt taskId without consuming events. resultCursor=0 starts UTF-8 byte pages of the immutable payload; follow nextCursor. This cursor does not page raw stdout/stderr files. Finished results remain queryable after resident eviction; never rerun commands to recover output.",
             ),
             Self::Task(TaskControlKind::Cancel) => schema::<crate::task_control::CancelTaskInput>(
                 "cancel_tool_task",

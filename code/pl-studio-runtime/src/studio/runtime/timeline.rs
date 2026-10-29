@@ -1,30 +1,20 @@
-//! 只读历史访问与共享会话解析。
+//! 只读历史访问与 checkpoint 栅栏。
 //!
-//! 这里只提供两件事：把 Thread 的共享 [`Session`] 内容源取出来（不激活 owner、不 flush writer），
-//! 以及为独立的 Turns 历史打开一个已落盘且越过 checkpoint 栅栏的 history 句柄。Timeline 正文本身
+//! 为 Turns 历史和 Timeline 内容打开一个已落盘且越过 checkpoint 栅栏的 history 句柄。Timeline 正文本身
 //! 由 [`super::timeline_content`] 统一读取，不再有第二套纯 SQL 正文入口。
 use super::StudioRuntime;
 use crate::studio::storage::history::HistoryStore;
 use anyhow::Result;
-use pl_core::chat::Session;
 
 impl StudioRuntime {
     /// Explicit access boundary, separate from strictly read-only projections and receipt queries.
     /// Prepares only existing history content; never imports TOML or activates an execution owner.
     pub(super) async fn prepare_timeline_history(&self, thread_id: &str) -> Result<HistoryStore> {
-        self.read_owned_thread(thread_id).await?;
+        let thread = self.read_protocol_thread(thread_id).await?;
+        self.check_thread_read_access(&thread)?;
         let history = self.store.history(thread_id).await?;
         history.prepare_history_access().await?;
         self.read_timeline_history(thread_id).await
-    }
-
-    /// Shares the same in-memory timeline with any live view or future producer.
-    pub(in crate::studio::runtime) async fn chat_session(
-        &self,
-        thread_id: &str,
-    ) -> Result<Session> {
-        self.read_owned_thread(thread_id).await?;
-        self.store.chat_session(thread_id).await
     }
 
     /// 只读地打开一个 Thread 的 history 数据库，并校验它已越过 durable checkpoint 栅栏。
@@ -38,18 +28,22 @@ impl StudioRuntime {
     /// replaced. A storage fault or an unreached fence is propagated as its typed error; only a
     /// reliable "no durable record" answer may become NotFound.
     pub(super) async fn read_timeline_history(&self, thread_id: &str) -> Result<HistoryStore> {
-        let history = self.store.history(thread_id).await?;
         let thread = self.read_protocol_thread(thread_id).await?;
-        let fence = crate::studio::thread_factory::recovery::load_checkpoint_read_only(
-            &self.store,
-            &thread,
-        )
+        self.check_thread_read_access(&thread)?;
+        read_history(&self.store, &thread).await
+    }
+}
+
+pub(super) async fn read_history(
+    store: &crate::studio::StudioStore,
+    thread: &pl_protocol::Thread,
+) -> Result<HistoryStore> {
+    let history = store.history(&thread.id).await?;
+    let fence = crate::studio::thread_factory::recovery::load_checkpoint_read_only(store, thread)
         .await?
         .map_or(0, |checkpoint| checkpoint.history_fence);
-        let watermark = history.watermark().await?;
-        ensure_fence_reached(watermark, fence)?;
-        Ok(history)
-    }
+    ensure_fence_reached(history.watermark().await?, fence)?;
+    Ok(history)
 }
 
 /// A watermark behind the durable fence is a retryable storage condition, never "not found".

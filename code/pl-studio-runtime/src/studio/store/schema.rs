@@ -3,7 +3,7 @@ use anyhow::{Result, ensure};
 use sea_orm::{ConnectionTrait, DatabaseBackend, DatabaseConnection, DbErr, Statement};
 use sea_orm_migration::{MigrationName, MigrationTrait, MigratorTrait, SchemaManager};
 
-pub(in crate::studio) const STUDIO_DATABASE_SCHEMA_VERSION: i64 = 25;
+pub(in crate::studio) const STUDIO_DATABASE_SCHEMA_VERSION: i64 = 26;
 
 pub(super) async fn preflight(db: &DatabaseConnection) -> Result<()> {
     let version = version(db).await?;
@@ -17,7 +17,7 @@ pub(super) async fn preflight(db: &DatabaseConnection) -> Result<()> {
         );
     } else {
         ensure!(
-            (22..=25).contains(&version),
+            (22..=26).contains(&version),
             crate::studio::startup::migration_error(
                 "Studio product",
                 "preflight",
@@ -90,6 +90,7 @@ impl MigratorTrait for Migrator {
             Box::new(DirectoryFields),
             Box::new(Delegation),
             Box::new(ExplicitClose),
+            Box::new(AgentCloseBinding),
         ]
     }
 }
@@ -177,6 +178,29 @@ impl MigrationTrait for ExplicitClose {
         if version(db).await? < 25 {
             db.execute_unprepared("ALTER TABLE threads ADD COLUMN explicitly_closed INTEGER NOT NULL DEFAULT 0 CHECK(explicitly_closed IN (0,1)); PRAGMA user_version=25").await?;
         }
+        Ok(())
+    }
+}
+
+/// AgentClose schema 1 was already persisted by the #147 product. Upgrade its embedded lease
+/// independently from top-level lease and workspace-receipt migrations; never rewrite a published step.
+struct AgentCloseBinding;
+impl MigrationName for AgentCloseBinding {
+    fn name(&self) -> &str {
+        "m20261027_000005_agent_close_binding"
+    }
+}
+#[sea_orm_migration::async_trait::async_trait]
+impl MigrationTrait for AgentCloseBinding {
+    fn use_transaction(&self) -> Option<bool> {
+        Some(true)
+    }
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        let db = manager.get_connection();
+        super::agent_close::upgrade_bindings(db)
+            .await
+            .map_err(|error| DbErr::Migration(format!("{error:#}")))?;
+        db.execute_unprepared("PRAGMA user_version=26").await?;
         Ok(())
     }
 }

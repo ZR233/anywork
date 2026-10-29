@@ -6,6 +6,55 @@ fixture 仅模拟 loopback 外部供应商及响应 gate。`verdict.json` 始终
 命令成功不能替代人工查看截图、canonical 状态、请求与进程证据。真实账号的有界任务由
 主代理另行执行，不能从模拟或 Linux 单平台结果外推兼容性。
 
+关闭工具采用 `{target, force?: false}`，不发送 `workspaceDisposition`。收据为
+`{target, agents: [{agentId, executionClosed, worktreeCleanup}], error}`；成功判定要求顶层无错误、
+目标成员存在且所有返回成员已真实关闭，工作树结果为 `notApplicable`、`notPresent` 或 `removed`，
+不能把 `pending`、`failed` 当成功。reviewer 的结果必须为 `notApplicable`；目录列表自身的
+`lifecycle=Closed` 检查继续保留，不与工具结果字段混淆。此阶段保留完整历史、可靠附件、
+独立分支/ref 与工作树外会话目录，工作树清理成功不是“全部磁盘资源已回收”。
+
+### 工作树派生与最终关闭专项
+
+`delegation-worktree` 复用上述真实工具和原生 GUI 链路。普通目录 root 与 worktree root
+分别执行同一派生旅程；后者先在自己的合成执行目录提交，使其 HEAD 与项目主目录不同。
+供应商只发工具调用，不直接运行 Git、访问产品数据库或修改租约。命令必须由生产 `exec`
+执行并等待真实终态；任何 ACK、截断输出或子代理未完成报告均不作为 Git 证据。
+
+旅程分多个有界 Turn，分别观察干净基线派生、脏工作区准入、工作树清理保护和重启读取。
+每个阶段在 provider observation 保留实际调用、完整结果与 Git/文件后置事实；Driver 保存
+真实 root/child 身份、截图和 canonical 快照，不通过填入期望值制造结果。合成 Git 写入
+仅限本次环境；只有合成文件显式暂存，身份与 hook 配置限定单条命令，不修改用户 Git 配置。
+
+- 干净基线：child 的实际目录和 HEAD 由 child 自身命令报告；HEAD 必须等于 caller
+  准入时的实际 HEAD。默认新工作树必须实际为 detached，创建前后全部 refs 不变；
+  路径、common-dir、独立管理目录及注册/backlink 共同证明现场，不能用非空分支名代替。
+  reviewer 的命令必须观察同一实际目录，不产生新工作树或分支。
+- 可变分支：只在 directory 阶段的一名已完成 child 上，经真实 exec 显式创建合成业务分支，
+  由 reviewer 观察同一实际 assignment，再改名、detach 并重新附着于改名后的分支。
+  默认 close 仍须成功且保留该业务 ref。原完成报告不改写，后续 checkout 观察单独记录；
+  不为所有 child 创建分支以掩盖默认 detached 行为。
+- 脏准入：分别建立未跟踪、暂存和未暂存改动；worktree spawn 明确拒绝后，目录成员、
+  工作树注册、refs 与原改动保持不变。directory/reviewer 不受该干净检查限制。
+- 无 HEAD 准入：仅在本次合成仓库暂时指向尚未创建的分支，以真实 Git 返回确认无 HEAD，
+  经公开 spawn 取得要求初始 commit 的失败；拒绝前后成员、注册、refs、索引与文件保持不变。
+  随后恢复原符号引用或原 direct HEAD，确认原 OID、索引、文件与目录状态，不生成替代提交。
+  已切换后的真实失败也必须尝试收束原 HEAD，再传播原错误；恢复失败保留双方错误。
+  正常跨请求的工具等待不是终止失败，不能为了立即恢复而跳过正在验证的无 HEAD 窗口。
+- 关闭：默认清理保护脏改动和未交付提交；真正的 reviewer 借用与 Git 锁连 force 也不能
+  绕过。默认清理失败但执行已关闭时，先证明同一成员、原轮次和真实永久关闭的发送拒绝，
+  provider 请求计数不增，再允许 force 重试。解除本次合成阻碍后，只删除原绑定工作树；
+  关闭前后全部既有 refs 不变，注册仅允许移除明确绑定一项，相邻目录仍存在。
+- 重启：同一 home 正常重开后读取原完整历史、报告和已有评价；已最终关闭 child 拒绝
+  续跑且无新增 provider 请求，未显式关闭 child 则可按原身份恢复。
+- 不存在的绑定：对已完成的合成 child 分别通过 Git 移除工作树，或将其目录移至本次独有
+  邻接位置以保留原注册，再调用 close，核对 `notPresent` 的实际路径及注册布尔值。
+  close 不清理独立 ref、遗留注册或邻接目录；将已移走目录放回原路径后的终态重试必须拒绝，
+  原目录、注册、ref 和文件内容保持不变，不通过修改产品数据库或租约制造这些状态。
+
+可靠附件、旧 preserved、bot、取消与真实 SSH 的额外证据仍逐项记录实际覆盖；
+不能从上述主旅程通过外推这些边界，也不把终态路径重现拒绝外推为所有身份替换情况。harness 的最终
+`manual_capture` 与进程回收规则不变，Driver 不提前 shutdown。
+
 ## 启动与资源所有权
 
 从仓库根目录运行，每次指定一个尚不存在的证据目录：
@@ -16,12 +65,17 @@ cargo xtask manual-gui --scenario delegation-lifecycle --output <artifacts>/life
 cargo xtask manual-gui --scenario delegation-window --output <artifacts>/window --retain-environment
 cargo xtask manual-gui --scenario delegation-enablement --output <artifacts>/enablement
 cargo xtask manual-gui --scenario delegation-recovery --output <artifacts>/recovery --retain-environment
+cargo xtask manual-gui --scenario delegation-worktree --output <artifacts>/worktree --retain-environment --delegation-driver code/anywork/test_driver/delegation_worktree_journey.dart
 ```
 
 默认是有交互终端的原生 debug/Driver 场景。Linux SSH 没有显示时，复用已有的
 `GDK_BACKEND=x11 xvfb-run -a ... script -q -e -c '<上述命令>' /dev/null` 入口；动态
 端口不使用 `1420`。Xvfb 由外层 `xvfb-run` 拥有，必须等待外层命令退出后核对回收。
 不能直接运行 `flutter run`，也不要使用 demo。GUI 未完成生成/编译时不要盲启动。
+
+独立供应商 fixture 由 harness 在服务期限开始前使用 Cargo `release` profile 构建，
+GUI 仍保持上述原生 debug/Driver 模式。完整请求证据、原子发布和真实进程退出仍须在
+既定停止期限内完成；不因业务阶段已经通过而忽略收尾失败。
 
 可选 `--delegation-driver <当前会话 scratch 中的 Dart 脚本>`。harness 通过已有纯
 Dart Driver 入口运行它，依次传入：
@@ -34,7 +88,7 @@ Dart Driver 入口运行它，依次传入：
 assertion。**脚本返回前不要 shutdown 应用**，harness 随后调用既有
 `manual_capture.dart`，要求 `capture-stage.txt=shutdown_completed` 并等待所属 GUI
 进程真正退出。无脚本时，外部 Driver 操作完后输入 `done`，其他动作码仅记录、不会替你
-点击 UI。生命周期、窗口和恢复场景会在第一次 `done`/脚本返回后自动重开同一 home，第二次
+点击 UI。生命周期、窗口、恢复和工作树场景会在第一次 `done`/脚本返回后自动重开同一 home，第二次
 `done` 才结束。EOF、取消、超时、缺主流程、provider 拒绝、Driver 非零、shutdown 或
 进程退出异常都向最外层非零传播。
 
@@ -43,6 +97,15 @@ fixture、Flutter/DTD/GUI、Driver 都沿用 `OwnedProcess` 所属进程组的�
 `--retain-environment` 才保留**整个环境根**并写 `retained-environment.json`，不能只复制
 home 导致工作区绝对路径失效。重开仍需原 fixture 端口；结束后的 retained environment
 主要用于冷目录/资料/截图，不承诺停掉的 loopback 端点还能执行模型。
+
+模拟供应商退出须同时保留真实进程终态和最终请求证据。收尾诊断仅记录阶段、耗时、记录数
+及报告是否可见，区分停止信号、供应商关闭调用和请求文件持久化；不为细分锁与快照阶段
+改变其临界区或关闭接口，不记录请求正文、凭据或账户配置。诊断失败延后传播，不跳过
+既有资源等待或可执行的证据保存。超时保持失败，不把 GUI 已关闭、读到状态快照或中间报告
+当作供应商已退出。
+最终请求文件保留完整既有 JSON 内容；只有序列化成功、全部输出明确写入临时文件后才发布
+目标文件。写入或刷新失败保留为真实失败，不依赖析构忽略错误，不以删减记录或延长退出期限
+解决大报告的收尾开销。
 
 账号 ID 带本次 PID 与隔离环境随机名，重开沿用原配置；A/B 都有同一个
 `delegation-shared`，分别指向
@@ -117,6 +180,20 @@ child 的真实 committed completed/no-pending 报告；最终评价仍核对它
 携带对象 data，也只表示非完成，必须在最新 Turn 判定处拒绝。completed 必须有正常
 completion=normal 及 completedAt>0；InteractionRequested 等不默认成 normal。
 不使用 untagged 载荷失败 fallback、不手写历史 JSON 映射、不新增另一份历史解码器。
+
+## 普通工具的后台完成
+
+任意普通工具都可能先返回受理回执，`list_agents`、派发或评价也不例外。夹具必须将原
+call ID、tool 名、参数和 task 身份精确关联；受理回执及被其他消息唤醒的 `wait` 均不表示
+目标已完成，也不得触发原副作用调用重放。对原工具的正式终态报告，只有成功终态才能继续
+消费与快速完成相同的结果投影；失败、取消、中断或身份不符必须保留为失败，不能借字符串
+片段中的 JSON 或预期错误文案制造成功或预期拒绝。等待须有界，不能依靠扩大生产快路径
+窗口或步骤上限规避异步路径。
+
+终态报告中的投影与完整 opaque payload 是不同的证据。普通 typed 消费者继续核对完整
+结果投影；需要完整命令记录的 `exec` 仍通过 `get_tool_task` 获取并验证原 payload 的格式、
+版本、连续 UTF-8 字节游标及完整长度。任务控制查询自身的异步完成也遵守同一原工具身份
+与终态约束，不递归创建新的任务查询链。
 
 ## 1. delegation-routing：固定与三个短偏好
 
@@ -195,10 +272,10 @@ HTTP 创建 CallContext。child 请求还核对自身根本没有 spawn/list/get
 记住原 lifecycle root 的真实 ID，第一阶段截图并 `done`。`reopen` 自动用同一 home 重启：
 打开**原 root**，提交 `[[delegation:cold]]`。冷列表/评价详情读取保存的冻结事实，验证
 原 executor revision 2 与三位 reviewer 各 revision 1 的内容、时间不变，并确认前两位仍
-Closed。此时只 close 保留的 executor 与第三位 reviewer，取得真实 Closed/preserve 回执；
+Closed。此时只 close 保留的 executor 与第三位 reviewer，取得真实执行关闭及工作树结果回执；
 最终四个真实 child 都须 Closed 且保留冻结模型。之后对 Closed executor 再 send 必须拒绝，
-不是先关闭全树后又用 send 激活。成功 close 会移除已关闭 owner，因此这里也经过真实
-activation 拒绝链，而非假定存在一个热 owner 的 `closed` 错误。关闭负例使用合法的 sample
+不是先关闭全树后又用 send 激活。成功 close 会移除已关闭 owner；持久化的最终关闭意图必须
+在新执行或冷激活之前拒绝该输入，不能依赖热 owner 仍然存在。关闭负例使用合法的 sample
 供应商输入，按下面的联合证据校验；若生产错误执行，供应商会正常回答并留下请求。
 第二阶段 child completion
 计数必须与第一阶段相同（正常 root completion 不计为 child 调用）。结束时再次 `done`。
@@ -293,18 +370,25 @@ CAS 冲突/快速开关必须由 UI canonical 观察或允许的真实 settings 
 
 新建自动/平衡 root、主模型 A/shared，提交 **`[[delegation:recovery]]`**：
 
-1. 通过真实 discover/query 选择 A/shared 的 directory executor（仅 `work`）与 B/shared
-   reviewer；记录真实 spawn、completed/no-pending 报告，reviewTargetAgentId 绑定 executor。
+1. 通过真实 discover/query 选择 A/shared 的 `worktree_executor` 与 B/shared reviewer；
+   复用 harness 已创建初始 commit 的干净合成项目，不传 directory 专用 `writablePaths`。
+   记录真实 spawn、completed/no-pending 报告，reviewTargetAgentId 绑定 executor。
 2. fresh reviewer 完整独立审查通过后，两者各创建自己的最终评价 revision 1；再真实
-   `close_agent` reviewer，取得 Closed/preserve 收据，executor **不显式关闭**。
+   `close_agent` reviewer，取得 `executionClosed=true` 且 `worktreeCleanup.kind=notApplicable` 的收据，executor **不显式关闭**。
 3. `recovery_first_complete.receipt` 保存 `rootAgentId`、`executor` / `reviewer` 两份事实：
    `agentId/profileId/model/messageSequence/turnId/commitSequence/evaluation`，以及
-   `reviewerClose` 的真实 target/lifecycle/workspaceDisposition。executor 此时必须 Open、
+   `reviewerClose` 的真实 `target/agents/error`，并核对该 reviewer 的 `executionClosed/worktreeCleanup`。executor 此时必须 Open、
    reviewer 必须 Closed，无 pending，所有模型/父子/最新 Turn 与真实目录一致。
 4. root 显示 `delegation recovery first complete` 后保存截图、canonical 状态与真实 root ID，
    输入第一次 `done`（或 first Driver 正常返回）。harness 正常 shutdown，等待
    `capture-stage.txt=shutdown_completed`、GUI 真 exit 0 和所属进程回收，再同 home/同 fixture
    端口启动 reopen。不能先向 executor 发送新输入，也不能在 first 偷跑 reopen marker。
+
+人工核对还须保存 executor 的实际 owned 工作树路径、注册、分支、HEAD 及原合成基线文件。
+普通退出前后这些事实须保持不变，重开后记录原 owner 的实际 `Preserved` 状态；现存、身份
+有效的原目录不需要 grant，也不执行重建或清理动作。本场景的原交付正文由既有历史与续修
+上下文断言证明，Git 基线文件由原目录的只读前后记录证明，不额外制造未跟踪成果来改变最终
+默认 close 的内容保护条件。
 
 ### reopen：原 root 恢复同 executor，独立复审后更新原评价
 
@@ -315,9 +399,10 @@ CAS 冲突/快速开关必须由 UI canonical 观察或允许的真实 settings 
    revision/时间，不能只用 fixture 内存当产品持久化证明。executor 冷目录可以显示上个 owner
    的 Closed，不以此拒绝续修；已显式关闭 reviewer 必须保持 Closed。
 2. 对该 reviewer 发送新输入，要求 **真实 send_message 工具错误**，不是成功 ACK。
-   当前真实冷关闭失败的模型可见外层是精确文本
-   `Agent service failed: Thread activation failed`，并不含 `closed` 或 `not open`；不从
-   该文本单独推断内部原因。有效合成输入 marker 为 `[[delegation:child:recovery-closed-probe]]`；如果
+   当前模型可见错误明确说明 `Permanently closed agent cannot execute or receive a new evaluation`，
+   并保留该次失败的诊断关联 ID；关联 ID 不固定为某次验收值。必须证明原 send 任务实际为
+   Failed，并精确核对当前永久关闭错误，不能接受普通激活失败或仅包含 closed 的任意文本。
+   有效合成输入 marker 为 `[[delegation:child:recovery-closed-probe]]`；如果
    生产错误地执行它，fixture 会正常回应并记录该 child 请求，不会自行拒绝来伪造负例。
    `recovery_explicit_close_rejected` checkpoint 只能在消费真实工具拒绝后出现。
 3. 给原 executor 发送一个明确的新小型续修要求。真实 send 回执 target 相同、messageId 有效、
@@ -329,7 +414,9 @@ CAS 冲突/快速开关必须由 UI canonical 观察或允许的真实 settings 
    字符串可以相同，不假定 opaque Turn 字符串全局唯一。
    新 reviewer 独立审查新增范围通过后，executor 更新原评价为 revision 2（createdAt 不变），
    新 reviewer 自己创建 revision 1。旧 reviewer 评价完整原样保留。
-5. 真实 close 新 reviewer 与 executor，取得两份 Closed/preserve 收据。最终目录三 child 都
+5. 真实 close 新 reviewer 与 executor：reviewer 的清理结果仍须 `notApplicable`，executor
+   须为 `removed`，人工将返回路径与首轮原绑定路径核对，并确认原注册/目录消失、独立 ref 保留。
+   两份收据均执行已关闭且顶层无错误。最终目录三 child 都
    Closed、模型不变、无 pending；最多同时两个 Open child，不提高产品并发上限。
    `recovery_complete.receipt` 保存 `rootAgentId/executor/initialReviewer/reviewer` 三份最终
    child 事实、`continuation` 真实 send 收据、`closedSend` 的 callId/tool/target/toolError/
@@ -346,10 +433,11 @@ CAS 冲突/快速开关必须由 UI canonical 观察或允许的真实 settings 
   已显式关闭 reviewer 的新输入目标计数在拒绝前后必须都是 0；root 正常 completion 不计入。
   `observation.continuation` 仍只在实际 final 响应时记录。
 - recovery 和 lifecycle 的关闭负例共用严格消费边界：已消费同一直接父子、冻结 route 的真实
-  Closed/preserve close 收据，且真实 get_delegation_model 仍确认原账号/型号 available，排除
+  执行已关闭且顶层无错误的 close 收据，且真实 get_delegation_model 仍确认原账号/型号 available，排除
   本场景意外修改账号/凭据/启用状态后造成的准入前置失败；send 的精确 callId/name 与原
   target/message 参数一致；输出不是
-  typed Sent 或其他 JSON 成功/ACK，并且**恰好**匹配上述已核实的外层错误。前后都真实
+  typed Sent 或其他 JSON 成功/ACK，原任务必须实际 Failed，且匹配上述永久关闭错误及其
+  非空诊断关联 ID；供应商与 harness 消费同一判定契约。前后都真实
   list_agents，目标仍 Closed、同 parent/route、无 pending inputs/tasks、latest completed Turn
   等于原最终 Turn。Open/cold list 的 lastTurn 都可为 null，不能伪造或要求该摘要加载历史；
   最新终态另经真实 read_agent_session（descending/full，每页50、最多4页）核对，前后各自
@@ -361,9 +449,9 @@ CAS 冲突/快速开关必须由 UI canonical 观察或允许的真实 settings 
   runningTasks；原 send 派发 observation 也保存同 callId 的 before/计数，不能在结果回放时
   重新取得较大基线掩盖一个误执行请求。
   只缺任一证据都失败，不接受其他含 closed 的文本、未知错误、错误 target、缺账号或未授权
-  前置失败。授权/直接父子检查发生在 activation 前；已持久显式关闭的恢复检查发生在
-  凭据/模型绑定前。外层仍不暴露完整 source，故这里只证明受控已关闭目标拒执行及无新工作，
-  不把这一文本当作任意环境故障的类型化根因证明。
+  前置失败。授权/直接父子检查及持久化的最终关闭检查均发生在执行激活之前，不能装配模型
+  后才报告关闭。错误文本与原任务终态、目录、历史及请求计数共同证明受控已关闭目标拒执行，
+  不将文本匹配单独当作任意环境故障的类型化根因证明。
 - harness 在 first 真实退出后保存阶段观察，校验 first 完成且 reopen 未提前执行；reopen 后
   必须读到同 root/同 executor、一个新的 reviewer、executor revision 2 / reviewers 各 revision 1，
   并确认关闭目标没有新增请求。原 lifecycle/window 的第二阶段 child 请求总数不增规则仍保留，

@@ -1,7 +1,9 @@
 use std::{
     fs,
+    io::{BufWriter, Write},
     path::{Path, PathBuf},
     sync::Arc,
+    time::Instant,
 };
 
 use anyhow::{Context, Result, bail, ensure};
@@ -375,16 +377,49 @@ async fn main() -> Result<()> {
         .context("--ready-file is required without --mcp-stdio")?;
     write_json(ready_file, &ready)?;
     wait_for_stop(&mut status_watch).await?;
+    let shutdown_started = Instant::now();
+    let delegation_diagnostics =
+        pl_provider_fixture::delegation::Scenario::parse(scenario).is_some();
+    let mut diagnostic_error = None;
+    if delegation_diagnostics {
+        record_diagnostic_error(
+            &mut diagnostic_error,
+            write_shutdown_diagnostic("stop_received", shutdown_started, None),
+        );
+    }
     // Stop the read-only watcher first so the server can be unwrapped from its
     // Arc and shut down exactly once.
     if let Some((stop, watcher)) = status_watch {
         stop.cancel();
         let joined = watcher.await.context("fixture status watcher failed")?;
         joined?;
+        if delegation_diagnostics {
+            record_diagnostic_error(
+                &mut diagnostic_error,
+                write_shutdown_diagnostic("watcher_joined", shutdown_started, None),
+            );
+        }
     }
     let fixture = Arc::try_unwrap(fixture)
         .map_err(|_| anyhow::anyhow!("fixture status watcher still holds the server"))?;
-    let report = match fixture.shutdown().await {
+    if delegation_diagnostics {
+        record_diagnostic_error(
+            &mut diagnostic_error,
+            write_shutdown_diagnostic("server_unwrapped", shutdown_started, None),
+        );
+        record_diagnostic_error(
+            &mut diagnostic_error,
+            write_shutdown_diagnostic("fixture_shutdown_started", shutdown_started, None),
+        );
+    }
+    let shutdown_result = fixture.shutdown().await;
+    if delegation_diagnostics {
+        record_diagnostic_error(
+            &mut diagnostic_error,
+            write_shutdown_diagnostic("fixture_shutdown_returned", shutdown_started, None),
+        );
+    }
+    let report = match shutdown_result {
         Ok(report) => report,
         Err(error) => {
             // The failure is printed on its own `fixture_` line so the
@@ -398,40 +433,107 @@ async fn main() -> Result<()> {
     // after the server has shut down: a delivered command result can never
     // outlive the directory the real command ran in.
     drop(realtime_host_cwd);
-    if let Some(path) = args.requests_file.as_ref() {
-        write_json(path, &report.requests)?;
-    }
-    if let Some(path) = args.model_catalog_requests.as_ref() {
-        write_json(path, &report.catalog_hits)?;
-    }
-    if let Some(path) = args.report_file.as_ref() {
-        write_json(path, &report.stress)?;
-    }
-    // Print the strict-match facts first so the coordinator can persist a
-    // reviewable reason even when the scenario fails part way through.
-    for line in report.diagnostic_lines() {
-        println!("{line}");
-    }
-    // No extra context is attached: the verification message already names the
-    // rejected request and the step it expected, and it has to stay the
-    // outermost reason the coordinator records.
-    report.verify()?;
-    if let Some(scenario) = pl_provider_fixture::delegation::Scenario::parse(scenario) {
-        let result = pl_provider_fixture::delegation::verify_requests(scenario, &report.requests);
-        println!(
-            "fixture_delegation_status={}",
-            if result.is_ok() {
-                "complete"
-            } else {
-                "incomplete"
+    let finalization_result = (|| -> Result<()> {
+        if let Some(path) = args.requests_file.as_ref() {
+            if delegation_diagnostics {
+                record_diagnostic_error(
+                    &mut diagnostic_error,
+                    write_shutdown_diagnostic(
+                        "requests_write_started",
+                        shutdown_started,
+                        Some(("requests_count", report.requests.len() as u64)),
+                    ),
+                );
             }
-        );
-        if let Err(error) = &result {
-            println!("fixture_failure={}", one_line(error));
+            write_json(path, &report.requests)?;
+            if delegation_diagnostics {
+                match fs::metadata(path) {
+                    Ok(metadata) => record_diagnostic_error(
+                        &mut diagnostic_error,
+                        write_shutdown_diagnostic(
+                            "requests_persisted",
+                            shutdown_started,
+                            Some(("requests_bytes", metadata.len())),
+                        ),
+                    ),
+                    Err(error) => record_diagnostic_error(
+                        &mut diagnostic_error,
+                        Err(error).context("failed to read requests-file diagnostic metadata"),
+                    ),
+                }
+            }
         }
-        result?;
+        if let Some(path) = args.model_catalog_requests.as_ref() {
+            write_json(path, &report.catalog_hits)?;
+        }
+        if let Some(path) = args.report_file.as_ref() {
+            write_json(path, &report.stress)?;
+        }
+        // Print the strict-match facts first so the coordinator can persist a
+        // reviewable reason even when the scenario fails part way through.
+        for line in report.diagnostic_lines() {
+            println!("{line}");
+        }
+        // No extra context is attached: the verification message already names the
+        // rejected request and the step it expected, and it has to stay the
+        // outermost reason the coordinator records.
+        report.verify()?;
+        if let Some(scenario) = pl_provider_fixture::delegation::Scenario::parse(scenario) {
+            let result =
+                pl_provider_fixture::delegation::verify_requests(scenario, &report.requests);
+            println!(
+                "fixture_delegation_status={}",
+                if result.is_ok() {
+                    "complete"
+                } else {
+                    "incomplete"
+                }
+            );
+            if let Err(error) = &result {
+                println!("fixture_failure={}", one_line(error));
+            }
+            result?;
+        }
+        Ok(())
+    })();
+    match finalization_result {
+        Err(error) => Err(error),
+        Ok(()) => match diagnostic_error {
+            Some(error) => Err(error),
+            None => Ok(()),
+        },
     }
-    Ok(())
+}
+
+fn record_diagnostic_error(slot: &mut Option<anyhow::Error>, result: Result<()>) {
+    if let Err(error) = result
+        && slot.is_none()
+    {
+        *slot = Some(error);
+    }
+}
+
+fn write_shutdown_diagnostic(
+    stage: &str,
+    started: Instant,
+    metric: Option<(&str, u64)>,
+) -> Result<()> {
+    let elapsed_ms = started.elapsed().as_millis();
+    let mut stderr = std::io::stderr().lock();
+    match metric {
+        Some((name, value)) => writeln!(
+            stderr,
+            "fixture_shutdown_stage={stage} elapsed_ms={elapsed_ms} {name}={value}"
+        ),
+        None => writeln!(
+            stderr,
+            "fixture_shutdown_stage={stage} elapsed_ms={elapsed_ms}"
+        ),
+    }
+    .context("failed to write fixture shutdown diagnostic")?;
+    stderr
+        .flush()
+        .context("failed to flush fixture shutdown diagnostic")
 }
 
 /// The existing host directory the realtime host-cwd command runs in.
@@ -579,7 +681,11 @@ fn write_json(path: &std::path::Path, value: &impl serde::Serialize) -> Result<(
         .unwrap_or_else(|| std::path::Path::new("."));
     fs::create_dir_all(parent)?;
     let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
-    serde_json::to_writer_pretty(&mut temporary, value)?;
+    {
+        let mut writer = BufWriter::new(&mut temporary);
+        serde_json::to_writer_pretty(&mut writer, value)?;
+        writer.flush()?;
+    }
     temporary.persist(path).map_err(|error| error.error)?;
     Ok(())
 }

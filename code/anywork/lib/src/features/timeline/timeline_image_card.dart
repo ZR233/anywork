@@ -277,7 +277,7 @@ class _ImageCardMediaState extends ConsumerState<_ImageCardMedia> {
       return;
     }
     if (!mounted || generation != _imageGeneration) return;
-    await _showStudioImageDialog(
+    await showStudioImageDialog(
       context,
       MemoryImage(image),
       dialogKey: StudioDriverKeys.timelineImageDialog(widget.attachment.id),

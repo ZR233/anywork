@@ -3,7 +3,7 @@ import 'dart:async';
 import 'package:anywork_client/accounts.dart';
 import 'package:anywork_client/model_directory.dart';
 import 'package:anywork_client/studio_client.dart'
-    show DraftStamp, OperationState, OperationPhase, ResourceStamp;
+    show DraftStamp, OperationId, OperationState, OperationPhase, ResourceStamp;
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
 import '../../../../presentation/providers/account_domains.dart';
@@ -11,6 +11,7 @@ import '../state/account_presentations.dart';
 import '../state/account_view_state.dart';
 import 'account_projection.dart';
 import 'account_operation_result.dart';
+import 'accounts_view_model.dart';
 
 part 'account_models_view_model.g.dart';
 
@@ -21,6 +22,28 @@ final class _CompactDraft {
   final String raw;
   final int revision;
   String? error;
+}
+
+final class _ModelAttempt {
+  _ModelAttempt(this.owner, this.lifetime, {this.removing = false});
+  final Object owner;
+  final Ref lifetime;
+  final bool removing;
+  final observations = <Observation>[];
+  OperationId? operationId;
+  void Function()? closeRetention;
+  bool waiting = true;
+  bool terminal = false;
+  bool retired = false;
+
+  void closeLocal() {
+    for (final observation in observations.toList()) {
+      observation.cancel();
+    }
+    observations.clear();
+    closeRetention?.call();
+    closeRetention = null;
+  }
 }
 
 /// Model controls are narrow intents, never part of an account card save.
@@ -37,7 +60,7 @@ class AccountModelsViewModel extends _$AccountModelsViewModel {
   final Map<String, AccountEvaluationFilter> _evaluationFilters = {};
   final Map<String, String> _errors = {};
   final Set<String> _pending = {};
-  final Map<String, Object> _pendingAttempts = {};
+  final Map<String, _ModelAttempt> _pendingAttempts = {};
   Object _owner = Object();
   String? _ownerEpoch;
   final Map<String, AccountReadoutState> _readouts = {};
@@ -45,13 +68,15 @@ class AccountModelsViewModel extends _$AccountModelsViewModel {
   final Map<String, (ResourceStamp?, int?, ResourceStamp?)> _readoutBindings =
       {};
   final Map<String, Object> _readoutTokens = {};
-  final List<Observation> _operations = [];
+  AccountsViewModel? _accountActions;
+  Ref? _accountActionsLifetime;
   String? _syncError;
   bool _syncAdmitting = false;
   AccountDemand? _modelDemand;
 
   @override
   FutureOr<AccountModelsViewState> build(AccountDisplayKey key) {
+    final lifetime = ref;
     if (key.kind != AccountKind.native) {
       throw ArgumentError.value(key, 'key', 'Models require a native account');
     }
@@ -62,12 +87,39 @@ class AccountModelsViewModel extends _$AccountModelsViewModel {
         _models.state.value.accounts[_identity]?.stamp?.ownerEpoch ??
         _models.state.value.configurations[_identity]?.stamp?.ownerEpoch;
     _modelDemand = _models.observeAccount(_identity);
+    // Strong listen keeps the unique command owner for this business cycle
+    // without watching its AsyncValue. Capture this Ref here, and the owner
+    // only when an event arrives, so a queued notification cannot publish on
+    // a later Ref or owner epoch.
+    ref.listen(
+      accountsViewModelProvider,
+      (_, _) {
+        final ownerAtEvent = _owner;
+        Future<void>(() {
+          if (!lifetime.mounted) return;
+          if (!identical(lifetime, ref) || !identical(ownerAtEvent, _owner)) {
+            return;
+          }
+          _publish();
+        });
+      },
+      weak: false,
+      fireImmediately: false,
+    );
+    _accountActions = ref.read(accountsViewModelProvider.notifier);
+    _accountActionsLifetime = lifetime;
     final observation = _models.state.watch((_) => _catalogChanged());
     ref.onDispose(() {
       releaseAccountDemand(_modelDemand);
       observation.cancel();
-      for (final operation in _operations) {
-        operation.cancel();
+      if (identical(_accountActionsLifetime, lifetime)) {
+        _accountActions = null;
+        _accountActionsLifetime = null;
+      }
+      for (final entry in _pendingAttempts.entries.toList()) {
+        if (identical(entry.value.lifetime, lifetime)) {
+          _retireCommand(entry.key, entry.value);
+        }
       }
     });
     return _derive();
@@ -100,10 +152,41 @@ class AccountModelsViewModel extends _$AccountModelsViewModel {
       _models.state.value.configurations[_identity]?.loaded == true &&
       _models.state.value.accounts[_identity]?.stale != true &&
       _models.state.value.configurations[_identity]?.stale != true;
+
+  bool get _deletionBlocked {
+    final source = _accountActions;
+    final bound = _accountActionsLifetime;
+    if (source == null ||
+        bound == null ||
+        !bound.mounted ||
+        !identical(bound, ref)) {
+      return true;
+    }
+    return source.isRemovalBlocked(_key) ||
+        _pendingAttempts.entries.any(
+          (entry) =>
+              entry.value.removing &&
+              _ownsCommand(entry.key, entry.value) &&
+              _pending.contains(entry.key),
+        );
+  }
+
+  bool canRemove({required Object expectedToken}) =>
+      ref.mounted &&
+      matchesCompactLeaveToken(expectedToken) &&
+      _ready &&
+      !hasCompactDrafts() &&
+      !compactLeaveBlocked() &&
+      !hasUnconfirmedCompactSave() &&
+      _pending.isEmpty &&
+      !_syncAdmitting &&
+      _models.state.value.accounts[_identity]?.value?.status.probing != true &&
+      !_deletionBlocked;
   AccountModelIdentity _model(String id) =>
       AccountModelIdentity(account: _identity, modelId: id);
 
   Future<void> sync() async {
+    if (_deletionBlocked) return;
     final resource = _models.state.value.accounts[_identity];
     if (resource?.loaded != true) {
       releaseAccountDemand(_modelDemand);
@@ -132,49 +215,71 @@ class AccountModelsViewModel extends _$AccountModelsViewModel {
     }
   }
 
-  Future<void> setEnabled(String id, bool enabled) =>
-      _command(id, () => _models.setEnabled(_model(id), enabled));
-  Future<void> setConnection(String id, AccountConnection connection) =>
-      _command(
-        id,
-        () => _models.setConnection(_model(id), switch (connection) {
-          AccountConnection.automatic => const ModelConnectionIntent.clear(),
-          AccountConnection.http => const ModelConnectionIntent.set(
-            AccountConnectionMode.http,
-          ),
-          AccountConnection.webSocket => const ModelConnectionIntent.set(
-            AccountConnectionMode.webSocket,
-          ),
-        }),
-      );
-  Future<void> removeManual(String id) =>
-      _command(id, () => _models.removeManual(_model(id)));
+  Future<void> setEnabled(String id, bool enabled) async {
+    await _command(id, () => _models.setEnabled(_model(id), enabled));
+  }
 
-  Future<void> _command(
+  Future<void> setConnection(String id, AccountConnection connection) async {
+    await _command(
+      id,
+      () => _models.setConnection(_model(id), switch (connection) {
+        AccountConnection.automatic => const ModelConnectionIntent.clear(),
+        AccountConnection.http => const ModelConnectionIntent.set(
+          AccountConnectionMode.http,
+        ),
+        AccountConnection.webSocket => const ModelConnectionIntent.set(
+          AccountConnectionMode.webSocket,
+        ),
+      }),
+    );
+  }
+
+  Future<OperationState?> removeManual(
+    String id, {
+    required Object expectedToken,
+  }) => _command(
+    id,
+    () => _models.removeManual(_model(id)),
+    removing: true,
+    expectedToken: expectedToken,
+  );
+
+  Future<OperationState?> _command(
     String id,
-    Future<OperationState> Function() action,
-  ) async {
-    if (!_ready || !_pending.add(id)) return;
-    final attempt = Object();
-    final owner = _owner;
+    Future<OperationState> Function() action, {
+    bool removing = false,
+    Object? expectedToken,
+  }) async {
+    if (!ref.mounted ||
+        !_ready ||
+        _deletionBlocked ||
+        (removing &&
+            (expectedToken == null ||
+                !canRemove(expectedToken: expectedToken) ||
+                _models.state.value.model(_model(id))?.origin !=
+                    ModelOrigin.manual)) ||
+        !_pending.add(id)) {
+      return null;
+    }
+    final previous = _pendingAttempts[id];
+    if (previous != null) {
+      previous.retired = true;
+      previous.closeLocal();
+    }
+    final attempt = _ModelAttempt(_owner, ref, removing: removing);
+    if (removing) attempt.closeRetention = ref.keepAlive().close;
     _pendingAttempts[id] = attempt;
     _errors.remove(id);
     _publish();
+    OperationState? admittedResult;
     try {
-      if (!identical(owner, _owner) ||
-          !identical(_pendingAttempts[id], attempt)) {
-        return;
-      }
+      if (!_ownsCommand(id, attempt)) return null;
       final result = await action();
-      if (!ref.mounted ||
-          !identical(owner, _owner) ||
-          !identical(_pendingAttempts[id], attempt)) {
-        return;
-      }
+      admittedResult = result;
+      attempt.operationId = result.id;
+      if (!_ownsCommand(id, attempt)) return result;
       void apply(OperationState operation) {
-        if (!ref.mounted ||
-            !identical(owner, _owner) ||
-            !identical(_pendingAttempts[id], attempt)) {
+        if (!_ownsCommand(id, attempt) || operation.id != attempt.operationId) {
           return;
         }
         final message = operationMessage(operation, _strings);
@@ -186,25 +291,77 @@ class AccountModelsViewModel extends _$AccountModelsViewModel {
         if (operationSaved(operation) ||
             operation.failurePhase == OperationPhase.rejected) {
           _pending.remove(id);
+          attempt.terminal = true;
         }
         _publish();
+        _releaseSettledCommand(id, attempt);
       }
 
-      trackAccountOperation(ref, result, _operations, apply);
+      trackAccountOperation(
+        attempt.lifetime,
+        result,
+        attempt.observations,
+        apply,
+      );
+      if (!removing || result.failurePhase != null) return result;
+      // Exactly one settled result for this admission. The Editor consumes it
+      // without another operation lookup/settler that could upgrade a failure.
+      return await observeAccountOperation(attempt.lifetime, result) ?? result;
     } catch (error) {
-      if (ref.mounted &&
-          identical(owner, _owner) &&
-          identical(_pendingAttempts[id], attempt)) {
+      if (_ownsCommand(id, attempt)) {
         _errors[id] = safeAccountError(error, _strings);
-        _pending.remove(id);
+        if (!removing || attempt.operationId == null) {
+          _pending.remove(id);
+          attempt.terminal = true;
+        }
       }
+      return admittedResult;
     } finally {
-      if (ref.mounted) _publish();
+      final current = _ownsCommand(id, attempt);
+      attempt.waiting = false;
+      _releaseSettledCommand(id, attempt);
+      if (current &&
+          ref.mounted &&
+          identical(ref, attempt.lifetime) &&
+          identical(_owner, attempt.owner)) {
+        _publish();
+      }
+    }
+  }
+
+  bool _ownsCommand(String id, _ModelAttempt attempt) =>
+      ref.mounted &&
+      attempt.lifetime.mounted &&
+      identical(ref, attempt.lifetime) &&
+      !attempt.retired &&
+      identical(attempt.owner, _owner) &&
+      identical(_pendingAttempts[id], attempt);
+
+  void _releaseSettledCommand(String id, _ModelAttempt attempt) {
+    if (attempt.retired || (attempt.terminal && !attempt.waiting)) {
+      attempt.closeLocal();
+      if (!attempt.retired &&
+          attempt.removing &&
+          _ownsCommand(id, attempt) &&
+          _models.state.value.accounts[_identity]?.loaded == true &&
+          _models.state.value.model(_model(id)) == null) {
+        _pendingAttempts.remove(id);
+        _errors.remove(id);
+      }
+    }
+  }
+
+  void _retireCommand(String id, _ModelAttempt attempt) {
+    attempt.retired = true;
+    attempt.closeLocal();
+    if (identical(_pendingAttempts[id], attempt)) {
+      _pendingAttempts.remove(id);
+      _pending.remove(id);
     }
   }
 
   void changeCompact(String id, String raw) {
-    if (!resourceModelLoaded(id)) return;
+    if (_deletionBlocked || !resourceModelLoaded(id)) return;
     final current = _compact[id];
     // A new keystroke cannot rebase a retired owner's intent implicitly.
     if (current != null && !identical(current.owner, _owner)) return;
@@ -277,6 +434,7 @@ class AccountModelsViewModel extends _$AccountModelsViewModel {
 
   bool _canSaveCompact(String id, _CompactDraft draft) =>
       _ready &&
+      !_deletionBlocked &&
       resourceModelLoaded(id) &&
       identical(draft.owner, _owner) &&
       !_compactAttempts.containsKey(id) &&
@@ -331,7 +489,8 @@ class AccountModelsViewModel extends _$AccountModelsViewModel {
   }
 
   Future<void> resetCompact(String id) async {
-    if (!_ready ||
+    if (_deletionBlocked ||
+        !_ready ||
         !resourceModelLoaded(id) ||
         (_compact[id] != null && !identical(_compact[id]!.owner, _owner)) ||
         _compactAttempts.containsKey(id) ||
@@ -512,7 +671,10 @@ class AccountModelsViewModel extends _$AccountModelsViewModel {
               in resource?.value?.models ?? const <AccountModelView>[])
             _projectModel(model, configuration?.value),
         ],
-        canSync: resource?.loaded == true && status?.supported == true,
+        canSync:
+            !_deletionBlocked &&
+            resource?.loaded == true &&
+            status?.supported == true,
         syncing:
             _syncAdmitting ||
             status?.probing == true ||
@@ -554,7 +716,7 @@ class AccountModelsViewModel extends _$AccountModelsViewModel {
         ModelOrigin.manual => AccountModelOrigin.manual,
       },
       enabled: model.enabled,
-      canToggle: _ready,
+      canToggle: _ready && !_deletionBlocked,
       saving: _pending.contains(model.modelId),
       error: _errors[model.modelId],
       summary: model.description,
@@ -659,9 +821,13 @@ class AccountModelsViewModel extends _$AccountModelsViewModel {
         contextWindow: model.context.contextWindow,
         adjusted: model.context.adjustment != null,
         canSave: draft != null && _canSaveCompact(model.modelId, draft),
-        canEdit: _ready && (draft == null || identical(draft.owner, _owner)),
+        canEdit:
+            _ready &&
+            !_deletionBlocked &&
+            (draft == null || identical(draft.owner, _owner)),
         canReset:
             _ready &&
+            !_deletionBlocked &&
             (override != null || draft != null) &&
             (draft == null || identical(draft.owner, _owner)) &&
             !_compactAttempts.containsKey(model.modelId) &&
@@ -669,8 +835,11 @@ class AccountModelsViewModel extends _$AccountModelsViewModel {
         canRetry:
             draft?.error != null && _canSaveCompact(model.modelId, draft!),
       ),
-      canEdit: _ready && model.origin == ModelOrigin.manual,
-      canDelete: _ready && model.origin == ModelOrigin.manual,
+      canEdit:
+          _ready && !_deletionBlocked && model.origin == ModelOrigin.manual,
+      canDelete:
+          model.origin == ModelOrigin.manual &&
+          canRemove(expectedToken: compactLeaveToken()),
     );
   }
 
@@ -692,14 +861,13 @@ class AccountModelsViewModel extends _$AccountModelsViewModel {
         epoch != null && _ownerEpoch != null && epoch != _ownerEpoch;
     _ownerEpoch = epoch ?? _ownerEpoch;
     if (ownerChanged) {
+      for (final entry in _pendingAttempts.entries.toList()) {
+        _retireCommand(entry.key, entry.value);
+      }
       _owner = Object();
       _pending.clear();
       _pendingAttempts.clear();
       _errors.clear();
-      for (final observation in _operations) {
-        observation.cancel();
-      }
-      _operations.clear();
       for (final draft in _compact.values) {
         draft.error = _strings['stale'];
       }

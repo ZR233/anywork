@@ -97,16 +97,15 @@ class ComposerDraftOwner extends ReadModel<ComposerThreadState> {
     if (!session.hasSnapshot || session.workspace?.thread.id != threadId) {
       throw StateError('Thread submission target is no longer available');
     }
-    final blocked =
-        _client.recovery.state.value?.values.any(
-          (issue) =>
-              issue.blocksAccess &&
-              issue.scope == RecoveryIssueScope.thread &&
-              issue.threadId == threadId,
-        ) ??
-        false;
-    if (blocked || session.storage?.blocksContinuation == true) {
-      throw StateError('Thread submission is blocked by recovery');
+    final recoveryIssue = recoveryIssueBlockingExecution(
+      _client.recovery.state.value?.values ?? const [],
+      projectId: session.workspace!.thread.projectId,
+      threadId: threadId,
+    );
+    if (recoveryIssue != null) throw recoveryIssue.blockedFailure();
+    final storage = session.storage;
+    if (storage?.blocksContinuation == true) {
+      throw threadStorageContinuationFailure(storage!);
     }
     final route = session.runtime?.modelRoute;
     if (route == null || !route.available)
@@ -199,7 +198,7 @@ class ComposerDraftOwner extends ReadModel<ComposerThreadState> {
         if (!_closed && stamp == frozen.stamp) {
           apply(
             ComposerThreadState.failure(
-              error: error.toString(),
+              error: error,
               draft: state.draft,
               attachments: state.attachments,
               submissionRevision: state.submissionRevision,
@@ -252,8 +251,9 @@ class ComposerDraftOwner extends ReadModel<ComposerThreadState> {
         threadId: threadId,
       );
     } catch (error) {
+      final failure = error is SubmissionNotSent ? error.error : error;
       if (acceptedReceipt != null) {
-        frozen.operation.syncFailed(error);
+        frozen.operation.syncFailed(failure);
         await _client.attachments.completeFrozen(
           operationId: frozen.operation.id,
           accepted: true,
@@ -261,8 +261,9 @@ class ComposerDraftOwner extends ReadModel<ComposerThreadState> {
           projectId: frozen.projectId,
           threadId: threadId,
         );
-      } else if (isKnownSubmissionRejection(error)) {
-        frozen.operation.reject(error);
+      } else if (error is SubmissionNotSent ||
+          isKnownSubmissionRejection(failure)) {
+        frozen.operation.reject(failure);
         await _client.attachments.completeFrozen(
           operationId: frozen.operation.id,
           accepted: false,
@@ -277,7 +278,7 @@ class ComposerDraftOwner extends ReadModel<ComposerThreadState> {
       if (!_closed && stamp == frozen.stamp) {
         apply(
           ComposerThreadState.failure(
-            error: error.toString(),
+            error: failure,
             draft: state.draft,
             attachments: state.attachments,
             submissionRevision: state.submissionRevision,

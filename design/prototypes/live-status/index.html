@@ -1,0 +1,1126 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="referrer" content="no-referrer" />
+  <title>糊来帮 (anywork) · 会话实时状态栏交互设计稿</title>
+  <style>
+    :root {
+      --bg-canvas: #F3EDE3;
+      --bg-panel: #EFE6DA;
+      --bg-surface: #E7DED2;
+      --bg-softbar: rgba(234, 224, 211, 0.82);
+      --bg-elevated: #FBF8F3;
+      --border-hairline: #D7CABB;
+      --border-rail: #D5C7B8;
+      --border-strong: #C2B2A1;
+      --ink-primary: #40362F;
+      --ink-secondary: #66584E;
+      --ink-muted: #8E7F73;
+      --brand-espresso: #514039;
+      --accent-blue: #55798C;
+      --status-success: #3E7B52;
+      --status-danger: #9E3B33;
+      --max-expanded-h: 240px;
+      --max-response-h: 220px;
+      --font-sans: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Noto Sans CJK SC", "Microsoft YaHei UI", system-ui, sans-serif;
+      --font-mono: "JetBrains Mono", "Fira Code", "Cascadia Code", Consolas, monospace;
+    }
+
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      padding: 0;
+      background-color: var(--bg-canvas);
+      color: var(--ink-primary);
+      font-family: var(--font-sans);
+      -webkit-font-smoothing: antialiased;
+      min-height: 100vh;
+    }
+
+    .font-mono-code {
+      font-family: var(--font-mono);
+      font-variant-numeric: tabular-nums;
+    }
+    .tabular-nums { font-variant-numeric: tabular-nums; }
+
+    /* Top Header */
+    .top-bar {
+      position: sticky;
+      top: 0;
+      z-index: 30;
+      background: var(--bg-panel);
+      border-bottom: 1px solid var(--border-hairline);
+      padding: 12px 22px;
+    }
+    .top-inner {
+      max-width: 1280px;
+      margin: 0 auto;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+    .brand-group {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .back-link {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 12px;
+      color: var(--brand-espresso);
+      text-decoration: none;
+      padding: 4px 8px;
+      border-radius: 6px;
+      border: 1px solid var(--border-hairline);
+      background: var(--bg-elevated);
+    }
+    .back-link:hover { background: var(--bg-surface); }
+    .brand-title h1 {
+      margin: 0;
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--ink-primary);
+    }
+    .brand-title p {
+      margin: 2px 0 0;
+      font-size: 11px;
+      color: var(--ink-secondary);
+    }
+
+    .scenario-bar {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 6px;
+    }
+    .scenario-btn {
+      padding: 5px 10px;
+      border-radius: 6px;
+      font-size: 12px;
+      border: 1px solid var(--border-strong);
+      background: var(--bg-elevated);
+      color: var(--ink-primary);
+      cursor: pointer;
+      transition: background 0.15s, color 0.15s;
+    }
+    .scenario-btn:hover { background: var(--bg-surface); }
+    .scenario-btn.active {
+      background: var(--brand-espresso);
+      color: var(--bg-elevated);
+      border-color: var(--brand-espresso);
+    }
+    .autoplay-btn {
+      padding: 5px 12px;
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 500;
+      border: none;
+      background: var(--accent-blue);
+      color: #fff;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .autoplay-btn:hover { opacity: 0.92; }
+
+    /* Main Grid */
+    .workspace-grid {
+      max-width: 1280px;
+      margin: 0 auto;
+      padding: 20px 22px 48px;
+      display: grid;
+      grid-template-columns: 7fr 5fr;
+      gap: 20px;
+    }
+    @media (max-width: 980px) {
+      .workspace-grid { grid-template-columns: 1fr; }
+    }
+
+    /* Left Simulated Window */
+    .sim-window {
+      display: flex;
+      flex-direction: column;
+      border-radius: 12px;
+      border: 1px solid var(--border-hairline);
+      background: var(--bg-canvas);
+      overflow: hidden;
+      box-shadow: 0 2px 6px rgba(64, 54, 47, 0.04);
+    }
+    .sim-win-header {
+      padding: 10px 16px;
+      background: var(--bg-panel);
+      border-bottom: 1px solid var(--border-hairline);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 12px;
+      color: var(--ink-secondary);
+    }
+    .sim-timeline {
+      flex: 1;
+      padding: 18px 20px;
+      min-height: 190px;
+      max-height: 250px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+    .user-bubble-row { display: flex; justify-content: flex-end; }
+    .user-bubble {
+      max-width: 82%;
+      border-radius: 16px 16px 4px 16px;
+      background: var(--bg-surface);
+      padding: 9px 14px;
+      font-size: 12px;
+      line-height: 1.55;
+      color: var(--ink-primary);
+    }
+    .history-group-note {
+      font-size: 11px;
+      color: var(--ink-muted);
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .assistant-prose {
+      font-size: 12px;
+      line-height: 1.6;
+      color: var(--ink-primary);
+    }
+
+    /* Live Status Bar Host (Soft Warm Surface + Pure Typographic Rows + 1px Left Rail) */
+    .live-status-host {
+      padding: 4px 16px 2px;
+      background: var(--bg-canvas);
+    }
+    .live-status-surface {
+      border-radius: 8px;
+      background: var(--bg-softbar);
+      padding: 8px 12px;
+      transition: all 0.15s ease;
+    }
+    .live-outer-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 2px 0;
+      user-select: none;
+    }
+    .live-outer-row.expandable { cursor: pointer; }
+    .live-outer-left {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+      flex: 1;
+    }
+    .live-outer-right {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-shrink: 0;
+    }
+    .pulse-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 9999px;
+      background: var(--accent-blue);
+      flex-shrink: 0;
+      animation: pulse-dot 1.6s ease-in-out infinite;
+    }
+    @keyframes pulse-dot {
+      0%, 100% { opacity: 0.35; transform: scale(0.9); }
+      50% { opacity: 1; transform: scale(1.08); }
+    }
+    @keyframes spin-slow {
+      from { transform: rotate(0deg); }
+      to { transform: rotate(360deg); }
+    }
+    .spin-icon {
+      width: 14px;
+      height: 14px;
+      color: var(--ink-secondary);
+      flex-shrink: 0;
+      animation: spin-slow 1.5s linear infinite;
+    }
+
+    /* Single-line front-truncation */
+    .front-truncate-wrapper {
+      display: flex;
+      overflow: hidden;
+      white-space: nowrap;
+      justify-content: flex-end;
+      flex: 1;
+      min-width: 0;
+      font-size: 12px;
+      color: var(--ink-secondary);
+      mask-image: linear-gradient(to right, transparent 0%, black 28px, black 100%);
+      -webkit-mask-image: linear-gradient(to right, transparent 0%, black 28px, black 100%);
+    }
+    .front-truncate-wrapper.no-mask {
+      justify-content: flex-start;
+      mask-image: none;
+      -webkit-mask-image: none;
+    }
+
+    /* Expanded Rail Area */
+    .expanded-rail-area {
+      max-height: var(--max-expanded-h);
+      overflow-y: auto;
+      margin-top: 4px;
+      margin-left: 3px;
+      padding-left: 12px;
+      padding-right: 4px;
+      border-left: 1px solid var(--border-rail);
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+    .tool-text-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 4px 4px;
+      margin: 0 -4px;
+      border-radius: 4px;
+      cursor: pointer;
+      user-select: none;
+      transition: background 0.12s;
+    }
+    .tool-text-row:hover {
+      background: rgba(64, 54, 47, 0.045);
+    }
+    .tool-row-left {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      min-width: 0;
+    }
+    .tool-row-right {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      flex-shrink: 0;
+      font-size: 11px;
+      color: var(--ink-muted);
+    }
+    .nested-rail-details {
+      margin-left: 7px;
+      padding: 4px 0 4px 12px;
+      margin-top: 2px;
+      margin-bottom: 2px;
+      border-left: 1px solid var(--border-rail);
+      font-size: 11px;
+      line-height: 1.55;
+      color: var(--ink-secondary);
+    }
+
+    /* Composer */
+    .sim-composer-wrap {
+      padding: 6px 16px 14px;
+      background: var(--bg-canvas);
+    }
+    .sim-composer {
+      border-radius: 12px;
+      border: 1px solid #CFC1B1;
+      background: var(--bg-elevated);
+      padding: 10px 12px;
+    }
+    .sim-composer-placeholder {
+      font-size: 12px;
+      color: var(--ink-muted);
+      padding-bottom: 14px;
+      user-select: none;
+    }
+    .sim-composer-footer {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding-top: 6px;
+      border-top: 1px solid #ECE3D8;
+      font-size: 11px;
+      color: var(--ink-secondary);
+    }
+    .stop-btn {
+      padding: 4px 10px;
+      border-radius: 6px;
+      border: none;
+      background: var(--brand-espresso);
+      color: var(--bg-elevated);
+      font-size: 12px;
+      font-weight: 500;
+    }
+
+    /* Right Control Panel */
+    .control-col {
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+    .control-card {
+      border-radius: 12px;
+      border: 1px solid var(--border-hairline);
+      background: var(--bg-panel);
+      padding: 14px;
+    }
+    .control-card h2 {
+      margin: 0 0 6px;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--brand-espresso);
+    }
+    .control-card p {
+      margin: 0 0 10px;
+      font-size: 11px;
+      line-height: 1.5;
+      color: var(--ink-secondary);
+    }
+    .btn-grid-1 { display: grid; grid-template-columns: 1fr; gap: 6px; }
+    .btn-grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+    .btn-grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+    .feed-btn {
+      text-align: left;
+      padding: 6px 10px;
+      border-radius: 6px;
+      border: 1px solid var(--border-strong);
+      background: var(--bg-elevated);
+      color: var(--ink-primary);
+      font-size: 11px;
+      cursor: pointer;
+      transition: background 0.12s;
+    }
+    .feed-btn:hover { background: var(--bg-surface); }
+    .feed-btn-sub {
+      display: block;
+      font-size: 10px;
+      color: var(--ink-muted);
+      margin-top: 2px;
+    }
+
+    /* Subtle Scrollbar */
+    .studio-scroll::-webkit-scrollbar { width: 4px; height: 4px; }
+    .studio-scroll::-webkit-scrollbar-track { background: transparent; }
+    .studio-scroll::-webkit-scrollbar-thumb {
+      background: rgba(102, 88, 78, 0.24);
+      border-radius: 9999px;
+    }
+    .studio-scroll::-webkit-scrollbar-thumb:hover {
+      background: rgba(102, 88, 78, 0.44);
+    }
+  </style>
+</head>
+<body>
+  <header class="top-bar">
+    <div class="top-inner">
+      <div class="brand-group">
+        <a href="../index.html" class="back-link">← 返回设计稿索引</a>
+        <div class="brand-title">
+          <h1>会话实时状态栏（ConversationActivityBar）· 交互设计稿</h1>
+          <p>外层轻量柔底 · 内部无框纯文本行 + 1px 左侧竖向导轨 · <code class="font-mono-code">LiveToolSpec&lt;S, M&gt;</code> 泛型工具消息驱动</p>
+        </div>
+      </div>
+
+      <div class="scenario-bar">
+        <button onclick="loadScenario('compacting')" id="btn-compacting" class="scenario-btn">1. 正在压缩</button>
+        <button onclick="loadScenario('thinking_no_summary')" id="btn-thinking_no_summary" class="scenario-btn">2. 流式思考(无摘要·前端截断)</button>
+        <button onclick="loadScenario('summary_with_tools')" id="btn-summary_with_tools" class="scenario-btn active">3. 思考摘要驻留 + 多工具执行</button>
+        <button onclick="loadScenario('summary_replaced')" id="btn-summary_replaced" class="scenario-btn">4. 新思考摘要替换</button>
+        <button onclick="loadScenario('streaming_response')" id="btn-streaming_response" class="scenario-btn">5. 文本流式输出(动态增高·不可展开)</button>
+        <button onclick="toggleAutoPlay()" id="btn-autoplay" class="autoplay-btn">
+          <span id="autoplay-icon">▶</span>
+          <span id="autoplay-label">自动播放完整流</span>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <main class="workspace-grid">
+    <!-- Left Simulated Chat Window -->
+    <section class="sim-window">
+      <div class="sim-win-header">
+        <div><strong>主代理 (Main Agent)</strong> · 任务模式</div>
+        <div>外层样式：<strong>轻量柔底 (Soft Warm Surface)</strong></div>
+      </div>
+
+      <div class="sim-timeline studio-scroll">
+        <div class="user-bubble-row">
+          <div class="user-bubble">
+            重构会话聊天框上面的实时状态，压缩时展示正在压缩，思考摘要用 Markdown 展示并驻留，正在执行的工具通过泛型接口支持各自的状态与流式消息，文本输出直接流式展示且不可展开。
+          </div>
+        </div>
+        <div class="history-group-note">
+          <span>已思考 2 秒</span> · <span>已读取 2 个文件</span>
+        </div>
+        <div class="assistant-prose">
+          下方紧贴输入框上方即为重构后的<strong>实时状态栏</strong>（轻量柔底 + 内部无框纯文本行 + <code>1px</code> 左侧竖向导轨）：
+        </div>
+      </div>
+
+      <!-- Live Status Bar Container -->
+      <div class="live-status-host">
+        <div id="live-status-bar-container" class="live-status-surface"></div>
+      </div>
+
+      <!-- Chat Composer -->
+      <div class="sim-composer-wrap">
+        <div class="sim-composer">
+          <div class="sim-composer-placeholder">输入消息，或在代理执行期间发送补充引导...</div>
+          <div class="sim-composer-footer">
+            <div><strong>GPT-5.4 · High</strong> &nbsp;|&nbsp; 上下文 42%</div>
+            <button class="stop-btn">停止</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Right Interactive Message Feeder -->
+    <section class="control-col">
+      <div class="control-card">
+        <h2>1. 投喂工具自定义泛型消息 <code class="font-mono-code">ConversationLiveToolEventMessage&lt;M&gt;</code></h2>
+        <p>
+          每个工具自行定义状态 <code class="font-mono-code">S</code> 与消息 <code class="font-mono-code">M</code>。控制器通过具体化泛型槽位 <code class="font-mono-code">_LiveToolSlot&lt;S, M&gt;</code> 调用 <code class="font-mono-code">spec.reduce(S, M)</code>，新增工具与消息无需改动状态栏组件：
+        </p>
+        <div class="btn-grid-1">
+          <button onclick="dispatchToolCustomEvent('exec_stdout')" class="feed-btn">
+            <strong>向「命令工具」投喂 <code class="font-mono-code">CommandStdoutAppended</code></strong>
+            <span class="feed-btn-sub">实时追加一行终端测试输出</span>
+          </button>
+          <button onclick="dispatchToolCustomEvent('wait_target')" class="feed-btn">
+            <strong>向「等待工具」投喂 <code class="font-mono-code">WaitTargetStateChanged</code></strong>
+            <span class="feed-btn-sub">切换被等待子代理 explorer 的完成状态</span>
+          </button>
+          <button onclick="dispatchToolCustomEvent('search_query')" class="feed-btn">
+            <strong>向「搜索工具」投喂 <code class="font-mono-code">WebSearchQueryAdded</code></strong>
+            <span class="feed-btn-sub">向正在执行的搜索工具追加一条查询词</span>
+          </button>
+        </div>
+      </div>
+
+      <div class="control-card">
+        <h2>2. 投喂顶层 <code class="font-mono-code">sealed class ConversationLiveStatusMessage</code></h2>
+        <div class="btn-grid-2">
+          <button onclick="feedMessage({type: 'phase', kind: 'compacting'})" class="feed-btn">
+            <strong>Compacting</strong>
+            <span class="feed-btn-sub">展示「正在压缩」而非准备中</span>
+          </button>
+          <button onclick="feedStreamingThinkingChunk()" class="feed-btn">
+            <strong>+ 追加流式思考内容</strong>
+            <span class="feed-btn-sub">无摘要时单行前端截断</span>
+          </button>
+          <button onclick="feedNewThinkingSummary()" class="feed-btn">
+            <strong style="color: var(--accent-blue);">★ 投喂新思考摘要 (MD)</strong>
+            <span class="feed-btn-sub">替换最外层标题并持久驻留</span>
+          </button>
+          <button onclick="feedStreamingResponseChunk(true)" class="feed-btn">
+            <strong>+ 追加流式回复正文</strong>
+            <span class="feed-btn-sub">直接展示 · 动态增高 · 不可展开</span>
+          </button>
+        </div>
+        <div style="margin-top: 10px;">
+          <div style="font-size: 11px; font-weight: 500; margin-bottom: 6px;">注册新的运行中工具 (<code class="font-mono-code">ConversationLiveToolStartedMessage&lt;S, M&gt;</code>)</div>
+          <div class="btn-grid-3">
+            <button onclick="addSampleTool('exec')" class="feed-btn">+ 命令执行</button>
+            <button onclick="addSampleTool('wait')" class="feed-btn">+ 等待代理</button>
+            <button onclick="addSampleTool('edit')" class="feed-btn">+ 文件编辑</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="control-card">
+        <h2>3. 最大高度与滚动阈值</h2>
+        <div style="display: flex; justify-content: space-between; font-size: 11px; margin-bottom: 4px;">
+          <span>展开区域最大高度 (Expanded Max Height)</span>
+          <span id="label-expanded-h" class="font-mono-code">240px</span>
+        </div>
+        <input type="range" min="140" max="360" step="10" value="240" oninput="updateMaxExpandedHeight(this.value)" style="width: 100%; accent-color: var(--brand-espresso);" />
+        <div id="event-log-bar" class="font-mono-code" style="font-size: 10.5px; color: var(--accent-blue); margin-top: 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
+          Ready: LiveToolSpec&lt;S, M&gt; generic dispatch active
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const state = {
+      phase: 'runningTool',
+      thinkingSeconds: 3,
+      thinkingSummaryMarkdown: '**思考了 3 秒** · 正在准备计划并检查实时状态栏接口契约',
+      thinkingContent: '1. 识别到模型产生了 SummaryText，外层标题固定渲染该 Markdown 摘要；\n2. 后续启动多个并发工具调用，最外层仍展示该思考摘要；\n3. 内部通过 LiveToolSpec<S, M> 泛型槽位管理不同工具的状态 S 与专属消息 M。',
+      responseMarkdown: '',
+      isOuterExpanded: true,
+      isThinkingExpanded: false,
+      tools: [],
+    };
+
+    let summaryCounter = 1;
+    let toolIdCounter = 100;
+    let autoPlayTimer = null;
+    let stdoutSeq = 1;
+
+    function setLog(text) {
+      const el = document.getElementById('event-log-bar');
+      if (el) el.textContent = text;
+    }
+
+    function renderInlineMarkdown(md) {
+      if (!md) return '';
+      return md
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/\*\*(.+?)\*\*/g, '<strong style="font-weight:600;color:var(--ink-primary)">$1</strong>')
+        .replace(/`([^`]+)`/g, '<code class="font-mono-code" style="font-size:11px;color:var(--brand-espresso)">$1</code>');
+    }
+
+    function renderBlockMarkdown(md) {
+      if (!md) return '';
+      const lines = md.split('\n');
+      let html = '';
+      let inCode = false;
+      for (const rawLine of lines) {
+        if (rawLine.trim().startsWith('```')) {
+          if (!inCode) {
+            inCode = true;
+            html += '<pre class="font-mono-code" style="font-size:11px;border-left:2px solid #C8B9A8;padding-left:10px;margin:6px 0;overflow-x:auto;color:var(--brand-espresso);line-height:1.5"><code>';
+          } else {
+            inCode = false;
+            html += '</code></pre>';
+          }
+          continue;
+        }
+        if (inCode) {
+          html += rawLine.replace(/&/g, '&amp;').replace(/</g, '&lt;') + '\n';
+          continue;
+        }
+        if (rawLine.startsWith('- ')) {
+          html += `<div style="margin:2px 0">· ${renderInlineMarkdown(rawLine.slice(2))}</div>`;
+        } else if (rawLine.trim() === '') {
+          html += '<div style="height:4px"></div>';
+        } else {
+          html += `<div style="line-height:1.55">${renderInlineMarkdown(rawLine)}</div>`;
+        }
+      }
+      if (inCode) html += '</code></pre>';
+      return html;
+    }
+
+    function createToolPresentation(kind) {
+      const id = `call_${++toolIdCounter}`;
+      const templates = {
+        exec: {
+          id,
+          kind: 'exec',
+          verb: '正在执行命令',
+          target: 'cargo test --package pl-studio-runtime --lib',
+          elapsedSeconds: 4,
+          expanded: true,
+          toolState: {
+            cwd: 'code/pl-studio-runtime',
+            lines: [
+              'Compiling pl-studio-runtime v0.2.0',
+              'running 18 tests',
+              'test studio::thread_projection::activity::tests::compacting_phase ... ok',
+            ],
+          },
+          reduce(event) {
+            if (event.type === 'CommandStdoutAppended') {
+              this.toolState.lines.push(event.line);
+            }
+          },
+          renderDetails(tool) {
+            return `
+              <div class="font-mono-code">
+                <div style="color:var(--ink-muted);font-size:10.5px">cwd: ${tool.toolState.cwd} · 已执行 ${tool.elapsedSeconds}s</div>
+                ${tool.toolState.lines.map(l => `<div>${l}</div>`).join('')}
+              </div>
+            `;
+          }
+        },
+        wait: {
+          id,
+          kind: 'wait',
+          verb: '正在等待子代理',
+          target: 'explorer, reviewer',
+          elapsedSeconds: 6,
+          expanded: true,
+          toolState: {
+            targets: [
+              { name: 'explorer', desc: '架构探索', done: false },
+              { name: 'reviewer', desc: '边界核对', done: true },
+            ]
+          },
+          reduce(event) {
+            if (event.type === 'WaitTargetStateChanged') {
+              const t = this.toolState.targets[0];
+              t.done = !t.done;
+            }
+          },
+          renderDetails(tool) {
+            return `
+              <div>
+                ${tool.toolState.targets.map(t => `
+                  <div>· <strong style="font-weight:500;color:var(--ink-primary)">${t.name}</strong> (${t.desc}) — ${
+                    t.done
+                      ? '<span style="color:var(--status-success)">已完成</span>'
+                      : `<span style="color:var(--accent-blue)">运行中 ${tool.elapsedSeconds}s</span>`
+                  }</div>
+                `).join('')}
+              </div>
+            `;
+          }
+        },
+        search: {
+          id,
+          kind: 'search',
+          verb: '正在搜索网页',
+          target: 'flutter widget_preview isolated state',
+          elapsedSeconds: 3,
+          expanded: false,
+          toolState: {
+            queries: [
+              'flutter widget_preview isolated state',
+              'flutter Scrollbar ConstrainedBox maxHeight',
+            ]
+          },
+          reduce(event) {
+            if (event.type === 'WebSearchQueryAdded') {
+              this.toolState.queries.push(event.query);
+            }
+          },
+          renderDetails(tool) {
+            return `
+              <div class="font-mono-code">
+                ${tool.toolState.queries.map(q => `<div>· "${q}"</div>`).join('')}
+              </div>
+            `;
+          }
+        },
+        edit: {
+          id,
+          kind: 'edit',
+          verb: '正在编辑',
+          target: 'conversation_activity_bar.dart',
+          elapsedSeconds: 2,
+          expanded: false,
+          toolState: {},
+          reduce() {},
+          renderDetails(tool) {
+            return `
+              <div class="font-mono-code">
+                <div style="color:var(--ink-muted);font-size:10.5px">code/anywork/lib/src/features/timeline/conversation_activity_bar.dart · ${tool.elapsedSeconds}s</div>
+                <div style="color:var(--status-danger)">- final ConversationActivityView activity;</div>
+                <div style="color:var(--status-success)">+ final ConversationLiveStatusController controller;</div>
+              </div>
+            `;
+          }
+        },
+        plan: {
+          id,
+          kind: 'plan',
+          verb: '正在更新计划',
+          target: '3 项实施步骤',
+          elapsedSeconds: 1,
+          expanded: true,
+          toolState: {},
+          reduce() {},
+          renderDetails() {
+            return `
+              <div>
+                <div style="color:var(--status-success)">✓ 定义 Sealed 消息与 LiveToolSpec&lt;S, M&gt;</div>
+                <div style="color:var(--ink-primary);font-weight:500">● 实现轻量柔底 + 无框纯文本工具行</div>
+                <div style="color:var(--ink-muted)">○ 接入 Widget Preview 与纯 Dart 测试</div>
+              </div>
+            `;
+          }
+        }
+      };
+      return templates[kind] || templates.exec;
+    }
+
+    function dispatchToolCustomEvent(type) {
+      if (state.phase !== 'runningTool') {
+        loadScenario('summary_with_tools');
+      }
+      state.isOuterExpanded = true;
+
+      if (type === 'exec_stdout') {
+        let tool = state.tools.find(t => t.kind === 'exec');
+        if (!tool) {
+          tool = createToolPresentation('exec');
+          state.tools.unshift(tool);
+        }
+        tool.expanded = true;
+        const line = `test studio::live_status::generic_slot_case_${stdoutSeq++} ... ok`;
+        tool.reduce({ type: 'CommandStdoutAppended', line });
+        setLog(`Dispatched ConversationLiveToolEventMessage<CommandEvent>(${tool.id}, CommandStdoutAppended)`);
+      } else if (type === 'wait_target') {
+        let tool = state.tools.find(t => t.kind === 'wait');
+        if (!tool) {
+          tool = createToolPresentation('wait');
+          state.tools.unshift(tool);
+        }
+        tool.expanded = true;
+        tool.reduce({ type: 'WaitTargetStateChanged' });
+        setLog(`Dispatched ConversationLiveToolEventMessage<WaitEvent>(${tool.id}, WaitTargetStateChanged)`);
+      } else if (type === 'search_query') {
+        let tool = state.tools.find(t => t.kind === 'search');
+        if (!tool) {
+          tool = createToolPresentation('search');
+          state.tools.unshift(tool);
+        }
+        tool.expanded = true;
+        tool.reduce({ type: 'WebSearchQueryAdded', query: `dart 3 sealed class generic dispatch #${stdoutSeq++}` });
+        setLog(`Dispatched ConversationLiveToolEventMessage<WebSearchEvent>(${tool.id}, WebSearchQueryAdded)`);
+      }
+      renderStatusBar();
+    }
+
+    setInterval(() => {
+      let changed = false;
+      if (state.phase === 'runningTool' && state.tools.length > 0) {
+        for (const t of state.tools) {
+          t.elapsedSeconds += 1;
+        }
+        changed = true;
+      } else if (state.phase === 'thinking' && !state.thinkingSummaryMarkdown) {
+        state.thinkingSeconds += 1;
+        changed = true;
+      }
+      if (changed) renderStatusBar(false);
+    }, 1000);
+
+    function renderStatusBar(scrollToBottomIfResponding = false) {
+      const container = document.getElementById('live-status-bar-container');
+
+      if (state.phase === 'responding') {
+        container.innerHTML = `
+          <div>
+            <div style="display:flex;align-items:center;gap:8px;font-size:11px;color:var(--ink-muted);margin-bottom:4px">
+              <span class="pulse-dot"></span>
+              <span>正在输出</span>
+            </div>
+            <div id="responding-scroll-box" class="studio-scroll" style="max-height:var(--max-response-h);overflow-y:auto;padding-left:14px;padding-right:4px;font-size:12px;color:var(--ink-primary)">
+              ${renderBlockMarkdown(state.responseMarkdown)}
+            </div>
+          </div>
+        `;
+        if (scrollToBottomIfResponding) {
+          const box = document.getElementById('responding-scroll-box');
+          if (box) box.scrollTop = box.scrollHeight;
+        }
+        return;
+      }
+
+      if ((state.phase === 'compacting' || state.phase === 'preparing') && !state.thinkingSummaryMarkdown && state.tools.length === 0) {
+        const isCompacting = state.phase === 'compacting';
+        const title = isCompacting ? '正在压缩' : '准备中';
+        const subtitle = isCompacting ? '正在整理历史上下文摘要...' : '正在准备请求...';
+        container.innerHTML = `
+          <div style="display:flex;align-items:center;gap:8px;font-size:12px;padding:2px 0">
+            <span class="pulse-dot"></span>
+            <strong style="font-weight:500">${title}</strong>
+            <span style="color:var(--ink-muted)">·</span>
+            <span style="color:var(--ink-muted)">${subtitle}</span>
+          </div>
+        `;
+        return;
+      }
+
+      const hasSummary = Boolean(state.thinkingSummaryMarkdown && state.thinkingSummaryMarkdown.trim());
+      const hasThinkingContent = Boolean(state.thinkingContent && state.thinkingContent.trim());
+      const hasTools = state.tools.length > 0;
+      const canExpand = hasTools || hasThinkingContent;
+
+      let headerLeftHtml = '';
+      if (hasSummary) {
+        headerLeftHtml = `<span style="font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${renderInlineMarkdown(state.thinkingSummaryMarkdown)}</span>`;
+      } else if (hasThinkingContent) {
+        const singleLine = state.thinkingContent.replace(/\s+/g, ' ').trim();
+        const needsMask = singleLine.length > 44;
+        headerLeftHtml = `
+          <span style="font-size:12px;color:var(--ink-secondary);flex-shrink:0">思考中 ${state.thinkingSeconds}s</span>
+          <span style="color:var(--ink-muted);flex-shrink:0">·</span>
+          <div class="front-truncate-wrapper ${needsMask ? '' : 'no-mask'}">
+            <span>${singleLine.replace(/&/g, '&amp;').replace(/</g, '&lt;')}</span>
+          </div>
+        `;
+      } else if (hasTools) {
+        headerLeftHtml = `<span style="font-size:12px">正在执行 ${state.tools.length} 个工具</span>`;
+      } else {
+        headerLeftHtml = `<span style="font-size:12px;color:var(--ink-secondary)">思考中...</span>`;
+      }
+
+      const rightMetaHtml = hasTools && hasSummary
+        ? `<span class="tabular-nums" style="font-size:11px;color:var(--ink-muted)">${state.tools.length} 个工具执行中</span>`
+        : '';
+
+      let expandedBodyHtml = '';
+      if (canExpand && state.isOuterExpanded) {
+        let thinkingSectionHtml = '';
+        if (hasThinkingContent) {
+          if (!hasSummary) {
+            thinkingSectionHtml = `<div style="font-size:11.5px;color:var(--ink-secondary);padding:2px 0">${renderBlockMarkdown(state.thinkingContent)}</div>`;
+          } else {
+            thinkingSectionHtml = `
+              <div>
+                <div onclick="toggleThinkingDetail(event)" class="tool-text-row" style="color:var(--ink-muted);font-size:11.5px">
+                  <span>查看思考过程全文 (${state.thinkingSeconds}s)</span>
+                  <span>${state.isThinkingExpanded ? '▾' : '▸'}</span>
+                </div>
+                ${state.isThinkingExpanded ? `
+                  <div class="nested-rail-details">${renderBlockMarkdown(state.thinkingContent)}</div>
+                ` : ''}
+              </div>
+            `;
+          }
+        }
+
+        const toolsRowsHtml = state.tools.map((tool, idx) => `
+          <div>
+            <div onclick="toggleToolExpand(${idx})" class="tool-text-row">
+              <div class="tool-row-left">
+                <span style="font-size:12px;color:var(--ink-primary);flex-shrink:0">${tool.verb}</span>
+                <span class="font-mono-code" style="font-size:11.5px;color:var(--ink-secondary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${tool.target}</span>
+              </div>
+              <div class="tool-row-right tabular-nums">
+                <span>${tool.elapsedSeconds}s</span>
+                <span>${tool.expanded ? '▾' : '▸'}</span>
+              </div>
+            </div>
+            ${tool.expanded ? `<div class="nested-rail-details">${tool.renderDetails(tool)}</div>` : ''}
+          </div>
+        `).join('');
+
+        expandedBodyHtml = `
+          <div class="expanded-rail-area studio-scroll">
+            ${toolsRowsHtml}
+            ${thinkingSectionHtml}
+          </div>
+        `;
+      }
+
+      container.innerHTML = `
+        <div>
+          <div onclick="${canExpand ? 'toggleOuterExpand()' : ''}" class="live-outer-row ${canExpand ? 'expandable' : ''}">
+            <div class="live-outer-left">
+              <span class="pulse-dot"></span>
+              ${headerLeftHtml}
+            </div>
+            <div class="live-outer-right">
+              ${rightMetaHtml}
+              ${canExpand ? `<span style="font-size:11px;color:var(--ink-muted)">${state.isOuterExpanded ? '▴' : '▾'}</span>` : ''}
+            </div>
+          </div>
+          ${expandedBodyHtml}
+        </div>
+      `;
+    }
+
+    function toggleOuterExpand() {
+      state.isOuterExpanded = !state.isOuterExpanded;
+      renderStatusBar();
+    }
+
+    function toggleThinkingDetail(e) {
+      e.stopPropagation();
+      state.isThinkingExpanded = !state.isThinkingExpanded;
+      renderStatusBar();
+    }
+
+    function toggleToolExpand(idx) {
+      if (state.tools[idx]) {
+        state.tools[idx].expanded = !state.tools[idx].expanded;
+        renderStatusBar();
+      }
+    }
+
+    function updateMaxExpandedHeight(val) {
+      document.documentElement.style.setProperty('--max-expanded-h', `${val}px`);
+      document.getElementById('label-expanded-h').textContent = `${val}px`;
+    }
+
+    function highlightScenarioButton(id) {
+      document.querySelectorAll('.scenario-btn').forEach(btn => btn.classList.remove('active'));
+      const activeBtn = document.getElementById(`btn-${id}`);
+      if (activeBtn) activeBtn.classList.add('active');
+    }
+
+    function loadScenario(name) {
+      stopAutoPlay();
+      highlightScenarioButton(name);
+
+      if (name === 'compacting') {
+        state.phase = 'compacting';
+        state.thinkingSummaryMarkdown = '';
+        state.thinkingContent = '';
+        state.responseMarkdown = '';
+        state.tools = [];
+        state.isOuterExpanded = false;
+      } else if (name === 'thinking_no_summary') {
+        state.phase = 'thinking';
+        state.thinkingSeconds = 4;
+        state.thinkingSummaryMarkdown = '';
+        state.thinkingContent = '正在检查 code/anywork/lib/src/features/timeline/conversation_activity_bar.dart 的布局约束，准备提取纯 Dart 状态控制器并支持单行尾部跟随截断展示，同时允许用户点击展开查看完整思考流...';
+        state.responseMarkdown = '';
+        state.tools = [];
+        state.isOuterExpanded = false;
+      } else if (name === 'summary_with_tools') {
+        state.phase = 'runningTool';
+        state.thinkingSeconds = 3;
+        state.thinkingSummaryMarkdown = '**思考了 3 秒** · 正在准备计划并检查实时状态栏接口契约';
+        state.thinkingContent = '1. 识别到模型产生了 SummaryText，外层标题固定渲染该 Markdown 摘要；\n2. 后续启动多个并发工具调用，最外层仍展示该思考摘要；\n3. 内部通过 LiveToolSpec<S, M> 泛型槽位管理不同工具的状态 S 与专属消息 M。';
+        state.responseMarkdown = '';
+        state.tools = [
+          createToolPresentation('exec'),
+          createToolPresentation('wait'),
+          createToolPresentation('search'),
+          createToolPresentation('edit'),
+        ];
+        state.isOuterExpanded = true;
+      } else if (name === 'summary_replaced') {
+        state.phase = 'runningTool';
+        state.thinkingSeconds = 6;
+        state.thinkingSummaryMarkdown = '**思考了 6 秒** · 工具检查完成，正在更新计划并核对符号引用 (`design/26`)';
+        state.thinkingContent = '上一轮工具已返回结果。模型进行了新一轮推理并输出了新的思考摘要，最外层标题已自动替换为最新摘要。';
+        state.responseMarkdown = '';
+        state.tools = [
+          createToolPresentation('plan'),
+        ];
+        state.isOuterExpanded = true;
+      } else if (name === 'streaming_response') {
+        state.phase = 'responding';
+        state.thinkingSummaryMarkdown = '';
+        state.thinkingContent = '';
+        state.tools = [];
+        state.responseMarkdown = [
+          '已按**轻量柔底 + 泛型工具消息 (`LiveToolSpec<S, M>`)** 完成方案升级：',
+          '- **外层轻量柔底 + 内部无框纯文本行**：彻底消除卡片套卡片，内部仅沿左侧 `1px` 竖向导轨缩进。',
+          '- **工具自定义状态 `S` 与消息 `M`**：新增工具或新增该工具的专属流式消息时，无需修改状态栏组件或顶层 `sealed` 消息。',
+          '```dart',
+          'abstract interface class LiveToolSpec<S, M> {',
+          '  S reduce(S state, M event);',
+          '  Widget buildHeader(BuildContext context, S state);',
+          '  Widget? buildDetails(BuildContext context, S state, {required int elapsedSeconds});',
+          '}',
+          '```'
+        ].join('\n');
+      }
+
+      renderStatusBar(name === 'streaming_response');
+    }
+
+    function feedMessage(msg) {
+      if (msg.type === 'phase') {
+        state.phase = msg.kind;
+        state.thinkingSummaryMarkdown = '';
+        state.thinkingContent = '';
+        state.responseMarkdown = '';
+        state.tools = [];
+      }
+      renderStatusBar();
+    }
+
+    const extraThinkingChunks = [
+      ' → 继续核对 TimelineActivityRow 无框文本行与左导轨缩进间距',
+      ' → 验证纯 Dart controller 在无 ProviderScope 下直接注入 @Preview',
+      ' → 确认每个运行中工具的 startedAt 秒数计算与每秒刷新门控'
+    ];
+    let chunkIdx = 0;
+
+    function feedStreamingThinkingChunk() {
+      if (state.phase === 'responding') state.phase = 'thinking';
+      const chunk = extraThinkingChunks[chunkIdx % extraThinkingChunks.length];
+      chunkIdx++;
+      state.thinkingContent = (state.thinkingContent || '正在分析实时状态栏的组件边界') + chunk;
+      state.thinkingSeconds += 1;
+      renderStatusBar();
+    }
+
+    const sampleSummaries = [
+      '**思考了 4 秒** · 正在设计 `LiveToolSpec<S, M>` 与泛型消息槽位',
+      '**思考了 7 秒** · 正在核对 `ConversationLiveToolEventMessage<M>` 类型安全归约',
+      '**思考了 2 秒** · 正在准备运行 `cargo xtask verify-client` 验证纯 Dart 测试'
+    ];
+
+    function feedNewThinkingSummary() {
+      if (state.phase === 'responding' || state.phase === 'compacting' || state.phase === 'preparing') {
+        state.phase = state.tools.length > 0 ? 'runningTool' : 'thinking';
+      }
+      const nextSummary = sampleSummaries[summaryCounter % sampleSummaries.length];
+      summaryCounter++;
+      state.thinkingSummaryMarkdown = nextSummary;
+      renderStatusBar();
+    }
+
+    function addSampleTool(kind) {
+      state.phase = 'runningTool';
+      const tool = createToolPresentation(kind);
+      state.tools.unshift(tool);
+      state.isOuterExpanded = true;
+      setLog(`Registered ConversationLiveToolStartedMessage<S, M>(${tool.id})`);
+      renderStatusBar();
+    }
+
+    function feedStreamingResponseChunk(longChunk) {
+      state.phase = 'responding';
+      if (!state.responseMarkdown) {
+        state.responseMarkdown = '正在生成流式回复，状态栏直接展示正文且不带折叠箭头：';
+      }
+      if (longChunk) {
+        state.responseMarkdown += '\n- 每个工具通过 `LiveToolSpec<S, M>` 定义自己的状态 `S` 与流式消息 `M`，状态栏内部通过泛型槽位 `_LiveToolSlot<S, M>` 捕获类型并完成无转型归约；\n- 流式输出期间高度随正文自然生长，到达最大高度后内部滚动。';
+      }
+      renderStatusBar(true);
+    }
+
+    function stopAutoPlay() {
+      if (autoPlayTimer) {
+        clearInterval(autoPlayTimer);
+        autoPlayTimer = null;
+      }
+      document.getElementById('autoplay-icon').textContent = '▶';
+      document.getElementById('autoplay-label').textContent = '自动播放完整流';
+    }
+
+    function toggleAutoPlay() {
+      if (autoPlayTimer) {
+        stopAutoPlay();
+        return;
+      }
+      document.getElementById('autoplay-icon').textContent = '⏸';
+      document.getElementById('autoplay-label').textContent = '暂停自动演示';
+
+      const steps = [
+        () => loadScenario('compacting'),
+        () => loadScenario('thinking_no_summary'),
+        () => feedStreamingThinkingChunk(),
+        () => loadScenario('summary_with_tools'),
+        () => dispatchToolCustomEvent('exec_stdout'),
+        () => dispatchToolCustomEvent('wait_target'),
+        () => loadScenario('summary_replaced'),
+        () => loadScenario('streaming_response'),
+      ];
+      let i = 0;
+      steps[i++]();
+      autoPlayTimer = setInterval(() => {
+        if (i >= steps.length) {
+          stopAutoPlay();
+          return;
+        }
+        steps[i++]();
+      }, 2400);
+    }
+
+    loadScenario('summary_with_tools');
+  </script>
+</body>
+</html>

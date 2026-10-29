@@ -50,9 +50,19 @@ pub(in crate::studio) fn project_activity(
     let attempt = turn_attempt(state, turn.turn_id);
     let tasks = active_tasks(state);
     let kind = kind(state, turn.turn_id, attempt, &tasks);
-    let tools = project_tools(state, &tasks, kind);
+    let tools = project_tools(state, &tasks, kind, previous);
     let associated = associated_attempt(attempt);
     let (summary, summary_truncated) = summary(state, associated, kind, &tools);
+    let previous_turn = previous.filter(|prev| prev.turn_id == turn.turn_id);
+    let thinking_summary = match kind {
+        ThreadActivityKind::Responding => None,
+        _ => latest_thinking_summary(state, associated)
+            .or_else(|| previous_turn.and_then(|prev| prev.thinking_summary.clone())),
+    };
+    let thinking_seconds = match kind {
+        ThreadActivityKind::Responding => None,
+        _ => previous_turn.and_then(|prev| prev.thinking_seconds),
+    };
     let step = associated.map_or("preparing", |attempt| attempt.attempt_id.as_str());
     let body = ThreadActivity {
         thread_id: thread_id.to_owned(),
@@ -64,6 +74,8 @@ pub(in crate::studio) fn project_activity(
         kind,
         summary,
         summary_truncated,
+        thinking_summary,
+        thinking_seconds,
         tools,
     };
     Some(match previous {
@@ -257,6 +269,7 @@ fn kind(
 /// 阶段说成正在压缩上下文。
 fn phase_kind(phase: ModelExecutionPhase) -> ThreadActivityKind {
     match phase {
+        ModelExecutionPhase::CompactingContext => ThreadActivityKind::Compacting,
         ModelExecutionPhase::PreparingContext
         | ModelExecutionPhase::BuildingRequest
         | ModelExecutionPhase::PreparingRequest
@@ -298,6 +311,7 @@ fn project_tools(
     state: &ThreadSnapshot,
     active_tasks: &[&TaskRecord],
     kind: ThreadActivityKind,
+    previous: Option<&ThreadActivity>,
 ) -> ThreadActivityTools {
     let foreground = foreground_calls(state, active_tasks, kind);
     // 启动顺序是 owner 的真实事实：任务开始时拿到自己的提交序号，所以并发工具的“最近开始”既不是
@@ -309,9 +323,10 @@ fn project_tools(
             .cmp(&start_order(state, right))
             .then_with(|| left.call_id.cmp(&right.call_id))
     });
+    let now_secs = now_unix_seconds();
     let entries = ordered
         .iter()
-        .map(|task| tool_entry(state, task))
+        .map(|task| tool_entry(state, task, previous, now_secs))
         .collect::<Vec<_>>();
     let background = active_tasks
         .iter()
@@ -324,6 +339,14 @@ fn project_tools(
         active: entries,
         latest_started,
     }
+}
+
+fn now_unix_seconds() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |duration| {
+            i64::try_from(duration.as_secs()).unwrap_or(i64::MAX)
+        })
 }
 
 /// 一次调用的真实启动次序键：owner 的开始序号，缺失时回落到该 Turn 的调用次序。
@@ -365,6 +388,7 @@ fn foreground_calls<'a>(
             .map(|task| task.call_id.as_str())
             .collect(),
         ThreadActivityKind::Preparing
+        | ThreadActivityKind::Compacting
         | ThreadActivityKind::WaitingApi
         | ThreadActivityKind::Thinking
         | ThreadActivityKind::Responding
@@ -373,8 +397,22 @@ fn foreground_calls<'a>(
     }
 }
 
-fn tool_entry(state: &ThreadSnapshot, task: &TaskRecord) -> ThreadActivityToolEntry {
+fn tool_entry(
+    state: &ThreadSnapshot,
+    task: &TaskRecord,
+    previous: Option<&ThreadActivity>,
+    now_secs: i64,
+) -> ThreadActivityToolEntry {
     let (arguments, summary) = tool_arguments(state, task);
+    let started_at = previous
+        .and_then(|prev| {
+            prev.tools
+                .active
+                .iter()
+                .find(|entry| entry.call_id == task.call_id)
+                .and_then(|entry| entry.started_at)
+        })
+        .or(Some(now_secs));
     ThreadActivityToolEntry {
         call_id: task.call_id.clone(),
         task_id: Some(task.id.clone()),
@@ -386,7 +424,7 @@ fn tool_entry(state: &ThreadSnapshot, task: &TaskRecord) -> ThreadActivityToolEn
         // call" without guessing from call ids, wall-clock seconds or the newest output. Absent only
         // on older v2 records that predate the field.
         ordinal: task.started_sequence,
-        started_at: None,
+        started_at,
         wait: wait_presentation(state, task),
     }
 }
@@ -511,11 +549,36 @@ fn summary(
             .as_ref()
             .map_or_else(String::new, |entry| entry.summary.clone()),
         ThreadActivityKind::Preparing
+        | ThreadActivityKind::Compacting
         | ThreadActivityKind::Planning
         | ThreadActivityKind::WaitingApi
         | ThreadActivityKind::AwaitingInput => String::new(),
     };
     bounded(&line)
+}
+
+/// 当前 attempt 最新的思考摘要（`ObservedStream::Summary`）；无摘要事实时返回 `None`。
+fn latest_thinking_summary(
+    state: &ThreadSnapshot,
+    attempt: Option<&RequestAttempt>,
+) -> Option<String> {
+    let attempt = attempt?;
+    let progress = state
+        .model_progress
+        .as_ref()
+        .filter(|progress| progress.attempt_id == attempt.attempt_id)?;
+    for part in progress.progress.parts().iter().rev() {
+        if part.is_empty() || observed_stream(part) != Some(ObservedStream::Summary) {
+            continue;
+        }
+        if let Some(line) = observed_tail_line(part) {
+            let text = bounded(&line.text).0;
+            if !text.is_empty() {
+                return Some(text);
+            }
+        }
+    }
+    None
 }
 
 /// 摘要尾部窗口的字节上限。
@@ -807,6 +870,8 @@ fn same_body(left: &ThreadActivity, right: &ThreadActivity) -> bool {
         && left.kind == right.kind
         && left.summary == right.summary
         && left.summary_truncated == right.summary_truncated
+        && left.thinking_summary == right.thinking_summary
+        && left.thinking_seconds == right.thinking_seconds
         && left.tools == right.tools
 }
 
@@ -1033,6 +1098,7 @@ fn tool_sources(
 pub(in crate::studio) struct ActivityProjection {
     previous: Option<ThreadActivity>,
     detail: Option<ActivityDetailOwner>,
+    thinking_started_at: Option<(String, Option<String>, i64)>,
 }
 
 /// 当前活动的驻留详情：活动本体与**读取时**物化的内容。
@@ -1065,7 +1131,47 @@ impl ActivityProjection {
         thread_id: &str,
         state: &ThreadSnapshot,
     ) -> Option<ThreadActivity> {
-        let activity = project_activity(thread_id, state, self.previous.as_ref());
+        let mut activity = project_activity(thread_id, state, self.previous.as_ref());
+        if let Some(act) = activity.as_mut() {
+            let now = now_unix_seconds();
+            if act.kind == ThreadActivityKind::Thinking {
+                let same_step =
+                    self.thinking_started_at
+                        .as_ref()
+                        .is_some_and(|(turn_id, attempt_id, _)| {
+                            turn_id == &act.turn_id && attempt_id == &act.attempt_id
+                        });
+                if !same_step {
+                    self.thinking_started_at =
+                        Some((act.turn_id.clone(), act.attempt_id.clone(), now));
+                }
+                if act.thinking_summary.is_some()
+                    && let Some((_, _, started)) = self.thinking_started_at.as_ref()
+                {
+                    let elapsed = u64::try_from((now - *started).max(0)).unwrap_or(0);
+                    if act.thinking_seconds != Some(elapsed) {
+                        act.thinking_seconds = Some(elapsed);
+                    }
+                }
+            } else if let Some((turn_id, _, started)) = self.thinking_started_at.take()
+                && turn_id == act.turn_id
+                && act.kind != ThreadActivityKind::Responding
+            {
+                let elapsed = u64::try_from((now - started).max(0)).unwrap_or(0);
+                act.thinking_seconds = Some(elapsed);
+            }
+            if let Some(prev) = self.previous.as_ref()
+                && prev.identity == act.identity
+            {
+                if same_body(prev, act) {
+                    act.revision = prev.revision;
+                } else if act.revision == prev.revision {
+                    act.revision = prev.revision.saturating_add(1);
+                }
+            }
+        } else {
+            self.thinking_started_at = None;
+        }
         self.sync_detail(state, activity.as_ref());
         self.previous = activity.clone();
         activity
@@ -1166,7 +1272,11 @@ impl ActivityProjection {
 
 /// 一条活动摘要与工具条目的文本字节。
 fn activity_bytes(activity: &ThreadActivity) -> u64 {
-    let mut bytes = activity.summary.len() as u64;
+    let mut bytes = activity.summary.len() as u64
+        + activity
+            .thinking_summary
+            .as_ref()
+            .map_or(0, |summary| summary.len() as u64);
     for tool in activity
         .tools
         .active

@@ -1308,14 +1308,17 @@ StudioRecoveryIssue _recoveryIssueFromFrb(
         RecoveryIssueCategory.repository,
       frb.BridgeRecoveryIssueCategory.storage => RecoveryIssueCategory.storage,
     },
+    impact: switch (issue.impact) {
+      frb.BridgeRecoveryImpact.advisory => RecoveryIssueImpact.advisory,
+      frb.BridgeRecoveryImpact.executionBlocked =>
+        RecoveryIssueImpact.executionBlocked,
+      frb.BridgeRecoveryImpact.accessBlocked =>
+        RecoveryIssueImpact.accessBlocked,
+    },
     availableActions: [
       for (final action in issue.availableActions)
         switch (action) {
           frb.BridgeRecoveryIssueAction.retry => RecoveryIssueAction.retry,
-          frb.BridgeRecoveryIssueAction.cleanupThread =>
-            RecoveryIssueAction.cleanupThread,
-          frb.BridgeRecoveryIssueAction.removeProject =>
-            RecoveryIssueAction.removeProject,
           frb.BridgeRecoveryIssueAction.cleanupWorktree =>
             RecoveryIssueAction.cleanupWorktree,
         },

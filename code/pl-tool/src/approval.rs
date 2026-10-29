@@ -34,38 +34,69 @@ pub struct ToolAccessAssessment {
 /// Invocation capability issued by Studio after authorizing access beyond a host-permitted workspace.
 pub const HOST_WORKSPACE_ACCESS: &str = "pl.tool.workspace.external";
 
+/// Assesses only the cwd already accepted by exec's strict input contract.
+pub fn assess_exec(input: &crate::exec::ValidatedExecInput, root: &Path) -> ToolAccessAssessment {
+    let external = input.cwd().is_some_and(|cwd| {
+        ToolPathPolicy::new(root.to_path_buf(), false, "exec").map_or(true, |policy| {
+            path_requires_external_access(&cwd.to_string_lossy(), &policy)
+        })
+    });
+    exec_assessment(input, external)
+}
+
+/// Remote cwd assessment never resolves paths through the host filesystem.
+pub fn assess_exec_remote(
+    input: &crate::exec::ValidatedExecInput,
+    root: &Path,
+) -> ToolAccessAssessment {
+    let external = input.cwd().is_some_and(|cwd| {
+        crate::remote::path::relative_workspace_path(&root.to_string_lossy(), cwd).is_err()
+    });
+    exec_assessment(input, external)
+}
+
+fn exec_assessment(
+    input: &crate::exec::ValidatedExecInput,
+    external: bool,
+) -> ToolAccessAssessment {
+    ToolAccessAssessment {
+        requested_access: if external {
+            WorkspaceAccess::ExternalAllowed
+        } else {
+            WorkspaceAccess::WorkspaceOnly
+        },
+        working_directory: input.cwd().map(|cwd| cwd.to_string_lossy().into_owned()),
+    }
+}
+
 /// Interprets built-in tool parameters for the Studio approval policy.
-/// Invalid JSON requests conservative external access; typed execution still validates parameters.
+/// 无法识别的 JSON 参数或补丁原文按保守策略请求外部访问；执行阶段仍会验证输入。
 pub fn assess(name: &str, raw: &str, root: &Path) -> ToolAccessAssessment {
-    let Ok(arguments) = serde_json::from_str::<serde_json::Value>(raw) else {
+    let Some((paths, working_directory)) = requested_paths_for_input(name, raw) else {
         return ToolAccessAssessment {
             requested_access: WorkspaceAccess::ExternalAllowed,
             working_directory: None,
         };
     };
     ToolAccessAssessment {
-        requested_access: requested_workspace_access(name, &arguments, root),
-        working_directory: get_working_directory(&arguments),
+        requested_access: access_for_paths(&paths, root),
+        working_directory,
     }
 }
 
 /// Classifies remote POSIX paths without touching the host filesystem.
 /// Worker-side confinement remains authoritative for symlinks and actual resources.
 pub fn assess_remote(name: &str, raw: &str, root: &Path) -> ToolAccessAssessment {
-    let Ok(arguments) = serde_json::from_str::<serde_json::Value>(raw) else {
+    let Some((paths, working_directory)) = requested_paths_for_input(name, raw) else {
         return ToolAccessAssessment {
             requested_access: WorkspaceAccess::ExternalAllowed,
             working_directory: None,
         };
     };
-    let working_directory = get_working_directory(&arguments);
-    let external = requested_paths_for_tool(name, &arguments)
-        .into_iter()
-        .chain(working_directory.clone())
-        .any(|path| {
-            crate::remote::path::relative_workspace_path(&root.to_string_lossy(), Path::new(&path))
-                .is_err()
-        });
+    let external = paths.iter().any(|path| {
+        crate::remote::path::relative_workspace_path(&root.to_string_lossy(), Path::new(path))
+            .is_err()
+    });
     ToolAccessAssessment {
         requested_access: if external {
             WorkspaceAccess::ExternalAllowed
@@ -73,6 +104,24 @@ pub fn assess_remote(name: &str, raw: &str, root: &Path) -> ToolAccessAssessment
             WorkspaceAccess::WorkspaceOnly
         },
         working_directory,
+    }
+}
+
+fn requested_paths_for_input(name: &str, raw: &str) -> Option<(Vec<String>, Option<String>)> {
+    match serde_json::from_str::<serde_json::Value>(raw) {
+        Ok(arguments) => {
+            let working_directory = get_working_directory(&arguments);
+            let paths = requested_paths_for_tool(name, &arguments)
+                .into_iter()
+                .chain(working_directory.clone())
+                .collect();
+            Some((paths, working_directory))
+        }
+        Err(_) if name == "apply_patch" => {
+            let paths = paths_from_patch_text(raw);
+            (!paths.is_empty()).then_some((paths, None))
+        }
+        Err(_) => None,
     }
 }
 
@@ -85,15 +134,7 @@ fn get_working_directory(arguments: &serde_json::Value) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
-fn requested_workspace_access(
-    name: &str,
-    arguments: &serde_json::Value,
-    workspace_root: &Path,
-) -> WorkspaceAccess {
-    let paths = requested_paths_for_tool(name, arguments)
-        .into_iter()
-        .chain(get_working_directory(arguments))
-        .collect::<Vec<_>>();
+fn access_for_paths(paths: &[String], workspace_root: &Path) -> WorkspaceAccess {
     let Ok(policy) = ToolPathPolicy::new(workspace_root.to_path_buf(), false, "permission") else {
         return WorkspaceAccess::ExternalAllowed;
     };
@@ -112,15 +153,11 @@ fn requested_paths_for_tool(name: &str, arguments: &serde_json::Value) -> Vec<St
         return argument_path(arguments, "filePath").into_iter().collect();
     }
     match name {
-        "exec" => get_working_directory(arguments).into_iter().collect(),
         "write_stdin" => Vec::new(),
-        "read_file" | "write_file" | "stat_path" | "view_image" | "create_directory"
-        | "delete_path" => argument_path(arguments, "path").into_iter().collect(),
+        "write_file" | "stat_path" | "view_image" | "create_directory" | "delete_path" => {
+            argument_path(arguments, "path").into_iter().collect()
+        }
         "lsp_query" => argument_path(arguments, "filePath").into_iter().collect(),
-        "list_files" => argument_path(arguments, "path")
-            .into_iter()
-            .filter(|path| !path.trim().is_empty())
-            .collect(),
         "copy_path" | "move_path" => ["from", "to"]
             .into_iter()
             .filter_map(|key| argument_path(arguments, key))

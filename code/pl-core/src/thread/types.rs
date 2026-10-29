@@ -204,6 +204,10 @@ pub enum ModelExecutionPhase {
     /// context, so it is the one phase that may genuinely run a separate preparation model. Running
     /// the hook does not by itself prove that a compaction or preparation model ran.
     PreparingContext,
+    /// Context compaction is actively summarizing or trimming context before the model request is
+    /// built. Entered when `force_compaction` is active or when the context-preparation hook
+    /// explicitly reports that it has started compacting.
+    CompactingContext,
     /// Message/steering/tool records and the immutable model request are being assembled.
     BuildingRequest,
     /// The model implementation is preparing the request (freezing, encoding, estimating) before the
@@ -1134,8 +1138,15 @@ pub enum ModelOutputViolation {
     AttemptIdentity { expected: String, actual: String },
     #[error("model context revision mismatch: expected {expected}, got {actual}")]
     ContextRevision { expected: u64, actual: u64 },
+    #[error("frozen tool execution authorization was revoked during model execution")]
+    ToolPermissionRevoked,
     #[error("model called unknown tool {tool_id} (call {call_id})")]
     UnknownTool { tool_id: String, call_id: String },
+    #[error("model tool call {call_id} was rejected: {rejection}")]
+    ToolCallRejected {
+        call_id: String,
+        rejection: crate::model::ModelToolCallRejection,
+    },
     #[error("model returned an empty tool call identity")]
     EmptyCallIdentity,
     #[error("model reused tool call identity {call_id}")]
@@ -1144,6 +1155,19 @@ pub enum ModelOutputViolation {
         "tools {tool_ids:?} require an exclusive response; no tools in this batch were executed"
     )]
     SoloBatch { tool_ids: Vec<String> },
+}
+
+impl ModelOutputViolation {
+    /// Whether this rejection can use the Turn's shared, bounded model-output correction budget.
+    pub(super) fn is_correctable(&self) -> bool {
+        matches!(self, Self::ToolCallRejected { .. } | Self::SoloBatch { .. })
+    }
+
+    pub(super) fn correction_feedback(&self) -> String {
+        format!(
+            "No tools in this batch were executed. This batch produced no tool side effects. Rejection: {self}. Generate a corrected response using the committed results. Select tool names exactly from the declarations in this request and follow their function parameter schemas or custom input formats. Do not repeat completed tool calls."
+        )
+    }
 }
 
 /// Whether a call completed inside the delivery window or remains owned by the Thread.

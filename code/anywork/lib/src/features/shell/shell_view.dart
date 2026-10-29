@@ -144,7 +144,7 @@ SidebarView sidebarView(Ref ref) {
             .isBusy ??
         false;
   }
-  return SidebarView(
+  return SidebarView.fromDirectories(
     projects: projects,
     rootThreads: [
       for (final thread in threads)
@@ -153,17 +153,7 @@ SidebarView sidebarView(Ref ref) {
     selectedProjectId: selection.selectedProjectId,
     selectedRootThreadId: selectedRootId,
     isBusy: busy,
-    projectRecoveryIssues: {
-      for (final issue in recovery)
-        if (issue.scope == RecoveryIssueScope.project &&
-            issue.projectId != null)
-          issue.projectId!: issue,
-    },
-    threadRecoveryIssues: {
-      for (final issue in recovery)
-        if (issue.scope == RecoveryIssueScope.thread && issue.threadId != null)
-          issue.threadId!: issue,
-    },
+    recoveryIssues: recovery,
     modeDisplayNames: {for (final mode in modes) mode.id: mode.displayName},
     directoryHasMore: directory.window.hasMore,
     directoryIsLoading: directory.window.isLoading,

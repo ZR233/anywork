@@ -616,6 +616,19 @@ impl Owner {
                 },
                 () = self.tools.next_cleanup(), if self.tools.has_cleanup() => self.publish_snapshot(),
                 changed = async {
+                    match self.compacting_progress.as_mut() {
+                        Some(receiver) => receiver.changed().await,
+                        None => std::future::pending().await,
+                    }
+                } => {
+                    if changed.is_ok() && self.compacting_progress.as_ref().is_some_and(|rx| *rx.borrow()) {
+                        self.compacting_progress = None;
+                        self.enter_model_execution(ModelExecutionPhase::CompactingContext);
+                    } else if changed.is_err() {
+                        self.compacting_progress = None;
+                    }
+                },
+                changed = async {
                     match self.model_progress.as_mut() {
                         Some((_, receiver)) => receiver.changed().await,
                         None => std::future::pending().await,

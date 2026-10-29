@@ -66,6 +66,53 @@ pub(super) struct Item {
     pub arguments: Option<String>,
 }
 
+#[derive(Debug)]
+pub(super) enum ToolCallOutput {
+    Immediate(String),
+    Pending {
+        task_id: String,
+        acknowledgement: String,
+    },
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum TaskCompletionStatus {
+    Succeeded,
+    Failed,
+    Cancelled,
+    Interrupted,
+}
+
+#[derive(Debug)]
+pub(super) struct TaskCompletion {
+    pub status: TaskCompletionStatus,
+    pub projection: String,
+}
+
+#[derive(Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(super) enum ToolTaskStatus {
+    Running,
+    Succeeded,
+    Failed,
+    Cancelled,
+    Interrupted,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct ToolTaskStatusView {
+    pub task_id: String,
+    pub tool_id: String,
+    pub status: ToolTaskStatus,
+    pub cancel_requested: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub(super) struct ToolTaskQuery {
+    pub task: ToolTaskStatusView,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
 pub(super) enum Text {
@@ -89,6 +136,21 @@ impl Text {
                 .join("\n"),
         }
     }
+
+    fn joined_complete(&self) -> Result<String> {
+        match self {
+            Self::Plain(text) => Ok(text.clone()),
+            Self::Parts(parts) => joined_text_parts(parts),
+        }
+    }
+}
+
+fn joined_text_parts(parts: &[TextPart]) -> Result<String> {
+    parts
+        .iter()
+        .map(|part| part.text.as_deref().context("text part has no text"))
+        .collect::<Result<Vec<_>>>()
+        .map(|parts| parts.join("\n"))
 }
 
 impl Request {
@@ -118,6 +180,142 @@ impl Request {
     }
     pub fn declared(&self, name: &str) -> bool {
         self.tools.iter().any(|tool| tool.name() == Some(name))
+    }
+
+    pub fn tool_call_output(
+        &self,
+        id: &str,
+        tool: &str,
+        expected_arguments: &Value,
+    ) -> Result<Option<(usize, ToolCallOutput)>> {
+        let calls: Vec<_> = self
+            .input
+            .iter()
+            .enumerate()
+            .filter(|(_, item)| item.kind == "function_call" && item.call_id.as_deref() == Some(id))
+            .collect();
+        let outputs: Vec<_> = self
+            .input
+            .iter()
+            .filter(|item| {
+                item.kind == "function_call_output" && item.call_id.as_deref() == Some(id)
+            })
+            .collect();
+        ensure!(
+            calls.len() <= 1 && outputs.len() <= 1,
+            "duplicate call/output identity {id}"
+        );
+        let Some((call_index, declaration)) = calls.first().copied() else {
+            ensure!(outputs.is_empty(), "orphan tool output {id}");
+            return Ok(None);
+        };
+        ensure!(
+            declaration.name.as_deref() == Some(tool),
+            "tool result belongs to the wrong tool"
+        );
+        let declared_arguments: Value = serde_json::from_str(
+            declaration
+                .arguments
+                .as_deref()
+                .context("tool call declaration has no arguments")?,
+        )
+        .context("decode tool call declaration arguments")?;
+        ensure!(
+            &declared_arguments == expected_arguments,
+            "tool call arguments changed during history replay"
+        );
+        let Some(output) = outputs.first() else {
+            anyhow::bail!("tool call {id} has no committed result")
+        };
+        let text = output
+            .output
+            .as_ref()
+            .context("tool output missing text")?
+            .joined_complete()?;
+        if let Some(task_id) = parse_task_ack(&text)? {
+            ensure!(
+                task_id == format!("task:{id}"),
+                "tool ACK task identity does not match its call"
+            );
+            return Ok(Some((
+                call_index,
+                ToolCallOutput::Pending {
+                    task_id,
+                    acknowledgement: text,
+                },
+            )));
+        }
+        Ok(Some((call_index, ToolCallOutput::Immediate(text))))
+    }
+
+    pub fn task_completion_after(
+        &self,
+        call_index: usize,
+        task_id: &str,
+        tool: &str,
+    ) -> Result<Option<TaskCompletion>> {
+        let identity_prefix = format!("Task {task_id} for tool ");
+        let mut completion = None;
+        for (index, item) in self.input.iter().enumerate() {
+            if item.role.as_deref() != Some("user") {
+                continue;
+            }
+            let Some(content) = &item.content else {
+                continue;
+            };
+            let parts = match content {
+                Text::Parts(parts) => parts,
+                Text::Plain(text) if text.starts_with(&identity_prefix) => {
+                    anyhow::bail!("task completion did not preserve production text parts")
+                }
+                Text::Plain(_) => continue,
+            };
+            let Some(first) = parts.first().and_then(|part| part.text.as_deref()) else {
+                continue;
+            };
+            if !first.starts_with(&identity_prefix) {
+                continue;
+            }
+            ensure!(
+                index > call_index,
+                "task completion predates its originating call"
+            );
+            let after_prefix = &first[identity_prefix.len()..];
+            let (reported_tool, reported_status) = after_prefix
+                .split_once(" finished: ")
+                .context("malformed task completion identity/status prefix")?;
+            ensure!(
+                reported_tool == tool,
+                "task completion belongs to another tool"
+            );
+            let status = if reported_status == "Succeeded." {
+                TaskCompletionStatus::Succeeded
+            } else if reported_status == "Failed." {
+                TaskCompletionStatus::Failed
+            } else if reported_status == "Cancelled." {
+                TaskCompletionStatus::Cancelled
+            } else if reported_status == "Interrupted." {
+                TaskCompletionStatus::Interrupted
+            } else {
+                anyhow::bail!("unknown or malformed task completion status")
+            };
+            // The producer inserts the status as one ContextContent::Text, then
+            // the original tool projection as its following text parts. The
+            // codec and Responses adapter preserve those part boundaries; this
+            // join matches the fixture's ordinary immediate-output projection.
+            let projection =
+                joined_text_parts(&parts[1..]).context("task result text part has no text")?;
+            ensure!(
+                !projection.is_empty(),
+                "task completion has no result projection parts"
+            );
+            ensure!(
+                completion.is_none(),
+                "duplicate task completion report for {task_id}"
+            );
+            completion = Some(TaskCompletion { status, projection });
+        }
+        Ok(completion)
     }
 
     pub fn is_title(&self) -> bool {
@@ -167,36 +365,23 @@ impl Request {
             .find(|(_, text)| text.trim_start().starts_with("[[delegation:"))
             .context("request has no authored delegation marker")
     }
+}
 
-    pub fn output(&self, id: &str) -> Result<Option<String>> {
-        let calls = self
-            .input
-            .iter()
-            .filter(|item| item.kind == "function_call" && item.call_id.as_deref() == Some(id))
-            .count();
-        let outputs: Vec<_> = self
-            .input
-            .iter()
-            .filter(|item| {
-                item.kind == "function_call_output" && item.call_id.as_deref() == Some(id)
-            })
-            .collect();
-        ensure!(
-            calls <= 1 && outputs.len() <= 1,
-            "duplicate call/output identity {id}"
-        );
-        if let Some(output) = outputs.first() {
-            ensure!(calls == 1, "orphan tool output {id}");
-            return Ok(Some(
-                output
-                    .output
-                    .as_ref()
-                    .context("tool output missing text")?
-                    .joined(),
-            ));
-        }
-        Ok(None)
+fn parse_task_ack(text: &str) -> Result<Option<String>> {
+    if !text.starts_with("Task ") {
+        return Ok(None);
     }
+    let task_id = text
+        .strip_prefix("Task ")
+        .and_then(|text| {
+            text.strip_suffix(" is running. Its result will be delivered when execution finishes.")
+        })
+        .context("unrecognized task-style tool output")?;
+    ensure!(
+        !task_id.is_empty() && !task_id.chars().any(char::is_whitespace),
+        "invalid background task acknowledgement identity"
+    );
+    Ok(Some(task_id.to_owned()))
 }
 
 pub(super) fn decode<T: DeserializeOwned>(text: &str) -> Result<T> {
@@ -462,8 +647,63 @@ pub(super) struct AgentRow {
 #[serde(rename_all = "camelCase")]
 pub(super) struct Closed {
     pub target: String,
-    pub lifecycle: Lifecycle,
-    pub workspace_disposition: String,
+    pub agents: Vec<ClosedAgent>,
+    pub error: Option<CloseFailure>,
+}
+
+impl Closed {
+    pub fn succeeded_for(&self, target: &str) -> bool {
+        self.target == target
+            && self.error.is_none()
+            && self.agents.iter().any(|agent| agent.agent_id == target)
+            && self.agents.iter().all(|agent| {
+                agent.execution_closed
+                    && matches!(
+                        &agent.worktree_cleanup,
+                        WorktreeCleanup::NotApplicable
+                            | WorktreeCleanup::NotPresent { .. }
+                            | WorktreeCleanup::Removed { .. }
+                    )
+            })
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct ClosedAgent {
+    pub agent_id: String,
+    pub execution_closed: bool,
+    pub worktree_cleanup: WorktreeCleanup,
+}
+
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub(super) enum WorktreeCleanup {
+    Pending,
+    NotApplicable,
+    NotPresent {
+        path: String,
+        registration_present: bool,
+    },
+    Removed {
+        path: String,
+    },
+    Failed {
+        path: Option<String>,
+        error: CloseFailure,
+    },
+}
+
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct CloseFailure {
+    pub code: String,
+    pub message: String,
+    pub retryable: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]

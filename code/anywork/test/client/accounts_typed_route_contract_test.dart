@@ -795,7 +795,10 @@ void main() {
         await _cancelDeleteIfOpen(tester);
         await pumpClientFuture(
           tester,
-          models.removeManual('manual'),
+          models.removeManual(
+            'manual',
+            expectedToken: models.compactLeaveToken(),
+          ),
           'dirty remove denied',
         );
         expect(h.models.removed, isEmpty);
@@ -806,7 +809,10 @@ void main() {
         expect(models.compactLeaveBlocked(), isTrue);
         await pumpClientFuture(
           tester,
-          models.removeManual('manual'),
+          models.removeManual(
+            'manual',
+            expectedToken: models.compactLeaveToken(),
+          ),
           'inflight remove denied',
         );
         expect(h.models.removed, isEmpty);
@@ -826,7 +832,10 @@ void main() {
         expect(models.hasUnconfirmedCompactSave(), isTrue);
         await pumpClientFuture(
           tester,
-          models.removeManual('manual'),
+          models.removeManual(
+            'manual',
+            expectedToken: models.compactLeaveToken(),
+          ),
           'unknown remove denied',
         );
         expect(h.models.removed, isEmpty);
@@ -876,7 +885,10 @@ void main() {
         );
         await pumpClientFuture(
           tester,
-          models.removeManual('manual'),
+          models.removeManual(
+            'manual',
+            expectedToken: models.compactLeaveToken(),
+          ),
           'duplicate remove denied',
         );
         expect(h.models.removed, hasLength(1));
@@ -997,6 +1009,7 @@ void main() {
         expect(find.byType(AccountUnsavedChangesDialog), findsNothing);
         await _cancelDeleteIfOpen(tester);
         await leaveDraftAndReenter();
+        await _ensureModelExpanded(tester, 'model');
         final cleanRaw = compact().raw;
         expect(_compactInput('model'), findsOneWidget);
         final admitted = Completer<void>();
@@ -1021,10 +1034,17 @@ void main() {
           h.models,
           models,
         );
+        final removalToken = models.compactLeaveToken();
         expect(
           await h.container
               .read(accountsViewModelProvider.notifier)
-              .remove(nativeKey),
+              .remove(
+                nativeKey,
+                isCompactClean: () =>
+                    h.container.exists(provider) &&
+                    identical(h.container.read(provider.notifier), models) &&
+                    models.canRemove(expectedToken: removalToken),
+              ),
           isFalse,
         );
         expect(h.accounts.removals, hasLength(1));
@@ -1056,6 +1076,340 @@ void main() {
         models.changeCompact('model', '1450');
         expect(compact().raw, '1450');
         expect(h.models.compactCalls, isEmpty);
+      } catch (error, stack) {
+        caseFailure = error;
+        caseStack = stack;
+        rethrow;
+      } finally {
+        await _closeAfterCase(h.close, caseFailure, caseStack);
+      }
+    },
+  );
+
+  testWidgets(
+    'confirmed account deletion waits for its operation and leaves once after canonical absence',
+    (tester) async {
+      final h = await _mountRouter(tester);
+      Object? caseFailure;
+      StackTrace? caseStack;
+      try {
+        const details = AccountDetailsRoute(
+          kind: AccountKind.native,
+          accountId: 'native',
+        );
+        h.router.go(details.location);
+        await _at(tester, h.router, details.location);
+        final provider = accountModelsViewModelProvider(nativeKey);
+        await pumpClientUntil(
+          tester,
+          () =>
+              h.container.exists(provider) &&
+              h.container.read(provider).hasValue,
+          'clean deletion model context',
+        );
+        final models = h.container.read(provider.notifier);
+        await _ensureModelExpanded(tester, 'model');
+        expect(
+          models.canRemove(expectedToken: models.compactLeaveToken()),
+          isTrue,
+        );
+        final admitted = Completer<void>();
+        final completion = Completer<OperationState>();
+        h.accounts.write = () {
+          admitted.complete();
+          return completion.future;
+        };
+        final delete = find.byKey(const ValueKey('account-details-delete'));
+        await tester.ensureVisible(delete);
+        await tester.pump();
+        expect(delete.hitTestable(), findsOneWidget);
+        await tester.tap(delete);
+        await _deleteDialog(tester);
+        await _confirmDeleteIfEnabled(tester);
+        await pumpClientFuture(
+          tester,
+          admitted.future,
+          'clean account deletion',
+        );
+        final accounts = h.container.read(accountsViewModelProvider.notifier);
+        expect(accounts.isRemovalBlocked(nativeKey), isTrue);
+        await tester.pump();
+        await _expectDeletionBlocksModels(
+          tester,
+          h.container,
+          h.models,
+          models,
+        );
+
+        h.accounts.state.publish(
+          AccountsState(
+            stamp: const ResourceStamp(
+              resourceKey: 'test',
+              ownerEpoch: 'owner',
+              revision: 2,
+            ),
+            accounts: const [],
+            templates: h.accounts.state.value.templates,
+          ),
+        );
+        await tester.pump();
+        expect(h.router.state.uri.toString(), details.location);
+        expect(accounts.isRemovalBlocked(nativeKey), isTrue);
+        expect(h.accounts.removals, [const NativeAccountIdentity('native')]);
+        expect(find.byType(AccountUnsavedChangesDialog), findsNothing);
+        completion.complete(savedVmOperation('account-remove-canonical-first'));
+        await _at(tester, h.router, const SettingsRoute().location);
+        expect(find.byType(AccountDeleteDialog), findsNothing);
+        expect(find.byType(AccountUnsavedChangesDialog), findsNothing);
+        expect(find.byType(AccountDetailsView), findsNothing);
+        expect(accounts.isRemovalBlocked(nativeKey), isFalse);
+        expect(
+          h.accounts.state.value.account(const NativeAccountIdentity('native')),
+          isNull,
+        );
+        expect(h.accounts.removals, hasLength(1));
+        expect(h.accounts.patches, isEmpty);
+        expect(h.accounts.creates, isEmpty);
+      } catch (error, stack) {
+        caseFailure = error;
+        caseStack = stack;
+        rethrow;
+      } finally {
+        await _closeAfterCase(h.close, caseFailure, caseStack);
+      }
+    },
+  );
+
+  testWidgets(
+    'a confirmed Create with a rejected default deletes its saved manual row through the retained Models owner',
+    (tester) async {
+      final h = await _mountRouter(tester);
+      Object? caseFailure;
+      StackTrace? caseStack;
+      try {
+        const create = AccountCreateRoute();
+        h.router.go(create.location);
+        await _at(tester, h.router, create.location);
+        final entry = _actualEditorEntry(tester);
+        final sessionProvider = accountEditorSessionViewModelProvider(entry);
+        await pumpClientUntil(
+          tester,
+          () => h.container.read(sessionProvider).asData?.value.editor != null,
+          'actual Create owner',
+        );
+        final session = _captureMountedOwner(h.container, entry);
+        final key = session.currentEditor!;
+        final editorProvider = accountEditorViewModelProvider(key);
+        await pumpClientUntil(
+          tester,
+          () => h.container.read(editorProvider).hasValue,
+          'Create input resource',
+        );
+        final editor = h.container.read(editorProvider.notifier);
+        final modelsProvider = accountModelsViewModelProvider(key.target);
+        expect(h.container.exists(modelsProvider), isFalse);
+        final nativeView = find.byType(NativeAccountEditorView);
+        final l10n = AppLocalizations.of(tester.element(nativeView));
+        await tester.enterText(
+          _editorInput(key.editorId, 'credential'),
+          'created-account-only-secret',
+        );
+        final add = find.descendant(
+          of: nativeView,
+          matching: find.text(l10n.settingsAddModel),
+        );
+        expect(add, findsOneWidget);
+        await tester.ensureVisible(add);
+        await tester.pump();
+        expect(add.hitTestable(), findsOneWidget);
+        await tester.tap(add);
+        await tester.pump();
+        final row = h.container
+            .read(editorProvider)
+            .requireValue
+            .native!
+            .manualModels
+            .single
+            .editorKey;
+        await tester.enterText(_manualInput(row, 'id'), 'create-manual');
+        await tester.enterText(_manualInput(row, 'name'), 'Created manual');
+        final setDefault = find.byKey(
+          const ValueKey('account-set-default-on-create'),
+        );
+        await tester.ensureVisible(setDefault);
+        await tester.pump();
+        await tester.tap(setDefault);
+        await tester.pump();
+        expect(
+          h.container
+              .read(editorProvider)
+              .requireValue
+              .native!
+              .setDefaultOnCreate,
+          isTrue,
+        );
+        final admitted = Completer<void>();
+        final creation = Completer<OperationState>();
+        h.accounts.createWrite = () {
+          admitted.complete();
+          return creation.future;
+        };
+        h.accounts.defaultWrite = () async => failedVmOperation(
+          OperationPhase.rejected,
+          id: 'created-default-rejected',
+          error: StateError('The confirmed create is not rolled back'),
+        );
+        final save = find.byKey(const ValueKey('account-save'));
+        await tester.ensureVisible(save);
+        await tester.pump();
+        expect(save.hitTestable(), findsOneWidget);
+        await tester.tap(save);
+        await pumpClientFuture(tester, admitted.future, 'Create admitted once');
+        final command = h.accounts.creates.single;
+        expect(command.identity.accountId, key.target.id);
+        expect(command.customModels.single.modelId, 'create-manual');
+        final stamp = ResourceStamp(
+          resourceKey: vmStamp.resourceKey,
+          ownerEpoch: vmStamp.ownerEpoch,
+          revision: 2,
+        );
+        h.accounts.put(
+          vmNative(
+            id: key.target.id,
+            name: command.name,
+            hasBearerToken: true,
+            manual: command.customModels,
+          ),
+        );
+        h.accounts.state.publish(
+          AccountsState(
+            stamp: stamp,
+            accounts: [
+              ...h.accounts.state.value.accounts,
+              vmSummary(command.identity, name: command.name),
+            ],
+            templates: h.accounts.state.value.templates,
+          ),
+        );
+        publishVmManualModel(
+          h.models,
+          command.identity,
+          modelId: 'create-manual',
+        );
+        creation.complete(savedVmOperation('confirmed-created-account'));
+        await pumpClientUntil(
+          tester,
+          () =>
+              h.container.read(editorProvider).asData?.value.saving == false &&
+              h.container
+                      .read(editorProvider)
+                      .asData
+                      ?.value
+                      .native
+                      ?.accountKey ==
+                  key.target &&
+              h.container.exists(modelsProvider) &&
+              h.container.read(modelsProvider).hasValue,
+          'confirmed Create retains the production Models resource',
+        );
+        await tester.pumpAndSettle();
+        final models = h.container.read(modelsProvider.notifier);
+        expect(session.isEditorCurrent(key), isTrue);
+        expect(
+          h.container.read(sessionProvider.notifier).currentOwner(),
+          same(session),
+        );
+        expect(h.router.state.uri.toString(), create.location);
+        expect(editor.isSavedModel(row), isTrue);
+        expect(
+          h.container.read(editorProvider).requireValue.native!.accountKey,
+          key.target,
+        );
+        expect(h.accounts.creates, hasLength(1));
+        expect(h.accounts.defaultCalls, [command.identity]);
+        expect(h.accounts.mutationCalls, ['create', 'default']);
+        expect(
+          models.canRemove(expectedToken: models.compactLeaveToken()),
+          isTrue,
+        );
+
+        final removed = Completer<void>();
+        final deletion = Completer<OperationState>();
+        h.models.removeWrite = () {
+          removed.complete();
+          return deletion.future;
+        };
+        final remove = find.descendant(
+          of: find.byKey(ValueKey(AccountViewKeyValues.manualItem(row))),
+          matching: find.text(l10n.settingsRemoveModel),
+        );
+        expect(remove, findsOneWidget);
+        await tester.ensureVisible(remove);
+        await tester.pump();
+        expect(remove.hitTestable(), findsOneWidget);
+        await tester.tap(remove);
+        await _deleteDialog(tester);
+        await _confirmDeleteIfEnabled(tester);
+        await pumpClientFuture(
+          tester,
+          removed.future,
+          'saved Create row deletion',
+        );
+        expect(h.models.removed, [
+          AccountModelIdentity(
+            account: command.identity,
+            modelId: 'create-manual',
+          ),
+        ]);
+        expect(h.container.read(modelsProvider.notifier), same(models));
+        deletion.complete(savedVmOperation('created-manual-delete'));
+        final directory = h.models.state.value;
+        h.models.state.publish(
+          ModelDirectoryState(
+            accounts: {
+              ...directory.accounts,
+              command.identity: AccountResource(
+                stamp: ResourceStamp(
+                  resourceKey: vmStamp.resourceKey,
+                  ownerEpoch: vmStamp.ownerEpoch,
+                  revision: 3,
+                ),
+                value: AccountModelCatalog(
+                  identity: command.identity,
+                  models: const [],
+                  status: const ModelCatalogStatusView(supported: true),
+                ),
+              ),
+            },
+            configurations: directory.configurations,
+          ),
+        );
+        await pumpClientUntil(
+          tester,
+          () =>
+              h.container.read(editorProvider).asData?.value.saving == false &&
+              h.container
+                      .read(editorProvider)
+                      .asData
+                      ?.value
+                      .native
+                      ?.manualModels
+                      .isEmpty ==
+                  true,
+          'saved Create row removed',
+        );
+        await tester.pumpAndSettle();
+        expect(
+          find.byKey(ValueKey(AccountViewKeyValues.manualItem(row))),
+          findsNothing,
+        );
+        expect(session.isEditorCurrent(key), isTrue);
+        expect(h.container.read(modelsProvider.notifier), same(models));
+        expect(h.router.state.uri.toString(), create.location);
+        expect(h.accounts.creates, hasLength(1));
+        expect(h.accounts.defaultCalls, hasLength(1));
+        expect(h.accounts.patches, isEmpty);
+        expect(h.models.removed, hasLength(1));
       } catch (error, stack) {
         caseFailure = error;
         caseStack = stack;
