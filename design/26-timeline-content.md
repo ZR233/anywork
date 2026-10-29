@@ -14,6 +14,18 @@ Rust、数据库、FRB、HTTP、分页和 SDK 领域类型不包含展示 group 
 
 核心层 `Session` 是完成集合、pending 与统一读取所有者，保持产品无关；业务封口与可变执行事实归 Runtime。HistoryStore 与既有 writer 负责事务、恢复和可靠预算。SDK 仅传递完成页及有限未交付批次；唯一 Flutter 呈现所有者持有当前已加载原子引用并决定分组，ViewState 不拥有 feed、Session 或查询句柄。
 
+### 模型成员的可靠封口与交接
+
+厂商已经给出独立、权威的成员结束事实时，必须按该成员封口，不能因为整个模型调用仍运行而继续等待 attempt 终态。例如 Responses 的 `output_item.done` 所携完整 message、reasoning summary 或 raw reasoning 成员，经模型层校验后可成为独立完成来源；通道切换、增量 block 关闭或单纯出现下一个 index 都不是等价来源。没有可靠成员结束事实的协议仍遵循本节的最终 attempt 输出规则，不猜测边界。
+
+模型层先完成该成员的身份、权威内容、重复冲突、输出与 replay 预算校验，再向 Core 交付类型化的完成事实。该交付与可合并的实时 progress watch 分开：watch 只表示最新预览，不能承担逐条完成事实或充当接纳确认。交付使用现有模型调用所有权内的有界可靠通道；满载产生背压，等待不持锁，不增加平行历史库、通用事件框架或第二个模型调用执行者。
+
+Core 在原调用仍运行时接纳这些事实，保留真实 attempt、恢复 generation、provider item 与 part 身份，立即形成现有不可变 effect/checkpoint 交接；不提前推进模型上下文、调用用量或 Turn 终态。Runtime 只沿原 prepared handoff、可靠预算和 writer 路径生成、发布并保存完成项，不能由模型回调直接写产品历史。完成通道的在途载荷及新 effect 必须由同一次调用已有的可靠输出准入承担；接纳前失败保留原责任，接纳后失败沿同一 pending 重试，不把内容移入无预算旁路。
+
+模型最终回执再次包含同一成员时，按相同完成身份和冻结载荷幂等，不重新分配完成序号；冲突明确失败，不能改写已经发布的历史。后续模型失败、停止或恢复不撤销已经接纳的成员，原因由独立终止事实表达。调用结束，包括取消和失败，须先收束生产者并交接已接纳的成员，再撤销相应观察；恢复只能依据已保存的 effect/checkpoint，不重发旧请求来重建成员。持久化结构的升级与旧数据未知来源处理仍遵循 [17](./17-studio-storage.md)。
+
+成员从 live 退出由 Runtime 同源完成交接决定，不由 progress 端提前删正文或由 Flutter 猜测。发布对应完成上界后才生成不再含该成员的活动快照，并沿已有 Activity Commit 与完成批次协调交付。已结束成员不得继续累积在活动元数据中直到撑满帧预算；修复此类累积不能靠提高帧上限、静默丢成员或减少输入规模。
+
 ## 26.2 身份、顺序与不可变性
 
 产品完成项包含稳定 `id`、`append_seq`、可选 `source_effect_seq`、可选 `sealed_at`、冻结来源与强类型完成载荷。载荷没有 `streaming`、`running`、`queued`、`pendingApproval`、动态 elapsed、`saved` 或内容 revision。最终耗时、返回码、错误及稳定资源引用属于完成事实，可以保存。
