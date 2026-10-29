@@ -41,6 +41,9 @@ impl MigratorTraitSelf for Migrator {
             Box::new(ReviewReceipt {
                 thread_id: self.thread_id.clone(),
             }),
+            Box::new(ProjectKind {
+                thread_id: self.thread_id.clone(),
+            }),
             Box::new(ModelAccess {
                 thread_id: self.thread_id.clone(),
             }),
@@ -70,10 +73,14 @@ pub(super) const EXECUTION_IDENTITY: &str = "m20261026_000008_history_execution_
 const RETIRE_ORDINALS: &str = "m20261027_000001_history_retire_ordinals";
 const PRODUCER_PAYLOADS: &str = "m20261027_000002_history_producer_payloads";
 const REVIEW_RECEIPT: &str = "m20261027_000003_history_review_receipt";
+const PROJECT_KIND: &str = "m20261027_000004_history_project_kind";
 
 // Content preparation and current-only readers share the same lifecycle boundary.
 fn is_lifecycle_migration(name: &str) -> bool {
-    matches!(name, MODEL_ACCESS | WORKSPACE_RECEIPT | EXECUTION_IDENTITY)
+    matches!(
+        name,
+        PROJECT_KIND | MODEL_ACCESS | WORKSPACE_RECEIPT | EXECUTION_IDENTITY
+    )
 }
 
 pub(super) async fn prepare(
@@ -605,6 +612,38 @@ impl MigrationTrait for CheckpointV5 {
             .await
             .map_err(conversion)?;
         Ok(())
+    }
+}
+
+/// Checkpoint Project bindings predate kind. Upgrade only at the named history boundary,
+/// so ordinary ProjectRecord decoding remains strict and old saved paths remain authoritative.
+struct ProjectKind {
+    thread_id: String,
+}
+impl MigrationName for ProjectKind {
+    fn name(&self) -> &str {
+        PROJECT_KIND
+    }
+}
+#[sea_orm_migration::async_trait::async_trait]
+impl MigrationTrait for ProjectKind {
+    fn use_transaction(&self) -> Option<bool> {
+        Some(true)
+    }
+
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        let db = manager.get_connection();
+        let Some(original) = checkpoint::read(db, &self.thread_id)
+            .await
+            .map_err(conversion)?
+        else {
+            return Ok(());
+        };
+        let mut migrated = original.clone();
+        crate::studio::producer_migration::project_kind(&mut migrated).map_err(conversion)?;
+        checkpoint::write_representation(db, &original, &migrated)
+            .await
+            .map_err(conversion)
     }
 }
 

@@ -45,7 +45,11 @@ final class AcpServiceImpl implements AcpService {
   final Map<Object, OperationId> _active = {};
   final Map<OperationId, _AuthBusiness> _authBusiness = {};
   final Map<OperationId, _InstallBusiness> _installBusiness = {};
-  final Map<Completer<AcpAccountDetails>, Observation> _savedWaiters = {};
+  final Map<
+    Completer<({AcpAccountDetails? detail, OperationState operation})>,
+    List<Observation>
+  >
+  _savedWaiters = {};
   bool _closed = false;
   @override
   ValueObservation<AcpAccountCatalogView> get templates => _templates;
@@ -91,7 +95,9 @@ final class AcpServiceImpl implements AcpService {
         _releaseDemand(business.demand);
       }
       for (final entry in savedWaiters) {
-        entry.value.cancel();
+        for (final observation in entry.value) {
+          observation.cancel();
+        }
         if (!entry.key.isCompleted)
           entry.key.completeError(
             StateError('ACP owner changed while observing save'),
@@ -305,6 +311,12 @@ final class AcpServiceImpl implements AcpService {
   Future<OperationState> save(
     AcpAccountUpdateView account, {
     DraftStamp? draft,
+  }) => _save(account, draft: draft);
+
+  Future<OperationState> _save(
+    AcpAccountUpdateView account, {
+    DraftStamp? draft,
+    void Function(OperationHandle operation)? onAdmitted,
   }) => mutations.run(
     key: 'account:acp:${account.accountId}',
     draft: draft,
@@ -313,6 +325,7 @@ final class AcpServiceImpl implements AcpService {
     },
     request: (revision, operation) =>
         port.saveAcpAccount(revision, account, operationId: operation),
+    onAdmitted: onAdmitted,
   );
   @override
   Future<OperationState> remove(AcpAccountIdentity identity) => mutations.run(
@@ -331,48 +344,122 @@ final class AcpServiceImpl implements AcpService {
     DraftStamp? draft,
   }) => _starts.run(() async {
     final identity = AcpAccountIdentity(account.accountId);
-    final operation = await save(account, draft: draft);
-    final stamp = operation.receipt?.targets
-        .whereType<ResourceStamp>()
-        .where((stamp) => stamp.resourceKey == 'settings')
-        .single;
-    if (stamp == null)
-      throw StateError('ACP save returned no settings observation target');
-    final detail = await _awaitSaved(identity, stamp);
+    final owner = mutations.coordinator.captureOwner();
+    final generation = observations.generation;
+    OperationHandle? admitted;
+    Observation? retained;
     try {
-      await check(identity);
-      return AcpSaveAndConnectResult(saved: detail.account);
-    } catch (error) {
-      return AcpSaveAndConnectResult(
-        saved: detail.account,
-        checkFailure: typedCommandFailure(error, correlationId: 'acp-connect'),
+      final saved = await _save(
+        account,
+        draft: draft,
+        onAdmitted: (operation) {
+          admitted = operation;
+          // Keep this exact handle alive even when a newer intent is admitted.
+          retained = operation.state.watch((_) {});
+        },
       );
+      if (saved.failurePhase != null)
+        return AcpSaveAndConnectResult(operation: saved);
+      final operation = admitted!;
+      late final AcpAccountDetails detail;
+      try {
+        _requireOwner(owner, generation);
+        final stamp = operation.state.value.receipt?.targets
+            .whereType<ResourceStamp>()
+            .where((stamp) => stamp.resourceKey == 'settings')
+            .single;
+        if (stamp == null)
+          throw StateError('ACP save returned no settings observation target');
+        final confirmation = await _awaitSaved(operation, identity, stamp);
+        if (confirmation.operation.failurePhase != null)
+          return AcpSaveAndConnectResult(operation: confirmation.operation);
+        detail = confirmation.detail!;
+        _requireOwner(owner, generation);
+      } catch (error) {
+        final current = operation.state.value;
+        final snapshot = current.failurePhase == null
+            ? operation.syncFailed(error)
+            : current;
+        return AcpSaveAndConnectResult(operation: snapshot);
+      }
+      final snapshot = operation.state.value;
+      if (snapshot.failurePhase != null)
+        return AcpSaveAndConnectResult(operation: snapshot);
+      try {
+        await check(identity);
+        return AcpSaveAndConnectResult(
+          operation: snapshot,
+          saved: detail.account,
+        );
+      } catch (error) {
+        return AcpSaveAndConnectResult(
+          operation: snapshot,
+          saved: detail.account,
+          checkFailure: typedCommandFailure(
+            error,
+            correlationId: 'acp-connect',
+          ),
+        );
+      }
+    } finally {
+      retained?.cancel();
     }
   });
 
-  Future<AcpAccountDetails> _awaitSaved(
+  Future<({AcpAccountDetails? detail, OperationState operation})> _awaitSaved(
+    OperationHandle operation,
     AcpAccountIdentity identity,
     ResourceStamp target,
   ) {
     if (_closed) return Future.error(StateError('ACP save observation closed'));
-    final done = Completer<AcpAccountDetails>();
-    void check(AccountResource<AccountDetails> value) {
-      if (done.isCompleted ||
-          !_savedWaiters.containsKey(done) ||
+    final done =
+        Completer<({AcpAccountDetails? detail, OperationState operation})>();
+    final subscriptions = <Observation>[];
+    _savedWaiters[done] = subscriptions;
+    final details = accounts.details(identity);
+    void release() {
+      for (final subscription
+          in _savedWaiters.remove(done) ?? <Observation>[]) {
+        subscription.cancel();
+      }
+    }
+
+    void check([OperationState? snapshot]) {
+      if (done.isCompleted || !_savedWaiters.containsKey(done)) return;
+      final state = snapshot ?? operation.state.value;
+      final value = details.value;
+      if (state.failurePhase != null) {
+        done.complete((detail: null, operation: state));
+        release();
+        return;
+      }
+      if (value.failure case final failure?) {
+        done.completeError(failure);
+        release();
+        return;
+      }
+      if (state.receipt == null ||
+          !state.observed ||
+          !state.durable ||
           value.stamp?.covers(target) != true)
         return;
       final detail = value.value;
-      if (detail is AcpAccountDetails) {
-        done.complete(detail);
+      if (detail is AcpAccountDetails && detail.identity == identity) {
+        done.complete((detail: detail, operation: state));
       } else {
         done.completeError(StateError('Saved ACP account was removed'));
       }
-      _savedWaiters.remove(done)?.cancel();
+      release();
     }
 
-    final watched = accounts.details(identity).watchLatest(check);
-    _savedWaiters[done] = watched.observation;
-    check(watched.value);
+    try {
+      subscriptions.add(details.watchLatest((_) => check()).observation);
+      subscriptions.add(operation.state.watchLatest(check).observation);
+      check();
+    } catch (error) {
+      release();
+      if (!done.isCompleted) done.completeError(error);
+    }
     return done.future;
   }
 
@@ -770,7 +857,9 @@ final class AcpServiceImpl implements AcpService {
     _starts.seal();
     _cancels.seal();
     for (final entry in _savedWaiters.entries.toList()) {
-      entry.value.cancel();
+      for (final observation in entry.value) {
+        observation.cancel();
+      }
       entry.key.completeError(StateError('ACP save observation closed'));
     }
     _savedWaiters.clear();

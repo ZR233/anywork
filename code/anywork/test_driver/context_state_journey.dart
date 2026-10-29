@@ -224,9 +224,14 @@ class ContextStateJourney {
     final savedFile = File('$output/isolation-observed.json');
     if (phase == 'isolation-first') {
       await openProject();
+      final opened = await driver.readSnapshot();
+      final projectId =
+          (opened['navigation'] as Map)['selectedProjectId'] as String;
       final roots = <String, String>{};
       for (final label in ['ROOT_A', 'ROOT_B']) {
-        if (roots.isNotEmpty) await tap('sidebar-new-session');
+        if (roots.isNotEmpty) {
+          await tap('project-new-session-$projectId');
+        }
         await submit(
           '仅进行只读会话隔离观察，不需要实施计划。'
           '本会话唯一私有标记为 $marker-$label。只在 final 中原样回复该标记，'
@@ -238,7 +243,7 @@ class ContextStateJourney {
         await answerWith('$marker-$label');
         await capture(label);
       }
-      await tap('sidebar-new-session');
+      await tap('project-new-session-$projectId');
       await submit(
         '进行只读代理上下文隔离观察，不需要实施计划，不修改文件。'
         '父会话私有标记为 $marker-PARENT_PRIVATE，禁止将此标记传给子代理。'

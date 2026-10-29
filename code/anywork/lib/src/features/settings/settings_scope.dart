@@ -16,7 +16,8 @@ import '../../l10n/studio_l10n.dart';
 
 export 'package:anywork_client/studio_client.dart' show BridgeSettingsScopeKind;
 
-/// 当前可见的设置 tab 索引（由设置壳的 TabController 驱动）。
+/// The committed SettingsSection projected to the existing index-based
+/// visibility consumers. This is display visibility only, never navigation state.
 ///
 /// Visibility only changes display observation; Client retains topic owners and drafts.
 final settingsVisibleTabProvider =

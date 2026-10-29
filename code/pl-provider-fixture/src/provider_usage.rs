@@ -27,6 +27,7 @@ pub const MCP_KEY: &str = "fixture-usage-mcp";
 pub const MCP_PATH: &str = "/provider-usage/mcp";
 pub const STATE_PATH: &str = "/__provider_usage/state";
 pub const RELEASE_PATH: &str = "/__provider_usage/release";
+pub const CONTROL_PATH: &str = "/__provider_usage/control";
 pub const MCP_TOOL_NAME: &str = "search";
 
 /// Owned reject category for the scenario's deliberate Zhipu 401.
@@ -36,12 +37,23 @@ pub const MCP_TOOL_NAME: &str = "search";
 /// category names.
 pub const DENIED_QUOTA_CATEGORY: &str = "provider_usage_denied";
 
+const FAST_TRANSIENT_CATEGORY: &str = "provider_usage_fast_transient";
+
 #[derive(Debug, Default)]
 struct ProviderUsageCounts {
     slow_quota_started: usize,
     fast_quota_started: usize,
+    fast_quota_failure_armed: bool,
+    fast_quota_failed: usize,
     denied_quota_started: usize,
+    plan_quota_started: usize,
     mcp_started: usize,
+}
+
+enum FastQuotaOutcome {
+    InitialBalance,
+    RecoveredBalance,
+    TransientFailure,
 }
 
 /// Per-listener gates and counters for quota / MCP handshake control.
@@ -63,10 +75,17 @@ impl ProviderUsageGates {
 
     fn snapshot(&self) -> ProviderUsageLiveState {
         let counts = self.counts.lock().expect("fixture state poisoned");
+        self.snapshot_with_counts(&counts)
+    }
+
+    fn snapshot_with_counts(&self, counts: &ProviderUsageCounts) -> ProviderUsageLiveState {
         ProviderUsageLiveState {
             slow_quota_started: counts.slow_quota_started,
             fast_quota_started: counts.fast_quota_started,
+            fast_quota_failure_armed: counts.fast_quota_failure_armed,
+            fast_quota_failed: counts.fast_quota_failed,
             denied_quota_started: counts.denied_quota_started,
+            plan_quota_started: counts.plan_quota_started,
             mcp_started: counts.mcp_started,
             slow_quota_released: self.quota_release.is_cancelled(),
             mcp_released: self.mcp_release.is_cancelled(),
@@ -80,11 +99,40 @@ impl ProviderUsageGates {
             .slow_quota_started += 1;
     }
 
-    fn bump_fast(&self) {
-        self.counts
-            .lock()
-            .expect("fixture state poisoned")
-            .fast_quota_started += 1;
+    fn start_fast_quota(&self) -> Option<FastQuotaOutcome> {
+        let mut counts = self.counts.lock().expect("fixture state poisoned");
+        let started = counts.fast_quota_started.checked_add(1)?;
+        if counts.fast_quota_failure_armed {
+            let failed = counts.fast_quota_failed.checked_add(1)?;
+            // Admission consumes the fault even if the HTTP caller later cancels.
+            // Check both counters before publishing any part of this transition.
+            counts.fast_quota_started = started;
+            counts.fast_quota_failure_armed = false;
+            counts.fast_quota_failed = failed;
+            Some(FastQuotaOutcome::TransientFailure)
+        } else {
+            counts.fast_quota_started = started;
+            Some(if counts.fast_quota_failed == 0 {
+                FastQuotaOutcome::InitialBalance
+            } else {
+                FastQuotaOutcome::RecoveredBalance
+            })
+        }
+    }
+
+    fn arm_fast_quota_failure(&self) -> Option<ProviderUsageLiveState> {
+        let mut counts = self.counts.lock().expect("fixture state poisoned");
+        if counts.fast_quota_failure_armed {
+            return None;
+        }
+        counts.fast_quota_failure_armed = true;
+        Some(self.snapshot_with_counts(&counts))
+    }
+
+    fn bump_plan(&self) -> Option<()> {
+        let mut counts = self.counts.lock().expect("fixture state poisoned");
+        counts.plan_quota_started = counts.plan_quota_started.checked_add(1)?;
+        Some(())
     }
 
     fn bump_denied(&self) {
@@ -107,7 +155,10 @@ impl ProviderUsageGates {
 pub struct ProviderUsageLiveState {
     pub slow_quota_started: usize,
     pub fast_quota_started: usize,
+    pub fast_quota_failure_armed: bool,
+    pub fast_quota_failed: usize,
     pub denied_quota_started: usize,
+    pub plan_quota_started: usize,
     pub mcp_started: usize,
     pub slow_quota_released: bool,
     pub mcp_released: bool,
@@ -121,19 +172,37 @@ pub(super) struct ReleaseRequest {
     mcp: bool,
 }
 
-pub(super) fn is_owned_reject(request: &RecordedRequest) -> bool {
-    !request.accepted
-        && request.method == "GET"
-        && request.path == "/api/monitor/usage/quota/limit"
-        && request.body.get("keyAlias").and_then(Value::as_str) == Some("denied")
-        && request
-            .diagnostic
-            .as_ref()
-            .is_some_and(|diagnostic| diagnostic.category == DENIED_QUOTA_CATEGORY)
+#[derive(Debug, Deserialize)]
+#[serde(tag = "action", rename_all = "camelCase", deny_unknown_fields)]
+pub(super) enum ControlRequest {
+    FailNextFastQuota {},
+}
+
+/// Recognizes only the scenario's deliberate Zhipu 401 and one-shot fast 503.
+/// Other credentials, routes, methods and control rejections remain failures.
+pub fn is_provider_usage_owned_reject(request: &RecordedRequest) -> bool {
+    if request.accepted || request.method != "GET" {
+        return false;
+    }
+    let Some(diagnostic) = &request.diagnostic else {
+        return false;
+    };
+    matches!(
+        (
+            request.path.as_str(),
+            request.body.get("keyAlias").and_then(Value::as_str),
+            diagnostic.category.as_str(),
+        ),
+        (
+            "/api/monitor/usage/quota/limit",
+            Some("denied"),
+            DENIED_QUOTA_CATEGORY
+        ) | ("/user/balance", Some("fast"), FAST_TRANSIENT_CATEGORY)
+    )
 }
 
 pub(super) fn is_unexpected_reject(request: &RecordedRequest) -> bool {
-    !request.accepted && !is_owned_reject(request)
+    !request.accepted && !is_provider_usage_owned_reject(request)
 }
 
 fn record(
@@ -205,6 +274,22 @@ fn unauthorized() -> Response {
         .into_response()
 }
 
+fn quota_counter_exhausted(state: &AppState, path: &str, alias: &str) -> Response {
+    record(
+        state,
+        "GET",
+        path,
+        key_alias_body(alias),
+        false,
+        Some("provider_usage_counter_exhausted"),
+    );
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(json!({ "error": { "code": "quota_counter_exhausted" } })),
+    )
+        .into_response()
+}
+
 fn openai_model_list() -> Value {
     json!({
         "object": "list",
@@ -228,6 +313,26 @@ fn deepseek_balance(total: &str, granted: &str, topped_up: &str) -> Value {
     })
 }
 
+fn fast_deepseek_balance(total: &str, granted: &str) -> Value {
+    json!({
+        "is_available": true,
+        "balance_infos": [
+            {
+                "currency": "USD",
+                "total_balance": total,
+                "granted_balance": granted,
+                "topped_up_balance": "80.00",
+            },
+            {
+                "currency": "CNY",
+                "total_balance": "0.000000000000000001",
+                "granted_balance": "0.000000000000000001",
+                "topped_up_balance": "0.000000000000000000",
+            },
+        ],
+    })
+}
+
 fn zhipu_quota_envelope() -> Value {
     json!({
         "success": true,
@@ -240,8 +345,8 @@ fn zhipu_quota_envelope() -> Value {
                     "type": "TOKENS_LIMIT",
                     "unit": 3,
                     "number": 5,
-                    "percentage": 40.0,
-                    "currentValue": 40.0,
+                    "percentage": 95.0,
+                    "currentValue": 95.0,
                     "usage": 100.0,
                     "nextResetTime": 1_700_000_000_000_i64,
                 },
@@ -345,16 +450,36 @@ pub(super) async fn deepseek_balance_get(
             Json(deepseek_balance("1.00", "1.00", "0.00")).into_response()
         }
         Some(FAST_QUOTA_KEY) => {
-            state.provider_usage.bump_fast();
+            let Some(outcome) = state.provider_usage.start_fast_quota() else {
+                return quota_counter_exhausted(&state, "/user/balance", "fast");
+            };
+            let failed = matches!(outcome, FastQuotaOutcome::TransientFailure);
             record(
                 &state,
                 "GET",
                 "/user/balance",
                 key_alias_body("fast"),
-                true,
-                None,
+                !failed,
+                failed.then_some(FAST_TRANSIENT_CATEGORY),
             );
-            Json(deepseek_balance("88.00", "8.00", "80.00")).into_response()
+            match outcome {
+                FastQuotaOutcome::InitialBalance => {
+                    Json(fast_deepseek_balance("88.00", "8.00")).into_response()
+                }
+                FastQuotaOutcome::RecoveredBalance => {
+                    Json(fast_deepseek_balance("89.00", "9.00")).into_response()
+                }
+                FastQuotaOutcome::TransientFailure => (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    Json(json!({
+                        "error": {
+                            "code": "quota_temporarily_unavailable",
+                            "message": "fixture quota is temporarily unavailable; retry",
+                        }
+                    })),
+                )
+                    .into_response(),
+            }
         }
         Some(_) => {
             record(
@@ -396,6 +521,9 @@ pub(super) async fn zhipu_quota_get(State(state): State<AppState>, headers: Head
             unauthorized()
         }
         Some(PLAN_QUOTA_KEY) => {
+            if state.provider_usage.bump_plan().is_none() {
+                return quota_counter_exhausted(&state, "/api/monitor/usage/quota/limit", "plan");
+            }
             record(
                 &state,
                 "GET",
@@ -442,6 +570,38 @@ pub(super) async fn live_state(State(state): State<AppState>) -> Response {
         None,
     );
     Json(snapshot).into_response()
+}
+
+pub(super) async fn control(
+    State(state): State<AppState>,
+    Json(request): Json<ControlRequest>,
+) -> Response {
+    let snapshot = match request {
+        ControlRequest::FailNextFastQuota {} => state.provider_usage.arm_fast_quota_failure(),
+    };
+    record(
+        &state,
+        "POST",
+        CONTROL_PATH,
+        json!({ "action": "failNextFastQuota", "keyAlias": "control" }),
+        snapshot.is_some(),
+        snapshot
+            .is_none()
+            .then_some("provider_usage_fast_failure_already_armed"),
+    );
+    match snapshot {
+        Some(snapshot) => Json(snapshot).into_response(),
+        None => (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": {
+                    "code": "fast_quota_failure_already_armed",
+                    "message": "the prepared fast quota failure has not been consumed",
+                }
+            })),
+        )
+            .into_response(),
+    }
 }
 
 pub(super) async fn release(

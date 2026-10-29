@@ -208,6 +208,7 @@ impl StudioStore {
             .find_by_path(path, ssh_alias)
             .map(|entry| ProjectRow {
                 id: entry.id,
+                kind: entry.kind,
                 name: entry.name,
                 created_at: entry.created_at,
             }))
@@ -255,6 +256,7 @@ fn studio_home_from_database(database: &Path) -> Result<PathBuf> {
 #[derive(Debug, Clone)]
 pub(in crate::studio) struct ProjectRow {
     pub(in crate::studio) id: String,
+    pub(in crate::studio) kind: pl_protocol::studio::WorkspaceKind,
     pub(in crate::studio) name: String,
     pub(in crate::studio) created_at: i64,
 }
@@ -672,6 +674,7 @@ mod v2_schema_upgrade_tests {
         let store = StudioStore::open(paths.database()).await?;
         let mut delta = DirectoryDelta::upsert_project(ProjectDirectoryRecord {
             id: "preserved-project".into(),
+            kind: pl_protocol::studio::WorkspaceKind::Project,
             name: "Preserved".into(),
             path: "/preserved".into(),
             ssh_alias: None,
@@ -799,6 +802,7 @@ mod v2_schema_upgrade_tests {
         let store = StudioStore::open(paths.database()).await?;
         let mut delta = DirectoryDelta::upsert_project(ProjectDirectoryRecord {
             id: "kept-project".into(),
+            kind: pl_protocol::studio::WorkspaceKind::Project,
             name: "既有工程".into(),
             path: "/retained-project".into(),
             ssh_alias: None,
@@ -951,6 +955,7 @@ mod v2_schema_upgrade_tests {
         let store = StudioStore::open(&database).await?;
         let mut delta = DirectoryDelta::upsert_project(ProjectDirectoryRecord {
             id: "project-1".into(),
+            kind: pl_protocol::studio::WorkspaceKind::Project,
             name: "Project".into(),
             path: "/tmp/project".into(),
             ssh_alias: None,

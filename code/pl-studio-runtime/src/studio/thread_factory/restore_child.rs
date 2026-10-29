@@ -166,6 +166,7 @@ impl StudioThreadFactory {
         let previous: crate::studio::ProjectRecord =
             decode(&saved_project.payload, "pl.studio.project")?;
         if previous.id != project.id
+            || previous.kind != project.kind
             || previous.path != project.path
             || previous.ssh_alias != project.ssh_alias
         {

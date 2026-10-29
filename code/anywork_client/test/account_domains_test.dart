@@ -10,9 +10,13 @@ import 'package:anywork_client/studio_client.dart'
     show
         MutationBoard,
         ResourceBudget,
+        ResourceBudgetExceeded,
         ResourceKind,
         OperationId,
+        OperationState,
         OperationPhase,
+        DraftStamp,
+        CommitReceipt,
         SettingsCommandReply,
         SettingsStateSnapshot,
         StudioCommandReceipt,
@@ -309,6 +313,202 @@ StudioCommandReceipt _receipt(
 );
 
 void main() {
+  for (final compact in [false, true]) {
+    for (final receiptAccepted in [false, true]) {
+      test(
+        '${compact ? 'compact' : 'Native patch'} returns frozen ${receiptAccepted ? 'syncFailed' : 'unknown'} despite same-ID reentrant confirmation',
+        () async {
+          final fixture = _Fixture();
+          addTearDown(fixture.close);
+          fixture.resources.acceptFrame(
+            AccountDetailFrame(_stamp('settings', 1), _native, _details()),
+          );
+          fixture.resources.acceptFrame(_models(_native, 1));
+          final entered = Completer<OperationId>();
+          final response = Completer<SettingsCommandReply>();
+          var requests = 0;
+          Future<SettingsCommandReply> request(int revision, OperationId id) {
+            requests++;
+            expect(revision, 1);
+            entered.complete(id);
+            return response.future;
+          }
+
+          fixture.port.patch = (revision, _, id) => request(revision, id);
+          fixture.port.compact = (revision, _, id) => request(revision, id);
+          final failure = StateError(
+            'response or canonical application failed',
+          );
+          if (receiptAccepted) {
+            fixture.resources.onSettings = (_) => throw failure;
+          }
+          const draft = DraftStamp(draftId: 'editor', revision: 7);
+          final pending = compact
+              ? fixture.resources.models.setAutoCompact(
+                  _model,
+                  AutoCompactIntent.set(123),
+                  draft: draft,
+                )
+              : fixture.resources.accounts.patch(
+                  const PatchAccountCommand(
+                    identity: _native,
+                    name: AccountTextPatch.set('Edited'),
+                  ),
+                  draft: draft,
+                );
+          final id = await entered.future;
+          final handle = fixture.board.lookup(id)!;
+          final newer = fixture.board.begin(target: handle.state.value.target);
+          addTearDown(() => newer.reject(StateError('Unused later intent')));
+          OperationState? publishedFailure;
+          final observer = handle.state.watch((next) {
+            if (next.failurePhase == null || publishedFailure != null) return;
+            publishedFailure = next;
+            expect(
+              (fixture.resources.accounts.details(_native).value.value
+                      as NativeAccountDetails)
+                  .name,
+              'Native',
+              reason: 'Neither transport loss nor failed reduction is success',
+            );
+            // Real public board + domain observation advance this exact ID
+            // synchronously, before the failure publisher returns its snapshot.
+            handle.accept(
+              CommitReceipt(
+                operationId: id,
+                disposition: CommitDisposition.applied,
+                targets: [_stamp('settings', 3)],
+                effect: EffectPoint.immediate,
+                effective: true,
+                durable: true,
+                requiresIdentityObservation: true,
+              ),
+            );
+            fixture.resources.acceptFrame(
+              AccountDetailFrame(
+                _stamp('settings', 3),
+                _native,
+                _details(name: 'Later authoritative proof'),
+              ),
+            );
+          });
+          addTearDown(observer.cancel);
+          if (receiptAccepted) {
+            response.complete(
+              SettingsCommandReply(
+                snapshot: SettingsStateSnapshot(revision: 2),
+                receipt: _receipt(id),
+              ),
+            );
+          } else {
+            response.completeError(failure);
+          }
+          final result = await pending;
+          expect(requests, 1);
+          expect(result, same(publishedFailure));
+          expect(result.id, id);
+          expect(result.target, newer.state.value.target);
+          expect(result.draft, draft);
+          expect(result.error, same(failure));
+          expect(
+            result.failurePhase,
+            receiptAccepted
+                ? OperationPhase.syncFailed
+                : OperationPhase.unknownOutcome,
+          );
+          expect(result.receipt?.operationId, receiptAccepted ? id : null);
+          expect(result.observed, isFalse);
+          expect(result.effective, isFalse);
+          expect(result.durable, receiptAccepted);
+          expect(
+            handle.state.value.receipt!.targets.single,
+            _stamp('settings', 3),
+          );
+          expect(handle.state.value.failurePhase, isNull);
+          expect(handle.state.value.observed, isTrue);
+          expect(fixture.board.latest(result.target)!.id, newer.id);
+          expect(newer.state.value.phase, OperationPhase.submitting);
+        },
+      );
+    }
+  }
+
+  test(
+    'observer budget failure after begin returns rejected without dispatch',
+    () async {
+      final fixture = _Fixture();
+      addTearDown(fixture.close);
+      final permits = [
+        for (
+          var i = 0;
+          i < fixture.budget.capacities[ResourceKind.observer]!;
+          i++
+        )
+          fixture.budget.acquire(ResourceKind.observer, owner: 'occupied:$i'),
+      ];
+      addTearDown(() {
+        for (final permit in permits) {
+          permit.release();
+        }
+      });
+      var requests = 0;
+      fixture.port.compact = (_, _, _) async {
+        requests++;
+        throw StateError('Must not dispatch');
+      };
+      const draft = DraftStamp(draftId: 'budget', revision: 1);
+      final result = await fixture.resources.models.setAutoCompact(
+        _model,
+        AutoCompactIntent.set(123),
+        draft: draft,
+      );
+      expect(result, same(fixture.board.operations.single));
+      expect(result.draft, draft);
+      expect(result.failurePhase, OperationPhase.rejected);
+      expect(
+        result.error,
+        isA<ResourceBudgetExceeded>().having(
+          (error) => error.kind,
+          'kind',
+          ResourceKind.observer,
+        ),
+      );
+      expect(result.receipt, isNull);
+      expect(requests, 0);
+      expect(fixture.port.opens, isEmpty);
+      expect(fixture.budget.used(ResourceKind.pendingOperation), 0);
+    },
+  );
+
+  test(
+    'synchronous close during observation admission returns rejected and joins',
+    () async {
+      final fixture = _Fixture();
+      addTearDown(fixture.close);
+      var requests = 0;
+      fixture.port.compact = (_, _, _) async {
+        requests++;
+        throw StateError('Must not dispatch');
+      };
+      late Future<void> closing;
+      fixture.port.onOpen = () {
+        closing = fixture.coordinator.close();
+      };
+      final result = await fixture.resources.models.setAutoCompact(
+        _model,
+        AutoCompactIntent.set(123),
+      );
+      await closing;
+      expect(fixture.port.opens, isNotEmpty, reason: 'Close hook was reached');
+      expect(result, same(fixture.board.operations.single));
+      expect(result.failurePhase, OperationPhase.rejected);
+      expect(result.error, isA<StateError>());
+      expect(result.receipt, isNull);
+      expect(requests, 0);
+      expect(fixture.budget.used(ResourceKind.pendingOperation), 0);
+    },
+  );
+
   for (final action in [
     'auth start',
     'auth cancel',
@@ -1349,7 +1549,13 @@ void main() {
         ],
       ),
     );
-    await expectLater(saving, throwsA(isA<Exception>()));
+    final failedSave = await saving;
+    expect(failedSave.id, operation);
+    expect(failedSave.failurePhase, OperationPhase.syncFailed);
+    expect(failedSave.receipt?.operationId, operation);
+    expect(failedSave.receipt!.targets.single, _stamp('settings', 100));
+    expect(failedSave.observed, isFalse);
+    expect(failedSave.error, isA<Exception>());
     expect(
       (fixture.resources.accounts.details(_native).value.value
               as NativeAccountDetails)
@@ -1364,6 +1570,19 @@ void main() {
     );
     expect(fixture.coordinator.stamp!.ownerEpoch, 'next');
     expect(fixture.coordinator.stamp!.revision, 1);
+    fixture.resources.acceptFrame(
+      AccountDetailFrame(
+        _stamp('settings', 1000, epoch: 'next'),
+        _native,
+        _details(name: 'newer owner proof'),
+      ),
+    );
+    expect(
+      fixture.board.lookup(operation)!.state.value.observed,
+      isFalse,
+      reason: 'A replacement owner high clock cannot confirm the retired write',
+    );
+    expect(failedSave.receipt!.targets.single, _stamp('settings', 100));
   });
   test('ACP idle baseline before install admission cannot release the new business observation', () async {
     final fixture = _Fixture();

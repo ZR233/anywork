@@ -9,6 +9,7 @@ import 'package:anywork_client/studio_client.dart'
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../app/routing/app_route.dart' show ModeWorkspaceRoute;
 import '../../../app/theme/studio_tokens.dart';
 import '../../../l10n/studio_l10n.dart';
 import '../../../presentation/providers/client_provider.dart';

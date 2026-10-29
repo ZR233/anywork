@@ -71,6 +71,7 @@ pub(crate) fn compaction_receipt(version: u32, content: &str) -> Result<Compacti
 }
 
 pub(crate) fn checkpoint(checkpoint: &mut ThreadCheckpoint) -> Result<()> {
+    project_kind(checkpoint)?;
     crate::compaction::migrate_checkpoint_sources(checkpoint)?;
     for record in checkpoint.state.extensions.values_mut() {
         if let Some(current) = normalize(&record.payload)? {
@@ -85,6 +86,27 @@ pub(crate) fn checkpoint(checkpoint: &mut ThreadCheckpoint) -> Result<()> {
                 *payload = current;
             }
         }
+    }
+    Ok(())
+}
+
+/// The pre-kind Project binding is upgraded only during explicit checkpoint import/migration.
+pub(crate) fn project_kind(checkpoint: &mut ThreadCheckpoint) -> Result<()> {
+    let Some(record) = checkpoint.state.extensions.get_mut("studio.project") else {
+        return Ok(());
+    };
+    ensure!(
+        record.payload.format() == "pl.studio.project" && record.payload.version() == 1,
+        "unsupported saved project binding"
+    );
+    let mut project: RawObject = serde_json::from_str(record.payload.content())?;
+    if !project.contains_key("kind") {
+        project.insert("kind".into(), to_raw_value("project")?);
+        let content = serde_json::to_string(&project)?;
+        let _: crate::studio::ProjectRecord = serde_json::from_str(&content)?;
+        record.payload = OpaquePayload::new("pl.studio.project", 1, content)?;
+    } else {
+        let _: crate::studio::ProjectRecord = serde_json::from_str(record.payload.content())?;
     }
     Ok(())
 }

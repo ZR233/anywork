@@ -1,11 +1,11 @@
 //! Effective catalog origin, membership and catalog-declared discovery.
 use pl_model::{
     config::{
-        AccountCapabilitySelection, AccountConfig, AccountModelCatalogConfig, AccountModelOrigin,
-        AccountTemplateId, AgentModelConfig, ModelCatalogId, builtin_account_catalog,
-        builtin_model_catalog, model_descriptor,
+        AccountCapabilitySelection, AccountConfig, AccountId, AccountModelCatalogConfig,
+        AccountModelOrigin, AccountTemplateId, AgentModelConfig, AgentRoleId, ModelCatalogId,
+        ModelRouteConfig, builtin_account_catalog, builtin_model_catalog, model_descriptor,
     },
-    model::{ModelInfo, ModelPricing, ModelTransportProfile, bundled_model_definition},
+    model::{ModelInfo, ModelPricing, ModelTransportProfile, ModelType, bundled_model_definition},
     protocol::{
         ProtocolEndpoint, ProtocolKind,
         discovery::{ModelCatalogQuery, ModelCatalogQueryResult},
@@ -86,12 +86,14 @@ fn updated(result: ModelCatalogQueryResult) -> Vec<ModelInfo> {
     }
 }
 
-/// 账号模板描述投影必须携带可回传的厂商协议，并以 camelCase 产品 wire 输出。
+/// 账号模板描述投影携带权威协议与能力，并以 camelCase 产品 wire 输出和修订。
 #[test]
 fn account_template_descriptor_projects_protocol_and_camel_case_wire() {
-    let snapshot = builtin_account_catalog().unwrap().snapshot().unwrap();
+    let mut registry = builtin_account_catalog().unwrap();
+    let snapshot = registry.snapshot().unwrap();
+    assert_eq!(registry.snapshot().unwrap().revision, snapshot.revision);
     let value = serde_json::to_value(&snapshot).unwrap();
-    assert_eq!(value["schemaVersion"], 18);
+    assert_eq!(value["schemaVersion"], 19);
     assert!(value.get("presets").is_none());
     assert!(value.get("templates").is_some());
     assert!(value.get("modelCatalogs").is_some());
@@ -101,6 +103,28 @@ fn account_template_descriptor_projects_protocol_and_camel_case_wire() {
         .find(|template| template["id"] == "deepseek")
         .unwrap();
     assert_eq!(deepseek_wire["protocol"], "deep_seek");
+    assert_eq!(deepseek_wire["defaultBillingKind"], "metered");
+    assert_eq!(deepseek_wire["supportsModelDiscovery"], true);
+    assert_eq!(deepseek_wire.get("supportsUsageQuery"), Some(&json!(null)));
+    assert!(deepseek_wire.get("default_billing_kind").is_none());
+    assert!(deepseek_wire.get("supports_model_discovery").is_none());
+    assert!(deepseek_wire.get("supports_usage_query").is_none());
+    assert!(
+        snapshot
+            .templates
+            .iter()
+            .all(|template| template.supports_usage_query.is_none())
+    );
+    let compatible = snapshot
+        .templates
+        .iter()
+        .find(|template| template.id == "openai-compatible")
+        .unwrap();
+    assert_eq!(
+        compatible.default_billing_kind,
+        pl_protocol::BillingKind::Unknown
+    );
+    assert!(!compatible.supports_model_discovery);
     assert!(deepseek_wire.get("suggestedModelId").is_some());
     assert!(deepseek_wire.get("modelCatalogId").is_some());
     assert!(deepseek_wire.get("baseUrl").is_some());
@@ -132,6 +156,11 @@ fn account_template_descriptor_projects_protocol_and_camel_case_wire() {
         .iter()
         .find(|template| template.id == "deepseek")
         .unwrap();
+    assert_eq!(
+        descriptor.default_billing_kind,
+        pl_protocol::BillingKind::Metered
+    );
+    assert!(descriptor.supports_model_discovery);
     let kind: ProtocolKind = descriptor.protocol.parse().unwrap();
     assert_eq!(kind, ProtocolKind::DeepSeek);
     let account = AccountConfig::from_bundled_catalog(
@@ -182,6 +211,44 @@ fn account_template_descriptor_projects_protocol_and_camel_case_wire() {
             protocol
         );
     }
+
+    // Metadata is projected from the owned account/catalog, not inferred from its template ID.
+    registry
+        .templates
+        .iter_mut()
+        .find(|template| template.id.as_str() == "deepseek")
+        .unwrap()
+        .account
+        .billing_kind = Some(pl_protocol::BillingKind::NoCharge);
+    let billing_changed = registry.snapshot().unwrap();
+    let changed_template = billing_changed
+        .templates
+        .iter()
+        .find(|template| template.id == "deepseek")
+        .unwrap();
+    assert_eq!(
+        changed_template.default_billing_kind,
+        pl_protocol::BillingKind::NoCharge
+    );
+    assert_ne!(billing_changed.revision, snapshot.revision);
+    let changed_wire = serde_json::to_value(changed_template).unwrap();
+    assert_eq!(changed_wire["defaultBillingKind"], "noCharge");
+
+    registry
+        .model_catalogs
+        .get_mut(&ModelCatalogId::new("deepseek").unwrap())
+        .unwrap()
+        .discovery = None;
+    let discovery_changed = registry.snapshot().unwrap();
+    assert!(
+        !discovery_changed
+            .templates
+            .iter()
+            .find(|template| template.id == "deepseek")
+            .unwrap()
+            .supports_model_discovery
+    );
+    assert_ne!(discovery_changed.revision, billing_changed.revision);
 }
 
 /// 当前 capability 来源 wire 只有 `template_defaults`；旧 `preset_defaults` 不再解析。
@@ -440,6 +507,61 @@ fn explicit_catalog_is_entirely_manual() {
         ]
     );
     assert!(config.discovery_profile().unwrap().is_none());
+
+    // An unfinished account can be saved and reconstructed, but never supplies a route.
+    let account_id = AccountId::new("unfinished").unwrap();
+    let empty = AccountConfig::from_explicit_models(
+        ProtocolEndpoint::compatible("Unfinished account", "http://127.0.0.1:1"),
+        Vec::new(),
+    );
+    empty.validate_declarations(&account_id).unwrap();
+    let declarations = AgentModelConfig {
+        accounts: [(account_id.clone(), empty)].into(),
+        routes: Default::default(),
+    };
+    declarations.validate_declarations().unwrap();
+    let mut restored: AgentModelConfig =
+        serde_json::from_value(serde_json::to_value(&declarations).unwrap()).unwrap();
+    restored.validate_declarations().unwrap();
+    restored.reconcile_model_catalog().unwrap();
+    restored.validate_declarations().unwrap();
+    let account = &restored.accounts[&account_id];
+    assert!(account.effective_catalog(None).unwrap().is_empty());
+    assert!(
+        account
+            .selectable_catalog(Some(ModelType::Text))
+            .unwrap()
+            .is_empty()
+    );
+    assert!(account.discovery_profile().unwrap().is_none());
+    assert!(matches!(
+        restored.validate(),
+        Err(pl_protocol::PureError::ConfigError(_))
+    ));
+
+    let role = AgentRoleId::new("unfinished-role").unwrap();
+    let route = ModelRouteConfig {
+        account_id,
+        model_id: "not-declared".into(),
+        effort: None,
+    };
+    assert!(matches!(
+        restored.route_availability(&route),
+        Err(pl_protocol::PureError::ConfigError(_))
+    ));
+    assert!(matches!(
+        restored.resolve_route(role.clone(), &route),
+        Err(pl_protocol::PureError::ConfigError(_))
+    ));
+    restored.routes.insert(role.clone(), route);
+    assert!(matches!(
+        restored.validate_declarations(),
+        Err(pl_protocol::PureError::ConfigError(_))
+    ));
+    assert!(matches!(
+        restored.resolve(&role),
+        Err(pl_protocol::PureError::ConfigError(_))
+    ));
 }
 
 #[test]

@@ -6,20 +6,102 @@ import 'account_menu_button.dart';
 import 'account_sections.dart'
     show AccountInlineError, accountBillingLabel, accountActionButtonStyle;
 
-class AccountBillingControl extends StatelessWidget {
+enum AccountBillingControlLayout { settingsRow, field }
+
+class AccountBillingControl extends StatefulWidget {
   const AccountBillingControl({
     required this.value,
     required this.onChanged,
     required this.onReset,
+    this.layout = AccountBillingControlLayout.settingsRow,
     super.key,
   });
   final AccountBillingPresentation value;
   final ValueChanged<AccountBilling> onChanged;
   final VoidCallback onReset;
+  final AccountBillingControlLayout layout;
+
+  @override
+  State<AccountBillingControl> createState() => _AccountBillingControlState();
+}
+
+class _AccountBillingControlState extends State<AccountBillingControl> {
+  final TextEditingController _selection = TextEditingController();
+
+  void _restoreSelection() {
+    final l10n = AppLocalizations.of(context);
+    final value = widget.value;
+    _selection.text = value.billingKindOverride == null
+        ? l10n.accountsAutomatic
+        : accountBillingLabel(l10n, value.billingKindOverride!);
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _restoreSelection();
+  }
+
+  @override
+  void didUpdateWidget(covariant AccountBillingControl oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.value.billingKindOverride !=
+            widget.value.billingKindOverride ||
+        oldWidget.value.effective != widget.value.effective) {
+      _restoreSelection();
+    }
+  }
+
+  @override
+  void dispose() {
+    _selection.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
+    final value = widget.value;
+    final onReset = widget.onReset;
+    final onChanged = widget.onChanged;
+    final layout = widget.layout;
     final l10n = AppLocalizations.of(context);
+    if (layout == AccountBillingControlLayout.field) {
+      return LayoutBuilder(
+        builder: (context, constraints) => Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            DropdownMenu<AccountBilling?>(
+              controller: _selection,
+              width: constraints.maxWidth,
+              enabled: !value.saving,
+              requestFocusOnTap: false,
+              initialSelection: value.billingKindOverride,
+              label: Text(l10n.settingsBillingKind),
+              menuHeight: 320,
+              dropdownMenuEntries: [
+                DropdownMenuEntry(value: null, label: l10n.accountsAutomatic),
+                for (final billing in value.allowedOverrides)
+                  DropdownMenuEntry(
+                    value: billing,
+                    label: accountBillingLabel(l10n, billing),
+                  ),
+              ],
+              onSelected: (billing) {
+                _restoreSelection();
+                billing == null ? onReset() : onChanged(billing);
+              },
+            ),
+            const SizedBox(height: 8),
+            Text(
+              l10n.accountsBillingDisclaimer,
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+            if (value.saving) const LinearProgressIndicator(minHeight: 2),
+            if (value.error != null) AccountInlineError(message: value.error!),
+          ],
+        ),
+      );
+    }
     final selection = Wrap(
       spacing: 8,
       runSpacing: 4,
@@ -28,7 +110,7 @@ class AccountBillingControl extends StatelessWidget {
         Text(
           '${accountBillingLabel(l10n, value.effective)} · '
           '${value.billingKindOverride == null ? l10n.settingsBillingAutomatic : l10n.settingsBillingOverride}',
-          style: Theme.of(context).textTheme.bodyLarge?.copyWith(fontSize: 16),
+          style: Theme.of(context).textTheme.bodyMedium,
         ),
         if (value.allowedOverrides.isNotEmpty)
           AccountMenuButton(
@@ -78,8 +160,7 @@ class AccountBillingControl extends StatelessWidget {
                   children: [
                     Text(
                       l10n.settingsBillingEffective,
-                      style: Theme.of(context).textTheme.bodyLarge
-                          ?.copyWith(fontSize: 16),
+                      style: Theme.of(context).textTheme.bodyMedium,
                     ),
                     selection,
                   ],
@@ -91,8 +172,7 @@ class AccountBillingControl extends StatelessWidget {
                       width: 180,
                       child: Text(
                         l10n.settingsBillingEffective,
-                        style: Theme.of(context).textTheme.bodyLarge
-                            ?.copyWith(fontSize: 16),
+                        style: Theme.of(context).textTheme.bodyMedium,
                       ),
                     ),
                     Expanded(child: selection),
@@ -104,7 +184,7 @@ class AccountBillingControl extends StatelessWidget {
         const SizedBox(height: 8),
         Text(
           l10n.accountsBillingDisclaimer,
-          style: Theme.of(context).textTheme.bodyMedium?.copyWith(fontSize: 14),
+          style: Theme.of(context).textTheme.bodySmall,
         ),
       ],
     );

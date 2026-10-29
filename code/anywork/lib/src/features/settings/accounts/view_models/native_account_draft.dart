@@ -131,7 +131,7 @@ final class NativeAccountDraft {
         templateId: templateId,
         baseUrl: endpoint.trim(),
         secret: credential.trim().isEmpty
-            ? const AccountSecretCommand.clear()
+            ? const AccountSecretCommand.preserve()
             : AccountSecretCommand.replace(credential.trim()),
         initialBillingKind: billing,
         customModels: commands,

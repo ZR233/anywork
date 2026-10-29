@@ -191,7 +191,7 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
     let home_unavailable = working.join("shutdown-unavailable-home");
     for extra in [&home_duplicate, &home_hang, &home_storage, &home_service] {
         fs::create_dir_all(extra)?;
-        write_config(extra, &ready, None)?;
+        write_config(extra, &ready, None, false)?;
     }
     // The runtime is never allowed to install here: a regular file occupies the
     // path where the v2 data root must be created, so the runtime fails with a
@@ -202,7 +202,7 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
     // CMake configure step refuses a non-existent bridge, so the GUI would never
     // start.)
     fs::create_dir(&home_unavailable)?;
-    write_config(&home_unavailable, &ready, None)?;
+    write_config(&home_unavailable, &ready, None, false)?;
     fs::write(home_unavailable.join("v2"), b"not a directory\n")?;
 
     // Driver-only fault homes: the two injected startup faults, the
@@ -214,14 +214,14 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
     let home_tmp_fallback = working.join("shutdown-tmp-fallback-home");
     for extra in [&home_init_close, &home_bridge, &home_subscription] {
         fs::create_dir_all(extra)?;
-        write_config(extra, &ready, None)?;
+        write_config(extra, &ready, None, false)?;
     }
     // The temp-fallback home cannot create its canonical diagnostic directory:
     // a regular file occupies `<home>/studio/logs`, so `recordDartError`'s canonical
     // write fails on any host (permission bits are ignored when running as
     // root). The fallback log lands in the isolated `TMPDIR` below.
     fs::create_dir(&home_tmp_fallback)?;
-    write_config(&home_tmp_fallback, &ready, None)?;
+    write_config(&home_tmp_fallback, &ready, None, false)?;
     fs::create_dir(home_tmp_fallback.join("studio"))?;
     fs::write(
         home_tmp_fallback.join("studio/logs"),
@@ -284,7 +284,7 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
     // business pids from the peer's coordination record beside the project.
     let home_tool = working.join("shutdown-tool-home");
     fs::create_dir(&home_tool)?;
-    write_config(&home_tool, &ready, None)?;
+    write_config(&home_tool, &ready, None, false)?;
     let tool_coord = working.join("shutdown-tool-coord.json");
 
     // The concurrent-stop home declares the scenario-owned stdio MCP server, so

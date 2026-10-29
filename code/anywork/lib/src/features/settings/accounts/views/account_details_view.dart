@@ -21,6 +21,7 @@ class AccountDetailsView extends StatelessWidget {
     required this.onBillingChanged,
     required this.onResetBilling,
     required this.onSyncModels,
+    this.onAddModel,
     required this.modelActions,
     required this.onAcpAction,
     required this.onLoginMethodChanged,
@@ -37,6 +38,7 @@ class AccountDetailsView extends StatelessWidget {
   final ValueChanged<AccountBilling> onBillingChanged;
   final VoidCallback onResetBilling;
   final VoidCallback onSyncModels;
+  final VoidCallback? onAddModel;
   final AccountModelActions modelActions;
   final ValueChanged<AcpAccountAction> onAcpAction;
   final ValueChanged<String> onLoginMethodChanged;
@@ -76,10 +78,12 @@ class AccountDetailsView extends StatelessWidget {
         switch (value.content) {
           NativeAccountDetailsContent(:final value) => _NativeDetails(
             value: value,
+            onEdit: this.value.canEdit ? onEdit : null,
             onRefreshUsage: onRefreshUsage,
             onBillingChanged: onBillingChanged,
             onResetBilling: onResetBilling,
             onSyncModels: onSyncModels,
+            onAddModel: onAddModel,
             modelActions: modelActions,
           ),
           AcpAccountDetailsContent(:final value) => AccountSection(
@@ -99,17 +103,21 @@ class AccountDetailsView extends StatelessWidget {
 class _NativeDetails extends StatelessWidget {
   const _NativeDetails({
     required this.value,
+    required this.onEdit,
     required this.onRefreshUsage,
     required this.onBillingChanged,
     required this.onResetBilling,
     required this.onSyncModels,
+    this.onAddModel,
     required this.modelActions,
   });
   final NativeAccountDetailsPresentation value;
+  final VoidCallback? onEdit;
   final VoidCallback onRefreshUsage;
   final ValueChanged<AccountBilling> onBillingChanged;
   final VoidCallback onResetBilling;
   final VoidCallback onSyncModels;
+  final VoidCallback? onAddModel;
   final AccountModelActions modelActions;
 
   @override
@@ -121,7 +129,7 @@ class _NativeDetails extends StatelessWidget {
         Padding(
           padding: const EdgeInsets.only(bottom: 24),
           child: Card(
-            color: accountGroupSurface(context),
+            color: Theme.of(context).colorScheme.surfaceContainerHigh,
             child: Padding(
               padding: const EdgeInsets.all(16),
               child: Column(
@@ -140,13 +148,18 @@ class _NativeDetails extends StatelessWidget {
                         children: [
                           Text(
                             l10n.accountsBalanceColumn,
-                            style: Theme.of(context).textTheme.titleLarge
+                            style: Theme.of(context).textTheme.titleMedium
                                 ?.copyWith(fontWeight: FontWeight.w700),
                           ),
-                          AccountBillingBadge(
-                            billing: value.billing.effective,
-                            health: value.usage.balanceHealth,
-                          ),
+                          if (value.usage.balanceHealth !=
+                              AccountBalanceHealth.unknown)
+                            Text(
+                              value.usage.balanceHealth ==
+                                      AccountBalanceHealth.sufficient
+                                  ? l10n.settingsUsageBalanceSufficient
+                                  : l10n.settingsUsageBalanceInsufficient,
+                              style: Theme.of(context).textTheme.labelSmall,
+                            ),
                         ],
                       ),
                       Wrap(
@@ -174,20 +187,11 @@ class _NativeDetails extends StatelessWidget {
                     ],
                   ),
                   const SizedBox(height: 16),
-                  Container(
-                    padding: const EdgeInsets.all(20),
-                    decoration: BoxDecoration(
-                      color: accountGroupSurface(context),
-                      border: Border.all(
-                        color: Theme.of(context).colorScheme.outlineVariant,
-                      ),
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: AccountUsageView(
-                      value: value.usage,
-                      onRetry: onRefreshUsage,
-                      showUpdated: false,
-                    ),
+                  AccountUsageView(
+                    value: value.usage,
+                    onRetry: onRefreshUsage,
+                    showUpdated: false,
+                    showHealth: false,
                   ),
                 ],
               ),
@@ -199,13 +203,27 @@ class _NativeDetails extends StatelessWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              AccountFacts(
-                facts: [
-                  AccountDisplayFact(
-                    label: l10n.settingsApiKey,
-                    value: value.credentialReady
-                        ? l10n.settingsConfigured
-                        : l10n.settingsMissing,
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.center,
+                children: [
+                  const Icon(Icons.key_outlined, size: 20),
+                  const SizedBox(width: 16),
+                  Expanded(
+                    child: AccountFacts(
+                      facts: [
+                        AccountDisplayFact(
+                          label: l10n.settingsApiKey,
+                          value: value.credentialReady
+                              ? l10n.settingsConfigured
+                              : l10n.settingsMissing,
+                        ),
+                      ],
+                    ),
+                  ),
+                  IconButton(
+                    tooltip: l10n.settingsEditAccount,
+                    onPressed: onEdit,
+                    icon: const Icon(Icons.edit_outlined),
                   ),
                 ],
               ),
@@ -237,6 +255,7 @@ class _NativeDetails extends StatelessWidget {
           value: value.catalog,
           actions: modelActions,
           onSync: onSyncModels,
+          onAddModel: onAddModel,
         ),
       ],
     );

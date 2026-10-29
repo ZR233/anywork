@@ -6,27 +6,26 @@ import '../state/account_presentations.dart';
 import 'account_sections.dart';
 import 'account_usage_metrics.dart';
 
+enum AccountStatusLabelLayout { singleLine, wrap }
+
 /// The main billing label and query health deliberately use separate channels.
 class AccountBillingBadge extends StatelessWidget {
   const AccountBillingBadge({
     required this.billing,
     this.health = AccountBalanceHealth.unknown,
+    this.labelLayout = AccountStatusLabelLayout.singleLine,
     super.key,
   });
   final AccountBilling billing;
   final AccountBalanceHealth health;
+  final AccountStatusLabelLayout labelLayout;
 
   @override
   Widget build(BuildContext context) {
     final l10n = AppLocalizations.of(context);
     final scheme = Theme.of(context).colorScheme;
     final semantic = Theme.of(context).extension<StudioSemanticColors>()!;
-    final meteredHealth = billing == AccountBilling.metered;
-    final label = meteredHealth && health != AccountBalanceHealth.unknown
-        ? health == AccountBalanceHealth.sufficient
-              ? l10n.settingsUsageBalanceSufficient
-              : l10n.settingsUsageBalanceInsufficient
-        : accountBillingLabel(l10n, billing);
+    final label = accountBillingLabel(l10n, billing);
     final (foreground, background) = switch ((billing, health)) {
       (AccountBilling.metered, AccountBalanceHealth.sufficient) => (
         semantic.success,
@@ -51,6 +50,7 @@ class AccountBillingBadge extends StatelessWidget {
     };
     return AccountStatusBadge(
       label: label,
+      labelLayout: labelLayout,
       foreground: foreground,
       background: background,
       indicator: billing == AccountBilling.subscription
@@ -67,12 +67,14 @@ class AccountStatusBadge extends StatelessWidget {
     this.foreground,
     this.background,
     this.indicator,
+    this.labelLayout = AccountStatusLabelLayout.singleLine,
     super.key,
   });
   final String label;
   final Color? foreground;
   final Color? background;
   final Color? indicator;
+  final AccountStatusLabelLayout labelLayout;
 
   @override
   Widget build(BuildContext context) {
@@ -82,35 +84,52 @@ class AccountStatusBadge extends StatelessWidget {
       widthFactor: 1,
       heightFactor: 1,
       alignment: AlignmentDirectional.centerStart,
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-        decoration: BoxDecoration(
-          color: background ?? scheme.surfaceContainerLow,
-          borderRadius: BorderRadius.circular(24),
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            DecoratedBox(
-              decoration: BoxDecoration(
-                color: indicator ?? textColor,
-                shape: BoxShape.circle,
+      child: Chip(
+        avatar:
+            labelLayout == AccountStatusLabelLayout.wrap || indicator == null
+            ? null
+            : Icon(Icons.circle, size: 8, color: indicator),
+        labelPadding: labelLayout == AccountStatusLabelLayout.wrap
+            ? EdgeInsets.zero
+            : null,
+        label: switch (labelLayout) {
+          AccountStatusLabelLayout.singleLine => Text(label),
+          AccountStatusLabelLayout.wrap => Builder(
+            builder: (labelContext) => Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (indicator != null) ...[
+                    Icon(Icons.circle, size: 8, color: indicator),
+                    const SizedBox(width: 8),
+                  ],
+                  Flexible(
+                    fit: FlexFit.loose,
+                    child: RichText(
+                      text: TextSpan(
+                        text: label,
+                        style: DefaultTextStyle.of(labelContext).style,
+                      ),
+                      maxLines: null,
+                      softWrap: true,
+                      overflow: TextOverflow.clip,
+                      textScaler: MediaQuery.textScalerOf(labelContext),
+                      locale: Localizations.localeOf(labelContext),
+                      textDirection: Directionality.of(labelContext),
+                    ),
+                  ),
+                ],
               ),
-              child: const SizedBox.square(dimension: 8),
             ),
-            const SizedBox(width: 8),
-            Flexible(
-              child: Text(
-                label,
-                style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                  fontSize: 16,
-                  color: textColor,
-                  fontWeight: FontWeight.w700,
-                ),
-              ),
-            ),
-          ],
-        ),
+          ),
+        },
+        side: BorderSide.none,
+        visualDensity: VisualDensity.compact,
+        padding: EdgeInsets.zero,
+        labelStyle: Theme.of(context).textTheme.labelSmall
+            ?.copyWith(color: textColor),
+        backgroundColor: background ?? scheme.surfaceContainerLow,
       ),
     );
   }
@@ -120,14 +139,16 @@ class AccountUsageView extends StatelessWidget {
   const AccountUsageView({
     required this.value,
     this.onRetry,
-    this.compact = false,
+    this.density = AccountMetricDensity.detailed,
     this.showUpdated = true,
+    this.showHealth = true,
     super.key,
   });
   final AccountUsagePresentation value;
   final VoidCallback? onRetry;
-  final bool compact;
+  final AccountMetricDensity density;
   final bool showUpdated;
+  final bool showHealth;
 
   @override
   Widget build(BuildContext context) {
@@ -143,6 +164,22 @@ class AccountUsageView extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
+        if (showHealth && value.balanceHealth != AccountBalanceHealth.unknown)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 4),
+            child: Text(
+              value.balanceHealth == AccountBalanceHealth.sufficient
+                  ? l10n.settingsUsageBalanceSufficient
+                  : l10n.settingsUsageBalanceInsufficient,
+              style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                color: value.balanceHealth == AccountBalanceHealth.sufficient
+                    ? Theme.of(context)
+                          .extension<StudioSemanticColors>()!
+                          .success
+                    : Theme.of(context).colorScheme.error,
+              ),
+            ),
+          ),
         if (value.phase == AccountQueryPhase.loading) ...[
           const LinearProgressIndicator(minHeight: 2),
           const SizedBox(height: 8),
@@ -150,23 +187,17 @@ class AccountUsageView extends StatelessWidget {
         for (final balance in value.balances)
           Padding(
             padding: const EdgeInsets.only(bottom: 8),
-            child: AccountBalanceMetrics(value: balance, compact: compact),
+            child: AccountBalanceMetrics(value: balance, density: density),
           ),
         if (value.quotas.isNotEmpty)
-          AccountQuotaMetrics(values: value.quotas, compact: compact),
+          AccountQuotaMetrics(values: value.quotas, density: density),
         if (phaseLabel != null && value.phase != AccountQueryPhase.failed)
           Padding(
             padding: const EdgeInsets.symmetric(vertical: 4),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                if (value.balances.isEmpty && value.quotas.isEmpty)
-                  Text('—', style: Theme.of(context).textTheme.titleLarge),
-                Text(
-                  phaseLabel,
-                  style: Theme.of(context).textTheme.bodyLarge
-                      ?.copyWith(fontSize: 16),
-                ),
+                Text(phaseLabel, style: Theme.of(context).textTheme.bodyMedium),
               ],
             ),
           ),
@@ -179,7 +210,9 @@ class AccountUsageView extends StatelessWidget {
             ].join('\n'),
             onRetry: value.canRetry ? onRetry : null,
           ),
-        if (showUpdated && value.updatedLabel != null)
+        if ((showUpdated ||
+                value.phase == AccountQueryPhase.failed && value.hasLastGood) &&
+            value.updatedLabel != null)
           Padding(
             padding: const EdgeInsets.only(top: 4),
             child: Text(

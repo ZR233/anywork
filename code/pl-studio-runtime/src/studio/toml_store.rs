@@ -30,23 +30,18 @@ pub(super) fn persist_if_absent<D: RevisionedDocument>(
 pub(super) fn mutate_document<D: RevisionedDocument>(
     inner: &Mutex<D>,
     path: &Path,
-    change: impl FnOnce(&mut D) -> bool,
+    change: impl FnOnce(&mut D) -> Result<bool>,
 ) -> Result<()> {
     let mut document = inner.lock().unwrap_or_else(PoisonError::into_inner);
-    let previous = document.clone();
-    if !change(&mut document) {
+    let mut candidate = document.clone();
+    if !change(&mut candidate)? {
         return Ok(());
     }
-    let revision = document.revision_mut();
+    let revision = candidate.revision_mut();
     *revision = revision.saturating_add(1);
-    let result = (|| {
-        let contents =
-            crate::toml_schema::encode(&*document, <D as RevisionedDocument>::VERSION_KEY)
-                .with_context(|| format!("failed to serialize {}", D::KIND))?;
-        pl_tool::workspace::write_file_atomically(path, contents.as_bytes()).map_err(Into::into)
-    })();
-    if result.is_err() {
-        *document = previous;
-    }
-    result
+    let contents = crate::toml_schema::encode(&candidate, <D as RevisionedDocument>::VERSION_KEY)
+        .with_context(|| format!("failed to serialize {}", D::KIND))?;
+    pl_tool::workspace::write_file_atomically(path, contents.as_bytes())?;
+    *document = candidate;
+    Ok(())
 }

@@ -182,7 +182,9 @@ class ThreadPreparationCard extends StatelessWidget {
             children: [
               _PreparationDetail(
                 label: l10n.preparationProjectLabel,
-                value: project.name,
+                value: project.isStandalone
+                    ? l10n.sidebarStandaloneSessions
+                    : project.name,
               ),
               _PreparationDetail(
                 label: l10n.composerWorkspaceModeLabel,

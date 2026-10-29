@@ -13,6 +13,349 @@ part of 'account_view_state.dart';
 // dart format off
 T _$identity<T>(T value) => value;
 /// @nodoc
+mixin _$AccountEditorEntryKey {
+
+ String get routeEntryId;
+/// Create a copy of AccountEditorEntryKey
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$AccountEditorEntryKeyCopyWith<AccountEditorEntryKey> get copyWith => _$AccountEditorEntryKeyCopyWithImpl<AccountEditorEntryKey>(this as AccountEditorEntryKey, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+  final _this = this as AccountEditorEntryKey;
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is AccountEditorEntryKey&&(identical(other.routeEntryId, _this.routeEntryId) || other.routeEntryId == _this.routeEntryId));
+}
+
+
+@override
+int get hashCode {
+  final _this = this as AccountEditorEntryKey;
+  return Object.hash(runtimeType,_this.routeEntryId);
+}
+
+@override
+String toString() {
+  final _this = this as AccountEditorEntryKey;
+  return 'AccountEditorEntryKey(routeEntryId: ${_this.routeEntryId})';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $AccountEditorEntryKeyCopyWith<$Res>  {
+  factory $AccountEditorEntryKeyCopyWith(AccountEditorEntryKey value, $Res Function(AccountEditorEntryKey) _then) = _$AccountEditorEntryKeyCopyWithImpl;
+@useResult
+$Res call({
+ String routeEntryId
+});
+
+
+
+
+}
+/// @nodoc
+class _$AccountEditorEntryKeyCopyWithImpl<$Res>
+    implements $AccountEditorEntryKeyCopyWith<$Res> {
+  _$AccountEditorEntryKeyCopyWithImpl(this._self, this._then);
+
+  final AccountEditorEntryKey _self;
+  final $Res Function(AccountEditorEntryKey) _then;
+
+/// Create a copy of AccountEditorEntryKey
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') @override $Res call({Object? routeEntryId = null,}) {
+  return _then(_self.copyWith(
+routeEntryId: null == routeEntryId ? _self.routeEntryId : routeEntryId // ignore: cast_nullable_to_non_nullable
+as String,
+  ));
+}
+
+}
+
+
+/// Adds pattern-matching-related methods to [AccountEditorEntryKey].
+extension AccountEditorEntryKeyPatterns on AccountEditorEntryKey {
+/// A variant of `map` that fallback to returning `orElse`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( CreatingAccountEditorEntryKey value)?  creating,TResult Function( EditingAccountEditorEntryKey value)?  editing,required TResult orElse(),}){
+final _that = this;
+switch (_that) {
+case CreatingAccountEditorEntryKey() when creating != null:
+return creating(_that);case EditingAccountEditorEntryKey() when editing != null:
+return editing(_that);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// Callbacks receives the raw object, upcasted.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case final Subclass2 value:
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( CreatingAccountEditorEntryKey value)  creating,required TResult Function( EditingAccountEditorEntryKey value)  editing,}){
+final _that = this;
+switch (_that) {
+case CreatingAccountEditorEntryKey():
+return creating(_that);case EditingAccountEditorEntryKey():
+return editing(_that);}
+}
+/// A variant of `map` that fallback to returning `null`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( CreatingAccountEditorEntryKey value)?  creating,TResult? Function( EditingAccountEditorEntryKey value)?  editing,}){
+final _that = this;
+switch (_that) {
+case CreatingAccountEditorEntryKey() when creating != null:
+return creating(_that);case EditingAccountEditorEntryKey() when editing != null:
+return editing(_that);case _:
+  return null;
+
+}
+}
+/// A variant of `when` that fallback to an `orElse` callback.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( String routeEntryId)?  creating,TResult Function( String routeEntryId,  AccountDisplayKey account)?  editing,required TResult orElse(),}) {final _that = this;
+switch (_that) {
+case CreatingAccountEditorEntryKey() when creating != null:
+return creating(_that.routeEntryId);case EditingAccountEditorEntryKey() when editing != null:
+return editing(_that.routeEntryId,_that.account);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// As opposed to `map`, this offers destructuring.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case Subclass2(:final field2):
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( String routeEntryId)  creating,required TResult Function( String routeEntryId,  AccountDisplayKey account)  editing,}) {final _that = this;
+switch (_that) {
+case CreatingAccountEditorEntryKey():
+return creating(_that.routeEntryId);case EditingAccountEditorEntryKey():
+return editing(_that.routeEntryId,_that.account);}
+}
+/// A variant of `when` that fallback to returning `null`
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( String routeEntryId)?  creating,TResult? Function( String routeEntryId,  AccountDisplayKey account)?  editing,}) {final _that = this;
+switch (_that) {
+case CreatingAccountEditorEntryKey() when creating != null:
+return creating(_that.routeEntryId);case EditingAccountEditorEntryKey() when editing != null:
+return editing(_that.routeEntryId,_that.account);case _:
+  return null;
+
+}
+}
+
+}
+
+/// @nodoc
+
+
+class CreatingAccountEditorEntryKey implements AccountEditorEntryKey {
+  const CreatingAccountEditorEntryKey({required this.routeEntryId});
+
+
+@override final  String routeEntryId;
+
+/// Create a copy of AccountEditorEntryKey
+/// with the given fields replaced by the non-null parameter values.
+@override @JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$CreatingAccountEditorEntryKeyCopyWith<CreatingAccountEditorEntryKey> get copyWith => _$CreatingAccountEditorEntryKeyCopyWithImpl<CreatingAccountEditorEntryKey>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is CreatingAccountEditorEntryKey&&(identical(other.routeEntryId, routeEntryId) || other.routeEntryId == routeEntryId));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,routeEntryId);
+}
+
+@override
+String toString() {
+    return 'AccountEditorEntryKey.creating(routeEntryId: $routeEntryId)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $CreatingAccountEditorEntryKeyCopyWith<$Res> implements $AccountEditorEntryKeyCopyWith<$Res> {
+  factory $CreatingAccountEditorEntryKeyCopyWith(CreatingAccountEditorEntryKey value, $Res Function(CreatingAccountEditorEntryKey) _then) = _$CreatingAccountEditorEntryKeyCopyWithImpl;
+@override @useResult
+$Res call({
+ String routeEntryId
+});
+
+
+
+
+}
+/// @nodoc
+class _$CreatingAccountEditorEntryKeyCopyWithImpl<$Res>
+    implements $CreatingAccountEditorEntryKeyCopyWith<$Res> {
+  _$CreatingAccountEditorEntryKeyCopyWithImpl(this._self, this._then);
+
+  final CreatingAccountEditorEntryKey _self;
+  final $Res Function(CreatingAccountEditorEntryKey) _then;
+
+/// Create a copy of AccountEditorEntryKey
+/// with the given fields replaced by the non-null parameter values.
+@override @pragma('vm:prefer-inline') $Res call({Object? routeEntryId = null,}) {
+  return _then(CreatingAccountEditorEntryKey(
+routeEntryId: null == routeEntryId ? _self.routeEntryId : routeEntryId // ignore: cast_nullable_to_non_nullable
+as String,
+  ));
+}
+
+
+}
+
+/// @nodoc
+
+
+class EditingAccountEditorEntryKey implements AccountEditorEntryKey {
+  const EditingAccountEditorEntryKey({required this.routeEntryId, required this.account});
+
+
+@override final  String routeEntryId;
+ final  AccountDisplayKey account;
+
+/// Create a copy of AccountEditorEntryKey
+/// with the given fields replaced by the non-null parameter values.
+@override @JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$EditingAccountEditorEntryKeyCopyWith<EditingAccountEditorEntryKey> get copyWith => _$EditingAccountEditorEntryKeyCopyWithImpl<EditingAccountEditorEntryKey>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is EditingAccountEditorEntryKey&&(identical(other.routeEntryId, routeEntryId) || other.routeEntryId == routeEntryId)&&(identical(other.account, account) || other.account == account));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,routeEntryId,account);
+}
+
+@override
+String toString() {
+    return 'AccountEditorEntryKey.editing(routeEntryId: $routeEntryId, account: $account)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $EditingAccountEditorEntryKeyCopyWith<$Res> implements $AccountEditorEntryKeyCopyWith<$Res> {
+  factory $EditingAccountEditorEntryKeyCopyWith(EditingAccountEditorEntryKey value, $Res Function(EditingAccountEditorEntryKey) _then) = _$EditingAccountEditorEntryKeyCopyWithImpl;
+@override @useResult
+$Res call({
+ String routeEntryId, AccountDisplayKey account
+});
+
+
+$AccountDisplayKeyCopyWith<$Res> get account;
+
+}
+/// @nodoc
+class _$EditingAccountEditorEntryKeyCopyWithImpl<$Res>
+    implements $EditingAccountEditorEntryKeyCopyWith<$Res> {
+  _$EditingAccountEditorEntryKeyCopyWithImpl(this._self, this._then);
+
+  final EditingAccountEditorEntryKey _self;
+  final $Res Function(EditingAccountEditorEntryKey) _then;
+
+/// Create a copy of AccountEditorEntryKey
+/// with the given fields replaced by the non-null parameter values.
+@override @pragma('vm:prefer-inline') $Res call({Object? routeEntryId = null,Object? account = null,}) {
+  return _then(EditingAccountEditorEntryKey(
+routeEntryId: null == routeEntryId ? _self.routeEntryId : routeEntryId // ignore: cast_nullable_to_non_nullable
+as String,account: null == account ? _self.account : account // ignore: cast_nullable_to_non_nullable
+as AccountDisplayKey,
+  ));
+}
+
+/// Create a copy of AccountEditorEntryKey
+/// with the given fields replaced by the non-null parameter values.
+@override
+@pragma('vm:prefer-inline')
+$AccountDisplayKeyCopyWith<$Res> get account {
+
+  return $AccountDisplayKeyCopyWith<$Res>(_self.account, (value) {
+    return _then(_self.copyWith(account: value));
+  });
+}
+}
+
+/// @nodoc
 mixin _$AccountEditorKey {
 
  String get editorId; AccountDisplayKey get target; bool get creating; AccountTemplateKey? get template;
@@ -330,7 +673,7 @@ $AccountTemplateKeyCopyWith<$Res>? get template {
 /// @nodoc
 mixin _$AccountActionPresentation {
 
- String get ownerEpoch; int? get acpConnectionRevision; bool get pending; String? get message;
+ String get ownerEpoch; bool get removing; int? get acpConnectionRevision; bool get pending; String? get message;
 /// Create a copy of AccountActionPresentation
 /// with the given fields replaced by the non-null parameter values.
 @JsonKey(includeFromJson: false, includeToJson: false)
@@ -342,20 +685,20 @@ $AccountActionPresentationCopyWith<AccountActionPresentation> get copyWith => _$
 @override
 bool operator ==(Object other) {
   final _this = this as AccountActionPresentation;
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is AccountActionPresentation&&(identical(other.ownerEpoch, _this.ownerEpoch) || other.ownerEpoch == _this.ownerEpoch)&&(identical(other.acpConnectionRevision, _this.acpConnectionRevision) || other.acpConnectionRevision == _this.acpConnectionRevision)&&(identical(other.pending, _this.pending) || other.pending == _this.pending)&&(identical(other.message, _this.message) || other.message == _this.message));
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is AccountActionPresentation&&(identical(other.ownerEpoch, _this.ownerEpoch) || other.ownerEpoch == _this.ownerEpoch)&&(identical(other.removing, _this.removing) || other.removing == _this.removing)&&(identical(other.acpConnectionRevision, _this.acpConnectionRevision) || other.acpConnectionRevision == _this.acpConnectionRevision)&&(identical(other.pending, _this.pending) || other.pending == _this.pending)&&(identical(other.message, _this.message) || other.message == _this.message));
 }
 
 
 @override
 int get hashCode {
   final _this = this as AccountActionPresentation;
-  return Object.hash(runtimeType,_this.ownerEpoch,_this.acpConnectionRevision,_this.pending,_this.message);
+  return Object.hash(runtimeType,_this.ownerEpoch,_this.removing,_this.acpConnectionRevision,_this.pending,_this.message);
 }
 
 @override
 String toString() {
   final _this = this as AccountActionPresentation;
-  return 'AccountActionPresentation(ownerEpoch: ${_this.ownerEpoch}, acpConnectionRevision: ${_this.acpConnectionRevision}, pending: ${_this.pending}, message: ${_this.message})';
+  return 'AccountActionPresentation(ownerEpoch: ${_this.ownerEpoch}, removing: ${_this.removing}, acpConnectionRevision: ${_this.acpConnectionRevision}, pending: ${_this.pending}, message: ${_this.message})';
 }
 
 
@@ -366,7 +709,7 @@ abstract mixin class $AccountActionPresentationCopyWith<$Res>  {
   factory $AccountActionPresentationCopyWith(AccountActionPresentation value, $Res Function(AccountActionPresentation) _then) = _$AccountActionPresentationCopyWithImpl;
 @useResult
 $Res call({
- String ownerEpoch, int? acpConnectionRevision, bool pending, String? message
+ String ownerEpoch, bool removing, int? acpConnectionRevision, bool pending, String? message
 });
 
 
@@ -383,10 +726,11 @@ class _$AccountActionPresentationCopyWithImpl<$Res>
 
 /// Create a copy of AccountActionPresentation
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') @override $Res call({Object? ownerEpoch = null,Object? acpConnectionRevision = freezed,Object? pending = null,Object? message = freezed,}) {
+@pragma('vm:prefer-inline') @override $Res call({Object? ownerEpoch = null,Object? removing = null,Object? acpConnectionRevision = freezed,Object? pending = null,Object? message = freezed,}) {
   return _then(AccountActionPresentation(
 ownerEpoch: null == ownerEpoch ? _self.ownerEpoch : ownerEpoch // ignore: cast_nullable_to_non_nullable
-as String,acpConnectionRevision: freezed == acpConnectionRevision ? _self.acpConnectionRevision : acpConnectionRevision // ignore: cast_nullable_to_non_nullable
+as String,removing: null == removing ? _self.removing : removing // ignore: cast_nullable_to_non_nullable
+as bool,acpConnectionRevision: freezed == acpConnectionRevision ? _self.acpConnectionRevision : acpConnectionRevision // ignore: cast_nullable_to_non_nullable
 as int?,pending: null == pending ? _self.pending : pending // ignore: cast_nullable_to_non_nullable
 as bool,message: freezed == message ? _self.message : message // ignore: cast_nullable_to_non_nullable
 as String?,
@@ -474,10 +818,10 @@ return $default(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( String ownerEpoch,  int? acpConnectionRevision,  bool pending,  String? message)?  $default,{required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( String ownerEpoch,  bool removing,  int? acpConnectionRevision,  bool pending,  String? message)?  $default,{required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case _AccountActionPresentation() when $default != null:
-return $default(_that.ownerEpoch,_that.acpConnectionRevision,_that.pending,_that.message);case _:
+return $default(_that.ownerEpoch,_that.removing,_that.acpConnectionRevision,_that.pending,_that.message);case _:
   return orElse();
 
 }
@@ -495,10 +839,10 @@ return $default(_that.ownerEpoch,_that.acpConnectionRevision,_that.pending,_that
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( String ownerEpoch,  int? acpConnectionRevision,  bool pending,  String? message)  $default,) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( String ownerEpoch,  bool removing,  int? acpConnectionRevision,  bool pending,  String? message)  $default,) {final _that = this;
 switch (_that) {
 case _AccountActionPresentation():
-return $default(_that.ownerEpoch,_that.acpConnectionRevision,_that.pending,_that.message);case _:
+return $default(_that.ownerEpoch,_that.removing,_that.acpConnectionRevision,_that.pending,_that.message);case _:
   throw StateError('Unexpected subclass');
 
 }
@@ -515,10 +859,10 @@ return $default(_that.ownerEpoch,_that.acpConnectionRevision,_that.pending,_that
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( String ownerEpoch,  int? acpConnectionRevision,  bool pending,  String? message)?  $default,) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( String ownerEpoch,  bool removing,  int? acpConnectionRevision,  bool pending,  String? message)?  $default,) {final _that = this;
 switch (_that) {
 case _AccountActionPresentation() when $default != null:
-return $default(_that.ownerEpoch,_that.acpConnectionRevision,_that.pending,_that.message);case _:
+return $default(_that.ownerEpoch,_that.removing,_that.acpConnectionRevision,_that.pending,_that.message);case _:
   return null;
 
 }
@@ -530,10 +874,11 @@ return $default(_that.ownerEpoch,_that.acpConnectionRevision,_that.pending,_that
 
 
 class _AccountActionPresentation implements AccountActionPresentation {
-  const _AccountActionPresentation({required this.ownerEpoch, this.acpConnectionRevision, this.pending = false, this.message});
+  const _AccountActionPresentation({required this.ownerEpoch, required this.removing, this.acpConnectionRevision, this.pending = false, this.message});
 
 
 @override final  String ownerEpoch;
+@override final  bool removing;
 @override final  int? acpConnectionRevision;
 @override@JsonKey() final  bool pending;
 @override final  String? message;
@@ -548,18 +893,18 @@ _$AccountActionPresentationCopyWith<_AccountActionPresentation> get copyWith => 
 
 @override
 bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is _AccountActionPresentation&&(identical(other.ownerEpoch, ownerEpoch) || other.ownerEpoch == ownerEpoch)&&(identical(other.acpConnectionRevision, acpConnectionRevision) || other.acpConnectionRevision == acpConnectionRevision)&&(identical(other.pending, pending) || other.pending == pending)&&(identical(other.message, message) || other.message == message));
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is _AccountActionPresentation&&(identical(other.ownerEpoch, ownerEpoch) || other.ownerEpoch == ownerEpoch)&&(identical(other.removing, removing) || other.removing == removing)&&(identical(other.acpConnectionRevision, acpConnectionRevision) || other.acpConnectionRevision == acpConnectionRevision)&&(identical(other.pending, pending) || other.pending == pending)&&(identical(other.message, message) || other.message == message));
 }
 
 
 @override
 int get hashCode {
-    return Object.hash(runtimeType,ownerEpoch,acpConnectionRevision,pending,message);
+    return Object.hash(runtimeType,ownerEpoch,removing,acpConnectionRevision,pending,message);
 }
 
 @override
 String toString() {
-    return 'AccountActionPresentation(ownerEpoch: $ownerEpoch, acpConnectionRevision: $acpConnectionRevision, pending: $pending, message: $message)';
+    return 'AccountActionPresentation(ownerEpoch: $ownerEpoch, removing: $removing, acpConnectionRevision: $acpConnectionRevision, pending: $pending, message: $message)';
 }
 
 
@@ -570,7 +915,7 @@ abstract mixin class _$AccountActionPresentationCopyWith<$Res> implements $Accou
   factory _$AccountActionPresentationCopyWith(_AccountActionPresentation value, $Res Function(_AccountActionPresentation) _then) = __$AccountActionPresentationCopyWithImpl;
 @override @useResult
 $Res call({
- String ownerEpoch, int? acpConnectionRevision, bool pending, String? message
+ String ownerEpoch, bool removing, int? acpConnectionRevision, bool pending, String? message
 });
 
 
@@ -587,10 +932,11 @@ class __$AccountActionPresentationCopyWithImpl<$Res>
 
 /// Create a copy of AccountActionPresentation
 /// with the given fields replaced by the non-null parameter values.
-@override @pragma('vm:prefer-inline') $Res call({Object? ownerEpoch = null,Object? acpConnectionRevision = freezed,Object? pending = null,Object? message = freezed,}) {
+@override @pragma('vm:prefer-inline') $Res call({Object? ownerEpoch = null,Object? removing = null,Object? acpConnectionRevision = freezed,Object? pending = null,Object? message = freezed,}) {
   return _then(_AccountActionPresentation(
 ownerEpoch: null == ownerEpoch ? _self.ownerEpoch : ownerEpoch // ignore: cast_nullable_to_non_nullable
-as String,acpConnectionRevision: freezed == acpConnectionRevision ? _self.acpConnectionRevision : acpConnectionRevision // ignore: cast_nullable_to_non_nullable
+as String,removing: null == removing ? _self.removing : removing // ignore: cast_nullable_to_non_nullable
+as bool,acpConnectionRevision: freezed == acpConnectionRevision ? _self.acpConnectionRevision : acpConnectionRevision // ignore: cast_nullable_to_non_nullable
 as int?,pending: null == pending ? _self.pending : pending // ignore: cast_nullable_to_non_nullable
 as bool,message: freezed == message ? _self.message : message // ignore: cast_nullable_to_non_nullable
 as String?,
@@ -603,7 +949,7 @@ as String?,
 /// @nodoc
 mixin _$AccountsViewState {
 
- AccountsListPresentation get list; AccountDisplayKey? get selected; AccountEditorKey? get editor; bool get choosingTemplate; bool get templatesLoading; List<AccountTemplatePresentation> get templates; String? get templateError; Map<AccountDisplayKey, AccountActionPresentation> get actions;
+ AccountsListPresentation get list; Map<AccountDisplayKey, AccountActionPresentation> get actions;
 /// Create a copy of AccountsViewState
 /// with the given fields replaced by the non-null parameter values.
 @JsonKey(includeFromJson: false, includeToJson: false)
@@ -615,20 +961,20 @@ $AccountsViewStateCopyWith<AccountsViewState> get copyWith => _$AccountsViewStat
 @override
 bool operator ==(Object other) {
   final _this = this as AccountsViewState;
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is AccountsViewState&&(identical(other.list, _this.list) || other.list == _this.list)&&(identical(other.selected, _this.selected) || other.selected == _this.selected)&&(identical(other.editor, _this.editor) || other.editor == _this.editor)&&(identical(other.choosingTemplate, _this.choosingTemplate) || other.choosingTemplate == _this.choosingTemplate)&&(identical(other.templatesLoading, _this.templatesLoading) || other.templatesLoading == _this.templatesLoading)&&const DeepCollectionEquality().equals(other.templates, _this.templates)&&(identical(other.templateError, _this.templateError) || other.templateError == _this.templateError)&&const DeepCollectionEquality().equals(other.actions, _this.actions));
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is AccountsViewState&&(identical(other.list, _this.list) || other.list == _this.list)&&const DeepCollectionEquality().equals(other.actions, _this.actions));
 }
 
 
 @override
 int get hashCode {
   final _this = this as AccountsViewState;
-  return Object.hash(runtimeType,_this.list,_this.selected,_this.editor,_this.choosingTemplate,_this.templatesLoading,const DeepCollectionEquality().hash(_this.templates),_this.templateError,const DeepCollectionEquality().hash(_this.actions));
+  return Object.hash(runtimeType,_this.list,const DeepCollectionEquality().hash(_this.actions));
 }
 
 @override
 String toString() {
   final _this = this as AccountsViewState;
-  return 'AccountsViewState(list: ${_this.list}, selected: ${_this.selected}, editor: ${_this.editor}, choosingTemplate: ${_this.choosingTemplate}, templatesLoading: ${_this.templatesLoading}, templates: ${_this.templates}, templateError: ${_this.templateError}, actions: ${_this.actions})';
+  return 'AccountsViewState(list: ${_this.list}, actions: ${_this.actions})';
 }
 
 
@@ -639,11 +985,11 @@ abstract mixin class $AccountsViewStateCopyWith<$Res>  {
   factory $AccountsViewStateCopyWith(AccountsViewState value, $Res Function(AccountsViewState) _then) = _$AccountsViewStateCopyWithImpl;
 @useResult
 $Res call({
- AccountsListPresentation list, AccountDisplayKey? selected, AccountEditorKey? editor, bool choosingTemplate, bool templatesLoading, List<AccountTemplatePresentation> templates, String? templateError, Map<AccountDisplayKey, AccountActionPresentation> actions
+ AccountsListPresentation list, Map<AccountDisplayKey, AccountActionPresentation> actions
 });
 
 
-$AccountsListPresentationCopyWith<$Res> get list;$AccountDisplayKeyCopyWith<$Res>? get selected;$AccountEditorKeyCopyWith<$Res>? get editor;
+$AccountsListPresentationCopyWith<$Res> get list;
 
 }
 /// @nodoc
@@ -656,16 +1002,10 @@ class _$AccountsViewStateCopyWithImpl<$Res>
 
 /// Create a copy of AccountsViewState
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') @override $Res call({Object? list = null,Object? selected = freezed,Object? editor = freezed,Object? choosingTemplate = null,Object? templatesLoading = null,Object? templates = null,Object? templateError = freezed,Object? actions = null,}) {
+@pragma('vm:prefer-inline') @override $Res call({Object? list = null,Object? actions = null,}) {
   return _then(AccountsViewState(
 list: null == list ? _self.list : list // ignore: cast_nullable_to_non_nullable
-as AccountsListPresentation,selected: freezed == selected ? _self.selected : selected // ignore: cast_nullable_to_non_nullable
-as AccountDisplayKey?,editor: freezed == editor ? _self.editor : editor // ignore: cast_nullable_to_non_nullable
-as AccountEditorKey?,choosingTemplate: null == choosingTemplate ? _self.choosingTemplate : choosingTemplate // ignore: cast_nullable_to_non_nullable
-as bool,templatesLoading: null == templatesLoading ? _self.templatesLoading : templatesLoading // ignore: cast_nullable_to_non_nullable
-as bool,templates: null == templates ? _self.templates : templates // ignore: cast_nullable_to_non_nullable
-as List<AccountTemplatePresentation>,templateError: freezed == templateError ? _self.templateError : templateError // ignore: cast_nullable_to_non_nullable
-as String?,actions: null == actions ? _self.actions : actions // ignore: cast_nullable_to_non_nullable
+as AccountsListPresentation,actions: null == actions ? _self.actions : actions // ignore: cast_nullable_to_non_nullable
 as Map<AccountDisplayKey, AccountActionPresentation>,
   ));
 }
@@ -677,30 +1017,6 @@ $AccountsListPresentationCopyWith<$Res> get list {
 
   return $AccountsListPresentationCopyWith<$Res>(_self.list, (value) {
     return _then(_self.copyWith(list: value));
-  });
-}/// Create a copy of AccountsViewState
-/// with the given fields replaced by the non-null parameter values.
-@override
-@pragma('vm:prefer-inline')
-$AccountDisplayKeyCopyWith<$Res>? get selected {
-    if (_self.selected == null) {
-    return null;
-  }
-
-  return $AccountDisplayKeyCopyWith<$Res>(_self.selected!, (value) {
-    return _then(_self.copyWith(selected: value));
-  });
-}/// Create a copy of AccountsViewState
-/// with the given fields replaced by the non-null parameter values.
-@override
-@pragma('vm:prefer-inline')
-$AccountEditorKeyCopyWith<$Res>? get editor {
-    if (_self.editor == null) {
-    return null;
-  }
-
-  return $AccountEditorKeyCopyWith<$Res>(_self.editor!, (value) {
-    return _then(_self.copyWith(editor: value));
   });
 }
 }
@@ -784,10 +1100,10 @@ return $default(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( AccountsListPresentation list,  AccountDisplayKey? selected,  AccountEditorKey? editor,  bool choosingTemplate,  bool templatesLoading,  List<AccountTemplatePresentation> templates,  String? templateError,  Map<AccountDisplayKey, AccountActionPresentation> actions)?  $default,{required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( AccountsListPresentation list,  Map<AccountDisplayKey, AccountActionPresentation> actions)?  $default,{required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case _AccountsViewState() when $default != null:
-return $default(_that.list,_that.selected,_that.editor,_that.choosingTemplate,_that.templatesLoading,_that.templates,_that.templateError,_that.actions);case _:
+return $default(_that.list,_that.actions);case _:
   return orElse();
 
 }
@@ -805,10 +1121,10 @@ return $default(_that.list,_that.selected,_that.editor,_that.choosingTemplate,_t
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( AccountsListPresentation list,  AccountDisplayKey? selected,  AccountEditorKey? editor,  bool choosingTemplate,  bool templatesLoading,  List<AccountTemplatePresentation> templates,  String? templateError,  Map<AccountDisplayKey, AccountActionPresentation> actions)  $default,) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( AccountsListPresentation list,  Map<AccountDisplayKey, AccountActionPresentation> actions)  $default,) {final _that = this;
 switch (_that) {
 case _AccountsViewState():
-return $default(_that.list,_that.selected,_that.editor,_that.choosingTemplate,_that.templatesLoading,_that.templates,_that.templateError,_that.actions);case _:
+return $default(_that.list,_that.actions);case _:
   throw StateError('Unexpected subclass');
 
 }
@@ -825,10 +1141,10 @@ return $default(_that.list,_that.selected,_that.editor,_that.choosingTemplate,_t
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( AccountsListPresentation list,  AccountDisplayKey? selected,  AccountEditorKey? editor,  bool choosingTemplate,  bool templatesLoading,  List<AccountTemplatePresentation> templates,  String? templateError,  Map<AccountDisplayKey, AccountActionPresentation> actions)?  $default,) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( AccountsListPresentation list,  Map<AccountDisplayKey, AccountActionPresentation> actions)?  $default,) {final _that = this;
 switch (_that) {
 case _AccountsViewState() when $default != null:
-return $default(_that.list,_that.selected,_that.editor,_that.choosingTemplate,_that.templatesLoading,_that.templates,_that.templateError,_that.actions);case _:
+return $default(_that.list,_that.actions);case _:
   return null;
 
 }
@@ -840,22 +1156,10 @@ return $default(_that.list,_that.selected,_that.editor,_that.choosingTemplate,_t
 
 
 class _AccountsViewState implements AccountsViewState {
-  const _AccountsViewState({required this.list, this.selected, this.editor, this.choosingTemplate = false, this.templatesLoading = false,  List<AccountTemplatePresentation> templates = const [], this.templateError,  Map<AccountDisplayKey, AccountActionPresentation> actions = const {}}): _templates = templates,_actions = actions;
+  const _AccountsViewState({required this.list,  Map<AccountDisplayKey, AccountActionPresentation> actions = const {}}): _actions = actions;
 
 
 @override final  AccountsListPresentation list;
-@override final  AccountDisplayKey? selected;
-@override final  AccountEditorKey? editor;
-@override@JsonKey() final  bool choosingTemplate;
-@override@JsonKey() final  bool templatesLoading;
- final  List<AccountTemplatePresentation> _templates;
-@override@JsonKey() List<AccountTemplatePresentation> get templates {
-  if (_templates is EqualUnmodifiableListView) return _templates;
-  // ignore: implicit_dynamic_type
-  return EqualUnmodifiableListView(_templates);
-}
-
-@override final  String? templateError;
  final  Map<AccountDisplayKey, AccountActionPresentation> _actions;
 @override@JsonKey() Map<AccountDisplayKey, AccountActionPresentation> get actions {
   if (_actions is EqualUnmodifiableMapView) return _actions;
@@ -874,18 +1178,18 @@ _$AccountsViewStateCopyWith<_AccountsViewState> get copyWith => __$AccountsViewS
 
 @override
 bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is _AccountsViewState&&(identical(other.list, list) || other.list == list)&&(identical(other.selected, selected) || other.selected == selected)&&(identical(other.editor, editor) || other.editor == editor)&&(identical(other.choosingTemplate, choosingTemplate) || other.choosingTemplate == choosingTemplate)&&(identical(other.templatesLoading, templatesLoading) || other.templatesLoading == templatesLoading)&&const DeepCollectionEquality().equals(other.templates, _templates)&&(identical(other.templateError, templateError) || other.templateError == templateError)&&const DeepCollectionEquality().equals(other.actions, _actions));
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is _AccountsViewState&&(identical(other.list, list) || other.list == list)&&const DeepCollectionEquality().equals(other.actions, _actions));
 }
 
 
 @override
 int get hashCode {
-    return Object.hash(runtimeType,list,selected,editor,choosingTemplate,templatesLoading,const DeepCollectionEquality().hash(_templates),templateError,const DeepCollectionEquality().hash(_actions));
+    return Object.hash(runtimeType,list,const DeepCollectionEquality().hash(_actions));
 }
 
 @override
 String toString() {
-    return 'AccountsViewState(list: $list, selected: $selected, editor: $editor, choosingTemplate: $choosingTemplate, templatesLoading: $templatesLoading, templates: $templates, templateError: $templateError, actions: $actions)';
+    return 'AccountsViewState(list: $list, actions: $actions)';
 }
 
 
@@ -896,11 +1200,11 @@ abstract mixin class _$AccountsViewStateCopyWith<$Res> implements $AccountsViewS
   factory _$AccountsViewStateCopyWith(_AccountsViewState value, $Res Function(_AccountsViewState) _then) = __$AccountsViewStateCopyWithImpl;
 @override @useResult
 $Res call({
- AccountsListPresentation list, AccountDisplayKey? selected, AccountEditorKey? editor, bool choosingTemplate, bool templatesLoading, List<AccountTemplatePresentation> templates, String? templateError, Map<AccountDisplayKey, AccountActionPresentation> actions
+ AccountsListPresentation list, Map<AccountDisplayKey, AccountActionPresentation> actions
 });
 
 
-@override $AccountsListPresentationCopyWith<$Res> get list;@override $AccountDisplayKeyCopyWith<$Res>? get selected;@override $AccountEditorKeyCopyWith<$Res>? get editor;
+@override $AccountsListPresentationCopyWith<$Res> get list;
 
 }
 /// @nodoc
@@ -913,16 +1217,10 @@ class __$AccountsViewStateCopyWithImpl<$Res>
 
 /// Create a copy of AccountsViewState
 /// with the given fields replaced by the non-null parameter values.
-@override @pragma('vm:prefer-inline') $Res call({Object? list = null,Object? selected = freezed,Object? editor = freezed,Object? choosingTemplate = null,Object? templatesLoading = null,Object? templates = null,Object? templateError = freezed,Object? actions = null,}) {
+@override @pragma('vm:prefer-inline') $Res call({Object? list = null,Object? actions = null,}) {
   return _then(_AccountsViewState(
 list: null == list ? _self.list : list // ignore: cast_nullable_to_non_nullable
-as AccountsListPresentation,selected: freezed == selected ? _self.selected : selected // ignore: cast_nullable_to_non_nullable
-as AccountDisplayKey?,editor: freezed == editor ? _self.editor : editor // ignore: cast_nullable_to_non_nullable
-as AccountEditorKey?,choosingTemplate: null == choosingTemplate ? _self.choosingTemplate : choosingTemplate // ignore: cast_nullable_to_non_nullable
-as bool,templatesLoading: null == templatesLoading ? _self.templatesLoading : templatesLoading // ignore: cast_nullable_to_non_nullable
-as bool,templates: null == templates ? _self._templates : templates // ignore: cast_nullable_to_non_nullable
-as List<AccountTemplatePresentation>,templateError: freezed == templateError ? _self.templateError : templateError // ignore: cast_nullable_to_non_nullable
-as String?,actions: null == actions ? _self._actions : actions // ignore: cast_nullable_to_non_nullable
+as AccountsListPresentation,actions: null == actions ? _self._actions : actions // ignore: cast_nullable_to_non_nullable
 as Map<AccountDisplayKey, AccountActionPresentation>,
   ));
 }
@@ -936,19 +1234,322 @@ $AccountsListPresentationCopyWith<$Res> get list {
   return $AccountsListPresentationCopyWith<$Res>(_self.list, (value) {
     return _then(_self.copyWith(list: value));
   });
-}/// Create a copy of AccountsViewState
+}
+}
+
+/// @nodoc
+mixin _$AccountEditorSessionState {
+
+ AccountEditorEntryKey get entry; String? get ownerId; AccountEditorKey? get editor; bool get templatesLoading; List<AccountTemplatePresentation> get templates; String? get error;
+/// Create a copy of AccountEditorSessionState
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$AccountEditorSessionStateCopyWith<AccountEditorSessionState> get copyWith => _$AccountEditorSessionStateCopyWithImpl<AccountEditorSessionState>(this as AccountEditorSessionState, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+  final _this = this as AccountEditorSessionState;
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is AccountEditorSessionState&&(identical(other.entry, _this.entry) || other.entry == _this.entry)&&(identical(other.ownerId, _this.ownerId) || other.ownerId == _this.ownerId)&&(identical(other.editor, _this.editor) || other.editor == _this.editor)&&(identical(other.templatesLoading, _this.templatesLoading) || other.templatesLoading == _this.templatesLoading)&&const DeepCollectionEquality().equals(other.templates, _this.templates)&&(identical(other.error, _this.error) || other.error == _this.error));
+}
+
+
+@override
+int get hashCode {
+  final _this = this as AccountEditorSessionState;
+  return Object.hash(runtimeType,_this.entry,_this.ownerId,_this.editor,_this.templatesLoading,const DeepCollectionEquality().hash(_this.templates),_this.error);
+}
+
+@override
+String toString() {
+  final _this = this as AccountEditorSessionState;
+  return 'AccountEditorSessionState(entry: ${_this.entry}, ownerId: ${_this.ownerId}, editor: ${_this.editor}, templatesLoading: ${_this.templatesLoading}, templates: ${_this.templates}, error: ${_this.error})';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $AccountEditorSessionStateCopyWith<$Res>  {
+  factory $AccountEditorSessionStateCopyWith(AccountEditorSessionState value, $Res Function(AccountEditorSessionState) _then) = _$AccountEditorSessionStateCopyWithImpl;
+@useResult
+$Res call({
+ AccountEditorEntryKey entry, String? ownerId, AccountEditorKey? editor, bool templatesLoading, List<AccountTemplatePresentation> templates, String? error
+});
+
+
+$AccountEditorEntryKeyCopyWith<$Res> get entry;$AccountEditorKeyCopyWith<$Res>? get editor;
+
+}
+/// @nodoc
+class _$AccountEditorSessionStateCopyWithImpl<$Res>
+    implements $AccountEditorSessionStateCopyWith<$Res> {
+  _$AccountEditorSessionStateCopyWithImpl(this._self, this._then);
+
+  final AccountEditorSessionState _self;
+  final $Res Function(AccountEditorSessionState) _then;
+
+/// Create a copy of AccountEditorSessionState
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') @override $Res call({Object? entry = null,Object? ownerId = freezed,Object? editor = freezed,Object? templatesLoading = null,Object? templates = null,Object? error = freezed,}) {
+  return _then(AccountEditorSessionState(
+entry: null == entry ? _self.entry : entry // ignore: cast_nullable_to_non_nullable
+as AccountEditorEntryKey,ownerId: freezed == ownerId ? _self.ownerId : ownerId // ignore: cast_nullable_to_non_nullable
+as String?,editor: freezed == editor ? _self.editor : editor // ignore: cast_nullable_to_non_nullable
+as AccountEditorKey?,templatesLoading: null == templatesLoading ? _self.templatesLoading : templatesLoading // ignore: cast_nullable_to_non_nullable
+as bool,templates: null == templates ? _self.templates : templates // ignore: cast_nullable_to_non_nullable
+as List<AccountTemplatePresentation>,error: freezed == error ? _self.error : error // ignore: cast_nullable_to_non_nullable
+as String?,
+  ));
+}
+/// Create a copy of AccountEditorSessionState
 /// with the given fields replaced by the non-null parameter values.
 @override
 @pragma('vm:prefer-inline')
-$AccountDisplayKeyCopyWith<$Res>? get selected {
-    if (_self.selected == null) {
+$AccountEditorEntryKeyCopyWith<$Res> get entry {
+
+  return $AccountEditorEntryKeyCopyWith<$Res>(_self.entry, (value) {
+    return _then(_self.copyWith(entry: value));
+  });
+}/// Create a copy of AccountEditorSessionState
+/// with the given fields replaced by the non-null parameter values.
+@override
+@pragma('vm:prefer-inline')
+$AccountEditorKeyCopyWith<$Res>? get editor {
+    if (_self.editor == null) {
     return null;
   }
 
-  return $AccountDisplayKeyCopyWith<$Res>(_self.selected!, (value) {
-    return _then(_self.copyWith(selected: value));
+  return $AccountEditorKeyCopyWith<$Res>(_self.editor!, (value) {
+    return _then(_self.copyWith(editor: value));
   });
-}/// Create a copy of AccountsViewState
+}
+}
+
+
+/// Adds pattern-matching-related methods to [AccountEditorSessionState].
+extension AccountEditorSessionStatePatterns on AccountEditorSessionState {
+/// A variant of `map` that fallback to returning `orElse`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeMap<TResult extends Object?>(TResult Function( _AccountEditorSessionState value)?  $default,{required TResult orElse(),}){
+final _that = this;
+switch (_that) {
+case _AccountEditorSessionState() when $default != null:
+return $default(_that);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// Callbacks receives the raw object, upcasted.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case final Subclass2 value:
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult map<TResult extends Object?>(TResult Function( _AccountEditorSessionState value)  $default,){
+final _that = this;
+switch (_that) {
+case _AccountEditorSessionState():
+return $default(_that);case _:
+  throw StateError('Unexpected subclass');
+
+}
+}
+/// A variant of `map` that fallback to returning `null`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>(TResult? Function( _AccountEditorSessionState value)?  $default,){
+final _that = this;
+switch (_that) {
+case _AccountEditorSessionState() when $default != null:
+return $default(_that);case _:
+  return null;
+
+}
+}
+/// A variant of `when` that fallback to an `orElse` callback.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( AccountEditorEntryKey entry,  String? ownerId,  AccountEditorKey? editor,  bool templatesLoading,  List<AccountTemplatePresentation> templates,  String? error)?  $default,{required TResult orElse(),}) {final _that = this;
+switch (_that) {
+case _AccountEditorSessionState() when $default != null:
+return $default(_that.entry,_that.ownerId,_that.editor,_that.templatesLoading,_that.templates,_that.error);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// As opposed to `map`, this offers destructuring.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case Subclass2(:final field2):
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( AccountEditorEntryKey entry,  String? ownerId,  AccountEditorKey? editor,  bool templatesLoading,  List<AccountTemplatePresentation> templates,  String? error)  $default,) {final _that = this;
+switch (_that) {
+case _AccountEditorSessionState():
+return $default(_that.entry,_that.ownerId,_that.editor,_that.templatesLoading,_that.templates,_that.error);case _:
+  throw StateError('Unexpected subclass');
+
+}
+}
+/// A variant of `when` that fallback to returning `null`
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( AccountEditorEntryKey entry,  String? ownerId,  AccountEditorKey? editor,  bool templatesLoading,  List<AccountTemplatePresentation> templates,  String? error)?  $default,) {final _that = this;
+switch (_that) {
+case _AccountEditorSessionState() when $default != null:
+return $default(_that.entry,_that.ownerId,_that.editor,_that.templatesLoading,_that.templates,_that.error);case _:
+  return null;
+
+}
+}
+
+}
+
+/// @nodoc
+
+
+class _AccountEditorSessionState implements AccountEditorSessionState {
+  const _AccountEditorSessionState({required this.entry, this.ownerId, this.editor, this.templatesLoading = false,  List<AccountTemplatePresentation> templates = const <AccountTemplatePresentation>[], this.error}): _templates = templates;
+
+
+@override final  AccountEditorEntryKey entry;
+@override final  String? ownerId;
+@override final  AccountEditorKey? editor;
+@override@JsonKey() final  bool templatesLoading;
+ final  List<AccountTemplatePresentation> _templates;
+@override@JsonKey() List<AccountTemplatePresentation> get templates {
+  if (_templates is EqualUnmodifiableListView) return _templates;
+  // ignore: implicit_dynamic_type
+  return EqualUnmodifiableListView(_templates);
+}
+
+@override final  String? error;
+
+/// Create a copy of AccountEditorSessionState
+/// with the given fields replaced by the non-null parameter values.
+@override @JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+_$AccountEditorSessionStateCopyWith<_AccountEditorSessionState> get copyWith => __$AccountEditorSessionStateCopyWithImpl<_AccountEditorSessionState>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is _AccountEditorSessionState&&(identical(other.entry, entry) || other.entry == entry)&&(identical(other.ownerId, ownerId) || other.ownerId == ownerId)&&(identical(other.editor, editor) || other.editor == editor)&&(identical(other.templatesLoading, templatesLoading) || other.templatesLoading == templatesLoading)&&const DeepCollectionEquality().equals(other.templates, _templates)&&(identical(other.error, error) || other.error == error));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,entry,ownerId,editor,templatesLoading,const DeepCollectionEquality().hash(_templates),error);
+}
+
+@override
+String toString() {
+    return 'AccountEditorSessionState(entry: $entry, ownerId: $ownerId, editor: $editor, templatesLoading: $templatesLoading, templates: $templates, error: $error)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class _$AccountEditorSessionStateCopyWith<$Res> implements $AccountEditorSessionStateCopyWith<$Res> {
+  factory _$AccountEditorSessionStateCopyWith(_AccountEditorSessionState value, $Res Function(_AccountEditorSessionState) _then) = __$AccountEditorSessionStateCopyWithImpl;
+@override @useResult
+$Res call({
+ AccountEditorEntryKey entry, String? ownerId, AccountEditorKey? editor, bool templatesLoading, List<AccountTemplatePresentation> templates, String? error
+});
+
+
+@override $AccountEditorEntryKeyCopyWith<$Res> get entry;@override $AccountEditorKeyCopyWith<$Res>? get editor;
+
+}
+/// @nodoc
+class __$AccountEditorSessionStateCopyWithImpl<$Res>
+    implements _$AccountEditorSessionStateCopyWith<$Res> {
+  __$AccountEditorSessionStateCopyWithImpl(this._self, this._then);
+
+  final _AccountEditorSessionState _self;
+  final $Res Function(_AccountEditorSessionState) _then;
+
+/// Create a copy of AccountEditorSessionState
+/// with the given fields replaced by the non-null parameter values.
+@override @pragma('vm:prefer-inline') $Res call({Object? entry = null,Object? ownerId = freezed,Object? editor = freezed,Object? templatesLoading = null,Object? templates = null,Object? error = freezed,}) {
+  return _then(_AccountEditorSessionState(
+entry: null == entry ? _self.entry : entry // ignore: cast_nullable_to_non_nullable
+as AccountEditorEntryKey,ownerId: freezed == ownerId ? _self.ownerId : ownerId // ignore: cast_nullable_to_non_nullable
+as String?,editor: freezed == editor ? _self.editor : editor // ignore: cast_nullable_to_non_nullable
+as AccountEditorKey?,templatesLoading: null == templatesLoading ? _self.templatesLoading : templatesLoading // ignore: cast_nullable_to_non_nullable
+as bool,templates: null == templates ? _self._templates : templates // ignore: cast_nullable_to_non_nullable
+as List<AccountTemplatePresentation>,error: freezed == error ? _self.error : error // ignore: cast_nullable_to_non_nullable
+as String?,
+  ));
+}
+
+/// Create a copy of AccountEditorSessionState
+/// with the given fields replaced by the non-null parameter values.
+@override
+@pragma('vm:prefer-inline')
+$AccountEditorEntryKeyCopyWith<$Res> get entry {
+
+  return $AccountEditorEntryKeyCopyWith<$Res>(_self.entry, (value) {
+    return _then(_self.copyWith(entry: value));
+  });
+}/// Create a copy of AccountEditorSessionState
 /// with the given fields replaced by the non-null parameter values.
 @override
 @pragma('vm:prefer-inline')
@@ -1575,7 +2176,7 @@ $AccountDisplayKeyCopyWith<$Res> get target {
 /// @nodoc
 mixin _$AccountReadoutState {
 
- AccountReadoutPhase get phase; List<AccountDisplayFact> get performance; List<AccountModelEvaluation> get evaluations; String? get error;
+ AccountReadoutPhase get phase; AccountPerformancePresentation? get performance; List<AccountDisplayFact> get guidance; List<AccountModelEvaluation> get evaluations; String? get error;
 /// Create a copy of AccountReadoutState
 /// with the given fields replaced by the non-null parameter values.
 @JsonKey(includeFromJson: false, includeToJson: false)
@@ -1587,20 +2188,20 @@ $AccountReadoutStateCopyWith<AccountReadoutState> get copyWith => _$AccountReado
 @override
 bool operator ==(Object other) {
   final _this = this as AccountReadoutState;
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is AccountReadoutState&&(identical(other.phase, _this.phase) || other.phase == _this.phase)&&const DeepCollectionEquality().equals(other.performance, _this.performance)&&const DeepCollectionEquality().equals(other.evaluations, _this.evaluations)&&(identical(other.error, _this.error) || other.error == _this.error));
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is AccountReadoutState&&(identical(other.phase, _this.phase) || other.phase == _this.phase)&&(identical(other.performance, _this.performance) || other.performance == _this.performance)&&const DeepCollectionEquality().equals(other.guidance, _this.guidance)&&const DeepCollectionEquality().equals(other.evaluations, _this.evaluations)&&(identical(other.error, _this.error) || other.error == _this.error));
 }
 
 
 @override
 int get hashCode {
   final _this = this as AccountReadoutState;
-  return Object.hash(runtimeType,_this.phase,const DeepCollectionEquality().hash(_this.performance),const DeepCollectionEquality().hash(_this.evaluations),_this.error);
+  return Object.hash(runtimeType,_this.phase,_this.performance,const DeepCollectionEquality().hash(_this.guidance),const DeepCollectionEquality().hash(_this.evaluations),_this.error);
 }
 
 @override
 String toString() {
   final _this = this as AccountReadoutState;
-  return 'AccountReadoutState(phase: ${_this.phase}, performance: ${_this.performance}, evaluations: ${_this.evaluations}, error: ${_this.error})';
+  return 'AccountReadoutState(phase: ${_this.phase}, performance: ${_this.performance}, guidance: ${_this.guidance}, evaluations: ${_this.evaluations}, error: ${_this.error})';
 }
 
 
@@ -1611,11 +2212,11 @@ abstract mixin class $AccountReadoutStateCopyWith<$Res>  {
   factory $AccountReadoutStateCopyWith(AccountReadoutState value, $Res Function(AccountReadoutState) _then) = _$AccountReadoutStateCopyWithImpl;
 @useResult
 $Res call({
- AccountReadoutPhase phase, List<AccountDisplayFact> performance, List<AccountModelEvaluation> evaluations, String? error
+ AccountReadoutPhase phase, AccountPerformancePresentation? performance, List<AccountDisplayFact> guidance, List<AccountModelEvaluation> evaluations, String? error
 });
 
 
-
+$AccountPerformancePresentationCopyWith<$Res>? get performance;
 
 }
 /// @nodoc
@@ -1628,16 +2229,29 @@ class _$AccountReadoutStateCopyWithImpl<$Res>
 
 /// Create a copy of AccountReadoutState
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') @override $Res call({Object? phase = null,Object? performance = null,Object? evaluations = null,Object? error = freezed,}) {
+@pragma('vm:prefer-inline') @override $Res call({Object? phase = null,Object? performance = freezed,Object? guidance = null,Object? evaluations = null,Object? error = freezed,}) {
   return _then(AccountReadoutState(
 phase: null == phase ? _self.phase : phase // ignore: cast_nullable_to_non_nullable
-as AccountReadoutPhase,performance: null == performance ? _self.performance : performance // ignore: cast_nullable_to_non_nullable
+as AccountReadoutPhase,performance: freezed == performance ? _self.performance : performance // ignore: cast_nullable_to_non_nullable
+as AccountPerformancePresentation?,guidance: null == guidance ? _self.guidance : guidance // ignore: cast_nullable_to_non_nullable
 as List<AccountDisplayFact>,evaluations: null == evaluations ? _self.evaluations : evaluations // ignore: cast_nullable_to_non_nullable
 as List<AccountModelEvaluation>,error: freezed == error ? _self.error : error // ignore: cast_nullable_to_non_nullable
 as String?,
   ));
 }
+/// Create a copy of AccountReadoutState
+/// with the given fields replaced by the non-null parameter values.
+@override
+@pragma('vm:prefer-inline')
+$AccountPerformancePresentationCopyWith<$Res>? get performance {
+    if (_self.performance == null) {
+    return null;
+  }
 
+  return $AccountPerformancePresentationCopyWith<$Res>(_self.performance!, (value) {
+    return _then(_self.copyWith(performance: value));
+  });
+}
 }
 
 
@@ -1719,10 +2333,10 @@ return $default(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( AccountReadoutPhase phase,  List<AccountDisplayFact> performance,  List<AccountModelEvaluation> evaluations,  String? error)?  $default,{required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( AccountReadoutPhase phase,  AccountPerformancePresentation? performance,  List<AccountDisplayFact> guidance,  List<AccountModelEvaluation> evaluations,  String? error)?  $default,{required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case _AccountReadoutState() when $default != null:
-return $default(_that.phase,_that.performance,_that.evaluations,_that.error);case _:
+return $default(_that.phase,_that.performance,_that.guidance,_that.evaluations,_that.error);case _:
   return orElse();
 
 }
@@ -1740,10 +2354,10 @@ return $default(_that.phase,_that.performance,_that.evaluations,_that.error);cas
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( AccountReadoutPhase phase,  List<AccountDisplayFact> performance,  List<AccountModelEvaluation> evaluations,  String? error)  $default,) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( AccountReadoutPhase phase,  AccountPerformancePresentation? performance,  List<AccountDisplayFact> guidance,  List<AccountModelEvaluation> evaluations,  String? error)  $default,) {final _that = this;
 switch (_that) {
 case _AccountReadoutState():
-return $default(_that.phase,_that.performance,_that.evaluations,_that.error);case _:
+return $default(_that.phase,_that.performance,_that.guidance,_that.evaluations,_that.error);case _:
   throw StateError('Unexpected subclass');
 
 }
@@ -1760,10 +2374,10 @@ return $default(_that.phase,_that.performance,_that.evaluations,_that.error);cas
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( AccountReadoutPhase phase,  List<AccountDisplayFact> performance,  List<AccountModelEvaluation> evaluations,  String? error)?  $default,) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( AccountReadoutPhase phase,  AccountPerformancePresentation? performance,  List<AccountDisplayFact> guidance,  List<AccountModelEvaluation> evaluations,  String? error)?  $default,) {final _that = this;
 switch (_that) {
 case _AccountReadoutState() when $default != null:
-return $default(_that.phase,_that.performance,_that.evaluations,_that.error);case _:
+return $default(_that.phase,_that.performance,_that.guidance,_that.evaluations,_that.error);case _:
   return null;
 
 }
@@ -1775,15 +2389,16 @@ return $default(_that.phase,_that.performance,_that.evaluations,_that.error);cas
 
 
 class _AccountReadoutState implements AccountReadoutState {
-  const _AccountReadoutState({required this.phase,  List<AccountDisplayFact> performance = const [],  List<AccountModelEvaluation> evaluations = const [], this.error}): _performance = performance,_evaluations = evaluations;
+  const _AccountReadoutState({required this.phase, this.performance,  List<AccountDisplayFact> guidance = const [],  List<AccountModelEvaluation> evaluations = const [], this.error}): _guidance = guidance,_evaluations = evaluations;
 
 
 @override final  AccountReadoutPhase phase;
- final  List<AccountDisplayFact> _performance;
-@override@JsonKey() List<AccountDisplayFact> get performance {
-  if (_performance is EqualUnmodifiableListView) return _performance;
+@override final  AccountPerformancePresentation? performance;
+ final  List<AccountDisplayFact> _guidance;
+@override@JsonKey() List<AccountDisplayFact> get guidance {
+  if (_guidance is EqualUnmodifiableListView) return _guidance;
   // ignore: implicit_dynamic_type
-  return EqualUnmodifiableListView(_performance);
+  return EqualUnmodifiableListView(_guidance);
 }
 
  final  List<AccountModelEvaluation> _evaluations;
@@ -1805,18 +2420,18 @@ _$AccountReadoutStateCopyWith<_AccountReadoutState> get copyWith => __$AccountRe
 
 @override
 bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is _AccountReadoutState&&(identical(other.phase, phase) || other.phase == phase)&&const DeepCollectionEquality().equals(other.performance, _performance)&&const DeepCollectionEquality().equals(other.evaluations, _evaluations)&&(identical(other.error, error) || other.error == error));
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is _AccountReadoutState&&(identical(other.phase, phase) || other.phase == phase)&&(identical(other.performance, performance) || other.performance == performance)&&const DeepCollectionEquality().equals(other.guidance, _guidance)&&const DeepCollectionEquality().equals(other.evaluations, _evaluations)&&(identical(other.error, error) || other.error == error));
 }
 
 
 @override
 int get hashCode {
-    return Object.hash(runtimeType,phase,const DeepCollectionEquality().hash(_performance),const DeepCollectionEquality().hash(_evaluations),error);
+    return Object.hash(runtimeType,phase,performance,const DeepCollectionEquality().hash(_guidance),const DeepCollectionEquality().hash(_evaluations),error);
 }
 
 @override
 String toString() {
-    return 'AccountReadoutState(phase: $phase, performance: $performance, evaluations: $evaluations, error: $error)';
+    return 'AccountReadoutState(phase: $phase, performance: $performance, guidance: $guidance, evaluations: $evaluations, error: $error)';
 }
 
 
@@ -1827,11 +2442,11 @@ abstract mixin class _$AccountReadoutStateCopyWith<$Res> implements $AccountRead
   factory _$AccountReadoutStateCopyWith(_AccountReadoutState value, $Res Function(_AccountReadoutState) _then) = __$AccountReadoutStateCopyWithImpl;
 @override @useResult
 $Res call({
- AccountReadoutPhase phase, List<AccountDisplayFact> performance, List<AccountModelEvaluation> evaluations, String? error
+ AccountReadoutPhase phase, AccountPerformancePresentation? performance, List<AccountDisplayFact> guidance, List<AccountModelEvaluation> evaluations, String? error
 });
 
 
-
+@override $AccountPerformancePresentationCopyWith<$Res>? get performance;
 
 }
 /// @nodoc
@@ -1844,17 +2459,30 @@ class __$AccountReadoutStateCopyWithImpl<$Res>
 
 /// Create a copy of AccountReadoutState
 /// with the given fields replaced by the non-null parameter values.
-@override @pragma('vm:prefer-inline') $Res call({Object? phase = null,Object? performance = null,Object? evaluations = null,Object? error = freezed,}) {
+@override @pragma('vm:prefer-inline') $Res call({Object? phase = null,Object? performance = freezed,Object? guidance = null,Object? evaluations = null,Object? error = freezed,}) {
   return _then(_AccountReadoutState(
 phase: null == phase ? _self.phase : phase // ignore: cast_nullable_to_non_nullable
-as AccountReadoutPhase,performance: null == performance ? _self._performance : performance // ignore: cast_nullable_to_non_nullable
+as AccountReadoutPhase,performance: freezed == performance ? _self.performance : performance // ignore: cast_nullable_to_non_nullable
+as AccountPerformancePresentation?,guidance: null == guidance ? _self._guidance : guidance // ignore: cast_nullable_to_non_nullable
 as List<AccountDisplayFact>,evaluations: null == evaluations ? _self._evaluations : evaluations // ignore: cast_nullable_to_non_nullable
 as List<AccountModelEvaluation>,error: freezed == error ? _self.error : error // ignore: cast_nullable_to_non_nullable
 as String?,
   ));
 }
 
+/// Create a copy of AccountReadoutState
+/// with the given fields replaced by the non-null parameter values.
+@override
+@pragma('vm:prefer-inline')
+$AccountPerformancePresentationCopyWith<$Res>? get performance {
+    if (_self.performance == null) {
+    return null;
+  }
 
+  return $AccountPerformancePresentationCopyWith<$Res>(_self.performance!, (value) {
+    return _then(_self.copyWith(performance: value));
+  });
+}
 }
 
 /// @nodoc

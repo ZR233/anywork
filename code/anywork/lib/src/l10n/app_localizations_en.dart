@@ -10,6 +10,93 @@ class AppLocalizationsEn extends AppLocalizations {
   AppLocalizationsEn([String locale = 'en']) : super(locale);
 
   @override
+  String get accountsModelModalityCapabilities =>
+      'Input/output modalities and capabilities';
+
+  @override
+  String get accountsModelContextThreshold =>
+      'Context and compaction threshold';
+
+  @override
+  String get accountsModelProtocolOrigin => 'Protocol and model origin';
+
+  @override
+  String get accountsSupportedConnections => 'Supported connections';
+
+  @override
+  String accountsVisibleCount(int count) {
+    return 'Showing $count accounts';
+  }
+
+  @override
+  String get accountsTemplateProtocol => 'Protocol';
+
+  @override
+  String get accountsTemplateDefaultEndpoint => 'Default endpoint';
+
+  @override
+  String get accountsTemplateDefaultBilling => 'Template default billing';
+
+  @override
+  String get accountsTemplateCapabilities => 'Catalog and usage capabilities';
+
+  @override
+  String get accountsTemplateDiscoverySupported =>
+      'Online model catalog sync supported';
+
+  @override
+  String get accountsTemplateDiscoveryUnsupported =>
+      'Online model catalog sync not supported';
+
+  @override
+  String get accountsTemplateUsageSupported => 'Usage queries supported';
+
+  @override
+  String get accountsTemplateUsageUnsupported => 'Usage queries not supported';
+
+  @override
+  String get accountsTemplateUsageUnknown =>
+      'Usage query capability not provided';
+
+  @override
+  String get accountsSetDefaultOnCreate => 'Set as default after creation';
+
+  @override
+  String get accountsSetDefaultOnCreateHint =>
+      'Update the default model for new chats in Simple mode. Other modes and existing chats are unchanged.';
+
+  @override
+  String get accountsCreatedDefaultIncomplete =>
+      'Account created; setting the default did not complete';
+
+  @override
+  String get accountsUnconfirmedSaveDiscardWarning =>
+      'Save outcome is not confirmed. Discarding only clears local edits; it does not cancel the submitted save, and the saved state may still change.';
+
+  @override
+  String get accountsConnectionBillingTitle =>
+      'Connection, credentials & billing';
+
+  @override
+  String get accountsTemplatesHint =>
+      'Search for a template, then review its connection settings. Changing templates is handled before replacing your edits.';
+
+  @override
+  String get accountsListHint =>
+      'Manage model services and integrations, and review current balances and quotas.';
+
+  @override
+  String get accountsTemplateNativeGroup => 'Model APIs';
+
+  @override
+  String get accountsTemplateAcpGroup => 'Managed integrations';
+
+  @override
+  String accountsBackToAccount(String accountName) {
+    return 'Back to $accountName';
+  }
+
+  @override
   String get accountsStateStale =>
       'The connection changed. Showing previous data until the current account is observed. Your input is kept.';
 
@@ -43,7 +130,7 @@ class AppLocalizationsEn extends AppLocalizations {
   String get accountsTargetMissing => 'This account no longer exists.';
 
   @override
-  String get accountsStatusColumn => 'Status';
+  String get accountsStatusColumn => 'Billing & status';
 
   @override
   String get accountsBalanceColumn => 'Balance & quota';
@@ -116,6 +203,48 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get accountsReadout => 'Load performance & evaluations';
+
+  @override
+  String get accountsModelDetails => 'Details & evaluations';
+
+  @override
+  String get accountsSpecsTab => 'Specifications & performance';
+
+  @override
+  String get accountsPriceMissing =>
+      'No verified tiered prices for this model.';
+
+  @override
+  String get accountsPerformanceMissing => 'No local performance samples yet.';
+
+  @override
+  String get accountsEvaluationWindow =>
+      'Summary of the latest 10 evaluations only; unrated outcomes are excluded from score averages.';
+
+  @override
+  String get accountsFilterAll => 'All outcomes';
+
+  @override
+  String get accountsFilterCategory => 'All categories';
+
+  @override
+  String get accountsFilterScore => 'Any quality score';
+
+  @override
+  String get accountsFilterEmpty => 'No evaluations match these filters.';
+
+  @override
+  String get accountsSortNewest => 'Newest first';
+
+  @override
+  String get accountsSortHighest => 'Highest quality first';
+
+  @override
+  String get accountsSortLowest => 'Lowest quality first';
+
+  @override
+  String get accountsCompactAdjusted =>
+      'The model applies a safety limit. Your requested value is preserved; the effective value below is authoritative.';
 
   @override
   String get accountsConnection => 'Connection';
@@ -569,6 +698,10 @@ class AppLocalizationsEn extends AppLocalizations {
   String startPageProject(String project) {
     return 'Working in $project';
   }
+
+  @override
+  String get startPageStandaloneBody =>
+      'No project needed. Files are saved in your Documents/anywork folder.';
 
   @override
   String get startPageOpenProjectTitle => 'Open a project to get started';
@@ -3441,6 +3574,17 @@ class AppLocalizationsEn extends AppLocalizations {
   @override
   String get sidebarEmptyProject =>
       'No sessions yet. Use + on this project to start';
+
+  @override
+  String get sidebarStandaloneSessions => 'Non-project sessions';
+
+  @override
+  String get sidebarStandaloneEmpty => 'No non-project sessions yet.';
+
+  @override
+  String sidebarStandalonePrepareFailed(String error) {
+    return 'Couldn\'t prepare a workspace: $error. Select New session to retry.';
+  }
 
   @override
   String get sidebarEarlier => 'Show earlier sessions';

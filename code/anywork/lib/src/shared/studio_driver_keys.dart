@@ -129,6 +129,18 @@ abstract final class StudioDriverKeys {
     'workspace-footer-scrollable',
   );
   static const newSession = ValueKey<String>(StudioDriverKeyValues.newSession);
+  static const nonProjectSessionsArea = ValueKey<String>(
+    StudioDriverKeyValues.nonProjectSessionsArea,
+  );
+  static const standalonePreparationFailure = ValueKey<String>(
+    StudioDriverKeyValues.standalonePreparationFailure,
+  );
+  static const standalonePreparationFailureMessage = ValueKey<String>(
+    StudioDriverKeyValues.standalonePreparationFailureMessage,
+  );
+  static const standalonePreparationRetry = ValueKey<String>(
+    StudioDriverKeyValues.standalonePreparationRetry,
+  );
   static const openProject = ValueKey<String>('sidebar-open-project');
   static const projectPathDialog = ValueKey<String>('project-path-dialog');
   static const projectPathInput = ValueKey<String>('project-path-input');
@@ -589,6 +601,9 @@ abstract final class StudioDriverKeys {
 
   static ValueKey<String> projectMenu(String id) =>
       ValueKey<String>('project-menu-$id');
+
+  static ValueKey<String> projectNewSession(String id) =>
+      ValueKey<String>(StudioDriverKeyValues.projectNewSession(id));
 
   static ValueKey<String> threadRow(String id) =>
       ValueKey<String>('thread-row-$id');

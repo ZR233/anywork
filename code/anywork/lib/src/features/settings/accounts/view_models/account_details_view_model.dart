@@ -152,8 +152,9 @@ class AccountDetailsViewModel extends _$AccountDetailsViewModel {
         ?.value
         .actions[_key];
     // The action owner qualifies its concrete local lifecycle/attempt before
-    // publication. Details additionally require the matching observed target;
-    // old content retained across reconnect or ACP replacement is not current.
+    // publication. Details still require the currently observed typed target.
+    // A deletion belongs to that account owner, not its original ACP connection;
+    // other action feedback keeps the original connection qualification.
     final action =
         resource.loaded &&
             source.loaded &&
@@ -163,10 +164,11 @@ class AccountDetailsViewModel extends _$AccountDetailsViewModel {
             candidate.ownerEpoch == source.stamp?.ownerEpoch &&
             (_key.kind == AccountKind.native ||
                 (acp != null &&
-                    candidate.acpConnectionRevision ==
-                        acp.account.connectionRevision &&
-                    candidate.acpConnectionRevision ==
-                        summary?.acpConnectionRevision))
+                    acp.account.connectionRevision ==
+                        summary?.acpConnectionRevision &&
+                    (candidate.removing ||
+                        candidate.acpConnectionRevision ==
+                            acp.account.connectionRevision)))
         ? candidate
         : null;
     final pending = action?.pending == true;

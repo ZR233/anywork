@@ -134,8 +134,10 @@ impl SettingsStore {
     ) -> Result<()> {
         let inner = self.inner.clone();
         let path = self.path.clone();
-        tokio::task::spawn_blocking(move || toml_store::mutate_document(&inner, &path, change))
-            .await?
+        tokio::task::spawn_blocking(move || {
+            toml_store::mutate_document(&inner, &path, |document| Ok(change(document)))
+        })
+        .await?
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, SettingsDocument> {

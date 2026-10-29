@@ -40,6 +40,7 @@ Future<OperationState?> observeAccountOperation(
   Ref ref,
   OperationState result,
 ) async {
+  if (result.failurePhase != null) return result;
   final source = ref.read(accountOperationObservationProvider)(result.id);
   final current = source?.value ?? result;
   if (operationSaved(current) ||

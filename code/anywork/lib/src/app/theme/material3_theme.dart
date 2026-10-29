@@ -288,12 +288,8 @@ ThemeData _createStudioTheme({String? fontFamily}) {
       GptMarkdownThemeData(
         brightness: Brightness.light,
         highlightColor: scheme.primaryContainer,
-        h1: text.headlineLarge,
-        h2: text.headlineMedium,
-        h3: text.headlineSmall,
-        h4: text.titleLarge,
-        h5: text.titleMedium,
-        h6: text.titleSmall,
+        // Typography.black only supplies paint styles, not heading geometry.
+        // Keep the renderer's Material heading metrics and inherit our fonts.
         hrLineColor: scheme.outlineVariant,
         linkColor: scheme.primary,
         linkHoverColor: scheme.onPrimaryContainer,

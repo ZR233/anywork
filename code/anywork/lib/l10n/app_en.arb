@@ -1,4 +1,38 @@
 {
+  "accountsModelModalityCapabilities": "Input/output modalities and capabilities",
+  "accountsModelContextThreshold": "Context and compaction threshold",
+  "accountsModelProtocolOrigin": "Protocol and model origin",
+  "accountsSupportedConnections": "Supported connections",
+  "accountsVisibleCount": "Showing {count} accounts",
+  "@accountsVisibleCount": {
+    "placeholders": {
+      "count": { "type": "int" }
+    }
+  },
+  "accountsTemplateProtocol": "Protocol",
+  "accountsTemplateDefaultEndpoint": "Default endpoint",
+  "accountsTemplateDefaultBilling": "Template default billing",
+  "accountsTemplateCapabilities": "Catalog and usage capabilities",
+  "accountsTemplateDiscoverySupported": "Online model catalog sync supported",
+  "accountsTemplateDiscoveryUnsupported": "Online model catalog sync not supported",
+  "accountsTemplateUsageSupported": "Usage queries supported",
+  "accountsTemplateUsageUnsupported": "Usage queries not supported",
+  "accountsTemplateUsageUnknown": "Usage query capability not provided",
+  "accountsSetDefaultOnCreate": "Set as default after creation",
+  "accountsSetDefaultOnCreateHint": "Update the default model for new chats in Simple mode. Other modes and existing chats are unchanged.",
+  "accountsCreatedDefaultIncomplete": "Account created; setting the default did not complete",
+  "accountsUnconfirmedSaveDiscardWarning": "Save outcome is not confirmed. Discarding only clears local edits; it does not cancel the submitted save, and the saved state may still change.",
+  "accountsConnectionBillingTitle": "Connection, credentials & billing",
+  "accountsTemplatesHint": "Search for a template, then review its connection settings. Changing templates is handled before replacing your edits.",
+  "accountsListHint": "Manage model services and integrations, and review current balances and quotas.",
+  "accountsTemplateNativeGroup": "Model APIs",
+  "accountsTemplateAcpGroup": "Managed integrations",
+  "accountsBackToAccount": "Back to {accountName}",
+  "@accountsBackToAccount": {
+    "placeholders": {
+      "accountName": { "type": "String" }
+    }
+  },
   "accountsStateStale": "The connection changed. Showing previous data until the current account is observed. Your input is kept.",
   "accountsSavePending": "The change was accepted. Waiting for this account to be observed and saved.",
   "accountsUnknownSaveOutcome": "The save result is unknown. Your input is kept; do not submit a replacement request blindly.",
@@ -8,7 +42,7 @@
   "accountsOutputModalities": "Output modalities",
   "accountsSavedConnectionFailed": "The account was saved, but the connection request failed.",
   "accountsTargetMissing": "This account no longer exists.",
-  "accountsStatusColumn": "Status",
+  "accountsStatusColumn": "Billing & status",
   "accountsBalanceColumn": "Balance & quota",
   "accountsSettingsSection": "Account settings",
   "accountsAdvancedSection": "Advanced information",
@@ -32,6 +66,19 @@
   "accountsPerformance": "Performance samples",
   "accountsEvaluations": "Recent evaluations (up to 10)",
   "accountsReadout": "Load performance & evaluations",
+  "accountsModelDetails": "Details & evaluations",
+  "accountsSpecsTab": "Specifications & performance",
+  "accountsPriceMissing": "No verified tiered prices for this model.",
+  "accountsPerformanceMissing": "No local performance samples yet.",
+  "accountsEvaluationWindow": "Summary of the latest 10 evaluations only; unrated outcomes are excluded from score averages.",
+  "accountsFilterAll": "All outcomes",
+  "accountsFilterCategory": "All categories",
+  "accountsFilterScore": "Any quality score",
+  "accountsFilterEmpty": "No evaluations match these filters.",
+  "accountsSortNewest": "Newest first",
+  "accountsSortHighest": "Highest quality first",
+  "accountsSortLowest": "Lowest quality first",
+  "accountsCompactAdjusted": "The model applies a safety limit. Your requested value is preserved; the effective value below is authoritative.",
   "accountsConnection": "Connection",
   "accountsHttp": "HTTP",
   "accountsWebSocket": "WebSocket",
@@ -274,6 +321,7 @@
       }
     }
   },
+  "startPageStandaloneBody": "No project needed. Files are saved in your Documents/anywork folder.",
   "startPageOpenProjectTitle": "Open a project to get started",
   "startPageOpenProjectBody": "Choose a project from the sidebar before sending your first message.",
   "shellSessionUpdated": "{mode} · updated {time}",
@@ -1699,6 +1747,16 @@
   "sidebarNewConnection": "New remote connection",
   "sidebarNoResults": "No matching projects or sessions",
   "sidebarEmptyProject": "No sessions yet. Use + on this project to start",
+  "sidebarStandaloneSessions": "Non-project sessions",
+  "sidebarStandaloneEmpty": "No non-project sessions yet.",
+  "sidebarStandalonePrepareFailed": "Couldn't prepare a workspace: {error}. Select New session to retry.",
+  "@sidebarStandalonePrepareFailed": {
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
   "sidebarEarlier": "Show earlier sessions",
   "sidebarArchived": "Archived",
   "sidebarRestore": "Unarchive session",

@@ -660,6 +660,45 @@ workspace_mode = "directory"
     }
 
     #[test]
+    fn current_main_keeps_an_unreferenced_empty_model_account_without_rewriting() {
+        let (_directory, store) = fixture();
+        let mut config = store.load().unwrap();
+        let account_id = crate::config::AccountId::new("unfinished").unwrap();
+        config.models.accounts.insert(
+            account_id.clone(),
+            pl_model::config::AccountConfig::from_explicit_models(
+                pl_model::protocol::ProtocolEndpoint::compatible(
+                    "Unfinished account",
+                    "http://127.0.0.1:1",
+                ),
+                Vec::new(),
+            ),
+        );
+        store.save(&config).unwrap();
+        let path = store.paths().config_file();
+        let original = fs::read_to_string(path).unwrap();
+
+        let loaded = store.load_for_startup().unwrap();
+        assert!(
+            loaded.models.accounts[&account_id]
+                .effective_catalog(None)
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(loaded.schema_version, 27);
+        assert_eq!(fs::read_to_string(path).unwrap(), original);
+        assert!(
+            store
+                .load()
+                .unwrap()
+                .models
+                .accounts
+                .contains_key(&account_id)
+        );
+        assert_eq!(fs::read_to_string(path).unwrap(), original);
+    }
+
+    #[test]
     fn current_config_keeps_the_existing_retired_ui_key_read_policy() {
         let (_directory, store) = fixture();
         let path = store.paths().config_file();

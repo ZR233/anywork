@@ -6,20 +6,13 @@ import '../state/account_presentations.dart';
 export 'account_billing_control.dart';
 export 'account_menu_button.dart';
 
-/// A near-white warm surface scoped to account groups, not an app theme.
-Color accountGroupSurface(BuildContext context) => Color.lerp(
-  Theme.of(context).colorScheme.surfaceContainerLowest,
-  Colors.white,
-  .76,
-)!;
+Color accountGroupSurface(BuildContext context) =>
+    Theme.of(context).colorScheme.surfaceContainerLowest;
 
 ButtonStyle accountActionButtonStyle(BuildContext context) => ButtonStyle(
   minimumSize: const WidgetStatePropertyAll(Size(0, 42)),
   visualDensity: VisualDensity.standard,
-  textStyle: WidgetStatePropertyAll(
-    Theme.of(context).textTheme.bodyLarge
-        ?.copyWith(fontSize: 16, fontWeight: FontWeight.w600),
-  ),
+  textStyle: WidgetStatePropertyAll(Theme.of(context).textTheme.labelLarge),
 );
 
 String accountBillingLabel(AppLocalizations l10n, AccountBilling billing) =>
@@ -63,7 +56,7 @@ class AccountSection extends StatelessWidget {
           children: [
             Text(
               title,
-              style: Theme.of(context).textTheme.titleLarge
+              style: Theme.of(context).textTheme.titleMedium
                   ?.copyWith(fontWeight: FontWeight.w700),
             ),
             if (actions.isNotEmpty)
@@ -72,11 +65,12 @@ class AccountSection extends StatelessWidget {
         ),
         const SizedBox(height: 12),
         Card(
+          margin: EdgeInsets.zero,
           color: accountGroupSurface(context),
           child: Padding(
             padding: const EdgeInsets.all(16),
             child: DefaultTextStyle.merge(
-              style: const TextStyle(fontSize: 16),
+              style: Theme.of(context).textTheme.bodyMedium!,
               child: child,
             ),
           ),
@@ -126,15 +120,13 @@ class AccountFacts extends StatelessWidget {
             builder: (context, constraints) {
               final label = Text(
                 fact.label,
-                style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                  fontSize: 16,
+                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                   color: Theme.of(context).colorScheme.onSurfaceVariant,
                 ),
               );
               final value = AccountSelectableText(
                 fact.value,
-                style: Theme.of(context).textTheme.bodyLarge
-                    ?.copyWith(fontSize: 16),
+                style: Theme.of(context).textTheme.bodyMedium,
               );
               return constraints.maxWidth < 460
                   ? Column(
@@ -175,10 +167,8 @@ class AccountInlineError extends StatelessWidget {
         ),
         Text(
           message,
-          style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-            fontSize: 16,
-            color: Theme.of(context).colorScheme.error,
-          ),
+          style: Theme.of(context).textTheme.bodyMedium
+              ?.copyWith(color: Theme.of(context).colorScheme.error),
         ),
         if (onRetry != null)
           TextButton(
@@ -202,6 +192,7 @@ class AccountRawTextField extends StatefulWidget {
     this.maxLines = 1,
     this.keyboardType,
     this.prefixIcon,
+    this.focusNode,
     super.key,
   });
   final AccountTextPresentation value;
@@ -212,6 +203,7 @@ class AccountRawTextField extends StatefulWidget {
   final int maxLines;
   final TextInputType? keyboardType;
   final Widget? prefixIcon;
+  final FocusNode? focusNode;
 
   @override
   State<AccountRawTextField> createState() => _AccountRawTextFieldState();
@@ -259,6 +251,7 @@ class _AccountRawTextFieldState extends State<AccountRawTextField> {
     child: TextField(
       key: const PageStorageKey<String>('account-input-scroll'),
       controller: _controller,
+      focusNode: widget.focusNode,
       onChanged: widget.onChanged,
       enabled: widget.enabled,
       obscureText: widget.obscure && !_reveal,
@@ -266,10 +259,9 @@ class _AccountRawTextFieldState extends State<AccountRawTextField> {
       enableSuggestions: !widget.obscure,
       maxLines: widget.maxLines,
       keyboardType: widget.keyboardType,
-      style: Theme.of(context).textTheme.bodyLarge?.copyWith(fontSize: 16),
+      style: Theme.of(context).textTheme.bodyLarge,
       decoration: InputDecoration(
-        labelStyle: Theme.of(context).textTheme.bodyLarge
-            ?.copyWith(fontSize: 16),
+        labelStyle: Theme.of(context).textTheme.bodyLarge,
         prefixIcon: widget.prefixIcon,
         labelText: widget.label,
         errorText: widget.value.error,
@@ -281,7 +273,9 @@ class _AccountRawTextFieldState extends State<AccountRawTextField> {
                 tooltip: _reveal
                     ? AppLocalizations.of(context).accountsHideCredential
                     : AppLocalizations.of(context).accountsShowCredential,
-                onPressed: () => setState(() => _reveal = !_reveal),
+                onPressed: widget.enabled
+                    ? () => setState(() => _reveal = !_reveal)
+                    : null,
                 icon: Icon(
                   _reveal
                       ? Icons.visibility_off_outlined

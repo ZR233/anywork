@@ -5,9 +5,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_chat_core/flutter_chat_core.dart';
 import 'package:flutter_chat_ui/flutter_chat_ui.dart';
-import 'package:flyer_chat_text_message/flyer_chat_text_message.dart';
-import 'package:flyer_chat_text_stream_message/flyer_chat_text_stream_message.dart';
 import 'package:flyer_chat_file_message/flyer_chat_file_message.dart';
+import 'package:flyer_chat_text_stream_message/flyer_chat_text_stream_message.dart'
+    show StreamState, StreamStateStreaming;
 
 import '../../../../app/theme/studio_tokens.dart';
 import '../../../../domain/models/timeline_commands.dart';
@@ -166,7 +166,7 @@ class _TimelineViewState extends State<TimelineView> {
     imageBuilder: widget.remoteImageBuilder,
   );
 
-  Widget _text(BuildContext context, TextMessage message, int index) {
+  Widget _text(BuildContext context, TextMessage message) {
     final entry = timelineEntryOf(message)!;
     return Column(
       key: StudioDriverKeys.timelineBlock(entry.first.id),
@@ -181,27 +181,7 @@ class _TimelineViewState extends State<TimelineView> {
               key: StudioDriverKeys.parentAgentLabel(entry.first.id),
             ),
           ),
-        if (timelineNeedsSafeMarkdown(message.text) ||
-            message.text.length > 6144)
-          _body(entry.first, message.text)
-        else
-          FlyerChatTextMessage(
-            message: message,
-            index: index,
-            padding: EdgeInsets.zero,
-            constraints: const BoxConstraints(),
-            showTime: false,
-            showStatus: false,
-            receivedBackgroundColor: Colors.transparent,
-            sentBackgroundColor: Colors.transparent,
-            receivedTextStyle: context.text.bodyMedium?.copyWith(height: 1.57),
-            sentTextStyle: context.text.bodyMedium?.copyWith(height: 1.57),
-            // Defense in depth only: unsafe candidates never reach a gesture
-            // because the Markdown path leaves them as plain text spans.
-            onLinkTap: (url, _) {
-              if (widget.isSafeLink(url)) widget.onLink(url);
-            },
-          ),
+        _body(entry.first, message.text),
         _terminal(entry.first),
         TimelineDetailNotices(item: entry.first, onDetail: widget.onDetail),
       ],
@@ -237,7 +217,7 @@ class _TimelineViewState extends State<TimelineView> {
           );
   }
 
-  Widget _stream(BuildContext context, TextStreamMessage message, int index) {
+  Widget _stream(TextStreamMessage message) {
     final stream = widget.controls.streamFor(message.id);
     if (stream == null) return const SizedBox.shrink();
     return ValueListenableBuilder<StreamState>(
@@ -248,27 +228,7 @@ class _TimelineViewState extends State<TimelineView> {
         return Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            if (timelineNeedsSafeMarkdown(text) || text.length > 6144)
-              _body(item, text)
-            else
-              FlyerChatTextStreamMessage(
-                message: message,
-                index: index,
-                streamState: value,
-                mode: TextStreamMessageMode.animatedOpacity,
-                chunkAnimationDuration: Duration.zero,
-                padding: EdgeInsets.zero,
-                showTime: false,
-                showStatus: false,
-                receivedBackgroundColor: Colors.transparent,
-                sentBackgroundColor: Colors.transparent,
-                receivedTextStyle: context.text.bodyMedium?.copyWith(
-                  height: 1.57,
-                ),
-                onLinkTap: (url, _) {
-                  if (widget.isSafeLink(url)) widget.onLink(url);
-                },
-              ),
+            _body(item, text),
             TimelineDetailNotices(item: item, onDetail: widget.onDetail),
           ],
         );
@@ -479,14 +439,14 @@ class _TimelineViewState extends State<TimelineView> {
                                     index, {
                                     required bool isSentByMe,
                                     MessageGroupStatus? groupStatus,
-                                  }) => _text(context, message, index),
+                                  }) => _text(context, message),
                                   textStreamMessageBuilder: (
                                     context,
                                     message,
                                     index, {
                                     required bool isSentByMe,
                                     MessageGroupStatus? groupStatus,
-                                  }) => _stream(context, message, index),
+                                  }) => _stream(message),
                                   imageMessageBuilder:
                                       (
                                         context,

@@ -8,7 +8,7 @@ import 'package:test/test.dart';
 import 'support/accounts_test_runtime.dart';
 
 const _catalog = AccountCatalogView(
-  schemaVersion: 16,
+  schemaVersion: 19,
   revision: 'catalog-r1',
   templates: [
     AccountTemplateView(
@@ -21,6 +21,9 @@ const _catalog = AccountCatalogView(
       modelCatalogId: 'open-ai',
       protocol: 'open_ai',
       suggestedModelId: 'gpt-5.6',
+      defaultBillingKind: BillingKind.metered,
+      supportsModelDiscovery: true,
+      supportsUsageQuery: null,
     ),
     AccountTemplateView(
       id: 'openai-compatible',
@@ -32,6 +35,9 @@ const _catalog = AccountCatalogView(
       modelCatalogId: 'openai-compatible',
       protocol: 'open_ai_compatible',
       suggestedModelId: '',
+      defaultBillingKind: BillingKind.unknown,
+      supportsModelDiscovery: false,
+      supportsUsageQuery: null,
     ),
   ],
   modelCatalogs: {
@@ -393,27 +399,20 @@ void main() {
         secret: const AccountSecretCommand.clear(),
       ),
     );
-    final rejected = expectLater(
-      pending,
-      throwsA(
-        isA<StudioFailure>().having(
-          (e) => e.code,
-          'code',
-          StudioFailureCode.invalidArgument,
-        ),
-      ),
-    );
     final call = await entered;
     expect((call.command as CreateAccountCommand).templateId, 'missing');
-    call.result.completeError(
-      const StudioFailure(
-        code: StudioFailureCode.invalidArgument,
-        message: 'Unknown template',
-        retryable: false,
-        correlationId: 'template',
-      ),
+    const error = StudioFailure(
+      code: StudioFailureCode.invalidArgument,
+      message: 'Unknown template',
+      retryable: false,
+      correlationId: 'template',
     );
-    await rejected;
+    call.result.completeError(error);
+    final rejected = await pending;
+    expect(rejected.id, call.operation);
+    expect(rejected.failurePhase, OperationPhase.rejected);
+    expect(rejected.error, same(error));
+    expect(rejected.receipt, isNull);
     expect(runtime.domains.accounts.state.value.accounts, isEmpty);
     expect(runtime.board.operations.last.phase, OperationPhase.rejected);
   });

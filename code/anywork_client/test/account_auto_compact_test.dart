@@ -582,11 +582,9 @@ void main() {
     final calls = StreamIterator(transport.calls.stream);
     addTearDown(calls.cancel);
     final first = _set(runtime, 'alpha', 100);
-    final firstFailure = expectLater(first, throwsA(isA<StudioFailure>()));
     await calls.moveNext();
     final older = calls.current;
     final second = _set(runtime, 'alpha', 150);
-    final secondFailure = expectLater(second, throwsA(isA<StudioFailure>()));
     const key = 'model:compact:7:fixture:alpha';
     const error = StudioFailure(
       code: StudioFailureCode.invalidArgument,
@@ -595,11 +593,21 @@ void main() {
       correlationId: 'fixture',
     );
     older.reply.completeError(error);
-    await firstFailure;
+    final firstFailure = await first;
+    expect(firstFailure.id, older.id);
+    expect(firstFailure.failurePhase, OperationPhase.rejected);
+    expect(firstFailure.error, same(error));
+    expect(firstFailure.receipt, isNull);
     await calls.moveNext();
+    final newer = calls.current;
+    expect(newer.id, isNot(older.id));
     expect(runtime.board.latest(key)!.state.value.isPending, isTrue);
-    calls.current.reply.completeError(error);
-    await secondFailure;
+    newer.reply.completeError(error);
+    final secondFailure = await second;
+    expect(secondFailure.id, newer.id);
+    expect(secondFailure.failurePhase, OperationPhase.rejected);
+    expect(secondFailure.error, same(error));
+    expect(secondFailure.receipt, isNull);
     expect(
       runtime.board.latest(key)!.state.value.phase,
       OperationPhase.rejected,
