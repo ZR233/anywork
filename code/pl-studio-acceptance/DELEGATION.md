@@ -1,10 +1,10 @@
 # 子代理分发原生人工验收 runbook
 
-这是 **manual-gui 显式人工观察**，不新增 Rust test、不进入自动门禁。真实生产
+这是 **manual-gui 显式人工观察** 的操作说明，不是修改或提交前的必跑流程，也不限制其他测试的新增。真实生产
 Runtime、Thread 工具、bridge、Client 和原生 GUI 负责准入、过滤、派发、评价和持久化；
 fixture 仅模拟 loopback 外部供应商及响应 gate。`verdict.json` 始终从 `pending` 开始，
-命令成功不能替代人工查看截图、canonical 状态、请求与进程证据。真实账号的有界任务由
-主代理另行执行，不能从模拟或 Linux 单平台结果外推兼容性。
+命令成功不能替代截图、canonical 状态、请求与进程证据的业务判断。
+真实账号观察是独立且需授权的入口，不能从模拟或 Linux 单平台结果外推兼容性。
 
 关闭工具采用 `{target, force?: false}`，不发送 `workspaceDisposition`。收据为
 `{target, agents: [{agentId, executionClosed, worktreeCleanup}], error}`；成功判定要求顶层无错误、

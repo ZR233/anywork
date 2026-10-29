@@ -6,7 +6,7 @@ category: guides
 
 # Studio 分发与最终评价
 
-先读 [协作契约](../../../design/12-collaboration.md#127-分发模式模型查询与最终评价)、
+相关事实入口为 [协作契约](../../../design/12-collaboration.md#127-分发模式模型查询与最终评价)、
 [配置契约](../../../design/20-config.md) 和 [前端状态](../../../design/25-frontend-state.md)。
 配置版本以 `code/pl-studio-runtime/src/config/mod.rs` 的 owner 常量为准；不要仅改版本号
 跳过迁移，也不要复制旧示例覆盖当前配置。配置和凭据的通用安全边界见 `studio-config`。
@@ -66,7 +66,8 @@ category: guides
 
 ## 验证证据
 
-遵守 `test-quality`、`rust-concurrency-safety` 与 `flutter-studio-build`；项目门禁见 AGENTS.md。
+可按问题参考 `test-quality`、`rust-concurrency-safety` 与 `flutter-studio-build`。
+以下说明不同证据能证明什么，不要求每次修改都运行全部场景。
 
 - 模拟供应商只提供外部响应与阻塞边界，不能重写被测资格、选模或评价规则。
   `/models` 库存和配置回读不证明 child 实际路由；核对真实 completion 请求与 spawn 回执。
@@ -79,14 +80,14 @@ category: guides
   没有新 Turn，需要终态历史证据时按需消费现有公开会话读取接口，并保持有界与身份核对。
 - 供应商请求已到达的可控响应 gate 可验证“禁用不杀在途、下一 Turn 拒绝”。没有公开
   锁内停点时，不把 sleep、重复竞速或一次成功当作确定性线性化证明，不加生产测试捷径。
-- GUI 使用真实 bridge 与 Driver，结合 canonical 状态、截图和请求日志判定。
+- GUI 的真实 bridge 与 Driver、canonical 状态、截图和请求日志可提供不同观察证据。
   智能体成员来自完整 AgentDirectory，不与 Thread 分页或热集合取交集；冷成员按显式选择读取。
   快速导航测试必须走公开命令入口，新意图在 enqueue 前使旧读取失效；只直接改 store 不能
   证明串行 lane 中的真实快速改选不会发布旧结果。
   生成物只由工程入口生成；截图、临时客户端和环境配置留在本 Thread 会话目录或工具
   规定的证据目录，不提交源码。等待 shutdown_completed 及所属进程真正退出。
-  冷恢复须实跑正常退出、同数据根重开、同 child 续跑且冻结模型不变；另证显式关闭后重开
-  仍拒执行且无新增 child 调用。只读历史或冷关闭不能代替冷续跑证据。
+  冷恢复与显式关闭的行为不同：前者可重开并沿冻结模型续跑，后者拒绝重新执行。
+  只读历史或冷关闭不能代替冷续跑证据。
 - 禁用准入负例使用真实外层错误与联合证据：禁用前同身份可选、禁用后明确不可用、精确调用
   关联、目录无新增或残留、目标和全部 child 请求均不增。计数基线只在真实派发时保存，
   回放读取原基线；发送合法 sample，使误准入能真正到达供应商，不能由 fixture 自拒造绿。

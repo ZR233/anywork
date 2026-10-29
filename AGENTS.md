@@ -9,7 +9,7 @@
 - 只读审查不隐含修改授权；本地修改不自动授权提交、推送、合并或部署。用户要求“修复并提 PR”时，可连续完成修改、验证、提交、推送和创建 PR；未授权的外部写入或用户数据删除等破坏性操作须先完成可独立准备的工作，再就具体动作询问，并遵守实际工具权限限制。
 - 用户明确指令优先于本文件和技能中的工作流建议；技能补充领域要求，不重复设置审批步骤。组件与依赖路线按下述自研决策门槛执行，技能不得绕过或弱化该门槛。若规则确实阻塞任务，引用具体文件与条款并说明原因，区分明确要求和自身推断。
 - 不回滚用户或其他 agent 的未提交改动；同一文件存在相关改动时，先读懂再叠加。
-- 涉及架构、接口、协议、运行时行为或长期约定时，在已有授权范围内先同步对应设计，再修改实现并核对一致性，不因旧文档与已明确的新需求冲突重复索要授权。仅调整协作规则或技能时直接维护相应文件；用户限定范围外的工作列为缺口。设计文档写作规则见 [设计索引](design/README.md)。
+- 架构、接口、协议、运行时行为和长期约定的文档与实现保持一致；旧文档不撤销用户已明确的新需求，用户限定范围外的工作仍是未授权范围。设计文档写作规则见 [设计索引](design/README.md)。
 - 提 PR 或创建分支时，优先推送到用户账号 fork，并优先向 fork 源仓库的默认分支提 PR。
 
 ## 组件与依赖选型
@@ -40,13 +40,13 @@
 
 ### PR 截图证据与附件
 
-- 涉及界面设计或功能修改的 PR，正文必须嵌入与本次改动直接相关的真实截图证据，并说明截图来源、场景、平台及实际覆盖范围。界面变更使用实际运行截图，按需提供同窗口尺寸的前后对照；纯文档变更不要求截图，也不为凑截图运行无关产品 GUI 或全量测试。
+- 使用截图作为 PR 证据时，正文中的图片应来自本次相关运行，并说明场景、平台及实际覆盖范围；可以提供同窗口尺寸的前后对照。截图不是每次修改的必备产物，不为凑截图运行无关 GUI 或测试。
 - 截图必须通过 GitHub 附件等已授权渠道上传，不能只放本地路径、文字日志或 PR 评论来替代正文中的图片；不得用示意图、生成图或其他版本的截图冒充本次验证。上传前检查并遮蔽凭据、个人信息等敏感内容，必要遮蔽须说明，不能改动验证结果。
 - 截图、预览文件和上传中间产物遵循下文“会话文件与交付位置”，不得放入源码、Git 提交或长期 Skill 资产；已有工具的固定产物入口保持不变。提交前检查暂存区与 PR 差异，不为隐藏截图修改仓库或全局忽略规则。
 
 #### 使用 GitHub CLI 添加附件
 
-先运行 `gh --version`、`gh pr create --help` 和 `gh pr edit --help`，核对当前版本的 `--attach` 能力与行为，不凭旧版本经验断言 CLI 无法上传。以下示例在本会话 `artifacts` 目录执行；`OWNER/REPO`、`BASE`、`BRANCH`、`PR_NUMBER`、标题与文件名均替换为实际值。
+`gh --version`、`gh pr create --help` 和 `gh pr edit --help` 可用于核对当前版本的 `--attach` 能力与行为，不凭旧版本经验断言 CLI 无法上传。以下示例在本会话 `artifacts` 目录执行；`OWNER/REPO`、`BASE`、`BRANCH`、`PR_NUMBER`、标题与文件名均替换为实际值。
 
 ```sh
 # 创建 PR，同时上传截图；重复 --attach 可添加多张图片。
@@ -70,17 +70,11 @@ gh pr view PR_NUMBER --repo OWNER/REPO --json body --jq .body
 
 ### Studio 发版决策
 
-- 自动版本计算统一递增 minor，`fix:` 也不自动递增 patch；`!` / `BREAKING CHANGE:`
-  不自动递增 major，但必须保留真实的破坏性变更标记和发行说明。发布契约见
-  [发布与更新](design/23-release-update.md#231-版本与发布流)。
-- 普通 `docs:` / `chore:` 不进入发行说明，仅含这些提交的批次不触发 Release PR；
-  真实破坏性变更说明和显式 `Release-As` 人工版本决定不受普通分类隐藏影响。
+- 版本计算、提交分类与发布机制见 [发布与更新](design/23-release-update.md#231-版本与发布流)，本文件不重复维护政策。
 - major 只能在维护者明确决定后，用最终落入 `main` 的提交正文 `Release-As: x.y.z`
   指定目标稳定版本。例如 subject 为 `chore(studio): release 7.0.0`，正文为
   `Release-As: 7.0.0`；这只是操作示例，不授权 agent 自行提交或选择大版本。
-- 使用 squash 合并时确认最终 commit body 保留 `Release-As`；仅修改 PR 标题或描述不够。
-  等待 Release Please 同步生成版本文件和 CHANGELOG 后，再审查并合并 Release PR；不直接
-  手改版本文件或 tag，也不在配置中长期保留 `release-as`。现有构建、签名和故障恢复流程不变。
+- `Release-As` 由最终提交正文消费，仅修改 PR 标题或描述不会改变发布版本。版本文件由 Release Please 管理，不手改版本文件、覆盖 tag 或在配置中长期保留 `release-as`。提交和提 PR 不包含发布授权。
 
 ## 项目目录与命令入口
 
@@ -91,7 +85,7 @@ gh pr view PR_NUMBER --repo OWNER/REPO --json body --jq .body
 - Flutter app 的 Dart package 名称是 `anywork`。
 - Flutter 项目根目录是 `code/anywork`。
 - SDK-only Dart Client 位于 `code/anywork_client`，无 Flutter/Riverpod/FRB 依赖；Client 命令通过 `cargo xtask verify-client` 在正确目录执行。
-- 每个 `AppGraph` 拥有独立 Client 与资源。`presentation/providers` 只适配只读观察；其销毁只能取消自己的观察和预算 permit，不能关闭 Session/ChatView、清草稿或清附件。业务意图直接调用 Client action；`features/**` 不导入 FRB、transport 或 Client 私有实现。
+- Client、AppGraph 与观察层的所有权和依赖边界见 [客户端与前端状态](design/25-frontend-state.md)。
 
 ### 会话文件与交付位置
 
@@ -108,7 +102,6 @@ gh pr view PR_NUMBER --repo OWNER/REPO --json body --jq .body
 - 常用命令：
 
   ```powershell
-  cargo flutter analyze
   cargo flutter analyze
   cargo dart format lib test_driver
   ```
@@ -147,9 +140,9 @@ gh pr view PR_NUMBER --repo OWNER/REPO --json body --jq .body
   ```
 
 - 不得手工修改生成文件，也不得直接调用单个生成器。
-- 修改生成输入后运行 `cargo xtask check-gui-generated` 检查 canonical 输出，并分开审查生成 diff 与手写 diff。已授权的代码修改或生成一致性验证包含这些命令所需的生成操作，不为常规生成另行确认；用户明确限定只读时，不运行会改写跟踪文件的命令，报告未验证项。
-- 普通 `run-gui` 和 `build-gui` 只消费当前源码，不运行生成器或可写格式化；修改生成输入后必须先显式运行 `cargo xtask generate-gui`。
-- `check-gui-generated`、`verify-gui` 和 `build-gui --check-generated` 会重新生成并检查 canonical 输出，适用于提交前及 PR 质量门禁。稳定发布的编译阶段与 RC 构建直接消费已提交的生成文件，后置 `release-gui stage` 只打包预构建 bundle，不重复质量门禁；批准发布前须确认前序验证完成（见 [发布与更新](design/23-release-update.md)）。
+- `cargo xtask check-gui-generated` 会重新生成并检查 canonical 输出；它不是只读命令。已授权的代码修改或生成一致性验证包含必要生成操作，但用户明确限定只读时，不能运行会改写跟踪文件的命令。
+- 普通 `run-gui` 和 `build-gui` 只消费当前源码，不运行生成器或可写格式化；更新生成物使用 `cargo xtask generate-gui`，生成输入与产物保持一致。
+- `check-gui-generated`、`verify-gui` 和 `build-gui --check-generated` 均包含生成检查，可以按目标选择，不是需要依次执行的清单。稳定发布与 RC 构建、预构建打包的行为见 [发布与更新](design/23-release-update.md)。
 - Git 索引与普通源码统一使用 LF；PowerShell、RC 和 Inno Setup 文件使用 CRLF，`.gitattributes` 与 `.editorconfig` 必须保持一致。不得通过全局 Git 配置、构建后索引刷新或全仓 renormalize 修复行尾。
 
 ### 预置系统技能
@@ -194,16 +187,13 @@ crate 职责、依赖方向与禁止依赖的唯一权威源是 [Crate 边界](d
 - 结构化协议变更必须同步 Rust protocol、FRB DTO、Dart domain model、reducer/projection 和设计文档。
 - 前端测试、浏览器验证和临时 dev server 不得占用 `1420` 端口，该端口保留给用户脚本。
 
-## 测试、检查与交付
+## 检查与观察入口
 
-- 验证按实际影响选择。纯文档、技能或协作规则修改（包括提交前）只检查内容、引用、规则一致性及适用格式，不运行 Rust、Flutter、GUI 或 live 全量验收；若同时改变构建／生成输入、运行配置或测试执行语义，则按这些实际影响验证。代码修改先运行定向检查，跨 crate、协议、构建或依赖变更扩展到相关消费者；提交前执行下述代码门禁，生成输入、GUI 行为与 live 验收另遵守对应要求。
-- 适用检查通过且需求已满足后直接交付；只有新修改、失败或尚未解决的具体风险才扩展或重复验证。只读分析以结论与出处为完成条件；修改任务以范围内修改完成、适用验证通过和差异可审查为完成条件；提 PR 任务还须交付 PR 链接及实际 CI 状态，排队或运行中不算通过。环境或权限阻塞时报告已完成项、原始失败和剩余工作，不声称全部完成。
-- Rust 常规自动化用例位于 `pl-patch/tests/`、`pl-model/tests/` 与 `pl-core/tests/`，只通过被测 crate 的公开 API 验证完整能力；`pl-patch` 仅限补丁语义一致性专项（与 Codex `apply-patch` 语义对齐，有意差异须显式断言），见 [测试设计](design/24-testing.md)。纯 Dart Client 的公开行为测试位于 `code/anywork_client/test/`，Riverpod/路由适配契约测试位于 `code/anywork/test/client/` 并纳入 `verify-client` 门禁。`pl-studio-runtime` 允许历史保存与数据迁移专项故障注入，以及 `tests/` 中通过公开 API、真实临时 Git/SQLite 验证工作树和归档生命周期的专项集成测试；不为测试扩展生产公共接口。除上述专项外其他 Rust crate 不新增测试；除上述 Client 适配契约外，Flutter widget/integration 与发布脚本测试仍不进入门禁。上述 Rust 测试通过本地模拟供应商或脚本化模型运行；`pl-core` 不依赖 `pl-model`。上游预置技能自带的测试源码保持原样，但不进入本项目门禁。测试设计与失败传播遵循 [test-quality](.agents/skills/test-quality/SKILL.md)，具体边界见 [测试设计](design/24-testing.md)。
+- 下列命令是可选入口，不是每次修改、提交或交付的必跑清单；本文件不规定测试目录或类型白名单，也不另设开发、审查或返修流程。可按任务目标和实际影响选择验证，通用方法见 [test-quality](.agents/skills/test-quality/SKILL.md)，基础设施和证据含义见 [测试与人工验收](design/24-testing.md)。
+- 验证报告区分实际执行、有效复用、失败和未验证；排队、运行中、零用例、采集完成或模型自述都不能冒充通过。环境或权限阻塞保留原始错误，不伪报完成。
 - `code/anywork/pubspec.lock` 是必须纳入 Git 的 canonical 应用依赖快照，不得加入 ignore；
   Flutter 直接依赖升级后必须同步提交重新解析的 lockfile。
-- 代码、构建、依赖或生成输入变更提交前，在本地执行与 CI 一致的检查清单（纯说明性变更按本节首条豁免；只需保证当前环境通过；
-  `PUB_HOSTED_URL` 及其镜像行为由 Flutter/Dart 自身处理，xtask 不改写已跟踪的
-  `pubspec.lock`）：
+- 常用入口（`PUB_HOSTED_URL` 及镜像行为由 Flutter/Dart 自身处理，xtask 不改写已跟踪的 `pubspec.lock`）：
 
   ```powershell
   cargo fmt --all --check
@@ -216,16 +206,16 @@ crate 职责、依赖方向与禁止依赖的唯一权威源是 [Crate 边界](d
   cargo xtask verify-gui
   ```
 
-- Linux 上运行使用外部 helper 模式的 Studio/Server 人工验收前，先执行
-  `cargo install --path code/pl-remote-helper --locked`，确保同一生产进程 worker 位于 PATH。
+- Linux 外部 helper 模式需要与源码匹配的生产 worker 位于 PATH，可用
+  `cargo install --path code/pl-remote-helper --locked` 安装或更新。
   桌面 xtask 构建将 worker 作为 Flutter bundle 资源分发，不嵌入 bridge；两种宿主均不使用裸 shell 后备路径。
 
 - 不默认启用 `--all-features`：`live-tests` 等 feature 依赖外部服务与有效
   API key，需要时以 `cargo run -p pl-studio-runtime --features live-tests --example model_observe -- <provider> <model> <task-file> <artifact-dir>` 等显式
   opt-in 执行，CI 与本地默认检查都不包含。
 - 真实模型和 GUI 任务使用人工观察入口；本地模拟验收记录执行结果和证据，不把模拟通过等同于真实供应商兼容。人工结论独立记录，默认为待评审。
-- CI（PR Quality Gate）运行 `pl-patch` 补丁语义专项、两库的确定性公开 API 集成测试与 Studio 历史保存、迁移及工作树/归档专项测试，并保留格式、静态分析、编译和 GUI 生成一致性检查，另执行 Conventional PR 标题、工作流静态检查及发布配置检查；GUI 人工验收与 live 模型观察不在 CI 中运行。GUI 行为改动交付前运行 `cargo xtask manual-gui`，核对截图、快照、日志和进程回收。
+- CI 的触发条件与作业以 [PR Quality Gate](.github/workflows/pr-quality.yml) 为准；它描述远端实际检查，不构成本地重复执行要求。GUI 人工观察与 live 模型观察是独立入口，模拟、单平台和真实供应商结果各有覆盖边界。
 - `cargo doc --workspace --all-features --no-deps` 为按需检查项，CI 不执行。
 
 - Flutter、Dart、GUI 和生成文件检查统一使用前文定义的项目命令入口；验收时结合 widget tree、窗口截图和日志判断结果。
-- 交付前运行 `git diff --check`，确认无意外生成文件、无范围外改动，并在总结中列出实际执行的测试、未执行项及原因。
+- `git diff --check` 可检查差异空白问题，不能代替内容、行为或权限范围的判断。

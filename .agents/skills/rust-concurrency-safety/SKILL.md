@@ -9,8 +9,8 @@ description: 设计、修改或审查 Rust 锁、原子操作、异步任务、�
 
 ## 按需阅读
 
-- 锁、等待、通知、回调与关闭：完整阅读[锁与生命周期](references/locking-and-lifecycle.md)。
-- 原子、内存顺序、无锁状态、异步执行、超时与取消：完整阅读[原子与异步](references/atomics-and-async.md)。
+- 锁、等待、通知、回调与关闭：参考[锁与生命周期](references/locking-and-lifecycle.md)。
+- 原子、内存顺序、无锁状态、异步执行、超时与取消：参考[原子与异步](references/atomics-and-async.md)。
 - `unsafe impl Send/Sync`、裸指针或 FFI 共享内存：同时使用 `rust-unsafe-safety`。
 
 优先考虑不共享、消息转移所有权、共享不可变值、保护明确不变量的锁，再考虑可独立证明的原子状态。不能用 `Arc`、更强的内存顺序或“更快的锁”代替同步与生命周期证明。
@@ -19,4 +19,5 @@ description: 设计、修改或审查 Rust 锁、原子操作、异步任务、�
 
 从发布者到观察者追踪完整同步链，再检查取消、错误和最终释放。明确等待如何结束、完成竞争如何裁决、关闭如何拒绝新工作并等待在途工作。构造具体交错，不以“可能有竞争”或“压力测试没失败”代替结论。
 
-按 `test-quality` 复用或增强关键行为证明。糊来帮的真实进程、stream、provider 与 GUI 生命周期采用[项目验证入口](../../../AGENTS.md)，模型或 fake 只证明其实际覆盖的规则。
+`test-quality` 提供行为证明的分析方法，[项目入口](../../../AGENTS.md) 提供可选工具。
+模型或 fake 只证明其实际覆盖的规则，不要求每次改动执行完整的生命周期场景。
