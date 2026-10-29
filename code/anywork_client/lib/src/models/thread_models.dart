@@ -10,7 +10,7 @@ import 'turn_models.dart';
 
 enum ThreadTextChannel { user, parentAgent, commentary, finalAnswer }
 
-class ThreadAttachmentView {
+final class ThreadAttachmentView {
   const ThreadAttachmentView({
     required this.id,
     required this.modality,
@@ -86,6 +86,20 @@ final class ThreadToolResultFieldView extends ThreadContentFieldView {
 
   @override
   Object get identityKey => (ThreadToolResultFieldView,);
+}
+
+final class ThreadPlanDocumentFieldView extends ThreadContentFieldView {
+  const ThreadPlanDocumentFieldView();
+
+  @override
+  Object get identityKey => (ThreadPlanDocumentFieldView,);
+}
+
+final class ThreadPlanFeedbackFieldView extends ThreadContentFieldView {
+  const ThreadPlanFeedbackFieldView();
+
+  @override
+  Object get identityKey => (ThreadPlanFeedbackFieldView,);
 }
 
 /// 工具一次执行附加的开放产物正文：只在 canonical 映射与详情查看边界编码。
@@ -285,7 +299,7 @@ final class ThreadSkillItemStateView extends ThreadItemStateView {
 
 enum SkillResourceBaseKind { directory, url, opaque }
 
-class SkillResourceBaseView {
+final class SkillResourceBaseView {
   const SkillResourceBaseView(this.kind, this.value);
   final SkillResourceBaseKind kind;
   final String value;
@@ -293,7 +307,7 @@ class SkillResourceBaseView {
 
 enum SkillActivationCauseKind { tool, userGesture }
 
-class SkillActivationCauseView {
+final class SkillActivationCauseView {
   const SkillActivationCauseView(this.kind, this.id);
   final SkillActivationCauseKind kind;
   final String id;
@@ -339,13 +353,13 @@ final class PlanConfirmationReceiptView {
 
 enum ThreadToolFailureKindView { execution, timedOut, budgetLimited }
 
-class ThreadToolFailureView {
+final class ThreadToolFailureView {
   const ThreadToolFailureView({required this.kind, required this.message});
   final ThreadToolFailureKindView kind;
   final String message;
 }
 
-class ThreadAgentIdentityView {
+final class ThreadAgentIdentityView {
   const ThreadAgentIdentityView({
     required this.id,
     required this.path,
@@ -428,7 +442,7 @@ final class CompletedThreadInferenceView extends ThreadInferenceLifecycleView {
   final ThreadInferenceUsageView usage;
 }
 
-class ThreadInferenceUsageView {
+final class ThreadInferenceUsageView {
   const ThreadInferenceUsageView({
     required this.promptTokens,
     required this.completionTokens,
@@ -594,7 +608,6 @@ class WorkspaceUiState {
     this.syncState = AgentWorkspaceSyncState.loading,
     this.loadError,
     this.subscriptionGeneration = 0,
-    this.activityDetail = const ThreadActivityDetailState(),
   });
 
   final ComposerThreadState composer;
@@ -602,15 +615,11 @@ class WorkspaceUiState {
   final String? loadError;
   final int subscriptionGeneration;
 
-  /// 按活动身份缓存的完整详情读取状态；身份变化即失效。
-  final ThreadActivityDetailState activityDetail;
-
   WorkspaceUiState copyWith({
     ComposerThreadState? composer,
     AgentWorkspaceSyncState? syncState,
     String? loadError,
     int? subscriptionGeneration,
-    ThreadActivityDetailState? activityDetail,
   }) {
     return WorkspaceUiState(
       composer: composer ?? this.composer,
@@ -622,56 +631,6 @@ class WorkspaceUiState {
           : loadError ?? this.loadError,
       subscriptionGeneration:
           subscriptionGeneration ?? this.subscriptionGeneration,
-      activityDetail: activityDetail ?? this.activityDetail,
-    );
-  }
-}
-
-/// 固定活动条展开详情的一次按需读取状态。
-///
-/// 以活动身份 + 版本为键：同一身份内版本前进即视为需要刷新；身份变化即失效。
-/// 读取在途时只保留一个请求（调用方合并），旧身份的迟到结果不得覆盖新身份。
-class ThreadActivityDetailState {
-  const ThreadActivityDetailState({
-    this.identity,
-    this.revision = 0,
-    this.loading = false,
-    this.detail,
-    this.error,
-  });
-
-  final String? identity;
-  final int revision;
-  final bool loading;
-  final ThreadActivityDetail? detail;
-  final String? error;
-
-  bool matches(String identity) => this.identity == identity;
-
-  /// 当前缓存是否已对同一身份的最新版本有效（无需重读）。
-  bool covers(String identity, int revision) {
-    if (identity.isEmpty || this.identity != identity) return false;
-    if (loading) return true;
-    return (detail != null || error != null) && this.revision >= revision;
-  }
-
-  ThreadActivityDetailState copyWith({
-    Object? identity = _workspaceUnset,
-    int? revision,
-    bool? loading,
-    Object? detail = _workspaceUnset,
-    Object? error = _workspaceUnset,
-  }) {
-    return ThreadActivityDetailState(
-      identity: identical(identity, _workspaceUnset)
-          ? this.identity
-          : identity as String?,
-      revision: revision ?? this.revision,
-      loading: loading ?? this.loading,
-      detail: identical(detail, _workspaceUnset)
-          ? this.detail
-          : detail as ThreadActivityDetail?,
-      error: identical(error, _workspaceUnset) ? this.error : error as String?,
     );
   }
 }

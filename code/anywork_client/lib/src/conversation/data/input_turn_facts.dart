@@ -14,10 +14,12 @@ final class InputTurnFact {
   });
   final String threadId;
   final String inputId;
-  final String itemId;
+  final String? itemId;
   final String? turnId;
   final StudioTurnStatus status;
-  final bool saved;
+
+  /// Null means the completion stream did not establish durability.
+  final bool? saved;
 }
 
 abstract interface class InputTurnFacts {

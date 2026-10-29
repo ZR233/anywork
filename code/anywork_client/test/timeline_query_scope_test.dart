@@ -1,900 +1,448 @@
 import 'dart:async';
 
+import 'package:anywork_client/src/conversation/data/conversation_read_scope.dart';
 import 'package:anywork_client/studio_client.dart';
 import 'package:test/test.dart';
 
 import 'support/timeline_transport.dart';
 
 void main() {
-  test('page/detail validation rejects invalid arguments before transport admission', () async {
-    final fixture = ConversationFixture();
-    final feed = await fixture.open();
-    final scope = fixture.session().content.openScope(generation: 1)!;
-    for (final limit in [0, 101, -1]) {
-      await expectLater(
-        scope.page(limit: limit),
-        throwsA(isA<StudioFailure>()),
-      );
-    }
-    for (final bytes in [3, 262145]) {
-      await expectLater(
-        scope.readDetail(
-          itemId: 'item',
-          query: ConversationDetailQuery(
-            field: const ThreadTextFieldView(),
-            revision: 1,
-            maxBytes: bytes,
-          ),
-        ),
-        throwsA(isA<StudioFailure>()),
-      );
-    }
-    expect(feed.pageRequests, isEmpty);
-    expect(feed.detailRequests, isEmpty);
-    await scope.page();
-    expect(feed.pageRequests.single.limit, 32);
-    await scope.close();
-    await fixture.close();
+  late TestConversationTransport transport;
+  late ResourceBudget budget;
+  late ConversationReadScope scope;
+  setUp(() {
+    transport = TestConversationTransport();
+    budget = ResourceBudget();
+    scope = ConversationReadScope(
+      threadId: 'thread',
+      timelineEpoch: 'epoch',
+      generation: 7,
+      transport: transport,
+      budget: budget,
+    );
   });
 
-  test('opaque cursor and detail continuation retain field/revision and exact UTF-8', () async {
-    final fixture = ConversationFixture();
-    final feed = await fixture.open();
-    final scope = fixture.session().content.openScope(generation: 1)!;
-    feed.onPage = (before, limit) async => ConversationPage(
-      items: [timelineItem(1, id: 'older', ordinal: 0)],
-      before: 'next',
-      hasOlder: true,
-    );
-    final page = await scope.page(before: 'cursor', limit: 7);
-    expect(feed.pageRequests.single, (before: 'cursor', limit: 7));
-    expect(page.before, 'next');
-    expect(page.hasOlder, isTrue);
-    feed.onDetail = (item, query) async => ConversationDetailChunk(
-      itemId: item,
-      field: query.field,
-      revision: query.revision,
-      text: query.continuation == null ? '中' : '文\n',
-      totalBytes: 7,
-      continuation: query.continuation == null ? 'opaque' : null,
-    );
-    final first = await scope.readDetail(
-      itemId: 'item',
-      query: const ConversationDetailQuery(
-        field: ThreadTextFieldView(),
-        revision: 1,
-        maxBytes: 4,
+  test('invalid page and detail arguments never reach transport', () async {
+    var calls = 0;
+    transport.onPage = (_, __, ___) {
+      calls++;
+      throw StateError('unexpected');
+    };
+    transport.onDetail = (_, __, ___) {
+      calls++;
+      throw StateError('unexpected');
+    };
+    await expectLater(scope.page(limit: 0), throwsArgumentError);
+    await expectLater(scope.page(limit: 101), throwsArgumentError);
+    await expectLater(
+      scope.readDetail(
+        itemId: 'item',
+        query: const ConversationDetailQuery(
+          timelineEpoch: 'wrong',
+          field: ThreadTextFieldView(),
+        ),
       ),
-    );
-    final second = await scope.readDetail(
-      itemId: 'item',
-      query: ConversationDetailQuery(
-        field: first.field,
-        revision: first.revision,
-        maxBytes: 4,
-        continuation: first.continuation,
-      ),
-    );
-    expect(first.text + second.text, '中文\n');
-    expect(second.isLast, isTrue);
-    feed.onDetail = (item, query) async => ConversationDetailChunk(
-      itemId: item,
-      field: query.field,
-      revision: 2,
-      text: 'bad',
-      totalBytes: 3,
-      continuation: null,
+      throwsA(isA<ConversationContinuityError>()),
     );
     await expectLater(
       scope.readDetail(
         itemId: 'item',
         query: const ConversationDetailQuery(
+          timelineEpoch: 'epoch',
           field: ThreadTextFieldView(),
-          revision: 1,
+          maxBytes: 3,
+        ),
+      ),
+      throwsArgumentError,
+    );
+    expect(calls, 0);
+    expect(transport.opens, isEmpty);
+    expect((await scope.close()).complete, isTrue);
+  });
+
+  test('empty detail chunk cannot claim a continuation', () async {
+    transport.onDetail = (thread, item, query) async => ConversationDetailChunk(
+      threadId: thread,
+      timelineEpoch: 'epoch',
+      itemId: item,
+      field: query.field,
+      text: '',
+      totalBytes: 1,
+      continuation: const ConversationQueryCursor('next'),
+    );
+    await expectLater(
+      scope.readDetail(
+        itemId: 'item',
+        query: const ConversationDetailQuery(
+          timelineEpoch: 'epoch',
+          field: ThreadTextFieldView(),
         ),
       ),
       throwsA(isA<ConversationContinuityError>()),
     );
-    await fixture.close();
+    expect((await scope.close()).complete, isTrue);
   });
 
-  for (final synchronousThrow in [false, true]) {
-    test(
-      'scope retirement rejects late results but joins their exact native futures (synchronousThrow=$synchronousThrow)',
-      () async {
-        final budget = ResourceBudget();
-        final fixture = ConversationFixture(budget: budget);
-        final feed = await fixture.open();
-        final scope = fixture.session().content.openScope(generation: 1)!;
-        final reply = Completer<ConversationPage>();
-        final failure = StateError('synchronous query failure');
-        late Future<CloseReport> scopeClosing;
-        var closed = false;
-        var admittedDuringCallback = -1;
-        var permitDuringCallback = false;
-        feed.onPage = (_, _) {
-          scopeClosing = scope.close().then((report) {
-            closed = true;
-            return report;
-          });
-          admittedDuringCallback = scope.pendingQueries;
-          permitDuringCallback = budget.usage.any(
-            (resource) => resource.owner.startsWith('timeline-page:'),
-          );
-          if (synchronousThrow) throw failure;
-          return reply.future;
-        };
-        final pending = scope.page();
-        final failed = expectLater(
-          pending,
-          // 回调先退役 scope 再抛错：迟到失败与迟到成功一样不进入新代次，
-          // 统一转 Stale；活跃 scope 的原始 typed 错误另由下方测试覆盖。
-          throwsA(isA<StaleConversationScope>()),
-        );
-        expect(
-          admittedDuringCallback,
-          1,
-          reason: 'The exact query is registered before transport can synchronously close',
-        );
-        expect(permitDuringCallback, isTrue);
-        expect(scope.isActive, isFalse);
-        if (!synchronousThrow) {
-          await Future<void>.value();
-          expect(closed, isFalse);
-          expect(scope.pendingQueries, 1);
-          expect(
-            (await scope.close(deadline: DateTime.now())).complete,
-            isFalse,
-          );
-          final closing = fixture.close(deadline: DateTime.now());
-          expect((await closing).complete, isFalse);
-          expect(
-            budget.usage.any(
-              (resource) => resource.owner.startsWith('timeline-page:'),
-            ),
-            isTrue,
-          );
-          reply.complete(
-            const ConversationPage(items: [], before: null, hasOlder: false),
-          );
-        }
-        await failed;
-        expect((await scopeClosing).complete, isTrue);
-        expect(closed, isTrue);
-        expect(
-          budget.usage.where(
-            (resource) => resource.owner.startsWith('timeline-page:'),
-          ),
-          isEmpty,
-        );
-        if (synchronousThrow) await fixture.close();
-        await feed.closeCompleted.future;
-        expect((await fixture.client.retryCleanup()).complete, isTrue);
-        expect(budget.usage, isEmpty);
-      },
-    );
-  }
-
-  for (final qualified in [false, true]) {
-    test(
-      'page tail interleaving merges reliable updates and does not resurrect Remove (qualified=$qualified)',
-      () async {
-        final fixture = ConversationFixture();
-        final feed = await fixture.open(
-          initial: baseline(
-            1,
-            items: [
-              timelineItem(1, id: 'old', ordinal: 0),
-              timelineItem(1, ordinal: 1),
-            ],
-            before: 'older',
-            hasOlder: true,
-          ),
-        );
-        final content = fixture.session().content;
-        final scope = content.openScope(
-          generation: 1,
-          coverage: qualified ? (await content.ready).pageCoverage : null,
-        )!;
-        final reply = Completer<ConversationPage>();
-        feed.onPage = (_, _) => reply.future;
-        final page = scope.page(before: 'older');
-        await feed.deliver(
-          ConversationUpdateEvent(
-            update: patch(
-              1,
-              2,
-              changes: [
-                const ConversationRemove('old'),
-                const ConversationUpdateItem(
-                  itemId: 'item',
-                  expectedRevision: 1,
-                  revision: 1,
-                  saved: true,
-                  lifecycle: ConversationLifecycle.streaming,
-                  fields: [],
-                ),
-              ],
-            ),
-          ),
-        );
-        reply.complete(
-          ConversationPage(
-            items: [
-              timelineItem(1, id: 'old', ordinal: 0),
-              timelineItem(1, ordinal: 1),
-            ],
-            before: 'earlier',
-            hasOlder: true,
-          ),
-        );
-        final result = await page;
-        expect(result.items.map((i) => i.id), ['item']);
-        expect(result.items.single.saved, isTrue);
-        expect(result.before, 'earlier');
-        await fixture.close();
-      },
-    );
-  }
-
   test(
-    'current tail Turn association overrides a late same-revision page header',
+    'page descriptors remain frozen and detail keeps the same field identity',
     () async {
-      final fixture = ConversationFixture();
-      final initial = timelineItem(1, ordinal: 1);
-      final feed = await fixture.open(initial: baseline(1, items: [initial]));
-      final scope = fixture.session().content.openScope(generation: 1)!;
-      final reply = Completer<ConversationPage>();
-      feed.onPage = (_, _) => reply.future;
-      final page = scope.page();
-      final changedHeader = ConversationItemHeader(
-        id: initial.id,
-        threadId: initial.header.threadId,
-        turnId: 'current-tail-turn',
-        ordinal: initial.header.ordinal,
-        createdAt: initial.header.createdAt,
-        updatedAt: DateTime.utc(2026, 2),
+      final source = [
+        const ConversationRawPayloadDescriptor(format: 'json', version: 1),
+      ];
+      final descriptor = ConversationRawDescriptor(
+        origin: ThreadRawItemOrigin.stored,
+        payloads: source,
+        notice: 'notice',
+        recordedAt: DateTime.utc(2026),
       );
-      await feed.deliver(
-        ConversationUpdateEvent(
-          update: ConversationPatch(
-            subscriptionId: 'sub',
-            from: 1,
-            to: 2,
-            changes: [
-              ConversationUpdateItem(
-                itemId: initial.id,
-                expectedRevision: initial.revision,
-                revision: initial.revision,
-                saved: initial.saved,
-                lifecycle: initial.lifecycle,
-                header: changedHeader,
-                fields: const [],
-              ),
-            ],
-            priority: ConversationPriority.coalesced,
+      final item = ConversationItem(
+        header: const ConversationItemHeader(
+          id: 'raw',
+          threadId: 'thread',
+          appendSeq: 1,
+        ),
+        source: const ConversationContentSource(),
+        descriptor: descriptor,
+        fields: const [
+          ConversationFieldPreview(
+            field: ThreadRawPayloadFieldView(0),
+            text: 'a',
+            totalBytes: 2,
           ),
+        ],
+      );
+      transport.onPage = (thread, _, __) async => ConversationPage(
+        threadId: thread,
+        timelineEpoch: 'epoch',
+        items: [item],
+        before: null,
+        hasOlder: false,
+      );
+      transport.onDetail = (thread, id, query) async => ConversationDetailChunk(
+        threadId: thread,
+        timelineEpoch: 'epoch',
+        itemId: id,
+        field: query.field,
+        text: 'ab',
+        totalBytes: 2,
+      );
+      final page = await scope.page();
+      source.clear();
+      final raw = page.items.single.descriptor as ConversationRawDescriptor;
+      expect(raw.payloads.single.format, 'json');
+      expect(() => raw.payloads.clear(), throwsUnsupportedError);
+      expect(() => page.items.clear(), throwsUnsupportedError);
+      expect(() => page.items.single.fields.clear(), throwsUnsupportedError);
+      final detail = await scope.readDetail(
+        itemId: 'raw',
+        query: const ConversationDetailQuery(
+          timelineEpoch: 'epoch',
+          field: ThreadRawPayloadFieldView(0),
         ),
       );
-      reply.complete(
-        ConversationPage(items: [initial], before: null, hasOlder: false),
-      );
-      final result = await page;
-      expect(result.items.single.header.turnId, 'current-tail-turn');
-      expect(result.items.single.header.updatedAt, DateTime.utc(2026, 2));
-      await fixture.close();
+      expect(detail.field, const ThreadRawPayloadFieldView(0));
+      expect(detail.text, 'ab');
+      expect((await scope.close()).complete, isTrue);
     },
   );
 
-  test('page continuity lost to Resync fails explicitly without manufacturing history', () async {
-    final fixture = ConversationFixture();
-    final feed = await fixture.open();
-    final scope = fixture.session().content.openScope(generation: 1)!;
-    final reply = Completer<ConversationPage>();
-    feed.onPage = (_, _) => reply.future;
-    final page = scope.page();
-    final failure = expectLater(
-      page,
-      throwsA(isA<ConversationContinuityError>()),
-    );
-    await feed.deliver(
-      ConversationUpdateEvent(
-        update: ConversationResync(
-          subscriptionId: 'sub',
-          reason: ConversationResyncReason.unavailable,
-          baseline: baseline(8),
-        ),
-      ),
-    );
-    reply.complete(
-      ConversationPage(items: [timelineItem(1)], before: null, hasOlder: false),
-    );
-    await failure;
-    await fixture.close();
-  });
-
-  test('page errors remain typed, repeated scope close is a true join and no new demand', () async {
-    final fixture = ConversationFixture();
-    final feed = await fixture.open();
-    final scope = fixture.session().content.openScope(generation: 1)!;
-    const failure = StudioFailure(
-      code: StudioFailureCode.busy,
-      message: 'history busy',
-      retryable: true,
-      correlationId: 'page',
-    );
-    feed.onPage = (_, _) => Future.error(failure);
-    await expectLater(scope.page(), throwsA(same(failure)));
-    expect(scope.pendingQueries, 0);
-    expect((await scope.close()).complete, isTrue);
-    expect((await scope.close()).complete, isTrue);
-    await expectLater(scope.page(), throwsA(isA<StaleConversationScope>()));
-    expect(fixture.transport.opens, hasLength(1));
-    await fixture.close();
-  });
-
-  test('close 失败时连接许可保持到显式重试', () async {
-    final fixture = ConversationFixture();
-    final feed = await fixture.open();
-    feed.closeFailure = StateError('native close failed');
-    final report = await fixture.close();
-    expect(report.complete, isFalse);
-    feed.closeFailure = null;
-    expect((await fixture.client.retryCleanup()).complete, isTrue);
-  });
-
-  test('native close 已返回但页查询仍在途时不提前 clean', () async {
-    final budget = ResourceBudget();
-    final fixture = ConversationFixture(budget: budget);
-    final feed = await fixture.open();
-    final scope = fixture.session().content.openScope(generation: 1)!;
-    final reply = Completer<ConversationPage>();
-    feed.onPage = (_, _) => reply.future;
-    final pending = scope.page();
-    expect(budget.used(ResourceKind.pendingOperation), 1);
-
-    final report = await fixture.close(
-      deadline: DateTime.now().add(const Duration(milliseconds: 40)),
-    );
-    // 连接自身的 close 已经返回（不是靠 native close 挂起来“等”）。
-    expect(feed.closeCalls, 1);
-    expect(report.complete, isFalse, reason: '真实受理的页查询仍持有许可');
-    expect(budget.used(ResourceKind.pendingOperation), 1);
-    expect(budget.used(ResourceKind.chatHandle), 1);
-
-    reply.complete(
-      const ConversationPage(items: [], before: null, hasOlder: false),
-    );
-    await expectLater(pending, throwsA(isA<StaleConversationScope>()));
-    // 查询真实收束后，清理才能归还许可并移除观察。
-    expect((await fixture.client.retryCleanup()).complete, isTrue);
-    expect(budget.used(ResourceKind.pendingOperation), 0);
-    expect(budget.used(ResourceKind.chatHandle), 0);
-  });
-
-  for (final detail in [false, true]) {
-    for (final lateFailure in [false, true]) {
-      test(
-        'synchronous ${detail ? 'detail' : 'page'} close keeps the admitted history query joined'
-        '${lateFailure ? ' (late failure)' : ''}',
-        () async {
-          final budget = ResourceBudget();
-          final fixture = ConversationFixture(budget: budget);
-          final feed = await fixture.open();
-          final scope = fixture.session().content.openScope(generation: 1)!;
-          final pageReply = Completer<ConversationPage>();
-          final detailReply = Completer<ConversationDetailChunk>();
-          Future<CloseReport>? closing;
-          feed.onQuery = () {
-            closing = scope.close(deadline: DateTime.now());
-          };
-          if (detail) {
-            feed.onDetail = (_, _) => detailReply.future;
-          } else {
-            feed.onPage = (_, _) => pageReply.future;
-          }
-          final pending = detail
-              ? scope.readDetail(
-                  itemId: 'item',
-                  query: const ConversationDetailQuery(
-                    field: ThreadTextFieldView(),
-                    revision: 1,
-                  ),
-                )
-              : scope.page();
-          final rejected = expectLater(
-            pending,
-            throwsA(isA<StaleConversationScope>()),
+  test(
+    'cold scope retains one reader across page and detail after feed closes',
+    () async {
+      final fixture = ConversationFixture();
+      final feed = await fixture.open();
+      final query = fixture.session().content.openScope(
+        timelineEpoch: 'epoch',
+        generation: 42,
+      );
+      fixture.transport.onPage = (thread, _, __) async => ConversationPage(
+        threadId: thread,
+        timelineEpoch: 'epoch',
+        items: [],
+        before: null,
+        hasOlder: false,
+      );
+      fixture.transport.onDetail = (thread, item, q) async =>
+          ConversationDetailChunk(
+            threadId: thread,
+            timelineEpoch: 'epoch',
+            itemId: item,
+            field: q.field,
+            text: 'hello',
+            totalBytes: 5,
           );
-          expect((await closing!).complete, isFalse);
-          expect(budget.used(ResourceKind.pendingOperation), 1);
-          if (detail) {
-            if (lateFailure) {
-              detailReply.completeError(StateError('late native failure'));
-            } else {
-              detailReply.complete(
-                const ConversationDetailChunk(
-                  itemId: 'item',
-                  field: ThreadTextFieldView(),
-                  revision: 1,
-                  text: 'original history',
-                  totalBytes: 16,
-                  continuation: null,
-                ),
-              );
-            }
-          } else {
-            if (lateFailure) {
-              pageReply.completeError(StateError('late native failure'));
-            } else {
-              pageReply.complete(
-                ConversationPage(
-                  items: [timelineItem(1)],
-                  before: null,
-                  hasOlder: false,
-                ),
-              );
-            }
-          }
-          await rejected;
-          expect((await scope.close()).complete, isTrue);
-          expect(budget.used(ResourceKind.pendingOperation), 0);
-          await fixture.close();
-        },
+      await query.page();
+      expect(fixture.transport.readers, hasLength(1));
+      final reader = fixture.transport.readers.single;
+      fixture.repository.setVisibleThread(null);
+      await feed.closeCompleted.future;
+      expect(reader.requested, isFalse);
+      final detail = await query.readDetail(
+        itemId: 'item',
+        query: const ConversationDetailQuery(
+          timelineEpoch: 'epoch',
+          field: ThreadTextFieldView(),
+        ),
       );
-    }
-  }
+      expect(detail.text, 'hello');
+      expect(fixture.transport.readers.single, same(reader));
+      expect((await query.close()).complete, isTrue);
+      expect(reader.closeCalls, 1);
+      expect((await fixture.close()).complete, isTrue);
+    },
+  );
 
-  test('scope 真实 join 干净后解除连接归属，不积压到整条连接关闭', () async {
-    final budget = ResourceBudget();
-    final fixture = ConversationFixture(budget: budget);
-    final feed = await fixture.open();
-
-    // 同连接多代次：每个 scope 的查询都真实收束并归还许可。
-    for (var round = 0; round < 3; round++) {
-      final scope = fixture.session().content.openScope(generation: round + 1)!;
-      final reply = Completer<ConversationPage>();
-      feed.onPage = (_, _) => reply.future;
-      final page = scope.page();
-      reply.complete(
-        const ConversationPage(items: [], before: null, hasOlder: false),
+  test(
+    'retire while opening retains and closes the late reader before join',
+    () async {
+      final opened = Completer<ConversationHistoryReader>();
+      transport.onOpenReader = (_) => opened.future;
+      final query = scope.page();
+      final rejected = expectLater(
+        query,
+        throwsA(isA<StaleConversationScope>()),
       );
-      await expectLater(page, completes);
+      final first = await scope.close(deadline: DateTime.now());
+      expect(first.complete, isFalse);
+      final reader = TestHistoryReader(transport, 'thread')
+        ..closeGate = Completer<void>();
+      opened.complete(reader);
+      await rejected;
+      final second = await scope.close(deadline: DateTime.now());
+      expect(second.complete, isFalse);
+      expect(reader.requested, isTrue);
+      expect(reader.closeCalls, 1);
+      expect(budget.used(ResourceKind.pendingOperation), 1);
+      reader.closeGate!.complete();
+      expect((await scope.close()).complete, isTrue);
+      expect(reader.closeCalls, 1);
+      expect(budget.used(ResourceKind.pendingOperation), 0);
+    },
+  );
+
+  test('reader close failure retains ownership until explicit retry', () async {
+    transport.onPage = (thread, _, __) async => ConversationPage(
+      threadId: thread,
+      timelineEpoch: 'epoch',
+      items: [],
+      before: null,
+      hasOlder: false,
+    );
+    await scope.page();
+    final reader = transport.readers.single
+      ..closeFailure = StateError('native close failed');
+    expect((await scope.close()).complete, isFalse);
+    expect(budget.used(ResourceKind.pendingOperation), 1);
+    reader.closeFailure = null;
+    expect((await scope.close()).complete, isTrue);
+    expect(reader.closeCalls, 2);
+    expect(budget.used(ResourceKind.pendingOperation), 0);
+  });
+
+  test(
+    'reader identity mismatch is rejected and the same handle is closed',
+    () async {
+      final reader = TestHistoryReader(
+        transport,
+        'thread',
+        timelineEpoch: 'other',
+      );
+      transport.onOpenReader = (_) async => reader;
+      await expectLater(
+        scope.page(),
+        throwsA(isA<ConversationContinuityError>()),
+      );
+      expect(reader.requested, isTrue);
+      expect((await scope.close()).complete, isTrue);
+      expect(reader.closeCalls, 1);
+      expect(budget.used(ResourceKind.pendingOperation), 0);
+    },
+  );
+
+  test(
+    'opaque page cursor and detail continuation preserve identity and UTF-8',
+    () async {
+      const before = ConversationQueryCursor('tlp2.opaque');
+      const continuation = ConversationQueryCursor('tld2.opaque');
+      transport.onPage = (thread, cursor, limit) async {
+        expect((thread, cursor, limit), ('thread', before, 32));
+        return ConversationPage(
+          threadId: thread,
+          timelineEpoch: 'epoch',
+          items: [timelineItem(3, body: '你好')],
+          before: null,
+          hasOlder: false,
+        );
+      };
+      transport.onDetail = (thread, item, query) async {
+        expect(
+          (thread, item, query.timelineEpoch, query.continuation),
+          ('thread', 'item', 'epoch', continuation),
+        );
+        return ConversationDetailChunk(
+          threadId: thread,
+          timelineEpoch: 'epoch',
+          itemId: item,
+          field: query.field,
+          text: '你好',
+          totalBytes: 6,
+        );
+      };
+      final page = await scope.page(before: before);
+      expect(
+        page.items.single.fieldFor(const ThreadTextFieldView())!.text,
+        '你好',
+      );
+      final detail = await scope.readDetail(
+        itemId: 'item',
+        query: const ConversationDetailQuery(
+          timelineEpoch: 'epoch',
+          field: ThreadTextFieldView(),
+          continuation: continuation,
+        ),
+      );
+      expect(detail.text, '你好');
+      expect(detail.isLast, isTrue);
+      expect(transport.opens, isEmpty);
+      expect((await scope.close()).complete, isTrue);
+    },
+  );
+
+  test(
+    'retired scope rejects late reply and retains permit until actual join',
+    () async {
+      final native = Completer<ConversationPage>();
+      transport.onPage = (_, __, ___) => native.future;
+      final result = scope.page();
+      final rejected = expectLater(
+        result,
+        throwsA(isA<StaleConversationScope>()),
+      );
+      expect(scope.pendingQueries, 1);
+      expect(budget.used(ResourceKind.pendingOperation), 2);
+      final report = await scope.close(deadline: DateTime.now());
+      expect(report.complete, isFalse);
+      expect(
+        budget.used(ResourceKind.pendingOperation),
+        greaterThanOrEqualTo(1),
+      );
+      native.complete(
+        ConversationPage(
+          threadId: 'thread',
+          timelineEpoch: 'epoch',
+          items: [],
+          before: null,
+          hasOlder: false,
+        ),
+      );
+      await rejected;
       expect((await scope.close()).complete, isTrue);
       expect(budget.used(ResourceKind.pendingOperation), 0);
-    }
-    // 干净 join 之后既没有未解决项，也不影响后续关闭。
-    expect(
-      (await fixture.session().content.joinRetired(
-        deadline: DateTime.now().add(const Duration(milliseconds: 20)),
-      )).unresolved,
-      isEmpty,
-    );
-    expect((await fixture.close()).complete, isTrue);
-    expect(budget.used(ResourceKind.chatHandle), 0);
-  });
+      expect(transport.opens, isEmpty);
+    },
+  );
 
-  test('qualified pages cannot skip query-before identities but may return them authoritatively', () async {
-    for (final includeKnown in [false, true]) {
-      final fixture = ConversationFixture();
-      final feed = await fixture.open(
-        initial: baseline(
-          1,
-          items: [
-            timelineItem(1, id: 'a', ordinal: 5),
-            timelineItem(1, id: 'b', ordinal: 6),
-          ],
-          before: 'older',
-          hasOlder: true,
-        ),
-      );
-      final content = fixture.session().content;
-      final coverage = (await content.ready).pageCoverage;
-      final scope = content.openScope(generation: 1, coverage: coverage)!;
-      await feed.deliver(
-        ConversationUpdateEvent(
-          update: patch(
-            1,
-            2,
-            changes: [ConversationAdd(timelineItem(1, id: 'x', ordinal: 4))],
-          ),
-        ),
-      );
-      final response = ConversationPage(
-        items: [
-          timelineItem(1, id: 'y', ordinal: 3),
-          if (includeKnown) timelineItem(2, id: 'x', ordinal: 4),
-        ],
-        before: null,
-        hasOlder: false,
-      );
-      Future<ConversationPage> readWithUpdate(
-        ConversationPage response,
-        int from,
-      ) async {
-        final gate = Completer<ConversationPage>();
-        feed.onPage = (_, _) => gate.future;
-        final pending = scope.page(before: 'older');
-        await feed.deliver(
-          ConversationUpdateEvent(
-            update: patch(
-              from,
-              from + 1,
-              changes: [
-                const ConversationUpdateItem(
-                  itemId: 'x',
-                  expectedRevision: 1,
-                  revision: 1,
-                  saved: true,
-                  lifecycle: ConversationLifecycle.streaming,
-                  fields: [],
-                ),
-              ],
-            ),
-          ),
-        );
-        gate.complete(response);
-        return pending;
-      }
-
-      if (includeKnown) {
-        final page = await readWithUpdate(response, 2);
-        expect(page.items.map((item) => item.id), ['y', 'x']);
-        expect(page.items.last.revision, 2);
-        expect(scope.pageCoverage, isNot(same(coverage)));
-      } else {
-        await expectLater(
-          readWithUpdate(response, 2),
-          throwsA(isA<ConversationContinuityError>()),
-        );
-        expect(scope.pageCoverage, same(coverage));
-        await expectLater(
-          readWithUpdate(
-            const ConversationPage(items: [], before: null, hasOlder: false),
-            3,
-          ),
-          throwsA(isA<ConversationContinuityError>()),
-        );
-        expect(scope.pageCoverage, same(coverage));
-        expect(
-          scope.isActive,
-          isTrue,
-          reason: 'A continuity error must not refresh or retire before its caller sees it',
-        );
-      }
-      expect(fixture.transport.opens, hasLength(1));
-      await fixture.close();
-    }
-  });
-
-  test('coverage rejects unknown overlap, preserves removed boundaries and accepts proved overlap', () async {
-    final fixture = ConversationFixture();
-    final a = timelineItem(1, id: 'a', ordinal: 1);
-    final b = timelineItem(1, id: 'b', ordinal: 3);
-    final feed = await fixture.open(
-      initial: baseline(1, items: [a, b], before: 'older', hasOlder: true),
-    );
-    final content = fixture.session().content;
-    final coverage = (await content.ready).pageCoverage;
-    final scope = content.openScope(generation: 1, coverage: coverage)!;
-    await feed.deliver(
-      ConversationUpdateEvent(
-        update: patch(
-          1,
-          2,
-          changes: [
-            ConversationAdd(timelineItem(1, id: 'x', ordinal: 2)),
-            const ConversationRemove('a'),
-          ],
-        ),
-      ),
-    );
-    for (final unknown in [
-      timelineItem(1, id: 'unknown', ordinal: 2),
-      timelineItem(1, id: 'z', ordinal: 1),
-    ]) {
-      feed.onPage = (_, _) async =>
-          ConversationPage(items: [unknown], before: null, hasOlder: false);
-      await expectLater(
-        scope.page(before: 'older'),
-        throwsA(isA<ConversationContinuityError>()),
-      );
-      expect(scope.pageCoverage, same(coverage));
-    }
-    feed.onPage = (_, _) async => ConversationPage(
-      items: [
-        timelineItem(1, id: 'older', ordinal: 0),
-        timelineItem(1, id: 'x', ordinal: 2),
-      ],
+  test('query errors propagate and epoch or continuation mismatch fails explicitly', () async {
+    final failure = StateError('native failure');
+    transport.onPage = (_, __, ___) => Future.error(failure);
+    await expectLater(scope.page(), throwsA(same(failure)));
+    transport.onPage = (_, __, ___) async => ConversationPage(
+      threadId: 'thread',
+      timelineEpoch: 'new',
+      items: [],
       before: null,
       hasOlder: false,
     );
     await expectLater(
-      scope.page(before: 'older'),
+      scope.page(),
       throwsA(isA<ConversationContinuityError>()),
     );
-    expect(
-      scope.pageCoverage,
-      same(coverage),
-      reason: 'Global knowledge of x is not membership in the frozen coverage',
+    const token = ConversationQueryCursor('same');
+    transport.onDetail = (thread, item, query) async => ConversationDetailChunk(
+      threadId: thread,
+      timelineEpoch: 'epoch',
+      itemId: item,
+      field: query.field,
+      text: 'a',
+      totalBytes: 1,
+      continuation: token,
     );
-    feed.onPage = (_, _) async => ConversationPage(
-      items: [
-        timelineItem(1, id: 'older', ordinal: 0),
-        a,
-        b,
-      ],
-      before: 'earlier',
-      hasOlder: true,
+    await expectLater(
+      scope.readDetail(
+        itemId: 'item',
+        query: const ConversationDetailQuery(
+          timelineEpoch: 'epoch',
+          field: ThreadTextFieldView(),
+          continuation: token,
+        ),
+      ),
+      throwsA(isA<ConversationContinuityError>()),
     );
-    final page = await scope.page(before: 'older');
-    expect(page.items.map((item) => item.id), ['older', 'b']);
-    expect(scope.pageCoverage, isNot(same(coverage)));
-    final extended = scope.pageCoverage;
-    feed.onPage = (_, _) async => ConversationPage(
-      items: [
-        timelineItem(1, id: 'older', ordinal: 0),
-        b,
-      ],
-      before: null,
-      hasOlder: false,
-    );
-    expect((await scope.page(before: 'earlier')).items.map((item) => item.id), [
-      'older',
-      'b',
-    ]);
-    expect(
-      scope.pageCoverage,
-      isNot(same(extended)),
-      reason:
-          'A page-delivered identity remains provable in the extended coverage',
-    );
-    await fixture.close();
+    expect((await scope.close()).complete, isTrue);
   });
 
-  for (final reentered in [false, true]) {
-    test(
-      'qualified EOF reconciles a proved concurrent earlier Add without losing its frontier (reentered=$reentered)',
-      () async {
-        final fixture = ConversationFixture();
-        final feed = await fixture.open(
-          initial: baseline(
-            1,
-            items: [timelineItem(1, id: 'a', ordinal: 5)],
-            before: 'older',
-            hasOlder: true,
-          ),
-        );
-        final content = fixture.session().content;
-        final original = (await content.ready).pageCoverage;
-        final scope = content.openScope(generation: 1, coverage: original)!;
-        if (reentered) {
-          await feed.deliver(
-            ConversationUpdateEvent(
-              update: patch(
-                1,
-                2,
-                changes: [
-                  ConversationAdd(
-                    timelineItem(1, id: 'concurrent', ordinal: 4),
-                  ),
-                ],
+  test(
+    'a pending independent page does not block feed delivery or lose its join',
+    () async {
+      final fixture = ConversationFixture();
+      final feed = await fixture.open();
+      final session = fixture.session();
+      final pending = Completer<ConversationPage>();
+      fixture.transport.onPage = (_, __, ___) => pending.future;
+      final query = session.content.openScope(
+        timelineEpoch: 'epoch',
+        generation: 9,
+      );
+      final reply = query.page();
+      final lateReply = expectLater(
+        reply,
+        throwsA(isA<StaleConversationScope>()),
+      );
+      await feed.deliver(
+        ConversationStateEvent(
+          frame: ThreadSnapshotFrame(
+            workspace: ThreadWorkspace(
+              thread: StudioThread(
+                id: 'thread',
+                projectId: 'project',
+                title: 'Thread',
+                mode: ThreadModeId.simple,
+                delegationMode: DelegationMode.profile,
+                delegationPreference: DelegationPreference.balanced,
+                updatedAt: DateTime.utc(2026),
+                workspacePath: '/project',
+              ),
+              revision: 1,
+              interactions: const [],
+              runtime: const ThreadRuntimeView(
+                modelId: 'model',
+                contextTokens: 0,
+                contextWindow: 1,
+                totalTokens: 0,
+                costLabel: '',
+                activeSkills: [],
+                activeMcpServers: [],
+                activeLspServers: [],
               ),
             ),
-          );
-        }
-        final reply = Completer<ConversationPage>();
-        feed.onPage = (_, _) => reply.future;
-        final pending = scope.page(before: 'older');
-        await feed.deliver(
-          ConversationUpdateEvent(
-            update: patch(
-              reentered ? 2 : 1,
-              reentered ? 3 : 2,
-              changes: [
-                if (reentered) const ConversationRemove('concurrent'),
-                ConversationAdd(
-                  timelineItem(reentered ? 2 : 1, id: 'concurrent', ordinal: 4),
-                ),
-              ],
-            ),
           ),
-        );
-        reply.complete(
-          const ConversationPage(items: [], before: null, hasOlder: false),
-        );
-        final result = await pending;
-        expect(result.items.map((item) => item.id), ['concurrent']);
-        expect(result.items.single.revision, reentered ? 2 : 1);
-        expect(result.hasOlder, isFalse);
-        expect(scope.pageCoverage, isNot(same(original)));
-        await fixture.close();
-      },
-    );
-  }
-
-  test('forgotten identity count or bytes remain uncertain rather than proving empty history', () async {
-    for (final identifierBytes in [0, 230000]) {
-      final fixture = ConversationFixture();
-      final feed = await fixture.open(
-        initial: baseline(
-          1,
-          items: [
-            timelineItem(1, id: 'a', ordinal: 200),
-            timelineItem(1, id: 'b', ordinal: 201),
-          ],
-          before: 'older',
-          hasOlder: true,
         ),
       );
-      final content = fixture.session().content;
-      final coverage = (await content.ready).pageCoverage;
-      final scope = content.openScope(generation: 1, coverage: coverage)!;
-      final count = identifierBytes == 0 ? 101 : 40;
-      final prefix = 'q' * identifierBytes;
-      var version = 1;
-      for (var index = 0; index < count; index++) {
-        await feed.deliver(
-          ConversationUpdateEvent(
-            update: patch(
-              version,
-              ++version,
-              changes: [
-                ConversationAdd(
-                  timelineItem(1, id: '$prefix-$index', ordinal: index + 1),
-                ),
-              ],
-            ),
-          ),
-        );
-      }
-      for (var index = 0; index < count; index++) {
-        await feed.deliver(
-          ConversationUpdateEvent(
-            update: patch(
-              version,
-              ++version,
-              changes: [ConversationRemove('$prefix-$index')],
-            ),
-          ),
-        );
-      }
-      feed.onPage = (_, _) async => ConversationPage(
-        items: [timelineItem(1, id: 'older', ordinal: 0)],
-        before: null,
-        hasOlder: false,
-      );
-      await expectLater(
-        scope.page(before: 'older'),
-        throwsA(isA<ConversationContinuityError>()),
-      );
-      expect(scope.pageCoverage, same(coverage));
-      await fixture.close();
-    }
-  });
-
-  test('coverage belongs to its issuer, attempt and baseline epoch without opening hidden feeds', () async {
-    final fixture = ConversationFixture();
-    final feed = await fixture.open(
-      initial: baseline(1, before: 'older', hasOlder: true),
-    );
-    final content = fixture.session().content;
-    final original = (await content.ready).pageCoverage;
-    final other = ConversationFixture();
-    await other.open(initial: baseline(1, before: 'older', hasOlder: true));
-    final foreign = (await other.session().content.ready).pageCoverage;
-    expect(
-      () => content.openScope(generation: 1, coverage: foreign),
-      throwsA(isA<ConversationContinuityError>()),
-    );
-    final independent = content.openScope(generation: 1)!;
-    expect(independent.pageCoverage, isNull);
-    await independent.close();
-    await feed.deliver(
-      ConversationUpdateEvent(
-        update: ConversationResync(
-          subscriptionId: 'sub',
-          reason: ConversationResyncReason.unavailable,
-          baseline: baseline(2, before: 'older', hasOlder: true),
+      expect(feed.acknowledgements, [1, 2]);
+      final first = await query.close(deadline: DateTime.now());
+      expect(first.complete, isFalse);
+      pending.complete(
+        ConversationPage(
+          threadId: 'thread',
+          timelineEpoch: 'epoch',
+          items: [],
+          before: null,
+          hasOlder: false,
         ),
-      ),
-    );
-    expect(
-      () => content.openScope(generation: 1, coverage: original),
-      throwsA(isA<ConversationContinuityError>()),
-    );
-    final resynced = (await content.ready).pageCoverage;
-    content.refresh();
-    await fixture.open(
-      index: 1,
-      initial: baseline(
-        3,
-        subscriptionId: 'new-sub',
-        before: 'older',
-        hasOlder: true,
-      ),
-    );
-    expect(
-      () => content.openScope(generation: 1, coverage: resynced),
-      throwsA(isA<ConversationContinuityError>()),
-    );
-    expect(fixture.transport.opens, hasLength(2));
-    await fixture.close();
-    expect(content.openScope(generation: 1, coverage: original), isNull);
-    await other.close();
-  });
-
-  test('qualified concurrent pages commit only their captured ticket and retirement still joins native work', () async {
-    final fixture = ConversationFixture();
-    final feed = await fixture.open(
-      initial: baseline(
-        1,
-        items: [timelineItem(1, id: 'a', ordinal: 5)],
-        before: 'older',
-        hasOlder: true,
-      ),
-    );
-    final content = fixture.session().content;
-    final scope = content.openScope(
-      generation: 1,
-      coverage: (await content.ready).pageCoverage,
-    )!;
-    final replies = List.generate(3, (_) => Completer<ConversationPage>());
-    var calls = 0;
-    feed.onPage = (_, _) => replies[calls++].future;
-    final first = scope.page(before: 'older');
-    final failedFirst = expectLater(
-      first,
-      throwsA(isA<ConversationContinuityError>()),
-    );
-    final second = scope.page(before: 'older');
-    replies[1].complete(
-      ConversationPage(
-        items: [timelineItem(1, id: 'b', ordinal: 4)],
-        before: 'earlier',
-        hasOlder: true,
-      ),
-    );
-    await second;
-    final committed = scope.pageCoverage;
-    replies[0].complete(
-      ConversationPage(
-        items: [timelineItem(1, id: 'c', ordinal: 3)],
-        before: null,
-        hasOlder: false,
-      ),
-    );
-    await failedFirst;
-    expect(scope.pageCoverage, same(committed));
-    await expectLater(
-      scope.page(before: 'older'),
-      throwsA(isA<ConversationContinuityError>()),
-    );
-    expect(
-      calls,
-      2,
-      reason: 'Wrong cursor is rejected before native admission',
-    );
-    final pending = scope.page(before: 'earlier');
-    final stale = expectLater(pending, throwsA(isA<StaleConversationScope>()));
-    scope.retire();
-    expect((await scope.close(deadline: DateTime.now())).complete, isFalse);
-    var joined = false;
-    final closing = scope.close().then((report) {
-      joined = true;
-      return report;
-    });
-    expect(joined, isFalse);
-    replies[2].complete(
-      ConversationPage(
-        items: [timelineItem(1, id: 'c', ordinal: 3)],
-        before: null,
-        hasOlder: false,
-      ),
-    );
-    await stale;
-    expect((await closing).complete, isTrue);
-    expect(scope.pageCoverage, same(committed));
-    await fixture.close();
-  });
+      );
+      await lateReply;
+      expect((await query.close()).complete, isTrue);
+      expect((await fixture.close()).complete, isTrue);
+    },
+  );
 }

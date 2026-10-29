@@ -215,15 +215,6 @@ abstract class StudioTransport
 
   Stream<StudioShutdownProgress> subscribeShutdownProgress();
 
-  /// 按活动身份按需读取当前活动的完整内容（reasoning / 输出正文 / 工具参数与输出）。
-  ///
-  /// 只读，且独立于消息窗口：即使该活动不在窗口里也能读取，不查 SQL 历史。身份不再
-  /// 成立时返回 `superseded` / `ended`，调用方据此丢弃迟到的展开结果。
-  Future<ThreadActivityDetail> readThreadActivityDetail(
-    String threadId,
-    String activityId,
-  );
-
   /// 早期退出封闭（Rust 侧唯一权威入口）。
   ///
   /// 必须在任何 Dart 外部取消等待之前调用：它同步封闭单向退出闩并广播一次取消，使迟到

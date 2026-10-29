@@ -9,6 +9,7 @@ import '../../studio/stores/thread_directory_store.dart';
 import '../../studio/stores/domain_sync.dart';
 import '../domain/conversation_repository.dart';
 import '../domain/conversation_state.dart';
+import '../domain/activity_content.dart';
 import 'conversation_content_impl.dart';
 import 'state_reducer.dart';
 import 'thread_stream_gate.dart';
@@ -23,7 +24,8 @@ final class ConversationSessionImpl implements ConversationSession {
     required this.directory,
     required ResourceBudget budget,
     required InputFactRegistry inputFacts,
-  }) : _source = LatestValue(ThreadSessionState(threadId: threadId)) {
+  }) : _inputFacts = inputFacts,
+       _source = LatestValue(ThreadSessionState(threadId: threadId)) {
     _content = ConversationContentImpl(
       threadId: threadId,
       transport: transport,
@@ -38,6 +40,7 @@ final class ConversationSessionImpl implements ConversationSession {
   @override
   final String threadId;
   final ThreadDirectoryStore directory;
+  final InputFactRegistry _inputFacts;
   final LatestValue<ThreadSessionState> _source;
   late final ConversationContentImpl _content;
   late final Observation _directoryObservation;
@@ -51,6 +54,9 @@ final class ConversationSessionImpl implements ConversationSession {
   ValueObservation<ThreadSessionState> get source => _source;
   @override
   ConversationContent get content => _content;
+  @override
+  ValueObservation<CurrentActivity?> get currentActivity =>
+      _content.currentActivity;
   @override
   bool get isActive => _content.hasDemand;
   @override
@@ -128,6 +134,7 @@ final class ConversationSessionImpl implements ConversationSession {
         );
         final eligible = _eligibleResync(attemptId);
         _source.publish(candidate);
+        if (identical(state, candidate)) _publishCurrentInputFacts(candidate);
         if (eligible != null &&
             identical(_resync, eligible) &&
             eligible.expectedAttempt == attemptId &&
@@ -156,7 +163,10 @@ final class ConversationSessionImpl implements ConversationSession {
               baseRevision: frame.baseRevision,
             );
           case ThreadFrameDecision.apply:
-            _source.publish(applyThreadNotificationState(state, frame));
+            final candidate = applyThreadNotificationState(state, frame);
+            _source.publish(candidate);
+            if (identical(state, candidate))
+              _publishCurrentInputFacts(candidate);
         }
     }
   }
@@ -230,8 +240,35 @@ final class ConversationSessionImpl implements ConversationSession {
   Future<CloseReport> retryCleanup({DateTime? deadline}) =>
       _content.retryCleanup(deadline: deadline);
 
-  void seedInputFacts(String inputId, void Function(InputTurnFact) onFact) =>
-      _content.seedInputFacts(inputId, onFact);
+  void seedInputFacts(String inputId, void Function(InputTurnFact) onFact) {
+    final seen = <String>{};
+    for (final turn in [state.activeTurn, state.lastTurn]) {
+      if (turn?.inputId == inputId && seen.add(turn!.turnId)) {
+        onFact(_turnFact(turn));
+      }
+    }
+  }
+
+  void _publishCurrentInputFacts(ThreadSessionState candidate) {
+    if (_closed || !_inputFacts.hasObservers) return;
+    final seen = <(String, String)>{};
+    for (final turn in [candidate.activeTurn, candidate.lastTurn]) {
+      final input = turn?.inputId;
+      if (turn == null || input == null || !seen.add((input, turn.turnId))) {
+        continue;
+      }
+      if (_inputFacts.isWatching(input)) _inputFacts.publish(_turnFact(turn));
+    }
+  }
+
+  InputTurnFact _turnFact(StudioTurnView turn) => InputTurnFact(
+    threadId: turn.threadId,
+    inputId: turn.inputId!,
+    itemId: null,
+    turnId: turn.turnId,
+    status: turn.state.status,
+    saved: null,
+  );
 }
 
 final class _RuntimeResync {

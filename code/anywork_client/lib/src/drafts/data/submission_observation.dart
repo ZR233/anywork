@@ -1,6 +1,7 @@
 import '../../commands/mutation_board.dart';
 import '../../observation/latest_value.dart';
 import '../../conversation/data/input_turn_facts.dart';
+import '../../studio/stores/domain_sync.dart';
 import '../../../models.dart';
 import 'drafts_dependencies.dart';
 
@@ -45,7 +46,8 @@ final class InputSubmissionObservation implements Observation {
   final String? expectedThreadId;
   final Observation _retainedOperation;
   Observation? _source;
-  ({String threadId, String itemId})? _identity;
+  Observation? _storageObservation;
+  ({String threadId, String? turnId})? _identity;
   SubmitPromptReceipt? _receipt;
   Object? _conflict;
   bool _effective = false;
@@ -60,7 +62,7 @@ final class InputSubmissionObservation implements Observation {
 
   void _record(InputTurnFact fact) {
     if (isCancelled) return;
-    final identity = (threadId: fact.threadId, itemId: fact.itemId);
+    final identity = (threadId: fact.threadId, turnId: fact.turnId);
     if (fact.inputId != inputId ||
         expectedThreadId != null && fact.threadId != expectedThreadId ||
         _identity != null && _identity != identity ||
@@ -69,7 +71,7 @@ final class InputSubmissionObservation implements Observation {
     } else {
       _identity = identity;
       _effective |= fact.status != StudioTurnStatus.queued;
-      _durable |= fact.saved;
+      _durable |= fact.saved == true;
     }
     _settle();
   }
@@ -130,6 +132,22 @@ final class InputSubmissionObservation implements Observation {
           return;
         }
         if (_identity == null) return;
+        final session = dependencies.conversations.existingSession(
+          _receipt!.threadId,
+        );
+        if (session != null && !session.isClosed) {
+          _storageObservation ??= session.source.watch((_) => _settle());
+          final current = session.state;
+          final durableSequence = current.storage?.durableSequence;
+          // The receipt cursor is the input's accepted commit sequence. Only
+          // canonical storage progress in the observed session proves its save.
+          if (current.sync.phase == DomainSyncPhase.ready &&
+              current.streamEpoch != null &&
+              durableSequence != null &&
+              durableSequence >= _receipt!.cursor) {
+            _durable = true;
+          }
+        }
         if (!_observed) {
           _observed = true;
           dependencies.mutations.observe(_stamp(_receipt!));
@@ -158,6 +176,7 @@ final class InputSubmissionObservation implements Observation {
     if (isCancelled) return;
     isCancelled = true;
     _source?.cancel();
+    _storageObservation?.cancel();
     _retainedOperation.cancel();
   }
 }

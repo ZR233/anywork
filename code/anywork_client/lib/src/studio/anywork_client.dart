@@ -326,14 +326,6 @@ class AnyworkClient {
     channels.retryTopic(topic);
   }
 
-  Future<ThreadActivityDetail> readThreadActivityDetail(
-    String threadId,
-    String identity,
-  ) => _query(
-    'activity:$threadId:$identity',
-    () => transport.readThreadActivityDetail(threadId, identity),
-  );
-
   Future<Uint8List> readAttachmentBytes(String threadId, String attachmentId) =>
       _query(
         'attachment:$threadId:$attachmentId',

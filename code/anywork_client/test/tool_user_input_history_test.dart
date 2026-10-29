@@ -6,376 +6,233 @@ import 'package:test/test.dart';
 import 'support/timeline_transport.dart';
 
 void main() {
-  ConversationItem questionItem({
-    ConversationUserInputState state = const ConversationUserInputPending(),
-    List<ConversationFieldPreview> fields = const [],
-    int revision = 1,
-  }) => ConversationItem(
-    header: timelineItem(1).header,
-    revision: revision,
-    descriptor: ConversationToolDescriptor(
-      invocation: const ConversationToolInvocation(
-        toolCallId: 'call',
-        name: 'request_user_input',
-      ),
-      state: const ConversationToolRunning(),
-      userInput: ConversationUserInputDescriptor(
-        interactionId: 'interaction',
-        questions: const [
-          ConversationQuestionDescriptor(
-            id: 'account',
-            isOther: true,
-            isSecret: false,
-            optionCount: 1,
-          ),
-          ConversationQuestionDescriptor(
-            id: 'token',
-            isOther: true,
-            isSecret: true,
-            optionCount: 0,
-          ),
-        ],
-        state: state,
-      ),
-    ),
-    saved: false,
-    lifecycle: ConversationLifecycle.streaming,
-    fields: fields,
-  );
-  const question = ThreadToolUserInputFieldView(
-    questionIndex: 0,
-    part: ThreadUserInputQuestionFieldPartView(),
-  );
-  const answer = ThreadToolUserInputFieldView(
-    questionIndex: 0,
-    part: ThreadUserInputAnswerFieldPartView(0),
-  );
-
-  test('typed question order, pending/cancelled and None versus zero options remain distinct', () {
-    final pending =
-        (questionItem().descriptor as ConversationToolDescriptor).userInput!;
-    expect(pending.questions.map((q) => q.id), ['account', 'token']);
-    expect(pending.state, isA<ConversationUserInputPending>());
-    expect(pending.questions.last.isSecret, isTrue);
-    expect(pending.questions.last.optionCount, 0);
-    expect(
-      const ConversationQuestionDescriptor(
-        id: 'free',
-        isOther: true,
-        isSecret: false,
-      ).optionCount,
-      isNull,
-    );
-    expect(
-      (questionItem(state: const ConversationUserInputCancelled()).descriptor
-              as ConversationToolDescriptor)
-          .userInput!
-          .state,
-      isA<ConversationUserInputCancelled>(),
-    );
-  });
-
-  test('question, option and answer values are field-addressable and an atomic descriptor update carries redaction', () async {
-    final fixture = ConversationFixture();
-    final content = fixture.session().content;
-    final initial = questionItem(
-      fields: const [
-        ConversationFieldPreview(
-          field: question,
-          text: 'Which?',
-          totalBytes: 6,
+  test(
+    'completed questions retain ordering, identity, answers and redaction',
+    () async {
+      final fixture = ConversationFixture();
+      final feed = await fixture.open();
+      const question = ThreadToolUserInputFieldView(
+        questionIndex: 0,
+        part: ThreadUserInputQuestionFieldPartView(),
+      );
+      const answer = ThreadToolUserInputFieldView(
+        questionIndex: 0,
+        part: ThreadUserInputAnswerFieldPartView(0),
+      );
+      final item = ConversationItem(
+        header: const ConversationItemHeader(
+          id: 'question',
+          threadId: 'thread',
+          appendSeq: 2,
         ),
-      ],
-    );
-    final resolved = questionItem(
-      revision: 2,
-      state: const ConversationUserInputResolved(
-        answers: [
-          ConversationAnswerDescriptor(
-            questionId: 'account',
-            answerCount: 1,
-            redacted: false,
+        source: const ConversationContentSource(),
+        descriptor: ConversationToolDescriptor(
+          invocation: const ConversationToolInvocation(
+            toolCallId: 'call',
+            name: 'request_user_input',
           ),
-          ConversationAnswerDescriptor(
-            questionId: 'token',
-            answerCount: 0,
-            redacted: true,
+          state: ConversationToolSucceeded(
+            completedAt: DateTime.utc(2026),
+            output: ConversationToolOutputDescriptor(attachments: const []),
           ),
-        ],
-      ),
-    );
-    final next = content.reduceItem(
-      initial,
-      ConversationUpdateItem(
-        itemId: 'item',
-        expectedRevision: 1,
-        revision: 2,
-        saved: true,
-        lifecycle: ConversationLifecycle.terminal,
-        descriptor: resolved.descriptor,
+          userInput: ConversationUserInputDescriptor(
+            interactionId: 'interaction',
+            questions: const [
+              ConversationQuestionDescriptor(
+                id: 'account',
+                isOther: true,
+                isSecret: false,
+                optionCount: 1,
+              ),
+              ConversationQuestionDescriptor(
+                id: 'token',
+                isOther: true,
+                isSecret: true,
+                optionCount: 0,
+              ),
+              ConversationQuestionDescriptor(
+                id: 'free',
+                isOther: true,
+                isSecret: false,
+              ),
+            ],
+            state: ConversationUserInputResolved(
+              answers: [
+                ConversationAnswerDescriptor(
+                  questionId: 'account',
+                  answerCount: 1,
+                  redacted: false,
+                ),
+                ConversationAnswerDescriptor(
+                  questionId: 'token',
+                  answerCount: 0,
+                  redacted: true,
+                ),
+              ],
+            ),
+          ),
+        ),
         fields: const [
-          ConversationFieldUpdate(
+          ConversationFieldPreview(
             field: question,
-            change: ReplaceThreadFieldChangeView('Which?\n'),
+            text: 'Which?\n',
             totalBytes: 7,
-            previewBytes: 7,
           ),
-          ConversationFieldUpdate(
+          ConversationFieldPreview(
             field: answer,
-            change: ReplaceThreadFieldChangeView('provider'),
+            text: 'provider',
             totalBytes: 8,
-            previewBytes: 8,
           ),
-          ConversationFieldUpdate(
+          ConversationFieldPreview(
             field: ThreadToolUserInputFieldView(
               questionIndex: 0,
               part: ThreadUserInputOptionLabelFieldPartView(0),
             ),
-            change: ReplaceThreadFieldChangeView('Keep'),
+            text: 'Keep',
             totalBytes: 4,
-            previewBytes: 4,
           ),
         ],
-      ),
-    );
-    expect(next.fieldFor(question)!.text, 'Which?\n');
-    expect(
-      next
-          .fieldFor(
-            const ThreadToolUserInputFieldView(
-              questionIndex: 0,
-              part: ThreadUserInputAnswerFieldPartView(0),
-            ),
-          )!
-          .text,
-      'provider',
-    );
-    final descriptors =
-        ((next.descriptor as ConversationToolDescriptor).userInput!.state
-                as ConversationUserInputResolved)
-            .answers;
-    expect(descriptors.last.redacted, isTrue);
-    expect(descriptors.last.answerCount, 0);
-    expect(next.saved, isTrue);
-    expect(next.omittedBytes, 0);
-    await fixture.close();
-  });
-
-  test('plan decisions preserve feedback, hide secret answers and ignore tool output artifacts', () async {
-    final fixture = ConversationFixture();
-    final content = fixture.session().content;
-    const label = ThreadToolUserInputFieldView(
-      questionIndex: 0,
-      part: ThreadUserInputOptionLabelFieldPartView(0),
-    );
-    ConversationItem planItem(
-      String decision, {
-      bool redacted = false,
-      bool secret = false,
-      String toolName = 'plan_submit',
-      ConversationUserInputState? inputState,
-    }) {
-      ConversationFieldPreview field(
-        ThreadContentFieldView identity,
-        String text,
-      ) => ConversationFieldPreview(
-        field: identity,
-        text: text,
-        totalBytes: utf8.encode(text).length,
       );
-      return ConversationItem(
-        header: timelineItem(1).header,
-        revision: 1,
-        descriptor: ConversationToolDescriptor(
-          invocation: ConversationToolInvocation(
-            toolCallId: 'plan',
-            name: toolName,
-          ),
-          state: const ConversationToolRunning(),
-          userInput: ConversationUserInputDescriptor(
-            interactionId: 'plan-confirmation',
-            questions: [
-              ConversationQuestionDescriptor(
-                id: agentSessionPlanConfirmationQuestionId,
-                isOther: true,
-                isSecret: secret,
-                optionCount: 1,
-              ),
-            ],
-            state:
-                inputState ??
-                ConversationUserInputResolved(
-                  answers: [
-                    ConversationAnswerDescriptor(
-                      questionId: agentSessionPlanConfirmationQuestionId,
-                      answerCount: 2,
-                      redacted: redacted,
-                    ),
-                  ],
-                ),
+      await feed.deliver(
+        ConversationUpdateEvent(
+          update: ConversationBatch(
+            subscriptionId: 'sub',
+            timelineEpoch: 'epoch',
+            fromSeq: 1,
+            throughSeq: 2,
+            items: [item],
           ),
         ),
-        saved: true,
-        lifecycle: ConversationLifecycle.terminal,
-        fields: [
-          field(question, '# Plan title\n\n原始正文\n'),
-          field(label, decision),
-          field(answer, decision),
-          field(
-            const ThreadToolUserInputFieldView(
-              questionIndex: 0,
-              part: ThreadUserInputAnswerFieldPartView(1),
-            ),
-            '  保留原反馈\n',
-          ),
-          field(
-            const ThreadToolOutputArtifactsFieldView(),
-            '{not a ThreadItem}',
-          ),
-        ],
       );
-    }
+      final delivered =
+          (fixture.consumers['thread']!.frames.last
+                  as ConversationCompletedBatchFrame)
+              .batch
+              .items
+              .single;
+      final input =
+          (delivered.descriptor as ConversationToolDescriptor).userInput!;
+      expect(input.interactionId, 'interaction');
+      expect(input.questions.map((q) => q.id), ['account', 'token', 'free']);
+      expect(input.questions[1].isSecret, isTrue);
+      expect(input.questions[1].optionCount, 0);
+      expect(input.questions[2].optionCount, isNull);
+      final answers = (input.state as ConversationUserInputResolved).answers;
+      expect(answers.map((a) => a.questionId), ['account', 'token']);
+      expect(answers.last.redacted, isTrue);
+      expect(answers.last.answerCount, 0);
+      expect(delivered.fieldFor(question)!.text, 'Which?\n');
+      expect(delivered.fieldFor(answer)!.text, 'provider');
+      expect(
+        delivered.fieldFor(
+          const ThreadToolUserInputFieldView(
+            questionIndex: 1,
+            part: ThreadUserInputAnswerFieldPartView(0),
+          ),
+        ),
+        isNull,
+      );
+      expect(delivered.planReceipt, isNull);
+      expect((await fixture.close()).complete, isTrue);
+    },
+  );
 
-    final value = planItem(agentSessionPlanReviseAnswer);
-    final merged = content.mergeItem(value, value);
-    expect(merged.fieldFor(label)!.text, agentSessionPlanReviseAnswer);
-    expect(merged.fieldFor(answer)!.text, agentSessionPlanReviseAnswer);
-    expect(merged.planReceipt!.title, 'Plan title');
-    expect(
-      merged.planReceipt!.decision,
-      PlanConfirmationDecisionView.revisionRequested,
+  test('typed Plan decision uses its own document and feedback, not tool artifacts', () {
+    ConversationItem plan(
+      ConversationPlanDecision decision, {
+      String? feedback,
+    }) => ConversationItem(
+      header: timelineItem(1).header,
+      source: const ConversationContentSource(),
+      descriptor: ConversationPlanDescriptor(
+        interactionId: 'plan-confirmation',
+        decision: decision,
+      ),
+      fields: [
+        const ConversationFieldPreview(
+          field: ThreadPlanDocumentFieldView(),
+          text: '# Plan title\n',
+          totalBytes: 13,
+        ),
+        if (feedback != null)
+          ConversationFieldPreview(
+            field: const ThreadPlanFeedbackFieldView(),
+            text: feedback,
+            totalBytes: utf8.encode(feedback).length,
+          ),
+        const ConversationFieldPreview(
+          field: ThreadToolOutputArtifactsFieldView(),
+          text: 'ignored',
+          totalBytes: 7,
+        ),
+      ],
     );
-    expect(merged.planReceipt!.feedback, ['  保留原反馈\n']);
+    final revised = plan(
+      ConversationPlanDecision.revisionRequested,
+      feedback: '  保留原反馈\n',
+    ).planReceipt!;
+    expect(revised.interactionId, 'plan-confirmation');
+    expect(revised.title, 'Plan title');
+    expect(revised.decision, PlanConfirmationDecisionView.revisionRequested);
+    expect(revised.feedback, ['  保留原反馈\n']);
     expect(
-      planItem(
-        agentSessionPlanApproveAnswer,
-        inputState: const ConversationUserInputPending(),
-      ).planReceipt!.decision,
-      PlanConfirmationDecisionView.pending,
-    );
-    expect(
-      planItem(
-        agentSessionPlanApproveAnswer,
-        inputState: const ConversationUserInputCancelled(),
-      ).planReceipt!.decision,
-      PlanConfirmationDecisionView.cancelled,
-    );
-    expect(
-      planItem(agentSessionPlanApproveAnswer).planReceipt!.decision,
+      plan(ConversationPlanDecision.approved).planReceipt!.decision,
       PlanConfirmationDecisionView.approved,
     );
     expect(
-      planItem(agentSessionPlanApproveAnswer).planReceipt!.feedback,
+      plan(ConversationPlanDecision.cancelled).planReceipt!.decision,
+      PlanConfirmationDecisionView.cancelled,
+    );
+    expect(
+      plan(ConversationPlanDecision.resolved).planReceipt!.decision,
+      PlanConfirmationDecisionView.resolved,
+    );
+    expect(
+      plan(ConversationPlanDecision.approved).planReceipt!.feedback,
       isEmpty,
     );
-    for (final hidden in [
-      planItem(agentSessionPlanReviseAnswer, redacted: true),
-      planItem(agentSessionPlanReviseAnswer, secret: true),
-    ]) {
-      expect(
-        hidden.planReceipt!.decision,
-        PlanConfirmationDecisionView.resolved,
-      );
-      expect(hidden.planReceipt!.feedback, isEmpty);
-    }
-    for (final toolName in ['ask_user', 'request_user_input']) {
-      for (final inputState in [
-        const ConversationUserInputPending(),
-        const ConversationUserInputResolved(
-          answers: [
-            ConversationAnswerDescriptor(
-              questionId: agentSessionPlanConfirmationQuestionId,
-              answerCount: 2,
-              redacted: false,
-            ),
-          ],
-        ),
-      ]) {
-        final ordinary = planItem(
-          agentSessionPlanReviseAnswer,
-          toolName: toolName,
-          inputState: inputState,
-        );
-        expect(
-          ordinary.planReceipt,
-          isNull,
-          reason: 'A reserved question ID does not give an ordinary tool plan ownership',
-        );
-        expect(ordinary.userInput, isNotNull);
-        expect(
-          ordinary.userInputText(
-            0,
-            const ThreadUserInputQuestionFieldPartView(),
-          ),
-          '# Plan title\n\n原始正文\n',
-        );
-        expect(ordinary.fieldFor(answer)!.text, agentSessionPlanReviseAnswer);
-      }
-    }
-    expect(questionItem().planReceipt, isNull);
-    expect(
-      merged.fieldFor(const ThreadToolOutputArtifactsFieldView())!.text,
-      '{not a ThreadItem}',
-    );
-    await fixture.close();
   });
 
-  test(
-    'known tool display strings require complete current arguments previews',
-    () {
-      ConversationItem toolItem(
-        String tool,
-        String arguments, {
-        int omittedBytes = 0,
-      }) => ConversationItem(
-        header: timelineItem(1).header,
-        revision: 1,
-        descriptor: ConversationToolDescriptor(
-          invocation: ConversationToolInvocation(
-            toolCallId: 'image',
-            name: tool,
+  test('known tool display strings require complete arguments previews', () {
+    ConversationItem tool(String name, String arguments, {int omitted = 0}) =>
+        ConversationItem(
+          header: timelineItem(1).header,
+          source: const ConversationContentSource(),
+          descriptor: ConversationToolDescriptor(
+            invocation: ConversationToolInvocation(
+              toolCallId: 'image',
+              name: name,
+            ),
+            state: ConversationToolSucceeded(
+              completedAt: DateTime.utc(2026),
+              output: ConversationToolOutputDescriptor(attachments: const []),
+            ),
           ),
-          state: const ConversationToolRunning(),
-        ),
-        saved: false,
-        lifecycle: ConversationLifecycle.streaming,
-        fields: [
-          ConversationFieldPreview(
-            field: const ThreadToolArgumentsFieldView(),
-            text: arguments,
-            totalBytes: utf8.encode(arguments).length + omittedBytes,
-          ),
-        ],
-      );
-
-      expect(
-        toolItem(
-          'show_image',
-          jsonEncode({'caption': '  说明 😀  '}),
-        ).imageCardCaption,
-        '说明 😀',
-      );
-      final long = '😀' * 241;
-      final bounded = toolItem(
-        'show_image',
-        jsonEncode({'caption': long}),
-      ).imageCardCaption!;
-      expect(bounded.runes.length, 240);
-      expect(bounded, '😀' * 240);
-      for (final item in [
-        toolItem('other_tool', jsonEncode({'caption': 'hidden'})),
-        toolItem('show_image', '{"caption":"truncated'),
-        toolItem('show_image', jsonEncode(['not', 'object'])),
-        toolItem('show_image', jsonEncode({'caption': 7})),
-        toolItem('show_image', jsonEncode({'caption': '  '})),
-        toolItem(
-          'show_image',
-          jsonEncode({'caption': 'visible'}),
-          omittedBytes: 1,
-        ),
-      ]) {
-        expect(item.imageCardCaption, isNull);
-      }
-    },
-  );
+          fields: [
+            ConversationFieldPreview(
+              field: const ThreadToolArgumentsFieldView(),
+              text: arguments,
+              totalBytes: utf8.encode(arguments).length + omitted,
+            ),
+          ],
+        );
+    expect(
+      tool('show_image', jsonEncode({'caption': '  说明 😀  '})).imageCardCaption,
+      '说明 😀',
+    );
+    expect(
+      tool('show_image', jsonEncode({'caption': '😀' * 241})).imageCardCaption,
+      '😀' * 240,
+    );
+    for (final item in [
+      tool('other', jsonEncode({'caption': 'hidden'})),
+      tool('show_image', '{"caption":"truncated'),
+      tool('show_image', jsonEncode(['bad'])),
+      tool('show_image', jsonEncode({'caption': 7})),
+      tool('show_image', jsonEncode({'caption': '  '})),
+      tool('show_image', jsonEncode({'caption': 'visible'}), omitted: 1),
+    ]) {
+      expect(item.imageCardCaption, isNull);
+    }
+  });
 }

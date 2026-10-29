@@ -164,10 +164,17 @@ final class _Transport extends AccountsTestTransport {
   }
 
   @override
-  Future<ConversationFeed> openConversationFeed(String threadId) async {
+  Future<ConversationFeed> openConversationFeed(
+    String threadId, {
+    ConversationCompletionCursor? resumeAfter,
+  }) async {
     final states = StreamController<ThreadStreamFrame>.broadcast(sync: true);
     threadBindings.add(states);
-    return ScriptedConversationFeed(threadId: threadId, states: states.stream);
+    return ScriptedConversationFeed(
+      threadId: threadId,
+      states: states.stream,
+      resumeAfter: resumeAfter,
+    );
   }
 
   @override
@@ -320,6 +327,7 @@ final class _RouteConflictFeed extends ScriptedConversationFeed {
     required super.threadId,
     required super.initial,
     required super.states,
+    super.resumeAfter,
     required this.onClose,
   });
 
@@ -352,7 +360,10 @@ final class _RouteConflictTransport extends _Transport {
   int windowOpens = 0;
 
   @override
-  Future<ConversationFeed> openConversationFeed(String threadId) async {
+  Future<ConversationFeed> openConversationFeed(
+    String threadId, {
+    ConversationCompletionCursor? resumeAfter,
+  }) async {
     final index = bindings.length;
     // Frames may have no consumer when opening is retired immediately.
     final binding = StreamController<ThreadStreamFrame>.broadcast(sync: true);
@@ -366,6 +377,7 @@ final class _RouteConflictTransport extends _Transport {
         items: const [],
       ),
       states: binding.stream,
+      resumeAfter: resumeAfter,
       onClose: () => onFeedClose?.call(index) ?? Future<void>.value(),
     );
     if (bindings.length == 2 && !refreshEntered.isCompleted)
@@ -710,12 +722,17 @@ Future<AnyworkClient> _client(
     threadId: 'thread',
     needsOpen: true,
   );
+  final consumer = TestCompletionConsumer();
+  client.conversations.session('thread').content.attachConsumer(consumer);
+  _completionConsumers[client] = consumer;
   client.conversations.setVisibleThread('thread');
   await client.conversations.session('thread').deliverWorkspace(_workspace());
   addTearDown(runtime.close);
   client.conversations.setVisibleThread('thread');
   return client;
 }
+
+final _completionConsumers = Expando<TestCompletionConsumer>();
 
 ResourceStamp _stamp(String key, int revision) =>
     ResourceStamp(resourceKey: key, ownerEpoch: _epoch, revision: revision);
@@ -2054,8 +2071,14 @@ void main() {
     expect(session.state.revision, 8);
     expect(session.state.runtime!.modelId, 'alpha');
     expect(session.state.sync.phase, DomainSyncPhase.ready);
-    final delivered = session.content.lastDeliveredFrame;
-    expect((delivered! as ConversationBaselineFrame).baseline.version, 300);
+    final delivered = _completionConsumers[client]!.frames.single;
+    expect(
+      (delivered as ConversationBaselineFrame)
+          .baseline
+          .completedCursor
+          .appendSeq,
+      300,
+    );
     expect(transport.windowOpens, 2);
     expect(transport.bindings, hasLength(2));
   });
@@ -2124,7 +2147,7 @@ void main() {
           expect(report.complete, isFalse);
           expect(
             report.unresolved.map((resource) => resource.owner),
-            contains('thread'),
+            contains('conversation:thread'),
           );
         }
         cleanup.complete();
@@ -3348,6 +3371,10 @@ void main() {
       threadId: 'thread',
       needsOpen: true,
     );
+    client.conversations
+        .session('thread')
+        .content
+        .attachConsumer(TestCompletionConsumer());
     client.conversations.setVisibleThread('thread');
     await client.conversations
         .session('thread')

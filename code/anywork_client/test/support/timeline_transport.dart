@@ -4,33 +4,26 @@ import 'dart:convert';
 import 'package:anywork_client/studio_client.dart';
 
 ConversationItem timelineItem(
-  int revision, {
+  int appendSeq, {
   String id = 'item',
   String body = 'body',
   String threadId = 'thread',
-  int ordinal = 0,
-  bool saved = false,
-  ConversationLifecycle lifecycle = ConversationLifecycle.streaming,
   int? totalBytes,
 }) => ConversationItem(
   header: ConversationItemHeader(
     id: id,
     threadId: threadId,
     turnId: 'turn',
-    ordinal: ordinal,
-    createdAt: DateTime.utc(2026),
-    updatedAt: DateTime.utc(2026),
+    appendSeq: appendSeq,
   ),
-  revision: revision,
   descriptor: ConversationTextDescriptor(
     channel: ThreadTextChannel.finalAnswer,
     attachments: const [],
-    lifecycle: lifecycle == ConversationLifecycle.terminal
-        ? CompletedThreadContentView(DateTime.utc(2026))
-        : const StreamingThreadContentView(),
+    outcome: ConversationContentCompleted(
+      CompletedThreadContentView(DateTime.utc(2026)),
+    ),
   ),
-  saved: saved,
-  lifecycle: lifecycle,
+  source: const ConversationContentSource(),
   fields: [
     ConversationFieldPreview(
       field: const ThreadTextFieldView(),
@@ -40,29 +33,22 @@ ConversationItem timelineItem(
   ],
 );
 ConversationBaseline baseline(
-  int version, {
+  int appendSeq, {
   String subscriptionId = 'sub',
+  String timelineEpoch = 'epoch',
   List<ConversationItem>? items,
-  String? before,
+  ConversationQueryCursor? before,
   bool hasOlder = false,
 }) => ConversationBaseline(
   subscriptionId: subscriptionId,
-  version: version,
-  items: items ?? [timelineItem(version)],
+  timelineEpoch: timelineEpoch,
+  completedCursor: ConversationCompletionCursor(
+    timelineEpoch: timelineEpoch,
+    appendSeq: appendSeq,
+  ),
+  items: items ?? [timelineItem(appendSeq)],
   before: before,
   hasOlder: hasOlder,
-);
-ConversationPatch patch(
-  int from,
-  int to, {
-  String subscriptionId = 'sub',
-  List<ConversationChange> changes = const [],
-}) => ConversationPatch(
-  subscriptionId: subscriptionId,
-  from: from,
-  to: to,
-  changes: changes,
-  priority: ConversationPriority.coalesced,
 );
 
 /// A scripted external source, never an alternate reducer. It allows malformed
@@ -78,6 +64,7 @@ class TestConversationFeed implements ConversationFeed {
   );
   final List<int> acknowledgements = [];
   final Map<int, Completer<void>> _acked = {};
+  final Map<int, Completer<void>> _ackStarted = {};
   int _sequence = 0;
   bool _requested = false;
   final requestCloseStarted = Completer<void>();
@@ -90,16 +77,6 @@ class TestConversationFeed implements ConversationFeed {
   int closeCalls = 0;
   int requestCloseCalls = 0;
   int eventConsumers = 0;
-  Future<ConversationPage> Function(String?, int?)? onPage;
-  Future<ConversationDetailChunk> Function(String, ConversationDetailQuery)?
-  onDetail;
-  final List<({String? before, int? limit})> pageRequests = [];
-  final List<({String itemId, ConversationDetailQuery query})> detailRequests =
-      [];
-
-  /// 同步查询注入：恰在 page/detail 返回受控 future 之前调用，回调里可以
-  /// 同步退役/关闭 scope；每次请求各自持有独立 future，不复用同一 Completer。
-  void Function()? onQuery;
   @override
   Stream<ConversationFrame> get events {
     if (++eventConsumers != 1) throw StateError('A feed permits one consumer');
@@ -144,33 +121,20 @@ class TestConversationFeed implements ConversationFeed {
     return (_acked[sequence] ??= Completer<void>()).future;
   }
 
+  Future<void> ackStarted(int sequence) =>
+      (_ackStarted[sequence] ??= Completer<void>()).future;
+
   @override
   Future<void> acknowledge(int deliverySequence) async {
+    final started = _ackStarted.putIfAbsent(
+      deliverySequence,
+      Completer<void>.new,
+    );
+    if (!started.isCompleted) started.complete();
     await ackGate?.future;
     if (ackFailure case final failure?) throw failure;
     acknowledgements.add(deliverySequence);
     _acked.remove(deliverySequence)?.complete();
-  }
-
-  @override
-  Future<ConversationPage> page({String? before, int? limit}) {
-    pageRequests.add((before: before, limit: limit));
-    onQuery?.call();
-    return onPage?.call(before, limit) ??
-        Future.value(
-          const ConversationPage(items: [], before: null, hasOlder: false),
-        );
-  }
-
-  @override
-  Future<ConversationDetailChunk> readDetail({
-    required String itemId,
-    required ConversationDetailQuery query,
-  }) {
-    detailRequests.add((itemId: itemId, query: query));
-    onQuery?.call();
-    return onDetail?.call(itemId, query) ??
-        Future.error(UnsupportedError('Unscripted detail'));
   }
 
   @override
@@ -197,13 +161,37 @@ class TestConversationTransport implements StudioTransport {
   final List<({String threadId, Completer<ConversationFeed> result})> opens =
       [];
   final Map<int, Completer<void>> _opening = {};
+  final List<ConversationCompletionCursor?> resumes = [];
+  Future<ConversationPage> Function(String, ConversationQueryCursor?, int?)?
+  onPage;
+  Future<ConversationDetailChunk> Function(
+    String,
+    String,
+    ConversationDetailQuery,
+  )?
+  onDetail;
+  final List<TestHistoryReader> readers = [];
+  Future<ConversationHistoryReader> Function(String)? onOpenReader;
   @override
-  Future<ConversationFeed> openConversationFeed(String threadId) {
+  Future<ConversationFeed> openConversationFeed(
+    String threadId, {
+    ConversationCompletionCursor? resumeAfter,
+  }) {
+    resumes.add(resumeAfter);
     final result = Completer<ConversationFeed>();
     final index = opens.length;
     opens.add((threadId: threadId, result: result));
     _opening.remove(index)?.complete();
     return result.future;
+  }
+
+  @override
+  Future<ConversationHistoryReader> openHistoryReader(String threadId) {
+    final custom = onOpenReader;
+    if (custom != null) return custom(threadId);
+    final reader = TestHistoryReader(this, threadId);
+    readers.add(reader);
+    return Future.value(reader);
   }
 
   Future<void> opened(int index) => opens.length > index
@@ -216,6 +204,48 @@ class TestConversationTransport implements StudioTransport {
   dynamic noSuchMethod(Invocation invocation) => throw UnsupportedError(
     'Unscripted transport capability: ${invocation.memberName}',
   );
+}
+
+final class TestHistoryReader implements ConversationHistoryReader {
+  TestHistoryReader(
+    this.transport,
+    this.threadId, {
+    this.timelineEpoch = 'epoch',
+  });
+  final TestConversationTransport transport;
+  @override
+  final String threadId;
+  @override
+  final String timelineEpoch;
+  int closeCalls = 0;
+  bool requested = false;
+  Completer<void>? closeGate;
+  Object? closeFailure;
+  @override
+  Future<ConversationPage> page({
+    ConversationQueryCursor? before,
+    int? limit,
+  }) =>
+      transport.onPage?.call(threadId, before, limit) ??
+      Future.error(UnsupportedError('Unscripted page'));
+  @override
+  Future<ConversationDetailChunk> readDetail({
+    required String itemId,
+    required ConversationDetailQuery query,
+  }) =>
+      transport.onDetail?.call(threadId, itemId, query) ??
+      Future.error(UnsupportedError('Unscripted detail'));
+  @override
+  void requestClose() {
+    requested = true;
+  }
+
+  @override
+  Future<void> close() async {
+    closeCalls++;
+    await closeGate?.future;
+    if (closeFailure case final failure?) throw failure;
+  }
 }
 
 class ConversationFixture {
@@ -231,13 +261,20 @@ class ConversationFixture {
   }
   final TestConversationTransport transport;
   late final AnyworkClient client;
+  final Map<String, TestCompletionConsumer> consumers = {};
   ConversationRepository get repository => client.conversations;
   ConversationSession session([String id = 'thread']) => repository.session(id);
+  TestCompletionConsumer attach(String id) => consumers.putIfAbsent(id, () {
+    final consumer = TestCompletionConsumer();
+    session(id).content.attachConsumer(consumer);
+    return consumer;
+  });
   Future<TestConversationFeed> open({
     String threadId = 'thread',
     ConversationBaseline? initial,
     int index = 0,
   }) async {
+    attach(threadId);
     repository.setVisibleThread(threadId);
     await transport.opened(index);
     final feed = TestConversationFeed(
@@ -253,4 +290,17 @@ class ConversationFixture {
 
   Future<CloseReport> close({DateTime? deadline}) =>
       client.close(deadline: deadline);
+}
+
+final class TestCompletionConsumer implements ConversationCompletionConsumer {
+  final List<ConversationContentFrame> frames = [];
+  final Map<int, Completer<void>> _waiters = {};
+  Future<void> waitForCount(int count) => frames.length >= count
+      ? Future.value()
+      : (_waiters[count] ??= Completer<void>()).future;
+  @override
+  Future<void> accept(ConversationContentFrame frame) async {
+    frames.add(frame);
+    _waiters.remove(frames.length)?.complete();
+  }
 }
