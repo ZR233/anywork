@@ -22,4 +22,8 @@ Scott Chacon、Ben Straub 的《Pro Git》第二版，[第 3.4 节](https://git-
 
 《Software Engineering at Google》[第 12 章](https://abseil.io/resources/swe-book/html/ch12.html)强调测试行为和公共接口，避免把测试绑定到实现组织。这里用于区分有独特失败信号的证明与重复检查，不据此删除所有错误路径或把两个样例当成全面覆盖。
 
+该书[第 23 章](https://abseil.io/resources/swe-book/html/ch23.html)和 Google Testing Blog 的 [Testing at the speed and scale of Google](https://testing.googleblog.com/2011/06/testing-at-speed-and-scale-of-google.html)（2011-06-02）说明按直接及传递依赖选择受影响测试以获得快速反馈。后者依赖成熟构建图，不表示凭文件名或模型猜测就能证明没有影响；本项目不为提示优化新建测试选择器，也不照搬其组织级合入政策。
+
+Ham Vocke 的 [The Practical Test Pyramid](https://martinfowler.com/articles/practical-test-pyramid.html)（2018-02-26）讨论跨层重复和独特集成信号。选测同样有分析与执行成本：很小的套件可能直接运行更省时，关键在有充分证据而不是机械缩减数量。多轮修改的操作建议统一放在系统指令中，本参考页仅解释依据，不再复制步骤。
+
 观察效率时同时记录实际结果、耗时与返修等事实，并标明模型、环境、人工等待和覆盖限制。单次运行更快或提示字符更少都不是因果证明；必要的安全与交付检查不能用速度指标替代。
