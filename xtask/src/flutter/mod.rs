@@ -1,4 +1,5 @@
 use crate::cli::{BuildGuiOptions, LogLevel, RunGuiOptions};
+use crate::release_bundle::{self, BundleKind};
 use crate::remote_helper::{self, BUNDLE_DIR_ENV};
 use crate::rust_bridge::{
     self, BRIDGE_DEBUG_SYMBOLS_ENV, BRIDGE_LIBRARY_ENV, BridgeConfiguration, RustBridgeArtifacts,
@@ -544,22 +545,11 @@ fn run_gui_args<'a>(
 }
 
 pub(crate) fn build_gui(options: BuildGuiOptions) -> Result<()> {
-    build_gui_with_version(options, None)
-}
-
-pub(crate) fn build_gui_release(options: BuildGuiOptions, version: &str) -> Result<()> {
-    build_gui_with_version(options, Some(version))
-}
-
-fn build_gui_with_version(options: BuildGuiOptions, release_version: Option<&str>) -> Result<()> {
     let workspace_root = paths::workspace_root()?;
     let app_dir = paths::studio_app_dir(&workspace_root);
     let dist_dir = paths::release_dist_dir(&workspace_root);
     let target = DesktopTarget::current()?;
     let app_version = studio_version::read(&app_dir)?;
-    if release_version.is_some_and(|version| version != app_version.to_string()) {
-        bail!("release version does not match pubspec.yaml version {app_version}");
-    }
     print_context(&workspace_root, &app_dir);
     ensure_desktop_build_environment(target)?;
     ensure_flutter_dependencies_for_build(&workspace_root, &app_dir)?;
@@ -596,7 +586,7 @@ fn build_gui_with_version(options: BuildGuiOptions, release_version: Option<&str
     } else {
         DistCleanMode::Clean
     };
-    copy_release_artifacts(&artifact_dir, &dist_dir, clean_mode)
+    copy_release_artifacts(&artifact_dir, &dist_dir, clean_mode, target)
 }
 
 fn build_gui_args(target: DesktopTarget, version_define: &str) -> Vec<&str> {
@@ -738,6 +728,7 @@ fn copy_release_artifacts(
     artifact_dir: &Path,
     dist_dir: &Path,
     clean_mode: DistCleanMode,
+    target: DesktopTarget,
 ) -> Result<()> {
     if !artifact_dir.is_dir() {
         bail!(
@@ -750,7 +741,12 @@ fn copy_release_artifacts(
     }
     fs::create_dir_all(dist_dir)
         .with_context(|| format!("failed to create {}", dist_dir.display()))?;
-    copy_dir_contents(artifact_dir, dist_dir)?;
+    let bundle_kind = if target == DesktopTarget::Windows {
+        BundleKind::Windows
+    } else {
+        BundleKind::PreserveAll
+    };
+    release_bundle::copy(artifact_dir, dist_dir, bundle_kind)?;
 
     println!();
     println!("Release build complete.");
@@ -787,35 +783,6 @@ fn clean_directory_contents(directory: &Path) -> Result<()> {
             fs::remove_file(&path)
         };
         result.with_context(|| format!("failed to remove stale artifact {}", path.display()))?;
-    }
-    Ok(())
-}
-
-fn copy_dir_contents(source: &Path, destination: &Path) -> Result<()> {
-    for entry in
-        fs::read_dir(source).with_context(|| format!("failed to read {}", source.display()))?
-    {
-        let entry =
-            entry.with_context(|| format!("failed to read entry in {}", source.display()))?;
-        let source_path = entry.path();
-        let destination_path = destination.join(entry.file_name());
-        if entry
-            .file_type()
-            .with_context(|| format!("failed to inspect {}", source_path.display()))?
-            .is_dir()
-        {
-            fs::create_dir_all(&destination_path)
-                .with_context(|| format!("failed to create {}", destination_path.display()))?;
-            copy_dir_contents(&source_path, &destination_path)?;
-        } else {
-            fs::copy(&source_path, &destination_path).with_context(|| {
-                format!(
-                    "failed to copy {} to {}",
-                    source_path.display(),
-                    destination_path.display()
-                )
-            })?;
-        }
     }
     Ok(())
 }

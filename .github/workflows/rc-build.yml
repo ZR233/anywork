@@ -6,10 +6,18 @@ on:
     tags:
       - "v*-rc*"
 
+permissions:
+  contents: read
+
 jobs:
   helper:
     name: Build Linux remote helper (${{ matrix.target }})
+    outputs:
+      x64ArtifactId: ${{ steps.helper-x64.outputs.artifact-id }}
+      arm64ArtifactId: ${{ steps.helper-arm64.outputs.artifact-id }}
     runs-on: ubuntu-latest
+    env:
+      CARGO_INCREMENTAL: "0"
     strategy:
       fail-fast: false
       matrix:
@@ -23,42 +31,6 @@ jobs:
           toolchain: 1.99.1
           targets: ${{ matrix.target }}
 
-      # Rust Cache hashes every installed rustup toolchain into its environment key, and
-      # the hosted image's preinstalled `stable` moves independently of the toolchain pinned
-      # in rust-toolchain.toml. Only that unused preinstalled `stable` toolchain is removed
-      # on this temporary runner, so the cache identity follows the compiler this job uses.
-      - name: Remove unused preinstalled stable Rust toolchain
-        shell: bash
-        run: |
-          set -euo pipefail
-          active_listing="$(rustup show active-toolchain)"
-          toolchains="$(rustup toolchain list)"
-          active="${active_listing%%[[:space:]]*}"
-          if [ -z "$active" ]; then
-            echo 'rustup did not report an active toolchain' >&2
-            exit 1
-          fi
-          while IFS= read -r listing; do
-            name="${listing%%[[:space:]]*}"
-            case "$name" in
-              stable-*) ;;
-              *) continue ;;
-            esac
-            if [ "$name" = "$active" ]; then
-              continue
-            fi
-            echo "Removing unused preinstalled toolchain $name"
-            rustup toolchain uninstall "$name"
-          done <<< "$toolchains"
-
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
-        with:
-          # Same helper build as the stable publisher; the pinned Zig toolchain versions
-          # are part of the key because they are not Cargo inputs.
-          shared-key: helper-linux-zig-0.16.0-zigbuild-0.23.4-${{ matrix.target }}
-          workspaces: |
-            . -> target
-            . -> target/xtask
       - name: Set up cargo-binstall
         uses: cargo-bins/cargo-binstall@8a2045612414e945291083f820cd50b4d8fc2218 # v1.26.0
         with:
@@ -83,33 +55,62 @@ jobs:
         env:
           PURE_REMOTE_HELPER_BUILDER: zigbuild
         run: cargo xtask build-remote-helper --target ${{ matrix.target }}
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - name: Preserve x64 helper
+        id: helper-x64
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: rc-bundled-helper-${{ github.sha }}-${{ matrix.target }}
+          name: rc-bundled-helper-${{ github.sha }}-${{ github.run_attempt }}-${{ matrix.target }}
           path: dist/remote-helper/${{ matrix.target }}/*
           if-no-files-found: error
           compression-level: 0
+          retention-days: 14
 
-  build:
-    name: Build (${{ matrix.os }})
+      - name: Preserve arm64 helper
+        id: helper-arm64
+        if: matrix.target == 'aarch64-unknown-linux-musl'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: rc-bundled-helper-${{ github.sha }}-${{ github.run_attempt }}-${{ matrix.target }}
+          path: dist/remote-helper/${{ matrix.target }}/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+  compile:
+    name: Compile Windows x64 checkpoint
     needs: helper
-    runs-on: ${{ matrix.os }}
+    runs-on: windows-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      bundleArtifactId: ${{ steps.bundle.outputs.artifact-id }}
+      toolArtifactId: ${{ steps.tool.outputs.artifact-id }}
+      bundleSha256: ${{ steps.checkpoint.outputs.bundleSha256 }}
+      toolSha256: ${{ steps.checkpoint.outputs.toolSha256 }}
+      toolWorkspace: ${{ steps.checkpoint.outputs.toolWorkspace }}
     env:
       PURE_REMOTE_HELPER_PREBUILT_DIR: ${{ github.workspace }}/dist/remote-helper
-    strategy:
-      fail-fast: false
-      matrix:
-        os:
-          - windows-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Require both helper producer identities
+        shell: pwsh
+        env:
+          HELPER_X64_ID: ${{ needs.helper.outputs.x64ArtifactId }}
+          HELPER_ARM64_ID: ${{ needs.helper.outputs.arm64ArtifactId }}
+        run: |
+          . .github/scripts/studio-compile-handoff.ps1
+          Assert-StudioArtifactId -Id $env:HELPER_X64_ID
+          Assert-StudioArtifactId -Id $env:HELPER_ARM64_ID
+
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: rc-bundled-helper-${{ github.sha }}-x86_64-unknown-linux-musl
+          artifact-ids: ${{ needs.helper.outputs.x64ArtifactId }}
+          merge-multiple: true
           path: dist/remote-helper/x86_64-unknown-linux-musl
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: rc-bundled-helper-${{ github.sha }}-aarch64-unknown-linux-musl
+          artifact-ids: ${{ needs.helper.outputs.arm64ArtifactId }}
+          merge-multiple: true
           path: dist/remote-helper/aarch64-unknown-linux-musl
       - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
         with:
@@ -149,15 +150,126 @@ jobs:
 
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
+          save-if: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
           # Same Windows GUI product set as the stable publisher build.
           shared-key: gui-windows
           workspaces: |
             . -> target
             . -> target/xtask
-      - name: Build GUI artifact
+      - name: Read stable package version
+        id: version
+        shell: pwsh
+        run: |
+          $version = (Get-Content -LiteralPath studio-version.txt -Raw).Trim()
+          if ($version -cnotmatch '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$') { throw 'Invalid stable package version' }
+          "version=$version" | Out-File $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: Build GUI bundle and release tool
         run: cargo xtask build-gui
-      - name: upload artifact
+
+      - name: Archive runtime bundle and identify release tool
+        id: checkpoint
+        shell: pwsh
+        run: |
+          . .github/scripts/studio-compile-handoff.ps1
+          New-StudioCompileCheckpoint
+
+      - name: Preserve runtime bundle checkpoint immediately
+        id: bundle
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: anywork-${{ matrix.os }}
-          path: dist/anywork-release/**
+          name: rc-${{ github.sha }}-bundle-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/bundle.zip
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+      - name: Preserve independent release tool
+        id: tool
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: rc-${{ github.sha }}-tool-${{ github.run_attempt }}
+          path: target/xtask/debug/pl-xtask.exe
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+  package-check:
+    name: Check prebuilt packaging without production credentials
+    needs: compile
+    runs-on: windows-latest
+    env:
+      RELEASE_VERSION: ${{ needs.compile.outputs.version }}
+      BUNDLE_ARTIFACT_ID: ${{ needs.compile.outputs.bundleArtifactId }}
+      BUNDLE_SHA256: ${{ needs.compile.outputs.bundleSha256 }}
+      TOOL_ARTIFACT_ID: ${{ needs.compile.outputs.toolArtifactId }}
+      TOOL_SHA256: ${{ needs.compile.outputs.toolSha256 }}
+      TOOL_WORKSPACE: ${{ needs.compile.outputs.toolWorkspace }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Require immutable runtime bundle artifact ID
+        shell: pwsh
+        run: |
+          . .github/scripts/studio-compile-handoff.ps1
+          Assert-StudioArtifactId -Id $env:BUNDLE_ARTIFACT_ID
+
+      - name: Download runtime bundle from this run
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ env.BUNDLE_ARTIFACT_ID }}
+          merge-multiple: true
+          path: ${{ runner.temp }}/studio-bundle
+
+      - name: Verify and restore runtime bundle
+        shell: pwsh
+        run: |
+          . .github/scripts/studio-compile-handoff.ps1
+          Restore-StudioBundle
+
+      - name: Require immutable release tool artifact ID
+        shell: pwsh
+        run: |
+          . .github/scripts/studio-compile-handoff.ps1
+          Assert-StudioArtifactId -Id $env:TOOL_ARTIFACT_ID
+
+      - name: Download release tool from this run
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ env.TOOL_ARTIFACT_ID }}
+          merge-multiple: true
+          path: ${{ runner.temp }}/studio-tool
+
+      - name: Verify and restore release tool
+        shell: pwsh
+        run: |
+          . .github/scripts/studio-compile-handoff.ps1
+          Restore-StudioReleaseTool
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: |
+          . .github/scripts/studio-package-tools.ps1
+          Install-StudioInnoSetup
+
+      - name: Stage installer from verified prebuilt bundle
+        shell: pwsh
+        run: |
+          . .github/scripts/studio-compile-handoff.ps1
+          Assert-StudioProductVersion -Executable (Join-Path $env:STUDIO_RELEASE_BUNDLE 'anywork.exe') -Version $env:RELEASE_VERSION
+          & $env:STUDIO_RELEASE_TOOL release-gui stage --version $env:RELEASE_VERSION --bundle $env:STUDIO_RELEASE_BUNDLE
+          if ($LASTEXITCODE -ne 0) { throw "Package staging exited with $LASTEXITCODE" }
+
+      - name: Smoke-test per-user installer
+        shell: pwsh
+        run: |
+          . .github/scripts/studio-package-tools.ps1
+          Test-StudioInstaller
+
+      - name: Preserve unsigned package check output
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: rc-package-check-${{ github.sha }}-${{ github.run_attempt }}
+          path: dist/studio-release/${{ needs.compile.outputs.version }}/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
