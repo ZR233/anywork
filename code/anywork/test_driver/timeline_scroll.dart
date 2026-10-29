@@ -64,7 +64,6 @@ Future<void> main(List<String> args) async {
     final timeline = TimelineObservation.optional(state);
     final scroll = TimelineScrollObservation.optional(state);
     return timeline != null &&
-        !timeline.preparingLive &&
         scroll != null &&
         scroll.laidOut &&
         !scroll.isScrolling &&
@@ -219,7 +218,6 @@ Future<void> main(List<String> args) async {
       final scroll = TimelineScrollObservation.optional(state);
       return timeline != null &&
           timeline.isLive &&
-          !timeline.preparingLive &&
           timeline.generation > beforeReturn.generation &&
           scroll != null &&
           scroll.laidOut &&

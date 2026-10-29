@@ -199,8 +199,7 @@ Future<void> main(List<String> args) async {
         'mode': timeline.mode,
         'generation': timeline.generation,
         'hasOlder': timeline.hasOlder,
-        'savedItems': timeline.items.where((item) => item.saved).length,
-        'terminalItems': timeline.items.where((item) => item.terminal).length,
+        'completedAtoms': timeline.items.length,
         'typedDetailRefs': timeline.items.fold<int>(
           0,
           (total, item) => total + item.details.length,

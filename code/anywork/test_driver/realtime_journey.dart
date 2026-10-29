@@ -392,7 +392,7 @@ class RealtimeJourney {
   /// sub-check is recorded here instead of being asserted.
   final List<String> pendingEvidence = <String>[
     'parallel concurrency is observed from two live exec tools in one poll; a backend overlap counter is still outstanding',
-    'in-flight tool stdout is asserted from the typed timeline output/progressBytes/itemRevision fields when the integrated Driver build projects them; a running tool is otherwise evidenced by its live status and screenshot, with its output verified only after delivery',
+    'in-flight tool stdout is asserted from ordered conversationActivity output parts keyed by activity identity and real call/part identity; missing parts remain unverified',
     'exec is a background tool: the scripted model only reports completion after it observed the task with the supported wait tool, so the model Turn terminal is recorded separately from the delivered command result and from the durable settled projection',
     'the parallel scenario waits on both command receipts; a single settled model step may consume both delivered results, so one answer is accepted for the batch',
     'first-content latency is measured from the Driver wall clock, not a account TTFT field',
@@ -836,10 +836,9 @@ class RealtimeJourney {
   /// samples two independent live facts in the *same* poll so neither can be lost
   /// to the other's cost:
   ///
-  /// * the running `exec` call's typed in-flight stdout (`output`/
-  ///   `progressBytes`/`itemRevision`) must grow across at least two samples of
-  ///   the same call, which a revision jump alone, a bare `running` status, or
-  ///   the final result read early can never satisfy; and
+  /// * the running `exec` call's ordered output parts must change content across
+  ///   multiple observations of the same activity and call identity; state and
+  ///   byte counters alone do not satisfy this; and
   /// * a *different* live activity identity must be published collapsed, i.e. the
   ///   expand state must reset when the activity identity switches.
   ///
@@ -851,7 +850,7 @@ class RealtimeJourney {
     final previousIdentity = expandedActivityIdentity;
     final wantIdentityReset = previousIdentity != null && activityLeftExpanded;
     final samples = <Map<String, Object?>>[];
-    var typedToolPreviewSeen = false;
+    var activityOutputPartsSeen = false;
     var activityFieldSeen = false;
     var observedGrowth = false;
     var identityResetObserved = false;
@@ -884,8 +883,8 @@ class RealtimeJourney {
         checks['activityIdentityResetsCollapse'] = true;
       }
       // (b) In-flight typed stdout growth of the same call identity.
-      if (_timelineExposesTypedToolPreview(snapshot)) {
-        typedToolPreviewSeen = true;
+      if (_activityExposesOutputParts(snapshot, callId)) {
+        activityOutputPartsSeen = true;
       }
       final sample = _liveToolProgressSample(snapshot, callId);
       if (sample != null) {
@@ -894,12 +893,13 @@ class RealtimeJourney {
           ...sample,
         });
         if (previous != null &&
-            (sample['progressBytes']! as int) >
-                (previous['progressBytes']! as int) &&
-            (sample['outputChars']! as int) >
-                (previous['outputChars']! as int) &&
-            (sample['itemRevision']! as int) >
-                (previous['itemRevision']! as int)) {
+            sample['activityIdentity'] == previous['activityIdentity'] &&
+            sample['callId'] == previous['callId'] &&
+            activityPartTextChanged(
+              previous['outputParts'],
+              sample['outputParts'],
+              identityField: 'partId',
+            )) {
           observedGrowth = true;
         }
         previous = sample;
@@ -1012,10 +1012,10 @@ class RealtimeJourney {
     observations['longCommandProgress'] = samples;
     observations['longCommandActivityDetails'] = activityDetailSamples;
     checks['longCommandActivityDetailsOutputGrows'] = activityDetailGrowth;
-    if (!typedToolPreviewSeen) {
+    if (!activityOutputPartsSeen) {
       pendingEvidence.add(
-        'long-command in-flight output: no typed tool preview was observed for '
-        '$callId, so the mid-flight stdout growth is pending a real observation',
+        'long-command in-flight output: conversationActivity exposed no outputParts '
+        'for real callId $callId, so streaming output remains unverified',
       );
     } else {
       checks['longCommandInFlightOutputGrows'] = observedGrowth;
@@ -1164,10 +1164,12 @@ class RealtimeJourney {
           ...sample,
         });
         if (previous != null &&
-            (sample['progressBytes']! as int) >
-                (previous['progressBytes']! as int) &&
-            (sample['outputChars']! as int) >
-                (previous['outputChars']! as int)) {
+            sample['activityIdentity'] == previous['activityIdentity'] &&
+            activityPartTextChanged(
+              previous['outputParts'],
+              sample['outputParts'],
+              identityField: 'partId',
+            )) {
           growthSeen = true;
         }
         previous = sample;
@@ -1524,7 +1526,6 @@ class RealtimeJourney {
         if (timeline == null || scroll == null) return false;
         return timeline.threadId == threadId &&
             timeline.isLive &&
-            !timeline.preparingLive &&
             timeline.generation > historyGeneration &&
             scroll.laidOut &&
             !scroll.isScrolling &&
@@ -1585,7 +1586,6 @@ class RealtimeJourney {
     checks['historyDirectSendNewGeneration'] =
         liveTimeline.threadId == history.threadId &&
         liveTimeline.isLive &&
-        !liveTimeline.preparingLive &&
         liveTimeline.generation > history.generation &&
         liveScroll.generation == liveTimeline.generation &&
         liveScroll.atLiveEdge &&
@@ -1610,7 +1610,6 @@ class RealtimeJourney {
           'threadId': liveTimeline.threadId,
           'mode': liveTimeline.mode,
           'generation': liveTimeline.generation,
-          'preparingLive': liveTimeline.preparingLive,
           'pixels': liveScroll.pixels,
           'extentBefore': liveScroll.extentBefore,
           'extentAfter': liveScroll.extentAfter,
@@ -2282,20 +2281,22 @@ class RealtimeJourney {
     // `expandable` (capability) is recorded for evidence only: the assertions use
     // the actual `expanded` state.
     counts['activityExpandableCapability'] = expandedView?['expandable'];
-    // The same identity must stay expanded across a *new* update. The revision
-    // token must advance through some typed content domain (final text, reasoning
-    // summary/body, tool progress), so this is never a re-read of the same
-    // snapshot and never keyed on one domain only. This is
+    // The same identity must stay expanded across a *new* update. Require a
+    // changed observation of actual ordered content parts, not a synthetic
+    // revision or a status/byte-counter change.
     // gathered BEFORE the window resize: the resize is the slowest observation, so
-    // the revision evidence is taken first and every phase stays tied to this
+    // content evidence is taken first and every phase stays tied to this
     // exact activity identity instead of racing the stream window.
-    final revisionBefore = _streamingRevision(expanded);
+    final contentBefore = _activityContentObservation(expanded);
     final advanced = await waitFor(
       (current) {
         final activity = conversationActivity(current);
         return activity != null &&
             activity['identity'] == identity &&
-            _streamingRevision(current) > revisionBefore;
+            conversationActivityContentChanged(
+              contentBefore,
+              _activityContentObservation(current),
+            );
       },
       '${label}_activity_update',
       timeout: const Duration(seconds: 20),
@@ -2306,12 +2307,8 @@ class RealtimeJourney {
     // The activity identity the update was confirmed against is the same one left
     // expanded for the cross-identity reset.
     expandedActivityIdentity = identity;
-    counts['activityRevisionBefore'] = revisionBefore;
-    counts['activityRevisionAfter'] = _streamingRevision(advanced);
-    // 真实内容域 before/after：说明这次“新更新”来自推理/工具/文本的哪一域，
-    // 不只是聚合 token 变了。
-    counts['activityDomainBefore'] = contentDomainProgress(expanded);
-    counts['activityDomainAfter'] = contentDomainProgress(advanced);
+    counts['activityPartsBefore'] = _activityContentObservation(expanded);
+    counts['activityPartsAfter'] = _activityContentObservation(advanced);
     // The real expanded layout is recorded while the details are open: the wide
     // window first, then the narrow window (restored immediately after). Both are
     // still on the same identity that was just confirmed expanded across updates.
@@ -2341,15 +2338,19 @@ class RealtimeJourney {
     checks['activityCollapse'] =
         conversationActivity(collapsed)?['expanded'] == false;
     // Collapsing must persist across a further update of the same identity: the
-    // revision must advance and the state must stay `expanded=false`.
-    final collapseRevision = _streamingRevision(collapsed);
+    // real content must change and the state must stay `expanded=false`.
+    final collapseContent = _activityContentObservation(collapsed);
+    counts['activityCollapseContentBefore'] = collapseContent;
     final recollapsed = await waitFor(
       (current) {
         final activity = conversationActivity(current);
         return activity != null &&
             activity['identity'] == identity &&
             activity['expanded'] == false &&
-            _streamingRevision(current) > collapseRevision;
+            conversationActivityContentChanged(
+              collapseContent,
+              _activityContentObservation(current),
+            );
       },
       '${label}_activity_collapsed_update',
       timeout: const Duration(seconds: 20),
@@ -2357,9 +2358,9 @@ class RealtimeJourney {
     );
     checks['activityCollapsePersists'] =
         conversationActivity(recollapsed)?['expanded'] == false;
-    counts['activityCollapseRevisionAfter'] = _streamingRevision(recollapsed);
-    counts['activityCollapseDomainBefore'] = contentDomainProgress(collapsed);
-    counts['activityCollapseDomainAfter'] = contentDomainProgress(recollapsed);
+    counts['activityCollapseContentAfter'] = _activityContentObservation(
+      recollapsed,
+    );
     // Leave the live activity expanded again so the cross-identity contract
     // observes a real reset on the next activity rather than asserting that an
     // already-collapsed bar stays collapsed.
@@ -2496,7 +2497,6 @@ class RealtimeJourney {
       final scroll = TimelineScrollObservation.optional(state);
       if (timeline != null &&
           timeline.isLive &&
-          !timeline.preparingLive &&
           timeline.generation > beforeReturn.generation &&
           scroll != null &&
           scroll.laidOut &&
@@ -2802,69 +2802,11 @@ String? _lastUserItemId(TimelineObservation timeline) =>
 String _activitySummaryKey(String reasoningId) =>
     'timeline-activity-summary-$reasoningId';
 
-/// A token of observable content progress for the current turn.
-///
-/// 各个**内容域**独立推进：新增条目、文本长度／字节、每个 canonical 条目的 typed
-/// 内容 revision、逐字段详情引用的完整长度与预览长度（推理摘要、推理正文、工具参数
-/// 与结果、原始记录等），以及工具结果的实时进度字节。推理正文不落在 `item.text`
-/// 上，只看最终文本长度会漏掉整个推理流。
-///
-/// 只消费当前 snapshot 的 typed 事实：不读 `saved`／`terminal`／订阅版本，也不把
-/// 重读同一快照当进展（同一快照得到的 token 完全相同）。这是证据 token，不是性能
-/// 指标。
-int _streamingRevision(Map<String, dynamic> snapshot) {
-  final timeline = TimelineObservation.optional(snapshot);
-  if (timeline == null) return 0;
-  var revision = timeline.itemCount;
-  for (final item in timeline.items) {
-    // canonical 条目内容 revision：一次内容变更只推进一次；保存确认只翻转同一
-    // revision 的 saved，因此它不是“保存进度”。
-    revision += item.revision;
-    revision += item.text.length + item.textBytes;
-    for (final detail in item.details) {
-      // 详情引用的 revision 是所属条目的当前版本（不重复计入）；字段的完整长度与
-      // 预览长度反映该内容域的真实增长，包含推理摘要／推理正文等不在 text 的域。
-      revision += detail.totalBytes + detail.previewBytes;
-    }
-    revision += item.tool?.progressBytes ?? 0;
-  }
-  return revision;
-}
-
-/// 各内容域的真实进展事实（诊断用），说明 token 的增长来自哪个域。
-///
-/// 推理摘要/推理正文/工具参数与结果/最终文本是不同内容域：这里分别给出条目
-/// revision 之和、逐字段详情字节、文本字节、工具进度字节，以及推理条目的 revision
-/// 列表。只读当前 snapshot，不改状态、不读 `saved`／`terminal`。
-Map<String, Object?> contentDomainProgress(Map<String, dynamic> snapshot) {
-  final timeline = TimelineObservation.optional(snapshot);
-  if (timeline == null) {
-    return const <String, Object?>{'present': false};
-  }
-  var itemRevisions = 0;
-  var detailBytes = 0;
-  var textBytes = 0;
-  var toolProgressBytes = 0;
-  final reasoningRevisions = <int>[];
-  for (final item in timeline.items) {
-    itemRevisions += item.revision;
-    textBytes += item.textBytes;
-    for (final detail in item.details) {
-      detailBytes += detail.totalBytes + detail.previewBytes;
-    }
-    toolProgressBytes += item.tool?.progressBytes ?? 0;
-    if (item.kind == 'reasoning') reasoningRevisions.add(item.revision);
-  }
-  return <String, Object?>{
-    'present': true,
-    'itemCount': timeline.itemCount,
-    'itemRevisions': itemRevisions,
-    'detailBytes': detailBytes,
-    'textBytes': textBytes,
-    'toolProgressBytes': toolProgressBytes,
-    'reasoningItemRevisions': reasoningRevisions,
-    'token': _streamingRevision(snapshot),
-  };
+/// Ordered, typed activity content from the read-only Driver projection. This
+/// serializes actual part identity, order, text and declared UTF-8 length; it is
+/// an observation value, not a version counter.
+String? _activityContentObservation(Map<String, dynamic> snapshot) {
+  return conversationActivityContentObservation(snapshot);
 }
 
 /// 真正的最终回答数量：只统计 `channel == finalAnswer`，不把进度/解释混入。
@@ -2909,7 +2851,7 @@ List<Map<String, dynamic>> execTools(Map<String, dynamic> snapshot) {
       'result': tool.result,
       'output': tool.result,
       'progressBytes': tool.progressBytes,
-      'itemRevision': tool.itemRevision,
+      'appendSeq': tool.appendSeq,
       'itemId': item.id,
     });
   }
@@ -2952,41 +2894,63 @@ Map<String, dynamic>? _toolByCallId(
   return null;
 }
 
-/// Whether the selected thread exposes any typed tool preview at all.
-///
-/// 契约保证每个 toolCall 预览都带 `progressBytes`/`itemRevision`，所以这个谓词只回答
-/// “有没有可采样的工具预览”，**不**声称观察到字段增长；增长由同一调用身份的连续
-/// 采样（progressBytes/outputChars/itemRevision 都前进）判定。
-bool _timelineExposesTypedToolPreview(Map<String, dynamic> snapshot) {
-  final timeline = TimelineObservation.optional(snapshot);
-  if (timeline == null) return false;
-  return timeline.items.any((item) => item.tool != null);
+/// Whether the current activity publishes output parts for this exact call.
+bool _activityExposesOutputParts(Map<String, dynamic> snapshot, String callId) {
+  final activity = conversationActivity(snapshot);
+  final tools = activity?['toolDetails'];
+  return tools is List &&
+      tools.whereType<Map>().any(
+        (tool) => tool['callId'] == callId && tool['outputParts'] is List,
+      );
 }
 
-/// A live sample of one call's typed in-flight stdout.
-///
-/// Returns null unless the call is genuinely still executing *and* the typed
-/// `output`/`progressBytes`/`itemRevision` triple is present: a scheduled,
-/// terminal or field-less observation is never a live progress sample.
+/// A live sample of the ordered output parts for one real activity call identity.
 Map<String, Object?>? _liveToolProgressSample(
   Map<String, dynamic> snapshot,
   String callId,
 ) {
-  final tool = _toolByCallId(snapshot, callId);
-  if (tool == null) return null;
-  if (!_liveToolStatuses.contains(tool['status'])) return null;
-  final output = tool['output'];
-  final progressBytes = tool['progressBytes'];
-  final itemRevision = tool['itemRevision'];
-  if (output is! String || progressBytes is! int || itemRevision is! int) {
+  final activity = conversationActivity(snapshot);
+  final tools = activity?['toolDetails'];
+  if (activity == null || activity['identity'] is! String || tools is! List) {
     return null;
   }
+  final matches = tools.whereType<Map>().where(
+    (tool) => tool['callId'] == callId,
+  );
+  if (matches.length != 1) return null;
+  final tool = matches.single;
+  final rawParts = tool['outputParts'];
+  if (!_liveToolStatuses.contains(tool['state']) || rawParts is! List) {
+    return null;
+  }
+  final outputParts = <Map<String, Object?>>[];
+  for (var index = 0; index < rawParts.length; index++) {
+    final part = rawParts[index];
+    if (part is! Map) return null;
+    outputParts.add(
+      parseConversationActivityPart(
+        part,
+        index: index,
+        identityField: 'partId',
+        context: 'conversationActivity tool $callId outputParts',
+      ),
+    );
+  }
+  final outputChars = outputParts.fold<int>(
+    0,
+    (total, part) => total + (part['text']! as String).length,
+  );
+  final progressBytes = outputParts.fold<int>(
+    0,
+    (total, part) => total + (part['byteLength']! as int),
+  );
   return <String, Object?>{
-    'status': tool['status'],
+    'activityIdentity': activity['identity'],
+    'callId': callId,
+    'state': tool['state'],
+    'outputParts': outputParts,
     'progressBytes': progressBytes,
-    'itemRevision': itemRevision,
-    'outputChars': output.length,
-    'lines': 'realtime-long-output-line'.allMatches(output).length,
+    'outputChars': outputChars,
   };
 }
 
@@ -3296,9 +3260,9 @@ List<Map<String, dynamic>> timelineRows(Map<String, dynamic> snapshot) {
         'type': _rowType(item),
         'text': item.text,
         'status': item.status,
-        'revision': item.revision,
-        'saved': item.saved,
-        'terminal': item.terminal,
+        'appendSeq': item.appendSeq,
+        'sourceEffectSeq': item.sourceEffectSeq,
+        'sealedAt': item.sealedAt,
         'callId': item.tool?.callId,
         'userInput': item.userInput == null
             ? null
@@ -3318,7 +3282,7 @@ List<Map<String, dynamic>> timelineRows(Map<String, dynamic> snapshot) {
               'result': tool.result,
               'output': tool.result,
               'progressBytes': tool.progressBytes,
-              'itemRevision': tool.itemRevision,
+              'appendSeq': tool.appendSeq,
               'itemId': item.id,
               'attachments': [
                 for (final attachment in tool.attachments)

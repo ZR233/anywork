@@ -513,7 +513,6 @@ class SkillActivityJourney {
           final timeline = TimelineObservation.optional(snapshot);
           final scroll = TimelineScrollObservation.optional(snapshot);
           return timeline != null &&
-              !timeline.preparingLive &&
               scroll != null &&
               scroll.laidOut &&
               !scroll.isScrolling;
@@ -539,7 +538,7 @@ class SkillActivityJourney {
           final group = timeline.presentationFor(item.id);
           fingerprint.add(<String, Object?>{
             'id': item.id,
-            'ordinal': item.ordinal,
+            'appendSeq': item.appendSeq,
             'kind': 'skill',
             'name': item.text,
             'status': item.status,
@@ -555,7 +554,7 @@ class SkillActivityJourney {
           }
           fingerprint.add(<String, Object?>{
             'id': item.id,
-            'ordinal': item.ordinal,
+            'appendSeq': item.appendSeq,
             'kind': tool.name,
             'status': item.status,
             'callId': tool.callId,
@@ -565,7 +564,7 @@ class SkillActivityJourney {
         case 'contextCompaction':
           fingerprint.add(<String, Object?>{
             'id': item.id,
-            'ordinal': item.ordinal,
+            'appendSeq': item.appendSeq,
             'kind': 'contextCompaction',
             'status': item.status,
           });

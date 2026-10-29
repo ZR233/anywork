@@ -6,6 +6,213 @@
 // （design/26 §26.9）。
 import 'dart:convert';
 
+/// Canonical read-only observation of the currently published activity parts.
+///
+/// This is decoded directly from `conversationActivity`; it does not cache or
+/// synthesize product state. The JSON value preserves activity/source identity,
+/// original part identity, order, text and the producer's UTF-8 byte declaration.
+String? conversationActivityContentObservation(Map<String, dynamic> snapshot) {
+  final rawActivity = snapshot['conversationActivity'];
+  if (rawActivity == null) return null;
+  if (rawActivity is! Map) {
+    throw StateError('conversationActivity is not an object: $rawActivity');
+  }
+  final activity = rawActivity.cast<String, dynamic>();
+  final identity = activity['identity'];
+  if (identity is! String) {
+    throw StateError('conversationActivity.identity is missing');
+  }
+
+  List<Map<String, Object?>> textParts(String field) {
+    final rawParts = activity[field];
+    if (rawParts is! List) {
+      throw StateError('conversationActivity.$field is missing');
+    }
+    final result = <Map<String, Object?>>[];
+    final seenIds = <String>{};
+    for (var index = 0; index < rawParts.length; index++) {
+      final rawPart = rawParts[index];
+      if (rawPart is! Map || rawPart['complete'] is! bool) {
+        throw StateError(
+          'conversationActivity.$field[$index] lacks bool complete state',
+        );
+      }
+      final itemId = rawPart['itemId'];
+      if (itemId is! String || !seenIds.add(itemId)) {
+        throw StateError(
+          'conversationActivity.$field has invalid/duplicate itemId: $itemId',
+        );
+      }
+      final parsed = parseConversationActivityPart(
+        rawParts[index],
+        index: index,
+        identityField: 'itemId',
+        context: 'conversationActivity.$field',
+      );
+      parsed['complete'] = rawPart['complete'];
+      result.add(parsed);
+    }
+    return result;
+  }
+
+  final rawTools = activity['toolDetails'];
+  if (rawTools is! List) {
+    throw StateError('conversationActivity.toolDetails is missing');
+  }
+  final tools = <Map<String, Object?>>[];
+  for (var toolIndex = 0; toolIndex < rawTools.length; toolIndex++) {
+    final rawTool = rawTools[toolIndex];
+    if (rawTool is! Map) {
+      throw StateError('conversationActivity tool is not an object');
+    }
+    final tool = rawTool.cast<String, dynamic>();
+    final callId = tool['callId'];
+    final state = tool['state'];
+    final rawParts = tool['outputParts'];
+    if (callId is! String || state is! String || rawParts is! List) {
+      throw StateError(
+        'conversationActivity tool lacks call/state/outputParts',
+      );
+    }
+    final seenPartIds = <String>{};
+    for (final rawPart in rawParts) {
+      if (rawPart is! Map ||
+          rawPart['partId'] is! String ||
+          !seenPartIds.add(rawPart['partId'] as String)) {
+        throw StateError(
+          'conversationActivity tool $callId has invalid/duplicate partId',
+        );
+      }
+    }
+    tools.add(<String, Object?>{
+      'callId': callId,
+      'state': state,
+      'outputParts': [
+        for (var index = 0; index < rawParts.length; index++)
+          parseConversationActivityPart(
+            rawParts[index],
+            index: index,
+            identityField: 'partId',
+            context: 'conversationActivity tool $callId outputParts',
+          ),
+      ],
+    });
+  }
+  return jsonEncode(<String, Object?>{
+    'identity': identity,
+    'turnId': activity['turnId'],
+    'executionId': activity['executionId'],
+    'reasoningParts': textParts('reasoningParts'),
+    'responseParts': textParts('responseParts'),
+    'tools': tools,
+  });
+}
+
+/// Whether two activity observations show changed text on an unchanged activity
+/// identity. Counters, status, byte declarations, and identity changes alone do
+/// not count as content progress.
+bool conversationActivityContentChanged(String? before, String? after) {
+  if (before == null || after == null) return false;
+  final left = jsonDecode(before);
+  final right = jsonDecode(after);
+  if (left is! Map ||
+      right is! Map ||
+      left['identity'] != right['identity'] ||
+      left['turnId'] != right['turnId'] ||
+      left['executionId'] != right['executionId']) {
+    return false;
+  }
+  for (final field in const ['reasoningParts', 'responseParts']) {
+    if (activityPartTextChanged(
+      left[field],
+      right[field],
+      identityField: 'itemId',
+    )) {
+      return true;
+    }
+  }
+  final oldTools = left['tools'];
+  final newTools = right['tools'];
+  if (oldTools is! List || newTools is! List) return false;
+  final oldByCall = <String, Map>{};
+  for (final tool in oldTools) {
+    if (tool is Map && tool['callId'] is String) {
+      oldByCall[tool['callId'] as String] = tool;
+    }
+  }
+  for (final tool in newTools) {
+    if (tool is! Map || tool['callId'] is! String) continue;
+    final oldTool = oldByCall[tool['callId'] as String];
+    if (activityPartTextChanged(
+      oldTool?['outputParts'],
+      tool['outputParts'],
+      identityField: 'partId',
+    )) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool activityPartTextChanged(
+  Object? before,
+  Object? after, {
+  required String identityField,
+}) {
+  if (before is! List || after is! List) return false;
+  final oldById = <String, String>{};
+  for (final value in before) {
+    if (value is Map &&
+        value[identityField] is String &&
+        value['text'] is String) {
+      oldById[value[identityField] as String] = value['text'] as String;
+    }
+  }
+  for (final value in after) {
+    if (value is! Map ||
+        value[identityField] is! String ||
+        value['text'] is! String) {
+      continue;
+    }
+    final id = value[identityField] as String;
+    final text = value['text'] as String;
+    final previousText = oldById[id];
+    if (previousText != null && previousText != text) {
+      return true;
+    }
+  }
+  return false;
+}
+
+Map<String, Object?> parseConversationActivityPart(
+  Object? raw, {
+  required int index,
+  required String identityField,
+  required String context,
+}) {
+  if (raw is! Map) throw StateError('$context[$index] is not an object');
+  final part = raw.cast<String, dynamic>();
+  final identity = part[identityField];
+  final text = part['text'];
+  final byteLength = part['byteLength'];
+  if (identity is! String || text is! String || byteLength is! int) {
+    throw StateError('$context[$index] lacks $identityField/text/byteLength');
+  }
+  if (part.containsKey('complete') && part['complete'] is! bool) {
+    throw StateError('$context[$index] complete state must be bool');
+  }
+  if (utf8.encode(text).length != byteLength) {
+    throw StateError('$context[$index] byteLength disagrees with text');
+  }
+  return <String, Object?>{
+    'index': index,
+    identityField: identity,
+    'text': text,
+    'byteLength': byteLength,
+    if (part.containsKey('complete')) 'complete': part['complete'],
+  };
+}
+
 /// Current display, layout and viewport demand have all settled. EOF can be short.
 bool timelineViewportSettled(Map<String, dynamic> snapshot) {
   final timeline = TimelineObservation.optional(snapshot);
@@ -13,7 +220,6 @@ bool timelineViewportSettled(Map<String, dynamic> snapshot) {
   return timeline != null &&
       timeline.ready &&
       timeline.connection == 'ready' &&
-      !timeline.preparingLive &&
       !timeline.loadingOlder &&
       timeline.olderError == null &&
       scroll != null &&
@@ -38,6 +244,7 @@ final class TimelineViewportStability {
     final stamp = (
       timeline.threadId,
       timeline.generation,
+      timeline.timelineEpoch,
       timeline.itemCount,
       timeline.olderCursor,
       timeline.hasOlder,
@@ -59,7 +266,9 @@ final class TimelineObservation {
     required this.ready,
     required this.mode,
     required this.connection,
-    required this.appliedVersion,
+    required this.timelineEpoch,
+    required this.completedThrough,
+    required this.loadedCount,
     required this.itemCount,
     required this.itemIds,
     required this.olderCursor,
@@ -67,7 +276,6 @@ final class TimelineObservation {
     required this.loadingOlder,
     required this.olderError,
     required this.hasNewOutput,
-    required this.preparingLive,
     required this.items,
     required this.presentationItems,
   });
@@ -124,7 +332,9 @@ final class TimelineObservation {
       ready: _bool(map, 'ready', 'timeline'),
       mode: _string(map, 'mode', 'timeline'),
       connection: _string(map, 'connection', 'timeline'),
-      appliedVersion: _intOrNull(map, 'appliedVersion', 'timeline'),
+      timelineEpoch: _stringOrNull(map, 'timelineEpoch', 'timeline'),
+      completedThrough: _intOrNull(map, 'completedThrough', 'timeline'),
+      loadedCount: _intOrNull(map, 'loadedCount', 'timeline'),
       itemCount: _int(map, 'itemCount', 'timeline'),
       itemIds: List.unmodifiable(itemIds),
       olderCursor: _stringOrNull(map, 'olderCursor', 'timeline'),
@@ -132,7 +342,6 @@ final class TimelineObservation {
       loadingOlder: _bool(map, 'loadingOlder', 'timeline'),
       olderError: _stringOrNull(map, 'olderError', 'timeline'),
       hasNewOutput: _bool(map, 'hasNewOutput', 'timeline'),
-      preparingLive: _bool(map, 'preparingLive', 'timeline'),
       items: List.unmodifiable(items),
     );
   }
@@ -153,7 +362,9 @@ final class TimelineObservation {
   /// `live` 或 `history`；这是内容发布策略，不是滚动 owner。
   final String mode;
   final String connection;
-  final int? appliedVersion;
+  final String? timelineEpoch;
+  final int? completedThrough;
+  final int? loadedCount;
   final int itemCount;
   final List<String> itemIds;
   final String? olderCursor;
@@ -161,7 +372,6 @@ final class TimelineObservation {
   final bool loadingOlder;
   final String? olderError;
   final bool hasNewOutput;
-  final bool preparingLive;
   final List<TimelineItemObservation> items;
   final List<TimelinePresentationObservation> presentationItems;
 
@@ -170,12 +380,12 @@ final class TimelineObservation {
         (item) => item.memberIds.contains(sourceId),
       );
 
-  int? ordinalOfIdentity(String id) {
+  int? appendSeqOfIdentity(String id) {
     for (final item in items) {
-      if (item.id == id) return item.ordinal;
+      if (item.id == id) return item.appendSeq;
     }
     for (final item in presentationItems) {
-      if (item.id == id) return item.ordinal;
+      if (item.id == id) return item.firstAppendSeq;
     }
     return null;
   }
@@ -240,10 +450,10 @@ final class TimelineObservation {
     }
   }
 
-  /// canonical 顺序（ordinal 升序）；用于证明分页前插没有错序。
-  bool get ordinalAscending {
+  /// canonical 完成项顺序（appendSeq 升序）；用于证明分页前插没有错序。
+  bool get appendSeqAscending {
     for (var index = 1; index < items.length; index++) {
-      if (items[index].ordinal <= items[index - 1].ordinal) return false;
+      if (items[index].appendSeq <= items[index - 1].appendSeq) return false;
     }
     return true;
   }
@@ -254,7 +464,9 @@ final class TimelineObservation {
     'ready': ready,
     'mode': mode,
     'connection': connection,
-    'appliedVersion': appliedVersion,
+    'timelineEpoch': timelineEpoch,
+    'completedThrough': completedThrough,
+    'loadedCount': loadedCount,
     'itemCount': itemCount,
     'firstId': itemIds.isEmpty ? null : itemIds.first,
     'lastId': itemIds.isEmpty ? null : itemIds.last,
@@ -263,7 +475,6 @@ final class TimelineObservation {
     'loadingOlder': loadingOlder,
     'olderError': olderError,
     'hasNewOutput': hasNewOutput,
-    'preparingLive': preparingLive,
   };
 }
 
@@ -272,7 +483,7 @@ final class TimelinePresentationObservation {
   TimelinePresentationObservation({
     required this.id,
     required this.kind,
-    required this.ordinal,
+    required this.firstAppendSeq,
     required this.memberIds,
     required this.visibleMemberIds,
     required this.skillPairs,
@@ -303,7 +514,7 @@ final class TimelinePresentationObservation {
     return TimelinePresentationObservation(
       id: _string(map, 'id', 'presentation'),
       kind: _string(map, 'kind', 'presentation'),
-      ordinal: _int(map, 'ordinal', 'presentation'),
+      firstAppendSeq: _int(map, 'firstAppendSeq', 'presentation'),
       memberIds: List<String>.unmodifiable(ids.cast<String>()),
       visibleMemberIds: List<String>.unmodifiable(visible.cast<String>()),
       skillPairs: Map<String, String>.unmodifiable(skillPairs),
@@ -312,7 +523,7 @@ final class TimelinePresentationObservation {
   }
   final String id;
   final String kind;
-  final int ordinal;
+  final int firstAppendSeq;
   final List<String> memberIds;
 
   /// 当前组内可见活动行的成员身份，按 canonical 顺序。
@@ -330,10 +541,9 @@ final class TimelinePresentationObservation {
 final class TimelineItemObservation {
   TimelineItemObservation._({
     required this.id,
-    required this.ordinal,
-    required this.revision,
-    required this.saved,
-    required this.terminal,
+    required this.appendSeq,
+    required this.sourceEffectSeq,
+    required this.sealedAt,
     required this.omittedBytes,
     required this.kind,
     required this.status,
@@ -383,10 +593,9 @@ final class TimelineItemObservation {
     _requireChannelForKind(kind, channel);
     return TimelineItemObservation._(
       id: _string(map, 'id', 'timeline item'),
-      ordinal: _int(map, 'ordinal', 'timeline item'),
-      revision: _int(map, 'revision', 'timeline item'),
-      saved: _bool(map, 'saved', 'timeline item'),
-      terminal: _bool(map, 'terminal', 'timeline item'),
+      appendSeq: _int(map, 'appendSeq', 'timeline item'),
+      sourceEffectSeq: _intOrNull(map, 'sourceEffectSeq', 'timeline item'),
+      sealedAt: _intOrNull(map, 'sealedAt', 'timeline item'),
       omittedBytes: _int(map, 'omittedBytes', 'timeline item'),
       kind: kind,
       status: _string(map, 'status', 'timeline item'),
@@ -406,10 +615,9 @@ final class TimelineItemObservation {
   }
 
   final String id;
-  final int ordinal;
-  final int revision;
-  final bool saved;
-  final bool terminal;
+  final int appendSeq;
+  final int? sourceEffectSeq;
+  final int? sealedAt;
   final int omittedBytes;
   final String kind;
   final String status;
@@ -447,12 +655,67 @@ final class TimelineItemObservation {
   }
 
   int? get textTotalBytes => detail('text')?.totalBytes;
+
+  /// The complete immutable Driver-published fields for epoch-stability checks.
+  Map<String, Object?> frozenFields() => <String, Object?>{
+    'id': id,
+    'appendSeq': appendSeq,
+    'sourceEffectSeq': sourceEffectSeq,
+    'sealedAt': sealedAt,
+    'omittedBytes': omittedBytes,
+    'kind': kind,
+    'status': status,
+    'text': text,
+    'channel': channel,
+    'details': [for (final value in details) value.toJson()],
+    'attachments': [
+      for (final value in attachments)
+        <String, Object?>{
+          'id': value.id,
+          'modality': value.modality,
+          'filename': value.filename,
+          'byteSize': value.byteSize,
+          'source': value.source,
+        },
+    ],
+    'tool': tool == null
+        ? null
+        : <String, Object?>{
+            'name': tool!.name,
+            'status': tool!.status,
+            'callId': tool!.callId,
+            'arguments': tool!.arguments,
+            'result': tool!.result,
+            'progressBytes': tool!.progressBytes,
+            'appendSeq': tool!.appendSeq,
+            'denialReason': tool!.denialReason,
+            'workingDirectory': tool!.workingDirectory,
+            'exitCode': tool!.exitCode,
+            'attachments': [
+              for (final value in tool!.attachments)
+                <String, Object?>{
+                  'id': value.id,
+                  'modality': value.modality,
+                  'filename': value.filename,
+                  'byteSize': value.byteSize,
+                  'source': value.source,
+                },
+            ],
+          },
+    'userInput': userInput == null
+        ? null
+        : <String, Object?>{
+            'interactionId': userInput!.interactionId,
+            'state': userInput!.state,
+            'isPlanConfirmation': userInput!.isPlanConfirmation,
+            'planDecision': userInput!.planDecision,
+          },
+  };
 }
 
 final class TimelineDetailObservation {
   const TimelineDetailObservation._({
     required this.field,
-    required this.revision,
     required this.totalBytes,
     required this.previewBytes,
   });
@@ -460,19 +723,16 @@ final class TimelineDetailObservation {
   static TimelineDetailObservation _parse(Map<String, dynamic> map) =>
       TimelineDetailObservation._(
         field: _string(map, 'field', 'timeline detail'),
-        revision: _int(map, 'revision', 'timeline detail'),
         totalBytes: _int(map, 'totalBytes', 'timeline detail'),
         previewBytes: _int(map, 'previewBytes', 'timeline detail'),
       );
 
   final String field;
-  final int revision;
   final int totalBytes;
   final int previewBytes;
 
   Map<String, Object?> toJson() => <String, Object?>{
     'field': field,
-    'revision': revision,
     'totalBytes': totalBytes,
     'previewBytes': previewBytes,
   };
@@ -513,7 +773,7 @@ final class TimelineToolObservation {
     required this.arguments,
     required this.result,
     required this.progressBytes,
-    required this.itemRevision,
+    required this.appendSeq,
     required this.denialReason,
     required this.workingDirectory,
     required this.exitCode,
@@ -541,7 +801,7 @@ final class TimelineToolObservation {
       arguments: _string(map, 'arguments', 'timeline tool'),
       result: _stringOrNull(map, 'result', 'timeline tool'),
       progressBytes: _int(map, 'progressBytes', 'timeline tool'),
-      itemRevision: _int(map, 'itemRevision', 'timeline tool'),
+      appendSeq: _int(map, 'appendSeq', 'timeline tool'),
       denialReason: _stringOrNull(map, 'denialReason', 'timeline tool'),
       workingDirectory: _stringOrNull(map, 'workingDirectory', 'timeline tool'),
       exitCode: _intOrNull(map, 'exitCode', 'timeline tool'),
@@ -557,7 +817,7 @@ final class TimelineToolObservation {
 
   /// 预览结果字节数：逐次增长即在途真实产出。
   final int progressBytes;
-  final int itemRevision;
+  final int appendSeq;
   final String? denialReason;
   final String? workingDirectory;
   final int? exitCode;

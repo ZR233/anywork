@@ -88,7 +88,6 @@ Future<Map<String, Object?>> observeLatestPagePresentation(
           scroll != null &&
           content.isLive &&
           content.generation > before.generation &&
-          !content.preparingLive &&
           !content.hasNewOutput &&
           scroll.atLiveEdge &&
           (scroll.pixels ?? 1).abs() <= 0.5;
@@ -137,7 +136,7 @@ Future<Map<String, Object?>> observeLatestPagePresentation(
       keyboardEnd.generation == keyboardStart.generation &&
       keyboardEnd.itemCount > keyboardStart.itemCount &&
       keyboardStart.itemIds.every(keyboardEnd.itemIds.contains) &&
-      keyboardEnd.ordinalAscending;
+      keyboardEnd.appendSeqAscending;
   observations['keyboardPagination'] = <String, Object?>{
     'input': 'focused message + native PageUp ScrollAction',
     'keyCount': keyCount,

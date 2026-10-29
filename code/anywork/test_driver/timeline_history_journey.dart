@@ -199,7 +199,7 @@ Future<void> main(List<String> args) async {
           duplicateIdentity = true;
         }
       }
-      if (!after.ordinalAscending) orderViolation = true;
+      if (!after.appendSeqAscending) orderViolation = true;
       final cursorMoved =
           after.olderCursor != before.olderCursor || after.hasOlder == false;
       if (!cursorMoved) cursorStalled = true;
@@ -231,7 +231,7 @@ Future<void> main(List<String> args) async {
         'generation': after.generation,
         'retained': retained,
         'prepended': prepended,
-        'orderAscending': after.ordinalAscending,
+        'orderAscending': after.appendSeqAscending,
         'cursorMoved': cursorMoved,
       });
       previous = after;

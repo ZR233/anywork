@@ -84,12 +84,12 @@ final class _DynamicSkillActivity {
         'dynamic Turn reordered, omitted or added calls: $callIds',
       );
     }
-    if (calls.any((item) => !item.saved || !item.terminal)) {
-      throw StateError('dynamic calls were not durably committed');
+    if (calls.any((item) => !timeline.itemIds.contains(item.id))) {
+      throw StateError('dynamic calls are missing canonical completion atoms');
     }
     final waits = _requireWaitHandoffs(calls);
     journey.checks['dynamicSameTurnCallIdentities'] = true;
-    journey.checks['dynamicWaitHandoffsTerminal'] = true;
+    journey.checks['dynamicCallsAreCanonicalCompletionAtoms'] = true;
 
     _requireList('skill-dynamic-before-call', const []);
     _requireWrite(

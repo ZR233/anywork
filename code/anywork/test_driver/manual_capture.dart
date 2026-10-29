@@ -111,10 +111,9 @@ List<Map<String, Object?>> _timelineItems(Map<String, dynamic> snapshot) {
     for (final item in timeline.items)
       <String, Object?>{
         'id': item.id,
-        'ordinal': item.ordinal,
-        'revision': item.revision,
-        'saved': item.saved,
-        'terminal': item.terminal,
+        'appendSeq': item.appendSeq,
+        'sourceEffectSeq': item.sourceEffectSeq,
+        'sealedAt': item.sealedAt,
         'kind': item.kind,
         'status': item.status,
         'omittedBytes': item.omittedBytes,

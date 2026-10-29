@@ -46,7 +46,6 @@ Future<Map<String, Object?>> observeStreamingHistory(
         'mode': timeline?['mode'],
         'connection': timeline?['connection'],
         'generation': timeline?['generation'],
-        'appliedVersion': timeline?['appliedVersion'],
         'itemCount': timeline?['itemCount'],
         'loadingOlder': timeline?['loadingOlder'],
         'busy': busy(state),
@@ -146,7 +145,7 @@ Future<Map<String, Object?>> observeStreamingHistory(
   final end = TimelineObservation.parse(completed);
   if (!end.isHistory ||
       end.generation != start.generation ||
-      end.appliedVersion != start.appliedVersion ||
+      end.timelineEpoch != start.timelineEpoch ||
       body(frozen) != body(completed) ||
       !end.hasNewOutput) {
     throw StateError('Background output changed the frozen History');
@@ -178,12 +177,31 @@ Future<Map<String, Object?>> observeStreamingHistory(
   });
   final retry = TimelineObservation.parse(retried);
   retry.requireConsistentIds();
+  if (start.timelineEpoch == null) {
+    throw StateError('Timeline epoch is missing before the page retry');
+  }
   if (retry.generation != start.generation ||
       !retry.isHistory ||
-      retry.appliedVersion != start.appliedVersion ||
+      retry.timelineEpoch != start.timelineEpoch ||
       !start.itemIds.every(retry.itemIds.contains) ||
+      jsonEncode(
+            retry.itemIds
+                .where(start.itemIds.toSet().contains)
+                .toList(growable: false),
+          ) !=
+          jsonEncode(start.itemIds) ||
+      !retry.appendSeqAscending ||
       retry.itemCount - start.itemCount > 32) {
     throw StateError('Retry lost or replaced the frozen display');
+  }
+  for (final id in start.itemIds) {
+    final before = start.item(id);
+    final after = retry.item(id);
+    if (before == null ||
+        after == null ||
+        jsonEncode(before.frozenFields()) != jsonEncode(after.frozenFields())) {
+      throw StateError('Retry changed frozen completed atom $id');
+    }
   }
   final coverageExpired = retry.olderError != null;
   if (coverageExpired &&
@@ -208,7 +226,7 @@ Future<Map<String, Object?>> observeStreamingHistory(
   );
   final live = TimelineObservation.parse(latest);
   if (!live.itemIds.last.contains('stress-item-19999') ||
-      live.items.last.ordinal <= start.items.last.ordinal) {
+      live.items.last.appendSeq <= start.items.last.appendSeq) {
     throw StateError('Return Live did not reveal genuinely newer output');
   }
   await File('${output.path}/streaming-history-live.png')

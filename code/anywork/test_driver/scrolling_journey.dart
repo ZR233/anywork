@@ -243,7 +243,6 @@ Future<Map<String, Object?>> observeTimelineScrolling(
       final timeline = TimelineObservation.parse(await snapshot());
       if (timeline.isLive &&
           timeline.generation > beforeReturn.generation &&
-          !timeline.preparingLive &&
           settledScroll.generation == timeline.generation) {
         returnedLive = settledScroll;
         liveTimeline = timeline;
