@@ -154,15 +154,11 @@ gh pr view PR_NUMBER --repo OWNER/REPO --json body --jq .body
 
 ### 预置系统技能
 
-- `pl-studio-runtime` 的上游预置技能（`canvas-design`、`frontend-design` 来自 anthropics/skills；`docx`、`pdf`、`powerpoint`、`xlsx` 来自 NousResearch/hermes-agent）只能通过仓库根目录的命令同步：
-
-  ```powershell
-  cargo xtask sync-skills
-  ```
-
-- 命令浅拉取各上游默认分支最新提交到 `target/xtask-sync-skills/` 缓存，完全替换 `code/pl-studio-runtime/assets/skills/` 下同名技能目录，替换前校验 frontmatter。
-- 同步结果必须提交进源码库；源码库是 canonical 内容，构建期不访问网络，也不使用 build.rs 下载上游内容。
-- 同步后人工核对 `code/pl-studio-runtime/THIRD_PARTY_NOTICES.md` 中的 revision 与许可边界（上游许可必须允许再分发；anthropics/skills 的 `pdf`/`docx`/`pptx`/`xlsx` 为禁止再分发的专有许可，不得预置）。
+- `pl-studio-runtime` 的上游预置技能直接存放在 `code/pl-studio-runtime/assets/skills/<name>/`：`canvas-design`、`frontend-design` 来自 anthropics/skills；Office 领域仅使用 DeepSeek Harness 的七项独立 `office` / `office-*` 技能，不混入其他文档技能来源。
+- 更新时通过工具读取固定上游提交及许可证，手动拷贝所需文件，按 `SKILL.md` 和 `references/`、`templates/`、`scripts/`、`assets/` 标准布局整理；下载副本放本会话 scratch。不得新增自动同步命令、子模块、外部仓库 checkout 或构建期下载。
+- 各技能基础约定独立完整，减少互相引用；支持文件位于本技能目录内。正文不写死工具函数调用、宿主物理路径或特定运行时的动态注入协议，遵循当前会话实际提供的发现与执行规则。
+- 内置技能按标准资产目录与 frontmatter 动态发现和校验，不维护技能名称或数量白名单；拷贝后核对名称、描述、引用、安全边界与源文件语义，并执行适用检查。
+- 源码库是 canonical 内容。每次更新须同步 `code/pl-studio-runtime/THIRD_PARTY_NOTICES.md` 中的固定 revision、来源路径、许可与本地适配说明，并保留随资源分发的版权和许可证。上游许可必须允许再分发；anthropics/skills 的 `pdf`/`docx`/`pptx`/`xlsx` 为禁止再分发的专有许可，不得预置。
 
 ## 工程边界
 

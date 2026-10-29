@@ -14,17 +14,6 @@ const BUNDLE_FINGERPRINT: &str =
     include_str!(concat!(env!("OUT_DIR"), "/system_skills_fingerprint"));
 
 const LEGACY_SYSTEM_MARKER_FILE_NAME: &str = ".pl-system-skills.marker";
-const EXPECTED_SYSTEM_SKILLS: [&str; 9] = [
-    "canvas-design",
-    "docx",
-    "frontend-design",
-    "pdf",
-    "powerpoint",
-    "skill-creator",
-    "studio-config",
-    "subagent-workflow",
-    "xlsx",
-];
 
 #[derive(Embed)]
 #[folder = "assets/skills/"]
@@ -144,18 +133,25 @@ fn write_cache_manifest(root: &Path) -> Result<()> {
 fn validated_bundled_assets() -> Result<Vec<BundledAsset>> {
     let mut assets = Vec::new();
     let mut skill_documents = BTreeSet::new();
+    let mut skill_directories = BTreeSet::new();
     for embedded_path in BundledSystemSkills::iter() {
         let path = validate_bundled_path(&embedded_path)?;
+        let skill_name = path
+            .components()
+            .next()
+            .and_then(|component| match component {
+                Component::Normal(name) => name.to_str(),
+                _ => None,
+            })
+            .context("bundled Skill directory name must be valid UTF-8")?;
+        skill_directories.insert(skill_name.to_owned());
         let asset = BundledSystemSkills::get(&embedded_path)
             .with_context(|| format!("bundled Skill asset disappeared: {embedded_path}"))?;
         if is_main_skill_document(&path) {
-            let skill_name = path
-                .parent()
-                .and_then(Path::file_name)
-                .and_then(|name| name.to_str())
-                .context("bundled Skill directory name must be valid UTF-8")?;
             let content = std::str::from_utf8(asset.data.as_ref())
                 .with_context(|| format!("bundled Skill document is not UTF-8: {embedded_path}"))?;
+            pl_tool::skill::validate_skill_name(skill_name)
+                .with_context(|| format!("invalid bundled Skill directory name: {skill_name}"))?;
             pl_tool::skill::validate_skill_document(content, Some(skill_name))
                 .with_context(|| format!("invalid bundled Skill document: {embedded_path}"))?;
             skill_documents.insert(skill_name.to_string());
@@ -167,12 +163,10 @@ fn validated_bundled_assets() -> Result<Vec<BundledAsset>> {
     }
     assets.sort_unstable_by(|left, right| left.path.cmp(&right.path));
 
-    let expected = EXPECTED_SYSTEM_SKILLS
-        .into_iter()
-        .map(ToOwned::to_owned)
-        .collect::<BTreeSet<_>>();
-    if skill_documents != expected {
-        bail!("bundled system Skills must contain exactly {expected:?}, found {skill_documents:?}");
+    if skill_directories != skill_documents {
+        bail!(
+            "every bundled system Skill directory must contain a valid top-level SKILL.md; directories: {skill_directories:?}, documents: {skill_documents:?}"
+        );
     }
     Ok(assets)
 }
@@ -187,9 +181,8 @@ fn validate_bundled_path(raw: &str) -> Result<PathBuf> {
     let skill_name = skill_name
         .to_str()
         .context("bundled Skill path must be valid UTF-8")?;
-    if !EXPECTED_SYSTEM_SKILLS.contains(&skill_name) {
-        bail!("unexpected bundled system Skill directory: {skill_name}");
-    }
+    pl_tool::skill::validate_skill_name(skill_name)
+        .with_context(|| format!("invalid bundled system Skill directory: {skill_name}"))?;
     normalized.push(skill_name);
     for component in components {
         match component {
@@ -209,8 +202,7 @@ fn validate_bundled_path(raw: &str) -> Result<PathBuf> {
 }
 
 fn is_main_skill_document(path: &Path) -> bool {
-    matches!(path.components().count(), 2 | 3)
-        && path.file_name().is_some_and(|name| name == "SKILL.md")
+    path.components().count() == 2 && path.file_name().is_some_and(|name| name == "SKILL.md")
 }
 
 fn replace_system_skills_dir(system_dir: &Path, assets: &[BundledAsset]) -> Result<()> {

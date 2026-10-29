@@ -27,8 +27,7 @@ pub(crate) fn required_for(command: &XtaskCommand) -> bool {
         XtaskCommand::Flutter(_)
         | XtaskCommand::Dart(_)
         | XtaskCommand::VerifyClient
-        | XtaskCommand::ReleaseGui { .. }
-        | XtaskCommand::SyncSkills => false,
+        | XtaskCommand::ReleaseGui { .. } => false,
     }
 }
 
