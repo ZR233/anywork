@@ -47,6 +47,7 @@ pub struct Manifest {
     pub root_workflow_snapshot_revision: Option<u64>,
     pub members: Vec<MemberIdentity>,
     pub workspace: Option<PathBuf>,
+    pub workspace_location: Option<WorkspaceLocation>,
     pub started_at: i64,
     pub ended_at: i64,
     pub elapsed_millis: u128,
@@ -81,6 +82,17 @@ pub struct Limits {
     timeline_items: usize,
     decisions: usize,
     decision_bytes: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum WorkspaceLocation {
+    Local { path: PathBuf },
+    Ssh { alias: String, path: String },
 }
 
 #[derive(Serialize)]
@@ -278,6 +290,7 @@ impl Manifest {
             root_workflow_snapshot_revision: None,
             members: Vec::new(),
             workspace: None,
+            workspace_location: None,
             started_at: unix_seconds()?,
             ended_at: 0,
             elapsed_millis: 0,

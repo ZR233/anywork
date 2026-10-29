@@ -60,8 +60,10 @@ cargo run --locked -p pl-studio-runtime --features live-tests --example collabor
 | `ANYWORK_OBSERVATION_SECONDS` | 正整数 `1..=1800`，默认 `180`。到时记录 `timedOut` 和未完成事项，不能作为 Task 完成或验收通过。 |
 | `ANYWORK_OBSERVATION_ACCOUNT` / `ANYWORK_OBSERVATION_MODEL` | 同时省略或同时设置为非空 Unicode。显式设置只覆盖新根会话的 `NewThreadModelRoute`，不会筛选账号或覆盖 child/Profile 路由。 |
 | `ANYWORK_OBSERVATION_EFFORT` | 非空值，只用于显式 ACCOUNT/MODEL 根路由覆盖；覆盖路由而未设置此值时传 `None`，不猜模型的首个候选。未覆盖路由时完整继承所选真实 Mode 的 effort。 |
-| `ANYWORK_OBSERVATION_WORKSPACE` | 可选，已准备好的小 fixture 目录，canonical 路径必须严格位于本次 artifact 目录内；拒绝 symlink 逃逸。只打开，不 reset、stash、提交或清理已有 fixture，允许刻意准备的脏状态。 |
-| `ANYWORK_OBSERVATION_WORKSPACE_MODE` | `local`（默认）或 `worktree`。后者的已有 fixture 必须有有效 HEAD，Git 元数据也须留在 artifact 内。 |
+| `ANYWORK_OBSERVATION_WORKSPACE` | 本地模式可选，已准备好的小 fixture 目录，canonical 路径必须严格位于本次 artifact 目录内；拒绝 symlink 逃逸。只打开，不 reset、stash、提交或清理已有 fixture，允许刻意准备的脏状态。不得与 SSH workspace 同时设置。 |
+| `ANYWORK_OBSERVATION_WORKSPACE_MODE` | `local`（默认）或 `worktree`。后者仅用于本地 fixture，必须有有效 HEAD，Git 元数据也须留在 artifact 内；SSH 不支持 worktree。 |
+| `ANYWORK_OBSERVATION_SSH_ALIAS` / `ANYWORK_OBSERVATION_SSH_WORKSPACE` | SSH 模式必须同时设置为非空 Unicode；使用已有 SSH alias 和预先独立创建的远端 workspace path。不得与本地 `ANYWORK_OBSERVATION_WORKSPACE` 混用，且只能使用 `local` workspace mode。path 原样传给生产 `open_remote_project`，不在本机 canonicalize、读取、初始化或修改远端目录，也不修改用户 SSH 配置或凭据。 |
+| `ANYWORK_OBSERVATION_HELPER_BUNDLE` | 可选，生产构建生成的 `data/remote-helper/` 资源目录；设置后用于 runtime SSH helper source。省略时使用默认 external helper（Linux 下从 PATH 查找）。 |
 
 未给 workspace 时，在本次 artifact 下新建唯一 Git 项目，只创建最小 README 并形成初始 HEAD。
 已有 fixture 不被自动提交或重写。`git/before/`、`git/after/` 保存实际 HEAD、NUL 格式状态、
@@ -87,6 +89,11 @@ stdout/stderr 在 worker 终态与 drain 结算后才按最终结果标记完整
 `studio-home` 运行时目录；缺失、类型不支持、采集中变化和读取错误都记录并使取证不完整。
 每次 before/after 最多 10000 个未跟踪文件、单路径最多 64 KiB，内容共用既有证据预算。
 运行器不改全局 Git 配置或 hook。后续模型工具操作仍按真实任务和运行时权限执行。
+SSH workspace 沿生产 SSH project 与 helper 路径执行；manifest 的 `workspaceLocation` 记录
+`kind=ssh`、alias 和原始远端 path，`project.json` 保存生产 runtime 返回的实际 project。
+SSH 不在本机读取或初始化远端 Git，也不生成 `git/before/` 或 `git/after/`；manifest 的
+`unfinished` 明确记录远端业务 Git 快照未采集、需人工核对远端产物。因此真实 workflow
+终态仍照常保存，但 `evidenceComplete` 为 false，不能把这次 SSH 采集报告为证据完整。
 
 运行器读取 `ConfigStore::default_app()` 指向的用户配置，仅接受 schema 23 至当前版本且无 inline
 account `bearer_token` 的原始 TOML bytes。它不会 dump hydrated 配置或读出 secret 供证据打印，

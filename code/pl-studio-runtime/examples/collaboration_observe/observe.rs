@@ -8,7 +8,7 @@ use super::Boundary;
 use super::{
     evidence::{
         EventWriter, Evidence, MAX_THREADS, Manifest, MemberIdentity, RetiredOwedWork, Termination,
-        TurnAnchor,
+        TurnAnchor, WorkspaceLocation,
     },
     inputs::Inputs,
 };
@@ -99,9 +99,16 @@ impl Collection {
         );
         scene.check()?;
         let admitted = std::time::Instant::now();
-        let project = runtime.open_project(&inputs.workspace).await;
+        let project = match &inputs.workspace {
+            WorkspaceLocation::Local { path } => runtime.open_project(path).await,
+            WorkspaceLocation::Ssh { alias, path } => {
+                runtime.open_remote_project(alias, path.clone()).await
+            }
+        };
         scene.returned("open_project", admitted, manifest);
         let project = project?;
+        self.evidence
+            .json("project.json", "actual production project record", &project)?;
         scene.check()?;
         let configured = runtime
             .read_settings()?

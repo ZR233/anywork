@@ -1,5 +1,5 @@
 //! Preserve user configuration; only explicit new-Thread parameters may override its defaults.
-use super::evidence::Evidence;
+use super::evidence::{Evidence, WorkspaceLocation};
 use super::git::{git_value, initialize_repository};
 use anyhow::{Context, Result};
 use pl_protocol::{
@@ -14,7 +14,7 @@ use std::{
 
 pub struct Inputs {
     pub home: PathBuf,
-    pub workspace: PathBuf,
+    pub workspace: WorkspaceLocation,
     pub mode: String,
     pub workspace_mode: ThreadWorkspaceMode,
     pub delegation_mode: Option<DelegationMode>,
@@ -91,6 +91,26 @@ impl Inputs {
             Some("worktree") => ThreadWorkspaceMode::Worktree,
             _ => anyhow::bail!("workspace mode must be local or worktree"),
         };
+        let ssh_alias = env("ANYWORK_OBSERVATION_SSH_ALIAS")?;
+        let ssh_workspace = env("ANYWORK_OBSERVATION_SSH_WORKSPACE")?;
+        let remote_workspace = match (ssh_alias, ssh_workspace) {
+            (None, None) => None,
+            (Some(alias), Some(path)) => Some((alias, path)),
+            _ => anyhow::bail!(
+                "ANYWORK_OBSERVATION_SSH_ALIAS and ANYWORK_OBSERVATION_SSH_WORKSPACE must be set together"
+            ),
+        };
+        let local_workspace = std::env::var_os("ANYWORK_OBSERVATION_WORKSPACE");
+        if remote_workspace.is_some() {
+            anyhow::ensure!(
+                local_workspace.is_none(),
+                "SSH workspace cannot be combined with ANYWORK_OBSERVATION_WORKSPACE"
+            );
+            anyhow::ensure!(
+                workspace_mode == ThreadWorkspaceMode::Local,
+                "SSH observation requires local workspace mode; worktree mode is unsupported"
+            );
+        }
         let effort = env("ANYWORK_OBSERVATION_EFFORT")?;
         let route_override = match (
             env("ANYWORK_OBSERVATION_ACCOUNT")?,
@@ -116,30 +136,39 @@ impl Inputs {
             .context("studio-home must be new; never reuse an observation home")?;
         scene.check()?;
         copy_configuration(evidence)?;
-        let workspace = match std::env::var_os("ANYWORK_OBSERVATION_WORKSPACE") {
-            Some(path) => {
-                let workspace = std::fs::canonicalize(path)?;
-                anyhow::ensure!(
-                    workspace.starts_with(evidence.root()) && workspace != evidence.root(),
-                    "fixture must be a directory strictly within the artifact directory"
-                );
-                anyhow::ensure!(
-                    workspace.is_dir() && !workspace.starts_with(&home),
-                    "fixture must not be Studio home"
-                );
-                check_fixture_links(&workspace, evidence.root())?;
-                workspace
-            }
+        let workspace = match remote_workspace {
+            Some((alias, path)) => WorkspaceLocation::Ssh { alias, path },
             None => {
-                let workspace = tempfile::Builder::new()
-                    .prefix("workspace-")
-                    .tempdir_in(evidence.root())?
-                    .keep();
-                initialize_repository(evidence, &workspace, scene).await?;
-                workspace
+                let path = match local_workspace {
+                    Some(path) => {
+                        let workspace = std::fs::canonicalize(path)?;
+                        anyhow::ensure!(
+                            workspace.starts_with(evidence.root()) && workspace != evidence.root(),
+                            "fixture must be a directory strictly within the artifact directory"
+                        );
+                        anyhow::ensure!(
+                            workspace.is_dir() && !workspace.starts_with(&home),
+                            "fixture must not be Studio home"
+                        );
+                        check_fixture_links(&workspace, evidence.root())?;
+                        workspace
+                    }
+                    None => {
+                        let workspace = tempfile::Builder::new()
+                            .prefix("workspace-")
+                            .tempdir_in(evidence.root())?
+                            .keep();
+                        initialize_repository(evidence, &workspace, scene).await?;
+                        workspace
+                    }
+                };
+                WorkspaceLocation::Local { path }
             }
         };
         if workspace_mode == ThreadWorkspaceMode::Worktree {
+            let WorkspaceLocation::Local { path: workspace } = &workspace else {
+                anyhow::bail!("worktree mode requires a local workspace");
+            };
             git_value(
                 evidence,
                 &workspace,
@@ -175,10 +204,10 @@ impl Inputs {
                 );
             }
         }
-        evidence.raw(
-            "workspace-path.txt",
-            "workspace",
-            workspace.to_string_lossy().as_bytes(),
+        evidence.json(
+            "workspace-location.json",
+            "actual local or remote workspace location",
+            &workspace,
         )?;
         let decisions = evidence.root().join("decisions");
         match std::fs::symlink_metadata(&decisions) {

@@ -88,6 +88,15 @@ async fn main() -> Result<()> {
         })
     };
     let result = run(&evidence, &mut manifest, &interrupt).await;
+    if matches!(
+        manifest.workspace_location.as_ref(),
+        Some(evidence::WorkspaceLocation::Ssh { .. })
+    ) {
+        manifest.unfinished.push(
+            "SSH remote business Git before/after snapshots were not collected; manually inspect remote artifacts"
+                .into(),
+        );
+    }
     stop_signal.cancel();
     match signal_task.await {
         Ok(Ok(())) => (),
@@ -150,19 +159,27 @@ async fn run(
     manifest.mode = inputs.mode.clone();
     manifest.root_route_override = inputs.route_override.is_some();
     manifest.prompt_sha256 = evidence::sha256(inputs.prompt.as_bytes());
-    manifest.workspace = Some(inputs.workspace.clone());
+    manifest.workspace_location = Some(inputs.workspace.clone());
     scene.check()?;
-    let before = git::capture_git(evidence, &inputs.workspace, "before", &scene).await;
-    manifest.scenario_elapsed_millis = scene_started.elapsed().as_millis();
-    before?;
+    if let evidence::WorkspaceLocation::Local { path } = &inputs.workspace {
+        manifest.workspace = Some(path.clone());
+        let before = git::capture_git(evidence, path, "before", &scene).await;
+        manifest.scenario_elapsed_millis = scene_started.elapsed().as_millis();
+        before?;
+    }
     scene.check()?;
     let admitted = Instant::now();
-    let initialized = StudioRuntime::initialize(StudioRuntimeOptions {
+    let mut options = StudioRuntimeOptions {
         studio_home: Some(inputs.home.clone()),
         host: StudioHostKind::Desktop,
         ..StudioRuntimeOptions::desktop()
-    })
-    .await;
+    };
+    if let Some(bundle) = std::env::var_os("ANYWORK_OBSERVATION_HELPER_BUNDLE") {
+        options = options.with_remote_helper_source(
+            pl_studio_runtime::RemoteHelperSource::Bundled(bundle.into()),
+        );
+    }
+    let initialized = StudioRuntime::initialize(options).await;
     scene.returned("initialize", admitted, manifest);
     manifest.scenario_elapsed_millis = scene_started.elapsed().as_millis();
     let runtime = match initialized {

@@ -14441,6 +14441,8 @@ impl SseDecode for crate::api::studio::types::thread_activity::BridgeThreadActiv
             );
         let mut var_summary = <String>::sse_decode(deserializer);
         let mut var_summaryTruncated = <bool>::sse_decode(deserializer);
+        let mut var_thinkingSummary = <Option<String>>::sse_decode(deserializer);
+        let mut var_thinkingSeconds = <Option<u64>>::sse_decode(deserializer);
         let mut var_tools =
             <crate::api::studio::types::thread_activity::BridgeThreadActivityTools>::sse_decode(
                 deserializer,
@@ -14455,6 +14457,8 @@ impl SseDecode for crate::api::studio::types::thread_activity::BridgeThreadActiv
             kind: var_kind,
             summary: var_summary,
             summary_truncated: var_summaryTruncated,
+            thinking_summary: var_thinkingSummary,
+            thinking_seconds: var_thinkingSeconds,
             tools: var_tools,
         };
     }
@@ -14537,14 +14541,15 @@ impl SseDecode for crate::api::studio::types::thread_activity::BridgeThreadActiv
         let mut inner = <i32>::sse_decode(deserializer);
         return match inner {
             0 => crate::api::studio::types::thread_activity::BridgeThreadActivityKind::Preparing,
-1 => crate::api::studio::types::thread_activity::BridgeThreadActivityKind::WaitingApi,
-2 => crate::api::studio::types::thread_activity::BridgeThreadActivityKind::Thinking,
-3 => crate::api::studio::types::thread_activity::BridgeThreadActivityKind::Responding,
-4 => crate::api::studio::types::thread_activity::BridgeThreadActivityKind::Planning,
-5 => crate::api::studio::types::thread_activity::BridgeThreadActivityKind::RunningTool,
-6 => crate::api::studio::types::thread_activity::BridgeThreadActivityKind::AwaitingApproval,
-7 => crate::api::studio::types::thread_activity::BridgeThreadActivityKind::AwaitingInput,
-8 => crate::api::studio::types::thread_activity::BridgeThreadActivityKind::Stopping,
+1 => crate::api::studio::types::thread_activity::BridgeThreadActivityKind::Compacting,
+2 => crate::api::studio::types::thread_activity::BridgeThreadActivityKind::WaitingApi,
+3 => crate::api::studio::types::thread_activity::BridgeThreadActivityKind::Thinking,
+4 => crate::api::studio::types::thread_activity::BridgeThreadActivityKind::Responding,
+5 => crate::api::studio::types::thread_activity::BridgeThreadActivityKind::Planning,
+6 => crate::api::studio::types::thread_activity::BridgeThreadActivityKind::RunningTool,
+7 => crate::api::studio::types::thread_activity::BridgeThreadActivityKind::AwaitingApproval,
+8 => crate::api::studio::types::thread_activity::BridgeThreadActivityKind::AwaitingInput,
+9 => crate::api::studio::types::thread_activity::BridgeThreadActivityKind::Stopping,
             _ => unreachable!("Invalid variant for BridgeThreadActivityKind: {}", inner),
         };
     }
@@ -30279,6 +30284,8 @@ impl flutter_rust_bridge::IntoDart
             self.kind.into_into_dart().into_dart(),
             self.summary.into_into_dart().into_dart(),
             self.summary_truncated.into_into_dart().into_dart(),
+            self.thinking_summary.into_into_dart().into_dart(),
+            self.thinking_seconds.into_into_dart().into_dart(),
             self.tools.into_into_dart().into_dart(),
         ]
         .into_dart()
@@ -30396,14 +30403,15 @@ impl flutter_rust_bridge::IntoDart
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         match self {
             Self::Preparing => 0.into_dart(),
-            Self::WaitingApi => 1.into_dart(),
-            Self::Thinking => 2.into_dart(),
-            Self::Responding => 3.into_dart(),
-            Self::Planning => 4.into_dart(),
-            Self::RunningTool => 5.into_dart(),
-            Self::AwaitingApproval => 6.into_dart(),
-            Self::AwaitingInput => 7.into_dart(),
-            Self::Stopping => 8.into_dart(),
+            Self::Compacting => 1.into_dart(),
+            Self::WaitingApi => 2.into_dart(),
+            Self::Thinking => 3.into_dart(),
+            Self::Responding => 4.into_dart(),
+            Self::Planning => 5.into_dart(),
+            Self::RunningTool => 6.into_dart(),
+            Self::AwaitingApproval => 7.into_dart(),
+            Self::AwaitingInput => 8.into_dart(),
+            Self::Stopping => 9.into_dart(),
             _ => unreachable!(),
         }
     }
@@ -41464,6 +41472,8 @@ impl SseEncode for crate::api::studio::types::thread_activity::BridgeThreadActiv
         );
         <String>::sse_encode(self.summary, serializer);
         <bool>::sse_encode(self.summary_truncated, serializer);
+        <Option<String>>::sse_encode(self.thinking_summary, serializer);
+        <Option<u64>>::sse_encode(self.thinking_seconds, serializer);
         <crate::api::studio::types::thread_activity::BridgeThreadActivityTools>::sse_encode(
             self.tools, serializer,
         );
@@ -41513,14 +41523,15 @@ impl SseEncode for crate::api::studio::types::thread_activity::BridgeThreadActiv
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         <i32>::sse_encode(match self {crate::api::studio::types::thread_activity::BridgeThreadActivityKind::Preparing => { 0 }
-crate::api::studio::types::thread_activity::BridgeThreadActivityKind::WaitingApi => { 1 }
-crate::api::studio::types::thread_activity::BridgeThreadActivityKind::Thinking => { 2 }
-crate::api::studio::types::thread_activity::BridgeThreadActivityKind::Responding => { 3 }
-crate::api::studio::types::thread_activity::BridgeThreadActivityKind::Planning => { 4 }
-crate::api::studio::types::thread_activity::BridgeThreadActivityKind::RunningTool => { 5 }
-crate::api::studio::types::thread_activity::BridgeThreadActivityKind::AwaitingApproval => { 6 }
-crate::api::studio::types::thread_activity::BridgeThreadActivityKind::AwaitingInput => { 7 }
-crate::api::studio::types::thread_activity::BridgeThreadActivityKind::Stopping => { 8 }
+crate::api::studio::types::thread_activity::BridgeThreadActivityKind::Compacting => { 1 }
+crate::api::studio::types::thread_activity::BridgeThreadActivityKind::WaitingApi => { 2 }
+crate::api::studio::types::thread_activity::BridgeThreadActivityKind::Thinking => { 3 }
+crate::api::studio::types::thread_activity::BridgeThreadActivityKind::Responding => { 4 }
+crate::api::studio::types::thread_activity::BridgeThreadActivityKind::Planning => { 5 }
+crate::api::studio::types::thread_activity::BridgeThreadActivityKind::RunningTool => { 6 }
+crate::api::studio::types::thread_activity::BridgeThreadActivityKind::AwaitingApproval => { 7 }
+crate::api::studio::types::thread_activity::BridgeThreadActivityKind::AwaitingInput => { 8 }
+crate::api::studio::types::thread_activity::BridgeThreadActivityKind::Stopping => { 9 }
  _ => { unimplemented!(""); }}, serializer);
     }
 }

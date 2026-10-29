@@ -92,6 +92,7 @@ impl Helper {
                 cwd: ".".into(),
                 environment: Default::default(),
                 capture: RemoteCapture::None,
+                remaining_timeout_ms: None,
             })
             .await?)
     }

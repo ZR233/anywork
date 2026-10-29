@@ -240,7 +240,7 @@ impl Owner {
     }
 
     /// Publishes the explicit model execution phase at the exact boundary it describes.
-    fn enter_model_execution(&mut self, phase: ModelExecutionPhase) {
+    pub(super) fn enter_model_execution(&mut self, phase: ModelExecutionPhase) {
         if self.state.model_execution == Some(phase) {
             return;
         }
@@ -290,7 +290,7 @@ impl Owner {
             self.enter_model_execution(ModelExecutionPhase::Admitting);
             self.ensure_model_admission(&input.cancellation).await?;
             let mut plan = self.tools.freeze();
-            self.enter_model_execution(ModelExecutionPhase::PreparingContext);
+            self.enter_model_execution(ModelExecutionPhase::CompactingContext);
             self.prepare_context(input, &mut plan, &[], true).await
         }
         .await;
@@ -457,7 +457,7 @@ impl Owner {
                         && retry_of.is_none() =>
                 {
                     *recovery_used = true;
-                    self.enter_model_execution(ModelExecutionPhase::PreparingContext);
+                    self.enter_model_execution(ModelExecutionPhase::CompactingContext);
                     let compacted = self
                         .prepare_context(&input, &mut plan, &frozen_input, true)
                         .await?;

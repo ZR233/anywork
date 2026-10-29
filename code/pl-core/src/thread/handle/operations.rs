@@ -166,6 +166,7 @@ impl ThreadHandle {
             pending_model_update: None,
             pending_runtime_facts: Default::default(),
             context_preparation: None,
+            compacting_progress: None,
             model_progress: None,
             effect_window: effect_window.clone(),
             permission_leases: Default::default(),

@@ -92,8 +92,18 @@ Flutter 原始 release 输出位于：
 `cargo xtask build-gui` 完成后再把可发布文件收集到 `dist/anywork-release/`。讨论故障时明确区分
 Flutter 原始输出与 xtask 最终收集目录。
 
-Windows 发布目录通常包含 `anywork.exe`、`flutter_windows.dll`、
-`pl_studio_bridge.dll`、可选 PDB 以及 `data/`。Linux 发布目录包含对应可执行文件、Flutter 库、
+Windows 稳定发布将编译与打包分开：先运行 `cargo xtask build-gui`，再以
+`release-gui stage --version <x.y.z> --bundle <路径>` 消费显式提供的预构建 bundle。
+`stage` 不启动 Flutter/Rust 编译；运行 bundle 与小型发布工具分别归档，下游对各自有效载荷
+核对一次生产者摘要，并核对工具编译工作区与源码/版本身份，禁止缺失时回退重新编译。
+不收集独立符号包，不为重复身份创建自述清单；`finalize` 已执行完整自检，同一作业不重复
+核验未改变的资产，跨作业和正式发布前的安全校验仍保留。构件过期或完整重跑不属于断点续跑保证；
+后置失败优先仅重跑失败/指定作业。阶段、权限与安全验证边界见
+[发布与更新](../../../design/23-release-update.md#231-版本与发布流)。
+
+Windows 发布目录只收集运行所需的 `anywork.exe`、Flutter/bridge/插件 DLL、
+应用目录部署的 VC++ Release 运行库及完整 `data/`，不收集 PDB、导入库或编译中间物。
+`data/app.so` 是 Windows Dart AOT 产物，不可当作 Linux 文件删除。Linux 发布目录包含对应可执行文件、Flutter 库、
 `libpl_studio_bridge.so` 与数据目录。两平台 `data/remote-helper/` 均包含两个架构的
 `pl-remote-helper.zst` 和 `pl-remote-helper.metadata.json`，应随安装包一并交付。
 

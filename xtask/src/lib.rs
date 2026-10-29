@@ -5,6 +5,7 @@ mod cli;
 mod client;
 mod flutter;
 mod release;
+mod release_bundle;
 mod remote_helper;
 mod rust_bridge;
 mod studio_acceptance;

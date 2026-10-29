@@ -116,6 +116,9 @@ async fn read_stream<R, B>(
             }
         }
     }
+    if let Some(observer) = &entry.output_observer {
+        observer.output_closed(stream.into());
+    }
     apply_transition(&entry, CommandProcessTransition::StreamClosed(stream)).await;
 }
 

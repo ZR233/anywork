@@ -14,12 +14,15 @@ pub struct BridgeThreadActivity {
     pub kind: BridgeThreadActivityKind,
     pub summary: String,
     pub summary_truncated: bool,
+    pub thinking_summary: Option<String>,
+    pub thinking_seconds: Option<u64>,
     pub tools: BridgeThreadActivityTools,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BridgeThreadActivityKind {
     Preparing,
+    Compacting,
     WaitingApi,
     Thinking,
     Responding,

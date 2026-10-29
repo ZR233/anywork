@@ -33,6 +33,7 @@ const OMITTED: &str =
 
 pub(super) struct CommandPreview {
     window: watch::Sender<Arc<ContentBlock>>,
+    decoders: std::sync::Mutex<[Option<encoding_rs::Decoder>; 2]>,
 }
 
 /// The exec tool's own observer: it keeps the live preview and relays a hard capture failure to its
@@ -62,6 +63,9 @@ impl CommandOutputObserver for ExecOutputObserver {
     fn output_chunk(&self, stream: CommandOutputStream, chunk: &[u8], revision: u64) {
         self.preview.output_chunk(stream, chunk, revision);
     }
+    fn output_closed(&self, stream: CommandOutputStream) {
+        self.preview.output_closed(stream);
+    }
     fn output_failed(&self, failure: &CommandCaptureFailure) {
         // A send that finds no receiver only means the call already returned and reports the same
         // typed fault on its return path, so it is never the only report.
@@ -72,20 +76,54 @@ impl CommandOutputObserver for ExecOutputObserver {
 impl CommandPreview {
     pub(super) fn channel() -> (Arc<Self>, watch::Receiver<Arc<ContentBlock>>) {
         let (window, receiver) = watch::channel(ContentBlock::empty());
-        (Arc::new(Self { window }), receiver)
+        (
+            Arc::new(Self {
+                window,
+                decoders: std::sync::Mutex::new(std::array::from_fn(|_| {
+                    Some(encoding_rs::UTF_8.new_decoder_without_bom_handling())
+                })),
+            }),
+            receiver,
+        )
     }
 }
 
 impl CommandOutputObserver for CommandPreview {
     fn output_chunk(&self, stream: CommandOutputStream, chunk: &[u8], _: u64) {
-        if chunk.is_empty() {
+        self.decode(stream, chunk, false);
+    }
+    fn output_closed(&self, stream: CommandOutputStream) {
+        self.decode(stream, b"", true);
+    }
+}
+
+impl CommandPreview {
+    fn decode(&self, stream: CommandOutputStream, chunk: &[u8], last: bool) {
+        let index = if stream == CommandOutputStream::Stdout {
+            0
+        } else {
+            1
+        };
+        let mut decoders = self
+            .decoders
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(decoder) = &mut decoders[index] else {
+            return;
+        };
+        let mut decoded = String::with_capacity(chunk.len().saturating_mul(3).saturating_add(4));
+        let _ = decoder.decode_to_string(chunk, &mut decoded, last);
+        if last {
+            decoders[index] = None;
+        }
+        if decoded.is_empty() {
             return;
         }
-        let mut text = String::new();
-        if stream == CommandOutputStream::Stderr {
-            text.push_str("[stderr] ");
-        }
-        text.push_str(&String::from_utf8_lossy(chunk));
+        let text = if stream == CommandOutputStream::Stderr {
+            format!("[stderr] {decoded}")
+        } else {
+            decoded
+        };
         self.window.send_modify(|window| {
             // The append path shares every byte already observed and copies nothing but the chunk.
             if window.len().saturating_add(text.len()) <= MAX_PREVIEW_BYTES {

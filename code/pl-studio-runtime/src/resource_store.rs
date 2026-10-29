@@ -148,11 +148,43 @@ impl pl_tool::exec::CommandOutputArchive for LocalCommandOutputArchive {
         &self,
         _: &str,
         snapshot: &pl_tool::command::CommandOutputSnapshot,
+        stream: pl_tool::command::CommandCaptureStream,
     ) -> Result<ResourceReference, pl_core::tool::opaque::ToolError> {
-        self.0
-            .retain_command_capture(&snapshot.capture_file)
-            .await
-            .map_err(retention_failure)
+        if snapshot.capture_offsets.total() > MAX_COMMAND_ARCHIVE_BYTES {
+            return Err(retention_failure(ResourceStoreError::TooLarge {
+                limit: MAX_COMMAND_ARCHIVE_BYTES,
+            }));
+        }
+        let path = match stream {
+            pl_tool::command::CommandCaptureStream::Stdout => &snapshot.capture_file,
+            pl_tool::command::CommandCaptureStream::Stderr => &snapshot.stderr_capture_file,
+        }
+        .clone();
+        let confirmed = snapshot.capture_offsets.get(stream);
+        let root = self.0.root.clone();
+        tokio::task::spawn_blocking(move || {
+            let file = File::open(&path).map_err(|source| ResourceStoreError::Io {
+                path: path.clone(),
+                source,
+            })?;
+            if file.metadata().map_err(ResourceStoreError::Read)?.len() < confirmed {
+                return Err(ResourceStoreError::Read(std::io::Error::other(
+                    "capture is shorter than its confirmed prefix",
+                )));
+            }
+            retain_input(
+                &root,
+                ResourceInput {
+                    reader: file.take(confirmed),
+                    source_path: Some(path),
+                },
+                "application/octet-stream".into(),
+                Some(MAX_COMMAND_ARCHIVE_BYTES),
+            )
+        })
+        .await
+        .map_err(pl_core::tool::opaque::ToolError::new)?
+        .map_err(retention_failure)
     }
 }
 

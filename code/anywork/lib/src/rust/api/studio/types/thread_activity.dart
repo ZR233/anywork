@@ -32,6 +32,8 @@ class BridgeThreadActivity {
   final BridgeThreadActivityKind kind;
   final String summary;
   final bool summaryTruncated;
+  final String? thinkingSummary;
+  final BigInt? thinkingSeconds;
   final BridgeThreadActivityTools tools;
 
   const BridgeThreadActivity({
@@ -44,6 +46,8 @@ class BridgeThreadActivity {
     required this.kind,
     required this.summary,
     required this.summaryTruncated,
+    this.thinkingSummary,
+    this.thinkingSeconds,
     required this.tools,
   });
 
@@ -58,6 +62,8 @@ class BridgeThreadActivity {
       kind.hashCode ^
       summary.hashCode ^
       summaryTruncated.hashCode ^
+      thinkingSummary.hashCode ^
+      thinkingSeconds.hashCode ^
       tools.hashCode;
 
   @override
@@ -74,6 +80,8 @@ class BridgeThreadActivity {
           kind == other.kind &&
           summary == other.summary &&
           summaryTruncated == other.summaryTruncated &&
+          thinkingSummary == other.thinkingSummary &&
+          thinkingSeconds == other.thinkingSeconds &&
           tools == other.tools;
 }
 
@@ -139,6 +147,7 @@ sealed class BridgeThreadActivityDetail with _$BridgeThreadActivityDetail {
 
 enum BridgeThreadActivityKind {
   preparing,
+  compacting,
   waitingApi,
   thinking,
   responding,
