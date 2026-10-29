@@ -580,6 +580,12 @@ pub(in crate::studio) async fn root_session_workspace_root(
         WorktreeError::IdentityMismatch("root/project: session association changed".into())
     );
     let frozen = store.workspace_identity(&root.id).await?;
+    anyhow::ensure!(
+        project.kind != pl_protocol::studio::WorkspaceKind::Standalone
+            || (root.workspace_mode == pl_protocol::ThreadWorkspaceMode::Local
+                && project.ssh_alias.is_none()),
+        "standalone sessions only support local workspaces"
+    );
     if root.workspace_mode == pl_protocol::ThreadWorkspaceMode::Local {
         let actual =
             super::worktree_lease::resolve_physical_workspace(ssh_manager, project, &local_root)

@@ -48,6 +48,8 @@ metrics! {
     ReadLockWaitNanos => "log_read_lock_wait_ns",
     WriteLockAcquire => "log_write_lock_acquire",
     WriteLockWaitNanos => "log_write_lock_wait_ns",
+    QueueDequeued => "queue_dequeued_mutations",
+    QueueAgeNanos => "queue_age_at_dequeue_ns",
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -56,6 +58,7 @@ pub struct ObservationSnapshot {
     pub counters: BTreeMap<String, u64>,
     pub queue_high_water_mutations: u64,
     pub queue_high_water_bytes: u64,
+    pub queue_age_max_nanos: u64,
 }
 
 impl ObservationSnapshot {
@@ -69,6 +72,7 @@ impl ObservationSnapshot {
                 .collect(),
             queue_high_water_mutations: self.queue_high_water_mutations,
             queue_high_water_bytes: self.queue_high_water_bytes,
+            queue_age_max_nanos: self.queue_age_max_nanos,
         }
     }
 }
@@ -82,6 +86,7 @@ pub(crate) struct Observation {
     counters: [AtomicU64; Metric::Count as usize],
     queue_mutations: AtomicU64,
     queue_bytes: AtomicU64,
+    queue_age_max_nanos: AtomicU64,
     /// Observation only: a real recent read entered. It does not require a particular read backend.
     read_epochs: tokio::sync::watch::Sender<u64>,
     observer_tickets: tokio::sync::watch::Sender<BTreeMap<String, ObserverResult>>,
@@ -93,6 +98,7 @@ impl Default for Observation {
             counters: std::array::from_fn(|_| AtomicU64::new(0)),
             queue_mutations: AtomicU64::new(0),
             queue_bytes: AtomicU64::new(0),
+            queue_age_max_nanos: AtomicU64::new(0),
             read_epochs: tokio::sync::watch::channel(0).0,
             observer_tickets: tokio::sync::watch::channel(BTreeMap::new()).0,
         }
@@ -182,6 +188,19 @@ impl Observation {
         self.queue_bytes.fetch_max(bytes as u64, Ordering::Relaxed);
     }
 
+    pub(crate) fn dequeued(&self, age: Duration) {
+        let nanos =
+            u64::try_from(age.as_nanos()).expect("benchmark queue age fits u64 nanoseconds");
+        self.increment(Metric::QueueDequeued);
+        self.counters[Metric::QueueAgeNanos as usize].fetch_add(nanos, Ordering::Relaxed);
+        self.queue_age_max_nanos.fetch_max(nanos, Ordering::Relaxed);
+    }
+
+    /// The measured operation starts only after fixture preparation has settled.
+    pub(crate) fn reset_queue_age(&self) {
+        self.queue_age_max_nanos.store(0, Ordering::Relaxed);
+    }
+
     /// Only called after fixture setup has settled, before starting measured work.
     pub(crate) fn reset_queue_high_water(&self) {
         self.queue_mutations.store(0, Ordering::Relaxed);
@@ -202,6 +221,7 @@ impl Observation {
                 .collect(),
             queue_high_water_mutations: self.queue_mutations.load(Ordering::Relaxed),
             queue_high_water_bytes: self.queue_bytes.load(Ordering::Relaxed),
+            queue_age_max_nanos: self.queue_age_max_nanos.load(Ordering::Relaxed),
         }
     }
 }

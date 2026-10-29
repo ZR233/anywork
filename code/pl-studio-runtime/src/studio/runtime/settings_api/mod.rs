@@ -92,6 +92,16 @@ impl StudioRuntime {
         request: UpdateSettingsFieldRequest,
     ) -> Result<SettingsCommandReply> {
         Self::validate_operation_id(&request.operation_id)?;
+        if let SettingsFieldUpdate::GeneralPinnedProjectIds { value } = &request.update {
+            let projects = self.agent_facility.product_events.project_snapshot().await;
+            anyhow::ensure!(
+                !projects.iter().any(|project| {
+                    project.kind == pl_protocol::studio::WorkspaceKind::Standalone
+                        && value.contains(&project.id)
+                }),
+                "the standalone workspace cannot be pinned"
+            );
+        }
         let mark_skills_stale = matches!(
             &request.update,
             SettingsFieldUpdate::SkillsEnabled { .. }

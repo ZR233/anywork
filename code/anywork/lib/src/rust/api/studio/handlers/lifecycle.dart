@@ -106,6 +106,11 @@ Future<void> finishShutdownDiagnostics() => RustLib.instance.api
 Future<ProjectDto> openProject({required String path}) =>
     RustLib.instance.api.crateApiStudioHandlersLifecycleOpenProject(path: path);
 
+Future<BridgeProjectDirectoryState> prepareStandaloneWorkspace() => RustLib
+    .instance
+    .api
+    .crateApiStudioHandlersLifecyclePrepareStandaloneWorkspace();
+
 Future<void> activateProject({required String projectId}) => RustLib
     .instance
     .api

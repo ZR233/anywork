@@ -2866,6 +2866,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   BridgeWorkflowTransition dco_decode_bridge_workflow_transition(dynamic raw);
 
   @protected
+  BridgeWorkspaceKind dco_decode_bridge_workspace_kind(dynamic raw);
+
+  @protected
   BridgeWorktreeInspection dco_decode_bridge_worktree_inspection(dynamic raw);
 
   @protected
@@ -7181,6 +7184,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeWorkflowTransition sse_decode_bridge_workflow_transition(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeWorkspaceKind sse_decode_bridge_workspace_kind(
     SseDeserializer deserializer,
   );
 
@@ -12341,6 +12349,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_bridge_workflow_transition(
     BridgeWorkflowTransition self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_workspace_kind(
+    BridgeWorkspaceKind self,
     SseSerializer serializer,
   );
 

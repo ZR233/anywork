@@ -370,6 +370,13 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard>
         if (input.text.trim().isEmpty && input.attachmentDraftIds.isEmpty) {
           return null;
         }
+        final project = (_client.project.state.projects?.values ?? const [])
+            .where((candidate) => candidate.id == projectId)
+            .firstOrNull;
+        if (project?.isStandalone == true &&
+            ThreadWorkspaceMode.fromId(workspaceMode ?? 'local').isWorktree) {
+          throw StateError('Standalone workspaces only support local mode');
+        }
         final key = 'new-thread:$projectId';
         _begin(key, label: projectId);
         try {

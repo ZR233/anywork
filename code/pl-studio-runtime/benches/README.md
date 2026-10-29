@@ -67,6 +67,22 @@ cargo bench --locked -p pl-studio-runtime --features benchmarks --bench statisti
   表示对应成功完成点。高水位为 setup 排空后、本 store/case 生命周期的绝对值，
   其余计数为每次测量的差值。观察状态不跨 store 或执行共享。
 
+## 存储字节与队列年龄
+
+Linux 的每条 `operationDistribution.measurement.storageIo` 保存本进程
+`/proc/self/io` 的 `readBytes`、`writeBytes`、`cancelledWriteBytes` 差值和独立的
+`elapsedNanos`。存储层吞吐按 `bytes / (elapsedNanos / 1e9) / 2^20` 得到 MiB/s；
+不要以 `rchar/wchar`、JSONL 长度或 Billing records/s 代替真实存储层字节。
+此独立区间包含操作及结果校验，不含夹具准备、关闭和报告写入，不改变 Criterion
+原操作计时边界。内核取消写回单列，缓存命中的零读取如实保留；它不代表全机设备或
+介质吞吐。非 Linux 保存 `null`，Linux 读取失败则明确失败，不回退成零。
+
+`queue_dequeued_mutations`、`queue_age_at_dequeue_ns` 和 `queueAgeMaxNanos`
+来自实际 writer 取批：分别为条目数、受理至取批年龄总和和本操作最大年龄。
+以总和除条目数可报告平均队列年龄；条目数为零时不可用，不补零平均值。
+年龄不含本次取批后的文件/SQL 处理；失败重试仍保留原受理时刻，可能包含之前尝试。
+补充历史观测必须独立命名并记录仅观测的源码差异，不能倒填或覆盖原前测。
+
 ## 稳定负载与边界
 
 | case | 输入与测量边界 |

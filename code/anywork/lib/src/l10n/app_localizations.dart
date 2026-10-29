@@ -1304,6 +1304,12 @@ abstract class AppLocalizations {
   /// **'Working in {project}'**
   String startPageProject(String project);
 
+  /// No description provided for @startPageStandaloneBody.
+  ///
+  /// In en, this message translates to:
+  /// **'No project needed. Files are saved in your Documents/anywork folder.'**
+  String get startPageStandaloneBody;
+
   /// No description provided for @startPageOpenProjectTitle.
   ///
   /// In en, this message translates to:
@@ -6437,6 +6443,24 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'No sessions yet. Use + on this project to start'**
   String get sidebarEmptyProject;
+
+  /// No description provided for @sidebarStandaloneSessions.
+  ///
+  /// In en, this message translates to:
+  /// **'Non-project sessions'**
+  String get sidebarStandaloneSessions;
+
+  /// No description provided for @sidebarStandaloneEmpty.
+  ///
+  /// In en, this message translates to:
+  /// **'No non-project sessions yet.'**
+  String get sidebarStandaloneEmpty;
+
+  /// No description provided for @sidebarStandalonePrepareFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Couldn\'t prepare a workspace: {error}. Select New session to retry.'**
+  String sidebarStandalonePrepareFailed(String error);
 
   /// No description provided for @sidebarEarlier.
   ///

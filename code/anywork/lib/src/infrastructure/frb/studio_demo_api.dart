@@ -858,6 +858,13 @@ class DemoStudioTransport extends StudioTransport
   final Set<String> _disabledSystemAgents = <String>{};
   final Map<String, AgentProfileView> _userAgentProfiles = {};
   final List<StudioProject> _openedRemoteProjects = [];
+  StudioProject? _standaloneProject;
+
+  Iterable<StudioProject> get _standaloneProjects {
+    final project = _standaloneProject;
+    return project == null ? const <StudioProject>[] : [project];
+  }
+
   String? _selectedProjectId;
   String? _selectedThreadId;
   DateTime? _fixtureNow;
@@ -1044,17 +1051,19 @@ class DemoStudioTransport extends StudioTransport
 
   ProjectDirectoryState _demoProjectDirectory() {
     final fixture = _ensureWorkspaceFixture();
-    final projects = [fixture.project, ..._openedRemoteProjects]
-        .where((project) => !_archivedProjectIds.contains(project.id))
-        .map(
-          (project) => StudioProject(
-            id: project.id,
-            name: _projectNames[project.id] ?? project.name,
-            path: project.path,
-            sshAlias: project.sshAlias,
-          ),
-        )
-        .toList();
+    final projects =
+        [fixture.project, ..._openedRemoteProjects, ..._standaloneProjects]
+            .where((project) => !_archivedProjectIds.contains(project.id))
+            .map(
+              (project) => StudioProject(
+                id: project.id,
+                name: _projectNames[project.id] ?? project.name,
+                path: project.path,
+                kind: project.kind,
+                sshAlias: project.sshAlias,
+              ),
+            )
+            .toList();
     return ProjectDirectoryState.fromState(
       state: _demoReadyResource(_projectDirectoryRevision, projects),
     );
@@ -2052,6 +2061,7 @@ class DemoStudioTransport extends StudioTransport
       id: project.id,
       name: name,
       path: project.path,
+      kind: project.kind,
       sshAlias: project.sshAlias,
     );
   }
@@ -2065,6 +2075,25 @@ class DemoStudioTransport extends StudioTransport
       );
     }
     return _demoProjectDirectory().values.first;
+  }
+
+  @override
+  Future<ProjectDirectoryState> prepareStandaloneWorkspace() async {
+    _ensureDemoRunning();
+    final existing = _standaloneProject;
+    if (existing != null) return _demoProjectDirectory();
+    const project = StudioProject(
+      id: 'project-standalone',
+      name: 'Standalone workspace',
+      path: 'Documents/anywork',
+      kind: WorkspaceKind.standalone,
+    );
+    _standaloneProject = project;
+    _projectDirectoryRevision++;
+    _publishProductPayload(
+      ProjectDirectoryChangedPayload(_demoProjectDirectory()),
+    );
+    return _demoProjectDirectory();
   }
 
   @override
@@ -2204,7 +2233,10 @@ class DemoStudioTransport extends StudioTransport
   }) async* {
     try {
       final projects = _demoProjectDirectory().values;
-      if (!projects.any((project) => project.id == projectId)) {
+      final project = projects
+          .where((candidate) => candidate.id == projectId)
+          .firstOrNull;
+      if (project == null) {
         throw StateError('unknown demo project $projectId');
       }
       if (input.text.trim().isEmpty && input.attachmentDraftIds.isEmpty) {
@@ -2219,6 +2251,13 @@ class DemoStudioTransport extends StudioTransport
           'must be local or worktree',
         ),
       };
+      if (project.isStandalone && requestedWorkspaceMode.isWorktree) {
+        throw ArgumentError.value(
+          workspaceMode,
+          'workspaceMode',
+          'standalone workspaces only support local mode',
+        );
+      }
       yield NewThreadStartProgress(
         ThreadPreparationProgress(
           projectId: projectId,

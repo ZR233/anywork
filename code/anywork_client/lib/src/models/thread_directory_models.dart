@@ -25,18 +25,24 @@ enum ThreadStatusView {
   bool get blocksNewExecution => this == closing || this == closed;
 }
 
+enum WorkspaceKind { project, standalone }
+
 class StudioProject {
   const StudioProject({
     required this.id,
     required this.name,
     required this.path,
+    this.kind = WorkspaceKind.project,
     this.sshAlias,
   });
 
   final String id;
   final String name;
   final String path;
+  final WorkspaceKind kind;
   final String? sshAlias;
+
+  bool get isStandalone => kind == WorkspaceKind.standalone;
 }
 
 /// 退役成员的角色判据：旧版 `planner` 子成员不再是合法角色。

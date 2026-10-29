@@ -24,6 +24,18 @@ final class _DraftTransport extends AccountsTestTransport {
   final Completer<SubmitPromptReceipt> promptReply = Completer();
   final Completer<void> compactEntered = Completer<void>();
   Completer<void>? compactGate;
+  Completer<void> standalonePrepareEntered = Completer<void>();
+  Completer<ProjectDirectoryState> standalonePrepareReply =
+      Completer<ProjectDirectoryState>();
+  Object? standalonePrepareFailure;
+  Completer<void>? openProjectEntered;
+  Completer<StudioProject>? openProjectReply;
+  Completer<void>? activateProjectEntered;
+  Completer<void>? activateProjectGate;
+  final Map<ProductTopic, StreamController<ProductTopicFrame>>
+  _topicControllers = {};
+  final Completer<void> projectDirectoryTopicListening = Completer<void>();
+  int _topicEventSequence = 0;
   final Completer<
     ({
       StudioPromptInput input,
@@ -47,6 +59,7 @@ final class _DraftTransport extends AccountsTestTransport {
   ConversationBaseline? Function(String threadId)? initialForThread;
   int feedOpens = 0;
   int startCalls = 0;
+  int standalonePrepareCalls = 0;
   int activateProjectCalls = 0;
   int recoveryRetryCalls = 0;
   final resumedThreads = <String>[];
@@ -85,6 +98,65 @@ final class _DraftTransport extends AccountsTestTransport {
   @override
   Future<void> activateProject(String projectId) async {
     activateProjectCalls += 1;
+    final entered = activateProjectEntered;
+    if (entered != null && !entered.isCompleted) entered.complete();
+    await activateProjectGate?.future;
+  }
+
+  @override
+  Future<StudioProject> openProject(String path) {
+    final entered = openProjectEntered;
+    if (entered != null && !entered.isCompleted) entered.complete();
+    final reply = openProjectReply;
+    return reply?.future ??
+        Future<StudioProject>.error(
+          UnsupportedError('Unscripted project open'),
+        );
+  }
+
+  @override
+  Future<ProjectDirectoryState> prepareStandaloneWorkspace() {
+    standalonePrepareCalls += 1;
+    if (!standalonePrepareEntered.isCompleted) {
+      standalonePrepareEntered.complete();
+    }
+    if (standalonePrepareFailure case final failure?) {
+      return Future<ProjectDirectoryState>.error(failure);
+    }
+    return standalonePrepareReply.future;
+  }
+
+  @override
+  Stream<ProductTopicFrame> subscribeProductTopic(ProductTopic topic) {
+    final controller = StreamController<ProductTopicFrame>(
+      sync: true,
+      onListen: () {
+        if (topic is ProjectDirectoryTopic &&
+            !projectDirectoryTopicListening.isCompleted) {
+          projectDirectoryTopicListening.complete();
+        }
+      },
+    );
+    addTearDown(() => controller.close());
+    _topicControllers[topic] = controller;
+    return controller.stream;
+  }
+
+  void emitProjectDirectory(ProjectDirectoryState directory) {
+    if (!_topicControllers.containsKey(const ProjectDirectoryTopic())) {
+      throw StateError('Project directory topic is not subscribed');
+    }
+    _topicControllers[const ProjectDirectoryTopic()]!.add(
+      ProductTopicDataFrame(
+        topic: const ProjectDirectoryTopic(),
+        event: ProductTopicEventEnvelope(
+          eventId: 'project-directory-${++_topicEventSequence}',
+          sequence: BigInt.from(_topicEventSequence),
+          createdAt: DateTime.utc(2026),
+          payload: ProjectDirectoryChangedPayload(directory),
+        ),
+      ),
+    );
   }
 
   @override
@@ -1329,6 +1401,246 @@ void main() {
     await _close(client, transport);
   });
 
+  test(
+    'standalone preparation adopts its canonical owner and can retry a failure',
+    () async {
+      final transport = _DraftTransport()
+        ..standalonePrepareFailure = StateError('workspace preparation failed');
+      final client = await _client(transport);
+      const standalone = StudioProject(
+        id: 'standalone',
+        name: 'Internal owner',
+        path: '/documents/anywork',
+        kind: WorkspaceKind.standalone,
+      );
+
+      await expectLater(
+        client.directoryCommands.beginStandaloneThread(),
+        throwsA(isA<StateError>()),
+      );
+      expect(
+        client.directoryCommands.state.standalonePreparationError,
+        contains('workspace preparation failed'),
+      );
+      expect(
+        client.directoryCommands.state.standalonePreparationInProgress,
+        isFalse,
+      );
+      expect(client.selection.state.selectedProjectId, _project.id);
+
+      transport
+        ..standalonePrepareFailure = null
+        ..standalonePrepareEntered = Completer<void>()
+        ..standalonePrepareReply = Completer<ProjectDirectoryState>();
+      final preparing = client.directoryCommands.beginStandaloneThread();
+      await transport.standalonePrepareEntered.future;
+      transport.standalonePrepareReply.complete(
+        ProjectDirectoryState(values: [_project, standalone], revision: 12),
+      );
+      await preparing;
+
+      expect(transport.standalonePrepareCalls, 2);
+      expect(
+        transport.startCalls,
+        0,
+        reason: 'Preparation must not create a Thread',
+      );
+      expect(client.selection.state.selectedProjectId, standalone.id);
+      expect(client.selection.state.selectedThreadId, isNull);
+      expect(
+        client.drafts.startDraft.state.forProject(standalone.id).workspaceMode,
+        ThreadWorkspaceMode.local,
+      );
+      expect(
+        client.project.state.projects?.values
+            .singleWhere((project) => project.id == standalone.id)
+            .kind,
+        WorkspaceKind.standalone,
+        reason: 'The versioned canonical directory supplies the owner kind',
+      );
+      expect(client.project.state.projectRevision, 12);
+      expect(client.directoryCommands.state.standalonePreparationError, isNull);
+      await _close(client, transport);
+    },
+  );
+
+  test(
+    'late standalone preparation cannot replace a newer direct selection',
+    () async {
+      final transport = _DraftTransport();
+      final client = await _client(transport);
+      const other = StudioProject(id: 'other', name: 'Other', path: '/other');
+      client.project.applyProjectDirectory(
+        ProjectDirectoryState(values: [_project, other], revision: 2),
+      );
+      const standalone = StudioProject(
+        id: 'standalone',
+        name: 'Internal owner',
+        path: '/documents/anywork',
+        kind: WorkspaceKind.standalone,
+      );
+
+      final preparing = client.directoryCommands.beginStandaloneThread();
+      await transport.standalonePrepareEntered.future;
+      client.selection.selectProject(other.id);
+      transport.standalonePrepareReply.complete(
+        ProjectDirectoryState(
+          values: [_project, other, standalone],
+          revision: 12,
+        ),
+      );
+      await preparing;
+
+      expect(client.selection.state.selectedProjectId, other.id);
+      expect(client.selection.state.selectedThreadId, isNull);
+      expect(
+        client.project.state.projects?.values
+            .singleWhere((project) => project.id == standalone.id)
+            .kind,
+        WorkspaceKind.standalone,
+        reason: 'The canonical directory may arrive, but stale navigation cannot select it',
+      );
+      expect(transport.activateProjectCalls, 0);
+      expect(transport.startCalls, 0);
+      expect(
+        client.directoryCommands.state.standalonePreparationInProgress,
+        isFalse,
+      );
+      await _close(client, transport);
+    },
+  );
+
+  test('queued standalone navigation clears preparation when direct selection supersedes it', () async {
+    final transport = _DraftTransport()
+      ..openProjectEntered = Completer<void>()
+      ..openProjectReply = Completer<StudioProject>();
+    final client = await _client(transport);
+    final opening = client.directoryCommands.openProject('/pending');
+    await transport.openProjectEntered!.future;
+
+    final preparing = client.directoryCommands.beginStandaloneThread();
+    expect(
+      client.directoryCommands.state.standalonePreparationInProgress,
+      isTrue,
+    );
+    client.selection.selectProject(_project.id);
+    transport.openProjectReply!.complete(
+      const StudioProject(id: 'pending', name: 'Pending', path: '/pending'),
+    );
+    await Future.wait([opening, preparing]);
+
+    expect(transport.standalonePrepareCalls, 0);
+    expect(client.selection.state.selectedProjectId, _project.id);
+    expect(
+      client.directoryCommands.state.standalonePreparationInProgress,
+      isFalse,
+    );
+    expect(client.directoryCommands.state.standalonePreparationError, isNull);
+    await _close(client, transport);
+  });
+
+  test('standalone directory receipt rejects an older event and retains the revision-12 owner', () async {
+    final transport = _DraftTransport()
+      ..activateProjectEntered = Completer<void>()
+      ..activateProjectGate = Completer<void>();
+    final client = await _client(transport);
+    const standalone = StudioProject(
+      id: 'standalone',
+      name: 'Internal owner',
+      path: '/documents/anywork',
+      kind: WorkspaceKind.standalone,
+    );
+    client.channels.acquireTopic(const ProjectDirectoryTopic());
+    await transport.projectDirectoryTopicListening.future;
+
+    final preparing = client.directoryCommands.beginStandaloneThread();
+    await transport.standalonePrepareEntered.future;
+    transport.standalonePrepareReply.complete(
+      ProjectDirectoryState(values: [_project, standalone], revision: 12),
+    );
+    await transport.activateProjectEntered!.future;
+    expect(client.project.state.projectRevision, 12);
+
+    transport.emitProjectDirectory(
+      ProjectDirectoryState(values: [_project], revision: 11),
+    );
+    expect(client.project.state.projectRevision, 12);
+    expect(
+      client.project.state.projects?.values.any(
+        (project) => project.isStandalone,
+      ),
+      isTrue,
+    );
+
+    transport.emitProjectDirectory(
+      ProjectDirectoryState(values: [_project, standalone], revision: 12),
+    );
+    transport.activateProjectGate!.complete();
+    await preparing;
+
+    expect(client.project.state.projectRevision, 12);
+    expect(client.selection.state.selectedProjectId, standalone.id);
+    expect(client.selection.state.selectedThreadId, isNull);
+    await _close(client, transport);
+  });
+
+  test(
+    'standalone draft and Client command cannot admit a worktree mode',
+    () async {
+      final transport = _DraftTransport();
+      final client = await _client(transport);
+      const standalone = StudioProject(
+        id: 'standalone',
+        name: 'Internal owner',
+        path: '/documents/anywork',
+        kind: WorkspaceKind.standalone,
+      );
+      client.project.applyProjectDirectory(
+        ProjectDirectoryState(values: [_project, standalone], revision: 2),
+      );
+      client.selection.selectProject(standalone.id);
+      client.drafts.startDraft.setWorkspaceMode(
+        standalone.id,
+        ThreadWorkspaceMode.worktree,
+      );
+      expect(
+        client.drafts.startDraft.state.forProject(standalone.id).workspaceMode,
+        ThreadWorkspaceMode.local,
+      );
+
+      await expectLater(
+        client.threadCommands.submitNewThread(
+          projectId: standalone.id,
+          input: const StudioPromptInput(
+            inputId: 'standalone-worktree',
+            text: 'must not enter a worktree',
+            attachmentDraftIds: [],
+          ),
+          mode: ThreadModeId.simple,
+          workspaceMode: 'worktree',
+          route: const ModeModelRouteView(
+            modeId: ThreadModeId.simple,
+            accountId: 'account',
+            modelId: 'alpha',
+            effort: 'medium',
+          ),
+          delegationMode: DelegationMode.automatic,
+          delegationPreference: DelegationPreference.balanced,
+          onProgress: (_) {},
+        ),
+        throwsA(
+          isA<SubmissionNotSent>().having(
+            (failure) => failure.error,
+            'rejection reason',
+            isA<StateError>(),
+          ),
+        ),
+      );
+      expect(transport.startCalls, 0);
+      await _close(client, transport);
+    },
+  );
+
   test('definite preparation failure retains the failed stage, newer draft and attachments', () async {
     final transport = _DraftTransport();
     final client = await _client(transport);
@@ -2427,6 +2739,12 @@ void main() {
 
     final owner = client.drafts.startDraft;
     await client.directoryCommands.beginNewThread(projectId: _project.id);
+    expect(
+      transport.standalonePrepareCalls,
+      0,
+      reason:
+          'Project-scoped new sessions must not prepare standalone workspaces',
+    );
     owner.updateDraft(_project.id, 'retain under application block');
     await client.drafts.attachments.admitNewThread(
       projectId: _project.id,

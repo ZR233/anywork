@@ -1569,6 +1569,8 @@ fn drain_batch(shared: &CallsWriter) -> Vec<QueuedCallMutation> {
             break;
         }
         bytes = next_bytes;
+        #[cfg(feature = "benchmarks")]
+        shared.observation.dequeued(front.accepted_at.elapsed());
         entries.push(queue.pop_front().expect("front entry checked"));
     }
     entries

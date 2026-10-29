@@ -35,6 +35,7 @@ impl WriterFixture {
             tokio::fs::create_dir_all(&project_root).await?;
             let mut delta = DirectoryDelta::upsert_project(ProjectDirectoryRecord {
                 id: "bench-project".into(),
+                kind: pl_protocol::studio::WorkspaceKind::Project,
                 name: "Statistics benchmark".into(),
                 path: project_root.to_string_lossy().into_owned(),
                 ssh_alias: None,

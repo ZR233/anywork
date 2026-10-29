@@ -402,6 +402,13 @@ pub async fn open_project(path: String) -> Result<ProjectDto, BridgeError> {
     Ok(project.into())
 }
 
+pub async fn prepare_standalone_workspace()
+-> Result<crate::api::studio::types::BridgeProjectDirectoryState, BridgeError> {
+    let bridge = active_bridge().await?;
+    let directory = bridge.studio.prepare_standalone_workspace().await?;
+    Ok(crate::api::studio::convert::runtime::bridge_project_directory(directory.state))
+}
+
 pub async fn activate_project(project_id: String) -> Result<(), BridgeError> {
     let bridge = active_bridge().await?;
     bridge.studio.activate_project(&project_id).await?;

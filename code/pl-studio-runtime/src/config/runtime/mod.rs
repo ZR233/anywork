@@ -127,8 +127,8 @@ pub enum ConfigRuntimeError {
         "bundled Agent product resources are invalid; startup must stop without data recovery: {0:#}"
     )]
     BundledAgentCatalog(#[source] anyhow::Error),
-    #[error("configuration migration failed; original file preserved: {0}")]
-    Migration(#[source] PureError),
+    #[error("configuration migration failed: {0}")]
+    Migration(#[source] anyhow::Error),
     #[error("work mode configuration requires repair; original files preserved: {0:#}")]
     ModeDefinitions(#[source] anyhow::Error),
     #[error("settings revision conflict: expected {expected}, actual {actual}")]
@@ -145,7 +145,11 @@ impl From<ConfigRuntimeError> for PureError {
             ConfigRuntimeError::ModelDiscoveryUnsupported => {
                 PureError::ConfigError("model discovery is unsupported".into())
             }
-            ConfigRuntimeError::Core(error) | ConfigRuntimeError::Migration(error) => error,
+            ConfigRuntimeError::Core(error) => error,
+            ConfigRuntimeError::Migration(error) => match error.downcast::<PureError>() {
+                Ok(error) => error,
+                Err(error) => PureError::ConfigError(error.to_string()),
+            },
             ConfigRuntimeError::BundledAgentCatalog(error) => {
                 PureError::ConfigError(format!("bundled Agent resources are invalid: {error:#}"))
             }

@@ -10,6 +10,7 @@ pub(crate) use pl_protocol::*;
 pub use pl_core::chat::{CHAT_ITEM_PREVIEW_BYTES, ChatError, ChatField, ChatItem, ChatLifecycle};
 pub use pl_core::model::ContentBlock;
 mod hash;
+mod toml_schema;
 
 pub mod agent;
 pub mod approval;

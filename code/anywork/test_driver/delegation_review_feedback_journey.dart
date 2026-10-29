@@ -203,7 +203,7 @@ class _Journey {
 
   Future<void> configureDraft() async {
     // The Mode selector also exists on a live Thread. Wait for the actual
-    // project draft before using it, including after sidebar-new-session.
+    // project draft before using it, including after a project-scoped new session.
     await waitFor((snapshot) {
       final navigation = snapshot['navigation'];
       final selectedProject = snapshot['project'];
@@ -399,7 +399,7 @@ class _Journey {
       'changed',
       'closed',
     ]) {
-      await tap(StudioDriverKeyValues.newSession);
+      await tap('project-new-session-${opened.projectId}');
       await configureDraft();
       final snapshot = await submit(
         '[[delegation:review-feedback:$caseName]]',

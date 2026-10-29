@@ -24,7 +24,10 @@ use super::storage::calls::{
 use super::storage::thread_writer::benchmark::WriterFixture;
 use super::{ProductEventBus, StudioStore};
 
+mod storage_io;
+
 pub use super::storage::calls::observation::ObservationSnapshot;
+pub use storage_io::StorageIo;
 
 pub const SEED: u64 = 209;
 pub const TOKIO_WORKER_THREADS: usize = 4;
@@ -153,7 +156,7 @@ impl Case {
             Workload::Effects { active_threads } => {
                 WriterFixture::open(directory.path(), active_threads)
                     .await
-                    .map(Fixture::Writer)
+                    .map(|fixture| Fixture::Writer(Box::new(fixture)))
             }
             Workload::Publication => PublicationFixture::open(directory.path())
                 .await
@@ -194,7 +197,7 @@ impl Case {
 
 enum Fixture {
     Calls(CallsStore),
-    Writer(WriterFixture),
+    Writer(Box<WriterFixture>),
     Publication(Box<PublicationFixture>),
 }
 
@@ -284,6 +287,7 @@ pub struct Measurement {
     pub elapsed: Duration,
     pub samples: Vec<OperationSample>,
     pub observation: ObservationSnapshot,
+    pub storage_io: Option<StorageIo>,
     pub verification: Value,
 }
 
@@ -331,7 +335,10 @@ impl PreparedCase {
 
     pub async fn measure(&mut self) -> Result<Measurement> {
         let observation = self.calls().observation().clone();
+        observation.reset_queue_age();
         let before = observation.snapshot();
+        let io_before = storage_io::IoSnapshot::read()?;
+        let io_started = Instant::now();
         let (elapsed, samples, verification) = match self.workload {
             Workload::History { limit, .. } => {
                 let started = Instant::now();
@@ -411,10 +418,13 @@ impl PreparedCase {
             }
             Workload::Parallel => parallel(self.calls(), &self.billing_records).await?,
         };
+        let io_elapsed = io_started.elapsed();
+        let io_after = storage_io::IoSnapshot::read()?;
         Ok(Measurement {
             elapsed,
             samples,
             observation: observation.snapshot().since(&before),
+            storage_io: storage_io::measure(io_before, io_after, io_elapsed)?,
             verification,
         })
     }

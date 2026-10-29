@@ -321,6 +321,7 @@
       }
     }
   },
+  "startPageStandaloneBody": "No project needed. Files are saved in your Documents/anywork folder.",
   "startPageOpenProjectTitle": "Open a project to get started",
   "startPageOpenProjectBody": "Choose a project from the sidebar before sending your first message.",
   "shellSessionUpdated": "{mode} · updated {time}",
@@ -1746,6 +1747,16 @@
   "sidebarNewConnection": "New remote connection",
   "sidebarNoResults": "No matching projects or sessions",
   "sidebarEmptyProject": "No sessions yet. Use + on this project to start",
+  "sidebarStandaloneSessions": "Non-project sessions",
+  "sidebarStandaloneEmpty": "No non-project sessions yet.",
+  "sidebarStandalonePrepareFailed": "Couldn't prepare a workspace: {error}. Select New session to retry.",
+  "@sidebarStandalonePrepareFailed": {
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
   "sidebarEarlier": "Show earlier sessions",
   "sidebarArchived": "Archived",
   "sidebarRestore": "Unarchive session",
