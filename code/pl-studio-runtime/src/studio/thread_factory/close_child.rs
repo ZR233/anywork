@@ -56,7 +56,7 @@ impl StudioThreadFactory {
             let identity =
                 workspace_preparation::cleanup_identity(&self.services.store, &lease).await?;
             ensure!(
-                identity.root == assignment.root,
+                identity.matches_root(&assignment.root),
                 "owned worktree assignment changed"
             );
             Some(OwnedWorktreeBinding { lease, identity })

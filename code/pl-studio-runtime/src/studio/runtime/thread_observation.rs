@@ -665,10 +665,9 @@ impl ThreadObservations {
             // "stopped, waiting for the main agent" for every member that is not loaded again. This
             // reads only the saved checkpoint — no activation, no workspace, no model request.
             directory::publish_cold_scheduling_state(services, &child, &checkpoint.state).await?;
-            services
-                .threads
-                .recover_saved_review_deliveries(&child)
-                .await?;
+            // Match close/retry recovery: keep the owned delivery state out of the parent's
+            // subscription future, which also nests checkpoint migration and activation.
+            Box::pin(services.threads.recover_saved_review_deliveries(&child)).await?;
         }
         Ok(())
     }

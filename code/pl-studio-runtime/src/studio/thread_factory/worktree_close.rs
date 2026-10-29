@@ -187,8 +187,7 @@ impl StudioThreadFactory {
             .await?
             .context("actual root delivery workspace has no frozen physical binding")?;
         ensure!(
-            delivery.endpoint == binding.identity.endpoint
-                && delivery.root != binding.identity.root,
+            delivery.endpoint == binding.identity.endpoint && delivery != binding.identity,
             "root delivery workspace endpoint or identity differs from owned child"
         );
         if let Some(grant) = &record.git {

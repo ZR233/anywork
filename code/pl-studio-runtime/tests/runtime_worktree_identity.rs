@@ -205,8 +205,15 @@ async fn existing_hot_spawn_and_cold_child_binding_do_not_depend_on_creation_bra
         git(root_path, &["switch", "-c", "root-business"])?;
         git(root_path, &["branch", "-m", "renamed-root"])?;
         begin.release();
-        reached(&spawned).await?;
-        reached(&child_running).await?;
+        reached(&spawned).await.with_context(|| {
+            format!(
+                "spawn result was not accepted: {:?}",
+                support::tool_output(&env.root_provider, "identity-spawn")
+            )
+        })?;
+        reached(&child_running)
+            .await
+            .context("spawned child did not start its model request")?;
         let receipt = support::receipt(&env.root_provider, "identity-spawn")?;
         let id = support::child_id(&receipt)?;
         let child_path = support::child_path(&receipt)?;

@@ -135,7 +135,7 @@ impl StudioChildResources for StudioThreadFactory {
                 .worktrees
                 .get(&request.caller)
                 .filter(|lease| {
-                    lease.path == identity.root
+                    identity.matches_root(&lease.path)
                         && lease.project_id == project.id
                         && lease.root_thread_id == parent.root_thread_id
                 })

@@ -389,9 +389,25 @@ mod migration_tests {
             b"retained original"
         );
         assert!(fixture.workspace_is_busy(&root.id));
+        let frozen = store.workspace_identity(&root.id).await?.unwrap();
+        assert_eq!(frozen, local_identity(&managed).await?);
+        // Windows' native canonical path uses an extended prefix. Re-admitting that same site
+        // must retain both the active use and the original durable spelling, without rebinding.
+        let equivalent = WorkspaceIdentity::canonical(
+            WorkspaceEndpoint::Local,
+            tokio::fs::canonicalize(&managed)
+                .await?
+                .to_string_lossy()
+                .into_owned(),
+        )?;
+        factory
+            .services
+            .worktrees
+            .assign_workspace(&execution, equivalent.clone())?;
+        store.bind_workspace_identity(&root.id, &equivalent).await?;
         assert_eq!(
-            store.workspace_identity(&root.id).await?.unwrap(),
-            local_identity(&managed).await?
+            store.workspace_identity(&root.id).await?.unwrap().root,
+            frozen.root
         );
         drop(execution);
 
@@ -620,7 +636,10 @@ mod migration_tests {
                 .unwrap();
             let assignment = crate::studio::workspace_receipt::from_payload(assignment)
                 .map_err(anyhow::Error::msg)?;
-            assert_eq!(assignment.root, managed.to_string_lossy());
+            assert_eq!(
+                assignment.root,
+                dunce::canonicalize(&managed)?.to_string_lossy()
+            );
             assert_ne!(registered.workspace_path, assignment.root);
             if let Some(target) = &request.review_target {
                 assert_eq!(assignment.review_target.as_ref(), Some(target));

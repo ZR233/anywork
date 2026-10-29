@@ -139,7 +139,7 @@ impl StudioThreadFactory {
         let root = match (&frozen, &assignment) {
             (Some(identity), Some(assignment)) => {
                 ensure!(
-                    identity.root == assignment.root,
+                    identity.matches_root(&assignment.root),
                     "execution assignment differs from its frozen identity"
                 );
                 identity.root.clone()
@@ -149,13 +149,16 @@ impl StudioThreadFactory {
             (None, None) if thread.parent_thread_id.is_none() => thread.workspace_path.clone(),
             _ => anyhow::bail!("child execution binding remains unknown"),
         };
+        let actual = self
+            .resolve_workspace_identity(&effective, Path::new(&root))
+            .await?;
         let lease = self
             .services
             .worktrees
             .snapshot()
             .into_iter()
             .find(|lease| {
-                lease.path == root
+                actual.matches_root(&lease.path)
                     && lease.root_thread_id == thread.root_thread_id
                     && lease.project_id == thread.project_id
             });
@@ -166,12 +169,11 @@ impl StudioThreadFactory {
                 "execution worktree was cleaned"
             );
         }
-        let actual = self
-            .resolve_workspace_identity(&effective, Path::new(&root))
-            .await?;
         ensure!(
             frozen.as_ref().is_none_or(|identity| *identity == actual),
-            "execution canonical identity or endpoint changed"
+            crate::agent::worktree::WorktreeError::IdentityMismatch(
+                "execution canonical path or endpoint changed".into()
+            )
         );
         self.verify_execution_identity(&effective, &actual).await?;
         if let Some(lease) = lease {

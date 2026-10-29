@@ -478,7 +478,13 @@ impl StudioThreadFactory {
             check._usage = Some(usage);
         }
         if check.binding.is_none()
-            && tokio::fs::canonicalize(&project.path).await? != Path::new(&assignment.project_root)
+            && !same_workspace_path(
+                &tokio::fs::canonicalize(&project.path)
+                    .await?
+                    .to_string_lossy(),
+                &assignment.project_root,
+                false,
+            )
         {
             return Err(ReviewWorkspaceError::Unconfirmed(
                 "cold Project root does not prove the frozen project binding",
@@ -688,7 +694,11 @@ impl StudioThreadFactory {
         } else {
             let path = Path::new(&assignment.root);
             if !tokio::fs::metadata(path).await?.is_dir()
-                || tokio::fs::canonicalize(path).await? != path
+                || !same_workspace_path(
+                    &tokio::fs::canonicalize(path).await?.to_string_lossy(),
+                    &assignment.root,
+                    false,
+                )
             {
                 return Err(ReviewWorkspaceError::Invalid(
                     "frozen local workspace is not the same canonical directory",
@@ -808,6 +818,6 @@ pub(super) fn same_workspace_path(left: &str, right: &str, remote: bool) -> bool
             _ => false,
         }
     } else {
-        Path::new(left) == Path::new(right)
+        dunce::simplified(Path::new(left)) == dunce::simplified(Path::new(right))
     }
 }
