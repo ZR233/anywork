@@ -11,7 +11,6 @@ mod rust_bridge;
 mod studio_acceptance;
 mod studio_tool;
 mod studio_version;
-mod sync_skills;
 mod toolchain;
 
 pub fn run(args: impl IntoIterator<Item = OsString>) -> Result<()> {
@@ -40,7 +39,6 @@ pub fn run(args: impl IntoIterator<Item = OsString>) -> Result<()> {
                 cli::Command::BuildGui(options) => flutter::build_gui(options),
                 cli::Command::ReleaseGui { action } => release::run(action),
                 cli::Command::BuildRemoteHelper(options) => remote_helper::build(options),
-                cli::Command::SyncSkills => sync_skills::run(),
             }
         }
     }

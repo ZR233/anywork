@@ -44,8 +44,6 @@ pub(crate) enum Command {
     },
     /// Cross-compile the minimal Linux SSH remote helper.
     BuildRemoteHelper(BuildRemoteHelperOptions),
-    /// Refresh bundled upstream preset Skills inside pl-studio-runtime.
-    SyncSkills,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
