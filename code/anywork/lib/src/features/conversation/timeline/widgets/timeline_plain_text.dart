@@ -119,6 +119,7 @@ class TimelinePlainTextState extends State<TimelinePlainText> {
               open,
               key: ValueKey('plain-open-${widget.id}'),
               style: bodyStyle,
+              softWrap: true,
             ),
         ];
         if (children.isEmpty) {
@@ -166,6 +167,7 @@ class TimelinePlainTextState extends State<TimelinePlainText> {
           chunkText,
           key: ValueKey('plain-chunk-${widget.id}-${_sealed.length}'),
           style: widget.style,
+          softWrap: true,
         ),
       );
       _sealedEnd += boundary;
