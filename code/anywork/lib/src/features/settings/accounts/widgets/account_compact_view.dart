@@ -72,9 +72,10 @@ class AccountCompactView extends StatelessWidget {
             );
             final controls = LayoutBuilder(
               builder: (context, constraints) => Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
+                crossAxisAlignment: CrossAxisAlignment.end,
                 children: [
                   Wrap(
+                    alignment: WrapAlignment.end,
                     spacing: 6,
                     runSpacing: 6,
                     children: [
@@ -93,6 +94,7 @@ class AccountCompactView extends StatelessWidget {
                   ),
                   const SizedBox(height: 10),
                   Wrap(
+                    alignment: WrapAlignment.end,
                     spacing: 8,
                     runSpacing: 8,
                     crossAxisAlignment: WrapCrossAlignment.center,
