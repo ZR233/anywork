@@ -5,7 +5,7 @@
     '已经把会话内容拆成两个清楚的区域：**上方阅读历史，下方关注当前执行**。',
     '',
     '### 这轮细化',
-    '- 历史保留完整文本和完整工作组，耗时与结果固定。',
+    '- 历史保留逐条完成事实，展示组只组合已完成成员。',
     '- 工具可以并行执行，在同一个工作组内查看进展。',
     '- 所有结束的内容都可以展开、选择与复制。',
     '',
@@ -17,7 +17,7 @@
     '| 内容 | 何时进入历史 |',
     '| --- | --- |',
     '| 文本输出 | 当前这段输出结束 |',
-    '| 思考工作组 | 整组结束 |',
+    '| 思考或工具结果 | 每个事实独立完成 |',
     '| 上下文压缩 | 压缩成功 |',
     '',
     '> 你可以在输出期间向上阅读，新的内容不会抢走阅读位置。',
@@ -31,7 +31,7 @@
       summary: '核对交互细节，补齐状态切换与历史回执',
       members: [
         { id: id + '-thinking', kind: 'thinking', title: '梳理历史与当前执行的边界', status: 'completed', elapsed: 3,
-          content: '先固定**完整工作组**的边界，再检查并行工具和用户交互。组内工具先完成时不拆组，整组结束后一起成为历史。' },
+          content: '每个思考或工具结果**独立完成即进入历史**。仍在运行的成员留在实时区；历史展示组可随相邻完成事实扩展，不决定发布时机。' },
         { id: id + '-read', kind: 'read', title: '读取文件', target: 'timeline_view.dart', status: 'completed', elapsed: 1,
           path: 'code/anywork/lib/src/features/timeline/timeline_view.dart',
           content: '已读取时间线、实时活动栏与输入区的组合结构。\n阅读列共用中心轴；历史与当前执行分别持有滚动区域。' },
@@ -49,7 +49,7 @@
           path: 'code/anywork/lib/src/features/timeline/conversation_activity_bar.dart',
           files: [
             { name: 'conversation_activity_bar.dart', added: 12, removed: 4,
-              diff: '@@ 当前执行与历史分离 @@\n- renderTimeline(activeItems);\n+ renderTimeline(completedItems);\n+ renderLiveStatus(currentActivity);\n \n+ onWorkGroupCompleted(appendHistory);' },
+              diff: '@@ 当前执行与历史分离 @@\n- renderTimeline(activeItems);\n+ renderTimeline(completedItems);\n+ renderLiveStatus(currentActivity);\n \n+ onItemCompleted(appendHistory);' },
             { name: 'timeline_view.dart', added: 6, removed: 2,
               diff: '@@ 历史阅读 @@\n- scrollToBottomOnEveryUpdate();\n+ if (followingLatest) scrollToLatest();\n+ else showNewHistoryCount();' }
           ] },
@@ -88,7 +88,7 @@
     answers: [[], []], others: ['', ''], secret: ''
   };
   const scenarios = [
-    { id: 'workgroup', label: '活跃工作组', hint: '组内有已完成与进行中的工具。整组结束后才进入历史。', live: 'workGroup' },
+    { id: 'workgroup', label: '活跃工作组', hint: '完成成员已逐条进入历史；运行中的工具留在实时区，相邻完成事实由前端组合展示。', live: 'workGroup' },
     { id: 'thinking', label: '思考中', hint: '尚无工作信息或正文，只显示不可展开的「思考中」。收到信息后切换到工作组。', waiting: true },
     { id: 'after-text', label: '文本结束后等待', hint: '完整正文已进入历史，轮次尚未结束。等待模型响应时显示不可展开的「思考中」。', waiting: true, afterText: true },
     { id: 'text', label: '实时文本', hint: '正文结束后整段进入历史；轮次仍在等待响应时，实时区切换为「思考中」。', live: 'textOutput' },

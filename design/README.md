@@ -44,7 +44,7 @@
 配套资产：`concepts/` 保存产品概念设计（如项目侧栏），`prototypes/` 保存视觉原型（HTML 静态稿，不作为架构契约），`assets/` 保存文档引用的图像资源。
 
 - Material 3 账号设计稿按界面分目录：[账号列表](./prototypes/accounts-list/index.html)、[账号详情](./prototypes/account-details/index.html)、[模型详情、价格与评价](./prototypes/model-details/index.html)。对应 [#168](https://github.com/ZR233/anywork/issues/168)，包含 62 个账户场景、计费方式选择后保存及带评价模型标识的模拟评价。三个入口共用 `prototypes/accounts-shared/` 中的样式、示例数据与交互代码，分别从对应界面打开；维护时修改共享文件，避免页面间漂移。浏览器直接打开即可交互，需要联网加载固定版本的 MDUI 和图标库；金额、价格、性能和评价均为设计样例，不连接真实账户，也不作为原生实现或验收证据。
-- 会话交互概念稿：[Timeline 与实时状态栏](./prototypes/live-status/index.html)。实时区互斥展示当前工作组、实时文本输出或正在压缩，前置活动图标持续旋转；尚无信息、等待模型响应时显示不可展开的「思考中」。完整工作组和完整文本结束后进入历史，成功压缩追加单行「已完成压缩」。覆盖工具详情、问答、主按钮停止与继续及历史阅读；失败和停止作为独立的折叠元素展示在 timeline 中。共享模块位于 [conversation-shared](./prototypes/conversation-shared/README.md)，工作台与交互停靠区复用相同结构和状态控制器；每个窗口独立操作。浏览器直接打开即可使用，固定版本的 Marked、DOMPurify 和 Lucide 通过 CDN 加载，首次打开需要联网。此稿是待评审的交互方案，所有任务均为本地模拟，不代表当前原生实现或验收结果。
+- 会话交互概念稿：[Timeline 与实时状态栏](./prototypes/live-status/index.html)。以 [26](./26-timeline-content.md) 的逐条完成事实为准，Flutter 可把相邻完成项派生成活动组；未完成活动/正文/压缩留唯一实时区，无信息显示不可展开“思考中”。旋转前置图标、独立折叠终态、问答 dock 与输入主按钮复用 [conversation-shared](./prototypes/conversation-shared/README.md)。概念稿为本地模拟和视觉参照，可按 issue 调整，不是原生或真实供应商验收证据。
 
 ## 写作规范
 
