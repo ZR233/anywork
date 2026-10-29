@@ -27,7 +27,9 @@ use tokio::{
     task::JoinHandle,
 };
 
-use crate::studio::storage::thread_writer::HistoryChannel;
+use crate::studio::storage::thread_writer::{
+    HistoryChannel, PendingProjectionRetention, ProjectionRetention, ProjectionTransfer,
+};
 use crate::studio::thread_projection::{LiveEvent, LiveProjection, storage_state};
 use crate::thread_assembler::agent_review::ReviewDeliverySource;
 
@@ -98,6 +100,9 @@ pub(in crate::studio) struct ThreadLiveFeed {
     /// It is a watch rather than a feed frame precisely because it has to outlive the broadcast: a
     /// fact nobody was subscribed for is still the fact the next subscriber must start from.
     last_turn: watch::Sender<Option<Arc<pl_protocol::Turn>>>,
+    /// Latest shared current content, never a queue of deltas. Subscribers derive their own bounded
+    /// increments from these canonical blocks, so coalescing a wakeup cannot drop text.
+    activity_content: watch::Sender<Arc<crate::studio::thread_projection::ActivitySnapshot>>,
 }
 
 impl ThreadLiveFeed {
@@ -105,11 +110,21 @@ impl ThreadLiveFeed {
         let (events, _) = broadcast::channel(LIVE_FEED_FRAMES);
         let (storage, _) = watch::channel(storage);
         let (last_turn, _) = watch::channel(None);
+        let (activity_content, _) = watch::channel(Arc::new(
+            crate::studio::thread_projection::ActivitySnapshot::default(),
+        ));
         Self {
             events,
             storage,
             last_turn,
+            activity_content,
         }
+    }
+
+    pub(in crate::studio) fn activity_content(
+        &self,
+    ) -> watch::Receiver<Arc<crate::studio::thread_projection::ActivitySnapshot>> {
+        self.activity_content.subscribe()
     }
 
     pub(in crate::studio) fn subscribe(&self) -> broadcast::Receiver<ThreadLiveEvent> {
@@ -910,18 +925,19 @@ impl LiveOwner {
         let id = thread.id.as_str();
         let chat = projector.store.chat_session(id).await?;
         let usage = live_usage(projector, id, snapshot);
-        // The one cold read of a projection: the durable facts of work that already started before
-        // this owner existed. Everything the commit and preview paths resolve afterwards comes from
-        // these tables, so a re-activated Thread never waits on a history reader mid-Turn.
+        // Seed the bounded active slice once. The channel owns allocation continuity; only a
+        // retired identity referenced by a late reliable fact needs an exact durable lookup.
         let mut projection = LiveProjection::new();
+        projection
+            .bind_execution_history(channel.order_index(), projector.store.history(id).await?)?;
         let retained = handle.effects().await?;
         let (seed_items, hidden) =
             cold_seed(&projector.store, &thread, snapshot, &channel, &retained).await?;
         projection.seed(seed_items, hidden);
-        // Seed the activity projection from the very snapshot this owner was installed on, so a
-        // subscriber that opens mid-Turn immediately sees the authoritative current activity.
-        let mut activity = crate::studio::thread_projection::ActivityProjection::default();
-        let activity_published = activity.observe(id, snapshot);
+        // Publish the first activity only after this snapshot's admitted completions have been
+        // folded below. Seeding the summary here would suppress that first shared content publish.
+        let activity = crate::studio::thread_projection::ActivityProjection::default();
+        let activity_published = None;
         // The owner is the single source of the typed storage state: publish the value it was
         // installed with, so a subscriber that opened before this first pass sees the authoritative
         // fact instead of an unset placeholder.
@@ -967,7 +983,7 @@ impl LiveOwner {
         };
         // The seeded facts are already resident, so the Thread's budget covers them from the moment
         // the owner is installed instead of only after its first commit.
-        owner.publish_retained();
+        owner.publish_retained()?;
         // A Thread re-activated after its last Turn finished has no live frame left for that fact:
         // the authoritative snapshot carries only the active Turn and `turnCompleted` was broadcast
         // once, to subscribers that may be long gone. This is the very cold-read path the owner is
@@ -993,7 +1009,7 @@ impl LiveOwner {
     /// the batch the writer already committed. The reliable channel's budget is what pauses new
     /// model/tool admission at a safe gap, so it has to see this number; nothing here waits for a
     /// GUI, because the owner publishes whether or not anyone is subscribed.
-    fn publish_retained(&self) {
+    fn retention(&self) -> ProjectionRetention {
         // The activity summary and its bounded resident detail are resident facts of the same owner,
         // so they belong to the same Thread budget instead of living outside it.
         let mut bytes = self
@@ -1004,10 +1020,22 @@ impl LiveOwner {
         // charged here — under the same Thread budget — until the reliable channel takes it over;
         // the queue's own `ThreadWrite` Arc is the very object admission already charged, so only
         // the prepared content is added and no body is counted twice in steady state.
-        if let Some(pending) = self.pending.as_ref() {
-            bytes = bytes.saturating_add(pending.retained_bytes());
+        let pending = self.pending.as_ref().map(|pending| {
+            let prepared_bytes = pending.prepared.retained_bytes();
+            bytes = bytes.saturating_add(pending.retained_bytes().saturating_sub(prepared_bytes));
+            PendingProjectionRetention {
+                sequence: pending.prepared.sequence,
+                prepared_bytes,
+            }
+        });
+        ProjectionRetention {
+            resident_bytes: bytes,
+            pending,
         }
-        self.channel.set_projection_bytes(bytes);
+    }
+
+    fn publish_retained(&self) -> Result<()> {
+        self.channel.set_projection_retention(self.retention())
     }
 
     /// Projects one admitted write into the session, broadcasts its live changes and hands the very
@@ -1075,16 +1103,18 @@ impl LiveOwner {
     ) -> Result<Option<Arc<pl_core::thread::inbox::ThreadMessage>>> {
         let effect = &write.effect;
         let deliver = self.feed.has_subscribers();
-        let projected = (|| {
-            crate::studio::thread_projection::fold_effect_accounting(&mut self.usage, effect)?;
-            self.projection.advance(
-                &self.chat,
-                &self.thread,
-                effect,
-                &write.checkpoint.state,
-                deliver,
-            )
-        })();
+        anyhow::ensure!(
+            self.pending.is_none(),
+            "a retained handoff must finish before projecting another effect"
+        );
+        let mut usage = self.usage.clone();
+        let projected = async {
+            crate::studio::thread_projection::fold_effect_accounting(&mut usage, effect)?;
+            self.projection
+                .prepare(&self.thread, effect, &write.checkpoint.state, deliver)
+                .await
+        }
+        .await;
         let (changes, prepared) = match projected {
             Ok(projected) => projected,
             Err(error) => {
@@ -1098,6 +1128,7 @@ impl LiveOwner {
                 return Err(anyhow::anyhow!("live Thread projection failed: {error}"));
             }
         };
+        self.usage = usage;
         // The folded commit is already resident in the shared session, so this owner retains the
         // whole handoff — the original write, the prepared batch, the delivery decision it made and
         // its mode — before the first await of the parent-report preparation. A failure, a
@@ -1117,7 +1148,7 @@ impl LiveOwner {
             changes,
             mode: HandoffMode::Live,
         });
-        self.publish_retained();
+        self.publish_retained()?;
         self.finish_pending(services).await
     }
 
@@ -1126,6 +1157,16 @@ impl LiveOwner {
         &mut self,
         services: &ObservationServices,
     ) -> Result<Option<Arc<pl_core::thread::inbox::ThreadMessage>>> {
+        // Publication may wait on either execution history or the completion Session's
+        // history port. Its original drafts and every projected body already belong
+        // to this charged slot, including when an earlier attempt failed or was cancelled.
+        self.publish_retained()?;
+        if let Some(pending) = self.pending.as_mut() {
+            self.projection
+                .publish_prepared(&self.chat, &mut pending.prepared)
+                .await?;
+        }
+        self.publish_retained()?;
         // Test-only fault boundary: a fault test that installed a hook parks the real batch right
         // after its retention and before the report preparation, and may fail it once. Production
         // builds (and owners without a hook) pass straight through.
@@ -1173,6 +1214,7 @@ impl LiveOwner {
     /// refuse the batch, this pending slot remains its sole owner. That prevents the next worker pass
     /// from starting delivery before the reliable handoff and keeps cancellation/retry on one batch.
     fn prepare_terminal_delivery(&mut self, services: &ObservationServices) -> Result<()> {
+        let before = self.retention();
         let Some(pending) = self.pending.as_mut() else {
             return Ok(());
         };
@@ -1195,16 +1237,33 @@ impl LiveOwner {
             )?,
         );
         let bytes = self.channel.terminal_material_bytes(&authority, &original);
-        let retention = services
-            .store
-            .thread_persistence()
-            .retain_terminal_material(&self.thread.id, &self.channel, bytes);
+        let source = before
+            .pending
+            .context("terminal batch has no charged identity")?;
+        let prepared_bytes = source
+            .prepared_bytes
+            .checked_sub(pending.prepared.parent_report_retained_bytes())
+            .context("terminal report exceeds its prepared batch charge")?;
+        let transfer = ProjectionTransfer {
+            source,
+            after: ProjectionRetention {
+                resident_bytes: before.resident_bytes,
+                pending: Some(PendingProjectionRetention {
+                    sequence: source.sequence,
+                    prepared_bytes,
+                }),
+            },
+        };
         let sequence = pending.write.effect.sequence;
         let Some(prepared) = Arc::get_mut(&mut pending.prepared) else {
             anyhow::bail!(
                 "live Thread pending batch of commit {sequence} is unexpectedly shared before terminal retention"
             );
         };
+        let retention = services
+            .store
+            .thread_persistence()
+            .retain_terminal_material(&self.thread.id, &self.channel, bytes, Some(transfer))?;
         prepared.terminal_retention = Some(retention.clone());
         pending.terminal = Some(Arc::new(
             crate::thread_assembler::review_dispatch::TerminalDelivery {
@@ -1225,7 +1284,7 @@ impl LiveOwner {
         ));
         // The report moved from the pending-batch estimate to the managed terminal-material charge.
         // Publish the new absolute projection value before attempting the synchronous handoff.
-        self.publish_retained();
+        self.publish_retained()?;
         Ok(())
     }
 
@@ -1282,7 +1341,7 @@ impl LiveOwner {
             *transfer = Some(terminal);
         }
         self.pending = None;
-        self.publish_retained();
+        self.publish_retained()?;
         Ok(report)
     }
 
@@ -1381,7 +1440,7 @@ impl LiveOwner {
         }
         // The report is now part of the retained batch: the Thread budget sees it before any
         // handoff attempt, and a refused handoff keeps the batch together with its report.
-        self.publish_retained();
+        self.publish_retained()?;
         Ok(())
     }
 
@@ -1400,12 +1459,10 @@ impl LiveOwner {
     ) -> Result<()> {
         self.seed_durable_targets(services, thread_id, write)
             .await?;
-        let projected = self.projection.project_committed(
-            &self.chat,
-            &self.thread,
-            &write.effect,
-            &write.checkpoint.state,
-        );
+        let projected = self
+            .projection
+            .prepare_committed(&self.thread, &write.effect, &write.checkpoint.state)
+            .await;
         let prepared = match projected {
             Ok(prepared) => prepared,
             Err(error) => {
@@ -1432,7 +1489,7 @@ impl LiveOwner {
             changes: None,
             mode: HandoffMode::Behind,
         });
-        self.publish_retained();
+        self.publish_retained()?;
         self.finish_pending(services).await?;
         Ok(())
     }
@@ -1448,7 +1505,7 @@ impl LiveOwner {
             .map_err(|error| anyhow::anyhow!("live Thread preview failed: {error}"))?;
         self.observe_runtime(snapshot)?;
         self.observe_activity(snapshot);
-        self.publish_retained();
+        self.publish_retained()?;
         Ok(())
     }
 
@@ -1518,14 +1575,26 @@ impl LiveOwner {
     ///
     /// The activity is an independent projection of the same facts: a phase change, a new foreground
     /// tool or an interaction change reaches it through the owner snapshot, never through `effect`.
-    /// Only a real change is broadcast, so a streaming body update does not cost a second status
-    /// frame and no subscriber ever has to project the activity itself.
+    /// Shared producer versions cover body changes even when the bounded summary stays identical.
+    /// The completion ceiling also advances independently of the activity summary.
     fn observe_activity(&mut self, snapshot: &ThreadSnapshot) {
         let activity = self.activity.observe(&self.thread.id, snapshot);
-        if activity == self.activity_published {
+        let completed_through = self.chat.head_seq();
+        let activity_changed = activity != self.activity_published;
+        if !activity_changed
+            && completed_through == self.feed.activity_content.borrow().completed_through
+        {
             return;
         }
         self.activity_published = activity;
+        let mut content = self.activity.snapshot();
+        // stream() runs only after every admitted effect through this Core snapshot has published
+        // its completion. A subscriber can therefore catch up to H before committing live removal.
+        content.completed_through = completed_through;
+        self.feed.activity_content.send_replace(Arc::new(content));
+        if !activity_changed {
+            return;
+        }
         // One shared handle per published change: every subscriber clones that handle, never the body.
         self.feed.publish(|| ThreadLiveEvent::Activity {
             observation_revision: snapshot.observation_revision,
@@ -1560,7 +1629,7 @@ impl Drop for LiveOwner {
     /// released Thread reading as pending work forever. A re-activated Thread installs a new owner
     /// that republishes its own tables on its first step.
     fn drop(&mut self) {
-        self.channel.set_projection_bytes(0);
+        self.channel.release_projection_retention();
     }
 }
 
@@ -2395,13 +2464,19 @@ mod storage_fault_tests {
         register_test_thread(store, &parent).await?;
         let parent_sink = ThreadStorageSink::new(store.clone(), parent.clone(), None).await?;
         let initial = ticket(&parent.id, 1);
-        let (_, prepared) = LiveProjection::new().advance(
-            &store.chat_session(&parent.id).await?,
-            &parent,
-            &initial.effect,
-            &initial.checkpoint.state,
-            false,
+        let mut projection = LiveProjection::new();
+        projection.bind_execution_history(
+            store
+                .thread_persistence()
+                .history_channel(&parent.id)
+                .order_index(),
+            store.history(&parent.id).await?,
         )?;
+        let chat = store.chat_session(&parent.id).await?;
+        let (_, mut prepared) = projection
+            .prepare(&parent, &initial.effect, &initial.checkpoint.state, false)
+            .await?;
+        projection.publish_prepared(&chat, &mut prepared).await?;
         parent_sink.admit(&parent.id, initial)?;
         let parent_channel = store.thread_persistence().history_channel(&parent.id);
         assert!(parent_channel.prepare(prepared));
@@ -2458,6 +2533,423 @@ mod storage_fault_tests {
             .await?;
         sink.flush(&child.id, 1).await?;
         Ok((resources, observations, worker, sink))
+    }
+
+    async fn completion_publication_retry(mode: HandoffMode, cancel: bool) -> Result<()> {
+        use sea_orm::ConnectionTrait;
+
+        let temp = tempfile::tempdir()?;
+        let store = StudioStore::open(temp.path().join("studio/v2/studio.sqlite")).await?;
+        let (resources, observations, mut worker, sink) =
+            terminal_projection_fixture(&store, false).await?;
+        let history = store.history(&worker.id).await?;
+        let db = sea_orm::Database::connect(
+            crate::studio::paths::sqlite_file_options(
+                &store
+                    .session_paths("project-test", &worker.id)?
+                    .history_database(),
+                crate::studio::paths::SqliteFileMode::ReadWrite,
+                |options| options,
+            )
+            .await?,
+        )
+        .await?;
+        let result = async {
+            let write = Arc::new(terminal_write(&worker.id, false)?);
+            sink.admit(&worker.id, write.as_ref().clone())?;
+            let services = worker.services.clone();
+            let channel = worker.state.channel.clone();
+            let live = worker.live.as_mut().context("real projection owner")?;
+            let chat = live.chat.clone();
+            let before = channel_gauge(&channel);
+            let head = chat.head_seq();
+            let (entered, release) = history.arm_completion_read_gate().await;
+            let mut publishing = Box::pin(async {
+                match mode {
+                    HandoffMode::Live => live
+                        .advance(&services, &write.effect.thread_id, &write)
+                        .await
+                        .map(|_| ()),
+                    HandoffMode::Behind => {
+                        live.prepare_behind(&services, &write.effect.thread_id, &write)
+                            .await
+                    }
+                }
+            });
+            let id = tokio::select! {
+                entered = entered => entered.context("real completion identity read entered")?,
+                result = publishing.as_mut() => {
+                    result?;
+                    anyhow::bail!("publication returned before its actual history read");
+                }
+            };
+            anyhow::ensure!(!id.is_empty());
+            anyhow::ensure!(
+                futures::poll!(publishing.as_mut()).is_pending(),
+                "publication must still owe the gated SQL read"
+            );
+            anyhow::ensure!(
+                channel_gauge(&channel) > before,
+                "projected bodies and drafts must be charged before the first publication wait"
+            );
+            anyhow::ensure!(chat.head_seq() == head);
+            if cancel {
+                drop(publishing);
+                anyhow::ensure!(release.is_closed(), "cancelled read retained its gate");
+            } else {
+                db.execute_unprepared(
+                    "ALTER TABLE timeline_records RENAME TO paused_timeline_records",
+                )
+                .await?;
+                release
+                    .send(())
+                    .map_err(|_| anyhow::anyhow!("publication read dropped its gate"))?;
+                let failed = publishing.await;
+                // Restore the real database before checking the failure or resuming the owner.
+                db.execute_unprepared(
+                    "ALTER TABLE paused_timeline_records RENAME TO timeline_records",
+                )
+                .await?;
+                anyhow::ensure!(
+                    failed.is_err(),
+                    "missing completion table must fail its read"
+                );
+            }
+
+            let pending = live.pending.as_ref().context("retained publication work")?;
+            anyhow::ensure!(pending.mode == mode);
+            anyhow::ensure!(Arc::ptr_eq(&pending.write, &write));
+            let drafts = pending
+                .prepared
+                .completion_drafts
+                .as_ref()
+                .context("original completion drafts still owed")?;
+            anyhow::ensure!(!drafts.is_empty());
+            let originals = pending.prepared.items.clone();
+            let expected_ids = drafts
+                .iter()
+                .map(|draft| draft.item_id.clone())
+                .collect::<std::collections::BTreeSet<_>>();
+            anyhow::ensure!(live.retention().pending.is_some());
+            anyhow::ensure!(chat.head_seq() == head);
+            anyhow::ensure!(channel.handoff_ticket() == 1);
+
+            // Resume only publication/report/handoff: the effect is never projected again.
+            live.finish_pending(&services).await?;
+            anyhow::ensure!(live.pending.is_none());
+            sink.flush(&worker.id, 2).await?;
+            let saved = history
+                .existing_items(originals.iter().map(|item| item.id.clone()))
+                .await?;
+            let by_id = |items: Vec<pl_protocol::ThreadItem>| {
+                items
+                    .into_iter()
+                    .map(|item| (item.id.clone(), item))
+                    .collect::<std::collections::BTreeMap<_, _>>()
+            };
+            anyhow::ensure!(saved == by_id(originals));
+            let page = chat
+                .page(pl_core::chat::ChatPageRequest {
+                    before: None,
+                    limit: Some(100),
+                })
+                .await?;
+            let ids = page
+                .items
+                .iter()
+                .map(|item| item.item_id.clone())
+                .collect::<std::collections::BTreeSet<_>>();
+            anyhow::ensure!(ids == expected_ids && ids.len() == page.items.len());
+            anyhow::ensure!(
+                page.items
+                    .iter()
+                    .enumerate()
+                    .all(|(index, item)| item.append_seq == index as u64 + 1)
+            );
+            live.finish_pending(&services).await?;
+            anyhow::ensure!(chat.head_seq() == page.items.len() as u64);
+            Ok(())
+        }
+        .await;
+        let channel = worker.state.channel.clone();
+        drop(worker);
+        drop(sink);
+        let cleanup = async {
+            channel.stop_and_join().await?;
+            observations.finish().await?;
+            resources.shutdown().await
+        }
+        .await;
+        result?;
+        cleanup
+    }
+
+    #[tokio::test]
+    async fn completion_publication_read_failure_keeps_the_original_projected_batch() -> Result<()>
+    {
+        for mode in [HandoffMode::Live, HandoffMode::Behind] {
+            completion_publication_retry(mode, false).await?;
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn completion_publication_read_cancellation_keeps_the_original_projected_batch()
+    -> Result<()> {
+        for mode in [HandoffMode::Live, HandoffMode::Behind] {
+            completion_publication_retry(mode, true).await?;
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn activity_snapshot_seeds_streams_and_retires_at_queryable_completion_head() -> Result<()>
+    {
+        use pl_core::{
+            chat::{ChatDraft, ChatPageRequest},
+            model::{
+                ActiveModelProgress, AggregateChannel, ModelProgress, ObservedPart,
+                ObservedPartIdentity,
+            },
+        };
+        let temp = tempfile::tempdir()?;
+        let store = StudioStore::open(temp.path().join("studio/v2/studio.sqlite")).await?;
+        let (resources, observations, mut worker, _sink) =
+            terminal_projection_fixture(&store, false).await?;
+        let mut updates = worker.feed.activity_content();
+        updates.borrow_and_update();
+        let prefix = "文".repeat(pl_protocol::ACTIVITY_SUMMARY_LIMIT + 1);
+        let part = ObservedPart::new(ObservedPartIdentity::Aggregate {
+            channel: AggregateChannel::Text,
+        })
+        .appended(&prefix);
+        let mut current = ThreadSnapshot {
+            commit_sequence: 1,
+            turns: Arc::from([TurnRecord {
+                turn_id: "active-turn".into(),
+                input_id: None,
+                state: TurnState::Running,
+                model_steps: 1,
+                elapsed_ms: None,
+            }]),
+            attempts: Arc::from([serde_json::from_value(serde_json::json!({
+                "turnId": "active-turn", "attemptId": "active-attempt",
+                "retryOf": null, "inputRevision": 0, "status": {"kind": "running"}
+            }))?]),
+            model_progress: Some(ActiveModelProgress {
+                attempt_id: "active-attempt".into(),
+                progress: ModelProgress::new(1, vec![part.clone()]),
+            }),
+            ..Default::default()
+        };
+        // Re-open with active state, exactly the late-subscriber / mid-attempt bootstrap path.
+        worker.live = None;
+        worker.project(&current, false, None).await?;
+        assert!(updates.has_changed()?);
+        let first = updates.borrow_and_update().clone();
+        assert_eq!(first.response.len(), 1);
+        let region = pl_protocol::ActivityTextRegion::Response {
+            item_id: first.response[0].item_id.clone(),
+        };
+        assert!(Arc::ptr_eq(&first.text[&region], part.content()));
+
+        let appended = part.appended("继续");
+        current.model_progress.as_mut().unwrap().progress =
+            ModelProgress::new(2, vec![appended.clone()]);
+        worker.project(&current, false, None).await?;
+        assert!(updates.has_changed()?);
+        let next = updates.borrow_and_update().clone();
+        assert_eq!(
+            first.activity.as_ref().unwrap().summary,
+            next.activity.as_ref().unwrap().summary,
+        );
+        assert!(Arc::ptr_eq(&next.text[&region], appended.content()));
+
+        let chat = worker.live.as_ref().unwrap().chat.clone();
+        let completed = chat
+            .publish_batch(vec![ChatDraft::new("completed-body")])
+            .await?;
+        let through = completed[0].append_seq;
+        current.turns = Arc::from([]);
+        current.model_progress = None;
+        worker.project(&current, false, None).await?;
+        let ended = updates.borrow_and_update().clone();
+        assert!(ended.activity.is_none());
+        assert!(ended.text.is_empty());
+        assert_eq!(ended.completed_through, through);
+        assert!(
+            chat.page(ChatPageRequest::latest())
+                .await?
+                .items
+                .iter()
+                .any(|item| { item.item_id == "completed-body" && item.append_seq == through })
+        );
+        // Even without an activity body change, a newer completion ceiling must reach the source.
+        let completed = chat
+            .publish_batch(vec![ChatDraft::new("completed-next")])
+            .await?;
+        worker.project(&current, false, None).await?;
+        assert!(updates.has_changed()?);
+        assert_eq!(
+            updates.borrow_and_update().completed_through,
+            completed[0].append_seq,
+        );
+        drop(worker);
+        observations.finish().await?;
+        resources.shutdown().await?;
+        Ok(())
+    }
+
+    #[test]
+    fn activity_tool_parts_deliver_prefix_replacement_empty_and_removal() -> Result<()> {
+        use super::super::activity_delivery::{ACTIVITY_CONTENT_BUDGET_BYTES, ActivityDelivery};
+        use pl_core::{
+            model::{ToolProgress, ToolProgressPart, ToolProgressUpdate},
+            thread::task::{TaskRecord, TaskStatus},
+        };
+        use pl_protocol::{ActivityContentFrame, ActivityTextOperation, ActivityTextRegion};
+
+        fn operations(frames: &[ActivityContentFrame]) -> Vec<ActivityTextOperation> {
+            frames
+                .iter()
+                .flat_map(|frame| match frame {
+                    ActivityContentFrame::Text { operations, .. } => operations.clone(),
+                    _ => vec![],
+                })
+                .collect()
+        }
+        let region = |part: &str| ActivityTextRegion::ToolOutput {
+            call_id: "call".into(),
+            part_id: part.into(),
+        };
+        let mut state = ThreadSnapshot::default();
+        state.tasks.insert(
+            "task".into(),
+            TaskRecord {
+                id: "task".into(),
+                call_id: "call".into(),
+                tool_id: "exec".into(),
+                turn_id: "background-turn".into(),
+                revision: 1,
+                status: TaskStatus::Running,
+                cancel_requested: false,
+                acknowledgement: None,
+                started_sequence: Some(1),
+            },
+        );
+        let mut progress = ToolProgress::new(1, vec![ToolProgressPart::new("empty")])
+            .applied(&ToolProgressUpdate::append("stdout", "一"))
+            .applied(&ToolProgressUpdate::append("stderr", "err"));
+        state.tool_progress.insert("task".into(), progress.clone());
+        let mut projection = crate::studio::thread_projection::ActivityProjection::default();
+        let mut delivery = ActivityDelivery::default();
+        projection.observe("thread", &state).expect("active tool");
+        let frames = delivery.encode(
+            Arc::new(projection.snapshot()),
+            ACTIVITY_CONTENT_BUDGET_BYTES,
+        )?;
+        let initial = operations(&frames);
+        assert_eq!(initial.len(), 3);
+        assert!(initial.contains(&ActivityTextOperation::Replace {
+            region: region("empty"),
+            text: String::new(),
+        }));
+        let ActivityContentFrame::Begin { tools, .. } = &frames[0] else {
+            bail!("first part delivery must declare metadata");
+        };
+        assert_eq!(
+            tools[0]
+                .output_parts
+                .iter()
+                .map(|part| part.part_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["empty", "stdout", "stderr"]
+        );
+
+        progress = progress.applied(&ToolProgressUpdate::append("stdout", "二"));
+        state.tool_progress.insert("task".into(), progress.clone());
+        projection.observe("thread", &state).expect("active tool");
+        let frames = delivery.encode(
+            Arc::new(projection.snapshot()),
+            ACTIVITY_CONTENT_BUDGET_BYTES,
+        )?;
+        assert_eq!(
+            operations(&frames),
+            vec![ActivityTextOperation::Append {
+                region: region("stdout"),
+                text: "二".into(),
+            }]
+        );
+
+        progress = progress.applied(&ToolProgressUpdate::replace("stderr", "new"));
+        state.tool_progress.insert("task".into(), progress.clone());
+        projection.observe("thread", &state).expect("active tool");
+        let frames = delivery.encode(
+            Arc::new(projection.snapshot()),
+            ACTIVITY_CONTENT_BUDGET_BYTES,
+        )?;
+        assert_eq!(
+            operations(&frames),
+            vec![ActivityTextOperation::Replace {
+                region: region("stderr"),
+                text: "new".into(),
+            }]
+        );
+
+        progress = progress.applied(&ToolProgressUpdate::replace("stdout", ""));
+        state.tool_progress.insert("task".into(), progress.clone());
+        projection.observe("thread", &state).expect("active tool");
+        let frames = delivery.encode(
+            Arc::new(projection.snapshot()),
+            ACTIVITY_CONTENT_BUDGET_BYTES,
+        )?;
+        assert_eq!(
+            operations(&frames),
+            vec![ActivityTextOperation::Replace {
+                region: region("stdout"),
+                text: String::new(),
+            }]
+        );
+
+        progress = ToolProgress::new(
+            progress.version() + 1,
+            vec![
+                progress.part("empty").unwrap().clone(),
+                progress.part("stdout").unwrap().clone(),
+            ],
+        );
+        state.tool_progress.insert("task".into(), progress);
+        projection.observe("thread", &state).expect("active tool");
+        let frames = delivery.encode(
+            Arc::new(projection.snapshot()),
+            ACTIVITY_CONTENT_BUDGET_BYTES,
+        )?;
+        assert_eq!(
+            operations(&frames),
+            vec![ActivityTextOperation::Remove {
+                region: region("stderr"),
+            }]
+        );
+
+        state.tasks.get_mut("task").unwrap().status = TaskStatus::Succeeded;
+        assert!(projection.observe("thread", &state).is_none());
+        let frames = delivery.encode(
+            Arc::new(projection.snapshot()),
+            ACTIVITY_CONTENT_BUDGET_BYTES,
+        )?;
+        let removed = operations(&frames);
+        assert_eq!(removed.len(), 2);
+        assert!(removed.contains(&ActivityTextOperation::Remove {
+            region: region("empty")
+        }));
+        assert!(removed.contains(&ActivityTextOperation::Remove {
+            region: region("stdout")
+        }));
+        assert!(matches!(
+            frames.last(),
+            Some(ActivityContentFrame::Commit { .. })
+        ));
+        Ok(())
     }
 
     fn terminal_write(id: &str, review: bool) -> Result<ThreadWrite> {
@@ -2753,27 +3245,91 @@ mod storage_fault_tests {
             .thread_persistence()
             .history_channel(&output_thread.id);
         let initial = crate::studio::storage_fault_test_support::ticket(&output_thread.id, 1);
-        let (_, prepared) = LiveProjection::new().advance(
-            &store.chat_session(&output_thread.id).await?,
-            &output_thread,
-            &initial.effect,
-            &initial.checkpoint.state,
-            false,
+        let mut projection = LiveProjection::new();
+        projection.bind_execution_history(
+            output_channel.order_index(),
+            store.history(&output_thread.id).await?,
         )?;
+        let chat = store.chat_session(&output_thread.id).await?;
+        let (_, mut prepared) = projection
+            .prepare(
+                &output_thread,
+                &initial.effect,
+                &initial.checkpoint.state,
+                false,
+            )
+            .await?;
+        projection.publish_prepared(&chat, &mut prepared).await?;
         output_sink.admit(&output_thread.id, initial)?;
         assert!(output_channel.prepare(prepared));
         wait_history_test_signal(output_channel.effects_released.subscribe(), 1).await?;
         let write = terminal_write(&worker.id, true)?;
         sink.admit(&worker.id, write.clone())?;
+        let mut output_sources = vec![(
+            output_thread.id.clone(),
+            output_sink.clone(),
+            output_channel.clone(),
+            0,
+        )];
+        for index in 1..4 {
+            let thread = bound_thread(&format!("output-quota-thread-{index}"));
+            register_test_thread(&store, &thread).await?;
+            let sink = ThreadStorageSink::new(store.clone(), thread.clone(), None).await?;
+            let channel = store.thread_persistence().history_channel(&thread.id);
+            output_sources.push((thread.id, sink, channel, 0));
+        }
+        // Fund this effect's actual identities, publication and original report before
+        // occupying the remaining process allowance with unrelated producer output.
+        let (hook, mut entered, control) = PendingPhaseHook::new();
+        worker
+            .live
+            .as_mut()
+            .context("projection owner")?
+            .pending_hook = Some(hook);
+        let mut projecting = Box::pin(worker.project(&write.checkpoint.state, false, None));
+        let sequence = tokio::select! {
+            entered = entered.recv() => entered.context("retained terminal batch")?,
+            result = projecting.as_mut() => {
+                result?;
+                anyhow::bail!("terminal projection bypassed the pending boundary");
+            }
+        };
+        assert_eq!(sequence, 2);
+        drop(projecting);
+        let services = worker.services.clone();
+        worker
+            .live
+            .as_mut()
+            .context("retained projection owner")?
+            .prepare_parent_report(&services)
+            .await?;
+        worker
+            .live
+            .as_mut()
+            .context("retained projection owner")?
+            .prepare_terminal_delivery(&services)?;
         let occupied = store.thread_persistence().delivery_process_bytes();
         let accepted = 256 * 1024 * 1024 - occupied - 1;
         let operation = "retained-producer-output";
-        assert_eq!(
-            output_sink.reserve_operation_output(&output_thread.id, operation, accepted)?,
-            accepted
-        );
-        output_sink.charge_operation_output(&output_thread.id, operation, accepted)?;
+        let mut remaining = accepted;
+        for (id, source, _, charged) in &mut output_sources {
+            let allowance = 64 * 1024 * 1024 - source.pressure(id).thread_bytes;
+            *charged = remaining.min(allowance);
+            assert_eq!(
+                source.reserve_operation_output(id, operation, *charged)?,
+                *charged
+            );
+            source.charge_operation_output(id, operation, *charged)?;
+            remaining -= *charged;
+        }
+        assert_eq!(remaining, 0, "real Threads fund the process allowance");
+        control.send_replace(Some(Ok(())));
         worker.project(&write.checkpoint.state, false, None).await?;
+        worker
+            .live
+            .as_mut()
+            .context("projection owner")?
+            .pending_hook = None;
         assert!(
             tokio::time::timeout(
                 Duration::from_secs(5),
@@ -2792,7 +3348,7 @@ mod storage_fault_tests {
         output_sink.release_operation_output(&output_thread.id, operation);
         assert_eq!(
             store.thread_persistence().delivery_process_bytes(),
-            before_release - accepted
+            before_release - output_sources[0].3
         );
         assert!(
             capacity.has_changed()?,
@@ -2830,7 +3386,10 @@ mod storage_fault_tests {
                 .is_none()
         );
         worker.state.channel.stop_and_join().await?;
-        output_channel.stop_and_join().await?;
+        for (id, source, channel, _) in output_sources {
+            source.release_operation_output(&id, operation);
+            channel.stop_and_join().await?;
+        }
         tokio::time::timeout(Duration::from_secs(10), observations.finish())
             .await
             .context("finish capacity-repaired observers")??;
@@ -3210,8 +3769,12 @@ mod storage_fault_tests {
         let chat = store.chat_session(&thread.id).await?;
         let (turn, write) = terminal_turn_write(&thread, "pending-handoff-turn")?;
         let mut projection = LiveProjection::new();
-        let (changes, prepared) =
-            projection.advance(&chat, &thread, &write.effect, &write.checkpoint.state, true)?;
+        projection
+            .bind_execution_history(channel.order_index(), store.history(&thread.id).await?)?;
+        let (changes, mut prepared) = projection
+            .prepare(&thread, &write.effect, &write.checkpoint.state, true)
+            .await?;
+        projection.publish_prepared(&chat, &mut prepared).await?;
         let original_items = prepared.items.clone();
         let result = crate::studio::thread_projection::TurnResult::from_items(&original_items);
         let original_report =
@@ -3517,12 +4080,7 @@ mod storage_fault_tests {
         Ok(page
             .items
             .into_iter()
-            .filter(|item| item.turn_id == turn_id)
-            // Durable saving is a separate watermark, not part of this content comparison.
-            .map(|mut item| {
-                item.saved = false;
-                item
-            })
+            .filter(|item| item.turn_id.as_deref() == Some(turn_id))
             .collect())
     }
 
@@ -3889,9 +4447,16 @@ mod storage_fault_tests {
         // Park the real advance on the pending boundary, then cancel the calling future.
         let mut parked = Box::pin(live.advance(&fixture.services, child_id, &write));
         assert!(futures::poll!(parked.as_mut()).is_pending());
-        let entered = tokio::time::timeout(Duration::from_secs(10), entered_rx.recv())
-            .await?
-            .context("hook entered")?;
+        let entered = tokio::time::timeout(Duration::from_secs(10), async {
+            tokio::select! {
+                entered = entered_rx.recv() => entered.context("hook entered"),
+                result = parked.as_mut() => {
+                    result?;
+                    anyhow::bail!("report preparation completed before its hook");
+                }
+            }
+        })
+        .await??;
         assert_eq!(entered, terminal);
         assert!(futures::poll!(parked.as_mut()).is_pending());
         drop(parked);
@@ -3998,6 +4563,7 @@ mod storage_fault_tests {
             .commit_effect(
                 1,
                 EffectCommit {
+                    completions: &[],
                     items: std::slice::from_ref(&question),
                     rolled_back_turns: &Default::default(),
                     identities: &[],
@@ -4021,6 +4587,13 @@ mod storage_fault_tests {
 
         // 2) 重启：新投影没有任何驻留正文，Turn/Task 都不在（空且已剪枝的状态）。
         let mut projection = LiveProjection::new();
+        projection.bind_execution_history(
+            store
+                .thread_persistence()
+                .history_channel(&thread.id)
+                .order_index(),
+            store.history(&thread.id).await?,
+        )?;
         let answered = qa_record(
             call_id,
             2,
@@ -4047,22 +4620,11 @@ mod storage_fault_tests {
             ..Default::default()
         };
 
-        // 没有补读时这张投影无法完成这份回答：这是缺 body 的真实失败，而不是可接受的限制。
-        assert!(
-            projection
-                .advance(&chat, &thread, &answer_effect, &answered_state, true)
-                .is_err()
-        );
-        // owner 按 identity 补读那一条 durable 正文后，同一次投影就能完成。
-        crate::studio::thread_projection::seed_interaction_targets(
-            &mut projection,
-            &thread.id,
-            &history,
-            &answer_effect,
-        )
-        .await?;
-        let (_, prepared) =
-            projection.advance(&chat, &thread, &answer_effect, &answered_state, true)?;
+        // The reliable identity miss resolves this exact durable body before projection.
+        let (_, mut prepared) = projection
+            .prepare(&thread, &answer_effect, &answered_state, true)
+            .await?;
+        projection.publish_prepared(&chat, &mut prepared).await?;
 
         // 3) 走真实 writer：回答必须落盘在原条目上，身份/顺序/创建时间不变。
         let answer_write = ThreadWrite {
@@ -4160,7 +4722,10 @@ mod storage_fault_tests {
         crate::studio::thread_projection::fold_effect_accounting(&mut usage, &effect)?;
         assert_eq!(usage.inference_count, 1);
         let mut projection = LiveProjection::new();
-        let (_, prepared) = projection.advance(&chat, &thread, &effect, &state, true)?;
+        projection
+            .bind_execution_history(channel.order_index(), store.history(&thread.id).await?)?;
+        let (_, mut prepared) = projection.prepare(&thread, &effect, &state, true).await?;
+        projection.publish_prepared(&chat, &mut prepared).await?;
         let write = ThreadWrite {
             effect: Arc::new(effect),
             checkpoint: ThreadCheckpoint::capture_transfer(thread.id.clone(), 1, state),
@@ -4238,8 +4803,12 @@ mod storage_fault_tests {
         };
         sink.admit(&thread.id, write.clone())?;
         let mut projection = LiveProjection::new();
-        let (_, prepared) =
-            projection.advance(&chat, &thread, &write.effect, &write.checkpoint.state, true)?;
+        projection
+            .bind_execution_history(channel.order_index(), store.history(&thread.id).await?)?;
+        let (_, mut prepared) = projection
+            .prepare(&thread, &write.effect, &write.checkpoint.state, true)
+            .await?;
+        projection.publish_prepared(&chat, &mut prepared).await?;
         assert!(channel.prepare(prepared));
         tokio::time::timeout(Duration::from_secs(5), sink.flush(&thread.id, 1)).await??;
         drop(projection);
@@ -4278,17 +4847,16 @@ mod storage_fault_tests {
         };
         let (items, hidden) = cold_seed(&store, &thread, &current, &channel, &retained).await?;
         let mut restored = LiveProjection::new();
+        restored.bind_execution_history(channel.order_index(), store.history(&thread.id).await?)?;
         restored.seed(items, hidden);
         restored.stream(&chat, &thread, &current, 2).await?;
         if delayed_admission {
             sink.admit(&thread.id, recovery.clone())?;
         }
-        let prepared = restored.project_committed(
-            &chat,
-            &thread,
-            &recovery.effect,
-            &recovery.checkpoint.state,
-        )?;
+        let mut prepared = restored
+            .prepare_committed(&thread, &recovery.effect, &recovery.checkpoint.state)
+            .await?;
+        restored.publish_prepared(&chat, &mut prepared).await?;
         assert!(channel.prepare(prepared));
         tokio::time::timeout(Duration::from_secs(5), sink.flush(&thread.id, 2)).await??;
         let history = store.history(&thread.id).await?;

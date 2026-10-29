@@ -417,13 +417,9 @@ pub(in crate::studio) fn project_effect_items(
     }
 
     items.sort_by_key(|item| (item.ordinal == 0, item.ordinal));
-    // An empty phase is only for discovering provisional identities. Once the caller supplies
-    // committed or Session-assigned orders, no item may fall through to storage-side allocation.
-    if (!existing.is_empty() || !reserved.is_empty())
-        && let Some(item) = items.iter().find(|item| item.ordinal == 0)
-    {
-        return Err(ProjectionError::ItemOrder(item.id.clone()));
-    }
+    // Zero denotes a candidate whose placement is not committed yet. The Runtime
+    // assigns every such identity together with its final stamp in one funded
+    // index batch, before recording, publishing or handing any item to storage.
     Ok(EffectProjection {
         items,
         unresolved_inputs,
@@ -487,7 +483,7 @@ fn preserve_wait(items: &mut [ThreadItem], existing: &BTreeMap<String, ThreadIte
 }
 
 /// Ordinal phase of one identity: the committed item, an in-memory Session assignment, or zero
-/// only during the first identity-discovery projection. The final projection rejects zero.
+/// while building an unpublished candidate. The Runtime's metadata commit replaces zero.
 fn stamp(
     existing: &BTreeMap<String, ThreadItem>,
     reserved: &BTreeMap<String, u64>,

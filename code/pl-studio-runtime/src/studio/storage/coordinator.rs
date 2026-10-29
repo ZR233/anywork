@@ -227,13 +227,36 @@ impl ThreadPersistenceCoordinator {
         thread_id: &str,
         channel: &Arc<HistoryChannel>,
         bytes: u64,
-    ) -> Arc<crate::thread_assembler::review_dispatch::TerminalMaterialRetention> {
-        let counter = channel.retain_terminal_bytes(bytes);
+        transfer: Option<super::thread_writer::ProjectionTransfer>,
+    ) -> anyhow::Result<Arc<crate::thread_assembler::review_dispatch::TerminalMaterialRetention>>
+    {
+        let admission = {
+            let mut threads = self
+                .0
+                .threads
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let status = threads
+                .entry(thread_id.to_owned())
+                .or_insert_with(|| ThreadStatus {
+                    incarnations: BTreeMap::new(),
+                    channel: channel.clone(),
+                });
+            anyhow::ensure!(
+                status.channel.shares_delivery_budget(channel),
+                "terminal material belongs to another history channel"
+            );
+            channel.pin_review_delivery(self.clone(), thread_id.to_owned())
+        };
+        let counter = match transfer {
+            Some(transfer) => channel.retain_terminal_bytes(bytes, transfer)?,
+            None => channel.retain_cold_terminal_bytes(bytes)?,
+        };
         let process_bytes = self.0.queued_bytes.clone();
         let weak_owner = Arc::downgrade(&self.0);
         let weak_channel = Arc::downgrade(channel);
         let thread_id = thread_id.to_owned();
-        Arc::new(
+        let retained = Arc::new(
             crate::thread_assembler::review_dispatch::TerminalMaterialRetention::new(move || {
                 counter.fetch_sub(bytes, Ordering::AcqRel);
                 process_bytes.fetch_sub(bytes, Ordering::AcqRel);
@@ -256,7 +279,9 @@ impl ThreadPersistenceCoordinator {
                     }
                 }
             }),
-        )
+        );
+        drop(admission);
+        Ok(retained)
     }
     #[cfg(test)]
     pub(crate) fn arm_release_gate(
@@ -327,7 +352,7 @@ impl ThreadPersistenceCoordinator {
         thread_id: &str,
         bytes: u64,
     ) -> Result<super::thread_writer::ReviewDeliveryRetention> {
-        let (channel, charged) = {
+        let (channel, admission) = {
             let mut threads = self
                 .0
                 .threads
@@ -342,14 +367,16 @@ impl ThreadPersistenceCoordinator {
                         self.0.capacity.clone(),
                     )),
                 });
-            let charged = status.channel.charge_review_delivery(bytes);
-            (status.channel.clone(), charged)
+            let admission = status
+                .channel
+                .pin_review_delivery(self.clone(), thread_id.to_owned());
+            (status.channel.clone(), admission)
         };
-        if let Err(error) = charged {
-            self.release_delivery_channel(thread_id, &channel);
-            return Err(error);
-        }
-        channel.retain_charged_review_delivery(bytes, self.clone(), thread_id.to_owned())
+        channel.charge_review_delivery(bytes)?;
+        let retention =
+            channel.retain_charged_review_delivery(bytes, self.clone(), thread_id.to_owned());
+        drop(admission);
+        retention
     }
 
     pub(crate) fn release_delivery_channel(&self, thread_id: &str, source: &Arc<HistoryChannel>) {

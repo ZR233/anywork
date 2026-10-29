@@ -99,6 +99,14 @@ struct HistoryStoreState {
     /// Test-only probe fired immediately before a cold reader waits on `init`.
     #[cfg(test)]
     reader_before_init: tokio::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+    /// Parks the next actual completion identity read before entering its SQL query.
+    #[cfg(test)]
+    completion_read_gate: tokio::sync::Mutex<
+        Option<(
+            tokio::sync::oneshot::Sender<String>,
+            tokio::sync::oneshot::Receiver<()>,
+        )>,
+    >,
 }
 
 /// One live connection plus the database identity it validated.
@@ -220,6 +228,8 @@ impl HistoryStore {
                 init_gate: tokio::sync::Mutex::new(None),
                 #[cfg(test)]
                 reader_before_init: tokio::sync::Mutex::new(None),
+                #[cfg(test)]
+                completion_read_gate: tokio::sync::Mutex::new(None),
             }),
         })
     }
@@ -255,6 +265,19 @@ impl HistoryStore {
         let (tx, rx) = tokio::sync::oneshot::channel();
         *self.state.reader_before_init.lock().await = Some(tx);
         rx
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn arm_completion_read_gate(
+        &self,
+    ) -> (
+        tokio::sync::oneshot::Receiver<String>,
+        tokio::sync::oneshot::Sender<()>,
+    ) {
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        *self.state.completion_read_gate.lock().await = Some((entered_tx, release_rx));
+        (entered_rx, release_tx)
     }
 
     /// The handle behind one share, or `None` once its last real holder released it.
@@ -1604,6 +1627,14 @@ impl ChatHistory for HistoryStore {
     }
 
     async fn item(&self, item_id: &str) -> std::result::Result<Option<ChatItem>, ChatError> {
+        #[cfg(test)]
+        {
+            let gate = self.state.completion_read_gate.lock().await.take();
+            if let Some((entered, release)) = gate {
+                let _ = entered.send(item_id.to_owned());
+                let _ = release.await;
+            }
+        }
         self.read_chat_item(item_id)
             .await
             .map_err(chat_history_error)
