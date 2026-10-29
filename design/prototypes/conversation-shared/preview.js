@@ -254,8 +254,7 @@
             this.updateTextFollow();
           }, { passive: true });
         } else {
-          surface.append(node(`<div class="cv-compressing-header">${activityIndicator()}<span>正在压缩</span><span class="cv-tabular"></span></div>`),
-            node('<div class="cv-compressing-description">正在整理历史上下文，已有记录保持不变。</div>'));
+          surface.append(node(`<div class="cv-compressing-header">${activityIndicator()}<span>正在压缩</span><span class="cv-tabular"></span></div>`));
         }
         icons(surface);
       }
