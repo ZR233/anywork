@@ -119,18 +119,42 @@ pub fn script() -> Vec<Step> {
             )),
         )
     });
+    // `exec` may return its supported background receipt before the short
+    // process exits. Wait for that exact task; completion still requires its
+    // real stdout marker and successful delivery, never just the receipt.
     script.add(|step| {
         Step::tool_output(
             Protocol::ResponsesHttp,
             "skill-first-exec-call",
-            EXEC_MARKER,
+            tool_running_receipt("skill-first-exec-call"),
             step,
-            Reply::Sse(responses_text(
-                ANSWER_FIRST,
-                "skill-first-answer",
+            Reply::Sse(responses_tool_calls(
+                "skill-first-wait-tools",
                 "fixture-model",
+                &[RealtimeToolCall {
+                    item_id: "skill-first-wait-item",
+                    call_id: "skill-first-wait-call",
+                    name: TOOL_WAIT_NAME,
+                    arguments: realtime_wait_arguments(&["skill-first-exec-call"]),
+                }],
             )),
         )
+        .optional()
+    });
+    script.add(|step| Step {
+        protocol: Protocol::ResponsesHttp,
+        request: RequestMatch::ToolCompletion {
+            call_id: "skill-first-exec-call".into(),
+            tool_id: TOOL_EXEC_NAME.into(),
+            marker: EXEC_MARKER.into(),
+            step,
+        },
+        reply: Reply::Sse(responses_text(
+            ANSWER_FIRST,
+            "skill-first-answer",
+            "fixture-model",
+        )),
+        optional: false,
     });
     script.optional_title(&first_title);
     script.optional_title(&mixed_title);

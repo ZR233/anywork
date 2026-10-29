@@ -11,25 +11,14 @@ import '../../features/settings/accounts/connectors/account_model_connector.dart
 import '../../features/settings/accounts/connectors/account_navigation.dart';
 import '../../features/settings/accounts/state/account_presentations.dart';
 import '../../features/settings/accounts/state/account_view_state.dart';
-import '../../features/settings/settings_bots_chat_page.dart' show BotChatPage;
-import '../../features/settings/settings_bots_tab.dart' show BotDetailsPage;
+import '../../features/settings/settings_bots_tab.dart'
+    show BotChatPage, BotDetailsPage;
 import '../../features/settings/settings_page.dart';
 import '../../features/settings/settings_section.dart';
 import '../../features/shell/studio_shell.dart';
 import '../../presentation/providers/client_provider.dart';
 
 part 'app_route.g.dart';
-
-const _studioRouteName = 'studio';
-const _settingsRouteName = 'settings';
-const _accountCreateRouteName = 'settings.account-create';
-const _accountDetailsRouteName = 'settings.account-details';
-const _accountEditRouteName = 'settings.account-edit';
-const _accountModelRouteName = 'settings.account-model';
-const _modeWorkspaceRouteName = 'mode-workspace';
-const _modeDetailRouteName = 'mode-detail';
-const _botDetailsRouteName = 'bot-details';
-const _botChatRouteName = 'bot-chat';
 
 String _encodeSettingsSection(SettingsSection value) =>
     _$SettingsSectionEnumMap[value]!;
@@ -47,52 +36,59 @@ AccountModelTab _decodeAccountModelTab(String value) =>
 
 @TypedGoRoute<StudioRoute>(
   path: '/',
-  name: _studioRouteName,
+  name: StudioRoute.name,
   routes: <TypedGoRoute<GoRouteData>>[
     TypedGoRoute<SettingsRoute>(
       path: 'settings',
-      name: _settingsRouteName,
+      name: SettingsRoute.name,
       routes: <TypedGoRoute<GoRouteData>>[
         TypedGoRoute<AccountCreateRoute>(
           path: 'accounts/new',
-          name: _accountCreateRouteName,
+          name: AccountCreateRoute.name,
         ),
         TypedGoRoute<AccountDetailsRoute>(
           path: 'accounts/:kind/:accountId',
-          name: _accountDetailsRouteName,
+          name: AccountDetailsRoute.name,
           routes: <TypedGoRoute<GoRouteData>>[
             TypedGoRoute<AccountEditRoute>(
               path: 'edit',
-              name: _accountEditRouteName,
+              name: AccountEditRoute.name,
             ),
             TypedGoRoute<AccountModelRoute>(
               path: 'models/:modelId',
-              name: _accountModelRouteName,
+              name: AccountModelRoute.name,
             ),
           ],
         ),
         TypedGoRoute<ModeWorkspaceRoute>(
           path: 'modes/:modeId',
-          name: _modeWorkspaceRouteName,
+          name: ModeWorkspaceRoute.name,
           routes: <TypedGoRoute<GoRouteData>>[
             TypedGoRoute<ModeDetailRoute>(
               path: 'details',
-              name: _modeDetailRouteName,
+              name: ModeDetailRoute.name,
             ),
-          ],
-        ),
-        TypedGoRoute<BotDetailsRoute>(
-          path: 'bots/:botId',
-          name: _botDetailsRouteName,
-          routes: <TypedGoRoute<GoRouteData>>[
-            TypedGoRoute<BotChatRoute>(path: 'chat', name: _botChatRouteName),
           ],
         ),
       ],
     ),
+    TypedGoRoute<BotDetailsRoute>(
+      path: 'bots/:botId',
+      name: BotDetailsRoute.name,
+    ),
+    TypedGoRoute<BotConversationRoute>(
+      path: 'bots/:botId/chats/:chatId/threads/:threadId',
+      name: BotConversationRoute.name,
+    ),
+    TypedGoRoute<BotPlatformToolsRoute>(
+      path: 'bots/:botId/chats/:chatId/platform',
+      name: BotPlatformToolsRoute.name,
+    ),
   ],
 )
 class StudioRoute extends GoRouteData with $StudioRoute {
+  static const name = 'studio';
+
   const StudioRoute();
 
   @override
@@ -101,6 +97,8 @@ class StudioRoute extends GoRouteData with $StudioRoute {
 }
 
 class SettingsRoute extends GoRouteData with $SettingsRoute {
+  static const name = 'settings';
+
   const SettingsRoute({
     @TypedQueryParameter<SettingsSection>(
       encoder: _encodeSettingsSection,
@@ -118,6 +116,7 @@ class SettingsRoute extends GoRouteData with $SettingsRoute {
   @override
   Page<void> buildPage(BuildContext context, GoRouterState state) =>
       MaterialPage<void>(
+        key: state.pageKey,
         restorationId: 'settings-page',
         child: SettingsPage(
           section: section,
@@ -128,6 +127,8 @@ class SettingsRoute extends GoRouteData with $SettingsRoute {
 }
 
 class AccountCreateRoute extends GoRouteData with $AccountCreateRoute {
+  static const name = 'settings.account-create';
+
   const AccountCreateRoute();
 
   AccountEditorEntryKey _entry(GoRouterState state) =>
@@ -145,6 +146,8 @@ class AccountCreateRoute extends GoRouteData with $AccountCreateRoute {
 }
 
 class AccountDetailsRoute extends GoRouteData with $AccountDetailsRoute {
+  static const name = 'settings.account-details';
+
   const AccountDetailsRoute({required this.kind, required this.accountId});
 
   final AccountKind kind;
@@ -172,6 +175,8 @@ class AccountDetailsRoute extends GoRouteData with $AccountDetailsRoute {
 }
 
 class AccountEditRoute extends GoRouteData with $AccountEditRoute {
+  static const name = 'settings.account-edit';
+
   const AccountEditRoute({
     required this.kind,
     required this.accountId,
@@ -206,6 +211,8 @@ class AccountEditRoute extends GoRouteData with $AccountEditRoute {
 }
 
 class AccountModelRoute extends GoRouteData with $AccountModelRoute {
+  static const name = 'settings.account-model';
+
   const AccountModelRoute({
     required this.kind,
     required this.accountId,
@@ -237,10 +244,12 @@ class AccountModelRoute extends GoRouteData with $AccountModelRoute {
 
 /// Full-screen workspace for one task mode.
 ///
-/// The exit guard only decides the already-open editor source whose document
-/// id matches [modeId]; the Settings parent re-checks whatever source is still
+/// The exit guard only decides the editor source whose opening identity
+/// matches [modeId]; the Settings parent re-checks whatever source is still
 /// unsettled when the whole Settings match is removed.
 class ModeWorkspaceRoute extends GoRouteData with $ModeWorkspaceRoute {
+  static const name = 'mode-workspace';
+
   const ModeWorkspaceRoute({required this.modeId});
 
   final String modeId;
@@ -251,10 +260,7 @@ class ModeWorkspaceRoute extends GoRouteData with $ModeWorkspaceRoute {
     final editingId = container
         .read(anyworkClientProvider)
         .modeEditor
-        .state
-        .document
-        ?.definition
-        .id;
+        .openedModeId;
     if (editingId != modeId) return true;
     return confirmLeaveModeEditor(context);
   }
@@ -262,6 +268,7 @@ class ModeWorkspaceRoute extends GoRouteData with $ModeWorkspaceRoute {
   @override
   Page<void> buildPage(BuildContext context, GoRouterState state) =>
       MaterialPage<void>(
+        key: state.pageKey,
         restorationId: 'mode-workspace-page',
         child: ModeWorkspacePage(modeId: modeId),
       );
@@ -272,6 +279,8 @@ class ModeWorkspaceRoute extends GoRouteData with $ModeWorkspaceRoute {
 /// The stage/edge selection is local to this page and never opens or resets a
 /// mode editor source for the guard.
 class ModeDetailRoute extends GoRouteData with $ModeDetailRoute {
+  static const name = 'mode-detail';
+
   const ModeDetailRoute({required this.modeId, this.stage, this.edge});
 
   final String modeId;
@@ -281,45 +290,50 @@ class ModeDetailRoute extends GoRouteData with $ModeDetailRoute {
   @override
   Page<void> buildPage(BuildContext context, GoRouterState state) =>
       MaterialPage<void>(
+        key: state.pageKey,
         restorationId: 'mode-detail-page',
         child: ModeDetailPage(modeId: modeId, stage: stage, edge: edge),
       );
 }
 
 class BotDetailsRoute extends GoRouteData with $BotDetailsRoute {
-  const BotDetailsRoute({
-    required this.botId,
-    @TypedQueryParameter(name: 'chatId') this.chatId,
-  });
-
+  const BotDetailsRoute({required this.botId});
+  static const name = 'bot-details';
   final String botId;
-  final String? chatId;
 
   @override
-  Page<void> buildPage(BuildContext context, GoRouterState state) =>
-      MaterialPage<void>(
-        restorationId: 'bot-details-page',
-        child: BotDetailsPage(botId: botId, chatId: chatId),
-      );
+  Widget build(BuildContext context, GoRouterState state) =>
+      BotDetailsPage(key: ValueKey((botId, null)), botId: botId);
 }
 
-class BotChatRoute extends GoRouteData with $BotChatRoute {
-  const BotChatRoute({
+class BotConversationRoute extends GoRouteData with $BotConversationRoute {
+  const BotConversationRoute({
     required this.botId,
-    @TypedQueryParameter(name: 'chatId') this.chatId = '',
-    this.title,
+    required this.chatId,
+    required this.threadId,
   });
-
+  static const name = 'bot-conversation';
   final String botId;
   final String chatId;
-  final String? title;
+  final String threadId;
 
   @override
-  Page<void> buildPage(BuildContext context, GoRouterState state) =>
-      MaterialPage<void>(
-        restorationId: 'bot-chat-page',
-        child: BotChatPage(botId: botId, chatId: chatId, title: title),
-      );
+  Widget build(BuildContext context, GoRouterState state) =>
+      BotChatPage(botId: botId, chatId: chatId, threadId: threadId);
+}
+
+class BotPlatformToolsRoute extends GoRouteData with $BotPlatformToolsRoute {
+  const BotPlatformToolsRoute({required this.botId, required this.chatId});
+  static const name = 'bot-platform-tools';
+  final String botId;
+  final String chatId;
+
+  @override
+  Widget build(BuildContext context, GoRouterState state) => BotDetailsPage(
+    key: ValueKey((botId, chatId)),
+    botId: botId,
+    chatId: chatId,
+  );
 }
 
 enum AccountRoutePage { list, create, details, edit, model, other }
@@ -353,15 +367,15 @@ AccountRouteIdentity? readAccountRouteIdentity(GoRouter router) {
 
   try {
     return switch (routeName) {
-      _studioRouteName => AccountRouteIdentity(
+      StudioRoute.name => AccountRouteIdentity(
         page: AccountRoutePage.other,
         location: $StudioRoute._fromState(state).location,
       ),
-      _settingsRouteName => _settingsIdentity(state),
-      _accountCreateRouteName => _createIdentity(state),
-      _accountDetailsRouteName => _detailsIdentity(state),
-      _accountEditRouteName => _editIdentity(state),
-      _accountModelRouteName => _modelIdentity(state),
+      SettingsRoute.name => _settingsIdentity(state),
+      AccountCreateRoute.name => _createIdentity(state),
+      AccountDetailsRoute.name => _detailsIdentity(state),
+      AccountEditRoute.name => _editIdentity(state),
+      AccountModelRoute.name => _modelIdentity(state),
       _ => null,
     };
   } on Object {
@@ -435,19 +449,18 @@ AccountRouteIdentity _modelIdentity(GoRouterState state) {
 
 /// The settings section represented by a matched typed destination.
 ///
-/// Child account routes are always the Accounts section, mode workspace
-/// routes are Work Modes, and bot routes are Bots; SettingsRoute's generated
-/// from-state factory owns query decoding for the settings root.
+/// Child account routes are always the Accounts section and mode workspace
+/// routes are Work Modes. Bot routes are outside Settings; SettingsRoute's
+/// generated from-state factory owns query decoding for the settings root.
 SettingsSection? settingsSectionForMatchedRoute(GoRouterState state) =>
     switch (state.topRoute?.name) {
-      _settingsRouteName => $SettingsRoute._fromState(state).section,
-      _accountCreateRouteName ||
-      _accountDetailsRouteName ||
-      _accountEditRouteName ||
-      _accountModelRouteName => SettingsSection.accounts,
-      _modeWorkspaceRouteName ||
-      _modeDetailRouteName => SettingsSection.workModes,
-      _botDetailsRouteName || _botChatRouteName => SettingsSection.bots,
+      SettingsRoute.name => $SettingsRoute._fromState(state).section,
+      AccountCreateRoute.name ||
+      AccountDetailsRoute.name ||
+      AccountEditRoute.name ||
+      AccountModelRoute.name => SettingsSection.accounts,
+      ModeWorkspaceRoute.name ||
+      ModeDetailRoute.name => SettingsSection.workModes,
       _ => null,
     };
 
@@ -456,13 +469,13 @@ SettingsSection? settingsSectionForMatchedRoute(GoRouterState state) =>
 bool currentMatchesSettings(Iterable<RouteMatchBase> matches) => matches.any(
   (match) =>
       match.route is GoRoute &&
-      (match.route as GoRoute).name == _settingsRouteName,
+      (match.route as GoRoute).name == SettingsRoute.name,
 );
 
 /// Whether this state's top matched route is the Settings root itself, as
 /// opposed to one of its typed child routes.
 bool isSettingsRootMatch(GoRouterState state) =>
-    state.topRoute?.name == _settingsRouteName;
+    state.topRoute?.name == SettingsRoute.name;
 
 /// Reuses the old, still-current typed Edit match only when it is the direct
 /// child responsible for this Details route's joint exit decision.
@@ -477,11 +490,11 @@ bool isSettingsRootMatch(GoRouterState state) =>
       .where(
         (match) =>
             match.route is GoRoute &&
-            (match.route as GoRoute).name == _accountEditRouteName,
+            (match.route as GoRoute).name == AccountEditRoute.name,
       )
       .toList(growable: false);
   if (editMatches.isEmpty) {
-    return oldCurrent.topRoute?.name == _accountEditRouteName
+    return oldCurrent.topRoute?.name == AccountEditRoute.name
         ? (valid: false, entry: null)
         : (valid: true, entry: null);
   }
@@ -491,13 +504,13 @@ bool isSettingsRootMatch(GoRouterState state) =>
   final detailsIndex = matches.indexWhere(
     (match) =>
         match.route is GoRoute &&
-        (match.route as GoRoute).name == _accountDetailsRouteName &&
+        (match.route as GoRoute).name == AccountDetailsRoute.name &&
         match.pageKey == oldDetailsState.pageKey,
   );
   final editorIndex = matches.indexOf(editorMatch);
   if (detailsIndex < 0 ||
       editorIndex != detailsIndex + 1 ||
-      oldCurrent.topRoute?.name != _accountEditRouteName ||
+      oldCurrent.topRoute?.name != AccountEditRoute.name ||
       oldCurrent.pageKey != editorMatch.pageKey ||
       !currentMatchesSettings(matches)) {
     return (valid: false, entry: null);

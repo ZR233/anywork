@@ -4,7 +4,37 @@
 //! revision、保存水位与执行终态与 HTTP wire 一一对应。内容字段身份只由身份决定，客户端不解析正文来
 //! 猜它属于哪里。
 
-use super::BridgeThreadItem;
+pub(crate) mod descriptor;
+pub use descriptor::*;
+
+use super::{BridgeError, BridgeThreadSubscriptionUpdate};
+
+/// Transport sequence is independent of both domain watermarks. Terminal events reuse the last
+/// data sequence (zero before the first data frame) and never consume credit.
+#[derive(Debug, Clone)]
+pub struct BridgeConversationFrame {
+    pub thread_id: String,
+    pub subscription_id: String,
+    pub delivery_sequence: u64,
+    pub event: BridgeConversationEvent,
+}
+
+#[derive(Debug, Clone)]
+pub enum BridgeConversationEvent {
+    State {
+        update: Box<BridgeThreadSubscriptionUpdate>,
+    },
+    ContentBaseline {
+        baseline: BridgeTimelineBaseline,
+    },
+    ContentUpdate {
+        update: BridgeTimelineUpdate,
+    },
+    Failure {
+        error: BridgeError,
+    },
+    Closed,
+}
 
 /// 条目的执行终态事实，与保存水位 `saved` 严格独立。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -62,27 +92,23 @@ pub enum BridgeThreadUserInputFieldPart {
     OptionDescription { option_index: u32 },
 }
 
-/// 一个内容字段的详情引用：完整正文按 `(item, field, revision)` 读取。
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BridgeTimelineDetailRef {
+pub struct BridgeTimelineFieldPreview {
     pub field: BridgeContentField,
-    pub revision: u64,
-    /// 该字段完整正文的 UTF-8 字节数。
+    pub text: String,
     pub total_bytes: u64,
-    /// 本次预览实际携带的字节数。
-    pub preview_bytes: u64,
 }
 
 /// 一条时间线条目的预览值。
 #[derive(Debug, Clone, PartialEq)]
 pub struct BridgeTimelineItem {
-    pub item: BridgeThreadItem,
+    pub header: BridgeTimelineItemHeader,
+    pub revision: u64,
+    pub descriptor: BridgeTimelineDescriptor,
     pub source: BridgeTimelineItemSource,
     pub saved: bool,
     pub lifecycle: BridgeTimelineLifecycle,
-    /// 预览省略的正文总字节数；零表示所有字段都是完整正文。
-    pub omitted_bytes: u64,
-    pub details: Vec<BridgeTimelineDetailRef>,
+    pub fields: Vec<BridgeTimelineFieldPreview>,
 }
 
 /// 只读来源提示；不携带 GUI 分组身份，也不改变 canonical 保存格式。
@@ -160,11 +186,10 @@ pub enum BridgeTimelineChange {
         item_id: String,
         expected_revision: u64,
         revision: u64,
-        /// 条目级省略量：全部字段完整长度与本次预览字节数之差的合计。
-        omitted_bytes: u64,
         saved: bool,
         lifecycle: BridgeTimelineLifecycle,
-        item_shell: Option<Box<BridgeThreadItem>>,
+        header: Option<BridgeTimelineItemHeader>,
+        descriptor: Option<Box<BridgeTimelineDescriptor>>,
         fields: Vec<BridgeTimelineFieldUpdate>,
     },
     /// 真实删除：该身份不再存在。预览缓存退出不是删除。

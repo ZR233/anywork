@@ -205,8 +205,15 @@ async fn existing_hot_spawn_and_cold_child_binding_do_not_depend_on_creation_bra
         git(root_path, &["switch", "-c", "root-business"])?;
         git(root_path, &["branch", "-m", "renamed-root"])?;
         begin.release();
-        reached(&spawned).await?;
-        reached(&child_running).await?;
+        reached(&spawned).await.with_context(|| {
+            format!(
+                "spawn result was not accepted: {:?}",
+                support::tool_output(&env.root_provider, "identity-spawn")
+            )
+        })?;
+        reached(&child_running)
+            .await
+            .context("spawned child did not start its model request")?;
         let receipt = support::receipt(&env.root_provider, "identity-spawn")?;
         let id = support::child_id(&receipt)?;
         let child_path = support::child_path(&receipt)?;
@@ -229,7 +236,7 @@ async fn existing_hot_spawn_and_cold_child_binding_do_not_depend_on_creation_bra
         let before = support::saved(&env.home, id).await?;
         let workspace = &before.checkpoint.state.extensions["studio.workspace"].payload;
         ensure!(
-            workspace.version() == 2,
+            workspace.version() == 3,
             "new child did not freeze the current receipt format"
         );
         let saved: pl_protocol::AgentWorkspaceAssignmentSnapshot =
@@ -301,9 +308,10 @@ async fn factory_missing_error_stays_typed_and_recovery_never_calls_missing_deta
             original_page.thread_id == root.thread.id
                 && !original_page.has_older
                 && original_page.items.iter().any(|item| {
-                    item.preview
-                        .text()
-                        .is_some_and(|text| text.text() == "saved missing-site history")
+                    item.fields.iter().any(|field| {
+                        field.field == pl_protocol::ThreadContentField::Text
+                            && field.text == "saved missing-site history"
+                    })
                 }),
             "original complete history did not contain the saved reply"
         );

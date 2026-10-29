@@ -32,7 +32,7 @@ use crate::http;
 use crate::report::{self, CaseResult};
 use anyhow::{Context, Result, bail, ensure};
 use pl_protocol::{
-    ThreadContentField, ThreadItemState, ThreadTextChannel, TimelineItem, TimelinePage,
+    ThreadContentField, ThreadTextChannel, TimelineDescriptor, TimelineItem, TimelinePage,
 };
 use pl_provider_fixture::feishu::{
     CallKind, CardDisposition, CardEntityReport, CardObservation, CardOperation, ChatType,
@@ -520,12 +520,12 @@ async fn inner(session: &mut Session, evidence: &mut Vec<String>) -> Result<Case
         completed_status == "completed",
         "after the model terminal the Turn must complete, got {completed_status}"
     );
-    let canonical = canonical_final(session, &bot_id).await?;
+    let canonical = canonical_final(session, &bot_id, MESSAGE_STREAM).await?;
     ensure!(
         canonical == final_text,
         "the canonical Final-channel text must be exactly the model's Markdown answer"
     );
-    assert_commentary_channel_local(session, &bot_id).await?;
+    assert_commentary_channel_local(session, &bot_id, MESSAGE_STREAM).await?;
     let cards = session.control()?.card_observations().await;
     let updates: Vec<&CardObservation> = cards
         .iter()
@@ -681,7 +681,8 @@ async fn inner(session: &mut Session, evidence: &mut Vec<String>) -> Result<Case
             .is_empty(),
         "an over-limit card must leave a local diagnostic on the inbound fact"
     );
-    let huge_canonical = canonical_total_bytes(session, &bot_id).await?;
+    let (page, turn_id) = inbound_target_timeline(session, &bot_id, MESSAGE_OVER_LIMIT).await?;
+    let huge_canonical = final_total_bytes(&page, &turn_id)?;
     ensure!(
         huge_canonical == huge.len() as u64,
         "the over-limit Final must stay complete in local history ({} != {} bytes)",
@@ -790,7 +791,7 @@ async fn inner(session: &mut Session, evidence: &mut Vec<String>) -> Result<Case
         status_after != "completed",
         "a restart must not turn an unknown card creation into a completed reply"
     );
-    let local_final = canonical_total_bytes(session, &bot_id).await?;
+    let local_final = canonical_total_bytes(session, &bot_id, MESSAGE_UNKNOWN_CREATE).await?;
     ensure!(
         local_final == SHORT_FINAL_UNKNOWN_CREATE.len() as u64,
         "the unknown phase must keep its complete local Final history"
@@ -878,7 +879,7 @@ async fn inner(session: &mut Session, evidence: &mut Vec<String>) -> Result<Case
         &[REASONING_MARKER, COMMENTARY_MARKER],
     )
     .await?;
-    let grow_local = canonical_total_bytes(session, &bot_id).await?;
+    let grow_local = canonical_total_bytes(session, &bot_id, MESSAGE_GROWING).await?;
     ensure!(
         grow_local == grow_final.len() as u64,
         "the growing Final must stay complete in local history"
@@ -989,7 +990,7 @@ async fn inner(session: &mut Session, evidence: &mut Vec<String>) -> Result<Case
             .collect::<Vec<_>>()
     );
     assert_no_markdown_post(session, "the empty-Final phase").await?;
-    assert_canonical_final_blank(session, &bot_id).await?;
+    assert_canonical_final_blank(session, &bot_id, MESSAGE_BLANK_FINAL).await?;
     evidence.push(format!(
         "blank-final: preview {} bytes confirmed on card {blank_card_id}, canonical Final blank, close summary \"{NO_FINAL_SUMMARY}\", lifecycle=noFinalReply, finalContentHash cleared, status={blank_status}",
         blank_prefix.len()
@@ -1304,7 +1305,8 @@ async fn inner(session: &mut Session, evidence: &mut Vec<String>) -> Result<Case
         "the restart must not change the unknown reply outcomes"
     );
     ensure!(
-        canonical_total_bytes(session, &bot_id).await? == close_final.len() as u64,
+        canonical_total_bytes(session, &bot_id, MESSAGE_UNKNOWN_CLOSE).await?
+            == close_final.len() as u64,
         "both unknown outcomes must keep their complete local Final history"
     );
     let restart_evidence = format!(
@@ -1636,65 +1638,136 @@ async fn assert_non_selected_payload_is_audited(
     Ok(())
 }
 
-/// Reads the newest canonical Final-channel text (complete preview required).
-async fn canonical_final(session: &Session, bot_id: &str) -> Result<String> {
+/// Resolve an inbound to its durable card-bound Turn, not the thread's newest Turn.
+async fn target_timeline(
+    session: &Session,
+    bot_id: &str,
+    message_id: &str,
+) -> Result<(TimelinePage, String)> {
     let thread_id = wait_thread_binding(&session.home, bot_id, DIRECT_CHAT_ID).await?;
-    let page = session.http()?.read_timeline(&thread_id, 100).await?;
-    let item = final_item(&page)?;
+    let stream = super::card_stream::card_stream(&session.home, bot_id, message_id).await?;
     ensure!(
-        item.omitted_bytes == 0,
-        "the small canonical Final must be a complete preview, omitted={}",
-        item.omitted_bytes
+        stream.thread_id == thread_id
+            && stream.state.binding.thread_id == thread_id
+            && stream.state.binding.chat_id == DIRECT_CHAT_ID
+            && stream.state.binding.message_id == message_id,
+        "card stream for {message_id} does not match the inbound thread binding"
     );
-    let ThreadItemState::Text(text) = item.preview.state() else {
-        bail!("the canonical Final item is not a text item");
-    };
-    Ok(text.text().to_owned())
+    let turn_id = stream
+        .turn_id
+        .context("card stream has no consumed Turn identity")?;
+    ensure!(
+        stream.state.turn_id.as_deref() == Some(turn_id.as_str()),
+        "card stream Turn identity disagrees with its durable state"
+    );
+    let page = session.http()?.read_timeline(&thread_id, 100).await?;
+    Ok((page, turn_id))
 }
 
-/// The newest canonical Final of the thread is empty or whitespace only.
+/// The over-limit case can fail before a card stream exists, so resolve its
+/// original inbound input directly, without falling back from a stream lookup.
+async fn inbound_target_timeline(
+    session: &Session,
+    bot_id: &str,
+    message_id: &str,
+) -> Result<(TimelinePage, String)> {
+    let thread_id = wait_thread_binding(&session.home, bot_id, DIRECT_CHAT_ID).await?;
+    let page = session.http()?.read_timeline(&thread_id, 100).await?;
+    ensure!(
+        !page.has_older,
+        "cannot uniquely resolve inbound {message_id} on a truncated timeline page"
+    );
+    let input_id = format!("bot:{bot_id}:{DIRECT_CHAT_ID}:{message_id}");
+    let mut turns = page.items.iter().filter(|item| {
+        matches!(&item.descriptor,
+        TimelineDescriptor::Turn(turn) if turn.input_id() == Some(input_id.as_str()))
+    });
+    let turn = turns
+        .next()
+        .context("inbound input has no Turn in the timeline")?;
+    ensure!(
+        turns.next().is_none(),
+        "inbound input has multiple Turns in the timeline"
+    );
+    ensure!(
+        turn.header.thread_id == thread_id && !turn.header.turn_id.is_empty(),
+        "inbound Turn has an invalid thread or empty Turn identity"
+    );
+    let turn_id = turn.header.turn_id.clone();
+    Ok((page, turn_id))
+}
+
+fn text_field(item: &TimelineItem) -> Result<&pl_protocol::TimelineFieldPreview> {
+    item.fields
+        .iter()
+        .find(|field| field.field == ThreadContentField::Text)
+        .context("the text item must expose a text content field")
+}
+
+/// Reads the newest canonical Final for the inbound Turn (complete preview required).
+async fn canonical_final(session: &Session, bot_id: &str, message_id: &str) -> Result<String> {
+    let (page, turn_id) = target_timeline(session, bot_id, message_id).await?;
+    let item = final_item(&page, &turn_id)?;
+    let field = text_field(item)?;
+    ensure!(
+        field.preview_bytes() == field.total_bytes,
+        "the small canonical Final must be a complete preview, preview={} total={}",
+        field.preview_bytes(),
+        field.total_bytes
+    );
+    Ok(field.text.clone())
+}
+
+/// Every canonical Final of the target Turn is empty or whitespace only.
 ///
 /// Both shapes are legal for "the Turn produced no answer": the timeline may
 /// keep a Final item whose text is blank, or may hold no Final item at all. The
 /// check fails when any non-blank Final text survived, which is what a leaked
 /// preview or a truncated finalization would leave behind.
-async fn assert_canonical_final_blank(session: &Session, bot_id: &str) -> Result<()> {
-    let thread_id = wait_thread_binding(&session.home, bot_id, DIRECT_CHAT_ID).await?;
-    let page = session.http()?.read_timeline(&thread_id, 100).await?;
-    let newest_final = page
+async fn assert_canonical_final_blank(
+    session: &Session,
+    bot_id: &str,
+    message_id: &str,
+) -> Result<()> {
+    let (page, turn_id) = target_timeline(session, bot_id, message_id).await?;
+    ensure!(
+        !page.has_older,
+        "cannot prove blank Final on a truncated timeline page for Turn {turn_id}"
+    );
+    for item in page
         .items
         .iter()
-        .rev()
-        .find_map(|item| match item.preview.state() {
-            ThreadItemState::Text(text) if text.channel() == ThreadTextChannel::Final => {
-                Some(text.text().to_owned())
-            }
-            _ => None,
-        });
-    if let Some(text) = newest_final {
+        .filter(|item| is_channel(item, &turn_id, ThreadTextChannel::Final))
+    {
+        let field = text_field(item)?;
         ensure!(
-            text.trim().is_empty(),
+            field.preview_bytes() == field.total_bytes,
+            "blank Final preview is incomplete for Turn {turn_id}"
+        );
+        ensure!(
+            field.text.trim().is_empty(),
             "the canonical Final must be blank, got {} bytes of visible text",
-            text.len()
+            field.text.len()
         );
     }
     Ok(())
 }
 
 /// The real commentary-phase text exists in the thread, in its own channel.
-async fn assert_commentary_channel_local(session: &Session, bot_id: &str) -> Result<()> {
-    let thread_id = wait_thread_binding(&session.home, bot_id, DIRECT_CHAT_ID).await?;
-    let page = session.http()?.read_timeline(&thread_id, 100).await?;
-    let commentary = page.items.iter().any(|item| {
-        matches!(
-            item.preview.state(),
-            ThreadItemState::Text(text)
-                if text.channel() == ThreadTextChannel::Commentary
-                    && text.text().contains(COMMENTARY_MARKER)
-        )
-    });
+async fn assert_commentary_channel_local(
+    session: &Session,
+    bot_id: &str,
+    message_id: &str,
+) -> Result<()> {
+    let (page, turn_id) = target_timeline(session, bot_id, message_id).await?;
+    let item = unique_channel_item(&page, &turn_id, ThreadTextChannel::Commentary)?;
+    let field = text_field(item)?;
     ensure!(
-        commentary,
+        field.preview_bytes() == field.total_bytes,
+        "commentary preview is incomplete for Turn {turn_id}"
+    );
+    ensure!(
+        field.text == COMMENTARY_TEXT,
         "the model really produced a commentary-phase message, so the absence of its marker on the \
          peer proves channel filtering"
     );
@@ -1702,28 +1775,48 @@ async fn assert_commentary_channel_local(session: &Session, bot_id: &str) -> Res
 }
 
 /// Reads the exact UTF-8 size of the newest Final content field.
-async fn canonical_total_bytes(session: &Session, bot_id: &str) -> Result<u64> {
-    let thread_id = wait_thread_binding(&session.home, bot_id, DIRECT_CHAT_ID).await?;
-    let page = session.http()?.read_timeline(&thread_id, 100).await?;
-    let item = final_item(&page)?;
+async fn canonical_total_bytes(session: &Session, bot_id: &str, message_id: &str) -> Result<u64> {
+    let (page, turn_id) = target_timeline(session, bot_id, message_id).await?;
+    final_total_bytes(&page, &turn_id)
+}
+
+fn final_total_bytes(page: &TimelinePage, turn_id: &str) -> Result<u64> {
+    let item = final_item(page, turn_id)?;
     let detail = item
-        .details
-        .iter()
+        .details()
         .find(|detail| detail.field == ThreadContentField::Text)
         .context("the Final item must expose a text content field")?;
     Ok(detail.total_bytes)
 }
 
-/// Newest Final-channel text item of the thread timeline.
-fn final_item(page: &TimelinePage) -> Result<&TimelineItem> {
-    page.items
+fn is_channel(item: &TimelineItem, turn_id: &str, channel: ThreadTextChannel) -> bool {
+    item.header.turn_id == turn_id
+        && matches!(&item.descriptor, TimelineDescriptor::Text(text) if text.channel == channel)
+}
+
+fn final_item<'a>(page: &'a TimelinePage, turn_id: &str) -> Result<&'a TimelineItem> {
+    unique_channel_item(page, turn_id, ThreadTextChannel::Final)
+}
+
+fn unique_channel_item<'a>(
+    page: &'a TimelinePage,
+    turn_id: &str,
+    channel: ThreadTextChannel,
+) -> Result<&'a TimelineItem> {
+    ensure!(
+        !page.has_older,
+        "cannot prove unique {channel:?} for Turn {turn_id} on a truncated timeline page"
+    );
+    let mut items = page
+        .items
         .iter()
-        .rev()
-        .find(|item| {
-            matches!(
-                item.preview.state(),
-                ThreadItemState::Text(text) if text.channel() == ThreadTextChannel::Final
-            )
-        })
-        .context("the timeline has no Final-channel text item")
+        .filter(|item| is_channel(item, turn_id, channel));
+    let item = items
+        .next()
+        .with_context(|| format!("target Turn {turn_id} has no {channel:?} text item"))?;
+    ensure!(
+        items.next().is_none(),
+        "target Turn {turn_id} has multiple {channel:?} text items"
+    );
+    Ok(item)
 }

@@ -253,6 +253,7 @@ pub(super) fn scan_skill_files(
     let mut builder = ignore::WalkBuilder::new(root);
     builder
         .max_depth(Some(super::MAX_SKILL_SCAN_DEPTH + 1))
+        .standard_filters(false)
         .hidden(true)
         .follow_links(false)
         .require_git(false)

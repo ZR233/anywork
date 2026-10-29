@@ -1,3 +1,5 @@
+import 'support/recording_demo_transport.dart';
+
 import 'support/test_statistics_feed.dart';
 
 import 'package:anywork/src/presentation/providers/client_provider.dart';
@@ -7,12 +9,11 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:anywork/src/app/app_graph.dart';
 import 'package:anywork_client/studio_client.dart';
 
-import 'package:anywork/src/infrastructure/frb/studio_api.dart';
 import 'package:anywork/src/presentation/providers/account_domains.dart';
 import 'package:anywork/src/presentation/providers/settings_store.dart';
 import 'package:anywork/src/presentation/providers/thread_directory_store.dart';
 import 'package:anywork/src/presentation/providers/thread_session_store.dart';
-import 'package:anywork/src/features/interaction/composer_view.dart';
+import 'package:anywork/src/features/conversation/composer/view_models/composer_view_model.dart';
 
 /// AppGraph/Riverpod 适配契约：改动“任务模式 / 思考强度”后，主界面的显示值必须**只由
 /// canonical 事实流收敛**——mode 走目录增量，运行时 route 走 Thread 有序流。
@@ -28,31 +29,36 @@ void main() {
   const threadId = 'thread-main';
 
   late AppGraph graph;
+  late RecordingDemoTransport transport;
   late ProviderContainer container;
   late ProviderSubscription<Object?> sessionHold;
   late ProviderSubscription<Object?> composerHold;
 
   setUp(() async {
-    final api = DemoStudioTransport(lspActivityLoop: false);
+    transport = RecordingDemoTransport();
     graph = AppGraph(
       statisticsFeed: const TestStatisticsFeedPort(),
-      transport: api,
+      transport: transport,
       clientId: 'canonical-convergence',
     );
     container = ProviderContainer(
       overrides: [appGraphProvider.overrideWithValue(graph)],
     );
     await graph.client.bootstrap();
-    await graph.client.directoryCommands.selectThread(threadId);
+    await (graph..setConversationPageVisible(true)).client.directoryCommands
+        .selectThread(threadId);
     sessionHold = container.listen(
       threadSessionStoreProvider(threadId),
       (_, _) {},
     );
     composerHold = container.listen(
-      composerDockViewProvider(threadId),
+      composerDockViewModelProvider(threadId),
       (_, _) {},
     );
-    await graph.client.session(threadId).source.waitFor((s) => s.hasSnapshot);
+    await graph.client.conversations
+        .session(threadId)
+        .source
+        .waitFor((s) => s.hasSnapshot);
     const limit = Duration(seconds: 5);
     await graph.accounts.state.waitFor((state) => state.loaded).timeout(limit);
     await graph.models.state
@@ -88,7 +94,11 @@ void main() {
 
   test('任务模式由目录增量交付，运行时 route 由 Thread 帧交付', () async {
     expect(
-      container.read(composerDockViewProvider(threadId)).thread?.mode,
+      container
+          .read(composerDockViewModelProvider(threadId))
+          .requireValue
+          .thread
+          ?.mode,
       ThreadModeId.simple,
       reason: 'demo fixture 的根会话默认是简洁模式',
     );
@@ -100,9 +110,9 @@ void main() {
     await container
         .read(anyworkClientProvider)
         .threadCommands
-        .setThreadMode(ThreadModeId.task);
+        .setThreadMode(ThreadModeId.task, threadId: threadId);
 
-    await graph.client
+    await graph.client.conversations
         .session(threadId)
         .source
         .waitFor(
@@ -128,7 +138,10 @@ void main() {
   });
 
   test('思考强度由 Thread 有序流收敛，命令响应只合并 settings', () async {
-    final route = container.read(composerDockViewProvider(threadId)).modelRoute;
+    final route = container
+        .read(composerDockViewModelProvider(threadId))
+        .requireValue
+        .modelRoute;
     expect(route, isNotNull, reason: '已建会话必须有 canonical route');
     final canonicalRoute = route!;
 
@@ -150,7 +163,7 @@ void main() {
           effort: target,
         );
 
-    await graph.client
+    await graph.client.conversations
         .session(threadId)
         .source
         .waitFor(
@@ -173,7 +186,9 @@ void main() {
       routeRevisionBefore + 1,
       reason: 'route 变更必须带新的模型路由 revision 到达 store',
     );
-    final settled = container.read(composerDockViewProvider(threadId));
+    final settled = container
+        .read(composerDockViewModelProvider(threadId))
+        .requireValue;
     expect(settled.routePending, isFalse, reason: '命令完成后不得停在 pending 目标值');
     expect(
       settled.modelRoute?.effort,
@@ -193,45 +208,70 @@ void main() {
     );
   });
 
-  test('Thread 单流水位门：同水位与更低水位丢弃，缺口走重同步', () {
-    const watermark = ThreadStreamWatermark(
-      hasSnapshot: true,
-      revision: 4,
-      epoch: 1,
-    );
+  test('Thread 单流水位门：同水位与更低水位丢弃，缺口走重同步', () async {
+    final session = graph.client.conversations.session(threadId);
+    await session.content.ready.timeout(const Duration(seconds: 5));
+    final workspace = session.state.workspace!;
+    await transport.publishWorkspace(workspace.copyWith(revision: 4));
+    final feed = transport.feeds.last;
+    await feed.emitStateAndWait(_notification(revision: 5, epoch: 1));
+    expect(session.state.watermark.revision, 5);
+    final accepted = session.state;
+    await feed.emitStateAndWait(_notification(revision: 5, epoch: 1));
+    expect(session.state, same(accepted), reason: '同水位不得重复应用');
+    await feed.emitStateAndWait(_notification(revision: 4, epoch: 1));
+    expect(session.state, same(accepted), reason: '更低水位不得覆盖新事实');
+    await feed.emitStateAndWait(_notification(revision: 6, epoch: 1));
+    expect(session.state.watermark.revision, 6);
 
-    expect(
-      classifyThreadFrame(watermark, _notification(revision: 4)),
-      ThreadFrameDecision.drop,
-      reason: '同水位重复帧不得重复应用',
-    );
-    expect(
-      classifyThreadFrame(watermark, _notification(revision: 3)),
-      ThreadFrameDecision.drop,
-      reason: '更低水位不得覆盖更新事实',
-    );
-    expect(
-      classifyThreadFrame(watermark, _notification(revision: 5)),
-      ThreadFrameDecision.apply,
-    );
-    expect(
-      classifyThreadFrame(watermark, _notification(revision: 7)),
-      ThreadFrameDecision.resync,
-      reason: '缺口不能就地拼接',
-    );
-    expect(
-      classifyThreadFrame(
-        watermark,
-        _notification(revision: 5, baseRevision: 3),
-      ),
-      ThreadFrameDecision.resync,
-      reason: '基线水位与当前水位不一致表示缺口',
-    );
-    expect(
-      classifyThreadFrame(watermark, _notification(revision: 5, epoch: 2)),
-      ThreadFrameDecision.resync,
-      reason: '跨订阅代次的通知不得应用',
-    );
+    for (final invalid in [
+      _notification(revision: 8, epoch: 1),
+      _notification(revision: 7, epoch: 1, baseRevision: 3),
+      _notification(revision: 7, epoch: 2),
+    ]) {
+      // 新 attempt 的 Demo 基线会重置 epoch；先经真实 feed 建立合法 epoch=1，
+      // 再验证跨 epoch，不能把 epoch=2 误当成该 attempt 的首次 epoch。
+      await transport.publishWorkspace(workspace.copyWith(revision: 5));
+      final current = transport.feeds.last;
+      await current.emitStateAndWait(_notification(revision: 6, epoch: 1));
+      expect(session.state.watermark.revision, 6);
+      expect(session.state.watermark.epoch, 1);
+      final attempt = session.content.currentAttemptId;
+      final count = transport.feeds.length;
+      final rejected = session.source
+          .waitFor((state) => state.sync.phase == DomainSyncPhase.reconnecting)
+          .timeout(const Duration(seconds: 5));
+      current.emitState(invalid);
+      await rejected;
+      await session.content.state
+          .waitFor(
+            (state) =>
+                state is ChatReady<ConversationContentFrame> &&
+                session.content.currentAttemptId != attempt,
+          )
+          .timeout(const Duration(seconds: 5));
+      expect(
+        transport.feeds.length,
+        count + 1,
+        reason: '缺口、错误 base 或跨 epoch 都重新建立 feed',
+      );
+      expect(session.content.currentAttemptId, isNot(attempt));
+      expect(current.requestCloseCalls, greaterThanOrEqualTo(1));
+      await current.joined.future.timeout(const Duration(seconds: 5));
+      expect(current.closeCalls, 1);
+      expect(
+        session.state.watermark.revision,
+        isNot(invalid.revision),
+        reason: '拒绝的事实不能污染镜像',
+      );
+      final recovered = session.state;
+      current.emitState(invalid);
+      expect(
+        session.state,
+        same(recovered),
+        reason: '已关闭的旧 feed 不得回写新 attempt',
+      );
+    }
   });
 }
 

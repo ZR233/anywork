@@ -130,10 +130,11 @@ fn directory_exemption(
         "dirty-directory-reviewer",
         "reviewer",
         Some(b),
-        &marker("read", parent),
+        &review::message(parent),
         Some(&executor.spawn.agent_id),
     )?;
     let reviewer = observe_child(flow, "dirty-directory-reviewer", root, reviewer)?;
+    review::require_target(&reviewer, &executor)?;
     require(
         reviewer.git.path == parent.path
             && reviewer.git.head == parent.head

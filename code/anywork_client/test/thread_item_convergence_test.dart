@@ -1,394 +1,463 @@
-import 'package:anywork_client/anywork_client.dart';
-import 'package:anywork_client/models.dart';
+import 'package:anywork_client/studio_client.dart';
 import 'package:test/test.dart';
 
 import 'support/timeline_transport.dart';
 
-/// 尾部 `Add` 携带权威整条预览，不保证该身份从未被页查询加载，也不保证随后补发
-/// `UpdateItem`；已加载身份必须在同 revision 上原位收敛（design/26 §26.7）。
-///
-/// 整体省略量由**持有逐字段详情引用、已核实支配关系与预算的调用方**传入，这个 helper
-/// 只做字段收敛与事实非回退，不自行猜测账目（design/26 §26.8）。
 void main() {
-  ThreadItemView text({
-    required String id,
-    required int revision,
-    int ordinal = 6,
-    String body = '正文',
-    bool saved = false,
-    bool terminal = false,
-    int omitted = 0,
-    String? turnId,
-  }) => ThreadItemView(
-    id: id,
-    threadId: 'thread',
-    turnId: turnId ?? 'turn-a',
-    ordinal: ordinal,
-    revision: revision,
-    createdAt: DateTime.utc(2026),
-    updatedAt: DateTime.utc(2026),
-    bodyOmittedUnits: omitted,
-    executionTerminal: terminal,
-    saved: saved,
-    state: ThreadTextItemStateView(
-      channel: ThreadTextChannel.finalAnswer,
-      text: body,
-      attachments: const [],
+  test('same revision Thinking and Tool preserve whole typed terminal descriptors in either order', () async {
+    final fixture = ConversationFixture();
+    final content = fixture.session().content;
+    ConversationItem item(
+      ConversationDescriptor descriptor, {
+      bool terminal = false,
+      bool saved = false,
+    }) => ConversationItem(
+      header: timelineItem(1).header,
+      revision: 1,
+      descriptor: descriptor,
+      saved: saved,
       lifecycle: terminal
-          ? CompletedThreadContentView(DateTime.utc(2026))
-          : const StreamingThreadContentView(),
-    ),
+          ? ConversationLifecycle.terminal
+          : ConversationLifecycle.streaming,
+      fields: const [],
+    );
+    final completedAt = DateTime.utc(2026);
+    final thinking = item(
+      const ConversationThinkingDescriptor(
+        lifecycle: StreamingThreadContentView(),
+      ),
+    );
+    final completedThinking = item(
+      ConversationThinkingDescriptor(
+        lifecycle: CompletedThreadContentView(completedAt),
+      ),
+      terminal: true,
+      saved: true,
+    );
+    const invocation = ConversationToolInvocation(
+      toolCallId: 'call',
+      name: 'tool',
+    );
+    const output = ConversationToolOutputDescriptor(
+      exitCode: 0,
+      attachments: [
+        ThreadAttachmentView(
+          id: 'artifact',
+          modality: AttachmentModalityView.file,
+          mediaType: 'text/plain',
+          byteSize: 3,
+          filename: 'result.txt',
+        ),
+      ],
+    );
+    final running = item(
+      const ConversationToolDescriptor(
+        invocation: invocation,
+        state: ConversationToolRunning(),
+      ),
+    );
+    final succeeded = item(
+      ConversationToolDescriptor(
+        invocation: invocation,
+        state: ConversationToolSucceeded(
+          completedAt: completedAt,
+          output: output,
+        ),
+      ),
+      terminal: true,
+      saved: true,
+    );
+    for (final pair in [
+      (thinking, completedThinking),
+      (completedThinking, thinking),
+    ]) {
+      final result = content.mergeItem(pair.$1, pair.$2);
+      expect(result.terminal, isTrue);
+      expect(result.saved, isTrue);
+      expect(
+        (result.descriptor as ConversationThinkingDescriptor).lifecycle,
+        isA<CompletedThreadContentView>().having(
+          (state) => state.completedAt,
+          'completion time',
+          completedAt,
+        ),
+      );
+    }
+    for (final pair in [(running, succeeded), (succeeded, running)]) {
+      final result = content.mergeItem(pair.$1, pair.$2);
+      expect(result.terminal, isTrue);
+      expect(result.saved, isTrue);
+      final state =
+          (result.descriptor as ConversationToolDescriptor).state
+              as ConversationToolSucceeded;
+      expect(state.completedAt, completedAt);
+      expect(state.output.exitCode, 0);
+      expect(state.output.attachments.single.id, 'artifact');
+      expect(state.output.attachments.single.filename, 'result.txt');
+    }
+    // The same typed rule applies to an atomic Update, not only Add/page merge.
+    final reduced = content.reduceItem(
+      succeeded,
+      const ConversationUpdateItem(
+        itemId: 'item',
+        expectedRevision: 1,
+        revision: 1,
+        saved: false,
+        lifecycle: ConversationLifecycle.streaming,
+        descriptor: ConversationToolDescriptor(
+          invocation: invocation,
+          state: ConversationToolRunning(),
+        ),
+        fields: [],
+      ),
+    );
+    expect(
+      (reduced.descriptor as ConversationToolDescriptor).state,
+      isA<ConversationToolSucceeded>(),
+    );
+    expect(reduced.saved, isTrue);
+    expect(reduced.terminal, isTrue);
+    await fixture.close();
+  });
+
+  test('same revision incompatible typed terminal, static identity and nonterminal facts require resync', () async {
+    final fixture = ConversationFixture();
+    final content = fixture.session().content;
+    ConversationItem item(
+      ConversationDescriptor descriptor, {
+      bool terminal = true,
+    }) => ConversationItem(
+      header: timelineItem(1).header,
+      revision: 1,
+      descriptor: descriptor,
+      saved: false,
+      lifecycle: terminal
+          ? ConversationLifecycle.terminal
+          : ConversationLifecycle.streaming,
+      fields: const [],
+    );
+    final date = DateTime.utc(2026);
+    final text = item(
+      ConversationTextDescriptor(
+        channel: ThreadTextChannel.finalAnswer,
+        attachments: const [],
+        lifecycle: CompletedThreadContentView(date),
+      ),
+    );
+    final failedText = item(
+      ConversationTextDescriptor(
+        channel: ThreadTextChannel.finalAnswer,
+        attachments: const [],
+        lifecycle: FailedThreadContentView(date, 'failed'),
+      ),
+    );
+    final thinking = item(
+      ConversationThinkingDescriptor(
+        lifecycle: CompletedThreadContentView(date),
+      ),
+    );
+    final failedThinking = item(
+      ConversationThinkingDescriptor(
+        lifecycle: FailedThreadContentView(date, 'failed'),
+      ),
+    );
+    const invocation = ConversationToolInvocation(
+      toolCallId: 'call',
+      name: 'tool',
+    );
+    final success = item(
+      ConversationToolDescriptor(
+        invocation: invocation,
+        state: ConversationToolSucceeded(
+          completedAt: date,
+          output: const ConversationToolOutputDescriptor(
+            attachments: [],
+            exitCode: 0,
+          ),
+        ),
+      ),
+    );
+    final failure = item(
+      ConversationToolDescriptor(
+        invocation: invocation,
+        state: ConversationToolFailed(
+          failedAt: date,
+          failure: const ThreadToolFailureView(
+            kind: ThreadToolFailureKindView.execution,
+            message: 'failed',
+          ),
+        ),
+      ),
+    );
+    final changedOutput = item(
+      ConversationToolDescriptor(
+        invocation: invocation,
+        state: ConversationToolSucceeded(
+          completedAt: date,
+          output: const ConversationToolOutputDescriptor(
+            attachments: [],
+            exitCode: 1,
+          ),
+        ),
+      ),
+    );
+    final running = item(
+      const ConversationToolDescriptor(
+        invocation: invocation,
+        state: ConversationToolRunning(),
+      ),
+      terminal: false,
+    );
+    final streaming = item(
+      const ConversationToolDescriptor(
+        invocation: invocation,
+        state: ConversationToolStreaming(),
+      ),
+      terminal: false,
+    );
+    final differentIdentity = item(
+      const ConversationToolDescriptor(
+        invocation: ConversationToolInvocation(
+          toolCallId: 'other',
+          name: 'tool',
+        ),
+        state: ConversationToolRunning(),
+      ),
+      terminal: false,
+    );
+    for (final pair in [
+      (text, failedText),
+      (thinking, failedThinking),
+      (success, failure),
+      (success, changedOutput),
+      (running, streaming),
+      (running, differentIdentity),
+    ]) {
+      for (final order in [pair, (pair.$2, pair.$1)]) {
+        expect(
+          () => content.mergeItem(order.$1, order.$2),
+          throwsA(isA<ConversationContinuityError>()),
+        );
+      }
+    }
+    await fixture.close();
+  });
+
+  test(
+    'same revision independent previews converge without a second body mirror',
+    () async {
+      final fixture = ConversationFixture();
+      final content = fixture.session().content;
+      final partial = timelineItem(4, body: 'a', totalBytes: 4);
+      final fuller = timelineItem(
+        4,
+        body: 'abc\n',
+        totalBytes: 4,
+        saved: true,
+        lifecycle: ConversationLifecycle.terminal,
+      );
+      final result = content.mergeItem(partial, fuller);
+      expect(result.fields.single.text, 'abc\n');
+      expect(result.saved, isTrue);
+      expect(result.terminal, isTrue);
+      expect(result.omittedBytes, 0);
+      final latePartial = content.mergeItem(result, partial);
+      expect(latePartial.fields.single.text, 'abc\n');
+      expect(latePartial.saved, isTrue);
+      expect(latePartial.terminal, isTrue);
+      expect(
+        (latePartial.descriptor as ConversationTextDescriptor).lifecycle,
+        isA<CompletedThreadContentView>(),
+      );
+      expect(
+        (result.descriptor as ConversationTextDescriptor).lifecycle,
+        isA<CompletedThreadContentView>(),
+      );
+      expect(latePartial.details.single.revision, 4);
+      await fixture.close();
+    },
   );
 
-  test('同 revision 的权威整条取更完整正文并采用调用方给定的账目', () {
-    final loaded = text(id: 'stable', revision: 4, body: 'abcd', omitted: 8);
-    final incoming = text(
-      id: 'stable',
-      revision: 4,
-      body: 'abcdefgh',
-      omitted: 0,
-      saved: true,
-      terminal: true,
-      turnId: 'turn-b',
-    );
-    final merged = loaded.convergeWith(incoming, omittedBytes: 0)!;
-    final state = merged.state as ThreadTextItemStateView;
-    expect(state.text, 'abcdefgh');
-    expect(merged.saved, isTrue);
-    expect(merged.executionTerminal, isTrue);
-    expect(merged.bodyOmittedUnits, 0, reason: '省略量来自调用方已核实的合成账目，不取两份输入的最小值');
-    expect(merged.turnId, 'turn-b', reason: 'Turn 关联允许随权威事实更新');
-    expect(merged.id, 'stable');
-    expect(merged.ordinal, 6);
-    expect(merged.revision, 4);
-  });
-
-  test('更短的同 revision 预览不回退已交付正文与事实', () {
-    final loaded = text(
-      id: 'stable',
-      revision: 4,
-      body: 'abcdefgh',
-      saved: true,
-      terminal: true,
-    );
-    final incoming = text(id: 'stable', revision: 4, body: 'abcd', omitted: 4);
-    final merged = loaded.convergeWith(incoming, omittedBytes: 0)!;
-    final state = merged.state as ThreadTextItemStateView;
-    expect(state.text, 'abcdefgh');
-    expect(merged.saved, isTrue);
-    expect(merged.executionTerminal, isTrue);
-    expect(merged.bodyOmittedUnits, 0, reason: '已交付正文更完整，调用方按已核账目传入 0');
-  });
-
-  test('负数省略量被拒绝：helper 不猜账目也不接受非法值', () {
-    final loaded = text(id: 'stable', revision: 4);
-    expect(
-      () => loaded.convergeWith(
-        text(id: 'stable', revision: 4, body: 'abcd'),
-        omittedBytes: -1,
+  test('same revision field-wise fuller previews combine only with compatible declared lengths', () async {
+    final fixture = ConversationFixture();
+    final content = fixture.session().content;
+    ConversationItem thinking(String summary, String body) => ConversationItem(
+      header: timelineItem(1).header,
+      revision: 1,
+      descriptor: const ConversationThinkingDescriptor(
+        lifecycle: StreamingThreadContentView(),
       ),
-      throwsArgumentError,
-    );
-  });
-
-  test('同 revision 却不是同一正文时不能造默默连续', () {
-    final loaded = text(id: 'stable', revision: 4, body: 'abcd');
-    final incoming = text(id: 'stable', revision: 4, body: '完全不同');
-    expect(loaded.convergeWith(incoming, omittedBytes: 0), isNull);
-  });
-
-  test('身份或顺序不稳定、或 revision 不同都不归这里处理', () {
-    final loaded = text(id: 'stable', revision: 4);
-    expect(
-      loaded.convergeWith(text(id: 'stable', revision: 5), omittedBytes: 0),
-      isNull,
-    );
-    expect(
-      loaded.convergeWith(
-        text(id: 'stable', revision: 4, ordinal: 9),
-        omittedBytes: 0,
-      ),
-      isNull,
-      reason: 'ordinal 是稳定顺序身份，权威副本不得改写它',
-    );
-    expect(
-      loaded.convergeWith(text(id: 'other', revision: 4), omittedBytes: 0),
-      isNull,
-    );
-  });
-
-  test('工具身份不同的同 revision 事实不可收敛，同身份则合并更完整参数', () {
-    ThreadItemView tool({
-      required String toolCallId,
-      required String arguments,
-      String output = '',
-    }) => ThreadItemView(
-      id: 'tool',
-      threadId: 'thread',
-      turnId: 'turn',
-      ordinal: 3,
-      revision: 2,
-      createdAt: DateTime.utc(2026),
-      updatedAt: DateTime.utc(2026),
-      state: ThreadToolItemStateView(
-        invocation: ThreadToolInvocationView(
-          toolCallId: toolCallId,
-          name: 'shell',
-          arguments: arguments,
+      saved: false,
+      lifecycle: ConversationLifecycle.streaming,
+      fields: [
+        ConversationFieldPreview(
+          field: const ThreadThinkingSummaryFieldView(8),
+          text: summary,
+          totalBytes: 3,
         ),
-        lifecycle: RunningThreadToolView(output),
-      ),
+        ConversationFieldPreview(
+          field: const ThreadThinkingContentFieldView(16),
+          text: body,
+          totalBytes: 3,
+        ),
+      ],
     );
-
-    final loaded = tool(
-      toolCallId: 'call-1',
-      arguments: '{"cmd":',
-      output: 'a',
+    final result = content.mergeItem(
+      thinking('abc', 'x'),
+      thinking('a', 'xyz'),
     );
-    final other = tool(toolCallId: 'call-2', arguments: '{"cmd":"ls"}');
-    expect(loaded.convergeWith(other, omittedBytes: 0), isNull);
-
-    final fuller = tool(
-      toolCallId: 'call-1',
-      arguments: '{"cmd":"ls"}',
-      output: 'abc',
-    );
-    final merged = loaded.convergeWith(fuller, omittedBytes: 0)!;
-    final state = merged.state as ThreadToolItemStateView;
-    expect(state.invocation.arguments, '{"cmd":"ls"}');
     expect(
-      (state.lifecycle as RunningThreadToolView).streamedOutput,
+      result.fieldFor(const ThreadThinkingSummaryFieldView(8))!.text,
       'abc',
-      reason: '同一调用阶段的流式正文取更完整者',
     );
+    expect(
+      result.fieldFor(const ThreadThinkingContentFieldView(16))!.text,
+      'xyz',
+    );
+    expect(result.omittedBytes, 0);
+    expect(
+      () => content.mergeItem(thinking('abc', 'x'), thinking('abd', 'xyz')),
+      throwsA(isA<ConversationContinuityError>()),
+    );
+    await fixture.close();
   });
 
-  test('终态工具生命周期的更高阶段不被更旧阶段覆盖', () {
-    ThreadItemView tool(ThreadToolLifecycleView lifecycle) => ThreadItemView(
-      id: 'tool',
-      threadId: 'thread',
-      turnId: 'turn',
-      ordinal: 3,
-      revision: 2,
-      createdAt: DateTime.utc(2026),
-      updatedAt: DateTime.utc(2026),
-      state: ThreadToolItemStateView(
-        invocation: ThreadToolInvocationView(
-          toolCallId: 'call-1',
-          name: 'shell',
-          arguments: '{}',
-        ),
-        lifecycle: lifecycle,
+  test('higher revisions can shorten original text and replace Turn association without changing identity', () async {
+    final fixture = ConversationFixture();
+    final content = fixture.session().content;
+    final old = timelineItem(8, body: 'longer');
+    final header = old.header;
+    final next = ConversationItem(
+      header: ConversationItemHeader(
+        id: header.id,
+        threadId: header.threadId,
+        turnId: 'rebound-turn',
+        ordinal: header.ordinal,
+        createdAt: header.createdAt,
+        updatedAt: header.updatedAt,
       ),
-    );
-
-    final succeeded = tool(
-      SucceededThreadToolView(
-        DateTime.utc(2026),
-        const ThreadToolOutputView(
-          result: 'done',
-          attachments: [],
-          outputArtifacts: [],
-        ),
-      ),
-    );
-    final running = tool(const RunningThreadToolView('done'));
-    final merged = succeeded.convergeWith(running, omittedBytes: 0)!;
-    expect(
-      (merged.state as ThreadToolItemStateView).lifecycle,
-      isA<SucceededThreadToolView>(),
-      reason: '同 revision 不得把工具阶段退回 running',
-    );
-  });
-
-  test('同事实重复交付不要求同一 Dart 实例，但必须保留全部权威元数据变化', () {
-    final loaded = text(id: 'stable', revision: 4, body: 'abcd');
-    final sameContent = ThreadItemView(
-      id: loaded.id,
-      threadId: loaded.threadId,
-      turnId: 'turn-b',
-      ordinal: loaded.ordinal,
-      revision: loaded.revision,
-      createdAt: loaded.createdAt,
-      updatedAt: DateTime.utc(2027),
-      contextDisposition: ThreadContextDisposition.rolledBack,
-      bodyOmittedUnits: loaded.bodyOmittedUnits,
-      executionTerminal: loaded.executionTerminal,
-      saved: loaded.saved,
-      state: loaded.state,
-    );
-    final merged = loaded.convergeWith(sameContent, omittedBytes: 0)!;
-    final state = merged.state as ThreadTextItemStateView;
-    expect(state.text, 'abcd');
-    expect(merged.turnId, 'turn-b', reason: 'Turn 关联由权威副本决定');
-    expect(merged.updatedAt, DateTime.utc(2027));
-    expect(
-      merged.contextDisposition,
-      ThreadContextDisposition.rolledBack,
-      reason: '上下文处置不能被“正文相同”吞掉',
-    );
-  });
-
-  test('同长度附件换成另一份同样生效', () {
-    ThreadItemView withAttachment(String id) => ThreadItemView(
-      id: 'stable',
-      threadId: 'thread',
-      turnId: 'turn',
-      ordinal: 6,
-      revision: 4,
-      createdAt: DateTime.utc(2026),
-      updatedAt: DateTime.utc(2026),
-      state: ThreadTextItemStateView(
-        channel: ThreadTextChannel.finalAnswer,
-        text: 'abcd',
-        attachments: [
-          ThreadAttachmentView(
-            id: id,
-            modality: AttachmentModalityView.image,
-            mediaType: 'image/png',
-            byteSize: 12,
-            filename: '$id.png',
-          ),
-        ],
-        lifecycle: const StreamingThreadContentView(),
-      ),
-    );
-
-    final merged = withAttachment('a')
-        .convergeWith(withAttachment('b'), omittedBytes: 0)!;
-    final state = merged.state as ThreadTextItemStateView;
-    expect(state.attachments.single.id, 'b');
-    expect(state.text, 'abcd');
-  });
-
-  test('字段与问答子字段的身份是值语义，独立构造的同值实例可查详情', () {
-    // 真实解码路径每帧都是新实例：这里显式用非 const 构造制造不同实例。
-    final contentIndex = 3;
-    final questionIndex = 1;
-    final answerIndex = 2;
-    final item = timelineItem(
-      7,
-      id: 'reasoning',
-      details: [
-        StudioTimelineDetailRef(
-          field: ThreadThinkingContentFieldView(contentIndex),
-          revision: 7,
-          totalBytes: 4096,
-          previewBytes: 128,
-        ),
-        StudioTimelineDetailRef(
-          field: ThreadToolUserInputFieldView(
-            questionIndex: questionIndex,
-            part: ThreadUserInputAnswerFieldPartView(answerIndex),
-          ),
-          revision: 7,
-          totalBytes: 64,
-          previewBytes: 64,
-        ),
-      ],
-    );
-
-    final sameThinking = ThreadThinkingContentFieldView(contentIndex);
-    final sameAnswer = ThreadToolUserInputFieldView(
-      questionIndex: questionIndex,
-      part: ThreadUserInputAnswerFieldPartView(answerIndex),
-    );
-    expect(
-      sameThinking == ThreadThinkingContentFieldView(contentIndex),
-      isTrue,
-    );
-    expect(
-      sameThinking.hashCode,
-      ThreadThinkingContentFieldView(contentIndex).hashCode,
-    );
-    expect(
-      sameAnswer ==
-          ThreadToolUserInputFieldView(
-            questionIndex: questionIndex,
-            part: ThreadUserInputAnswerFieldPartView(answerIndex),
-          ),
-      isTrue,
-    );
-    expect(
-      sameAnswer ==
-          ThreadToolUserInputFieldView(
-            questionIndex: questionIndex,
-            part: ThreadUserInputAnswerFieldPartView(9),
-          ),
-      isFalse,
-    );
-    expect(
-      item.detailFor(sameThinking)!.totalBytes,
-      4096,
-      reason: 'detailFor 必须按值语义命中，而不是按对象恒等',
-    );
-    expect(item.detailFor(sameAnswer)!.previewBytes, 64);
-    expect(item.detailFor(ThreadThinkingContentFieldView(4)), isNull);
-
-    // Map 以字段为键时，同值实例必须落到同一个槽（详情引用不会随帧增长）。
-    final byField = <ThreadContentFieldView, int>{sameThinking: 1};
-    byField[ThreadThinkingContentFieldView(contentIndex)] = 2;
-    expect(byField.length, 1);
-    expect(byField.values.single, 2);
-  });
-
-  test('预览值与条目事实分开携带时，未变化的字段引用保持原样', () {
-    final item = timelineItem(
-      4,
-      id: 'stable',
-      body: 'abcd',
-      details: const [
-        StudioTimelineDetailRef(
+      revision: 9,
+      descriptor: old.descriptor,
+      saved: false,
+      lifecycle: old.lifecycle,
+      fields: const [
+        ConversationFieldPreview(
           field: ThreadTextFieldView(),
-          revision: 4,
-          totalBytes: 8,
-          previewBytes: 4,
+          text: 'x',
+          totalBytes: 1,
         ),
       ],
     );
-    expect(item.detailFor(const ThreadTextFieldView())!.truncated, isTrue);
+    final result = content.mergeItem(old, next);
+    expect(result.header.turnId, 'rebound-turn');
+    expect(result.fields.single.text, 'x');
+    expect(content.mergeItem(result, old), same(result));
+    final otherIdentity = timelineItem(9, id: 'other');
+    expect(
+      () => content.mergeItem(result, otherIdentity),
+      throwsA(isA<ConversationContinuityError>()),
+    );
+    await fixture.close();
   });
 
-  test('原始记录的来源是事实：同来源收敛并保留，不同来源不可互相冒充', () {
-    ThreadItemView raw({
-      required ThreadRawItemOrigin origin,
-      required String notice,
-    }) => ThreadItemView(
-      id: 'raw',
-      threadId: 'thread',
-      turnId: 'turn-a',
-      ordinal: 6,
-      revision: 4,
-      createdAt: DateTime.utc(2026),
-      updatedAt: DateTime.utc(2026),
-      state: ThreadRawItemStateView(
-        const [RawHistoryPayload('text/plain', 1, '正文')],
-        notice,
-        DateTime.utc(2026),
-        origin: origin,
+  test('same revision authoritative headers update Turn association but not stable identity', () async {
+    final fixture = ConversationFixture();
+    final content = fixture.session().content;
+    final current = timelineItem(4, body: 'same');
+    ConversationItemHeader header({
+      String threadId = 'thread',
+      int ordinal = 0,
+      String turnId = 'new-turn',
+    }) => ConversationItemHeader(
+      id: current.id,
+      threadId: threadId,
+      turnId: turnId,
+      ordinal: ordinal,
+      createdAt: current.header.createdAt,
+      updatedAt: DateTime.utc(2026, 2),
+    );
+    final incoming = ConversationItem(
+      header: header(),
+      revision: current.revision,
+      descriptor: current.descriptor,
+      saved: current.saved,
+      lifecycle: current.lifecycle,
+      fields: current.fields,
+    );
+    final merged = content.mergeItem(current, incoming);
+    expect(merged.header.turnId, 'new-turn');
+    expect(merged.header.updatedAt, DateTime.utc(2026, 2));
+    final reduced = content.reduceItem(
+      current,
+      ConversationUpdateItem(
+        itemId: current.id,
+        expectedRevision: current.revision,
+        revision: current.revision,
+        saved: current.saved,
+        lifecycle: current.lifecycle,
+        header: header(turnId: 'updated-turn'),
+        fields: const [],
       ),
     );
+    expect(reduced.header.turnId, 'updated-turn');
+    for (final invalid in [
+      header(threadId: 'other-thread'),
+      header(ordinal: 1),
+    ]) {
+      expect(
+        () => content.reduceItem(
+          current,
+          ConversationUpdateItem(
+            itemId: current.id,
+            expectedRevision: current.revision,
+            revision: current.revision,
+            saved: current.saved,
+            lifecycle: current.lifecycle,
+            header: invalid,
+            fields: const [],
+          ),
+        ),
+        throwsA(isA<ConversationContinuityError>()),
+      );
+    }
+    await fixture.close();
+  });
 
-    final loaded = raw(
-      origin: ThreadRawItemOrigin.runtimeControl,
-      notice: 'runtime notice',
-    );
-    final merged = loaded.convergeWith(
-      raw(origin: ThreadRawItemOrigin.runtimeControl, notice: 'runtime notice'),
-      omittedBytes: 0,
-    )!;
+  test('field identities use value equality and budgets reject overlarge previews rather than trim', () async {
+    final fixture = ConversationFixture();
+    final content = fixture.session().content;
+    final item = timelineItem(1, body: 'body');
+    expect(item.fieldFor(const ThreadTextFieldView())!.text, 'body');
     expect(
-      (merged.state as ThreadRawItemStateView).origin,
-      ThreadRawItemOrigin.runtimeControl,
-      reason: '来源不随收敛丢失',
+      () =>
+          content.mergeItem(item, timelineItem(1, body: 'x' * (32 * 1024 + 1))),
+      throwsA(isA<ConversationContinuityError>()),
     );
-    expect(
-      loaded.convergeWith(
-        raw(origin: ThreadRawItemOrigin.stored, notice: 'runtime notice'),
-        omittedBytes: 0,
+    final tool = ConversationItem(
+      header: item.header,
+      revision: 1,
+      descriptor: const ConversationToolDescriptor(
+        invocation: ConversationToolInvocation(
+          toolCallId: 'call',
+          name: 'exec',
+        ),
+        state: ConversationToolRunning(),
       ),
-      isNull,
-      reason: '同一正文不能同时是历史载荷与运行时说明',
+      saved: false,
+      lifecycle: ConversationLifecycle.streaming,
+      fields: [
+        ConversationFieldPreview(
+          field: const ThreadToolArgumentsFieldView(),
+          text: 'x' * 4097,
+          totalBytes: 4097,
+        ),
+      ],
     );
+    expect(
+      () => content.mergeItem(tool, tool),
+      throwsA(isA<ConversationContinuityError>()),
+    );
+    expect(item.fields.single.text, 'body');
+    await fixture.close();
   });
 }

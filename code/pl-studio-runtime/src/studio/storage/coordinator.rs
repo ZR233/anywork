@@ -2,7 +2,10 @@
 
 use std::{
     collections::BTreeMap,
-    sync::{Arc, Mutex, atomic::AtomicU64},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 use anyhow::{Result, bail};
@@ -147,7 +150,7 @@ struct Inner {
     #[cfg(test)]
     release_gate: Mutex<
         Option<(
-            std::sync::mpsc::SyncSender<()>,
+            tokio::sync::oneshot::Sender<()>,
             std::sync::mpsc::Receiver<()>,
         )>,
     >,
@@ -170,6 +173,7 @@ struct Inner {
     /// Views and the active writer share one session without pinning cold sessions forever.
     chats: Mutex<BTreeMap<String, WeakSession>>,
     queued_bytes: Arc<AtomicU64>,
+    capacity: watch::Sender<u64>,
     state: watch::Sender<ThreadPersistenceSnapshot>,
     retry: Notify,
 }
@@ -194,6 +198,7 @@ impl Drop for HistoryWriterRegistration {
 impl Default for ThreadPersistenceCoordinator {
     fn default() -> Self {
         let (state, _) = watch::channel(ThreadPersistenceSnapshot::default());
+        let (capacity, _) = watch::channel(0);
         Self(Arc::new(Inner {
             #[cfg(test)]
             release_gate: Mutex::new(None),
@@ -203,6 +208,7 @@ impl Default for ThreadPersistenceCoordinator {
             history: Mutex::new(BTreeMap::new()),
             chats: Mutex::new(BTreeMap::new()),
             queued_bytes: Arc::new(AtomicU64::new(0)),
+            capacity,
             state,
             retry: Notify::new(),
         }))
@@ -210,11 +216,56 @@ impl Default for ThreadPersistenceCoordinator {
 }
 
 impl ThreadPersistenceCoordinator {
+    pub(crate) fn delivery_process_bytes(&self) -> u64 {
+        self.0.queued_bytes.load(Ordering::Acquire)
+    }
+    pub(crate) fn subscribe_delivery_capacity(&self) -> watch::Receiver<u64> {
+        self.0.capacity.subscribe()
+    }
+    pub(crate) fn retain_terminal_material(
+        &self,
+        thread_id: &str,
+        channel: &Arc<HistoryChannel>,
+        bytes: u64,
+    ) -> Arc<crate::thread_assembler::review_dispatch::TerminalMaterialRetention> {
+        let counter = channel.retain_terminal_bytes(bytes);
+        let process_bytes = self.0.queued_bytes.clone();
+        let weak_owner = Arc::downgrade(&self.0);
+        let weak_channel = Arc::downgrade(channel);
+        let thread_id = thread_id.to_owned();
+        Arc::new(
+            crate::thread_assembler::review_dispatch::TerminalMaterialRetention::new(move || {
+                counter.fetch_sub(bytes, Ordering::AcqRel);
+                process_bytes.fetch_sub(bytes, Ordering::AcqRel);
+                if let Some(owner) = weak_owner.upgrade() {
+                    owner
+                        .capacity
+                        .send_modify(|revision| *revision = revision.wrapping_add(1));
+                    let channel = weak_channel.upgrade().or_else(|| {
+                        owner
+                            .threads
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .get(&thread_id)
+                            .map(|status| status.channel.clone())
+                    });
+                    if let Some(channel) = channel {
+                        channel.refresh_terminal_bytes();
+                        ThreadPersistenceCoordinator(owner)
+                            .release_delivery_channel(&thread_id, &channel);
+                    }
+                }
+            }),
+        )
+    }
     #[cfg(test)]
     pub(crate) fn arm_release_gate(
         &self,
-    ) -> (std::sync::mpsc::Receiver<()>, std::sync::mpsc::Sender<()>) {
-        let (entered, waiting) = std::sync::mpsc::sync_channel(1);
+    ) -> (
+        tokio::sync::oneshot::Receiver<()>,
+        std::sync::mpsc::Sender<()>,
+    ) {
+        let (entered, waiting) = tokio::sync::oneshot::channel();
         let (release, released) = std::sync::mpsc::channel();
         *self.0.release_gate.lock().unwrap() = Some((entered, released));
         (waiting, release)
@@ -249,25 +300,94 @@ impl ThreadPersistenceCoordinator {
 
     /// The manager owns admitted history independently of a writer or GUI subscription.
     pub(crate) fn history_channel(&self, thread_id: &str) -> Arc<HistoryChannel> {
-        self.0
+        let mut threads = self
+            .0
             .threads
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let status = threads
             .entry(thread_id.to_owned())
             .or_insert_with(|| ThreadStatus {
                 incarnations: BTreeMap::new(),
-                channel: Arc::new(HistoryChannel::new(self.0.queued_bytes.clone())),
-            })
-            .channel
-            .clone()
+                channel: Arc::new(HistoryChannel::with_capacity(
+                    self.0.queued_bytes.clone(),
+                    self.0.capacity.clone(),
+                )),
+            });
+        if status.incarnations.is_empty() && status.channel.is_stopping() {
+            status.channel = Arc::new(status.channel.next_storage_channel());
+        }
+        status.channel.clone()
     }
 
-    #[cfg(test)]
+    /// A receive-only producer can exist without a physical writer (e.g. receipt-first success).
+    /// Release its empty coordinator row only after the last retained copy and writer are gone.
+    pub(crate) fn retain_review_delivery(
+        &self,
+        thread_id: &str,
+        bytes: u64,
+    ) -> Result<super::thread_writer::ReviewDeliveryRetention> {
+        let (channel, charged) = {
+            let mut threads = self
+                .0
+                .threads
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let status = threads
+                .entry(thread_id.to_owned())
+                .or_insert_with(|| ThreadStatus {
+                    incarnations: BTreeMap::new(),
+                    channel: Arc::new(HistoryChannel::with_capacity(
+                        self.0.queued_bytes.clone(),
+                        self.0.capacity.clone(),
+                    )),
+                });
+            let charged = status.channel.charge_review_delivery(bytes);
+            (status.channel.clone(), charged)
+        };
+        if let Err(error) = charged {
+            self.release_delivery_channel(thread_id, &channel);
+            return Err(error);
+        }
+        channel.retain_charged_review_delivery(bytes, self.clone(), thread_id.to_owned())
+    }
+
+    pub(crate) fn release_delivery_channel(&self, thread_id: &str, source: &Arc<HistoryChannel>) {
+        let current = self
+            .0
+            .threads
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(thread_id)
+            .map(|status| status.channel.clone());
+        let Some(current) = current else {
+            return;
+        };
+        if !current.shares_delivery_budget(source)
+            || !current.is_clean()
+            || current.has_delivery_bytes()
+        {
+            return;
+        }
+        let mut threads = self
+            .0
+            .threads
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if threads.get(thread_id).is_some_and(|status| {
+            status.incarnations.is_empty()
+                && Arc::ptr_eq(&status.channel, &current)
+                && !status.channel.has_delivery_bytes()
+        }) {
+            threads.remove(thread_id);
+        }
+    }
+
     pub(crate) fn retained_history_channel(&self, thread_id: &str) -> Option<Arc<HistoryChannel>> {
         self.0
             .threads
             .lock()
-            .unwrap()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(thread_id)
             .map(|status| status.channel.clone())
     }
@@ -411,8 +531,14 @@ impl ThreadPersistenceCoordinator {
                 .entry(thread_id.to_owned())
                 .or_insert_with(|| ThreadStatus {
                     incarnations: BTreeMap::new(),
-                    channel: Arc::new(HistoryChannel::new(self.0.queued_bytes.clone())),
+                    channel: Arc::new(HistoryChannel::with_capacity(
+                        self.0.queued_bytes.clone(),
+                        self.0.capacity.clone(),
+                    )),
                 });
+            if status.incarnations.is_empty() && status.channel.is_stopping() {
+                status.channel = Arc::new(status.channel.next_storage_channel());
+            }
             anyhow::ensure!(!status.channel.is_stopping(), "history writer is stopping");
             // Queue adoption is confirmed by update(), not by this preparation reservation.
             let superseded: Vec<usize> = status
@@ -520,7 +646,7 @@ impl ThreadPersistenceCoordinator {
                 && !status.incarnations.values().any(IncarnationStatus::is_live);
             empty = status.incarnations.is_empty();
         }
-        if empty && clean {
+        if empty && clean && !channel.has_delivery_bytes() {
             threads.remove(thread_id);
         }
         drop(threads);
@@ -529,7 +655,11 @@ impl ThreadPersistenceCoordinator {
             let gate = self.0.release_gate.lock().unwrap().take();
             if let Some((entered, release)) = gate {
                 let _ = entered.send(());
-                let _ = release.recv();
+                // This deliberate synchronous Drop gate must not occupy a Tokio
+                // worker while the test awaits the replacement incarnation.
+                tokio::task::block_in_place(|| {
+                    let _ = release.recv();
+                });
             }
         }
         if unavailable {

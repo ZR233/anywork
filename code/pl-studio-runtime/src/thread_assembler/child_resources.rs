@@ -7,14 +7,35 @@ use std::sync::{
 
 /// The actual preparation/unpublished owner retains its physical use independently of a caller
 /// waiting for preparation. A published Entry takes over before this owner is released.
+#[derive(Debug, Default)]
+struct PreparationResources {
+    usage: Option<super::WorkspaceUsageLease>,
+    review: Option<crate::studio::thread_factory::VerifiedLocalResume>,
+}
 #[derive(Debug, Clone, Default)]
-pub struct WorkspacePreparationOwner(Arc<std::sync::Mutex<Option<super::WorkspaceUsageLease>>>);
+pub struct WorkspacePreparationOwner(Arc<std::sync::Mutex<PreparationResources>>);
 impl WorkspacePreparationOwner {
+    pub(crate) fn verified_review(
+        proof: crate::studio::thread_factory::VerifiedLocalResume,
+    ) -> Self {
+        Self(Arc::new(std::sync::Mutex::new(PreparationResources {
+            usage: Some(proof.usage()),
+            review: Some(proof),
+        })))
+    }
+    pub(crate) fn take_review(&self) -> Option<crate::studio::thread_factory::VerifiedLocalResume> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .review
+            .take()
+    }
     pub(crate) fn retain(&self, usage: &super::WorkspaceUsageLease) {
         let previous = self
             .0
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .usage
             .replace(usage.clone());
         drop(previous);
     }
@@ -22,6 +43,7 @@ impl WorkspacePreparationOwner {
         self.0
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .usage
             .take()
     }
 }
@@ -142,7 +164,10 @@ impl super::StudioThreadAssembler {
         if !self.0.state().unpublished_children.contains_key(id) {
             return Ok(());
         }
-        self.close_thread(id).await?;
+        // This retained disposal task owns only its cleanup gate, not the identity operation
+        // permit. close_thread consumes that permit and may release it while joining producers.
+        let operation = self.agent_operation(id).await;
+        self.close_thread(id, operation).await?;
         let usage = pending.workspace.take();
         if let Err(error) = pending
             .factory

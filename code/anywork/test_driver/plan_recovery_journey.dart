@@ -899,7 +899,7 @@ class PlanRecoveryJourney {
     checks['${label}PlanDetailsClosed'] = true;
   }
 
-  /// Visible H1 of [markdown] after `_AgentMarkdown` / GptMarkdown strips `# `.
+  /// Visible H1 of [markdown] after the Markdown renderer strips `# `.
   String _planHeadingText(String markdown) {
     for (final line in markdown.split('\n')) {
       final trimmed = line.trim();
@@ -913,22 +913,49 @@ class PlanRecoveryJourney {
 
   /// Proves the open details panel itself rendered [expectedMarkdown]'s heading.
   ///
-  /// The snapshot `plan.markdown` check only confirms the runtime projection.
-  /// Driver `getText` cannot read `Text.rich` (GptMarkdown H1), so presence of
-  /// a panel descendant whose plain text equals the heading is the evidence:
-  /// `find.text` matches `Text.textSpan.toPlainText()` when `Text.data` is null.
+  /// The snapshot only proves the runtime projection. The current renderer
+  /// uses RichText subclasses, which the stock ByText finder does not match.
+  /// Read the actual body's render tree through the official Driver command;
+  /// only InlineSpan text properties count, never creator strings or the
+  /// separate panel title. Missing/truncated diagnostics remain failures.
   Future<bool> _planPanelRendersHeading(String expectedMarkdown) async {
     final heading = _planHeadingText(expectedMarkdown);
-    final inPanel = find.descendant(
-      of: find.byValueKey('plan-details-scroll'),
-      matching: find.text(heading),
+    final tree = await driver.sendCommand(
+      GetDiagnosticsTree(
+        find.byValueKey('plan-details-markdown'),
+        DiagnosticsType.renderObject,
+        subtreeDepth: 128,
+        timeout: const Duration(seconds: 10),
+      ),
     );
-    try {
-      await driver.waitFor(inPanel, timeout: const Duration(seconds: 10));
-      return true;
-    } on Object {
-      return false;
+    final texts = <String>[];
+    void visit(Map node) {
+      final children = node['children'];
+      if (node['truncated'] == true ||
+          (node['hasChildren'] == true &&
+              (children is! List || children.isEmpty))) {
+        throw StateError('plan body render diagnostics were truncated');
+      }
+      for (final property in node['properties'] as List? ?? const []) {
+        if (property is Map &&
+            property['name'] == 'text' &&
+            property['value'] is String) {
+          texts.add(property['value'] as String);
+        }
+      }
+      for (final child in children as List? ?? const []) {
+        if (child is! Map) {
+          throw StateError('invalid plan body render diagnostic child');
+        }
+        visit(child);
+      }
     }
+
+    visit(tree);
+    if (texts.isEmpty) {
+      throw StateError('plan body render diagnostics contain no text');
+    }
+    return texts.contains(heading);
   }
 
   /// Opens and closes the read-only Plan details panel through the product UI.

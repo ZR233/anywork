@@ -3,7 +3,7 @@ import 'support/test_statistics_feed.dart';
 import 'dart:async';
 
 import 'package:anywork/src/app/app_graph.dart';
-import 'package:anywork/src/features/interaction/composer_view.dart';
+import 'package:anywork/src/features/conversation/composer/view_models/composer_view_model.dart';
 import 'package:anywork/src/infrastructure/frb/studio_api.dart';
 import 'package:anywork_client/studio_client.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -119,7 +119,7 @@ void main() {
       await graph.client.bootstrap();
       await graph.client.directoryCommands.beginNewThread();
       final projectId = graph.client.selection.state.selectedProjectId!;
-      final owner = graph.client.startDraft;
+      final owner = graph.client.drafts.startDraft;
       owner.updateDraft(projectId, 'prepare a workspace');
       owner.setWorkspaceMode(projectId, ThreadWorkspaceMode.worktree);
 
@@ -138,7 +138,7 @@ void main() {
       );
 
       final observer = container.listen(
-        startPageComposerViewProvider,
+        startPageComposerViewModelProvider,
         (_, _) {},
       );
       await graph.accounts.state
@@ -152,7 +152,10 @@ void main() {
             ),
           )
           .timeout(_waitLimit);
-      final project = container.read(startPageComposerViewProvider).project!;
+      final project = container
+          .read(startPageComposerViewModelProvider)
+          .requireValue
+          .project!;
       expect(project.id, projectId);
       final submitted = submission = owner.submit(project.id);
       final input = await Future.any<StudioPromptInput>([
@@ -196,7 +199,9 @@ void main() {
         overrides: [appGraphProvider.overrideWithValue(graph)],
       );
       containerDisposed = false;
-      final projection = container.read(startPageComposerViewProvider);
+      final projection = container
+          .read(startPageComposerViewModelProvider)
+          .requireValue;
       expect(projection.preparation?.inputId, input.inputId);
       expect(projection.preparation?.projectId, project.id);
       expect(
@@ -227,7 +232,9 @@ void main() {
         ),
       );
       expect(await submitted.timeout(_waitLimit), isFalse);
-      final terminal = container.read(startPageComposerViewProvider);
+      final terminal = container
+          .read(startPageComposerViewModelProvider)
+          .requireValue;
       expect(terminal.preparation?.phase, NewThreadPreparationPhase.failed);
       expect(terminal.preparation?.inputId, input.inputId);
       expect(

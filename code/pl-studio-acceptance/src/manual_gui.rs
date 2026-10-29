@@ -128,7 +128,7 @@ pub(crate) struct ManualGuiOptions {
     /// group. Only valid with `--scenario acp-auto-install`.
     #[arg(long, value_name = "PHASE", value_parser = ["first", "cancel"])]
     pub(crate) acp_install_from: Option<String>,
-    /// Optional session-owned Dart Driver for the dedicated delegation scenes.
+    /// Optional Dart Driver for delegation scenes, including review-feedback.
     /// Arguments: VM URL, project, phase evidence directory, environment, phase,
     /// fixture origin. It must not shut down the application; the harness does.
     #[arg(long, value_name = "PATH")]
@@ -867,13 +867,8 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
                     | "stress-body-large"
                     | "wait-events"
                     | "acp-auto-install"
-                    | "delegation-routing"
-                    | "delegation-lifecycle"
-                    | "delegation-window"
-                    | "delegation-enablement"
-                    | "delegation-recovery"
-                    | "delegation-worktree"
-            ),
+            )
+            || pl_provider_fixture::delegation::Scenario::parse(&options.scenario).is_some(),
         "--retain-environment is supported by --scenario gui, single-instance, tool-scroll, \
          timeline-history, stress-body-large, wait-events, acp-auto-install and the delegation scenes"
     );
@@ -2493,6 +2488,8 @@ fn run_timeline_history_scenario(
             "failed to initialize isolated timeline-history project"
         );
         for phase in ["live", "restart"] {
+            let phase_index = phases.len();
+            phases.push((phase, None, None));
             let gui_log = working.join(format!("timeline-history-{phase}-gui.log"));
             let stage = working.join(format!("timeline-history-{phase}-stage"));
             let driver_log = working.join(format!("timeline-history-{phase}-driver.log"));
@@ -2520,11 +2517,13 @@ fn run_timeline_history_scenario(
                 interrupt,
                 phase,
             )?;
+            phases[phase_index].1 = Some(driver_exit);
             ensure!(
                 driver_exit.success(),
                 "timeline-history {phase} Driver failed: {driver_exit}"
             );
             let gui_exit = wait_for_gui_exit(&mut gui, Duration::from_secs(120), phase)?;
+            phases[phase_index].2 = Some(gui_exit);
             ensure!(
                 gui_exit.success(),
                 "timeline-history {phase} GUI did not exit cleanly: {gui_exit}"
@@ -2737,12 +2736,12 @@ fn run_timeline_history_scenario(
                     "timeline-history cold start mislabels auto-opened vs selected: {restore:?}"
                 );
             }
-            phases.push((phase, Some(driver_exit), Some(gui_exit)));
         }
         if *run_displacement {
+            let phase_index = phases.len();
+            phases.push(("displacement", None, None));
             let gui_log = working.join("timeline-history-displacement-gui.log");
             let driver_log = working.join("timeline-history-displacement-driver.log");
-            let stage = working.join("timeline-history-displacement-stage");
             let mut gui = start_timeline_history_gui(
                 workspace,
                 home,
@@ -2755,6 +2754,7 @@ fn run_timeline_history_scenario(
             )?;
             let mut command =
                 driver_command(app_dir, "test_driver/timeline_displacement_journey.dart");
+            let driver_output = File::create(&driver_log)?;
             command
                 .arg(&vm_url)
                 .arg(output)
@@ -2763,18 +2763,19 @@ fn run_timeline_history_scenario(
                 .arg("--thread-id")
                 .arg(&target.thread_id)
                 .env("ANYWORK_HOME", home)
-                .stdout(Stdio::from(File::create(&driver_log)?))
-                .stderr(Stdio::from(File::create(stage.with_extension("err"))?));
+                .stdout(Stdio::from(driver_output.try_clone()?))
+                .stderr(Stdio::from(driver_output));
             let mut driver = OwnedProcess::start(&mut command, false)?;
             let deadline = Instant::now() + Duration::from_secs(3_600);
-            let driver_exit = loop {
+            loop {
                 if let Some(status) = driver.child.try_wait()? {
                     driver.stopped = true;
+                    phases[phase_index].1 = Some(status);
                     ensure!(
                         status.success(),
                         "native displacement collector failed: {status}"
                     );
-                    break status;
+                    break;
                 }
                 if gui.exited()? {
                     // After the completed cleanup ACK the Driver requests the
@@ -2801,8 +2802,9 @@ fn run_timeline_history_scenario(
                     "displacement collection timed out"
                 );
                 thread::sleep(Duration::from_millis(100));
-            };
+            }
             let gui_exit = wait_for_gui_exit(&mut gui, Duration::from_secs(120), "displacement")?;
+            phases[phase_index].2 = Some(gui_exit);
             ensure!(
                 gui_exit.success(),
                 "displacement GUI did not exit cleanly: {gui_exit}"
@@ -2914,27 +2916,35 @@ fn run_timeline_history_scenario(
                 output.join("observations.json"),
                 output.join("timeline-displacement.json"),
             )?;
-            phases.push(("displacement", Some(driver_exit), Some(gui_exit)));
         }
         Ok(())
     })();
 
+    // Record observed exits before assertions and retain failed-phase evidence.
+    // Startup-only GUI filtering would erase the Driver's actual failure.
+    let redactions = [
+        (home.to_string_lossy().into_owned(), "<home>"),
+        (working.to_string_lossy().into_owned(), "<coord>"),
+        (output.to_string_lossy().into_owned(), "<output>"),
+        (app_dir.to_string_lossy().into_owned(), "<app>"),
+        (workspace.to_string_lossy().into_owned(), "<workspace>"),
+    ];
     for (phase, driver_exit, gui_exit) in &phases {
-        for (source, suffix) in [
-            (
-                working.join(format!("timeline-history-{phase}-gui.log")),
-                "gui.log",
-            ),
-            (
-                working.join(format!("timeline-history-{phase}-driver.log")),
-                "driver.log",
-            ),
-        ] {
-            if source.is_file() {
-                let destination = output.join(format!("timeline-history-{phase}-{suffix}"));
-                write_sanitized_log(&source, &destination)?;
-            }
+        let gui_log = working.join(format!("timeline-history-{phase}-gui.log"));
+        if gui_log.is_file() {
+            write_sanitized_log(
+                &gui_log,
+                &output.join(format!("timeline-history-{phase}-gui.log")),
+            )?;
         }
+        write_realtime_driver_evidence(
+            &working.join(format!("timeline-history-{phase}-driver.log")),
+            output,
+            &format!("timeline-history-{phase}"),
+            *driver_exit,
+            journey.as_ref().err(),
+            &redactions,
+        )?;
         fs::write(
             output.join(format!("timeline-history-{phase}-exit.json")),
             serde_json::to_vec_pretty(&serde_json::json!({

@@ -169,7 +169,7 @@ pub fn gui_markdown_answer() -> String {
 /// control/observation routes, and it verifies the real requests against them.
 /// The GUI side is driven by the optional delegation Driver
 /// (`--delegation-driver`), or by the manual flow when it is absent.
-pub const GUI_SCENARIOS: [&str; 31] = [
+pub const GUI_SCENARIOS: [&str; 32] = [
     "gui",
     "markdown-layout",
     "single-instance",
@@ -199,6 +199,7 @@ pub const GUI_SCENARIOS: [&str; 31] = [
     "delegation-window",
     "delegation-enablement",
     "delegation-recovery",
+    "delegation-review-feedback",
     "delegation-worktree",
     "acp-auto-install",
 ];
@@ -1172,6 +1173,11 @@ pub enum RequestMatch {
     },
     Exact(Value),
     Prompt {
+        text: String,
+        step: usize,
+    },
+    /// Exact answers plus the real client's opaque, nonempty decision identity.
+    InteractionAnswers {
         text: String,
         step: usize,
     },
@@ -4282,6 +4288,9 @@ fn match_step(state: &AppState, method: &str, path: &str, body: &Value) -> Resul
                                     request.accepted && prompt(&request.body) == Some(text.as_str())
                                 }))
                     }
+                    RequestMatch::InteractionAnswers { text, step } => {
+                        *step == index && question_history::matches_answers(prompt(body), text)
+                    }
                     RequestMatch::Compaction { marker, step } => {
                         *step == index
                             && body["input"]
@@ -4367,6 +4376,9 @@ fn reject_diagnostic(
     let actual = prompt(body);
     let (expected_kind, expected_prompt) = match expected.map(|step| step.request.base()) {
         Some(RequestMatch::Prompt { text, .. }) => ("prompt", Some(text.clone())),
+        Some(RequestMatch::InteractionAnswers { text, .. }) => {
+            ("interaction_answers", Some(text.clone()))
+        }
         Some(RequestMatch::Compaction { marker, .. }) => ("compaction", Some(marker.clone())),
         Some(RequestMatch::Delivery { marker, .. }) => ("delivery", Some(marker.clone())),
         Some(RequestMatch::ToolOutput {
@@ -4384,6 +4396,9 @@ fn reject_diagnostic(
     let actual_prompt_present = actual.is_some();
     let prompt_matches_expected = match expected.map(|step| step.request.base()) {
         Some(RequestMatch::Prompt { text, .. }) => actual == Some(text.as_str()),
+        Some(RequestMatch::InteractionAnswers { text, .. }) => {
+            question_history::matches_answers(actual, text)
+        }
         Some(RequestMatch::Compaction { marker, .. }) => body["input"].to_string().contains(marker),
         Some(RequestMatch::Delivery { marker, .. }) => {
             actual.is_some_and(|value| value.contains(marker.as_str()))

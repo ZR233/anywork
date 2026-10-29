@@ -58,4 +58,4 @@ final class AttachmentDraftsProvider
   }
 }
 
-String _$attachmentDraftsHash() => r'7786ad305c52ca353fbf49418a6f615b1031f99c';
+String _$attachmentDraftsHash() => r'5ff43a6d134b7adffc576c30d4fe8cde0a236f8e';

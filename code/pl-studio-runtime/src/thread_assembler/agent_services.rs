@@ -291,6 +291,45 @@ impl AgentServices {
         Ok(())
     }
 
+    pub(super) async fn activate_verified_review_child(
+        &self,
+        owner: &StudioThreadAssembler,
+        caller: &str,
+        target: &str,
+        proof: crate::studio::thread_factory::VerifiedLocalResume,
+        operation: tokio::sync::OwnedMutexGuard<()>,
+    ) -> Result<(), super::ThreadAssemblyError> {
+        let checked = async {
+            self.authorize(caller, target).await?;
+            self.store.ensure_agent_execution_allowed(target).await?;
+            let record = self.record(target).await?;
+            self.recovery.ensure_thread_read_access(&record)?;
+            self.recovery.ensure_thread_execution_access(&record)?;
+            anyhow::ensure!(
+                record.parent_thread_id.as_deref() == Some(caller) && !record.archived,
+                "only the original direct child can consume a local review proof"
+            );
+            Ok::<_, anyhow::Error>(record)
+        }
+        .await
+        .map_err(|source| super::ThreadAssemblyError::Resource {
+            operation: "admit verified local review restore",
+            source: source.into(),
+        })?;
+        owner
+            .activate_verified_review(
+                super::ThreadActivation {
+                    id: checked.id,
+                    parent_id: checked.parent_thread_id,
+                },
+                self.factory.clone(),
+                proof,
+                operation,
+            )
+            .await?;
+        Ok(())
+    }
+
     pub(super) async fn record(&self, id: &str) -> Result<pl_protocol::Thread> {
         match self.events.thread_snapshot(id) {
             Some(thread) => Ok(thread),

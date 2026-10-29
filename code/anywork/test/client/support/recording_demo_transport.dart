@@ -1,23 +1,35 @@
 import 'dart:async';
 
 import 'package:anywork/src/infrastructure/frb/studio_api.dart';
+import 'package:anywork_client/models.dart';
+import 'package:anywork_client/conversation_ports.dart';
 
-/// Uses Demo's real directory/runtime/content behavior. Only resource ownership
-/// is recorded; this fixture never claims to exercise a native FRB handle.
+/// Lifecycle instrumentation around the real Demo transport; it does not reduce content.
 class RecordingDemoTransport extends DemoStudioTransport {
-  RecordingDemoTransport() : super(lspActivityLoop: false);
-
-  /// 本传输打开过的内容连接（按打开顺序）。
-  final List<RecordingTimelineConnection> timelines = [];
+  final List<RecordingConversationFeed> feeds = [];
+  final Map<String, Completer<RecordingConversationFeed>> _feedWaiters = {};
   final bootstrapDelivered = Completer<void>();
   int bootstrapCalls = 0;
-
-  /// 非空时下一次打开的内容连接首帧失败（消费一次）。
   Object? failNextInitial;
+
+  /// 在当前实际 feed 投递状态事实，并等待 SDK 处理后的显式 ACK。
+  Future<void> publishWorkspace(ThreadWorkspace workspace) async {
+    final feed = await _activeFeed(workspace.thread.id);
+    await feed.emitStateAndWait(ThreadSnapshotFrame(workspace: workspace));
+  }
+
+  /// Waits for the actual visible-demand feed; it never opens or fabricates one.
+  Future<RecordingConversationFeed> _activeFeed(String threadId) async {
+    final current = feeds
+        .where((feed) => feed.threadId == threadId && !feed._closed)
+        .lastOrNull;
+    if (current != null) return current;
+    return (_feedWaiters[threadId] ??= Completer<RecordingConversationFeed>())
+        .future;
+  }
 
   @override
   Duration get shutdownPhaseDelay => Duration.zero;
-
   @override
   Future<StudioBootstrap> readBootstrap() async {
     bootstrapCalls++;
@@ -27,101 +39,199 @@ class RecordingDemoTransport extends DemoStudioTransport {
   }
 
   @override
-  Future<StudioTimelineConnection> openTimeline(String threadId) async {
+  Future<ConversationFeed> openConversationFeed(String threadId) async {
     final failure = failNextInitial;
     failNextInitial = null;
-    final connection = RecordingTimelineConnection(
-      threadId: threadId,
-      inner: await super.openTimeline(threadId),
+    final feed = RecordingConversationFeed(
+      inner: await super.openConversationFeed(threadId),
       initialFailure: failure,
     );
-    timelines.add(connection);
-    return connection;
+    feeds.add(feed);
+    _feedWaiters.remove(threadId)?.complete(feed);
+    return feed;
   }
 }
 
-/// 记录一条内容连接的生命周期事实：打开、首帧、取帧、查询、取消与真实 join。
-///
-/// 它只替换故障点/门槛，不实现业务内容：正文仍由 demo 的 [`DemoStudioTransport`] 提供。
-class RecordingTimelineConnection implements StudioTimelineConnection {
-  RecordingTimelineConnection({
-    required this.threadId,
-    required this.inner,
-    this.initialFailure,
-  });
-
-  final String threadId;
-  final StudioTimelineConnection inner;
-
-  /// 非空时首帧以该错误收束（消费一次），用于故障注入。
+/// Gating/error injection is confined to the external transport seam. Real Demo facts,
+/// preview budgeting, typed DTOs and production SDK reduction remain on the normal path.
+class RecordingConversationFeed implements ConversationFeed {
+  RecordingConversationFeed({required this.inner, this.initialFailure});
+  final ConversationFeed inner;
+  @override
+  String get threadId => inner.threadId;
+  @override
+  String get subscriptionId => inner.subscriptionId;
   Object? initialFailure;
+  void Function(ThreadStreamFrame)? onState;
+  void Function()? onClosed;
+  Completer<void>? initialGate;
+  final initialEntered = Completer<void>();
   final nextEntered = Completer<void>();
   final joined = Completer<void>();
-
-  /// 非空时首帧被挂起，用于观察“连接已打开但首帧未到”的中间状态。
-  Completer<void>? initialGate;
-
   int initialCalls = 0;
   int nextCalls = 0;
   int pageCalls = 0;
   int detailCalls = 0;
   int requestCloseCalls = 0;
   int closeCalls = 0;
-  bool _closed = false;
-
-  /// 非空时由测试脚本提供尾部帧（仍走 production 的唯一内容泵）。
+  final acknowledgements = <int>[];
   bool scriptFrames = false;
-  final List<Completer<StudioTimelineUpdate?>> _scriptedFrames = [];
-
-  /// 非空时由测试脚本提供页结果，用于观察分页在途/失败/去重。
-  Completer<StudioTimelinePage>? scriptedPage;
-
+  Completer<ConversationPage>? scriptedPage;
+  bool _closed = false;
+  bool _claimed = false;
+  int _sequence = 0;
+  int get deliveredFrames => _sequence;
+  final Map<int, int> _nativeSequences = {};
+  final Map<int, Completer<void>> _ackWaiters = {};
+  StreamSubscription<ConversationFrame>? _subscription;
+  Future<void>? _closing;
+  final Set<Future<void>> _pending = {};
+  late final StreamController<ConversationFrame> _events = StreamController(
+    onListen: _listen,
+    onCancel: () {
+      requestClose();
+      return close();
+    },
+  );
   @override
-  Future<StudioTimelineBaseline> initial() async {
-    initialCalls++;
-    await initialGate?.future;
-    final failure = initialFailure;
-    if (failure != null) {
-      initialFailure = null;
-      throw failure;
-    }
-    return inner.initial();
+  Stream<ConversationFrame> get events {
+    if (_claimed) throw StateError('Recording feed already has a consumer');
+    _claimed = true;
+    return _events.stream;
   }
 
-  @override
-  Future<StudioTimelineUpdate?> next() {
-    nextCalls++;
-    if (!nextEntered.isCompleted) nextEntered.complete();
-    if (scriptFrames) {
-      final pending = Completer<StudioTimelineUpdate?>();
-      _scriptedFrames.add(pending);
-      return pending.future;
+  void _listen() {
+    if (_closed) {
+      unawaited(_events.close());
+      return;
     }
-    return inner.next();
+    _subscription = inner.events.listen(
+      (frame) {
+        if (_closed) return;
+        // Retain the actual in-flight conversion/gate work so close can join it.
+        final work = _forward(frame);
+        _pending.add(work);
+        unawaited(
+          work.then<void>(
+            (_) {
+              _pending.remove(work);
+            },
+            onError: (Object error, StackTrace stack) {
+              _pending.remove(work);
+              if (!_closed) _events.addError(error, stack);
+            },
+          ),
+        );
+      },
+      onError: (Object error, StackTrace stack) {
+        if (!_closed) _events.addError(error, stack);
+      },
+      onDone: () {
+        if (!_closed) unawaited(_events.close());
+      },
+    );
   }
 
-  void emit(StudioTimelineUpdate? update) {
-    if (_scriptedFrames.isEmpty) throw StateError('No pending content read');
-    _scriptedFrames.removeAt(0).complete(update);
+  Future<void> _forward(ConversationFrame frame) async {
+    final event = frame.event;
+    if (event case ConversationStateEvent(:final frame)) onState?.call(frame);
+    if (event is ConversationBaselineEvent) {
+      initialCalls++;
+      if (!initialEntered.isCompleted) initialEntered.complete();
+      await initialGate?.future;
+      if (_closed) return;
+      if (initialFailure case final error?) {
+        initialFailure = null;
+        throw error;
+      }
+      nextCalls++;
+      if (!nextEntered.isCompleted) nextEntered.complete();
+    }
+    if (scriptFrames && event is ConversationUpdateEvent) return;
+    final terminal =
+        event is ConversationClosedEvent || event is ConversationFailureEvent;
+    final sequence = terminal ? _sequence : ++_sequence;
+    if (!terminal) _nativeSequences[sequence] = frame.deliverySequence;
+    if (!_closed) {
+      _events.add(
+        ConversationFrame(
+          threadId: threadId,
+          subscriptionId: subscriptionId,
+          deliverySequence: sequence,
+          event: event,
+        ),
+      );
+    }
+  }
+
+  /// An explicit scripted transport fault/value, not a second business reducer.
+  void emit(ConversationUpdate? update) {
+    if (_closed) return;
+    if (update == null) {
+      _events.add(
+        ConversationFrame(
+          threadId: threadId,
+          subscriptionId: subscriptionId,
+          deliverySequence: _sequence,
+          event: const ConversationClosedEvent(),
+        ),
+      );
+      return;
+    }
+    _events.add(
+      ConversationFrame(
+        threadId: threadId,
+        subscriptionId: subscriptionId,
+        deliverySequence: ++_sequence,
+        event: ConversationUpdateEvent(update: update),
+      ),
+    );
   }
 
   void emitError(Object error) {
-    if (_scriptedFrames.isEmpty) throw StateError('No pending content read');
-    _scriptedFrames.removeAt(0).completeError(error);
+    if (!_closed) _events.addError(error);
+  }
+
+  void emitState(ThreadStreamFrame frame) {
+    if (_closed) return;
+    onState?.call(frame);
+    _events.add(
+      ConversationFrame(
+        threadId: threadId,
+        subscriptionId: subscriptionId,
+        deliverySequence: ++_sequence,
+        event: ConversationStateEvent(frame: frame),
+      ),
+    );
+  }
+
+  Future<void> emitStateAndWait(ThreadStreamFrame frame) {
+    if (_closed) return Future.error(StateError('Recording feed is closed'));
+    final accepted = Completer<void>();
+    _ackWaiters[_sequence + 1] = accepted;
+    emitState(frame);
+    return accepted.future;
   }
 
   @override
-  Future<StudioTimelinePage> page({String? before, int? limit}) {
+  Future<void> acknowledge(int deliverySequence) async {
+    acknowledgements.add(deliverySequence);
+    final native = _nativeSequences[deliverySequence];
+    if (native != null) await inner.acknowledge(native);
+    _nativeSequences.removeWhere((key, _) => key <= deliverySequence);
+    _ackWaiters.remove(deliverySequence)?.complete();
+  }
+
+  @override
+  Future<ConversationPage> page({String? before, int? limit}) {
     pageCalls++;
-    final scripted = scriptedPage;
-    if (scripted != null) return scripted.future;
-    return inner.page(before: before, limit: limit);
+    return scriptedPage?.future ?? inner.page(before: before, limit: limit);
   }
 
   @override
-  Future<StudioTimelineDetailChunk> readDetail({
+  Future<ConversationDetailChunk> readDetail({
     required String itemId,
-    required StudioTimelineDetailQuery query,
+    required ConversationDetailQuery query,
   }) {
     detailCalls++;
     return inner.readDetail(itemId: itemId, query: query);
@@ -132,18 +242,32 @@ class RecordingTimelineConnection implements StudioTimelineConnection {
     requestCloseCalls++;
     if (_closed) return;
     _closed = true;
+    onClosed?.call();
     inner.requestClose();
-    for (final pending in _scriptedFrames) {
-      if (!pending.isCompleted) pending.complete(null);
+    for (final waiter in _ackWaiters.values) {
+      waiter.completeError(StateError('Feed closed before state ACK'));
     }
-    _scriptedFrames.clear();
+    _ackWaiters.clear();
+    if (initialGate case final gate? when !gate.isCompleted) gate.complete();
   }
 
   @override
-  Future<void> close() async {
-    closeCalls++;
+  Future<void> close() {
     requestClose();
-    await inner.close();
-    if (!joined.isCompleted) joined.complete();
+    return _closing ??= _join();
+  }
+
+  Future<void> _join() async {
+    closeCalls++;
+    try {
+      await inner.close();
+      await Future.wait(_pending.toList());
+      await _subscription?.cancel();
+      if (_claimed) unawaited(_events.close());
+      if (!joined.isCompleted) joined.complete();
+    } catch (_) {
+      _closing = null;
+      rethrow;
+    }
   }
 }

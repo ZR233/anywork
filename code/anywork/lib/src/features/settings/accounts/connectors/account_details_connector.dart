@@ -1,16 +1,19 @@
 import 'dart:async';
 
+import 'package:anywork_client/accounts.dart' show AccountDemand;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../l10n/app_localizations.dart';
 import '../../../../app/routing/app_route.dart';
+import '../../../../presentation/providers/account_domains.dart';
 import '../state/account_presentations.dart';
 import '../state/account_view_state.dart';
 import '../view_models/account_details_view_model.dart';
 import '../view_models/account_models_view_model.dart';
 import '../view_models/accounts_view_model.dart';
 import '../view_models/acp_account_view_model.dart';
+import '../view_models/account_projection.dart' show releaseAccountDemand;
 import '../views/account_details_view.dart';
 import 'account_actions.dart';
 import 'account_strings.dart';
@@ -28,18 +31,28 @@ class _AccountDetailsConnectorState
   String? _locale;
   AccountAcpKey? _localizedAcp;
   void Function()? _releaseModels;
+  AccountDemand? _usageDemand;
 
   @override
   void initState() {
     super.initState();
-    _retainModels();
+    _retainAccountContext();
   }
 
-  void _retainModels() {
+  void _retainAccountContext() {
     if (widget.account.kind == AccountKind.native) {
       _releaseModels = ref
           .read(accountModelsViewModelProvider(widget.account).notifier)
           .retainAccountScope();
+      final account = widget.account;
+      scheduleMicrotask(() {
+        if (!mounted || widget.account != account) return;
+        // The list can be hidden while this account context remains visible.
+        // Reuse the repository's demand and query-identity deduplication.
+        _usageDemand ??= ref
+            .read(accountUsageRepositoryProvider)
+            .observeVisible();
+      });
     }
   }
 
@@ -49,9 +62,11 @@ class _AccountDetailsConnectorState
     if (oldWidget.account != widget.account) {
       _releaseModels?.call();
       _releaseModels = null;
+      releaseAccountDemand(_usageDemand);
+      _usageDemand = null;
       _locale = null;
       _localizedAcp = null;
-      _retainModels();
+      _retainAccountContext();
       _localize();
     }
   }
@@ -59,6 +74,7 @@ class _AccountDetailsConnectorState
   @override
   void dispose() {
     _releaseModels?.call();
+    releaseAccountDemand(_usageDemand);
     super.dispose();
   }
 

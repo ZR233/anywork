@@ -77,7 +77,7 @@ final class ThreadSessionStoreProvider
 }
 
 String _$threadSessionStoreHash() =>
-    r'8e816d364f2cf739a58e71ba73c65d95ec633bc4';
+    r'f035f8a50b7e5e806097e60b312daf353dff99f8';
 
 /// Riverpod owns this display observation; the Client owns the resource.
 

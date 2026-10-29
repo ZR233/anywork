@@ -94,7 +94,7 @@ impl PersistedStudioObject for AgentCloseRecord {
                     && lease.owner_thread_id == owner
                     && lease.root_thread_id == self.root_id
                     && lease.project_id == self.project_id
-                    && lease.path == binding.identity.root,
+                    && binding.identity.matches_root(&lease.path),
                 "agent close worktree ownership mismatch"
             );
             ensure!(
@@ -120,7 +120,7 @@ impl PersistedStudioObject for AgentCloseRecord {
             if let Some(grant) = &self.git {
                 ensure!(
                     grant.delivery.endpoint == binding.identity.endpoint
-                        && grant.delivery.root != binding.identity.root
+                        && grant.delivery != binding.identity
                         && !grant.expected_common_dir.is_empty()
                         && matches!(grant.expected_head.len(), 40 | 64)
                         && grant

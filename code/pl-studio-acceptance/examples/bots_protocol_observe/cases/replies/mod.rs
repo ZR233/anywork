@@ -125,11 +125,11 @@ pub(super) async fn wait_cancelled_turn(
         let page = session.http()?.read_timeline(thread_id, 100).await?;
         let mut present = false;
         for item in page.items.iter().rev() {
-            if item.preview.turn_id != turn_id {
+            if item.header.turn_id != turn_id {
                 continue;
             }
             present = true;
-            if let pl_protocol::ThreadItemState::Turn(turn) = item.preview.state()
+            if let pl_protocol::TimelineDescriptor::Turn(turn) = &item.descriptor
                 && let pl_protocol::TurnState::Cancelled(state) = turn.state()
             {
                 return Ok(state.clone());
@@ -163,11 +163,11 @@ pub(super) async fn wait_running_turn(
         let page = session.http()?.read_timeline(thread_id, 100).await?;
         let mut present = false;
         for item in page.items.iter().rev() {
-            if item.preview.turn_id != turn_id {
+            if item.header.turn_id != turn_id {
                 continue;
             }
             present = true;
-            if let pl_protocol::ThreadItemState::Turn(turn) = item.preview.state() {
+            if let pl_protocol::TimelineDescriptor::Turn(turn) = &item.descriptor {
                 match turn.state() {
                     pl_protocol::TurnState::Running(state) => return Ok(state.clone()),
                     terminal => anyhow::bail!(
@@ -396,13 +396,14 @@ pub(super) fn optional_title_step(index: usize, user_prompt: &str) -> Step {
 }
 
 /// Rebuilds the hidden continuation text the runtime synthesizes for resolved
-/// user-input questions: `BTreeMap` ordering and encoding stay authoritative.
-pub(super) fn answers_json(entries: &[(&str, &str)]) -> String {
+/// user-input questions, including `answers` and `operationId`; `BTreeMap`
+/// ordering and encoding stay authoritative.
+pub(super) fn answers_json(operation_id: &str, entries: &[(&str, &str)]) -> String {
     let answers = entries
         .iter()
         .map(|(id, answer)| (*id, serde_json::json!({ "answers": [answer] })))
         .collect::<std::collections::BTreeMap<_, _>>();
-    serde_json::json!({ "answers": answers }).to_string()
+    serde_json::json!({ "answers": answers, "operationId": operation_id }).to_string()
 }
 
 /// Waits for the durable DM→Thread binding and returns the Thread ID the bot

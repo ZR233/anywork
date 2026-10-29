@@ -48,6 +48,14 @@ packages:
       relative: true
     source: path
     version: "0.1.0"
+  archive:
+    dependency: transitive
+    description:
+      name: archive
+      sha256: "0d58d1fa1fddf6588251ccf2819f3fb3b6d0452c1b2813ac7413a05592bfbefe"
+      url: "https://pub.dev"
+    source: hosted
+    version: "4.5.2"
   args:
     dependency: transitive
     description:
@@ -64,6 +72,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "2.13.1"
+  blurhash_dart:
+    dependency: transitive
+    description:
+      name: blurhash_dart
+      sha256: "43955b6c2e30a7d440028d1af0fa185852f3534b795cc6eb81fbf397b464409f"
+      url: "https://pub.dev"
+    source: hosted
+    version: "1.2.1"
   boolean_selector:
     dependency: transitive
     description:
@@ -432,6 +448,38 @@ packages:
     description: flutter
     source: sdk
     version: "0.0.0"
+  flyer_chat_file_message:
+    dependency: "direct main"
+    description:
+      name: flyer_chat_file_message
+      sha256: ab3aed799a03f47d741b7272ac035aaad003532ff30a96c2f19a61794647011a
+      url: "https://pub.dev"
+    source: hosted
+    version: "2.4.1"
+  flyer_chat_image_message:
+    dependency: "direct main"
+    description:
+      name: flyer_chat_image_message
+      sha256: "54f6eaf08652d73f54346c9d2ae7192fa12dd43fa8d5975f3f7c78819a356002"
+      url: "https://pub.dev"
+    source: hosted
+    version: "2.3.1"
+  flyer_chat_text_message:
+    dependency: "direct main"
+    description:
+      name: flyer_chat_text_message
+      sha256: "4bc77431304d39bd2953d766d506576d063fbbac0fd70c7c3c42a096e8ec2f04"
+      url: "https://pub.dev"
+    source: hosted
+    version: "2.6.1"
+  flyer_chat_text_stream_message:
+    dependency: "direct main"
+    description:
+      name: flyer_chat_text_stream_message
+      sha256: "0954f3737ec8bed5ef26c8946c1e205488cc3e82db97f1496da500c74d947c00"
+      url: "https://pub.dev"
+    source: hosted
+    version: "2.3.1"
   freezed:
     dependency: "direct dev"
     description:
@@ -533,6 +581,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "2.10.1+1"
+  image:
+    dependency: transitive
+    description:
+      name: image
+      sha256: "89ed75b2f8231fe676808c5564f9590d728024ded7ac782a7ed8474f1c95b72a"
+      url: "https://pub.dev"
+    source: hosted
+    version: "4.12.0"
   intl:
     dependency: "direct main"
     description:
@@ -845,6 +901,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "1.5.3"
+  posix:
+    dependency: transitive
+    description:
+      name: posix
+      sha256: "6312deb534ce3812a1b454143740ffe721a17dc3a33bfc978f3a6d7bc5833edf"
+      url: "https://pub.dev"
+    source: hosted
+    version: "6.5.3"
   pretty_qr_code:
     dependency: "direct main"
     description:
@@ -973,6 +1037,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "3.0.0"
+  shimmer:
+    dependency: transitive
+    description:
+      name: shimmer
+      sha256: "5f88c883a22e9f9f299e5ba0e4f7e6054857224976a5d9f839d4ebdc94a14ac9"
+      url: "https://pub.dev"
+    source: hosted
+    version: "3.0.0"
   sky_engine:
     dependency: transitive
     description: flutter
@@ -1074,6 +1146,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "0.7.12"
+  thumbhash:
+    dependency: transitive
+    description:
+      name: thumbhash
+      sha256: "5f6d31c5279ca0b5caa81ec10aae8dcaab098d82cb699ea66ada4ed09c794a37"
+      url: "https://pub.dev"
+    source: hosted
+    version: "0.1.0+1"
   tray_manager:
     dependency: "direct main"
     description:

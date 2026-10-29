@@ -4,33 +4,30 @@
 //! 模块只把已交付的 typed 结果逐字段转成 FRB 可生成类型：不复制差量逻辑、不持有第二份内容索引，也不
 //! 自己重建基线。
 
+mod descriptor;
+
 use pl_protocol::{
     ThreadContentField, ThreadUserInputFieldPart, TimelineChange, TimelineDetailChunk,
-    TimelineDetailQuery, TimelineDetailRef, TimelineFieldChange, TimelineFieldUpdate, TimelineItem,
+    TimelineDetailQuery, TimelineFieldChange, TimelineFieldUpdate, TimelineItem,
     TimelineItemSource, TimelineLifecycle, TimelinePage, TimelinePageQuery, TimelinePriority,
     TimelineRecoveryNotice, TimelineResyncReason, TimelineTailBaseline, TimelineTailUpdate,
 };
 
-use crate::api::studio::convert::thread_stream::bridge_chat_thread_item;
 use crate::api::studio::types::{
-    BridgeContentField, BridgeError, BridgeThreadUserInputFieldPart, BridgeTimelineBaseline,
+    BridgeContentField, BridgeThreadUserInputFieldPart, BridgeTimelineBaseline,
     BridgeTimelineChange, BridgeTimelineDetailChunk, BridgeTimelineDetailQuery,
-    BridgeTimelineDetailRef, BridgeTimelineFieldChange, BridgeTimelineFieldUpdate,
+    BridgeTimelineFieldChange, BridgeTimelineFieldPreview, BridgeTimelineFieldUpdate,
     BridgeTimelineItem, BridgeTimelineItemSource, BridgeTimelineLifecycle, BridgeTimelinePage,
     BridgeTimelinePriority, BridgeTimelineRecoveryNotice, BridgeTimelineResyncReason,
     BridgeTimelineUpdate,
 };
 
-pub(crate) fn page(value: TimelinePage) -> Result<BridgeTimelinePage, BridgeError> {
-    Ok(BridgeTimelinePage {
-        items: value
-            .items
-            .into_iter()
-            .map(item)
-            .collect::<Result<_, _>>()?,
+pub(crate) fn page(value: TimelinePage) -> BridgeTimelinePage {
+    BridgeTimelinePage {
+        items: value.items.into_iter().map(item).collect(),
         before: value.before,
         has_older: value.has_older,
-    })
+    }
 }
 
 /// FRB 页请求 → 共享页查询。
@@ -38,22 +35,18 @@ pub(crate) fn page_query(before: Option<String>, limit: Option<u32>) -> Timeline
     TimelinePageQuery { before, limit }
 }
 
-pub(crate) fn baseline(value: TimelineTailBaseline) -> Result<BridgeTimelineBaseline, BridgeError> {
-    Ok(BridgeTimelineBaseline {
+pub(crate) fn baseline(value: TimelineTailBaseline) -> BridgeTimelineBaseline {
+    BridgeTimelineBaseline {
         subscription_id: value.subscription_id,
         version: value.version,
-        items: value
-            .items
-            .into_iter()
-            .map(item)
-            .collect::<Result<_, _>>()?,
+        items: value.items.into_iter().map(item).collect(),
         before: value.before,
         has_older: value.has_older,
-    })
+    }
 }
 
-pub(crate) fn update(value: TimelineTailUpdate) -> Result<BridgeTimelineUpdate, BridgeError> {
-    Ok(match value {
+pub(crate) fn update(value: TimelineTailUpdate) -> BridgeTimelineUpdate {
+    match value {
         TimelineTailUpdate::Patch {
             subscription_id,
             from,
@@ -64,7 +57,7 @@ pub(crate) fn update(value: TimelineTailUpdate) -> Result<BridgeTimelineUpdate, 
             subscription_id,
             from,
             to,
-            changes: changes.into_iter().map(change).collect::<Result<_, _>>()?,
+            changes: changes.into_iter().map(change).collect(),
             priority: priority_dto(priority),
         },
         TimelineTailUpdate::Resync {
@@ -74,9 +67,9 @@ pub(crate) fn update(value: TimelineTailUpdate) -> Result<BridgeTimelineUpdate, 
         } => BridgeTimelineUpdate::Resync {
             subscription_id,
             reason: resync_reason(reason),
-            baseline: baseline(value)?,
+            baseline: baseline(value),
         },
-    })
+    }
 }
 
 pub(crate) fn detail_query(value: BridgeTimelineDetailQuery) -> TimelineDetailQuery {
@@ -88,22 +81,22 @@ pub(crate) fn detail_query(value: BridgeTimelineDetailQuery) -> TimelineDetailQu
     }
 }
 
-pub(crate) fn detail_chunk(
-    value: TimelineDetailChunk,
-) -> Result<BridgeTimelineDetailChunk, BridgeError> {
-    Ok(BridgeTimelineDetailChunk {
+pub(crate) fn detail_chunk(value: TimelineDetailChunk) -> BridgeTimelineDetailChunk {
+    BridgeTimelineDetailChunk {
         item_id: value.item_id,
         field: content_field(value.field),
         revision: value.revision,
         text: value.text,
         total_bytes: value.total_bytes,
         continuation: value.continuation,
-    })
+    }
 }
 
-fn item(value: TimelineItem) -> Result<BridgeTimelineItem, BridgeError> {
-    Ok(BridgeTimelineItem {
-        item: bridge_chat_thread_item(value.preview)?,
+fn item(value: TimelineItem) -> BridgeTimelineItem {
+    BridgeTimelineItem {
+        header: descriptor::header(value.header),
+        revision: value.revision,
+        descriptor: descriptor::descriptor(value.descriptor),
         source: match value.source {
             TimelineItemSource::Content => BridgeTimelineItemSource::Content,
             TimelineItemSource::ModelRecovery { attempt_id, notice } => {
@@ -118,48 +111,44 @@ fn item(value: TimelineItem) -> Result<BridgeTimelineItem, BridgeError> {
         },
         saved: value.saved,
         lifecycle: lifecycle_dto(value.lifecycle),
-        omitted_bytes: value.omitted_bytes,
-        details: value.details.into_iter().map(detail_ref).collect(),
-    })
-}
-
-fn detail_ref(value: TimelineDetailRef) -> BridgeTimelineDetailRef {
-    BridgeTimelineDetailRef {
-        field: content_field(value.field),
-        revision: value.revision,
-        total_bytes: value.total_bytes,
-        preview_bytes: value.preview_bytes,
+        fields: value
+            .fields
+            .into_iter()
+            .map(|field| BridgeTimelineFieldPreview {
+                field: content_field(field.field),
+                text: field.text,
+                total_bytes: field.total_bytes,
+            })
+            .collect(),
     }
 }
 
-fn change(value: TimelineChange) -> Result<BridgeTimelineChange, BridgeError> {
-    Ok(match value {
+fn change(value: TimelineChange) -> BridgeTimelineChange {
+    match value {
         TimelineChange::Add { item: value } => BridgeTimelineChange::Add {
-            item: Box::new(item(*value)?),
+            item: Box::new(item(*value)),
         },
         TimelineChange::Remove { item_id } => BridgeTimelineChange::Remove { item_id },
         TimelineChange::UpdateItem {
             item_id,
             expected_revision,
             revision,
-            omitted_bytes,
             saved,
             lifecycle,
-            item_shell,
+            header,
+            descriptor,
             fields,
         } => BridgeTimelineChange::UpdateItem {
             item_id,
             expected_revision,
             revision,
-            omitted_bytes,
             saved,
             lifecycle: lifecycle_dto(lifecycle),
-            item_shell: item_shell
-                .map(|shell| bridge_chat_thread_item(*shell).map(Box::new))
-                .transpose()?,
+            header: header.map(self::descriptor::header),
+            descriptor: descriptor.map(|value| Box::new(self::descriptor::descriptor(*value))),
             fields: fields.into_iter().map(field_update).collect(),
         },
-    })
+    }
 }
 
 fn field_update(value: TimelineFieldUpdate) -> BridgeTimelineFieldUpdate {

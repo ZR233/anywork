@@ -23,7 +23,7 @@ pub(crate) fn from_snapshot(
 /// Decodes one `pl.studio.workspace` payload as received from a saved extension record.
 pub(crate) fn from_payload(payload: &OpaquePayload) -> Result<AgentWorkspaceAssignmentSnapshot> {
     ensure!(
-        payload.format() == FORMAT && payload.version() == 2,
+        payload.format() == FORMAT && payload.version() == 3,
         "unsupported workspace receipt encoding; explicit recovery migration is required"
     );
     Ok(serde_json::from_str(payload.content())?)
@@ -32,5 +32,5 @@ pub(crate) fn from_payload(payload: &OpaquePayload) -> Result<AgentWorkspaceAssi
 /// Encodes an assignment into the durable `pl.studio.workspace` payload form.
 pub(crate) fn to_payload(assignment: &AgentWorkspaceAssignmentSnapshot) -> Result<OpaquePayload> {
     let content = serde_json::to_string(assignment)?;
-    Ok(OpaquePayload::new(FORMAT, 2, content)?)
+    Ok(OpaquePayload::new(FORMAT, 3, content)?)
 }

@@ -8,9 +8,12 @@ ThreadStreamFrame _threadStreamFrameFromFrb(
         ThreadSnapshotFrame(workspace: _threadWorkspaceFromSnapshot(snapshot)),
     notification: (envelope) {
       final threadId = envelope.threadId;
-      final revision = envelope.revision.toInt();
-      final epoch = envelope.epoch.toInt();
-      final baseRevision = envelope.baseRevision.toInt();
+      final revision = _exactTimelineInt(envelope.revision, 'state counter');
+      final epoch = _exactTimelineInt(envelope.epoch, 'state counter');
+      final baseRevision = _exactTimelineInt(
+        envelope.baseRevision,
+        'state counter',
+      );
       return envelope.notification.when(
         turnStarted: (turn) => ThreadNotificationFrame(
           threadId: threadId,
@@ -75,7 +78,7 @@ ThreadStreamFrame _threadStreamFrameFromFrb(
         ),
         lagged: (dropped) => ThreadResyncRequiredFrame(
           threadId: threadId,
-          dropped: dropped.toInt(),
+          dropped: _exactTimelineInt(dropped, 'state counter'),
           epoch: epoch,
         ),
       );
@@ -88,7 +91,7 @@ ThreadStreamFrame _threadStreamFrameFromFrb(
 ThreadWorkspace _threadWorkspaceFromSnapshot(frb.BridgeThreadSnapshot value) {
   return ThreadWorkspace(
     thread: _threadFromFrb(value.thread),
-    revision: value.revision.toInt(),
+    revision: _exactTimelineInt(value.revision, 'state counter'),
     interactions: value.interactions
         .where(_interactionIsPending)
         .map(_interactionFromFrb)
@@ -115,7 +118,7 @@ ThreadActivityView _threadActivityFromFrb(
   return ThreadActivityView(
     threadId: value.threadId,
     identity: value.identity,
-    revision: value.revision.toInt(),
+    revision: _exactTimelineInt(value.revision, 'state counter'),
     turnId: value.turnId,
     inputId: value.inputId,
     attemptId: value.attemptId,
@@ -177,7 +180,7 @@ ThreadActivityToolEntry _activityToolFromFrb(
         ThreadActivityArgumentsKind.unavailable,
     },
     state: _activityToolStateFromFrb(value.state),
-    ordinal: value.ordinal?.toInt(),
+    ordinal: _exactNullableTimelineInt(value.ordinal, 'state counter'),
     startedAt: _frbNullableInt(value.startedAt),
     wait: value.wait == null ? null : _waitFromFrb(value.wait!),
   );
@@ -216,9 +219,15 @@ ThreadStorageStateView _threadStorageFromFrb(
         ThreadHistoryFault.blobFailed,
       null => null,
     },
-    faultGeneration: value.faultGeneration.toInt(),
-    acceptedSequence: value.acceptedSequence?.toInt(),
-    durableSequence: value.durableSequence?.toInt(),
+    faultGeneration: _exactTimelineInt(value.faultGeneration, 'state counter'),
+    acceptedSequence: _exactNullableTimelineInt(
+      value.acceptedSequence,
+      'state counter',
+    ),
+    durableSequence: _exactNullableTimelineInt(
+      value.durableSequence,
+      'state counter',
+    ),
     execution: switch (value.execution) {
       frb_activity.BridgeThreadStorageExecution.running =>
         ThreadStorageExecution.running,
@@ -265,7 +274,7 @@ ThreadActivityContentPart _activityContentPartFromFrb(
 ) {
   return ThreadActivityContentPart(
     itemId: value.itemId,
-    revision: value.revision?.toInt(),
+    revision: _exactNullableTimelineInt(value.revision, 'state counter'),
     complete: value.complete,
     text: value.text,
   );
@@ -281,7 +290,7 @@ ThreadActivityToolDetail _activityToolDetailFromFrb(
     state: _activityToolStateFromFrb(value.state),
     arguments: value.arguments,
     output: value.output,
-    ordinal: value.ordinal?.toInt(),
+    ordinal: _exactNullableTimelineInt(value.ordinal, 'state counter'),
     startedAt: _frbNullableInt(value.startedAt),
     wait: value.wait == null ? null : _waitFromFrb(value.wait!),
   );
@@ -327,138 +336,6 @@ StudioThread _threadFromFrb(frb.BridgeThread value) {
   );
 }
 
-ThreadItemView _threadItemFromFrb(
-  frb_item.BridgeThreadItem value, {
-  ThreadContextDisposition contextDisposition = ThreadContextDisposition.active,
-  bool exactNumbers = false,
-}) {
-  return ThreadItemView(
-    id: value.id,
-    threadId: value.threadId,
-    turnId: value.turnId,
-    ordinal: exactNumbers
-        ? _exactTimelineInt(value.ordinal, 'item ordinal')
-        : value.ordinal.toInt(),
-    revision: exactNumbers
-        ? _exactTimelineInt(value.revision, 'item revision')
-        : value.revision.toInt(),
-    createdAt: _dateFromUnix(value.createdAt),
-    updatedAt: _dateFromUnix(value.updatedAt),
-    state: _threadItemStateFromFrb(value.state),
-    contextDisposition: contextDisposition,
-  );
-}
-
-ThreadItemStateView _threadItemStateFromFrb(
-  frb_item.BridgeThreadItemState value,
-) {
-  return value.when(
-    text: (channel, text, attachments, lifecycle) => ThreadTextItemStateView(
-      channel: switch (channel) {
-        frb_item.BridgeThreadTextChannel.user => ThreadTextChannel.user,
-        frb_item.BridgeThreadTextChannel.parentAgent =>
-          ThreadTextChannel.parentAgent,
-        frb_item.BridgeThreadTextChannel.commentary =>
-          ThreadTextChannel.commentary,
-        frb_item.BridgeThreadTextChannel.final_ =>
-          ThreadTextChannel.finalAnswer,
-      },
-      text: text,
-      attachments: attachments.map(_attachmentFromFrb).toList(),
-      lifecycle: _contentLifecycleFromFrb(lifecycle),
-    ),
-    thinking: (summary, content, lifecycle) => ThreadThinkingItemStateView(
-      summary: summary,
-      content: content,
-      lifecycle: _contentLifecycleFromFrb(lifecycle),
-    ),
-    tool: (invocation, state, userInput, wait) => ThreadToolItemStateView(
-      invocation: ThreadToolInvocationView(
-        taskId: invocation.taskId,
-        toolCallId: invocation.toolCallId,
-        callId: invocation.callId,
-        providerItemId: invocation.providerItemId,
-        name: invocation.name,
-        arguments: invocation.arguments,
-        workingDirectory: invocation.workingDirectory,
-      ),
-      lifecycle: _toolLifecycleFromFrb(state),
-      userInput: userInput == null ? null : _userInputFromFrb(userInput),
-      wait: wait == null ? null : _waitFromFrb(wait),
-    ),
-    agent: (identity, state) => ThreadAgentItemStateView(
-      identity: ThreadAgentIdentityView(
-        id: identity.id,
-        path: identity.path,
-        parentPath: identity.parentPath,
-        role: identity.role,
-        task: identity.task,
-        depth: identity.depth,
-      ),
-      lifecycle: _agentLifecycleFromFrb(state),
-    ),
-    turn: (state, inputId) =>
-        ThreadTurnItemStateView(_turnStateFromFrb(state), inputId: inputId),
-    inference: (inferenceId, model, state) => ThreadInferenceItemStateView(
-      inferenceId: inferenceId,
-      model: model,
-      lifecycle: _inferenceLifecycleFromFrb(state),
-    ),
-    skill: (name, source, providerId, resourceBase, cause, activatedAt) =>
-        ThreadSkillItemStateView(
-          name: name,
-          source: source,
-          providerId: providerId,
-          resourceBase: resourceBase.when(
-            directory: (path) =>
-                SkillResourceBaseView(SkillResourceBaseKind.directory, path),
-            url: (url) => SkillResourceBaseView(SkillResourceBaseKind.url, url),
-            opaque: (description) => SkillResourceBaseView(
-              SkillResourceBaseKind.opaque,
-              description,
-            ),
-          ),
-          cause: cause.when(
-            tool: (toolCallId) => SkillActivationCauseView(
-              SkillActivationCauseKind.tool,
-              toolCallId,
-            ),
-            userGesture: (invocationId) => SkillActivationCauseView(
-              SkillActivationCauseKind.userGesture,
-              invocationId,
-            ),
-          ),
-          activatedAt: _dateFromUnix(activatedAt),
-        ),
-    file: (path, mediaType, completedAt) =>
-        ThreadFileItemStateView(path, mediaType, _dateFromUnix(completedAt)),
-    raw: (origin, payloads, notice, recordedAt) => ThreadRawItemStateView(
-      payloads
-          .map(
-            (payload) => RawHistoryPayload(
-              payload.format,
-              payload.version,
-              payload.content,
-            ),
-          )
-          .toList(),
-      notice,
-      _dateFromUnix(recordedAt),
-      origin: switch (origin) {
-        frb_item.BridgeRawItemOrigin.stored => ThreadRawItemOrigin.stored,
-        frb_item.BridgeRawItemOrigin.runtimeControl =>
-          ThreadRawItemOrigin.runtimeControl,
-      },
-    ),
-    contextCompaction: (beforeTokens, afterTokens, compactedAt) =>
-        ThreadContextCompactionItemStateView(
-          beforeTokens?.toInt(),
-          afterTokens?.toInt(),
-          _dateFromUnix(compactedAt),
-        ),
-  );
-}
-
 ThreadWaitPresentationView _waitFromFrb(
   frb_item.BridgeThreadWaitPresentation value,
 ) {
@@ -487,10 +364,11 @@ ThreadWaitPresentationView _waitFromFrb(
               },
             ),
         ],
-        timeoutMs: timeoutMs.toInt(),
+        timeoutMs: _exactTimelineInt(timeoutMs, 'state counter'),
       ),
-      timer: (durationMs) =>
-          ThreadWaitTimerIntentView(durationMs: durationMs.toInt()),
+      timer: (durationMs) => ThreadWaitTimerIntentView(
+        durationMs: _exactTimelineInt(durationMs, 'state counter'),
+      ),
     ),
     state: switch (value.state) {
       frb_item.BridgeThreadWaitState.waiting => ThreadWaitStateView.waiting,
@@ -503,44 +381,6 @@ ThreadWaitPresentationView _waitFromFrb(
         ThreadWaitStateView.interrupted,
     },
     messagesReady: value.messagesReady,
-  );
-}
-
-/// 普通问答投影 → domain typed 视图：问题顺序、权威状态与脱敏标记原样过桥。
-ThreadToolUserInputView _userInputFromFrb(
-  frb_item.BridgeThreadUserInput value,
-) {
-  return ThreadToolUserInputView(
-    interactionId: value.interactionId,
-    questions: [
-      for (final question in value.questions)
-        UserQuestionView(
-          id: question.id,
-          header: question.header,
-          question: question.question,
-          isOther: question.isOther,
-          isSecret: question.isSecret,
-          options: [
-            for (final option in question.options)
-              UserQuestionOptionView(
-                label: option.label,
-                description: option.description,
-              ),
-          ],
-        ),
-    ],
-    state: value.state.when(
-      pending: () => const PendingThreadToolUserInputView(),
-      resolved: (answers) => ResolvedThreadToolUserInputView([
-        for (final answer in answers)
-          ThreadUserInputAnswerView(
-            questionId: answer.questionId,
-            answers: answer.answers,
-            redacted: answer.redacted,
-          ),
-      ]),
-      cancelled: () => const CancelledThreadToolUserInputView(),
-    ),
   );
 }
 
@@ -573,57 +413,7 @@ ThreadAttachmentView _attachmentFromFrb(frb_item.BridgeThreadAttachment value) {
     filename: value.filename,
     width: value.width,
     height: value.height,
-    byteSize: value.byteSize.toInt(),
-  );
-}
-
-ThreadToolLifecycleView _toolLifecycleFromFrb(
-  frb_item.BridgeThreadToolState value,
-) {
-  return value.when(
-    queued: () => const QueuedThreadToolView(),
-    cancelling: (streamedOutput) => CancellingThreadToolView(streamedOutput),
-    interrupted: (interruptedAt, reason) =>
-        InterruptedThreadToolView(_dateFromUnix(interruptedAt), reason),
-    started: () => const StartedThreadToolView(),
-    streaming: () => const StreamingThreadToolView(),
-    awaitingApproval: () => const AwaitingApprovalThreadToolView(),
-    approved: () => const ApprovedThreadToolView(),
-    running: (streamedOutput) => RunningThreadToolView(streamedOutput),
-    succeeded: (completedAt, output) => SucceededThreadToolView(
-      _dateFromUnix(completedAt),
-      _toolOutputFromFrb(output),
-    ),
-    failed: (failedAt, failure, output) => FailedThreadToolView(
-      _dateFromUnix(failedAt),
-      ThreadToolFailureView(
-        kind: switch (failure.kind) {
-          frb_item.BridgeThreadToolFailureKind.execution =>
-            ThreadToolFailureKindView.execution,
-          frb_item.BridgeThreadToolFailureKind.timedOut =>
-            ThreadToolFailureKindView.timedOut,
-          frb_item.BridgeThreadToolFailureKind.budgetLimited =>
-            ThreadToolFailureKindView.budgetLimited,
-        },
-        message: failure.message,
-      ),
-      output == null ? null : _toolOutputFromFrb(output),
-    ),
-    denied: (deniedAt, reason) =>
-        DeniedThreadToolView(_dateFromUnix(deniedAt), reason),
-    cancelled: (cancelledAt, reason) =>
-        CancelledThreadToolView(_dateFromUnix(cancelledAt), reason),
-  );
-}
-
-ThreadToolOutputView _toolOutputFromFrb(frb_item.BridgeThreadToolOutput value) {
-  return ThreadToolOutputView(
-    result: value.result,
-    attachments: value.attachments.map(_attachmentFromFrb).toList(),
-    outputArtifacts: value.outputArtifactsJson
-        .map(JsonLeafDecoder.decode)
-        .toList(),
-    exitCode: value.exitCode,
+    byteSize: _exactTimelineInt(value.byteSize, 'state counter'),
   );
 }
 
@@ -652,10 +442,16 @@ ThreadInferenceLifecycleView _inferenceLifecycleFromFrb(
     completed: (completedAt, usage) => CompletedThreadInferenceView(
       _dateFromUnix(completedAt),
       ThreadInferenceUsageView(
-        promptTokens: usage.promptTokens.toInt(),
-        completionTokens: usage.completionTokens.toInt(),
-        cachedPromptTokens: usage.cachedPromptTokens.toInt(),
-        totalTokens: usage.totalTokens.toInt(),
+        promptTokens: _exactTimelineInt(usage.promptTokens, 'state counter'),
+        completionTokens: _exactTimelineInt(
+          usage.completionTokens,
+          'state counter',
+        ),
+        cachedPromptTokens: _exactTimelineInt(
+          usage.cachedPromptTokens,
+          'state counter',
+        ),
+        totalTokens: _exactTimelineInt(usage.totalTokens, 'state counter'),
       ),
     ),
     failed: (failedAt, error) =>
@@ -670,7 +466,7 @@ StudioTurnView _turnFromFrb(frb.BridgeTurn value) {
     inputId: value.inputId,
     turnId: value.id,
     threadId: value.threadId,
-    revision: value.revision.toInt(),
+    revision: _exactTimelineInt(value.revision, 'state counter'),
     state: _turnStateFromFrb(value.state),
     updatedAt: _dateFromUnix(value.updatedAt),
   );
@@ -721,7 +517,10 @@ StudioTurnState _turnStateFromFrb(frb.BridgeTurnState value) {
               modelSteps: limit.usage.modelSteps,
               toolCalls: limit.usage.toolCalls,
               waitCalls: limit.usage.waitCalls,
-              elapsedMs: limit.usage.elapsedMs.toInt(),
+              elapsedMs: _exactTimelineInt(
+                limit.usage.elapsedMs,
+                'state counter',
+              ),
             ),
           ),
           rollover: rollover.when(
@@ -756,7 +555,10 @@ StudioTurnFailureView _turnFailureFromFrb(frb.BridgeTurnFailureDto value) {
     httpStatus: value.httpStatus,
     message: value.message,
     retryable: value.retryable,
-    retryAfterMs: value.retryAfterMs?.toInt(),
+    retryAfterMs: _exactNullableTimelineInt(
+      value.retryAfterMs,
+      'state counter',
+    ),
   );
 }
 
@@ -777,7 +579,10 @@ ThreadRuntimeView _threadRuntimeFromFrb(frb.BridgeThreadRuntimeSnapshot value) {
             accountId: value.modelRoute!.accountId,
             modelId: value.modelRoute!.modelId,
             effort: value.modelRoute!.effort,
-            revision: value.modelRoute!.revision.toInt(),
+            revision: _exactTimelineInt(
+              value.modelRoute!.revision,
+              'state counter',
+            ),
             available: value.modelRoute!.available,
             unavailableReason: value.modelRoute!.unavailableReason,
           ),
@@ -786,29 +591,66 @@ ThreadRuntimeView _threadRuntimeFromFrb(frb.BridgeThreadRuntimeSnapshot value) {
         : ThreadRuntimeLiveUsageView(
             turnId: value.liveUsage!.turnId,
             attemptId: value.liveUsage!.attemptId,
-            completionTokens: value.liveUsage!.completionTokens?.toInt(),
-            responseMillis: value.liveUsage!.responseMillis?.toInt(),
-            latestContextTokens: value.liveUsage!.latestContextTokens?.toInt(),
+            completionTokens: _exactNullableTimelineInt(
+              value.liveUsage!.completionTokens,
+              'state counter',
+            ),
+            responseMillis: _exactNullableTimelineInt(
+              value.liveUsage!.responseMillis,
+              'state counter',
+            ),
+            latestContextTokens: _exactNullableTimelineInt(
+              value.liveUsage!.latestContextTokens,
+              'state counter',
+            ),
             state:
                 value.liveUsage!.state == frb.BridgeThreadRuntimeUsageState.live
                 ? ThreadRuntimeUsageState.live
                 : ThreadRuntimeUsageState.authoritative,
-            observationSequence: value.liveUsage!.observationSequence.toInt(),
+            observationSequence: _exactTimelineInt(
+              value.liveUsage!.observationSequence,
+              'state counter',
+            ),
           ),
-    contextTokens: usage.latestContextTokens.toInt(),
-    contextWindow: usage.contextWindow?.toInt() ?? 0,
-    maxContextWindow: usage.maxContextWindow?.toInt(),
-    autoCompactLimit: usage.autoCompactLimit?.toInt(),
-    totalTokens: usage.totalTokens.toInt(),
-    promptTokens: usage.promptTokens.toInt(),
-    completionTokens: usage.completionTokens.toInt(),
-    cachedPromptTokens: usage.cachedPromptTokens.toInt(),
-    cacheWriteTokens: usage.cacheWriteTokens.toInt(),
-    reasoningTokens: usage.reasoningTokens.toInt(),
-    inferenceCount: usage.inferenceCount.toInt(),
+    contextTokens: _exactTimelineInt(
+      usage.latestContextTokens,
+      'state counter',
+    ),
+    contextWindow:
+        _exactNullableTimelineInt(usage.contextWindow, 'state counter') ?? 0,
+    maxContextWindow: _exactNullableTimelineInt(
+      usage.maxContextWindow,
+      'state counter',
+    ),
+    autoCompactLimit: _exactNullableTimelineInt(
+      usage.autoCompactLimit,
+      'state counter',
+    ),
+    totalTokens: _exactTimelineInt(usage.totalTokens, 'state counter'),
+    promptTokens: _exactTimelineInt(usage.promptTokens, 'state counter'),
+    completionTokens: _exactTimelineInt(
+      usage.completionTokens,
+      'state counter',
+    ),
+    cachedPromptTokens: _exactTimelineInt(
+      usage.cachedPromptTokens,
+      'state counter',
+    ),
+    cacheWriteTokens: _exactTimelineInt(
+      usage.cacheWriteTokens,
+      'state counter',
+    ),
+    reasoningTokens: _exactTimelineInt(usage.reasoningTokens, 'state counter'),
+    inferenceCount: _exactTimelineInt(usage.inferenceCount, 'state counter'),
     cacheUsage: CacheUsageView(
-      inputTokens: usage.cacheUsage.inputTokens.toInt(),
-      cacheReadTokens: usage.cacheUsage.cacheReadTokens.toInt(),
+      inputTokens: _exactTimelineInt(
+        usage.cacheUsage.inputTokens,
+        'state counter',
+      ),
+      cacheReadTokens: _exactTimelineInt(
+        usage.cacheUsage.cacheReadTokens,
+        'state counter',
+      ),
       hitRate: usage.cacheUsage.hitRate,
       hasIncompleteUsage: usage.cacheUsage.hasIncompleteUsage,
     ),
@@ -821,11 +663,20 @@ ThreadRuntimeView _threadRuntimeFromFrb(frb.BridgeThreadRuntimeSnapshot value) {
         .toList(growable: false),
     hasUnpricedUsage: usage.hasUnpricedUsage,
     hasIncompleteUsage: usage.hasIncompleteUsage,
-    promptGeneration: usage.promptGeneration?.toInt(),
+    promptGeneration: _exactNullableTimelineInt(
+      usage.promptGeneration,
+      'state counter',
+    ),
     promptCachePolicy: usage.promptCachePolicy,
     prefixChangedReason: usage.prefixChangedReason?.name,
-    turnCompletionTokens: value.turnCompletionTokens.toInt(),
-    turnResponseMillis: value.turnResponseMillis.toInt(),
+    turnCompletionTokens: _exactTimelineInt(
+      value.turnCompletionTokens,
+      'state counter',
+    ),
+    turnResponseMillis: _exactTimelineInt(
+      value.turnResponseMillis,
+      'state counter',
+    ),
     costLabel: costLabel,
     activeSkills: value.activeSkills,
     activeMcpServers: value.activeMcpServers,
@@ -867,7 +718,7 @@ ContinuationView _continuationFromFrb(
 PlanRuntimeView _planRuntimeFromFrb(frb.BridgePlanRuntimeSnapshot value) {
   final document = value.document;
   return PlanRuntimeView(
-    revision: value.revision.toInt(),
+    revision: _exactTimelineInt(value.revision, 'state counter'),
     state: switch (value.state) {
       frb.BridgePlanPhase.drafting => PlanRuntimePhase.drafting,
       frb.BridgePlanPhase.awaitingConfirmation =>
@@ -879,7 +730,7 @@ PlanRuntimeView _planRuntimeFromFrb(frb.BridgePlanRuntimeSnapshot value) {
     document: document == null
         ? null
         : PlanDocumentView(
-            version: document.version.toInt(),
+            version: _exactTimelineInt(document.version, 'state counter'),
             markdown: document.markdown,
             contentHash: document.contentHash,
           ),
@@ -892,14 +743,17 @@ WorkflowRuntimeView _workflowRuntimeFromFrb(
 ) {
   final run = value.currentRun;
   return WorkflowRuntimeView(
-    revision: value.revision.toInt(),
+    revision: _exactTimelineInt(value.revision, 'state counter'),
     currentRun: run == null
         ? null
         : WorkflowRunView(
             lineageId: run.lineageId,
             runId: run.runId,
             modeId: run.modeId,
-            graphRevision: run.graphRevision.toInt(),
+            graphRevision: _exactTimelineInt(
+              run.graphRevision,
+              'state counter',
+            ),
             graphHash: run.graphHash,
             currentStateId: run.currentStateId,
             terminal: run.lifecycle == frb.BridgeWorkflowRunLifecycle.terminal,
@@ -956,7 +810,7 @@ PendingInteraction _interactionFromFrb(frb.BridgeInteractionRequest value) {
           kind: InteractionKind.toolApproval,
           payload: ToolApprovalInteractionPayload(
             toolName: name,
-            arguments: JsonLeafDecoder.decode(argumentsJson),
+            arguments: jsonDecode(argumentsJson),
             workingDirectory: workingDirectory ?? '',
             parentAgentId: parentAgentId,
           ) as InteractionPayload,
@@ -970,7 +824,7 @@ PendingInteraction _interactionFromFrb(frb.BridgeInteractionRequest value) {
     title: _interactionTitle(mapped.kind, mapped.payload),
     body: _interactionBody(mapped.kind, mapped.payload),
     payload: mapped.payload,
-    revision: value.revision.toInt(),
+    revision: _exactTimelineInt(value.revision, 'state counter'),
   );
 }
 
@@ -1011,35 +865,6 @@ bool _interactionIsPending(frb.BridgeInteractionRequest value) {
   );
 }
 
-int _compareThreadItems(ThreadItemView left, ThreadItemView right) {
-  final ordinal = left.ordinal.compareTo(right.ordinal);
-  return ordinal != 0 ? ordinal : left.id.compareTo(right.id);
-}
-
-abstract final class JsonLeafDecoder {
-  static Object? decode(String json) {
-    try {
-      return jsonDecode(json);
-    } on FormatException catch (error) {
-      throw FormatException('Invalid typed bridge JSON leaf: ${error.message}');
-    }
-  }
-
-  static Map<String, Object?> decodeObject(String json) {
-    final value = decode(json);
-    if (value is Map<String, Object?>) return value;
-    if (value is Map) {
-      return value.map((key, value) => MapEntry(key.toString(), value));
-    }
-    throw const FormatException('Typed bridge JSON leaf must be an object');
-  }
-}
-
-/// 把任意错误统一包装成 typed [StudioFailure]。
-///
-/// 保留桥错误已有的 `code`/`message`/`correlationId`（含关闭路径）；已知变体通过穷尽
-/// switch 映射，未知桥变体不再触发 `values.byName` 抛出的 `ArgumentError`，非桥错误也
-/// 统一为 typed 失败而不是漏出未包装的分支。
 Object _studioFailure(Object error) {
   return switch (error) {
     // 已是领域错误：保持身份与堆栈，不二次包装。

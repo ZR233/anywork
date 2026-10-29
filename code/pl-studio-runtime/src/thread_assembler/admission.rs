@@ -3,24 +3,41 @@ use super::{StudioThreadAssembler, ThreadAssemblyError, agent_services::AgentSer
 use anyhow::{Context, Result};
 use pl_core::thread::{DeferredModelUpdatePrecondition, ThreadHandle};
 
+#[derive(Clone, Copy)]
+pub(super) enum WorkspaceAdmission<'a> {
+    Explicit,
+    VerifiedReview(&'a crate::studio::thread_factory::ReviewWorkspaceCheck),
+}
+
 impl AgentServices {
     pub(super) async fn prepare_model_admission(
         &self,
         id: &str,
         thread: &ThreadHandle,
+        workspace: WorkspaceAdmission<'_>,
     ) -> Result<()> {
         self.store.ensure_agent_execution_allowed(id).await?;
         let snapshot = thread.snapshot();
         let record = self.record(id).await?;
         self.recovery.ensure_thread_read_access(&record)?;
-        let resources = self
-            .factory
-            .verify_execution_workspace(
-                &record,
-                Some(&snapshot),
-                crate::studio::thread_factory::ExecutionWorkspaceCheck::Execute,
-            )
-            .await;
+        let resources = match workspace {
+            WorkspaceAdmission::Explicit => {
+                self.factory
+                    .verify_execution_workspace(
+                        &record,
+                        Some(&snapshot),
+                        crate::studio::thread_factory::ExecutionWorkspaceCheck::Execute,
+                    )
+                    .await
+            }
+            WorkspaceAdmission::VerifiedReview(proof) => {
+                anyhow::ensure!(
+                    proof.target() == id,
+                    "workspace proof belongs to another target"
+                );
+                proof.confirm().await.map_err(anyhow::Error::from)
+            }
+        };
         self.events.emit_recovery_state(
             self.recovery
                 .apply_execution_workspace_check(&record, resources.as_ref().err()),
@@ -83,6 +100,9 @@ impl AgentServices {
                 Vec::new(),
             )
             .await?;
+        if let WorkspaceAdmission::VerifiedReview(proof) = workspace {
+            proof.confirm().await?;
+        }
         Ok(())
     }
 }
@@ -100,7 +120,7 @@ impl StudioThreadAssembler {
         // before assembly, so every production path resolves its frozen selector against it.
         if let Some(services) = services {
             services
-                .prepare_model_admission(id, thread)
+                .prepare_model_admission(id, thread, WorkspaceAdmission::Explicit)
                 .await
                 .map_err(|source| ThreadAssemblyError::Resource {
                     operation: "admit Thread model",
@@ -108,5 +128,27 @@ impl StudioThreadAssembler {
                 })?;
         }
         Ok(())
+    }
+
+    pub(super) async fn prepare_verified_review_admission(
+        &self,
+        id: &str,
+        thread: &ThreadHandle,
+        proof: &crate::studio::thread_factory::ReviewWorkspaceCheck,
+    ) -> Result<(), ThreadAssemblyError> {
+        self.ensure_agent_admission_open(id)?;
+        let services = self
+            .0
+            .state()
+            .agent_services
+            .clone()
+            .ok_or(ThreadAssemblyError::Closed)?;
+        services
+            .prepare_model_admission(id, thread, WorkspaceAdmission::VerifiedReview(proof))
+            .await
+            .map_err(|source| ThreadAssemblyError::Resource {
+                operation: "admit frozen review input",
+                source: source.into(),
+            })
     }
 }

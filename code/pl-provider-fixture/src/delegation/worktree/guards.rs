@@ -112,10 +112,11 @@ pub(super) fn run(flow: &Flow<'_>, root: &str, environment: &Environment) -> Pro
         "guard-borrower",
         "reviewer",
         Some(&b),
-        &marker("read", &parent),
+        &review::message(&parent),
         Some(&child.spawn.agent_id),
     )?;
     let reviewer = observe_child(flow, "guard-borrower", root, reviewer)?;
+    review::require_target(&reviewer, &child)?;
     require(
         reviewer.git.path == child.git.path
             && reviewer.git.head == child.git.head

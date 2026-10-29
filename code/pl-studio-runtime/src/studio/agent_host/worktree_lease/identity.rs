@@ -27,11 +27,16 @@ impl WorkspaceEndpoint {
 }
 
 /// Only constructors supplied with OS/helper canonical results may create a new identity.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct WorkspaceIdentity {
     pub endpoint: WorkspaceEndpoint,
     pub root: String,
+}
+impl PartialEq for WorkspaceIdentity {
+    fn eq(&self, other: &Self) -> bool {
+        self.endpoint == other.endpoint && self.matches_root(&other.root)
+    }
 }
 impl WorkspaceIdentity {
     pub(crate) fn canonical(endpoint: WorkspaceEndpoint, root: String) -> Result<Self> {
@@ -56,12 +61,23 @@ impl WorkspaceIdentity {
         }
         Ok(Self { endpoint, root })
     }
+    /// Compares a frozen root without resolving or rebinding it. Only local paths use the host's
+    /// component semantics and safe Windows prefix simplification; SSH paths stay POSIX strings.
+    pub(crate) fn matches_root(&self, root: &str) -> bool {
+        match self.endpoint {
+            WorkspaceEndpoint::Local => {
+                dunce::simplified(Path::new(&self.root)) == dunce::simplified(Path::new(root))
+            }
+            WorkspaceEndpoint::Ssh { .. } => self.root == root,
+        }
+    }
     pub(crate) fn within(&self, outer: &Self) -> bool {
         if self.endpoint != outer.endpoint {
             return false;
         }
         match self.endpoint {
-            WorkspaceEndpoint::Local => Path::new(&self.root).starts_with(&outer.root),
+            WorkspaceEndpoint::Local => dunce::simplified(Path::new(&self.root))
+                .starts_with(dunce::simplified(Path::new(&outer.root))),
             WorkspaceEndpoint::Ssh { .. } => {
                 self.root == outer.root
                     || self

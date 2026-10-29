@@ -4,14 +4,14 @@ mod absent;
 mod admission;
 mod branch_journey;
 mod evidence;
-mod exec;
 mod git;
 mod guards;
 mod no_head;
 mod partial_close;
 mod reopen;
+mod review;
 
-use super::{Environment, SHARED_MODEL, flow::*, journeys::Decision, wire::*};
+use super::{Environment, SHARED_MODEL, exec, flow::*, journeys::Decision, wire::*};
 use anyhow::{Context, Result};
 use evidence::*;
 use git::{Action, Git};
@@ -137,6 +137,12 @@ pub(super) fn child_reply(flow: &Flow<'_>, prompt: &str) -> Progress<Option<Deci
         _ => return Err(anyhow::anyhow!("invalid worktree child action").into()),
     }
     let text = serde_json::to_string(&evidence).context("encode actual child Git evidence")?;
+    if prompt
+        .lines()
+        .any(|line| line == "WORKTREE_PHYSICAL_REVIEW:only")
+    {
+        return review::finish(flow, &evidence, &text).map(Some);
+    }
     Ok(Some(Decision::answer("worktree_child_evidence", &text)))
 }
 
@@ -169,13 +175,20 @@ fn child_report(flow: &Flow<'_>, label: &str, child: &Spawn) -> Progress<(Report
         )?;
         if let Some(report) = matching.into_iter().next() {
             report.completed()?;
-            let git: Git =
-                serde_json::from_str(&report.message).context("decode child-owned Git evidence")?;
+            let (checked, git) = if child.profile_id == "reviewer" {
+                let checked = flow.report(label, child, review::SUMMARY, 0)?;
+                let git = review::full_git(flow, label, child, &checked)?;
+                (checked, git)
+            } else {
+                let git = serde_json::from_str(&report.message)
+                    .context("decode child-owned Git evidence")?;
+                let checked = flow.report(label, child, &report.message, 0)?;
+                (checked, git)
+            };
             require(
                 git.kind == "worktreeEvidence",
                 "child report is not actual Git evidence",
             )?;
-            let checked = flow.report(label, child, &report.message, 0)?;
             return Ok((checked, git));
         }
         let _ = flow.raw(
@@ -270,10 +283,11 @@ fn baseline(flow: &Flow<'_>, root: &str, phase: &str) -> Progress<Evidence> {
         "baseline-reviewer",
         "reviewer",
         Some(&b),
-        &marker("read", &parent),
+        &review::message(&parent),
         Some(&child.spawn.agent_id),
     )?;
     let reviewer = observe_child(flow, "baseline-reviewer", root, reviewer)?;
+    review::require_target(&reviewer, &child)?;
     require(
         git::same_identity(&reviewer.git, child.checkout())
             && reviewer.git.head == child.checkout().head

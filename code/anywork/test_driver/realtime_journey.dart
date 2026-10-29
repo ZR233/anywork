@@ -6,6 +6,7 @@ import 'package:flutter_driver/flutter_driver.dart';
 import 'driver_observation.dart';
 import 'flutter_driver_session.dart';
 import 'timeline_observation.dart';
+import 'tool_probe.dart';
 import 'window_control.dart';
 
 /// Fully condition-driven realtime acceptance journey.
@@ -24,8 +25,8 @@ const _answers = <String, String>{
   'resume': 'realtime continued after cancel',
 };
 
-/// 本 journey 既定 account-error 输入：发送后的新用户消息正文必须逐字等于它。
-const _accountErrorPrompt = 'Realtime account error';
+/// 本 journey 既定 provider-error 输入：发送后的新用户消息正文必须逐字等于它。
+const _providerErrorPrompt = 'Realtime provider error';
 
 const _activeToolStatuses = <String>{
   'queued',
@@ -626,9 +627,17 @@ class RealtimeJourney {
       'delayed',
     );
     final waiting = await waitFor(
-      (snapshot) =>
-          turnId(snapshot) != context.priorTurnId &&
-          assistantContentCount(snapshot) == context.priorContent,
+      (snapshot) {
+        final diagnostics = snapshot['driverDiagnostics'] as Map?;
+        final stream = diagnostics?['stateStream'] as Map?;
+        return turnId(snapshot) != null &&
+            turnId(snapshot) != context.priorTurnId &&
+            assistantContentCount(snapshot) == context.priorContent &&
+            stream?['threadId'] ==
+                TimelineObservation.optional(snapshot)?.threadId &&
+            stream?['hasSnapshot'] == true &&
+            stream?['epoch'] is int;
+      },
       'delayed_waiting',
       timeout: const Duration(seconds: 20),
       abort: threadFaulted,
@@ -846,6 +855,12 @@ class RealtimeJourney {
     var activityFieldSeen = false;
     var observedGrowth = false;
     var identityResetObserved = false;
+    var activityToolOpened = false;
+    String? openedActivityIdentity;
+    var activityDetailGrowth = false;
+    int? previousDetailLines;
+    final activityDetailSamples = <Map<String, Object?>>[];
+    final activityToolDetails = find.byValueKey('live-tool-details-$callId');
     Map<String, Object?>? previous;
     var latest = first;
     final deadline = DateTime.now().add(const Duration(seconds: 40));
@@ -893,7 +908,85 @@ class RealtimeJourney {
       // Once the call is terminal no further live sample or activity can arrive.
       final toolTerminal =
           tool != null && _terminalToolStatuses.contains(tool['status']);
-      final growthSettled = observedGrowth || toolTerminal;
+      final activityIdentity = activity?['identity'] as String?;
+      if (activityToolOpened && activityIdentity != openedActivityIdentity) {
+        activityToolOpened = false;
+        previousDetailLines = null;
+      }
+      final waitTool = timelineToolByCallId(
+        snapshot,
+        'realtime-long-wait-call',
+      );
+      final stableToolActivity =
+          waitTool != null &&
+          _liveToolStatuses.contains(waitTool.status) &&
+          activity?['activeToolCount'] == 2;
+      if (!toolTerminal &&
+          !activityToolOpened &&
+          stableToolActivity &&
+          activity != null &&
+          (!wantIdentityReset || identityResetObserved)) {
+        if (activity['expanded'] != true) {
+          await _tap('conversation-activity');
+        }
+        final row = find.byValueKey('live-tool-row-$callId');
+        await driver.waitFor(row, timeout: const Duration(seconds: 5));
+        await driver.rawTap(row);
+        await driver.waitFor(
+          activityToolDetails,
+          timeout: const Duration(seconds: 5),
+        );
+        activityToolOpened = true;
+        openedActivityIdentity = activityIdentity;
+      }
+      if (!toolTerminal && activityToolOpened) {
+        final Map<String, dynamic> rendered;
+        try {
+          rendered = await driver.sendCommand(
+            ToolProbe(activityToolDetails, 'readText'),
+          );
+        } on DriverError {
+          final retired = await this.snapshot();
+          final retiredTool = _toolByCallId(retired, callId);
+          if (retiredTool != null &&
+              _terminalToolStatuses.contains(retiredTool['status'])) {
+            latest = retired;
+            break;
+          }
+          rethrow;
+        }
+        final texts =
+            ((rendered['samples'] as List).single as Map)['texts'] as List;
+        final outputs = texts.whereType<String>().where(
+          (text) => text.startsWith('realtime-long-output-line-01'),
+        );
+        final fresh = await this.snapshot();
+        final freshTool = _toolByCallId(fresh, callId);
+        if (outputs.length > 1) {
+          throw StateError('ambiguous live activity output for $callId');
+        }
+        if (outputs.isNotEmpty &&
+            freshTool != null &&
+            _liveToolStatuses.contains(freshTool['status'])) {
+          final output = outputs.single;
+          final lines = RegExp(r'realtime-long-output-line-\d\d')
+              .allMatches(output)
+              .length;
+          activityDetailSamples.add({
+            'at': DateTime.now().millisecondsSinceEpoch,
+            'callId': callId,
+            'activityIdentity': openedActivityIdentity,
+            'lines': lines,
+            'text': output,
+          });
+          if (previousDetailLines != null && lines > previousDetailLines) {
+            activityDetailGrowth = true;
+          }
+          previousDetailLines = lines;
+        }
+      }
+      final growthSettled =
+          (observedGrowth && activityDetailGrowth) || toolTerminal;
       final identitySettled =
           !wantIdentityReset || identityResetObserved || toolTerminal;
       if (growthSettled && identitySettled) break;
@@ -917,6 +1010,8 @@ class RealtimeJourney {
     }
     counts['longCommandProgressSamples'] = samples.length;
     observations['longCommandProgress'] = samples;
+    observations['longCommandActivityDetails'] = activityDetailSamples;
+    checks['longCommandActivityDetailsOutputGrows'] = activityDetailGrowth;
     if (!typedToolPreviewSeen) {
       pendingEvidence.add(
         'long-command in-flight output: no typed tool preview was observed for '
@@ -1290,11 +1385,11 @@ class RealtimeJourney {
       'atLiveEdge': beforeScroll.atLiveEdge,
     };
     Map<String, Object?>? expansion;
-    if ((beforeScroll.maxScrollExtent ?? 0) <= 0) {
-      expansion = await _expandLoadedReasoningForScroll(beforeTimeline);
+    if ((beforeScroll.maxScrollExtent ?? 0) <= _minDetachedOffset) {
+      expansion = await _expandLoadedActivityForScroll(beforeTimeline);
     }
     final steps = <Map<String, Object?>>[];
-    var current = beforeSnapshot;
+    var current = await snapshot();
     var geometry = _scrollGeometryOf(current);
     var entered = false;
     for (var step = 0; step < _maxHistoryScrollSteps; step += 1) {
@@ -1365,63 +1460,55 @@ class RealtimeJourney {
     );
   }
 
-  /// 展开已加载 reasoning 的公开折叠行，使标准列表真正可滚。
-  ///
-  /// 只做用户可见的展开动作：不发请求、不写 pixels、不调用分页或「回到实时」。
-  /// `timeline-activity-details` 只在展开时渲染，因此它的可读几何就是展开事实。
-  Future<Map<String, Object?>> _expandLoadedReasoningForScroll(
+  /// 紧凑工作组不足以离底 200px 时，先通过真实 UI 展开已加载的活动组。
+  /// 不改写 pixels、不增造消息；展开和可滚范围都必须来自当前展示事实。
+  Future<Map<String, Object?>> _expandLoadedActivityForScroll(
     TimelineObservation timeline,
   ) async {
-    TimelineItemObservation? target;
-    for (final item in timeline.items) {
-      if (item.kind == 'reasoning') target = item;
+    TimelinePresentationObservation? target;
+    for (final group in timeline.presentationItems) {
+      if (group.kind == 'activity' && !group.expanded) target = group;
     }
     if (target == null) {
       throw StateError(
-        'history direct send: the loaded timeline exposes no reasoning row to '
-        'expand, and its content does not fill the viewport '
-        '(itemCount=${timeline.itemCount})',
+        'history direct send: no loaded collapsed activity group can provide '
+        'the required reading range (itemCount=${timeline.itemCount})',
       );
     }
-    final summaryKey = _activitySummaryKey(target.id);
-    await driver.waitFor(
-      find.byValueKey(summaryKey),
+    final groupId = target.id;
+    final summaryKey = _activitySummaryKey(groupId);
+    final summary = find.byValueKey(summaryKey);
+    await driver.scrollUntilVisible(
+      find.byValueKey('timeline-scrollable'),
+      summary,
+      dyScroll: _historyScrollStep,
       timeout: const Duration(seconds: 20),
     );
-    await driver.rawTap(
-      find.byValueKey(summaryKey),
-      timeout: const Duration(seconds: 30),
-    );
-    await driver.waitFor(
-      find.byValueKey('timeline-activity-details'),
-      timeout: const Duration(seconds: 20),
-    );
-    final rect = await _readRect('timeline-activity-details');
-    // 展开后的真实可滚动范围来自标准 controller，只等它自己发布，不按固定帧。
-    final scrollable = await waitFor(
-      (snapshot) =>
-          (TimelineScrollObservation.optional(snapshot)?.maxScrollExtent ?? 0) >
-          0,
+    await driver.rawTap(summary, timeout: const Duration(seconds: 30));
+    final expanded = await waitFor(
+      (snapshot) {
+        final current = TimelineObservation.optional(snapshot);
+        return current != null &&
+            current.presentationItems.any(
+              (group) => group.id == groupId && group.expanded,
+            ) &&
+            (TimelineScrollObservation.optional(snapshot)?.maxScrollExtent ??
+                    0) >
+                _minDetachedOffset;
+      },
       'provider_error_history_expand',
       timeout: const Duration(seconds: 20),
     );
-    final expandedScroll = TimelineScrollObservation.optional(scrollable);
-    final evidence = <String, Object?>{
-      'reasoningItemId': target.id,
+    final scroll = TimelineScrollObservation.parse(expanded);
+    return <String, Object?>{
+      'groupId': groupId,
       'summaryKey': summaryKey,
-      'detailsRect': rect?.toJson(),
-      'expanded': rect != null,
-      'maxScrollExtent': expandedScroll?.maxScrollExtent,
-      'pixels': expandedScroll?.pixels,
-      'extentBefore': expandedScroll?.extentBefore,
+      'expanded': true,
+      'maxScrollExtent': scroll.maxScrollExtent,
+      'pixels': scroll.pixels,
+      'extentBefore': scroll.extentBefore,
+      'requiredDetachedOffset': _minDetachedOffset,
     };
-    if (rect == null || (expandedScroll?.maxScrollExtent ?? 0) <= 0) {
-      throw StateError(
-        'history direct send: expanding the loaded reasoning did not make the '
-        'timeline scrollable ($evidence)',
-      );
-    }
-    return evidence;
   }
 
   /// 发送后：同一 Thread 由新的 Live 代次接管，stock 几何属于该新代次且从 offset 0
@@ -1479,7 +1566,7 @@ class RealtimeJourney {
     // History 直接发送：先由真实用户意图进入 History（不显式回实时、不分页、不写
     // pixels），随后用同一 composer 发送这一条既定输入。新代次必须由发送自身建立。
     final history = await _enterHistoryForDirectSend();
-    final context = await submitPrompt(_accountErrorPrompt, 'account_error');
+    final context = await submitPrompt(_providerErrorPrompt, 'account_error');
     final running = await awaitNewTurn(context, 'account_error');
     final afterLive = await _awaitDirectSendLive(
       threadId: history.threadId,
@@ -1491,7 +1578,7 @@ class RealtimeJourney {
     final newUserItemId = await _awaitNewUserIdentity(
       threadId: history.threadId,
       previousUserId: history.before['lastUserItemId'] as String?,
-      expectedText: _accountErrorPrompt,
+      expectedText: _providerErrorPrompt,
     );
     // 只有真实观察到这些事实才置真：同一 Thread、Live、新代次、非 preparing、
     // 几何绑定新代次且 offset 0，并且新用户/Turn 身份确实出现。
@@ -1514,7 +1601,7 @@ class RealtimeJourney {
         'history': history.history,
         'tap': <String, Object?>{
           'label': 'account_error',
-          'prompt': _accountErrorPrompt,
+          'prompt': _providerErrorPrompt,
           'composerInputKey': 'composer-input',
           'composerSubmitKey': 'composer-submit',
           'submittedAt': context.submittedAt,
@@ -1554,6 +1641,23 @@ class RealtimeJourney {
       timeout: const Duration(seconds: 60),
     );
     final terminalAt = DateTime.now().millisecondsSinceEpoch;
+    final workspace = workspaceOf(failed);
+    final terminal = [
+      workspace?['turn'],
+      workspace?['lastTurn'],
+    ].whereType<Map>().firstWhere((value) => value['id'] == turn);
+    final failure = terminal['failure'];
+    final expectedFailure =
+        failure is Map &&
+        failure['httpStatus'] == 400 &&
+        failure['code'] == 'invalid_request_error' &&
+        (failure['message'] as String? ?? '').contains(
+          'realtime fixture provider error',
+        );
+    checks['providerErrorMatchesFixture'] = expectedFailure;
+    if (!expectedFailure) {
+      throw StateError('provider error did not match the fixture: $failure');
+    }
     await observe('account_error', failed);
     await shot('account-error');
     timings['accountError'] = {
@@ -1573,6 +1677,7 @@ class RealtimeJourney {
       (snapshot) => turnId(snapshot) == turn && isBusy(snapshot),
       'cancel_streaming',
       timeout: const Duration(seconds: 30),
+      abort: turnFailed,
     );
     await observe('cancel_streaming', streaming);
     await shot('cancel-streaming');
@@ -2916,7 +3021,7 @@ TimelineToolObservation? timelineToolByCallId(
 ///
 /// `pl-core` 用它把已提交的后台工具结果交给模型；这里只在 Driver 边界读取同一段
 /// 文本（不新增生产 API、不拿请求参数冒充 stdout）。payload 必须是 final/succeeded
-/// 且带 `exit_code`、`stdout`、`stderr`。
+/// 且带 exec v2 的 `exitCode` 与双流 `content`。
 ({int exitCode, String stdout, String stderr}) requireTaskEnvelope(
   String? result,
   String taskId,
@@ -2943,14 +3048,13 @@ TimelineToolObservation? timelineToolByCallId(
     throw StateError('host cwd: delivery payload is not an object: $payload');
   }
   final state = payload['state'];
-  final stdout = payload['stdout'];
-  final stderr = payload['stderr'];
+  final stdoutStream = payload['stdout'];
+  final stderrStream = payload['stderr'];
   final stateMap = state is Map ? state : null;
   final data = stateMap?['data'];
   final resultNode = data is Map ? data['result'] : null;
   final resultFact = resultNode is Map ? resultNode : null;
-  final resultData = resultFact?['data'];
-  final exitCode = resultData is Map ? resultData['exit_code'] : null;
+  final exitCode = payload['exitCode'];
   if (stateMap == null ||
       stateMap['kind'] != 'final' ||
       resultFact == null ||
@@ -2960,9 +3064,11 @@ TimelineToolObservation? timelineToolByCallId(
       'host cwd: delivery state is not a successful final result: $state',
     );
   }
+  final stdout = stdoutStream is Map ? stdoutStream['content'] : null;
+  final stderr = stderrStream is Map ? stderrStream['content'] : null;
   if (stdout is! String || stderr is! String) {
     throw StateError(
-      'host cwd: delivery payload has no string stdout/stderr: $payload',
+      'host cwd: delivery payload has no exec v2 stdout/stderr content: $payload',
     );
   }
   return (exitCode: exitCode, stdout: stdout, stderr: stderr);

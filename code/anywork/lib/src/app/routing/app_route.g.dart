@@ -60,21 +60,25 @@ RouteBase get $studioRoute => GoRouteData.$route(
             ),
           ],
         ),
-        GoRouteData.$route(
-          path: 'bots/:botId',
-          name: 'bot-details',
-          hasOverriddenOnExit: false,
-          factory: $BotDetailsRoute._fromState,
-          routes: [
-            GoRouteData.$route(
-              path: 'chat',
-              name: 'bot-chat',
-              hasOverriddenOnExit: false,
-              factory: $BotChatRoute._fromState,
-            ),
-          ],
-        ),
       ],
+    ),
+    GoRouteData.$route(
+      path: 'bots/:botId',
+      name: 'bot-details',
+      hasOverriddenOnExit: false,
+      factory: $BotDetailsRoute._fromState,
+    ),
+    GoRouteData.$route(
+      path: 'bots/:botId/chats/:chatId/threads/:threadId',
+      name: 'bot-conversation',
+      hasOverriddenOnExit: false,
+      factory: $BotConversationRoute._fromState,
+    ),
+    GoRouteData.$route(
+      path: 'bots/:botId/chats/:chatId/platform',
+      name: 'bot-platform-tools',
+      hasOverriddenOnExit: false,
+      factory: $BotPlatformToolsRoute._fromState,
     ),
   ],
 );
@@ -342,17 +346,42 @@ mixin $ModeDetailRoute on GoRouteData {
 }
 
 mixin $BotDetailsRoute on GoRouteData {
-  static BotDetailsRoute _fromState(GoRouterState state) => BotDetailsRoute(
-    botId: state.pathParameters['botId']!,
-    chatId: state.uri.queryParameters['chatId'],
-  );
+  static BotDetailsRoute _fromState(GoRouterState state) =>
+      BotDetailsRoute(botId: state.pathParameters['botId']!);
 
   BotDetailsRoute get _self => this as BotDetailsRoute;
 
   @override
+  String get location =>
+      GoRouteData.$location('/bots/${Uri.encodeComponent(_self.botId)}');
+
+  @override
+  void go(BuildContext context) => context.go(location);
+
+  @override
+  Future<T?> push<T>(BuildContext context) => context.push<T>(location);
+
+  @override
+  void pushReplacement(BuildContext context) =>
+      context.pushReplacement(location);
+
+  @override
+  void replace(BuildContext context) => context.replace(location);
+}
+
+mixin $BotConversationRoute on GoRouteData {
+  static BotConversationRoute _fromState(GoRouterState state) =>
+      BotConversationRoute(
+        botId: state.pathParameters['botId']!,
+        chatId: state.pathParameters['chatId']!,
+        threadId: state.pathParameters['threadId']!,
+      );
+
+  BotConversationRoute get _self => this as BotConversationRoute;
+
+  @override
   String get location => GoRouteData.$location(
-    '/settings/bots/${Uri.encodeComponent(_self.botId)}',
-    queryParams: {if (_self.chatId != null) 'chatId': _self.chatId},
+    '/bots/${Uri.encodeComponent(_self.botId)}/chats/${Uri.encodeComponent(_self.chatId)}/threads/${Uri.encodeComponent(_self.threadId)}',
   );
 
   @override
@@ -369,22 +398,18 @@ mixin $BotDetailsRoute on GoRouteData {
   void replace(BuildContext context) => context.replace(location);
 }
 
-mixin $BotChatRoute on GoRouteData {
-  static BotChatRoute _fromState(GoRouterState state) => BotChatRoute(
-    botId: state.pathParameters['botId']!,
-    chatId: state.uri.queryParameters['chatId'] ?? '',
-    title: state.uri.queryParameters['title'],
-  );
+mixin $BotPlatformToolsRoute on GoRouteData {
+  static BotPlatformToolsRoute _fromState(GoRouterState state) =>
+      BotPlatformToolsRoute(
+        botId: state.pathParameters['botId']!,
+        chatId: state.pathParameters['chatId']!,
+      );
 
-  BotChatRoute get _self => this as BotChatRoute;
+  BotPlatformToolsRoute get _self => this as BotPlatformToolsRoute;
 
   @override
   String get location => GoRouteData.$location(
-    '/settings/bots/${Uri.encodeComponent(_self.botId)}/chat',
-    queryParams: {
-      if (_self.chatId != '') 'chatId': _self.chatId,
-      if (_self.title != null) 'title': _self.title,
-    },
+    '/bots/${Uri.encodeComponent(_self.botId)}/chats/${Uri.encodeComponent(_self.chatId)}/platform',
   );
 
   @override

@@ -229,12 +229,12 @@ void main() {
     ], reason: '停止目标固定为该行的会话与执行身份');
     expect(graph.client.selection.state, selection, reason: '点击停止不改变当前选择');
     expect(
-      graph.client.sessionStates.map((state) => state.threadId),
+      graph.client.conversations.sessionStates.map((state) => state.threadId),
       isNot(contains(_runningChild)),
       reason: '停止不打开子会话',
     );
     expect(
-      graph.client.existingComposer(_runningChild),
+      graph.client.drafts.existingComposer(_runningChild),
       isNull,
       reason: '停止不创建子会话草稿',
     );

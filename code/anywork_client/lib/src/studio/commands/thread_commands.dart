@@ -1,3 +1,6 @@
+import '../../../conversation.dart';
+import '../../../drafts_ports.dart';
+
 import 'dart:async';
 
 import '../../../models.dart';
@@ -11,22 +14,39 @@ import '../../../anywork_client.dart'
         Observation,
         ResourceKind,
         ResourcePermit,
-        LatestValue;
+        ValueObservation;
 import '../anywork_client.dart';
 import '../agent_directory_queries.dart';
 import '../stores/child_interaction_store.dart';
 import '../stores/domain_sync.dart';
 import '../stores/project_store.dart';
-import '../thread_session_state.dart';
+import '../../commands/mutation_board.dart' show OperationPhase;
 import 'command_lane.dart';
 
 int _wallClockMs() => DateTime.now().millisecondsSinceEpoch;
 
-class ThreadCommands extends ReadModel<ThreadCommandBoard> {
-  ThreadCommands(this._client, {int Function()? nowMs})
-    : _nowMs = nowMs ?? _wallClockMs,
-      super(const ThreadCommandBoard());
+/// Identity 观察在操作失败阶段的处置策略。
+enum _ObservationFailurePolicy {
+  /// 任何失败阶段立即取消观察（默认：一次性本地命令观察）。
+  cancelOnFailure,
+
+  /// 只有 observed、明确 rejected 或 owner 关闭才取消；unknown 与带回执的
+  /// syncFailed 保留原 binding，等待后续同 ID 接受或 canonical 帧观察完成。
+  /// continuation 的原身份接续依赖它在 unknown 期间不丢 canonical 观察。
+  retainUntilSettled,
+}
+
+class ThreadCommands extends ReadModel<ThreadCommandBoard>
+    implements DraftSubmissionCommands {
+  ThreadCommands(
+    this._client, {
+    required ChildInteractionStore childInteractions,
+    int Function()? nowMs,
+  }) : _childInteractions = childInteractions,
+       _nowMs = nowMs ?? _wallClockMs,
+       super(const ThreadCommandBoard());
   final AnyworkClient _client;
+  final ChildInteractionStore _childInteractions;
 
   /// 命令登记时间来源；界面用自己的墙钟比较，因此这里使用 Unix 毫秒。
   final int Function() _nowMs;
@@ -77,7 +97,7 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
         _throwIfExecutionClosed(threadId);
         final issue = _executionBlockerForThread(threadId);
         if (issue != null) throw issue.blockedFailure();
-        final storage = _client.session(threadId).state.storage;
+        final storage = _client.conversations.sessionState(threadId)?.storage;
         if (storage?.blocksContinuation == true) {
           throw threadStorageContinuationFailure(storage!);
         }
@@ -127,18 +147,16 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
     );
   }
 
-  Future<void> setThreadMode(ThreadModeId mode) {
+  Future<void> setThreadMode(ThreadModeId mode, {required String threadId}) {
     _ensureOpen();
-    // 点击时冻结目标：排队期间切换会话不改变命令目标。
-    final threadId = _client.selection.state.selectedThreadId;
-    if (threadId == null) return Future<void>.value();
+    // 调用方传入渲染时冻结的目标，不重新读取全局选择。
     final key = 'mode:$threadId';
     final operation = _client.mutations.begin(target: key);
     _begin(key, label: mode.id);
     _watchObservation(operation, () => _clear(key));
     return _lane.enqueue(() async {
       final thread = _directoryThread(threadId);
-      final runtime = _client.session(threadId).state.runtime;
+      final runtime = _client.conversations.session(threadId).state.runtime;
       final recoveryIssue = _accessBlockerForThread(threadId);
       if (recoveryIssue != null) {
         final failure = recoveryIssue.blockedFailure();
@@ -193,7 +211,7 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
         }
         final issue = _executionBlockerForThread(threadId);
         if (issue != null) throw issue.blockedFailure();
-        final storage = _client.session(threadId).state.storage;
+        final storage = _client.conversations.sessionState(threadId)?.storage;
         if (storage?.blocksContinuation == true) {
           throw threadStorageContinuationFailure(storage!);
         }
@@ -234,13 +252,13 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
     if (recoveryIssue != null) {
       return Future<void>.error(recoveryIssue.blockedFailure());
     }
-    final storage = _client.session(threadId).state.storage;
+    final storage = _client.conversations.sessionState(threadId)?.storage;
     if (storage?.blocksContinuation == true) {
       return Future<void>.error(threadStorageContinuationFailure(storage!));
     }
     final key = 'interaction:$threadId';
     final operation = _client.mutations.begin(target: key);
-    final displayed = _client
+    final displayed = _client.conversations
         .session(threadId)
         .state
         .interactions
@@ -275,18 +293,20 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
         _rejectQueuedOperation(operation, key, interactionId, failure);
         throw failure;
       }
-      final queuedStorage = _client.session(threadId).state.storage;
+      final queuedStorage = _client.conversations
+          .sessionState(threadId)
+          ?.storage;
       if (queuedStorage?.blocksContinuation == true) {
         final failure = threadStorageContinuationFailure(queuedStorage!);
         _rejectQueuedOperation(operation, key, interactionId, failure);
         throw failure;
       }
-      final active = [..._client.session(threadId).state.interactions]
-        ..sort(
-          (left, right) =>
-              interactionPriority(left.kind)
-                  .compareTo(interactionPriority(right.kind)),
-        );
+      final active =
+          [..._client.conversations.session(threadId).state.interactions]..sort(
+            (left, right) =>
+                interactionPriority(left.kind)
+                    .compareTo(interactionPriority(right.kind)),
+          );
       if (turnId == null ||
           active.firstOrNull?.id != interactionId ||
           active.firstOrNull?.turnId != turnId) {
@@ -437,7 +457,11 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
         requireCurrentCanonical: false,
       );
     }
-    final execution = _client.session(threadId).state.runtime?.execution;
+    final execution = _client.conversations
+        .session(threadId)
+        .state
+        .runtime
+        ?.execution;
     if (execution == null) {
       return Future<ThreadStopOutcome>.value(
         StopNoExecution(threadId: threadId),
@@ -580,7 +604,7 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
       } else {
         _watchPredicate(
           operation,
-          _client.session(threadId).source,
+          _client.conversations.session(threadId).source,
           (state) =>
               state.hasSnapshot && state.runtime?.execution?.id != executionId,
           () => _clear(key),
@@ -598,7 +622,11 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
       final current = requireCurrentCanonical
           ? (fromDirectory
                 ? _agentEntry(threadId)?.execution
-                : _client.session(threadId).state.runtime?.execution)
+                : _client.conversations
+                      .session(threadId)
+                      .state
+                      .runtime
+                      ?.execution)
           : null;
       if (requireCurrentCanonical &&
           (current == null || current.id != executionId)) {
@@ -671,24 +699,24 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
     final intentKey = '$threadId:$continuationId';
     final existing = _continuationIntents[intentKey];
     if (existing?.inFlight case final inFlight?) return inFlight;
-    if (existing != null && existing.operationId != null) {
-      // A previous explicit intent already owns an identity: read the original
-      // operation instead of dispatching a second one.
-      final reconciling = _lane.run(
-        () => _reconcileContinuation(
-          threadId: threadId,
-          continuation: continuation,
-          intentKey: intentKey,
-          intent: existing,
-          expectedModelRouteRevision: expectedModelRouteRevision,
-        ),
-      );
-      existing.inFlight = reconciling;
-      return reconciling.whenComplete(() {
+    if (existing != null) {
+      // A previous explicit intent already owns a frozen identity: read the
+      // original operation instead of dispatching a second one. The shared
+      // join is registered before any synchronously reentrant lane work, so
+      // every reentrant click for this intent observes the same future.
+      final completion = Completer<ContinueThreadCommandReply>();
+      late final Future<ContinueThreadCommandReply> reconciling;
+      reconciling = completion.future.whenComplete(() {
         if (identical(existing.inFlight, reconciling)) {
           existing.inFlight = null;
         }
       });
+      existing.inFlight = reconciling;
+      unawaited(
+        _reconcileExistingIntent(existing)
+            .then(completion.complete, onError: completion.completeError),
+      );
+      return reconciling;
     }
     _throwIfExecutionClosed(threadId);
     final recoveryIssue = _executionBlockerForThread(threadId);
@@ -697,7 +725,7 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
         recoveryIssue.blockedFailure(),
       );
     }
-    final storage = _client.session(threadId).state.storage;
+    final storage = _client.conversations.sessionState(threadId)?.storage;
     if (storage?.blocksContinuation == true) {
       return Future<ContinueThreadCommandReply>.error(
         threadStorageContinuationFailure(storage!),
@@ -716,54 +744,120 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
       _fail('continue:$threadId', threadId, claimed);
       return Future<ContinueThreadCommandReply>.error(claimed);
     }
-    final intent = existing ?? _ContinuationIntent();
-    _continuationIntents[intentKey] = intent;
     final key = 'continue:$threadId';
-    final operation = _client.mutations.begin(target: key);
-    intent.operationId = operation.id;
-    _begin(key, label: continuationId);
+    // The intent and its shared join exist before any synchronously reentrant
+    // publication: a reentrant click during begin/board publication joins
+    // this future instead of allocating a second operation for the intent.
+    final intent = _ContinuationIntent(
+      threadId: threadId,
+      continuationId: continuationId,
+      expectedModelRouteRevision: expectedModelRouteRevision,
+    );
+    final completion = Completer<ContinueThreadCommandReply>();
+    late final Future<ContinueThreadCommandReply> tracked;
+    tracked = completion.future.whenComplete(() {
+      if (identical(intent.inFlight, tracked)) intent.inFlight = null;
+    });
+    _continuationIntents[intentKey] = intent;
+    intent.inFlight = tracked;
     try {
+      final operation = _client.mutations.begin(target: key);
+      intent.operation = operation;
+      _begin(key, label: continuationId);
       _watchPredicate(
         operation,
-        _client.session(threadId).source,
+        _client.conversations.session(threadId).source,
         (state) =>
             state.hasSnapshot &&
             (state.runtime?.execution != null ||
                 (state.activeTurn?.state.isBusy ?? false)),
         () => _clear(key),
+        policy: _ObservationFailurePolicy.retainUntilSettled,
       );
     } catch (error) {
-      operation.reject(error);
-      if (_isLatest(operation)) _fail(key, threadId, error);
-      return Future<ContinueThreadCommandReply>.error(error);
+      // Never invoked and never observed: this is a definite local rejection,
+      // so the frozen identity is released for a fresh explicit click. Every
+      // synchronous setup step shares this path: a budget-exceeded begin or a
+      // board registration failure must not leave the intent's shared join
+      // dangling in the map for later clicks to await forever.
+      final handle = intent.operation;
+      if (handle != null) handle.reject(error);
+      if (identical(_continuationIntents[intentKey], intent)) {
+        _continuationIntents.remove(intentKey);
+      }
+      if (handle != null && _isLatest(handle)) _fail(key, threadId, error);
+      completion.completeError(error);
+      return tracked;
     }
+    final task = _sendContinuation(intent, resend: false);
+    unawaited(
+      task.then(completion.complete, onError: completion.completeError),
+    );
+    return tracked;
+  }
+
+  /// 首次发送与已查明 NotFound 的原身份再发共用同一发送 helper。
+  ///
+  /// 冻结的 thread/continuation/route CAS 与原 OperationId 原样透传。[resend]
+  /// 为 true 时，发送前的本地 guard 失败只把 typed 错误交回调用方：不删除
+  /// 意图、不 reject 原操作、不分配新 ID，原 unknown 身份与观察责任保持不变。
+  Future<ContinueThreadCommandReply> _sendContinuation(
+    _ContinuationIntent intent, {
+    required bool resend,
+  }) {
+    final operation = intent.operation!;
+    final key = 'continue:${intent.threadId}';
+    final intentKey = '${intent.threadId}:${intent.continuationId}';
     var transportInvoked = false;
-    final task = _lane.enqueue(() async {
+    return _lane.enqueue(() async {
       try {
-        _throwIfExecutionClosed(threadId);
-        final recoveryIssue = _executionBlockerForThread(threadId);
+        if (resend) {
+          _ensureOpen();
+          _throwIfAccessBlockedForThread(intent.threadId);
+          // The reconcile read and this dispatch are separate steps: state
+          // may have changed in between. A determined rejection must never
+          // reach the transport again under this identity.
+          final state = operation.state.value;
+          if (state.failurePhase == OperationPhase.rejected) {
+            throw StateError(
+              'The continuation identity reached a terminal disposition',
+            );
+          }
+        }
+        _throwIfExecutionClosed(intent.threadId);
+        final recoveryIssue = _executionBlockerForThread(intent.threadId);
         if (recoveryIssue != null) throw recoveryIssue.blockedFailure();
-        final storage = _client.session(threadId).state.storage;
+        final storage = _client.conversations
+            .sessionState(intent.threadId)
+            ?.storage;
         if (storage?.blocksContinuation == true) {
           throw threadStorageContinuationFailure(storage!);
         }
         transportInvoked = true;
         final reply = await _api.continueThread(
-          threadId,
-          continuationId,
-          expectedModelRouteRevision: expectedModelRouteRevision,
+          intent.threadId,
+          intent.continuationId,
+          expectedModelRouteRevision: intent.expectedModelRouteRevision,
           operationId: operation.id,
         );
-        if (reply.threadId != threadId ||
+        if (reply.threadId != intent.threadId ||
             !reply.receipt.requiresIdentityObservation) {
           throw StateError('Continue receipt did not match the stable target');
         }
-        operation.accept(reply.receipt.toCommitReceipt());
+        try {
+          operation.accept(reply.receipt.toCommitReceipt());
+        } finally {
+          // Synchronous observation may clear this command or admit a newer
+          // intent. A recorded receipt survives later synchronization failure.
+          if (_isLatest(operation) && operation.state.value.receipt != null) {
+            _markAccepted(key);
+          }
+        }
         return reply;
       } catch (error) {
         if (transportInvoked) {
           _failOperation(operation, error);
-        } else {
+        } else if (!resend) {
           // The allocated ID was never sent and must not be reconciled as an
           // unknown operation after a local lane-time rejection.
           operation.reject(error);
@@ -771,16 +865,14 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
             _continuationIntents.remove(intentKey);
           }
         }
-        if (_isLatest(operation)) _fail(key, threadId, error);
+        // A resend blocked before dispatch keeps the original unknown identity
+        // and its observation responsibility; nothing is rejected or replaced.
+        if (!resend && _isLatest(operation)) {
+          _fail(key, intent.threadId, error);
+        }
         rethrow;
       }
     });
-    late final Future<ContinueThreadCommandReply> tracked;
-    tracked = task.whenComplete(() {
-      if (identical(intent.inFlight, tracked)) intent.inFlight = null;
-    });
-    intent.inFlight = tracked;
-    return tracked;
   }
 
   /// 按原操作身份回查一次继续操作；查询不激活执行、不解除后来发生的停止。
@@ -798,8 +890,11 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
   /// 该会话当前继续点的规范投影；未打开或没有未完成工作时为空。
   ///
   /// 只读访问器：不激活会话、不新建操作，也不在本地推断继续资格。
-  ContinuationView? continuation(String threadId) =>
-      _client.existingSession(threadId)?.state.runtime?.continuation;
+  ContinuationView? continuation(String threadId) => _client.conversations
+      .existingSession(threadId)
+      ?.state
+      .runtime
+      ?.continuation;
 
   /// 读取主会话可见的子任务待决交互只读投影。
   ///
@@ -815,10 +910,15 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
         recoveryIssue.blockedFailure(),
       );
     }
+    final read = _childInteractions.beginRead();
     return _lane.run(() async {
-      final sequence = _client.childInteractions.beginRead();
       final items = await _api.readChildInteractions(hostThreadId);
-      _client.childInteractions.apply(hostThreadId, items, sequence: sequence);
+      _childInteractions.apply(
+        hostThreadId,
+        items,
+        sequence: read.sequence,
+        readDisplayGeneration: read.displayGeneration,
+      );
       return items;
     });
   }
@@ -827,7 +927,8 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
   ///
   /// 宿主身份固定为主会话，原交互身份与版本原样透传；决议结果落在原交互所属的子会话。
   /// 子会话侧没有等价入口，这里也拒绝把子会话当作宿主。
-  Future<void> resolveChildInteraction(
+  /// 合法回执受理后返回本次真实操作；调用方观察其状态，不以回调成功推断决议已生效。
+  Future<OperationHandle> resolveChildInteraction(
     String hostThreadId,
     ChildInteractionSummary summary,
     InteractionResolutionCommand resolution,
@@ -837,11 +938,13 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
     _throwIfExecutionClosed(summary.childThreadId);
     final recoveryIssue = _executionBlockerForThread(hostThreadId);
     if (recoveryIssue != null) {
-      return Future<void>.error(recoveryIssue.blockedFailure());
+      return Future<OperationHandle>.error(recoveryIssue.blockedFailure());
     }
-    final storage = _client.sessionState(hostThreadId)?.storage;
+    final storage = _client.conversations.sessionState(hostThreadId)?.storage;
     if (storage?.blocksContinuation == true) {
-      return Future<void>.error(threadStorageContinuationFailure(storage!));
+      return Future<OperationHandle>.error(
+        threadStorageContinuationFailure(storage!),
+      );
     }
     if (summary.childThreadId == hostThreadId ||
         summary.interaction.threadId != summary.childThreadId ||
@@ -853,20 +956,19 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
         correlationId: 'client-child-interaction-host',
         reason: StudioFailureReason.interactionNotHosted,
       );
-      return Future<void>.error(failure);
+      return Future<OperationHandle>.error(failure);
     }
     final childRecoveryIssue = _executionBlockerForThread(
       summary.childThreadId,
     );
     if (childRecoveryIssue != null) {
-      return Future<void>.error(childRecoveryIssue.blockedFailure());
+      return Future<OperationHandle>.error(childRecoveryIssue.blockedFailure());
     }
-    final childStorage = _client
-        .existingSession(summary.childThreadId)
-        ?.state
-        .storage;
+    final childStorage = _client.conversations
+        .sessionState(summary.childThreadId)
+        ?.storage;
     if (childStorage?.blocksContinuation == true) {
-      return Future<void>.error(
+      return Future<OperationHandle>.error(
         threadStorageContinuationFailure(childStorage!),
       );
     }
@@ -888,7 +990,7 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
     } catch (error) {
       operation.reject(error);
       if (_isLatest(operation)) _fail(key, summary.interactionId, error);
-      return Future<void>.error(error);
+      return Future<OperationHandle>.error(error);
     }
     return _lane.enqueue(() async {
       final hostRecoveryIssue = _executionBlockerForThread(hostThreadId);
@@ -907,7 +1009,9 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
         _rejectQueuedOperation(operation, key, summary.interactionId, failure);
         throw failure;
       }
-      final hostStorage = _client.sessionState(hostThreadId)?.storage;
+      final hostStorage = _client.conversations
+          .sessionState(hostThreadId)
+          ?.storage;
       if (hostStorage?.blocksContinuation == true) {
         final failure = threadStorageContinuationFailure(hostStorage!);
         _rejectQueuedOperation(operation, key, summary.interactionId, failure);
@@ -921,7 +1025,7 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
         _rejectQueuedOperation(operation, key, summary.interactionId, failure);
         throw failure;
       }
-      final childStorage = _client
+      final childStorage = _client.conversations
           .existingSession(summary.childThreadId)
           ?.state
           .storage;
@@ -945,7 +1049,17 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
             'Child interaction receipt did not match the stable target',
           );
         }
-        operation.accept(response.receipt.toCommitReceipt());
+        try {
+          operation.accept(response.receipt.toCommitReceipt());
+        } finally {
+          // Acceptance can synchronously observe this command or admit a newer
+          // intent. Keep a recorded receipt even if later synchronization fails,
+          // but never recreate a cleared command or mark the newer intent.
+          if (_isLatest(operation) && operation.state.value.receipt != null) {
+            _markAccepted(key);
+          }
+        }
+        return operation;
       } catch (error) {
         _failOperation(operation, error);
         if (_isLatest(operation)) _fail(key, summary.interactionId, error);
@@ -1031,7 +1145,9 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
         final result = response.result;
         if (!_client.isClosed) {
           for (final id in result.removedThreadIds) {
-            _client.releaseSession(id);
+            if (_client.selection.state.selectedThreadId == id) {
+              _client.conversations.setVisibleThread(null);
+            }
           }
           final selected = _client.selection.state.selectedThreadId;
           if (selected != null && result.removedThreadIds.contains(selected)) {
@@ -1139,7 +1255,7 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
   }) async {
     _client.settingsWrites.requireOwner(owner);
     _throwIfAccessBlockedForThread(threadId);
-    final session = _client.session(threadId).state;
+    final session = _client.conversations.session(threadId).state;
     final route = session.runtime?.modelRoute;
     final target = _findModel(accountId, modelId);
     if (!session.hasSnapshot || route == null || target == null) {
@@ -1174,7 +1290,7 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
     _throwIfAccessBlockedForThread(threadId);
     if (settings == null || !!_client.isClosed) return false;
     try {
-      await _client.session(threadId).resyncRuntime();
+      await _client.conversations.session(threadId).resyncRuntime();
     } catch (_) {
       _client.settingsWrites.requireOwner(owner);
       // Only a fresh owner baseline permits another CAS attempt. Observation
@@ -1252,87 +1368,104 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
     return false;
   }
 
-  /// 按原操作身份核对一次继续意图。
+  /// 已存在意图按原身份回查一次；仅回查本身的 NotFound 才允许原身份再发。
   ///
-  /// 已受理就沿用原回执；只有「没有可证明的受理事实」才允许新的显式操作换编号，
-  /// 读取本身失败时保留未知结果，不盲目重发。
-  Future<ContinueThreadCommandReply> _reconcileContinuation({
-    required String threadId,
-    required ContinuationView continuation,
-    required String intentKey,
-    required _ContinuationIntent intent,
-    required int expectedModelRouteRevision,
-  }) async {
-    final operationId = intent.operationId;
-    if (operationId == null) {
+  /// 已受理就沿用原回执；NotFound 证明该身份从未被受理，此时在串行 lane 内
+  /// 复核准入后以冻结输入与**同一 OperationId** 再发，不换编号、不递归公共
+  /// continueThread；其它回查错误原样上抛，保留未知结果，不盲目重发。
+  Future<ContinueThreadCommandReply> _reconcileExistingIntent(
+    _ContinuationIntent intent,
+  ) async {
+    final operation = intent.operation;
+    if (operation == null) {
       throw StateError('A continuation intent has no operation identity');
     }
+    final ContinuationOperationView view;
+    // A determined rejection proves this intent reached a terminal local
+    // disposition. Re-sending it after a NotFound would admit a second attempt
+    // under the frozen identity and only then reject the handle after the
+    // transport accepted it: fail closed instead. A held receipt is different:
+    // the original acceptance keeps its observation duty and later guards
+    // still return their typed failures through the normal resend path.
+    void throwIfDefinitelyDisposed() {
+      final state = operation.state.value;
+      if (state.failurePhase == OperationPhase.rejected) {
+        throw state.error ??
+            StateError('The continuation intent was already rejected');
+      }
+    }
+
     try {
-      _throwIfAccessBlockedForThread(threadId);
-      final view = await _api.readContinuationOperation(
-        threadId,
-        operationId.value,
-      );
-      if (view.threadId != threadId || view.operationId != operationId.value) {
-        throw StateError('Continuation read did not match the frozen identity');
-      }
-      final handle = _client.mutations.lookup(operationId);
-      handle?.accept(view.receipt.toCommitReceipt());
-      switch (view.state) {
-        case ConsumedContinuation():
-          // A consumed control input is a canonical fact about the new Turn: the
-          // effect happened even though the original receipt was lost.
-          if (handle != null && handle.state.value.receipt != null) {
-            if (!handle.state.value.effective) handle.markEffective();
-            if (!handle.state.value.observed) handle.markObserved();
-          }
-        case DiscardedContinuation():
-          // A discarded control input never runs; it must not stay pending.
-          handle?.reject(
-            StudioFailure(
-              code: StudioFailureCode.conflict,
-              message: 'The continuation intent was discarded',
-              retryable: false,
-              correlationId: 'client-continuation-discarded',
-              reason: StudioFailureReason.continuationUnavailable,
-            ),
-          );
-        case PendingContinuation():
-          // Still admitted and unconsumed: the identity observer registered at
-          // dispatch settles it when the canonical Turn appears.
-          break;
-      }
-      if (_client.mutations.latest('continue:$threadId')?.id == operationId) {
-        _clear('continue:$threadId');
-      }
-      return ContinueThreadCommandReply(
-        threadId: view.threadId,
-        inputId: view.inputId,
-        continuationId: view.continuationId,
-        cursor: view.acceptedSequence,
-        receipt: view.receipt,
-      );
+      // 只读回查走并行跟踪的 run：它不排在 mutation 串行队列里，后续再发的
+      // enqueue 不会在持有同串行 lane 的闭包内等待自己。
+      view = await _lane.run(() {
+        _throwIfAccessBlockedForThread(intent.threadId);
+        return _api.readContinuationOperation(
+          intent.threadId,
+          operation.id.value,
+        );
+      });
     } on StudioFailure catch (error, stackTrace) {
       if (error.code != StudioFailureCode.notFound) {
         Error.throwWithStackTrace(error, stackTrace);
       }
-      // No provable acceptance exists for the original identity: forget it so a
-      // new explicit click may start one operation with its own identity.
-      _continuationIntents.remove(intentKey);
-      _client.mutations.lookup(operationId)?.reject(error);
-      _clear('continue:$threadId');
-      return continueThread(
-        threadId,
-        continuation,
-        expectedModelRouteRevision: expectedModelRouteRevision,
-      );
+      // The backend proves this identity was never admitted: resend the frozen
+      // input under the SAME operation id after the serial lane re-checks
+      // admission. The intent, its unknown protection and its observation
+      // responsibility stay with the original identity.
+      // The read itself may have raced a reentrant disposition change, so the
+      // frozen identity is re-checked before any dispatch decision.
+      throwIfDefinitelyDisposed();
+      return _sendContinuation(intent, resend: true);
     }
+    if (view.threadId != intent.threadId ||
+        view.operationId != operation.id.value) {
+      throw StateError('Continuation read did not match the frozen identity');
+    }
+    // Use the original handle directly: a missing or already-rejected identity
+    // is an incompatible state that must fail closed instead of re-beginning.
+    operation.accept(view.receipt.toCommitReceipt());
+    switch (view.state) {
+      case ConsumedContinuation():
+        // A consumed control input is a canonical fact about the new Turn: the
+        // effect happened even though the original receipt was lost.
+        if (operation.state.value.receipt != null) {
+          if (!operation.state.value.effective) operation.markEffective();
+          if (!operation.state.value.observed) operation.markObserved();
+        }
+      case DiscardedContinuation():
+        // A discarded control input never runs; it must not stay pending.
+        operation.reject(
+          StudioFailure(
+            code: StudioFailureCode.conflict,
+            message: 'The continuation intent was discarded',
+            retryable: false,
+            correlationId: 'client-continuation-discarded',
+            reason: StudioFailureReason.continuationUnavailable,
+          ),
+        );
+      case PendingContinuation():
+        // Still admitted and unconsumed: the identity observer registered at
+        // dispatch settles it when the canonical Turn appears.
+        break;
+    }
+    if (_client.mutations.latest('continue:${intent.threadId}')?.id ==
+        operation.id) {
+      _clear('continue:${intent.threadId}');
+    }
+    return ContinueThreadCommandReply(
+      threadId: view.threadId,
+      inputId: view.inputId,
+      continuationId: view.continuationId,
+      cursor: view.acceptedSequence,
+      receipt: view.receipt,
+    );
   }
 
   String? _projectIdForThread(String threadId) {
     final directoryProjectId = _directoryThread(threadId)?.projectId;
     if (directoryProjectId != null) return directoryProjectId;
-    final workspaceProjectId = _client
+    final workspaceProjectId = _client.conversations
         .existingSession(threadId)
         ?.state
         .workspace
@@ -1388,7 +1521,7 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
   // remain unknown; the backend still authoritatively rejects retired targets.
   bool _isExecutionClosed(String threadId) =>
       _directoryThread(threadId)?.status.blocksNewExecution == true ||
-      _client
+      _client.conversations
               .sessionState(threadId)
               ?.workspace
               ?.thread
@@ -1490,7 +1623,7 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
   ) {
     _watchPredicate<ThreadSessionState>(
       operation,
-      _client.session(threadId).source,
+      _client.conversations.session(threadId).source,
       predicate,
       onObserved,
     );
@@ -1503,10 +1636,12 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
   /// 是同一同步事务，帧先到和回执先到都不漏确认。
   void _watchPredicate<S>(
     OperationHandle operation,
-    LatestValue<S> source,
+    ValueObservation<S> source,
     bool Function(S) predicate,
-    void Function() onObserved,
-  ) {
+    void Function() onObserved, {
+    _ObservationFailurePolicy policy =
+        _ObservationFailurePolicy.cancelOnFailure,
+  }) {
     final permit = _client.budget.acquire(
       ResourceKind.observer,
       owner: 'command:${operation.id.value}',
@@ -1533,7 +1668,13 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
     void mergeOperation(OperationState next) {
       if (next.observed && !_client.isClosed && _isLatest(operation))
         onObserved();
-      if (next.observed || next.failurePhase != null) {
+      final settled = switch (policy) {
+        _ObservationFailurePolicy.cancelOnFailure =>
+          next.observed || next.failurePhase != null,
+        _ObservationFailurePolicy.retainUntilSettled =>
+          next.observed || next.failurePhase == OperationPhase.rejected,
+      };
+      if (settled) {
         binding.cancel();
         _operationObservations.remove(binding);
       } else {
@@ -1658,12 +1799,27 @@ final class _StopFlight {
   Future<ThreadStopOutcome>? queued;
 }
 
-/// 一个 (会话, 继续点) 意图的唯一操作身份与在途结果。
+/// 一个 (会话, 继续点) 意图的一次性冻结身份与唯一在途结果。
 ///
+/// Thread、continuation 身份、route CAS 与 OperationId 在首次创建时冻结；
 /// 回执丢失或页面离开后，这个身份仍然可用：再次显式点击先按它回查原操作，
-/// 不自动换编号重发，也不会同时存在两个操作。
+/// 仅当回查证明 NotFound 时才以同一身份再发冻结输入，不换编号，也不会同时
+/// 存在两个操作。
 final class _ContinuationIntent {
-  OperationId? operationId;
+  _ContinuationIntent({
+    required this.threadId,
+    required this.continuationId,
+    required this.expectedModelRouteRevision,
+  });
+
+  final String threadId;
+  final String continuationId;
+  final int expectedModelRouteRevision;
+
+  /// 分配一次；任何后续路径不得重新 begin 或替换该身份。
+  OperationHandle? operation;
+
+  /// 当前在途结果；同一意图的所有调用共享同一个 future。
   Future<ContinueThreadCommandReply>? inFlight;
 }
 

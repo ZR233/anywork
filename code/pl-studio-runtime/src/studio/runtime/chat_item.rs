@@ -1,12 +1,11 @@
 //! Canonical `ThreadItem` ↔ typed `ChatItem` 适配。
 //!
-//! core 的窗口条目是「静态结构 + 若干共享 `ContentBlock` 内容域」。宿主把 canonical 条目的**静态部分**
+//! core 的内容条目是「静态结构 + 若干共享 `ContentBlock` 内容域」。宿主把 canonical 条目的**静态部分**
 //! （身份、kind、时间戳、附件、工具身份……）编码一次进 `meta`，把**动态正文**按 [`ChatField`] 放进
 //! `fields`：流式热路径只克隆 `Arc`/共享链，不 JSON、不逐 token 复制全文。
 //!
-//! 反向只发生在**交付/落盘边界**（窗口出帧、writer 持久化）：用 [`canonical_item`] 把 `meta` 的结构与
-//! `fields` 的正文重新组装成一条 canonical [`ThreadItem`]，结构化字段（attachments、tool 参数/结果、
-//! reasoning summary/content）都在这里如实还原，不丢域、不做字符串拼接。
+//! 读取 DTO 直接解码头部与描述并遍历有界字段；反向构造只发生在可靠保存或必要权威边界。
+//! `static_state` 仅服务投影判等，不是内存 meta 或读取 DTO。
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -14,10 +13,16 @@ use std::sync::Arc;
 use anyhow::Result;
 use pl_core::chat::{ChatField, ChatItem, ChatLifecycle, PresentationPart};
 use pl_core::model::ContentBlock;
+
 use pl_protocol::{
     ResolvedThreadToolUserInput, ThreadItem, ThreadItemState, ThreadRawItem, ThreadRawPayload,
     ThreadTextItem, ThreadThinkingItem, ThreadToolInvocation, ThreadToolItem, ThreadToolState,
     ThreadToolUserInput, ThreadToolUserInputAnswer, ThreadToolUserInputState, UserQuestion,
+};
+
+use super::timeline_content::{
+    meta::{TimelineMeta, count, validate_counts},
+    restore,
 };
 
 /// 工具参数、工具结果与工具开放产物各自的宿主字段域 key（稳定身份，不是内容推断）。
@@ -43,8 +48,8 @@ pub(crate) fn typed_item(item: ThreadItem, saved: bool) -> Result<ChatItem> {
     } else {
         ChatLifecycle::Streaming
     };
-    let fields = content_fields(item.state());
     let meta = static_meta(&item)?;
+    let fields = content_fields(item.state())?;
     Ok(ChatItem::complete(pl_core::chat::ChatItemParts {
         item_id: item.id,
         turn_id: item.turn_id,
@@ -57,26 +62,20 @@ pub(crate) fn typed_item(item: ThreadItem, saved: bool) -> Result<ChatItem> {
     }))
 }
 
-/// 只含静态结构的 `meta`：身份、kind、时间戳、附件与工具身份，动态正文清空、revision 归零。
-///
-/// 静态部分与动态正文分开编码，热路径因此可以按身份缓存它一次、逐 token 只交付共享正文块；窗口
-/// revision 由调用方自己的内容版本给出，不从 `meta` 里回读，避免把提交序号冒充成内容版本。
+/// 仅编码当前头部与独立描述；revision 由 ChatItem 持有，不在 meta 中驻留。
 pub(crate) fn static_meta(item: &ThreadItem) -> Result<Arc<[u8]>> {
-    let blank = ThreadItem::new(
-        item.id.clone(),
-        item.thread_id.clone(),
-        item.turn_id.clone(),
-        item.ordinal,
-        0,
-        item.created_at,
-        item.updated_at,
-        static_state(item.state()),
-    );
-    Ok(Arc::from(serde_json::to_vec(&blank)?))
+    Ok(Arc::from(serde_json::to_vec(&TimelineMeta::from_item(
+        item,
+    )?)?))
 }
 
 /// 动态正文域：只由条目自己的动态事实派生，正文块与生产者共享。
-pub(crate) fn content_fields(state: &ThreadItemState) -> BTreeMap<ChatField, Arc<ContentBlock>> {
+///
+/// 超出 u32 的位置/数量返回 Overloaded；问答关联缺失明确失败，不静默丢弃答案。
+pub(crate) fn content_fields(
+    state: &ThreadItemState,
+) -> Result<BTreeMap<ChatField, Arc<ContentBlock>>> {
+    validate_counts(state)?;
     let mut fields = BTreeMap::new();
     match state {
         ThreadItemState::Text(text) => {
@@ -85,13 +84,13 @@ pub(crate) fn content_fields(state: &ThreadItemState) -> BTreeMap<ChatField, Arc
         ThreadItemState::Thinking(thinking) => {
             for (index, chunk) in thinking.summary().iter().enumerate() {
                 fields.insert(
-                    ChatField::Part(PresentationPart::SummaryText(index as u32)),
+                    ChatField::Part(PresentationPart::SummaryText(count(index)?)),
                     ContentBlock::from_text(chunk),
                 );
             }
             for (index, chunk) in thinking.content().iter().enumerate() {
                 fields.insert(
-                    ChatField::Part(PresentationPart::ReasoningText(index as u32)),
+                    ChatField::Part(PresentationPart::ReasoningText(count(index)?)),
                     ContentBlock::from_text(chunk),
                 );
             }
@@ -135,9 +134,14 @@ pub(crate) fn content_fields(state: &ThreadItemState) -> BTreeMap<ChatField, Arc
                     }
                 }
                 for answer in user_input.answers() {
-                    let Some(position) = question_position(user_input, answer.question_id()) else {
+                    // validate_counts 已验证关联；正文始终来自公开投影，不回读私有值。
+                    if answer.is_redacted() {
                         continue;
-                    };
+                    }
+                    let position =
+                        question_position(user_input, answer.question_id()).ok_or_else(|| {
+                            anyhow::anyhow!("validated timeline answer lost its question")
+                        })?;
                     for (index, value) in answer.answers().iter().enumerate() {
                         fields.insert(
                             user_input_answer_field(position, index),
@@ -159,16 +163,14 @@ pub(crate) fn content_fields(state: &ThreadItemState) -> BTreeMap<ChatField, Arc
         }
         _ => {}
     }
-    fields
+    Ok(fields)
 }
 
 /// 同一条目的**结构 / 终态形状**：动态正文被清空，kind、附件、生命周期与工具状态如实保留。
 ///
-/// 有两个用途，都是为了让「可持久化载荷」与「易变元数据」分开：
-/// * [`static_meta`] 用它编码一次静态结构，热路径按身份复用；
-/// * 内容版本比较（宿主投影）用它判断持久化载荷的**结构 / 终态状态**是否变化——工具状态转移
-///   （Running→Succeeded 等）与执行终态（streaming→completed/failed/cancelled）都是载荷变化，
-///   必须递增内容版本，否则旧的保存回执会张冠李戴地确认新载荷。
+/// 仅用于宿主投影的内容版本比较：工具状态转移（Running→Succeeded 等）与执行终态
+/// （streaming→completed/failed/cancelled）都是载荷变化，必须递增内容版本，否则旧的保存回执
+/// 会张冠李戴地确认新载荷。读取 DTO 和内存 meta 不消费这里的空正文结构。
 ///
 /// 它**不含** `ThreadItem` 上会随每次投影变化的易变时间戳（`created_at`/`updated_at`），因此同一条目
 /// 重复投影不会无意义地抬高内容版本；但生命周期自带的 `completed_at`/`failed_at` 属于真实转移，保留。
@@ -211,78 +213,20 @@ pub(crate) fn static_state(state: &ThreadItemState) -> ThreadItemState {
     }
 }
 
-/// 把 typed 窗口条目重新组装成 canonical 条目（只在交付/落盘边界调用）。
+/// 从当前头部、描述及完整字段重建可靠载荷；不可用于有界读取预览。
 pub(crate) fn canonical_item(item: &ChatItem) -> Result<ThreadItem> {
-    let canonical: ThreadItem = serde_json::from_slice(&item.meta)?;
-    let state = match canonical.state() {
-        ThreadItemState::Text(text) => ThreadItemState::Text(ThreadTextItem::new(
-            text.channel(),
-            text_of(item, &ChatField::Body),
-            text.attachments().to_vec(),
-            text.lifecycle().clone(),
-        )),
-        ThreadItemState::Thinking(thinking) => {
-            let summary = chunk_vec(item, ChunkKind::Summary);
-            let content = chunk_vec(item, ChunkKind::Reasoning);
-            ThreadItemState::Thinking(ThreadThinkingItem::new(
-                summary,
-                content,
-                thinking.lifecycle().clone(),
-            ))
-        }
-        ThreadItemState::Tool(tool) => {
-            let arguments = text_of(item, &ChatField::host(TOOL_ARGUMENTS_FIELD));
-            let output = text_of(item, &ChatField::host(TOOL_RESULT_FIELD));
-            let state = fill_terminal_output(tool.state(), &output, artifacts_of(item)?);
-            ThreadItemState::Tool(
-                ThreadToolItem::new(
-                    fill_arguments(tool.invocation(), arguments),
-                    fill_streamed_output(&state, &output),
-                )
-                .with_user_input(tool.user_input().map(|input| fill_user_input(input, item)))
-                .with_wait(tool.wait().cloned()),
-            )
-        }
-        ThreadItemState::Raw(raw) => ThreadItemState::Raw(ThreadRawItem {
-            origin: raw.origin,
-            payloads: raw
-                .payloads
-                .iter()
-                .enumerate()
-                .map(|(index, payload)| ThreadRawPayload {
-                    format: payload.format.clone(),
-                    version: payload.version,
-                    content: text_of(item, &raw_payload_field(index)),
-                })
-                .collect(),
-            notice: raw.notice.clone(),
-            recorded_at: raw.recorded_at,
-        }),
-        other => other.clone(),
-    };
-    // `meta` 只携带静态结构（revision 归零），窗口自己的内容版本才是权威，绝不回读成提交序号。
+    let meta = TimelineMeta::for_item(item)?;
+    let state = restore::state(&meta.descriptor, item, &meta.header.thread_id)?;
     Ok(ThreadItem::new(
-        item.item_id.clone(),
-        canonical.thread_id.clone(),
-        item.turn_id.clone(),
-        item.order,
+        meta.header.id,
+        meta.header.thread_id,
+        meta.header.turn_id,
+        meta.header.ordinal,
         item.revision,
-        canonical.created_at,
-        canonical.updated_at,
+        meta.header.created_at,
+        meta.header.updated_at,
         state,
     ))
-}
-
-/// 从静态 `meta` 还原不含动态正文的条目骨架，并填入当前权威 `revision`。
-pub(crate) fn item_shell(meta: &[u8], revision: u64) -> Result<ThreadItem> {
-    let mut shell: ThreadItem = serde_json::from_slice(meta)?;
-    shell.revision = revision;
-    Ok(shell)
-}
-
-fn text_of(item: &ChatItem, field: &ChatField) -> String {
-    item.field(field)
-        .map_or_else(String::new, |block| block.text())
 }
 
 /// 一个问题标题的内容域身份。
@@ -412,99 +356,6 @@ fn clear_user_input(user_input: &ThreadToolUserInput) -> ThreadToolUserInput {
     )
 }
 
-/// 用内容域正文把静态结构还原成完整问答投影。
-fn fill_user_input(user_input: &ThreadToolUserInput, item: &ChatItem) -> ThreadToolUserInput {
-    ThreadToolUserInput::new(
-        user_input.interaction_id().to_owned(),
-        user_input
-            .questions()
-            .iter()
-            .enumerate()
-            .map(|(position, question)| UserQuestion {
-                header: text_of(item, &user_input_header_field(position)),
-                question: text_of(item, &user_input_question_field(position)),
-                options: question.options.as_ref().map(|options| {
-                    options
-                        .iter()
-                        .enumerate()
-                        .map(|(option_index, _)| pl_protocol::UserQuestionOption {
-                            label: text_of(
-                                item,
-                                &user_input_option_label_field(position, option_index),
-                            ),
-                            description: text_of(
-                                item,
-                                &user_input_option_description_field(position, option_index),
-                            ),
-                        })
-                        .collect()
-                }),
-                ..question.clone()
-            })
-            .collect(),
-        match user_input.state() {
-            ThreadToolUserInputState::Pending => ThreadToolUserInputState::Pending,
-            ThreadToolUserInputState::Cancelled => ThreadToolUserInputState::Cancelled,
-            ThreadToolUserInputState::Resolved(resolved) => {
-                ThreadToolUserInputState::Resolved(ResolvedThreadToolUserInput::new(
-                    resolved
-                        .answers()
-                        .iter()
-                        .map(|answer| {
-                            let question_id = answer.question_id().to_owned();
-                            // 敏感回答从未进入公开正文域，只还原它已回答/已隐藏的状态。
-                            if answer.is_redacted() {
-                                return ThreadToolUserInputAnswer::redacted(question_id);
-                            }
-                            let values = question_position(user_input, answer.question_id())
-                                .map_or_else(Vec::new, |position| {
-                                    (0..answer.answers().len())
-                                        .map(|index| {
-                                            text_of(item, &user_input_answer_field(position, index))
-                                        })
-                                        .collect()
-                                });
-                            ThreadToolUserInputAnswer::new(question_id, values)
-                        })
-                        .collect(),
-                ))
-            }
-        },
-    )
-}
-
-/// thinking 的 chunk 类别：summary 与 reasoning 各自独立成字段域。
-#[derive(Clone, Copy)]
-enum ChunkKind {
-    Summary,
-    Reasoning,
-}
-
-/// 重建 thinking 某类 chunk 向量：以已交付的 Part 字段索引为准，缺位补空串。
-fn chunk_vec(item: &ChatItem, kind: ChunkKind) -> Vec<String> {
-    let mut indexed: Vec<(u32, String)> = Vec::new();
-    for (field, preview) in &item.fields {
-        let ChatField::Part(part) = field else {
-            continue;
-        };
-        let index = match (kind, part) {
-            (ChunkKind::Summary, PresentationPart::SummaryText(index)) => Some(*index),
-            (ChunkKind::Reasoning, PresentationPart::ReasoningText(index)) => Some(*index),
-            _ => None,
-        };
-        if let Some(index) = index {
-            indexed.push((index, preview.block.text()));
-        }
-    }
-    indexed.sort_by_key(|(index, _)| *index);
-    let len = indexed.last().map_or(0, |(index, _)| *index as usize + 1);
-    let mut chunks = vec![String::new(); len];
-    for (index, text) in indexed {
-        chunks[index as usize] = text;
-    }
-    chunks
-}
-
 fn streamed_output(state: &ThreadToolState) -> Option<&str> {
     match state {
         ThreadToolState::Running(running) => Some(running.streamed_output()),
@@ -516,21 +367,6 @@ fn streamed_output(state: &ThreadToolState) -> Option<&str> {
 /// 原始记录一段正文的内容域身份。
 fn raw_payload_field(payload_index: usize) -> ChatField {
     ChatField::host(format!("{RAW_PAYLOAD_FIELD}{payload_index}"))
-}
-
-/// 工具开放产物的完整值：只用可由 core 字段承载的 JSON 数组表达。
-///
-/// 预览被省略时不尝试解析半段 JSON；查看器按字段身份读取完整正文，绝不把一个被截断的数组当作
-/// 完整产物。
-fn artifacts_of(item: &ChatItem) -> Result<Vec<serde_json::Value>> {
-    let field = ChatField::host(TOOL_OUTPUT_ARTIFACTS_FIELD);
-    if !item.field_is_complete(&field) {
-        return Ok(Vec::new());
-    }
-    let Some(block) = item.field(&field) else {
-        return Ok(Vec::new());
-    };
-    Ok(serde_json::from_str(&block.text())?)
 }
 
 /// 只有正文被清空的终态工具输出，其余结构（附件、退出码、失败原因）保持不变。
@@ -562,49 +398,6 @@ fn cleared_output(output: &pl_protocol::ThreadToolOutput) -> pl_protocol::Thread
     )
 }
 
-/// 用内容域正文与开放产物还原终态工具输出。
-fn fill_terminal_output(
-    state: &ThreadToolState,
-    result: &str,
-    artifacts: Vec<serde_json::Value>,
-) -> ThreadToolState {
-    match state {
-        ThreadToolState::Succeeded(succeeded) => {
-            ThreadToolState::Succeeded(pl_protocol::SucceededThreadTool::new(
-                succeeded.completed_at(),
-                filled_output(succeeded.output(), result, artifacts),
-            ))
-        }
-        ThreadToolState::Failed(failed) => {
-            ThreadToolState::Failed(pl_protocol::FailedThreadTool::new(
-                failed.failed_at(),
-                failed.failure().clone(),
-                failed
-                    .output()
-                    .map(|output| filled_output(output, result, artifacts)),
-            ))
-        }
-        other => other.clone(),
-    }
-}
-
-fn filled_output(
-    output: &pl_protocol::ThreadToolOutput,
-    result: &str,
-    artifacts: Vec<serde_json::Value>,
-) -> pl_protocol::ThreadToolOutput {
-    pl_protocol::ThreadToolOutput::new(
-        result.to_owned(),
-        output.attachments().to_vec(),
-        artifacts,
-        output.exit_code(),
-    )
-}
-
-fn clear_arguments(invocation: &ThreadToolInvocation) -> ThreadToolInvocation {
-    rebuild_invocation(invocation, String::new())
-}
-
 fn clear_streamed_output(state: &ThreadToolState) -> ThreadToolState {
     match state {
         ThreadToolState::Running(_) => {
@@ -617,22 +410,12 @@ fn clear_streamed_output(state: &ThreadToolState) -> ThreadToolState {
     }
 }
 
-fn fill_arguments(invocation: &ThreadToolInvocation, arguments: String) -> ThreadToolInvocation {
-    rebuild_invocation(invocation, arguments)
-}
-
-/// 用给定正文重建工具调用身份，保留 provider 身份、工作目录与任务关联。
-///
-/// 只有 `arguments` 是正文域，其余字段是静态身份：静态 `meta` 清空正文、落盘边界再填回时都不能
-/// 丢掉它们，否则窗口条目与 canonical 条目会在 task/call 关联上分叉。
-fn rebuild_invocation(
-    invocation: &ThreadToolInvocation,
-    arguments: String,
-) -> ThreadToolInvocation {
+/// 只用于 static_state 的结构判等，保留 task/call 关联；不用于读取或内存 meta 编码。
+fn clear_arguments(invocation: &ThreadToolInvocation) -> ThreadToolInvocation {
     let rebuilt = ThreadToolInvocation::new(
         invocation.tool_call_id().to_owned(),
         invocation.name().to_owned(),
-        arguments,
+        String::new(),
     )
     .with_provider_identity(
         invocation.call_id().map(str::to_owned),
@@ -642,17 +425,5 @@ fn rebuild_invocation(
     match invocation.task_id() {
         Some(task_id) => rebuilt.with_task_id(task_id.to_owned()),
         None => rebuilt,
-    }
-}
-
-fn fill_streamed_output(state: &ThreadToolState, output: &str) -> ThreadToolState {
-    match state {
-        ThreadToolState::Running(_) => {
-            ThreadToolState::Running(pl_protocol::RunningThreadTool::new(output.to_owned()))
-        }
-        ThreadToolState::Cancelling(_) => {
-            ThreadToolState::Cancelling(pl_protocol::CancellingThreadTool::new(output.to_owned()))
-        }
-        other => other.clone(),
     }
 }

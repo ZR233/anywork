@@ -33,7 +33,7 @@ pub(super) struct ToolBinding {
 
 #[derive(Default)]
 pub(super) struct ThreadToolLifetime {
-    gate: std::sync::Arc<tokio::sync::Mutex<()>>,
+    pub(super) gate: std::sync::Arc<tokio::sync::Mutex<()>>,
     pub(super) cancellation: tokio_util::sync::CancellationToken,
 }
 
@@ -331,21 +331,7 @@ impl StudioThreadFactory {
         )
         .await?;
         ensure_same_target(&binding.project, &project)?;
-        if let Some(previous) = &binding.ssh_profile {
-            let current = self
-                .services
-                .ssh_manager
-                .list_servers()
-                .await
-                .into_iter()
-                .find(|entry| entry.profile.alias == previous.alias)
-                .map(|entry| entry.profile);
-            if current.as_ref() != Some(previous) {
-                return Err(ThreadAssemblyError::InvalidatedBinding(
-                    "SSH target configuration changed; reactivate this Thread".into(),
-                ));
-            }
-        }
+        ensure_frozen_ssh_profile(&self.services.ssh_manager, binding.ssh_profile.as_ref()).await?;
         let child = thread.parent_thread_id.is_some();
         let assignment = crate::studio::workspace_receipt::from_snapshot(snapshot)
             .map_err(|error| resource_error("decode workspace binding", error))?;
@@ -428,6 +414,7 @@ impl StudioThreadFactory {
         let mut prepared = self
             .prepare_thread_tools_with(
                 ThreadToolAssembly {
+                    verified_local: None,
                     assignment: binding.assignment.as_ref(),
                     workspace_usage: binding.workspace_usage.clone(),
                     thread_id: id,
@@ -459,6 +446,16 @@ impl StudioThreadFactory {
                     error
                 }
             })?;
+        if child {
+            let (profile, _) = crate::studio::model_route::saved_profile(snapshot)
+                .map_err(|error| resource_error("decode review role for tool refresh", error))?
+                .ok_or_else(|| {
+                    ThreadAssemblyError::Identity("child has no frozen Profile".into())
+                })?;
+            if let Some(assignment) = &assignment {
+                Self::configure_review_finish(&mut prepared.tools, id, &profile, assignment)?;
+            }
+        }
         let exposure = if child {
             crate::thread_assembler::AgentControlExposure::Disabled
         } else {
@@ -518,6 +515,26 @@ fn catalog_fact(
         },
     };
     (previous != Some(&fact)).then_some(fact)
+}
+
+pub(super) async fn ensure_frozen_ssh_profile(
+    manager: &pl_tool::remote::SshManager,
+    previous: Option<&pl_tool::remote::SshServerProfile>,
+) -> Result<(), ThreadAssemblyError> {
+    if let Some(previous) = previous {
+        let current = manager
+            .list_servers()
+            .await
+            .into_iter()
+            .find(|entry| entry.profile.alias == previous.alias)
+            .map(|entry| entry.profile);
+        if current.as_ref() != Some(previous) {
+            return Err(ThreadAssemblyError::InvalidatedBinding(
+                "SSH target configuration changed; reactivate this Thread".into(),
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn ensure_same_target(

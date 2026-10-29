@@ -44,6 +44,13 @@ impl ChildEvidence {
             "recovery evidence did not bind the real frozen child and completed Turn",
         )?;
         report.completed()?;
+        if child.profile_id == "reviewer" {
+            report
+                .review
+                .as_ref()
+                .context("recovery reviewer lacks typed conclusion")?
+                .require_legacy(APPROVED, report)?;
+        }
         Ok(Self {
             agent_id: child.agent_id.clone(),
             profile_id: child.profile_id.clone(),
@@ -99,7 +106,7 @@ pub(super) fn run(flow: &Flow<'_>, prompt: &str, environment: &Environment) -> P
         executor.agent_id != reviewer.agent_id,
         "recovery review reused the executor",
     )?;
-    let review = flow.report("recovery-review-initial", &reviewer, APPROVED, 0)?;
+    let review = flow.legacy_report("recovery-review-initial", &reviewer, APPROVED, 0)?;
     let first = flow.evaluate(
         "recovery-first-evaluation",
         &executor,
@@ -279,7 +286,7 @@ fn resumed(flow: &Flow<'_>, environment: &Environment) -> Progress<Decision> {
         reviewer.agent_id != old_reviewer.agent_id && reviewer.agent_id != executor.agent_id,
         "resumed recovery did not spawn a fresh independent reviewer",
     )?;
-    let approval = flow.report("recovery-review-resumed", &reviewer, APPROVED, 0)?;
+    let approval = flow.legacy_report("recovery-review-resumed", &reviewer, APPROVED, 0)?;
     let updated = flow.evaluate(
         "recovery-updated-evaluation",
         &executor,

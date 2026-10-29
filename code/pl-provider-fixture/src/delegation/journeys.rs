@@ -67,12 +67,24 @@ pub(super) fn decide(request: &Request, environment: &Environment) -> Result<Dec
             Scenario::Window => super::window::run(&flow, &prompt),
             Scenario::Enablement => enablement(&flow, &prompt, environment),
             Scenario::Recovery => super::recovery::run(&flow, &prompt, environment),
+            Scenario::ReviewFeedback => super::review_feedback::run(&flow, &prompt, environment),
             Scenario::Worktree => super::worktree::run(&flow, &prompt, environment),
         }
     };
     match result {
         Ok(decision) => Ok(decision),
-        Err(Stop::Call(decision)) => Ok(*decision),
+        Err(Stop::Call(mut decision)) => {
+            if decision.call.as_ref().is_some_and(|call| {
+                call.name == "exec" && call.id == format!("{}-review-surface", flow.prefix)
+            }) {
+                for case in ["busy", "changed", "closed"] {
+                    if prompt.starts_with(&format!("[[delegation:child:rf-review:{case}]]")) {
+                        decision.note = format!("rf-review-{case}-arrived");
+                    }
+                }
+            }
+            Ok(*decision)
+        }
         Err(Stop::Failed(error)) => Err(error),
     }
 }
@@ -95,6 +107,9 @@ fn child(request: &Request, prompt: &str, environment: &Environment) -> Progress
             ROOT_ONLY_TOOLS.iter().all(|tool| !request.declared(tool)),
             "child discovery revealed a deferred root-only tool",
         )?;
+    }
+    if let Some(decision) = super::review_child::child(&flow, prompt, environment)? {
+        return Ok(decision);
     }
     if let Some(decision) = super::worktree::child_reply(&flow, prompt)? {
         return Ok(decision);
@@ -122,6 +137,22 @@ fn child(request: &Request, prompt: &str, environment: &Environment) -> Progress
     } else {
         return Err(anyhow::anyhow!("unknown child marker").into());
     };
+    if prompt.starts_with("[[delegation:child:review]]")
+        || prompt.starts_with("[[delegation:child:review-pass]]")
+        || prompt.starts_with("[[delegation:child:recovery-review-")
+    {
+        return super::review_child::finish_review(
+            &flow,
+            note,
+            text,
+            if prompt.starts_with("[[delegation:child:review]]") {
+                super::review_wire::Disposition::NeedsChanges
+            } else {
+                super::review_wire::Disposition::Approved
+            },
+            note,
+        );
+    }
     Ok(Decision::answer(note, text))
 }
 

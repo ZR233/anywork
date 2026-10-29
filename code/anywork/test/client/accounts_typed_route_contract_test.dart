@@ -20,6 +20,7 @@ import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/platform/host_app_icons.dart';
 import 'package:anywork/src/presentation/providers/account_domains.dart';
 import 'package:anywork/src/presentation/providers/account_operation_observation.dart';
+import 'package:anywork/src/shared/studio_driver_keys.dart';
 import 'package:anywork/src/features/settings/statistics/view_models/statistics_repository_provider.dart';
 import 'package:anywork_client/accounts.dart';
 import 'package:anywork_client/model_directory.dart';
@@ -61,6 +62,10 @@ void main() {
           'details model owner',
         );
         final models = h.container.read(provider.notifier);
+        final usage =
+            h.container.read(accountUsageRepositoryProvider) as VmUsage;
+        expect(usage.demands, hasLength(1));
+        final detailUsage = usage.demands.single;
         models.changeCompact('model', '1250');
         final token = models.compactLeaveToken();
         const model = AccountModelRoute(
@@ -91,6 +96,8 @@ void main() {
             hasLength(depth),
           );
           expect(h.container.read(provider.notifier), same(models));
+          expect(usage.demands, hasLength(1));
+          expect(detailUsage.releases, 0);
           expect(models.matchesCompactLeaveToken(token), isTrue);
           expect(find.byType(AccountUnsavedChangesDialog), findsNothing);
         }
@@ -111,6 +118,14 @@ void main() {
         await _at(tester, h.router, const SettingsRoute().location);
         expect(find.byType(AccountUnsavedChangesDialog), findsNothing);
         expect(h.models.compactCalls, isEmpty);
+        // The local account back returns to the list. The global Settings
+        // action must leave all nested account pages and return to the chat.
+        h.router.go(details.location);
+        await _at(tester, h.router, details.location);
+        await tester.tap(find.byKey(StudioDriverKeys.settingsBack));
+        await _at(tester, h.router, const StudioRoute().location);
+        expect(detailUsage.releases, 1);
+        expect(usage.demands.every((demand) => demand.releases == 1), isTrue);
       } catch (error, stack) {
         caseFailure = error;
         caseStack = stack;

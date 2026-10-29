@@ -199,7 +199,7 @@ impl AgentServices {
         owner: &StudioThreadAssembler,
         record: &pl_protocol::Thread,
     ) -> Result<()> {
-        let _operation = owner.agent_operation(&record.id).await;
+        let operation = owner.agent_operation(&record.id).await;
         let receiver = owner.0.state().entries.get(&record.id).and_then(|entry| {
             (entry.purpose == EntryPurpose::ReportReceiver).then(|| entry.incarnation.clone())
         });
@@ -267,7 +267,7 @@ impl AgentServices {
             .factory
             .project_child_close(record, &thread.snapshot())
             .await;
-        owner.close_with_permit(&record.id).await?;
+        owner.close_with_permit(&record.id, operation).await?;
         owner
             .acknowledge_parent_reports(&self.store, record)
             .await?;

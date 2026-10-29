@@ -6,7 +6,7 @@ use pl_protocol::studio::{
     SaveBotRequest, SetAccountModelConnectionRequest, SetThreadModeRequest, SettingsFieldUpdate,
     StudioPromptInput, SubmitPromptRequest, UpdateSettingsFieldRequest,
 };
-use pl_protocol::{ThreadItemState, ThreadStatus, TurnState};
+use pl_protocol::{ThreadContentField, ThreadStatus, TimelineDescriptor, TurnState};
 use pl_provider_fixture::{
     agent_definitions::{
         AgentPhase, CHILD_MODEL, COMPACT_MODEL, FUTURE_MODEL, ROOT_MODEL, USER_MODEL_NEW,
@@ -385,7 +385,7 @@ impl Observation<'_> {
             message_id(AgentPhase::ColdFeishu)
         );
         let before_cold = self.session.http()?.read_timeline(&feishu, 100).await?;
-        ensure!(!before_cold.items.iter().any(|item| matches!(item.preview.state(), ThreadItemState::Turn(turn) if turn.input_id() == Some(cold_input.as_str()))), "cold platform input already existed before this inbound");
+        ensure!(!before_cold.items.iter().any(|item| matches!(&item.descriptor, TimelineDescriptor::Turn(turn) if turn.input_id() == Some(cold_input.as_str()))), "cold platform input already existed before this inbound");
         self.ingress(&bot, AgentPhase::ColdFeishu).await?;
         let cold_bindings = sqlite::thread_bindings(&self.session.home, &bot).await?;
         let cold_binding = cold_bindings
@@ -399,19 +399,17 @@ impl Observation<'_> {
             "cold inbound changed original bot/chat Thread binding"
         );
         let cold_timeline = self.session.http()?.read_timeline(&feishu, 100).await?;
-        let cold_turns = cold_timeline.items.iter().filter(|item| matches!(item.preview.state(), ThreadItemState::Turn(turn) if turn.input_id() == Some(cold_input.as_str()) && matches!(turn.state(), TurnState::Completed(_)))).collect::<Vec<_>>();
+        let cold_turns = cold_timeline.items.iter().filter(|item| matches!(&item.descriptor, TimelineDescriptor::Turn(turn) if turn.input_id() == Some(cold_input.as_str()) && matches!(turn.state(), TurnState::Completed(_)))).collect::<Vec<_>>();
         ensure!(
             cold_turns.len() == 1,
             "original Feishu Thread has no unique completed Turn for current platform message"
         );
-        let cold_turn = &cold_turns[0].preview.turn_id;
+        let cold_turn = &cold_turns[0].header.turn_id;
         let has_text = |channel, expected: &str| {
             cold_timeline.items.iter().any(|item| {
-                item.preview.turn_id == *cold_turn
-                    && item
-                        .preview
-                        .text()
-                        .is_some_and(|text| text.channel() == channel && text.text() == expected)
+                item.header.turn_id == *cold_turn
+                    && matches!(&item.descriptor, TimelineDescriptor::Text(text) if text.channel == channel)
+                    && item.fields.iter().any(|field| field.field == ThreadContentField::Text && field.text == expected)
             })
         };
         ensure!(
@@ -490,7 +488,7 @@ impl Observation<'_> {
         loop {
             let page = self.session.http()?.read_timeline(id, 100).await?;
             for item in &page.items {
-                if let ThreadItemState::Turn(turn) = item.preview.state()
+                if let TimelineDescriptor::Turn(turn) = &item.descriptor
                     && turn.input_id() == Some(input_id.as_str())
                 {
                     match turn.state() {
@@ -848,16 +846,20 @@ impl Observation<'_> {
         let tool = page
             .items
             .iter()
-            .filter_map(|item| item.preview.tool())
-            .find(|tool| tool.invocation().tool_call_id() == phase.action_call())
+            .filter_map(|item| match &item.descriptor {
+                TimelineDescriptor::Tool(tool) => Some(tool),
+                _ => None,
+            })
+            .find(|tool| tool.invocation.tool_call_id == phase.action_call())
             .context("rejected real tool item missing")?;
         ensure!(
             matches!(
-                tool.state(),
-                pl_protocol::ThreadToolState::Failed(_) | pl_protocol::ThreadToolState::Denied(_)
+                tool.state,
+                pl_protocol::TimelineToolState::Failed { .. }
+                    | pl_protocol::TimelineToolState::Denied { .. }
             ),
             "forbidden spawn was not rejected: {:?}",
-            tool.state()
+            tool.state
         );
         Ok(())
     }

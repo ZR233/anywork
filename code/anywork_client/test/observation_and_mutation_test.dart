@@ -40,6 +40,84 @@ void main() {
     expect(source.observerCount, 0);
   });
 
+  test('reentrant publications supersede old delivery for active and paused observers', () {
+    for (final paused in [false, true]) {
+      for (final replacement in <String?>[null, 'B']) {
+        final source = LatestValue<String?>('A');
+        var replaced = false;
+        source.watch((value) {
+          if (value != 'B' || replaced) return;
+          replaced = true;
+          source.publish(replacement);
+        });
+        final seen = <String?>[];
+        final second = source.watch(seen.add);
+        if (paused) second.pause();
+        source.publish('B');
+        if (paused) {
+          expect(seen, isEmpty);
+          second.resume();
+        }
+        expect(seen, [replacement]);
+        expect(source.value, replacement);
+        source.close();
+      }
+    }
+  });
+
+  test('resume can publish while registration and cancellation retain snapshot semantics', () {
+    final source = LatestValue<String?>('A');
+    final firstSeen = <String?>[];
+    final secondSeen = <String?>[];
+    LatestWatch<String?>? added;
+    late final Observation second;
+    final first = source.watch((value) {
+      firstSeen.add(value);
+      if (value != 'B') return;
+      added = source.watchLatest(secondSeen.add);
+      second.cancel();
+      source.publish(null);
+    });
+    first.pause();
+    final cancelledSeen = <String?>[];
+    second = source.watch(cancelledSeen.add);
+    source.publish('B');
+    expect(cancelledSeen, ['B']);
+    first.resume();
+    expect(firstSeen, ['B', null]);
+    expect(added!.value, 'B');
+    expect(secondSeen, [null]);
+    expect(cancelledSeen, ['B']);
+    expect(second.isCancelled, isTrue);
+    source.close();
+    expect(source.observerCount, 0);
+  });
+
+  test(
+    'close inside a publication cancels pending delivery and fails its waiters',
+    () async {
+      final source = LatestValue<String?>('A');
+      source.watch((value) {
+        if (value == 'B') source.close();
+      });
+      final seen = <String?>[];
+      source.watch(seen.add);
+      final pausedSeen = <String?>[];
+      final paused = source.watch(pausedSeen.add)..pause();
+      final waiting = expectLater(
+        source.waitFor((value) => value == 'never'),
+        throwsStateError,
+      );
+      source.publish('B');
+      paused.resume();
+      expect(seen, isEmpty);
+      expect(pausedSeen, isEmpty);
+      expect(source.observerCount, 0);
+      expect(() => source.publish(null), throwsStateError);
+      await waiting;
+    },
+  );
+
   test(
     'watchLatest and waitFor observe updates adjacent to registration',
     () async {

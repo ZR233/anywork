@@ -96,6 +96,27 @@ pub struct StudioThreadTools {
 }
 
 impl StudioThreadTools {
+    /// Replaces only the standard finish registration, preserving the frozen role on refresh.
+    pub(crate) fn configure_review_finish(
+        &mut self,
+        authority: pl_tool::finish_turn::ReviewAuthority,
+    ) -> Result<(), ThreadAssemblyError> {
+        if !self
+            .registrations
+            .iter()
+            .any(|tool| tool.tool_id() == pl_tool::finish_turn::TOOL_FINISH_TURN)
+        {
+            return Ok(());
+        }
+        let registration = pl_tool::finish_turn::registration_with_review(
+            pl_model::runtime::thread_tool_declaration(&pl_tool::finish_turn::review_declaration())?,
+            Some(authority),
+        )?;
+        self.registrations
+            .retain(|tool| tool.tool_id() != pl_tool::finish_turn::TOOL_FINISH_TURN);
+        self.registrations.push(registration);
+        Ok(())
+    }
     /// Transfers an explicitly selected catalog, without constructing standard capabilities.
     /// Optional capability builders remain disabled for this restricted catalog.
     pub fn selected(store: FileResourceStore, registrations: Vec<Registration>) -> Self {

@@ -37,7 +37,6 @@ pub async fn subscribe_startup_progress(
             cancel: CancellationToken::new(),
             producer_task: tokio::sync::Mutex::new(None),
             sink_task: tokio::sync::Mutex::new(None),
-            thread_receiver: tokio::sync::Mutex::new(None),
             product_topic_receiver: tokio::sync::Mutex::new(None),
             shutdown_receiver: tokio::sync::Mutex::new(None),
             startup_receiver: tokio::sync::Mutex::new(Some(events)),

@@ -3,6 +3,12 @@ use super::*;
 use futures::FutureExt;
 use std::future::Future;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ActivationPurpose {
+    Explicit,
+    VerifiedReview,
+}
+
 /// Product identity selected before allocating physical resources.
 #[derive(Debug, Clone)]
 pub struct ThreadActivation {
@@ -49,6 +55,42 @@ impl StudioThreadAssembler {
         identity: ThreadActivation,
         factory: impl StudioActivationFactory,
     ) -> Result<ThreadHandle, ThreadAssemblyError> {
+        self.activate_owned(identity, factory, None).await
+    }
+
+    pub(crate) async fn activate_verified_review(
+        &self,
+        identity: ThreadActivation,
+        factory: crate::studio::StudioThreadFactory,
+        proof: crate::studio::thread_factory::VerifiedLocalResume,
+        operation: tokio::sync::OwnedMutexGuard<()>,
+    ) -> Result<ThreadHandle, ThreadAssemblyError> {
+        self.activate_owned(
+            identity,
+            factory,
+            Some((
+                super::WorkspacePreparationOwner::verified_review(proof),
+                operation,
+            )),
+        )
+        .await
+    }
+
+    async fn activate_owned(
+        &self,
+        identity: ThreadActivation,
+        factory: impl StudioActivationFactory,
+        restricted: Option<(
+            super::WorkspacePreparationOwner,
+            tokio::sync::OwnedMutexGuard<()>,
+        )>,
+    ) -> Result<ThreadHandle, ThreadAssemblyError> {
+        let is_restricted = restricted.is_some();
+        let purpose = if is_restricted {
+            ActivationPurpose::VerifiedReview
+        } else {
+            ActivationPurpose::Explicit
+        };
         loop {
             let changed = self.0.changed.notified();
             tokio::pin!(changed);
@@ -59,6 +101,9 @@ impl StudioThreadAssembler {
                     return Err(ThreadAssemblyError::Closed);
                 }
                 if let Some(entry) = state.entries.get(&identity.id) {
+                    if is_restricted {
+                        return Err(ThreadAssemblyError::Preparing(identity.id.clone()));
+                    }
                     if entry.parent_id != identity.parent_id {
                         return Err(ThreadAssemblyError::Identity(identity.id));
                     }
@@ -75,6 +120,12 @@ impl StudioThreadAssembler {
                     }
                 }
                 let preparation = match state.creating.get(&identity.id) {
+                    Some(preparation)
+                        if is_restricted
+                            || preparation.purpose.is_some_and(|mode| mode != purpose) =>
+                    {
+                        return Err(ThreadAssemblyError::Preparing(identity.id.clone()));
+                    }
                     Some(preparation) if preparation.parent_id == identity.parent_id => {
                         Some(preparation.result.clone())
                     }
@@ -122,14 +173,21 @@ impl StudioThreadAssembler {
                     .get_mut(&identity.id)
                     .ok_or(ThreadAssemblyError::Closed)?;
                 preparation.result = Some(result.clone());
+                preparation.purpose = Some(purpose);
                 preparation.cancellation.clone()
             };
             self.0.changed.notify_waiters();
             let owner = self.clone();
             tokio::spawn(async move {
-                let workspace_owner = super::WorkspacePreparationOwner::default();
+                let (workspace_owner, operation) = match restricted {
+                    Some((workspace, operation)) => (workspace, Some(operation)),
+                    None => (super::WorkspacePreparationOwner::default(), None),
+                };
                 let operation = std::panic::AssertUnwindSafe(async {
-                    let _operation = owner.agent_operation(&identity.id).await;
+                    let _operation = match operation {
+                        Some(operation) => operation,
+                        None => owner.agent_operation(&identity.id).await,
+                    };
                     if owner.0.state().sealed_agents.contains_key(&identity.id) {
                         return Err(ThreadAssemblyError::Closed);
                     }

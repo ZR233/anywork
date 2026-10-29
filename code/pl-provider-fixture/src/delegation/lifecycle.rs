@@ -46,7 +46,7 @@ pub(super) fn run(flow: &Flow<'_>, prompt: &str, environment: &Environment) -> P
         "[[delegation:child:review]]",
         Some(&executor.agent_id),
     )?;
-    let changes = flow.report(
+    let changes = flow.legacy_report(
         "review",
         &initial_reviewer,
         "delegation independent review: changes requested",
@@ -97,7 +97,7 @@ pub(super) fn run(flow: &Flow<'_>, prompt: &str, environment: &Environment) -> P
         &repair_review_message,
         Some(&executor.agent_id),
     )?;
-    let approved = flow.report(
+    let approved = flow.legacy_report(
         "rereview",
         &repair_reviewer,
         "delegation independent review: approved",
@@ -201,7 +201,7 @@ pub(super) fn run(flow: &Flow<'_>, prompt: &str, environment: &Environment) -> P
         &late_review_message,
         Some(&executor.agent_id),
     )?;
-    let late_approved = flow.report(
+    let late_approved = flow.legacy_report(
         "late-rereview",
         &late_reviewer,
         "delegation independent review: approved",

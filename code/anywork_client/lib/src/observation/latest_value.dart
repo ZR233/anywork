@@ -16,6 +16,7 @@ final class LatestValue<T> implements ValueObservation<T> {
   LatestValue(this._value);
 
   T _value;
+  int _publicationVersion = 0;
   bool _closed = false;
   final Set<_Observation<T>> _observations = {};
   final Set<Completer<T>> _waiters = {};
@@ -25,8 +26,11 @@ final class LatestValue<T> implements ValueObservation<T> {
 
   void publish(T next) {
     if (_closed) throw StateError('The display mirror is closed');
+    final publication = ++_publicationVersion;
     _value = next;
     for (final observation in List.of(_observations)) {
+      // A nested publication already delivers the newer snapshot, even if equal.
+      if (_closed || _publicationVersion != publication) break;
       observation.deliver(next);
     }
   }

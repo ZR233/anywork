@@ -5,47 +5,48 @@
 // 人工证据覆盖（design/19、design/26 §26.7）。
 import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/domain/models/timeline_commands.dart';
-import 'package:anywork/src/features/timeline/timeline_view.dart';
+import 'package:anywork/src/features/conversation/timeline/views/timeline_view.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/l10n/studio_l10n.dart';
 import 'package:anywork/src/presentation/view_models/timeline_session_owner.dart';
+import 'package:anywork/src/shared/studio_driver_keys.dart';
 import 'package:anywork_client/studio_client.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+
+import 'support/conversation_fixtures.dart';
+import 'support/pump_client_future.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   final timestamp = DateTime.utc(2026, 1, 2, 3, 4, 5);
 
-  StudioTimelineItem rawItem(
+  ConversationItem rawItem(
     String id, {
     required int ordinal,
-    required ThreadRawItemStateView state,
-  }) => StudioTimelineItem(
-    item: ThreadItemView(
-      id: id,
-      threadId: 'thread',
-      turnId: 'turn',
-      ordinal: ordinal,
-      revision: 1,
-      createdAt: timestamp,
-      updatedAt: timestamp,
-      state: state,
-    ),
-    saved: true,
-    lifecycle: StudioTimelineLifecycle.terminal,
-    omittedBytes: 0,
-    details: const [],
+    required ConversationRawDescriptor descriptor,
+    Map<ThreadContentFieldView, String> fields = const {},
+  }) => conversationFixture(
+    id: id,
+    threadId: 'thread',
+    ordinal: ordinal,
+    createdAt: timestamp,
+    updatedAt: timestamp,
+    descriptor: descriptor,
+    fields: fields,
   );
 
-  TimelineDisplayLease leaseWith(List<StudioTimelineItem> items) {
+  TimelineDisplayLease leaseWith(
+    WidgetTester tester,
+    List<ConversationItem> items,
+  ) {
     final lease = TimelineDisplayLease(
       threadId: 'thread',
       generation: 1,
-      openQueries: (_) => null,
+      content: conversationContentFixture(tester: tester),
     );
     lease.adoptBaseline(
-      StudioTimelineBaseline(
+      ConversationBaseline(
         subscriptionId: 'test',
         version: 0,
         items: items,
@@ -70,12 +71,27 @@ void main() {
     isPreparingLive: false,
   );
 
+  Future<void> unmountTimeline(
+    WidgetTester tester,
+    TimelineDisplayLease lease,
+  ) async {
+    if (lease.isReleased) return;
+    await tester.pumpWidget(const SizedBox.shrink());
+    await pumpClientFuture(
+      tester,
+      lease.retire(),
+      'raw timeline stock operations done',
+    );
+    expect(lease.isReleased, isTrue, reason: '卸载后等待真实 stock operations done');
+  }
+
   Future<void> pumpTimeline(
     WidgetTester tester,
     TimelineDisplayLease lease,
   ) async {
     await tester.binding.setSurfaceSize(const Size(900, 700));
     addTearDown(() => tester.binding.setSurfaceSize(null));
+    addTearDown(() => unmountTimeline(tester, lease));
     await tester.pumpWidget(
       MaterialApp(
         theme: pureStudioTheme(),
@@ -85,12 +101,18 @@ void main() {
           body: TimelineView(
             threadId: 'thread',
             view: viewState(),
-            lease: lease,
+            controls: lease,
             onLoadOlder: () async {},
             onRetryOlder: () async {},
             onReturnLive: () async {},
             onEnterHistory: () {},
             onRetryConnection: () async {},
+            onDetail: (_, _) {},
+            onLink: (_) {},
+            isSafeLink: (_) => false,
+            imageBuilder: (_, _, _) => const SizedBox.shrink(),
+            remoteImageBuilder: (_, _) => const SizedBox.shrink(),
+            groupMediaBuilder: (_) => const SizedBox.shrink(),
           ),
         ),
       ),
@@ -100,26 +122,32 @@ void main() {
   }
 
   testWidgets('运行时说明不冒充原始历史记录，历史载荷仍可展开', (tester) async {
-    final lease = leaseWith([
+    final lease = leaseWith(tester, [
       rawItem(
         'notice',
         ordinal: 1,
-        state: ThreadRawItemStateView(
-          const [],
-          'This session continued after it was stopped.',
-          timestamp,
+        descriptor: ConversationRawDescriptor(
+          payloads: const [],
+          notice: 'This session continued after it was stopped.',
+          recordedAt: timestamp,
           origin: ThreadRawItemOrigin.runtimeControl,
         ),
       ),
       rawItem(
         'payload',
         ordinal: 2,
-        state: ThreadRawItemStateView(
-          const [RawHistoryPayload('pl.model.receipt', 1, '{"ok":false}')],
-          'Unsupported saved response encoding',
-          timestamp,
+        descriptor: ConversationRawDescriptor(
+          payloads: const [
+            ConversationRawPayloadDescriptor(
+              format: 'pl.model.receipt',
+              version: 1,
+            ),
+          ],
+          notice: 'Unsupported saved response encoding',
+          recordedAt: timestamp,
           origin: ThreadRawItemOrigin.stored,
         ),
+        fields: {const ThreadRawPayloadFieldView(0): '{"ok":false}'},
       ),
     ]);
 
@@ -127,15 +155,16 @@ void main() {
 
     final context = tester.element(find.byType(TimelineView));
     final l10n = context.l10n;
-    expect(
-      find.byKey(const ValueKey('runtime-notice-notice')),
-      findsOneWidget,
-      reason: '运行时说明有自己的行身份',
-    );
+    final notice = find.byKey(StudioDriverKeys.timelineBlock('notice'));
+    expect(notice, findsOneWidget, reason: '运行时说明有自己的行身份');
     expect(find.text(l10n.timelineRuntimeNotice), findsOneWidget);
     expect(
-      find.byKey(const ValueKey('raw-history-notice')),
-      findsNothing,
+      tester
+          .widget<InkWell>(
+            find.descendant(of: notice, matching: find.byType(InkWell)),
+          )
+          .onTap,
+      isNull,
       reason: '运行时说明没有可展开载荷，不能显示成原始历史记录',
     );
     expect(
@@ -145,7 +174,7 @@ void main() {
     );
 
     expect(find.text(l10n.timelineRawRecord), findsOneWidget);
-    final storedTile = find.byKey(const ValueKey('raw-history-payload'));
+    final storedTile = find.byKey(StudioDriverKeys.timelineBlock('payload'));
     expect(storedTile, findsOneWidget, reason: '真历史载荷仍按原样保留展开入口');
     expect(
       find.text('Unsupported saved response encoding'),
@@ -156,5 +185,6 @@ void main() {
     await tester.tap(storedTile);
     await tester.pumpAndSettle();
     expect(find.text('{"ok":false}'), findsOneWidget, reason: '展开后显示原始载荷正文');
+    await unmountTimeline(tester, lease);
   });
 }

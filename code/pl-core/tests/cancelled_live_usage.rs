@@ -238,6 +238,7 @@ async fn stopped_attempt_never_publishes_a_live_pair(stop: Stop) {
             )
         })
         .expect("the Thread stays open");
+    assert!(immediate.observation_revision > observed_pair.observation_revision);
     assert!(
         immediate.model_progress.is_some(),
         "the stopped attempt keeps its observation identity and partial content"

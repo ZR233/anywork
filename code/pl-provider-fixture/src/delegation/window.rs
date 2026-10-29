@@ -40,7 +40,7 @@ pub(super) fn run(flow: &Flow<'_>, prompt: &str) -> Progress<Decision> {
             "[[delegation:child:review-pass]]",
             Some(&child.agent_id),
         )?;
-        let approval = flow.report(
+        let approval = flow.legacy_report(
             &format!("sample-review-{index}"),
             &reviewer,
             "delegation independent review: approved",

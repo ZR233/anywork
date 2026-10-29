@@ -1,7 +1,7 @@
 //! Bounded visible-message reads and resumable substring search over canonical Session content.
 use anyhow::{Context, Result, ensure};
 use base64::Engine;
-use pl_protocol::{ThreadContentField, TimelineDetailQuery, TimelinePageQuery};
+use pl_protocol::{ThreadContentField, TimelineDescriptor, TimelineDetailQuery, TimelinePageQuery};
 use serde::{Deserialize, Serialize};
 
 use super::{StudioRuntime, output};
@@ -186,29 +186,30 @@ pub(super) async fn search(
                 cursor.before = None;
                 continue;
             };
-            let Some(text) = item.preview.text() else {
+            if !matches!(&item.descriptor, TimelineDescriptor::Text(_)) {
+                advance(&mut cursor, page.before, !page.has_older);
+                continue;
+            }
+            let Some(text) = item
+                .fields
+                .iter()
+                .find(|field| field.field == ThreadContentField::Text)
+            else {
                 advance(&mut cursor, page.before, !page.has_older);
                 continue;
             };
             let pending = PendingText {
-                item_id: item.preview.id.clone(),
-                revision: item.preview.revision,
+                item_id: item.header.id.clone(),
+                revision: item.revision,
                 continuation: None,
                 overlap: String::new(),
                 next_before: page.before,
                 end_of_session: !page.has_older,
             };
-            if let Some(detail) = item
-                .details
-                .iter()
-                .find(|detail| detail.field == ThreadContentField::Text)
-            {
-                cursor.pending = Some(PendingText {
-                    revision: detail.revision,
-                    ..pending
-                });
+            if text.preview_bytes() < text.total_bytes {
+                cursor.pending = Some(pending);
             } else {
-                if let Some(snippet) = matched_snippet(text.text(), &needle) {
+                if let Some(snippet) = matched_snippet(&text.text, &needle) {
                     matches.push(Match {
                         session_id,
                         item_id: pending.item_id,

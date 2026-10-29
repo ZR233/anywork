@@ -1,13 +1,12 @@
-//! Preserve the original terminal projection in child history before attempting parent delivery.
-use super::ObservationServices;
+//! Immutable terminal reports contain submitted conclusions, never later delivery outcomes.
 use crate::studio::thread_projection::TurnResult;
-use crate::thread_assembler::observation::ParentMessageDelivery;
 use anyhow::Result;
 use pl_core::{
     context::{ContextContent, OpaquePayload},
     thread::{ThreadSnapshot, TurnRecord},
 };
 use pl_protocol::Thread;
+use pl_tool::finish_turn::ReviewDisposition;
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -15,6 +14,8 @@ struct TurnReport<'a> {
     child_id: &'a str,
     commit_sequence: u64,
     turn: &'a TurnRecord,
+    turn_id: &'a str,
+    input_id: Option<&'a str>,
     message: String,
     messages: Vec<MessageIdentity<'a>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -22,6 +23,36 @@ struct TurnReport<'a> {
     running_tasks: Vec<&'a str>,
     pending_interactions: Vec<&'a str>,
     permissions: Vec<&'a pl_core::thread::permissions::PermissionRecord>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    review: Option<ReviewReport<'a>>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ReviewReport<'a> {
+    target: Option<&'a pl_protocol::AgentReviewTargetSnapshot>,
+    /// Conclusion submitted for this frozen baseline, not approval of a later checkout.
+    disposition: ReviewDisposition,
+    summary: String,
+    reviewed_version: Option<&'a str>,
+    reason: Option<ReviewConclusionReason>,
+    full_report: FullReportLocation<'a>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+enum ReviewConclusionReason {
+    MissingConclusion,
+    AbnormalTerminal,
+    UnsettledWork,
+    InvalidFrozenBinding,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FullReportLocation<'a> {
+    agent_id: &'a str,
+    turn_id: &'a str,
 }
 
 #[derive(serde::Serialize)]
@@ -33,44 +64,8 @@ struct MessageIdentity<'a> {
     consumed: bool,
 }
 
-pub(super) async fn publish_terminal(
-    services: &ObservationServices,
-    thread: &Thread,
-    message: pl_core::thread::inbox::ThreadMessage,
-    wake: bool,
-) -> Result<Option<ParentMessageDelivery>> {
-    let Some(parent) = thread.parent_thread_id.as_deref() else {
-        return Ok(None);
-    };
-    let delivery = services
-        .threads
-        .notify_parent(parent, message, wake)
-        .await?;
-    match &delivery {
-        ParentMessageDelivery::Accepted {
-            message_id,
-            sequence,
-        } => {
-            tracing::trace!(%message_id, parent_sequence = sequence, "terminal report admitted; durable receipt still required")
-        }
-        ParentMessageDelivery::ProvenExisting {
-            message_id,
-            sequence,
-        } => {
-            tracing::trace!(%message_id, parent_sequence = sequence, "terminal report already durable")
-        }
-        ParentMessageDelivery::Skipped(reason) => tracing::trace!(
-            ?reason,
-            "terminal report publication skipped; no delivery ACK"
-        ),
-    }
-    // Keeping the child projection drainable during shutdown is not a delivery ACK. Retirement
-    // separately verifies the exact report identities in the parent's durable history index.
-    Ok(Some(delivery))
-}
-
-/// Frozen while the projection still owns the exact terminal write's snapshot and Turn result.
-/// The writer stores this message alongside that effect, even if publication is skipped or fails.
+/// Frozen by the terminal projection before handing the effect to its one history writer.
+/// No current target lookup, filesystem probe, forwarding or future idle assertion belongs here.
 pub(super) fn terminal_message(
     thread: &Thread,
     snapshot: &ThreadSnapshot,
@@ -78,12 +73,93 @@ pub(super) fn terminal_message(
     sequence: u64,
     result: &TurnResult,
 ) -> Result<pl_core::thread::inbox::ThreadMessage> {
-    let content = serde_json::to_string(&report(thread, turn, snapshot, result)?)?;
+    let mut report = report(thread, turn, snapshot, result)?;
+    report.commit_sequence = sequence;
+    let assignment = crate::studio::workspace_receipt::from_snapshot(snapshot)?;
+    let profile = crate::studio::model_route::saved_profile(snapshot)?.map(|(profile, _)| profile);
+    let is_review = assignment
+        .as_ref()
+        .is_some_and(|assignment| assignment.mode == pl_protocol::AgentWorkspaceMode::Review)
+        || profile.as_ref().is_some_and(|profile| {
+            profile.workspace_mode == pl_protocol::AgentWorkspaceMode::Review
+        });
+    if is_review {
+        let typed = result
+            .finish
+            .as_ref()
+            .and_then(|finish| finish.review.as_ref());
+        let valid_binding = assignment.as_ref().is_some_and(|assignment| {
+            assignment.mode == pl_protocol::AgentWorkspaceMode::Review
+                && assignment
+                    .review_target
+                    .as_ref()
+                    .is_some_and(|target| target.baseline.is_some() && target.agent_id != thread.id)
+        }) && profile.as_ref().is_some_and(|profile| {
+            profile.workspace_mode == pl_protocol::AgentWorkspaceMode::Review
+        });
+        let unsettled = !report.running_tasks.is_empty()
+            || !report.pending_interactions.is_empty()
+            || snapshot
+                .permissions
+                .values()
+                .any(|item| item.state == pl_core::thread::permissions::PermissionState::Pending)
+            || snapshot.continuation.is_some();
+        let reason = if !valid_binding {
+            Some(ReviewConclusionReason::InvalidFrozenBinding)
+        } else if !matches!(
+            turn.state,
+            pl_core::thread::TurnState::Finished(pl_core::thread::TurnOutcome::Completed)
+        ) {
+            Some(ReviewConclusionReason::AbnormalTerminal)
+        } else if unsettled {
+            Some(ReviewConclusionReason::UnsettledWork)
+        } else if typed.is_none() {
+            Some(ReviewConclusionReason::MissingConclusion)
+        } else {
+            None
+        };
+        let disposition = if reason.is_none() {
+            typed
+                .expect("a valid submitted conclusion exists")
+                .disposition
+        } else {
+            ReviewDisposition::Inconclusive
+        };
+        let summary = typed.map_or_else(
+            || "未提交有效结构化审查结论".to_owned(),
+            |review| review.summary.clone(),
+        );
+        report.message = summary.clone();
+        report.last_tool = None;
+        report.review = Some(ReviewReport {
+            target: assignment
+                .as_ref()
+                .and_then(|assignment| assignment.review_target.as_ref()),
+            disposition,
+            summary,
+            reviewed_version: typed.map(|review| review.reviewed_version.as_str()),
+            reason,
+            full_report: FullReportLocation {
+                agent_id: &thread.id,
+                turn_id: &turn.turn_id,
+            },
+        });
+        return encode_message(thread, sequence, &report);
+    }
+    encode_message(thread, sequence, &report)
+}
+
+fn encode_message(
+    thread: &Thread,
+    sequence: u64,
+    report: &TurnReport<'_>,
+) -> Result<pl_core::thread::inbox::ThreadMessage> {
+    let content = serde_json::to_string(report)?;
     Ok(pl_core::thread::inbox::ThreadMessage {
         kind: pl_core::context::AgentMessageKind::Report,
         id: crate::studio::agent_close::terminal_report_id(&thread.id, sequence),
         source_id: format!("studio.child:{}", thread.id),
-        payload: OpaquePayload::new("pl.studio.turn-report", 1, content.clone())?,
+        payload: OpaquePayload::new("pl.studio.turn-report", 3, content.clone())?,
         context: vec![ContextContent::Text {
             text: content.into(),
         }],
@@ -105,7 +181,7 @@ fn report<'a>(
     if message.is_empty() {
         message = format!(
             "本轮已停止，未提交最终总结。实际状态：{:?}。\n\n本轮已有可见输出：\n{}",
-            turn.state,
+            turn,
             result.commentary()
         );
     }
@@ -133,6 +209,8 @@ fn report<'a>(
         child_id: &thread.id,
         commit_sequence: snapshot.commit_sequence,
         turn,
+        turn_id: &turn.turn_id,
+        input_id: turn.input_id.as_deref(),
         message,
         messages,
         last_tool,
@@ -156,5 +234,6 @@ fn report<'a>(
                     || item.state == pl_core::thread::permissions::PermissionState::Pending
             })
             .collect(),
+        review: None,
     })
 }

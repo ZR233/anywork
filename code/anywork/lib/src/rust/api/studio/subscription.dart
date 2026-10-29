@@ -6,7 +6,6 @@
 import '../../frb_generated.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
-import 'package:freezed_annotation/freezed_annotation.dart' hide protected;
 
 import 'types/acp.dart';
 import 'types/acp_install.dart';
@@ -19,15 +18,12 @@ import 'types/product_topic.dart';
 import 'types/response.dart';
 import 'types/runtime.dart';
 import 'types/settings.dart';
-import 'types/thread_activity.dart';
 import 'types/thread_stream.dart';
-import 'types/thread_stream/item.dart';
 import 'types/updater.dart';
-part 'subscription.freezed.dart';
 
-// These functions are ignored because they are not marked as `pub`: `broadcast_cancel`, `cancel_and_wait`, `is_settled`, `is_settled`, `join_cancelled`, `join_subscription_cancellations`, `new`, `next_id`, `owned_completion`, `register_account_observation`, `register_statistics_feed`, `register`, `send_or_cancel`, `shutdown_issue`, `signal_cancel`, `unregister_account_observation`, `unregister_statistics_feed`, `unregister`, `wait_stopped`
+// These functions are ignored because they are not marked as `pub`: `broadcast_cancel`, `cancel_and_wait`, `is_settled`, `is_settled`, `join_cancelled`, `join_subscription_cancellations`, `new`, `next_id`, `owned_completion`, `register_account_observation`, `register_conversation`, `register_statistics_feed`, `register`, `send_or_cancel`, `shutdown_issue`, `signal_cancel`, `unregister_account_observation`, `unregister_statistics_feed`, `unregister`, `wait_stopped`
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `BridgeSubscriptionInner`, `BridgeSubscriptionKind`, `BridgeTaskRegistry`, `PendingSubscriptionCancellation`, `SubscriptionCompletionFacts`, `SubscriptionOwner`, `SubscriptionStop`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clone`, `clone`, `clone`, `drop`, `fmt`, `fmt`, `fmt`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clone`, `clone`, `drop`, `fmt`, `fmt`
 // These functions are ignored (category: IgnoreBecauseOwnerTyShouldIgnore): `default`
 
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<BridgeEventSubscription>>
@@ -59,24 +55,4 @@ abstract class BridgeEventSubscription implements RustOpaqueInterface {
   /// # Errors
   /// 拒绝其他订阅种类或第二个流消费者。
   Stream<BridgeStartupStage> startupStream();
-
-  /// 打开该 Thread 订阅的状态流；每个订阅只能打开一次。
-  ///
-  /// # Errors
-  /// 拒绝其他订阅种类或第二个流消费者。
-  Stream<BridgeThreadStreamEnvelope> threadStream();
-}
-
-@freezed
-sealed class BridgeThreadStreamEnvelope with _$BridgeThreadStreamEnvelope {
-  const BridgeThreadStreamEnvelope._();
-
-  const factory BridgeThreadStreamEnvelope.data({
-    required BridgeThreadSubscriptionUpdate update,
-  }) = BridgeThreadStreamEnvelope_Data;
-  const factory BridgeThreadStreamEnvelope.failure({
-    required BridgeError error,
-  }) = BridgeThreadStreamEnvelope_Failure;
-  const factory BridgeThreadStreamEnvelope.closed() =
-      BridgeThreadStreamEnvelope_Closed;
 }

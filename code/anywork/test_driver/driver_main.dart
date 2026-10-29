@@ -25,6 +25,7 @@ import 'package:anywork/src/app/routing/app_route.dart';
 import 'package:go_router/go_router.dart';
 import 'package:anywork/src/features/settings/accounts/view_models/account_models_view_model.dart';
 import 'package:anywork/src/features/settings/accounts/view_models/acp_account_view_model.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/timeline_plain_text.dart';
 import 'package:anywork/src/app/app_graph.dart';
 import 'package:anywork/src/app/studio_host_lifecycle.dart';
 import 'package:anywork/src/app/studio_shutdown.dart';
@@ -73,7 +74,9 @@ void main() {
       PointerDragCommandExtension(),
       ScrollbarDragCommandExtension(),
       KeyPressCommandExtension(),
-      ToolProbeExtension(),
+      ToolProbeExtension(
+        owner: () => _container.read(appGraphProvider).timeline,
+      ),
     ],
   );
   SchedulerBinding.instance.addTimingsCallback(_recordFrameTimings);
@@ -286,7 +289,9 @@ Future<String> _handleDriverData(String? message) async {
       final editor = _client.modeEditor.state;
       final catalog = _client.modeCatalog.state;
       final threadId = _client.selection.state.selectedThreadId;
-      final session = threadId == null ? null : _client.sessionState(threadId);
+      final session = threadId == null
+          ? null
+          : _client.conversations.sessionState(threadId);
       final run = session?.runtime?.workflow?.currentRun;
       return jsonEncode({
         'document': editor.document?.toJson(),
@@ -395,7 +400,7 @@ Future<String> _handleDriverData(String? message) async {
     case 'thread-current':
       final threadId = _client.selection.state.selectedThreadId;
       if (threadId == null) return jsonEncode({'outputTokens': null});
-      final snapshot = _client.sessionState(threadId)?.workspace;
+      final snapshot = _client.conversations.sessionState(threadId)?.workspace;
       return jsonEncode({
         'outputTokens': snapshot?.runtime.completionTokens,
         'revision': snapshot?.revision,
@@ -1532,7 +1537,7 @@ Map<String, Object?> _mountedAccountsViews(
 Map<String, Object?> _delegationSnapshot(StudioDriverFacts facts) {
   final store = _client.settings.state;
   final defaults = store.configLoaded ? store.canonical?.delegation : null;
-  final drafts = _client.startDraft.state;
+  final drafts = _client.drafts.startDraft.state;
   final directory = _client.threadDirectory.state;
   final threads = <String, StudioThread>{
     for (final thread in [
@@ -1690,6 +1695,9 @@ Iterable<Map<String, Object?>> _observedReadouts(AccountDisplayKey key) sync* {
 Map<String, Object?> _driverDiagnostics({StudioDriverFacts? observed}) {
   final facts = observed ?? StudioDriverState.readFacts();
   final workspace = facts.workspace;
+  final session = workspace == null
+      ? null
+      : _client.conversations.existingSession(workspace.thread.id)?.state;
   final runtime = workspace?.runtime;
   final liveUsage = runtime?.liveUsage;
   final observedUsage =
@@ -1772,6 +1780,13 @@ Map<String, Object?> _driverDiagnostics({StudioDriverFacts? observed}) {
               'tokensPerSecond': tokensPerSecond,
             },
     },
+    'stateStream': {
+      'threadId': session?.threadId,
+      'hasSnapshot': session?.hasSnapshot ?? false,
+      'epoch': session?.streamEpoch,
+      'baseRevision': session?.baseRevision,
+      'revision': session?.revision,
+    },
     'skills': _driverSkillsDiagnostics(),
     'composer': <String, Object?>{
       'newThread': _driverComposerDiagnostics(facts.newThreadComposer),
@@ -1781,6 +1796,7 @@ Map<String, Object?> _driverDiagnostics({StudioDriverFacts? observed}) {
     'accountsPresentation': _accountsPresentation(),
     'topics': studioDriverTopicDiagnostics(
       _client,
+      timeline: _container.read(appGraphProvider).timeline,
       accountsRepository: _container.read(appGraphProvider).accounts,
       modelsRepository: _container.read(appGraphProvider).models,
       usageRepository: _container.read(appGraphProvider).accountUsage,
@@ -1984,6 +2000,7 @@ Future<String> _startDriverFixtureClipboardImage() async {
 
   final selection = _client.selection.state;
   final projectId = selection.selectedProjectId;
+  final threadId = selection.selectedThreadId;
   if (projectId == null) {
     return jsonEncode(<String, Object?>{
       'ok': false,
@@ -1994,10 +2011,10 @@ Future<String> _startDriverFixtureClipboardImage() async {
     });
   }
   final bytes = await fixture.readAsBytes();
-  final threadId = selection.selectedThreadId;
   final Future<void> task;
   if (threadId != null) {
-    if (_client.composerState(threadId) == null) {
+    final composer = _client.drafts.existingComposer(threadId);
+    if (composer == null) {
       return jsonEncode(<String, Object?>{
         'ok': false,
         'hook': 'driver-fixture-clipboard-image',
@@ -2006,10 +2023,10 @@ Future<String> _startDriverFixtureClipboardImage() async {
         'reason': 'composer-not-ready',
       });
     }
-    task = _client.composer(threadId).addClipboardImage(bytes);
+    task = composer.addClipboardImage(bytes);
   } else {
-    final mode = _client.startDraft.state.forProject(projectId).mode;
-    task = _client.attachments.addNewThreadClipboard(
+    final mode = _client.drafts.startDraft.state.forProject(projectId).mode;
+    task = _client.drafts.attachments.addNewThreadClipboard(
       projectId: projectId,
       mode: mode,
       pngBytes: bytes,
@@ -2239,7 +2256,7 @@ String _redactEndpoint(String endpoint) {
 // Cross-block text selection acceptance.
 //
 // The production timeline renders a long plain-text reply through
-// `_PlainBodyText`, which seals the body into bounded chunks that each become a
+// `TimelinePlainText`, which seals the body into bounded chunks that each become a
 // real `RenderParagraph`. This Driver-only bridge lets the acceptance journey
 // drive the *real* `SelectionArea` selection and the product's own context-menu
 // copy callback, then read the platform clipboard back. It never writes the
@@ -2249,7 +2266,7 @@ String _redactEndpoint(String endpoint) {
 // These helpers live only in the Driver entrypoint; the product timeline widget
 // and model are not touched.
 
-/// The key prefixes the production `_PlainBodyText` gives its sealed chunks and
+/// The key prefixes the production `TimelinePlainText` gives its sealed chunks and
 /// its trailing open chunk.
 const _plainChunkKeyPrefix = 'plain-chunk-';
 const _plainOpenKeyPrefix = 'plain-open-';
@@ -2274,8 +2291,7 @@ List<Element> _longBodyTextElements() {
     if (value.startsWith(_plainChunkKeyPrefix) ||
         value.startsWith(_plainOpenKeyPrefix)) {
       element.visitAncestorElements((ancestor) {
-        final key = ancestor.widget.key;
-        if (key is ValueKey<String> && key.value.startsWith('plain-')) {
+        if (ancestor.widget is TimelinePlainText) {
           bodies.putIfAbsent(ancestor, () => <Element>[]).add(element);
           return false;
         }

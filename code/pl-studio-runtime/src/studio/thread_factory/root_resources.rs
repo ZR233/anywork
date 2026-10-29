@@ -391,6 +391,7 @@ impl StudioThreadFactory {
         );
         let mut prepared = self
             .prepare_thread_tools(ThreadToolAssembly {
+                verified_local: None,
                 assignment: None,
                 workspace_usage: workspace_usage.clone(),
                 thread_id: id,

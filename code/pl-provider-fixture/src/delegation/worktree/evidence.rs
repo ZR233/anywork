@@ -95,7 +95,10 @@ pub(super) struct TerminalReport {
     pub child_id: String,
     pub commit_sequence: u64,
     pub turn: TerminalTurn,
+    pub turn_id: String,
+    pub input_id: Option<String>,
     pub message: String,
+    pub review: Option<crate::delegation::review_wire::Review>,
     pub messages: Vec<Delivery>,
     pub running_tasks: Vec<String>,
     pub pending_interactions: Vec<String>,
@@ -148,6 +151,9 @@ impl TerminalReport {
         Ok(Self {
             child_id: report.child_id,
             commit_sequence: report.commit_sequence,
+            turn_id: report.turn_id,
+            input_id: report.input_id,
+            review: report.review,
             turn: TerminalTurn {
                 input_id: report.turn.input_id,
                 turn_id: report.turn.turn_id,

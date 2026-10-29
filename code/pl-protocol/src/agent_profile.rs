@@ -40,6 +40,33 @@ pub struct AgentWorktreeSnapshot {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AgentReviewTargetSnapshot {
     pub agent_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub feedback: Option<AgentReviewFeedback>,
+    /// Absent on migrated receipts: old history never grants a new review baseline.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub baseline: Option<AgentReviewBaseline>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum AgentReviewFeedback {
+    ToExecutor,
+}
+
+/// Host-proven delivery and admission watermarks, not model-authored disk version evidence.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentReviewBaseline {
+    pub turn_id: String,
+    pub input_id: Option<String>,
+    pub terminal_sequence: u64,
+    pub commit_sequence: u64,
+    pub input_ordinal: u64,
+    pub message_sequence: u64,
+    pub consumed_messages: u64,
+    pub wake_messages_through: u64,
+    pub execution_sequence: u64,
+    pub continuation_id: Option<String>,
 }
 
 /// 子 Agent 在创建时冻结的有效工作区边界。

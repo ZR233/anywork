@@ -157,7 +157,7 @@ impl BotRuntime {
                 &owner,
             )?;
             std::fs::create_dir_all(target.join("uploads"))?;
-            std::fs::canonicalize(root_copy)
+            dunce::canonicalize(root_copy)
         })
         .await
         .map_err(workspace_error)?
@@ -201,7 +201,7 @@ impl BotRuntime {
                 }
                 Err(error) => return Err(error),
             }
-            std::fs::canonicalize(root)
+            dunce::canonicalize(root)
         })
         .await
         .map_err(workspace_error)?

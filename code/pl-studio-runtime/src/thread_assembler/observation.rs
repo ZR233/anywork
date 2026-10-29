@@ -164,6 +164,12 @@ impl StudioThreadAssembler {
             source: source.into_boxed_dyn_error(),
         };
         let history = store.history(&child.id).await.map_err(failure)?;
+        Box::pin(self.recover_saved_review_deliveries(child))
+            .await
+            .map_err(failure)?;
+        self.join_review_delivery(&child.id)
+            .await
+            .map_err(failure)?;
         let mut after = 0;
         let mut acknowledged = false;
         let mut synchronized = false;
@@ -173,6 +179,26 @@ impl StudioThreadAssembler {
                 .await
                 .map_err(failure)?;
             if sequences.is_empty() {
+                let mut cursor = String::new();
+                loop {
+                    let facts = history
+                        .review_delivery_exceptions(&cursor)
+                        .await
+                        .map_err(failure)?;
+                    if facts.is_empty() {
+                        break;
+                    }
+                    for fact in facts {
+                        let parent = child.parent_thread_id.as_deref().ok_or_else(|| {
+                            failure(anyhow::anyhow!("review delivery exception has no parent"))
+                        })?;
+                        cursor = fact.message.id.clone();
+                        self.acknowledge_review_exception(parent, fact.message, false)
+                            .await
+                            .map_err(failure)?;
+                        acknowledged = true;
+                    }
+                }
                 return Ok(if acknowledged {
                     ParentReportAcknowledgement::Proven
                 } else {
@@ -286,7 +312,7 @@ impl StudioThreadAssembler {
         }
     }
 
-    async fn durable_message_identity(
+    pub(super) async fn durable_message_identity(
         &self,
         thread_id: &str,
         message_id: &str,
@@ -877,32 +903,59 @@ mod storage_fault_tests {
         Ok(())
     }
 
-    /// Component integration: a retained collaboration job owns the parent gate while the real
-    /// global seal runs. A skipped publication must fail close completion and retain its source.
-    /// A fresh parent owner then accepts the original terminal ID once and proves it durably.
+    /// Component integration in two phases: global Closing rejects live publication without an
+    /// ACK while the parent gate is held. After that gate and shutdown finish, a fresh owner runs
+    /// explicit recovery and proves the saved original ID/body durably and idempotently.
     #[tokio::test]
     async fn global_seal_skips_report_without_ack_and_retry_proves_the_original_terminal_id()
     -> Result<()> {
         let temp = tempfile::tempdir()?;
         let store = StudioStore::open(temp.path().join("studio/v2/studio.sqlite")).await?;
+        let resources = crate::studio::storage_fault_test_support::close_factory(&store)?;
         let fixture = Fixture::new(store.clone())?;
+        resources.install(&fixture.owner)?;
         let parent = fixture.add("parent", None).await?;
         let child = Fixture::protocol("child", Some("parent"));
         register_test_thread(&store, &child).await?;
-        let child_sink = ThreadStorageSink::new(store.clone(), child.clone(), None).await?;
-        spawn_live_projection(&child_sink);
-        let mut terminal = ticket("child", 1);
-        let turn = TurnRecord {
-            turn_id: "turn".into(),
+        let message_id = crate::studio::agent_close::terminal_report_id("child", 1);
+        let terminal_turn = TurnRecord {
+            turn_id: "original-terminal-turn".into(),
             input_id: None,
             state: TurnState::Finished(TurnOutcome::Completed),
             model_steps: 0,
             elapsed_ms: None,
         };
-        terminal.checkpoint.state.turns = Arc::from([turn.clone()]);
-        Arc::make_mut(&mut terminal.effect).turn = Some(turn);
-        child_sink.admit("child", terminal)?;
-        child_sink.flush("child", 1).await?;
+        let body = serde_json::to_string(&serde_json::json!({
+            "childId": child.id,
+            "commitSequence": 1,
+            "turn": terminal_turn,
+            "turnId": terminal_turn.turn_id,
+            "inputId": terminal_turn.input_id,
+            "message": "actual terminal fixture",
+            "messages": [],
+            "runningTasks": [],
+            "pendingInteractions": [],
+            "permissions": [],
+        }))?;
+        let message = pl_core::thread::inbox::ThreadMessage {
+            kind: AgentMessageKind::Report,
+            id: message_id.clone(),
+            source_id: "studio.child:child".into(),
+            payload: OpaquePayload::new("pl.studio.turn-report", 3, body.clone())?,
+            context: vec![ContextContent::Text { text: body.into() }],
+        };
+        // Save the original body with its terminal effect through the real writer. A ticket
+        // without this handoff cannot authorize recovery to reconstruct a report from later state.
+        crate::studio::storage_fault_test_support::save_terminal_report(
+            &store,
+            &child,
+            message.clone(),
+        )
+        .await?;
+        let checkpoint = store.history("child").await?.checkpoint().await?;
+        let child_sink =
+            ThreadStorageSink::new(store.clone(), child.clone(), checkpoint.as_ref()).await?;
+        spawn_live_projection(&child_sink);
         let mut closed = ticket("child", 2);
         closed.checkpoint.state.lifecycle = ThreadLifecycle::Closed;
         child_sink.admit("child", closed)?;
@@ -924,20 +977,19 @@ mod storage_fault_tests {
             store
                 .history("child")
                 .await?
-                .terminal_report_sequence("turn")
+                .terminal_report_sequence("original-terminal-turn")
                 .await?,
             Some(1)
         );
-        let message_id = crate::studio::agent_close::terminal_report_id("child", 1);
-        let message = pl_core::thread::inbox::ThreadMessage {
-            kind: AgentMessageKind::Report,
-            id: message_id.clone(),
-            source_id: "studio.child:child".into(),
-            payload: OpaquePayload::text("actual terminal fixture"),
-            context: vec![ContextContent::Text {
-                text: "actual terminal fixture".into(),
-            }],
-        };
+        // Recovery must retry the projection's original saved bytes, never a second body with
+        // the same terminal ID. The real services below also own cold delivery reconciliation.
+        let original = store
+            .history("child")
+            .await?
+            .parent_report(1)
+            .await?
+            .context("original durable terminal report")?;
+        assert_eq!(original, message);
         let root_gate = fixture.owner.agent_operation("parent").await;
         let (entered, registered) = tokio::sync::oneshot::channel();
         let (release, publish) = tokio::sync::oneshot::channel();
@@ -948,19 +1000,41 @@ mod storage_fault_tests {
         let operations = super::super::agent_operations::AgentOperations::default();
         let job = tokio::spawn(async move {
             operations
-                .run("parent".into(), || Ok(()), async move {
-                    let _parent_resources = root_gate;
-                    entered
-                        .send(())
-                        .map_err(|_| anyhow::anyhow!("registration gate closed"))?;
-                    publish.await?;
-                    assert_eq!(
-                        owner.notify_parent("parent", first_message, false).await?,
-                        ParentMessageDelivery::Skipped(ParentMessageSkip::Closing)
-                    );
-                    owner.acknowledge_parent_reports(&source, &target).await?;
-                    Ok(())
-                })
+                .run(
+                    "parent".into(),
+                    "report-ack-fixture".into(),
+                    || Ok(()),
+                    async move {
+                        let _parent_resources = root_gate;
+                        entered
+                            .send(())
+                            .map_err(|_| anyhow::anyhow!("registration gate closed"))?;
+                        publish.await?;
+                        assert_eq!(
+                            owner
+                                .notify_parent("parent", first_message.clone(), false)
+                                .await?,
+                            ParentMessageDelivery::Skipped(ParentMessageSkip::Closing)
+                        );
+                        // Observe the negative live-send result before any explicit recovery.
+                        // Full ACK recovery may take this same gate and belongs to phase B.
+                        assert!(
+                            source
+                                .history("parent")
+                                .await?
+                                .message_identity(&first_message.id)
+                                .await?
+                                .is_none()
+                        );
+                        let history = source.history(&target.id).await?;
+                        assert_eq!(history.terminal_report_sequences(0).await?, vec![1]);
+                        assert_eq!(history.parent_report(1).await?, Some(first_message));
+                        assert!(history.checkpoint().await?.is_some());
+                        assert!(source.agent_close(&target.id).await?.is_none());
+                        drop(_parent_resources);
+                        Ok(())
+                    },
+                )
                 .await
         });
         registered.await?;
@@ -970,10 +1044,7 @@ mod storage_fault_tests {
         release
             .send(())
             .map_err(|_| anyhow::anyhow!("publication gate closed"))?;
-        assert!(
-            job.await?.is_err(),
-            "a skipped report must not pass close completion"
-        );
+        job.await??;
         assert!(
             store
                 .history("parent")
@@ -989,6 +1060,7 @@ mod storage_fault_tests {
         drop(parent);
         drop(fixture);
         let restarted = Fixture::new(store.clone())?;
+        resources.install(&restarted.owner)?;
         let parent = restarted.add("parent", None).await?;
         let accepted = restarted
             .owner
@@ -1022,6 +1094,11 @@ mod storage_fault_tests {
             .await?
             .context("exact durable parent report")?;
         assert_eq!(receipt.sequence, sequence);
+        assert_eq!(receipt.digest.as_deref(), Some(original.digest().as_str()));
+        assert_eq!(
+            store.history("child").await?.parent_report(1).await?,
+            Some(original)
+        );
         assert_eq!(
             parent
                 .snapshot()
@@ -1050,6 +1127,7 @@ mod storage_fault_tests {
         );
         assert!(restarted.owner.close_all().await.is_empty());
         restarted.stop_writers().await?;
+        resources.shutdown().await?;
         Ok(())
     }
 }

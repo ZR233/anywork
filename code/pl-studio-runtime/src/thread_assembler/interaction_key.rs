@@ -5,7 +5,7 @@ const PREFIX: &str = "studio-interaction:";
 #[error("invalid Studio interaction identity")]
 pub struct InteractionKeyError;
 
-pub(super) fn encode(thread_id: &str, local_id: &str) -> String {
+pub(crate) fn encode(thread_id: &str, local_id: &str) -> String {
     format!("{PREFIX}{}:{thread_id}{local_id}", thread_id.len())
 }
 

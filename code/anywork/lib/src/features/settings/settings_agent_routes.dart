@@ -162,7 +162,11 @@ class AgentRouteView extends StatelessWidget {
     final effortSelector = DropdownMenu<String>(
       key: StudioDriverKeys.settingsRoleEffort(role),
       initialSelection: selectedEffort,
-      label: Text(context.l10n.statusReasoningEffort),
+      label: Text(
+        context.l10n.statusReasoningEffort,
+        maxLines: 1,
+        softWrap: false,
+      ),
       hintText: effortUnresolvedLabel,
       expandedInsets: EdgeInsets.zero,
       enabled: efforts.isNotEmpty && !pending,
@@ -203,7 +207,7 @@ class AgentRouteView extends StatelessWidget {
             children: [
               Expanded(child: modelSelector),
               const SizedBox(width: 12),
-              SizedBox(width: textScaler.scale(140), child: effortSelector),
+              SizedBox(width: textScaler.scale(220), child: effortSelector),
             ],
           );
         },
