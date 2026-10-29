@@ -10,6 +10,7 @@
     return template.content.firstElementChild;
   }
   const icon = name => `<i data-lucide="${escape(name)}" aria-hidden="true"></i>`;
+  const activityIndicator = () => `<span class="cv-activity-indicator" aria-hidden="true">${icon('loader-circle')}</span>`;
   function icons(root) {
     window.lucide.createIcons({ root, icons: window.lucide.icons, attrs: { 'stroke-width': 1.65 } });
   }
@@ -185,9 +186,9 @@
     flush() { this.logContent?.flush(); this.markdown?.flush(); }
   }
 
-  function groupHeading() {
+  function groupHeading(mode = 'history') {
     return node(`<summary class="cv-group-heading">
-      <span class="cv-live-dot" aria-hidden="true"></span><span class="cv-group-title"></span>
+      ${mode === 'live' ? activityIndicator() : ''}<span class="cv-group-title"></span>
       <span class="cv-group-meta cv-tabular"></span><span class="cv-chevron">${icon('chevron-right')}</span>
     </summary>`);
   }
@@ -196,7 +197,7 @@
     constructor(group, mode, actions, expanded = mode === 'live') {
       this.mode = mode;
       this.node = node(`<details class="cv-work-group cv-group-${escape(mode)}" data-history-kind="workGroup"><div class="cv-group-rail"></div></details>`);
-      this.node.prepend(groupHeading());
+      this.node.prepend(groupHeading(mode));
       this.node.open = expanded;
       this.title = this.node.querySelector('.cv-group-title');
       this.meta = this.node.querySelector('.cv-group-meta');
@@ -232,6 +233,7 @@
       const body = element.querySelector('.cv-group-rail');
       const explanation = item.error || (item.subject === '上下文压缩'
         ? '上下文压缩已停止，原始历史保持不变。'
+        : item.subject === '模型响应' ? '等待模型响应已停止，可以通过主按钮继续。'
         : '本次执行已停止，已保留停止前生成的内容。');
       body.append(node(`<div class="cv-detail-meta">${escape(item.subject)}</div>`),
         node(`<p class="${item.status === 'failed' ? 'cv-group-error' : 'cv-outcome-description'}">${escape(explanation)}</p>`));
@@ -323,5 +325,5 @@
     }
   }
 
-  app.ui = { escape, node, icon, icons, button, statusLabel, MarkdownView, WorkGroupView, PendingView, historyItem, groupText, selectedInside };
+  app.ui = { escape, node, icon, activityIndicator, icons, button, statusLabel, MarkdownView, WorkGroupView, PendingView, historyItem, groupText, selectedInside };
 })();

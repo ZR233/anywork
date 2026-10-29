@@ -2,6 +2,9 @@
   'use strict';
   const app = window.AnyworkConversation;
   const clone = value => structuredClone(value);
+  const isWaitingForModel = live => live?.kind === 'workGroup'
+    ? !live.summary.trim() && live.members.length === 0
+    : live?.kind === 'textOutput' && !live.text.trim();
   function freeze(value) {
     if (value && typeof value === 'object') {
       Object.values(value).forEach(freeze);
@@ -31,7 +34,8 @@
     recordOutcome(live, status, error = '') {
       this.snapshot({
         id: live.id + '-outcome', kind: 'outcome', status, sourceId: live.id,
-        subject: live.kind === 'workGroup' ? live.summary : live.kind === 'textOutput' ? '文本输出' : '上下文压缩',
+        subject: isWaitingForModel(live) ? '模型响应'
+          : live.kind === 'workGroup' ? live.summary : live.kind === 'textOutput' ? '文本输出' : '上下文压缩',
         error
       });
     }
@@ -41,13 +45,10 @@
       if (this.state) this.state.playing = false;
     }
     textSteps(offset = 0) {
-      return [
-        ...app.fixtures.textEvents(offset),
-        { type: 'finishText' }, { type: 'finishTurn' }
-      ];
+      return app.fixtures.responseEvents(this.id('group'), offset);
     }
     afterGroup(id) {
-      return [{ type: 'finishGroup' }, { type: 'startText', id }, ...this.textSteps()];
+      return [{ type: 'finishGroup' }, { type: 'startText', id }, { type: 'tick' }, ...this.textSteps()];
     }
 
     load(scenario) {
@@ -63,7 +64,11 @@
       };
       if (!spec?.empty) app.fixtures.history().forEach(item => this.snapshot(item));
       const id = this.id('group');
-      if (spec?.live === 'workGroup') {
+      if (spec?.waiting) {
+        if (spec.afterText) this.snapshot({ id: this.id('text'), kind: 'text', status: 'completed', text: app.fixtures.text });
+        this.state.queue = app.fixtures.story(id);
+        this.apply(this.state.queue[this.state.cursor++]);
+      } else if (spec?.live === 'workGroup') {
         this.state.live = app.fixtures.group(id);
         this.state.queue = [
           { type: 'appendCommand', line: 'test complete_group_is_a_single_history_item ... ok' },
@@ -133,9 +138,9 @@
         live.members.forEach(member => {
           if (member.status === 'running') member.status = status === 'completed' ? 'completed' : 'stopped';
         });
-        this.snapshot(live);
+        if (!isWaitingForModel(live)) this.snapshot(live);
       } else if (live.kind === 'textOutput') {
-        if (live.text) this.snapshot({ ...live, kind: 'text', status, error });
+        if (live.text.trim()) this.snapshot({ ...live, kind: 'text', status, error });
       } else if (status === 'completed') {
         this.snapshot({ id: live.id, kind: 'compression', status: 'completed' });
         this.state.context = 18;
@@ -148,9 +153,17 @@
       const live = this.state.live;
       switch (event.type) {
         case 'tick': break;
+        case 'waitForModel':
+          if (live) throw new Error('A live item must be sealed before waiting for the model');
+          this.state.live = { id: event.id, kind: 'workGroup', status: 'running', summary: '', members: [], elapsed: 0 };
+          this.state.running = true;
+          break;
         case 'startGroup':
-          if (live) throw new Error('A live item must be sealed before starting a work group');
+          if (live && !(live.kind === 'workGroup' && live.id === event.group.id && isWaitingForModel(live))) {
+            throw new Error('A live item must be sealed before starting a work group');
+          }
           this.state.live = clone(event.group);
+          this.state.live.elapsed = Math.max(this.state.live.elapsed, live?.elapsed || 0);
           this.state.running = true;
           break;
         case 'memberDone':
@@ -190,6 +203,7 @@
           if (live?.kind === 'compacting' && (!event.id || event.id === live.id)) this.seal();
           break;
         case 'finishTurn':
+          if (isWaitingForModel(live)) this.seal();
           if (!this.state.live) {
             this.state.running = false;
             this.state.resumable = false;
@@ -212,7 +226,7 @@
       }
       this.state.cursor++;
       this.apply(event);
-      while (!this.state.live && ['startText', 'startGroup', 'finishTurn'].includes(this.state.queue[this.state.cursor]?.type)) {
+      while (!this.state.live && ['waitForModel', 'startText', 'startGroup', 'finishTurn'].includes(this.state.queue[this.state.cursor]?.type)) {
         this.apply(this.state.queue[this.state.cursor++]);
       }
       if (this.state.cursor >= this.state.queue.length) this.halt();
@@ -248,6 +262,7 @@
       this.halt();
       const compacting = this.state.live.kind === 'compacting';
       const message = compacting ? '压缩服务暂时不可用。原历史已保留，可以重试。'
+        : isWaitingForModel(this.state.live) ? '等待模型响应时连接中断，可以继续。'
         : this.state.live.kind === 'textOutput' ? '文本输出连接中断。已保留接收到的内容，可以继续。'
         : this.state.pending ? '交互已中断，尚未提交决定。'
         : '示例命令退出码 1：检查未通过，已保留当前结果。';
@@ -353,5 +368,6 @@
       this.urls.clear();
     }
   }
+  app.isWaitingForModel = isWaitingForModel;
   app.ConversationController = ConversationController;
 })();
