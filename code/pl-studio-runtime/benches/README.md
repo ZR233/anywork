@@ -42,6 +42,11 @@ cargo bench --locked -p pl-studio-runtime --features benchmarks --bench statisti
 为每轮更新元数据。使用不同 baseline 名称（例如 `before-r1/r2/r3`）保留各轮 Criterion
 结果，再用对应名称比较；若重复使用 `before`，Criterion 自己可能替换同名基线。
 标准结果仍由 Criterion 在其实际输出入口管理；调用者应将实际输出目录与 baseline 名称记录到运行证据，按轮次唯一命名，不覆盖原基线。该目录属于工程工具的标准产物入口，与显式 artifacts 中的额外原始指标相互补充；不更改构建工作目录或猜测 `CRITERION_HOME`。
+使用隔离的历史 checkout 时，为不同源码设置独立 `CARGO_TARGET_DIR`，避免跨工作树复用
+Cargo 新鲜度缓存而链接到另一版本的依赖。优化 profile、编译参数和负载仍须相同。
+若 Criterion 入口因构建目录隔离而不同，只复制对应的已完成 baseline 子目录到完成版的
+实际 Criterion 入口，逐文件校验 SHA-256 并记录来源；不修改名称、样本或估计值，不移动、
+覆盖原始 baseline。构建目录路径差异须在环境记录中明确，不把复制当作新的前测。
 支持 Criterion 的名称过滤；`--test` 和 profile 模式不接受为实际采样入口。
 
 每个执行有唯一 run 目录，每个 fixture 有唯一 case 目录。
