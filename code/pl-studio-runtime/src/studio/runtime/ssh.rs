@@ -249,6 +249,7 @@ impl StudioRuntime {
             .unwrap_or_else(|| (crate::studio::ids::new_id("project"), now, name));
         let delta = ProjectDirectoryRecord {
             id: id.clone(),
+            kind: pl_protocol::studio::WorkspaceKind::Project,
             name: name.clone(),
             path: canonical_path.clone(),
             ssh_alias: Some(alias.to_string()),
@@ -263,6 +264,7 @@ impl StudioRuntime {
             .await?;
         Ok(ProjectRecord {
             id,
+            kind: pl_protocol::studio::WorkspaceKind::Project,
             name,
             path: canonical_path,
             ssh_alias: Some(alias.to_string()),

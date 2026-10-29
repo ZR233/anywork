@@ -956,6 +956,7 @@ mod layout_migration_tests {
     ) -> Result<()> {
         let mut delta = DirectoryDelta::upsert_project(ProjectDirectoryRecord {
             id: project_id.into(),
+            kind: pl_protocol::studio::WorkspaceKind::Project,
             name: "Layout".into(),
             path: "/tmp/layout".into(),
             ssh_alias: ssh_alias.map(str::to_owned),

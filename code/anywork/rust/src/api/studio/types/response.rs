@@ -592,10 +592,18 @@ pub struct BridgeAccountUsageStateData {
 #[serde(rename_all = "camelCase")]
 pub struct ProjectDto {
     pub id: String,
+    pub kind: BridgeWorkspaceKind,
     pub name: String,
     pub path: String,
     pub ssh_alias: Option<String>,
     pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum BridgeWorkspaceKind {
+    Project,
+    Standalone,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

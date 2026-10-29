@@ -266,6 +266,7 @@ mod migration_tests {
         let mut delta = crate::studio::store::directory::DirectoryDelta::upsert_project(
             crate::studio::store::directory::ProjectDirectoryRecord {
                 id: root.project_id.clone(),
+                kind: pl_protocol::studio::WorkspaceKind::Project,
                 name: "Original project".into(),
                 path: root.workspace_path.clone(),
                 ssh_alias: None,

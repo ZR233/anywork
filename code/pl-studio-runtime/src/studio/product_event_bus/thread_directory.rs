@@ -485,6 +485,7 @@ impl ProductEventBus {
             .iter()
             .map(|project| crate::ProjectRecord {
                 id: project.id.clone(),
+                kind: project.kind,
                 name: project.name.clone(),
                 path: project.path.clone(),
                 ssh_alias: project.ssh_alias.clone(),

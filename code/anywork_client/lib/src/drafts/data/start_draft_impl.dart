@@ -37,6 +37,10 @@ final class StartSessionDraftImpl extends ReadModel<StartSessionDraft>
   }
 
   void setWorkspaceMode(String projectId, ThreadWorkspaceMode mode) {
+    final workspace = _dependencies.project.value.projects?.values
+        .where((project) => project.id == projectId)
+        .firstOrNull;
+    if (workspace?.isStandalone == true && mode.isWorktree) return;
     final project = state.forProject(projectId);
     if (project.workspaceMode == mode && state.projects.containsKey(projectId))
       return;
@@ -130,7 +134,10 @@ final class StartSessionDraftImpl extends ReadModel<StartSessionDraft>
     }
     final projects =
         _dependencies.project.value.projects?.values ?? const <StudioProject>[];
-    if (!projects.any((project) => project.id == projectId)) {
+    final workspace = projects
+        .where((project) => project.id == projectId)
+        .firstOrNull;
+    if (workspace == null) {
       throw StateError('Project is no longer available');
     }
     final recoveryIssue = recoveryIssueBlockingExecution(
@@ -139,6 +146,9 @@ final class StartSessionDraftImpl extends ReadModel<StartSessionDraft>
     );
     if (recoveryIssue != null) throw recoveryIssue.blockedFailure();
     final project = state.forProject(projectId);
+    if (workspace.isStandalone && project.workspaceMode.isWorktree) {
+      throw StateError('Standalone workspaces only support local mode');
+    }
     final composer = _dependencies.attachments.state.newThread(projectId);
     if (project.text.trim().isEmpty && composer.attachments.isEmpty) {
       throw StateError('Cannot submit an empty draft');

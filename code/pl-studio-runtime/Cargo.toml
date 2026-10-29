@@ -50,6 +50,7 @@ minisign-verify = { workspace = true }
 fs4 = { workspace = true }
 rust-embed = { workspace = true }
 dunce = { workspace = true }
+dirs = { workspace = true }
 zstd = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
