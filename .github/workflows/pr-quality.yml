@@ -2,9 +2,13 @@ name: PR Quality Gate
 
 on:
   pull_request:
+    paths-ignore:
+      - 'design/**'
   push:
     branches:
       - main
+    paths-ignore:
+      - 'design/**'
 
 permissions: {}
 
