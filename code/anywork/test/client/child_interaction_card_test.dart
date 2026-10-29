@@ -2,8 +2,7 @@ import 'dart:async';
 
 import 'package:anywork/src/app/app_graph.dart';
 import 'package:anywork/src/app/theme/material3_theme.dart';
-import 'package:anywork/src/features/interaction/child_interaction_dock.dart';
-import 'package:anywork/src/features/interaction/composer_dock.dart';
+import 'package:anywork/src/features/conversation/composer/connectors/composer_dock_connector.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
 import 'package:anywork_client/studio_client.dart';
@@ -19,6 +18,7 @@ const _rootId = 'thread-main';
 const _questionChild = 'thread-child-q';
 const _approvalChild = 'thread-child-a';
 const _staleChild = 'thread-child-s';
+const _alternateChild = 'thread-alt-child';
 
 const _question = PendingInteraction(
   id: 'interaction-q',
@@ -79,6 +79,29 @@ const _stale = PendingInteraction(
     workingDirectory: '/tmp',
   ),
   revision: 2,
+);
+
+const _alternate = PendingInteraction(
+  id: 'interaction-alt',
+  threadId: _alternateChild,
+  turnId: 'child-turn-alt',
+  kind: InteractionKind.toolApproval,
+  title: 'Run in alternate host',
+  body: 'The alternate member wants to run a command',
+  payload: ToolApprovalInteractionPayload(
+    toolName: 'shell',
+    arguments: {'command': 'pwd'},
+    workingDirectory: '/tmp',
+  ),
+  revision: 9,
+);
+
+const _alternateSummary = ChildInteractionSummary(
+  childThreadId: _alternateChild,
+  interactionId: 'interaction-alt',
+  kind: InteractionKind.toolApproval,
+  revision: 9,
+  interaction: _alternate,
 );
 
 /// 子会话的计划请求：它是子会话自身的诊断事实，不进入主会话的可决议投影。
@@ -142,6 +165,7 @@ final class _ChildCardTransport extends RecordingDemoTransport {
       String host,
       String interactionId,
       int revision,
+      OperationId operationId,
       InteractionResolutionCommand resolution,
     })
   >
@@ -171,13 +195,14 @@ final class _ChildCardTransport extends RecordingDemoTransport {
     readHosts.add(hostThreadId);
     final failure = readError;
     final from = failReadFrom;
-    if (failure != null && from != null && readHosts.length >= from) {
-      throw failure;
-    }
+    final result = List<ChildInteractionSummary>.of(summaries);
+    final shouldFail =
+        failure != null && from != null && readHosts.length >= from;
     final gate = readGate;
     if (gate != null) await gate.future;
     completedReads[hostThreadId] = (completedReads[hostThreadId] ?? 0) + 1;
-    return List.of(summaries);
+    if (shouldFail) throw failure;
+    return result;
   }
 
   Completer<void>? readGate;
@@ -200,16 +225,17 @@ final class _ChildCardTransport extends RecordingDemoTransport {
       host: hostThreadId,
       interactionId: interactionId,
       revision: expectedRevision,
+      operationId: operationId,
       resolution: resolution,
     ));
+    final summary = summaries.firstWhere(
+      (item) => item.interactionId == interactionId,
+    );
     final error = respondError;
     final gate = decisionGate;
     if (gate != null) await gate.future;
     respondCompletions++;
     if (error != null) throw error;
-    final summary = summaries.firstWhere(
-      (item) => item.interactionId == interactionId,
-    );
     if (!keepAfterDecision) summariseDecided();
     return InteractionCommandReply(
       interaction: summary.interaction,
@@ -253,6 +279,20 @@ List<StudioAgentView> _members() => [
       state: const WaitingInteractionStudioAgent('child-turn', 'interaction'),
       updatedAt: DateTime.utc(2026, 1, 1),
     ),
+  StudioAgentView(
+    id: _alternateChild,
+    threadId: _alternateChild,
+    path: 'root-alt/member',
+    parentPath: 'root-alt',
+    rootThreadId: 'thread-alt',
+    depth: 1,
+    role: 'executor',
+    delegationMode: DelegationMode.profile,
+    delegationPreference: DelegationPreference.balanced,
+    task: 'Alternate member',
+    state: const WaitingInteractionStudioAgent('child-turn', 'interaction'),
+    updatedAt: DateTime.utc(2026, 1, 1),
+  ),
 ];
 
 final class _Fixture {
@@ -270,6 +310,12 @@ Future<_Fixture> _fixture(WidgetTester tester) async {
     statisticsFeed: const TestStatisticsFeedPort(),
   );
   addTearDown(() async {
+    final readGate = transport.readGate;
+    if (readGate != null && !readGate.isCompleted) readGate.complete();
+    final decisionGate = transport.decisionGate;
+    if (decisionGate != null && !decisionGate.isCompleted) {
+      decisionGate.complete();
+    }
     await tester.pumpWidget(const SizedBox.shrink());
     await pumpClientFuture(
       tester,
@@ -280,7 +326,8 @@ Future<_Fixture> _fixture(WidgetTester tester) async {
   await pumpClientFuture(tester, graph.client.bootstrap(), 'cards bootstrap');
   await pumpClientFuture(
     tester,
-    graph.client.directoryCommands.selectThread(_rootId),
+    (graph..setConversationPageVisible(true)).client.directoryCommands
+        .selectThread(_rootId),
     'select root for cards',
   );
   graph.client.project.applyAgentDirectory(
@@ -289,7 +336,11 @@ Future<_Fixture> _fixture(WidgetTester tester) async {
   return _Fixture(graph, transport);
 }
 
-Future<void> _pump(WidgetTester tester, _Fixture fixture) async {
+Future<void> _pump(
+  WidgetTester tester,
+  _Fixture fixture, {
+  String host = _rootId,
+}) async {
   // 三张卡片同屏出现：测试画布按内容放大，避免把画布不足当成产品溢出。
   tester.view.physicalSize = const Size(1200, 2400);
   tester.view.devicePixelRatio = 1.0;
@@ -309,7 +360,7 @@ Future<void> _pump(WidgetTester tester, _Fixture fixture) async {
           body: SizedBox(
             width: 1000,
             height: 2300,
-            child: ComposerDock(threadId: _rootId),
+            child: ComposerDockConnector(threadId: host),
           ),
         ),
       ),
@@ -435,9 +486,11 @@ void main() {
 
     // 列举与决议都不激活 child 会话，也不为它建立草稿。
     for (final childId in [_questionChild, _approvalChild, _staleChild]) {
-      expect(fixture.graph.client.existingComposer(childId), isNull);
+      expect(fixture.graph.client.drafts.existingComposer(childId), isNull);
       expect(
-        fixture.graph.client.sessionStates.map((state) => state.threadId),
+        fixture.graph.client.conversations.sessionStates.map(
+          (state) => state.threadId,
+        ),
         isNot(contains(childId)),
       );
     }
@@ -499,8 +552,29 @@ void main() {
   testWidgets('受理但 canonical 未确认时不宣告已保存或已决议', (tester) async {
     final fixture = await _fixture(tester);
     fixture.transport.keepAfterDecision = true;
+    final gate = Completer<void>();
+    addTearDown(() {
+      if (!gate.isCompleted) gate.complete();
+    });
+    fixture.transport.decisionGate = gate;
     await _pump(tester, fixture);
     final transport = fixture.transport;
+    final currentApprove = find.descendant(
+      of: find.byKey(StudioDriverKeys.childInteractionCard('interaction-a')),
+      matching: find.byKey(StudioDriverKeys.toolApprove),
+    );
+    final otherApprove = find.descendant(
+      of: find.byKey(StudioDriverKeys.childInteractionCard('interaction-s')),
+      matching: find.byKey(StudioDriverKeys.toolApprove),
+    );
+    final currentDeny = find.descendant(
+      of: find.byKey(StudioDriverKeys.childInteractionCard('interaction-a')),
+      matching: find.byKey(StudioDriverKeys.toolDeny),
+    );
+    final otherDeny = find.descendant(
+      of: find.byKey(StudioDriverKeys.childInteractionCard('interaction-s')),
+      matching: find.byKey(StudioDriverKeys.toolDeny),
+    );
     await pumpClientUntil(
       tester,
       () => find
@@ -509,15 +583,72 @@ void main() {
           .isNotEmpty,
       'approval card renders',
     );
-    await tester.tap(
-      find.descendant(
-        of: find.byKey(StudioDriverKeys.childInteractionCard('interaction-a')),
-        matching: find.byKey(StudioDriverKeys.toolApprove),
-      ),
+    expect(
+      find.byKey(StudioDriverKeys.childInteractionCard('interaction-s')),
+      findsOneWidget,
+    );
+    expect(tester.widget<FilledButton>(otherApprove).onPressed, isNotNull);
+    await tester.tap(currentApprove);
+    await pumpClientUntil(
+      tester,
+      () =>
+          transport.decisions.length == 1 &&
+          find
+              .byKey(const ValueKey('child-interaction-awaiting-interaction-a'))
+              .evaluate()
+              .isNotEmpty,
+      'approval pending before transport response',
+    );
+    expect(
+      find.byKey(const ValueKey('child-interaction-accepted-interaction-a')),
+      findsNothing,
+    );
+    expect(tester.widget<FilledButton>(currentApprove).onPressed, isNull);
+    expect(tester.widget<FilledButton>(otherApprove).onPressed, isNull);
+    expect(tester.widget<TextButton>(currentDeny).onPressed, isNull);
+    expect(tester.widget<TextButton>(otherDeny).onPressed, isNull);
+    await tester.tap(currentApprove);
+    await tester.tap(otherApprove);
+    await tester.pump();
+    expect(transport.decisions.length, 1, reason: '在途期间不能重复派发或派发其他交互');
+    gate.complete();
+    await pumpClientUntil(
+      tester,
+      () =>
+          fixture.graph.client.mutations
+              .latest('interaction:$_rootId')
+              ?.state
+              .value
+              .receipt !=
+          null,
+      'decision receipt received',
+    );
+    final operation = fixture.graph.client.mutations
+        .latest('interaction:$_rootId')!
+        .state
+        .value;
+    expect(operation.id, transport.decisions.single.operationId);
+    expect(operation.receipt!.operationId, operation.id);
+    expect(operation.receipt!.requiresIdentityObservation, isTrue);
+    expect(operation.observed, isFalse);
+    expect(operation.failurePhase, isNull);
+    expect(
+      fixture
+          .graph
+          .client
+          .threadCommands
+          .state
+          .commands['interaction:$_rootId']
+          ?.accepted,
+      isTrue,
+      reason: '真实回执已受理而 canonical 尚未确认，命令看板必须发布受理事实',
     );
     await pumpClientUntil(
       tester,
-      () => transport.decisions.isNotEmpty,
+      () => find
+          .byKey(const ValueKey('child-interaction-accepted-interaction-a'))
+          .evaluate()
+          .isNotEmpty,
       'approval accepted',
     );
     // 受理回执到达，但 root 投影仍是同一 pending 触：不显示成功说明。
@@ -579,6 +710,15 @@ void main() {
       isNull,
       reason: '等待确认期间禁止重复提交',
     );
+    expect(
+      tester.widget<FilledButton>(otherApprove).onPressed,
+      isNull,
+      reason: '受理但未确认期间同一宿主的其他决定仍被阻塞',
+    );
+    expect(tester.widget<TextButton>(otherDeny).onPressed, isNull);
+    await tester.tap(otherApprove);
+    await tester.pump();
+    expect(transport.decisions.length, 1);
     await _close(tester, fixture);
   });
 
@@ -607,6 +747,26 @@ void main() {
       tester,
       () => transport.readCalls >= 2,
       'failed reread after acceptance',
+    );
+    final operation = fixture.graph.client.mutations
+        .latest('interaction:$_rootId')!
+        .state
+        .value;
+    expect(operation.id, transport.decisions.single.operationId);
+    expect(operation.receipt!.operationId, operation.id);
+    expect(operation.receipt!.requiresIdentityObservation, isTrue);
+    expect(operation.observed, isFalse);
+    expect(operation.failurePhase, isNull);
+    expect(
+      fixture
+          .graph
+          .client
+          .threadCommands
+          .state
+          .commands['interaction:$_rootId']
+          ?.accepted,
+      isTrue,
+      reason: '读取失败不能抹去已受理回执',
     );
     // 等待确认的进度指示是持续动画，用固定帧推进而不是 pumpAndSettle。
     await tester.pump();
@@ -673,194 +833,244 @@ void main() {
     await _close(tester, fixture);
   });
 
-  testWidgets('切换主会话时旧读取结束仍会列举新宿主', (tester) async {
-    final fixture = await _fixture(tester);
-    final transport = fixture.transport;
-    final gate = Completer<void>();
-    transport.readGate = gate;
-    await tester.pumpWidget(
-      ProviderScope(
-        overrides: [appGraphProvider.overrideWithValue(fixture.graph)],
-        child: MaterialApp(
-          theme: pureStudioTheme(),
-          locale: const Locale('en'),
-          localizationsDelegates: AppLocalizations.localizationsDelegates,
-          supportedLocales: AppLocalizations.supportedLocales,
-          home: const Scaffold(
-            body: SizedBox(
-              width: 900,
-              height: 900,
-              child: ChildInteractionDock(
-                hostThreadId: 'root-a',
-                items: [],
-                sources: {},
-              ),
-            ),
-          ),
-        ),
-      ),
-    );
-    await tester.pump();
-    await pumpClientUntil(
-      tester,
-      () => transport.readHosts.isNotEmpty,
-      'first host read starts',
-    );
-    expect(transport.readHosts, ['root-a']);
+  for (final oldFails in [false, true]) {
+    testWidgets(oldFails ? '旧读取失败不覆盖新代次错误' : '旧读取成功不覆盖新代次重试卡片', (tester) async {
+      final fixture = await _fixture(tester);
+      final transport = fixture.transport;
+      final client = fixture.graph.client;
+      const hostB = 'thread-alt';
+      final alternate = await transport.readThread(hostB);
+      client.threadDirectory.mergeOverlayThreads([alternate]);
+      await _pump(tester, fixture);
+      await pumpClientUntil(
+        tester,
+        () => transport.completedReadsFor(_rootId) == 1,
+        'initial A read',
+      );
 
-    // 旧读取仍在途时切到新宿主：请求不能被 _reading 丢弃。
-    await tester.pumpWidget(
-      ProviderScope(
-        overrides: [appGraphProvider.overrideWithValue(fixture.graph)],
-        child: MaterialApp(
-          theme: pureStudioTheme(),
-          locale: const Locale('en'),
-          localizationsDelegates: AppLocalizations.localizationsDelegates,
-          supportedLocales: AppLocalizations.supportedLocales,
-          home: const Scaffold(
-            body: SizedBox(
-              width: 900,
-              height: 900,
-              child: ChildInteractionDock(
-                hostThreadId: 'root-b',
-                items: [],
-                sources: {},
-              ),
-            ),
-          ),
+      // A1 的响应和错误在请求入口冻结，直到 gate 放行才完成。
+      client.conversations.setVisibleThread(null);
+      await tester.pump();
+      final gate = Completer<void>();
+      addTearDown(() {
+        if (!gate.isCompleted) gate.complete();
+      });
+      transport.readGate = gate;
+      transport.readError = oldFails ? StateError('old A1 failure') : null;
+      transport.failReadFrom = oldFails ? 2 : null;
+      client.conversations.setVisibleThread(_rootId);
+      await pumpClientUntil(
+        tester,
+        () => transport.readCalls == 2,
+        'A1 started',
+      );
+      expect(transport.completedReadsFor(_rootId), 1);
+      expect(
+        find.byKey(StudioDriverKeys.childInteractionCard('interaction-a')),
+        findsNothing,
+      );
+
+      transport.readGate = null;
+      transport.readError = null;
+      transport.failReadFrom = null;
+      transport.summaries = const [_alternateSummary];
+      client.conversations.setVisibleThread(hostB);
+      await _pump(tester, fixture, host: hostB);
+      await pumpClientUntil(
+        tester,
+        () => transport.completedReadsFor(hostB) == 1,
+        'B read completed',
+      );
+      expect(transport.readHosts, [_rootId, _rootId, hostB]);
+      expect(
+        find.byKey(StudioDriverKeys.childInteractionCard('interaction-alt')),
+        findsOneWidget,
+      );
+      expect(find.text('From Alternate member'), findsOneWidget);
+
+      transport.readError = StateError('current A2 failure');
+      transport.failReadFrom = 4;
+      client.conversations.setVisibleThread(_rootId);
+      await _pump(tester, fixture);
+      await pumpClientUntil(
+        tester,
+        () => find
+            .byKey(const ValueKey('child-interaction-load-failure'))
+            .evaluate()
+            .isNotEmpty,
+        'A2 failure',
+      );
+      expect(transport.readHosts, [_rootId, _rootId, hostB, _rootId]);
+      expect(
+        transport.completedReadsFor(_rootId),
+        2,
+        reason: 'A2 已完成，A1 仍被 gate 阻塞',
+      );
+      expect(
+        find.text(
+          'Child interactions could not be read: Bad state: current A2 failure',
         ),
-      ),
-    );
-    await tester.pump();
-    transport.readGate = null;
-    gate.complete();
-    await pumpClientUntil(
-      tester,
-      () => transport.readHosts.contains('root-b'),
-      'new host listed after the old read finished',
-    );
-    expect(transport.readHosts, ['root-a', 'root-b']);
-    await _close(tester, fixture);
-  });
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(StudioDriverKeys.childInteractionCard('interaction-a')),
+        findsNothing,
+      );
+
+      if (oldFails) {
+        gate.complete();
+        await pumpClientUntil(
+          tester,
+          () => transport.completedReadsFor(_rootId) == 3,
+          'old A1 failure completed',
+        );
+        await tester.pump();
+        expect(
+          find.text(
+            'Child interactions could not be read: Bad state: current A2 failure',
+          ),
+          findsOneWidget,
+        );
+        expect(find.textContaining('old A1 failure'), findsNothing);
+        expect(transport.readCalls, 4);
+      }
+
+      transport.failReadFrom = null;
+      transport.summaries = const [
+        ChildInteractionSummary(
+          childThreadId: _staleChild,
+          interactionId: 'interaction-s',
+          kind: InteractionKind.toolApproval,
+          revision: 2,
+          interaction: _stale,
+        ),
+      ];
+      await tester.tap(find.byKey(const ValueKey('child-interaction-retry')));
+      await pumpClientUntil(
+        tester,
+        () => find
+            .byKey(StudioDriverKeys.childInteractionCard('interaction-s'))
+            .evaluate()
+            .isNotEmpty,
+        'A2 retry card',
+      );
+      expect(find.text('From Stale member'), findsOneWidget);
+      expect(
+        find.byKey(const ValueKey('child-interaction-load-failure')),
+        findsNothing,
+      );
+      expect(
+        find.byKey(StudioDriverKeys.childInteractionCard('interaction-a')),
+        findsNothing,
+      );
+      expect(transport.readCalls, 5);
+      if (!oldFails) {
+        gate.complete();
+        await pumpClientUntil(
+          tester,
+          () => transport.completedReadsFor(_rootId) == 4,
+          'old A1 success completed',
+        );
+        await tester.pump();
+        expect(
+          find.byKey(StudioDriverKeys.childInteractionCard('interaction-s')),
+          findsOneWidget,
+        );
+        expect(find.text('From Stale member'), findsOneWidget);
+        expect(
+          find.byKey(StudioDriverKeys.childInteractionCard('interaction-a')),
+          findsNothing,
+        );
+        expect(
+          find.byKey(const ValueKey('child-interaction-load-failure')),
+          findsNothing,
+        );
+        expect(transport.readCalls, 5);
+      }
+      expect(transport.decisions, isEmpty);
+      await _close(tester, fixture);
+    });
+  }
 
   testWidgets('迟到的决议回调不污染已切换的主会话', (tester) async {
     final fixture = await _fixture(tester);
     final transport = fixture.transport;
     final gate = Completer<void>();
+    addTearDown(() {
+      if (!gate.isCompleted) gate.complete();
+    });
     transport.decisionGate = gate;
-    const hostA = 'root-a';
-    const hostB = 'root-b';
+    const hostA = _rootId;
+    const hostB = 'thread-alt';
     const aSummary = ChildInteractionSummary(
-      childThreadId: 'child-a',
-      interactionId: 'interaction-a-host',
+      childThreadId: _approvalChild,
+      interactionId: 'interaction-a',
       kind: InteractionKind.toolApproval,
-      revision: 5,
-      interaction: PendingInteraction(
-        id: 'interaction-a-host',
-        threadId: 'child-a',
-        turnId: 'turn-a',
-        kind: InteractionKind.toolApproval,
-        title: 'Run in A',
-        body: 'Child A wants to run a command',
-        payload: ToolApprovalInteractionPayload(
-          toolName: 'shell',
-          arguments: {'command': 'ls'},
-          workingDirectory: '/tmp',
-        ),
-        revision: 5,
+      revision: 7,
+      interaction: _approval,
+    );
+    const bSummary = _alternateSummary;
+    final client = fixture.graph.client;
+    final alternate = await transport.readThread(hostB);
+    client.threadDirectory.mergeOverlayThreads([alternate]);
+    transport.summaries = [aSummary];
+    await _pump(tester, fixture);
+    await pumpClientUntil(
+      tester,
+      () => find
+          .byKey(StudioDriverKeys.childInteractionCard('interaction-a'))
+          .evaluate()
+          .isNotEmpty,
+      'host A canonical card',
+    );
+    await tester.tap(
+      find.descendant(
+        of: find.byKey(StudioDriverKeys.childInteractionCard('interaction-a')),
+        matching: find.byKey(StudioDriverKeys.toolApprove),
       ),
     );
-    const bSummary = ChildInteractionSummary(
-      childThreadId: 'child-b',
-      interactionId: 'interaction-b-host',
-      kind: InteractionKind.toolApproval,
-      revision: 9,
-      interaction: PendingInteraction(
-        id: 'interaction-b-host',
-        threadId: 'child-b',
-        turnId: 'turn-b',
-        kind: InteractionKind.toolApproval,
-        title: 'Run in B',
-        body: 'Child B wants to run a command',
-        payload: ToolApprovalInteractionPayload(
-          toolName: 'shell',
-          arguments: {'command': 'pwd'},
-          workingDirectory: '/tmp',
-        ),
-        revision: 9,
-      ),
-    );
-    Widget dock(String host, List<ChildInteractionSummary> items) {
-      return ProviderScope(
-        overrides: [appGraphProvider.overrideWithValue(fixture.graph)],
-        child: MaterialApp(
-          theme: pureStudioTheme(),
-          locale: const Locale('en'),
-          localizationsDelegates: AppLocalizations.localizationsDelegates,
-          supportedLocales: AppLocalizations.supportedLocales,
-          home: Scaffold(
-            body: SizedBox(
-              width: 900,
-              height: 1200,
-              child: ChildInteractionDock(
-                hostThreadId: host,
-                items: items,
-                sources: const {'child-a': 'Member A', 'child-b': 'Member B'},
-              ),
-            ),
-          ),
-        ),
-      );
-    }
-
-    await tester.pumpWidget(dock(hostA, [aSummary]));
-    await tester.pump();
-    await tester.tap(find.byKey(StudioDriverKeys.toolApprove));
     await pumpClientUntil(
       tester,
       () => transport.decisions.length == 1,
       'host A decision started',
     );
+    expect(transport.decisions.single.host, hostA);
 
-    // 切到主会话 B：A 的决定仍未返回。
-    await tester.pumpWidget(dock(hostB, [bSummary]));
-    await tester.pump();
+    // B 的列表和卡片来自生产 dock 所观察的 SDK canonical，而非手工传入。
+    transport.summaries = [bSummary];
+    client.conversations.setVisibleThread(hostB);
+    await _pump(tester, fixture, host: hostB);
     await pumpClientUntil(
       tester,
-      () => transport.completedReadsFor(hostB) > 0,
-      'host B listing completed',
+      () => find
+          .byKey(StudioDriverKeys.childInteractionCard('interaction-alt'))
+          .evaluate()
+          .isNotEmpty,
+      'host B canonical card',
     );
-
-    final bCompletionsBefore = transport.completedReadsFor(hostB);
-    expect(
-      bCompletionsBefore,
-      greaterThan(0),
-      reason: 'B 的列举必须已完成，才能判定 A 的迟到结果',
+    expect(transport.completedReadsFor(hostB), 1);
+    final approveB = find.descendant(
+      of: find.byKey(StudioDriverKeys.childInteractionCard('interaction-alt')),
+      matching: find.byKey(StudioDriverKeys.toolApprove),
     );
+    expect(tester.widget<FilledButton>(approveB).onPressed, isNotNull);
+    final bReadsBefore = transport.readHosts
+        .where((host) => host == hostB)
+        .length;
 
-    // A 的回调此时才到达：不得进入 B 的已受理/成功状态，也不得据 A 摘要做确认。
-    // 用 runAsync 放行真实异步，让挂起的决议请求真正恢复。
-    await tester.runAsync(() async {
-      gate.complete();
-      await Future<void>.delayed(Duration.zero);
-    });
+    gate.complete();
     await pumpClientUntil(
       tester,
-      () => transport.completedReadsFor(hostB) > bCompletionsBefore,
-      'host B relisted after the stale callback '
-      'hosts=${transport.readHosts} completed=${transport.completedReads} '
-      'respondCompletions=${transport.respondCompletions}',
+      () => transport.respondCompletions == 1,
+      'host A decision completes',
     );
     await tester.pump();
     expect(
-      find.byKey(const ValueKey('child-interaction-notice-interaction-a-host')),
+      find.byKey(const ValueKey('child-interaction-notice-interaction-a')),
       findsNothing,
-      reason: 'A 的成功通知不得出现在 B 页面',
     );
     expect(
-      find.byKey(
-        const ValueKey('child-interaction-accepted-interaction-a-host'),
-      ),
+      find.byKey(const ValueKey('child-interaction-accepted-interaction-a')),
       findsNothing,
     );
     expect(
@@ -871,38 +1081,38 @@ void main() {
       find.textContaining('The original permission wait is decided'),
       findsNothing,
     );
-    // B 按自己的 canonical 投影重新列举（完成次数已在上面增加）。
-    expect(transport.readHosts.last, hostB);
-    expect(transport.completedReadsFor(hostB), greaterThan(bCompletionsBefore));
     expect(
-      find.byKey(StudioDriverKeys.childInteractionCard('interaction-b-host')),
+      transport.readHosts.where((host) => host == hostB).length,
+      bReadsBefore,
+    );
+    expect(
+      find.byKey(StudioDriverKeys.childInteractionCard('interaction-alt')),
       findsOneWidget,
-      reason: 'B 的卡片不受 A 的迟到结果影响',
     );
 
-    // B 自己的决议仍能正常确认。
     transport.decisionGate = null;
     transport.keepAfterDecision = false;
-    transport.summaries = [aSummary, bSummary];
-    await tester.tap(
-      find.descendant(
-        of: find.byKey(
-          StudioDriverKeys.childInteractionCard('interaction-b-host'),
-        ),
-        matching: find.byKey(StudioDriverKeys.toolApprove),
-      ),
-    );
+    transport.summaries = [bSummary];
+    await tester.tap(approveB);
     await pumpClientUntil(
       tester,
       () => transport.decisions.length == 2,
       'host B decision submitted',
     );
-    await tester.pumpWidget(dock(hostB, const []));
-    await tester.pump();
+    expect(transport.decisions.last.host, hostB);
+    expect(transport.decisions.last.interactionId, 'interaction-alt');
+    expect(transport.decisions.last.revision, 9);
+    await pumpClientUntil(
+      tester,
+      () => find
+          .byKey(const ValueKey('child-interaction-notice-interaction-alt'))
+          .evaluate()
+          .isNotEmpty,
+      'host B canonical confirmation',
+    );
     expect(
-      find.byKey(const ValueKey('child-interaction-notice-interaction-b-host')),
+      find.byKey(const ValueKey('child-interaction-notice-interaction-alt')),
       findsOneWidget,
-      reason: 'B 自己的决议在 canonical 确认后显示成功通知',
     );
     await _close(tester, fixture);
   });

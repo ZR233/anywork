@@ -255,11 +255,15 @@ class ModeEditorJourney {
   }
 
   Future<void> submit(int index, {bool wait = true}) async {
+    final previousTurnId = turnId(await driver.readSnapshot());
     await text('composer-input', _prompts[index]);
     await tap('composer-submit');
     final snapshot = await waitSnapshot(
-      (snapshot) => workspaceOf(snapshot)?['threadId'] is String,
-      'Thread admitted',
+      (snapshot) =>
+          workspaceOf(snapshot)?['threadId'] is String &&
+          turnId(snapshot) != null &&
+          turnId(snapshot) != previousTurnId,
+      'new Turn admitted',
     );
     threadId = workspaceOf(snapshot)!['threadId'] as String;
     await File('$coord/observed.json')
@@ -672,6 +676,9 @@ class ModeEditorJourney {
       !(deleted['catalog'] as List).any((mode) => mode['id'] == _modeId),
       'deleted Mode removed from catalog',
     );
+    // The canonical catalog is published before the delete action pops its page.
+    // Wait for that navigation to finish before issuing a separate Back action.
+    await driver.waitForAbsent(find.byValueKey('mode-workspace-back'));
     await checkpointStage('deleted-running');
     await leaveToStudio();
     await waitSnapshot(
@@ -693,7 +700,14 @@ class ModeEditorJourney {
           workspaceOf(snapshot)?['threadId'] == threadId && settled(snapshot),
       'cold restored Thread',
     );
-    final state = await editor();
+    // Content identity may arrive before the independent status baseline.
+    // Wait for the canonical workflow fact before asserting its saved fields.
+    final state = await waitEditor(
+      (state) =>
+          state['threadId'] == threadId &&
+          (state['run'] as Map?)?['runId'] is String,
+      'cold restored workflow snapshot',
+    );
     require(
       !(state['catalog'] as List).any((mode) => mode['id'] == _modeId),
       'snapshot absent from global catalog',

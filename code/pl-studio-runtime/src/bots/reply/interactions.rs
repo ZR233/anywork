@@ -1,29 +1,41 @@
-use super::content::MAX_TURN_CONTENT_ITEMS;
+use super::content::{Coverage, read_failure};
 use super::owner::ReplyTarget;
 use super::owner::{
-    ClaimGuard, ReplyRun, Step, attention, hint_key, interaction_hint, recoverable,
+    ClaimGuard, ReplyRun, Step, attention, content_failure, hint_key, interaction_hint, recoverable,
 };
 use crate::bots::InboundWorkOutcome;
 use crate::bots::owner::BotRuntime;
 use crate::bots::storage::{MarkOutcome, card::CardLifecycle};
 use crate::bots::{BotInteractionKind, BotInteractionRead, SendAuthority};
-use crate::studio::StudioRuntime;
+use crate::studio::{StudioRuntime, TimelineContentReader};
 use pl_protocol::InteractionStatus;
-use pl_protocol::{ThreadItemKind, ThreadItemState, TimelinePageQuery};
+use pl_protocol::{TimelineDescriptor, TimelinePageQuery};
 use std::collections::BTreeSet;
 use tokio_util::sync::CancellationToken;
 
+fn interaction_local<'a>(
+    interaction_id: &'a str,
+    expected_thread_id: &str,
+) -> Result<&'a str, InboundWorkOutcome> {
+    let (owner, local) = crate::thread_assembler::decode_interaction_key(interaction_id)
+        .map_err(|_| attention("canonical interaction identity is malformed"))?;
+    if owner != expected_thread_id {
+        return Err(attention(
+            "canonical interaction identity belongs to another Thread",
+        ));
+    }
+    Ok(local)
+}
+
 /// timeline 兜底：快照不再保留该 Turn 的交互时，从 tool.user_input 投影发现 local 身份。
 pub(super) async fn discover_timeline_interactions(
-    runtime: &StudioRuntime,
-    thread_id: &str,
+    reader: &TimelineContentReader,
     turn_id: &str,
     cancel: &CancellationToken,
 ) -> Result<BTreeSet<String>, InboundWorkOutcome> {
     let mut locals = BTreeSet::new();
     let mut before = None;
-    let mut previous_before = None;
-    let mut inspected = 0usize;
+    let mut coverage = Coverage::new(reader.thread_id());
     loop {
         let query = TimelinePageQuery {
             before: before.clone(),
@@ -33,44 +45,32 @@ pub(super) async fn discover_timeline_interactions(
             _ = cancel.cancelled() => {
                 return Err(InboundWorkOutcome::Interrupted);
             }
-            page = runtime.timeline_page(thread_id, &query) => page.map_err(|error| {
-                recoverable(format!("canonical timeline page failed: {error:#}"))
-            })?,
+            page = reader.page(&query) => page.map_err(|error| content_failure(read_failure("canonical interaction page failed", error)))?,
         };
-        inspected = inspected.saturating_add(page.items.len());
-        if inspected > MAX_TURN_CONTENT_ITEMS {
-            return Err(attention(
-                "canonical interaction discovery exceeded 16384 content items",
-            ));
+        if page.thread_id != reader.thread_id() {
+            return Err(attention("canonical interaction page Thread conflict"));
         }
+        coverage.page(&page.items).map_err(content_failure)?;
+        let mut found_start = false;
         for item in page.items {
-            if item.preview.turn_id != turn_id {
+            if item.header.thread_id != reader.thread_id() {
+                return Err(attention("canonical interaction item Thread conflict"));
+            }
+            if item.header.turn_id != turn_id {
                 continue;
             }
-            if item.preview.kind() != ThreadItemKind::Tool {
-                continue;
-            }
-            if let ThreadItemState::Tool(tool_item) = item.preview.state()
-                && let Some(user_input) = tool_item.user_input()
+            found_start |= matches!(item.descriptor, TimelineDescriptor::Turn(_));
+            if let TimelineDescriptor::Tool(tool_item) = item.descriptor
+                && let Some(user_input) = tool_item.user_input
             {
-                locals.insert(user_input.interaction_id().to_string());
+                let local = interaction_local(&user_input.interaction_id, reader.thread_id())?;
+                locals.insert(local.to_owned());
             }
         }
-        if !page.has_older {
+        if found_start || !page.has_older {
             break;
         }
-        let Some(next) = page.before.filter(|token| !token.is_empty()) else {
-            return Err(attention(
-                "canonical timeline reported older content without a before cursor",
-            ));
-        };
-        if previous_before.as_ref() == Some(&next) {
-            return Err(attention(
-                "canonical timeline before cursor did not advance",
-            ));
-        }
-        previous_before = before.clone();
-        before = Some(next);
+        before = Some(coverage.cursor(page.before).map_err(content_failure)?);
     }
     Ok(locals)
 }
@@ -87,6 +87,7 @@ impl BotRuntime {
         runtime: &StudioRuntime,
         run: &mut ReplyRun,
         turn_id: &str,
+        reader: &TimelineContentReader,
         cancel: &CancellationToken,
     ) -> Step {
         if let Err(outcome) = self
@@ -102,7 +103,7 @@ impl BotRuntime {
             return Step::Done(outcome);
         }
         let locals = match self
-            .turn_interaction_locals(runtime, run, turn_id, cancel)
+            .turn_interaction_locals(runtime, run, turn_id, reader, cancel)
             .await
         {
             Ok(locals) => locals,
@@ -189,6 +190,7 @@ impl BotRuntime {
         runtime: &StudioRuntime,
         run: &ReplyRun,
         turn_id: &str,
+        reader: &TimelineContentReader,
         cancel: &CancellationToken,
     ) -> Result<BTreeSet<String>, InboundWorkOutcome> {
         let snapshot = runtime
@@ -200,18 +202,15 @@ impl BotRuntime {
             if interaction.scope.turn_id != turn_id {
                 continue;
             }
-            if let Ok((_, local)) =
-                crate::thread_assembler::decode_interaction_key(&interaction.interaction_id)
-            {
-                locals.insert(local.to_string());
-            }
+            let local = interaction_local(&interaction.interaction_id, &run.thread_id)?;
+            locals.insert(local.to_owned());
         }
         if !locals.is_empty() {
             return Ok(locals);
         }
         // 快照不再保留该 Turn 的交互（例如重启窗口内已收束）：从 timeline 的
         // tool.user_input 投影发现 local 身份，仍只读统一内容源。
-        discover_timeline_interactions(runtime, &run.thread_id, turn_id, cancel).await
+        discover_timeline_interactions(reader, turn_id, cancel).await
     }
 
     /// Turn 执行期与终态等待中的 pending 交互逐个提示；每个交互独立稳定键。
@@ -230,16 +229,17 @@ impl BotRuntime {
                 return Step::Done(recoverable("canonical interaction snapshot is not ready"));
             }
         };
-        let locals: BTreeSet<String> = snapshot
-            .interactions
-            .iter()
-            .filter(|interaction| interaction.scope.turn_id == turn_id)
-            .filter_map(|interaction| {
-                crate::thread_assembler::decode_interaction_key(&interaction.interaction_id)
-                    .ok()
-                    .map(|(_, local)| local.to_string())
-            })
-            .collect();
+        let mut locals = BTreeSet::new();
+        for interaction in &snapshot.interactions {
+            if interaction.scope.turn_id != turn_id {
+                continue;
+            }
+            let local = match interaction_local(&interaction.interaction_id, &run.thread_id) {
+                Ok(local) => local,
+                Err(outcome) => return Step::Done(outcome),
+            };
+            locals.insert(local.to_owned());
+        }
         let mut waiting = false;
         for local in &locals {
             let pending = match runtime.bot_interaction_fact(&run.thread_id, local).await {

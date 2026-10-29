@@ -323,10 +323,10 @@ class _SettingsNav extends ConsumerWidget {
     Future<void> select(int index) async {
       if (index == controller.index) return;
       if (controller.index == _SettingsTab.workModes.index &&
-          !await confirmLeaveModeEditor(context, ref)) {
+          !await confirmLeaveModeEditor(context)) {
         return;
       }
-      if (!context.mounted || !await confirmLeaveAccountsEditor(context, ref)) {
+      if (!context.mounted || !await confirmLeaveAccountsEditor(context)) {
         return;
       }
       if (!context.mounted) return;
@@ -435,14 +435,7 @@ class _SettingsBackTile extends ConsumerWidget {
         child: InkWell(
           key: StudioDriverKeys.settingsBack,
           borderRadius: BorderRadius.circular(StudioRadii.sm),
-          onTap: () async {
-            if (!await confirmLeaveModeEditor(context, ref)) return;
-            if (!context.mounted ||
-                !await confirmLeaveAccountsEditor(context, ref)) {
-              return;
-            }
-            if (context.mounted && context.canPop()) context.pop();
-          },
+          onTap: () => context.pop(),
           child: Padding(
             padding: EdgeInsets.symmetric(
               horizontal: compact ? 10 : 10,

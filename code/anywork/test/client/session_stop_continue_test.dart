@@ -32,7 +32,8 @@ void main() {
       projectId: client.selection.state.selectedProjectId!,
       threadId: threadId,
     );
-    final session = client.session(threadId);
+    client.conversations.setVisibleThread(threadId);
+    final session = client.conversations.session(threadId);
     // The saved model route is the CAS baseline of an explicit continue.
     await session.source.waitFor((state) => state.runtime?.modelRoute != null);
     await client.threadCommands.submitComposer(
@@ -101,7 +102,7 @@ void main() {
     );
     expect(view.continuationId, point.id);
     expect(
-      client.composer(threadId).state.draft,
+      client.drafts.composer(threadId).state.draft,
       isEmpty,
       reason: 'A content-free continuation never writes a user draft',
     );
@@ -124,7 +125,8 @@ void main() {
       projectId: client.selection.state.selectedProjectId!,
       threadId: threadId,
     );
-    final session = client.session(threadId);
+    client.conversations.setVisibleThread(threadId);
+    final session = client.conversations.session(threadId);
     await session.source.waitFor((state) => state.runtime?.modelRoute != null);
     await client.threadCommands.submitComposer(
       threadId,
@@ -189,7 +191,8 @@ void main() {
       projectId: client.selection.state.selectedProjectId!,
       threadId: threadId,
     );
-    final session = client.session(threadId);
+    client.conversations.setVisibleThread(threadId);
+    final session = client.conversations.session(threadId);
     await session.source.waitFor((state) => state.runtime?.modelRoute != null);
     await client.threadCommands.submitComposer(
       threadId,
@@ -249,7 +252,8 @@ void main() {
       projectId: client.selection.state.selectedProjectId!,
       threadId: threadId,
     );
-    final session = client.session(threadId);
+    client.conversations.setVisibleThread(threadId);
+    final session = client.conversations.session(threadId);
     await session.source.waitFor((state) => state.runtime?.modelRoute != null);
     await client.threadCommands.submitComposer(
       threadId,

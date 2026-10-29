@@ -8,8 +8,7 @@ import 'package:anywork_client/model_directory.dart';
 import 'package:flutter_chat_core/flutter_chat_core.dart';
 
 import '../domain/models/agent_workspace_view.dart';
-import '../domain/models/plan_confirmation_ownership.dart';
-import '../domain/models/timeline_presentation.dart';
+import '../features/conversation/timeline/state/timeline_entry.dart';
 import '../features/shell/shell_view.dart' show primaryInteraction, projectById;
 import '../presentation/view_models/timeline_session_owner.dart';
 import 'studio_driver_key_values.dart';
@@ -69,25 +68,38 @@ StudioDriverFacts queryStudioDriverFacts(
     selection.selectedProjectId,
   );
   final selectedThreadId = selection.selectedThreadId;
-  final session = selectedThreadId == null || selection.needsOpen
+  final visibleThreadId = client.conversations.visibleThreadId.value;
+  // Hidden pages can still observe the selected background execution; visible
+  // bot pages always use their own destination rather than sidebar selection.
+  final presentationThreadId = timeline.source.value?.threadId;
+  final observedThreadId =
+      presentationThreadId ?? visibleThreadId ?? selectedThreadId;
+  final session =
+      observedThreadId == null ||
+          (presentationThreadId == null &&
+              visibleThreadId == null &&
+              selection.needsOpen)
       ? null
-      : client.sessionState(selectedThreadId);
-  final thread = client.findThread(selectedThreadId ?? '');
+      : client.conversations.sessionState(observedThreadId);
+  final thread =
+      client.findThread(observedThreadId ?? '') ?? session?.workspace?.thread;
   final agents = projects.agents?.values ?? const <StudioAgentView>[];
   final rootId = AgentDirectoryQueries.rootThreadId(
-    threadId: selectedThreadId,
+    threadId: observedThreadId,
     agents: agents,
     threads: threads,
   );
-  final root = threads
-      .where((thread) => thread.id == rootId && thread.isRoot)
-      .firstOrNull;
-  final threadComposer = selectedThreadId == null
+  final root =
+      threads
+          .where((thread) => thread.id == rootId && thread.isRoot)
+          .firstOrNull ??
+      (thread?.isRoot == true ? thread : null);
+  final threadComposer = observedThreadId == null
       ? const ComposerThreadState.idle()
-      : client.composerState(selectedThreadId) ??
+      : client.drafts.existingComposer(observedThreadId)?.state ??
             const ComposerThreadState.idle();
   final newThreadComposer = _newThreadComposer(client, selection);
-  final projectDraft = client.startDraft.state.forProject(
+  final projectDraft = client.drafts.startDraft.state.forProject(
     selection.selectedProjectId,
   );
   AgentWorkspaceView? workspace;
@@ -122,13 +134,14 @@ StudioDriverFacts queryStudioDriverFacts(
   }
 
   return StudioDriverFacts(
-    timeline: _timelineFacts(timeline, selectedThreadId),
-    timelineScroll: _timelineScrollFacts(timeline, selectedThreadId),
+    timeline: _timelineFacts(timeline, presentationThreadId),
+    timelineScroll: _timelineScrollFacts(timeline, presentationThreadId),
     workspacesByThread: {
-      for (final state in client.sessionStates)
+      for (final state in client.conversations.sessionStates)
         if (state.workspace case final workspace?)
-          if (client.findThread(state.threadId) case final identity?)
-            state.threadId: workspace.copyWith(thread: identity),
+          state.threadId: workspace.copyWith(
+            thread: client.findThread(state.threadId) ?? workspace.thread,
+          ),
     },
     rootThreads: [
       for (final thread in threads)
@@ -137,6 +150,8 @@ StudioDriverFacts queryStudioDriverFacts(
     directoryHasMore: directory.hasMore,
     selectedProjectId: selection.selectedProjectId,
     selectedThreadId: selectedThreadId,
+    visibleThreadId: visibleThreadId,
+    presentationThreadId: presentationThreadId,
     newThreadMode: projectDraft.mode,
     newThreadWorkspaceMode: projectDraft.workspaceMode,
     newThreadComposer: newThreadComposer,
@@ -176,6 +191,7 @@ StudioDriverFacts queryStudioDriverFacts(
 /// this endpoint never changes topic demand, even if no Widget observes it.
 Map<String, Object?> studioDriverTopicDiagnostics(
   AnyworkClient client, {
+  required TimelineSessionOwner timeline,
   required AccountsRepository accountsRepository,
   required ModelsRepository modelsRepository,
   required AccountUsageRepository usageRepository,
@@ -190,7 +206,10 @@ Map<String, Object?> studioDriverTopicDiagnostics(
       'totalRefs': refs.values.fold(0, (total, value) => total + value),
     },
     'connections': _connectionCounts(client),
-    'projectionRevisions': _projectionRevisions(client),
+    'projectionRevisions': _projectionRevisions(
+      client,
+      timeline.source.value?.threadId,
+    ),
     // Domain observations expose business resource stamps, not transport sync
     // counters. Reading these surfaces acquires no display/network demand.
     'accountDomains': {
@@ -243,15 +262,20 @@ TimelineDisplayFacts? _timelineFacts(
       StudioFailure(:final code) => code,
       _ => null,
     },
+    olderErrorCorrelationId: switch (view.olderError) {
+      StudioFailure(:final correlationId) => correlationId,
+      _ => null,
+    },
     hasNewOutput: view.hasNewOutput,
     preparingLive: view.isPreparingLive,
     items: [
-      for (final payload in lease?.payloads ?? const <TimelineMessagePayload>[])
-        _timelineItemFacts(payload),
+      for (final item in lease?.items ?? const <ConversationItem>[])
+        _timelineItemFacts(item),
     ],
     presentationItems: [
       for (final message in lease?.controller.messages ?? const <Message>[])
-        if (timelinePresentationOf(message) case final item?)
+        if (timelineEntryOf(message) case final item?
+            when message.id == item.id)
           TimelinePresentationFacts(
             id: item.id,
             kind: item.kind.name,
@@ -298,31 +322,31 @@ TimelineScrollDiagnostic? _timelineScrollFacts(
   );
 }
 
-TimelineItemFacts _timelineItemFacts(TimelineMessagePayload payload) {
-  final item = payload.item;
-  final tool = item.tool;
-  final userInput = tool?.userInput ?? item.tool?.userInput;
-  // 与时间线同一归属规则：只有 `plan_submit` 发起的调用才是计划确认，
-  // 普通问答即使带保留的问题 ID 也必须报告为普通问答。
-  final receipt = ownsPlanConfirmation(tool?.name)
-      ? userInput?.planReceipt
-      : null;
+TimelineItemFacts _timelineItemFacts(ConversationItem item) {
+  final descriptor = item.descriptor;
+  final tool = descriptor is ConversationToolDescriptor ? descriptor : null;
+  final userInput = item.userInput;
+  // The SDK helper owns plan attribution and secret/redacted answer filtering.
+  final receipt = item.planReceipt;
+  final attachments = timelineAttachments(item);
+  final result = item.fieldFor(const ThreadToolResultFieldView())?.text;
+  final status = _itemStatus(descriptor);
   return TimelineItemFacts(
     id: item.id,
-    ordinal: item.ordinal,
+    ordinal: item.header.ordinal,
     revision: item.revision,
-    saved: payload.saved,
-    terminal: payload.terminal,
-    omittedBytes: payload.omittedBytes,
-    kind: item.kind.name,
-    status: item.status,
-    text: item.text,
-    channel: switch (item.state) {
-      ThreadTextItemStateView(:final channel) => channel,
+    saved: item.saved,
+    terminal: item.terminal,
+    omittedBytes: item.omittedBytes,
+    kind: _itemKind(descriptor),
+    status: status,
+    text: _itemText(item),
+    channel: switch (descriptor) {
+      ConversationTextDescriptor(:final channel) => channel,
       _ => null,
     },
     details: [
-      for (final detail in payload.details)
+      for (final detail in item.details)
         TimelineDetailFacts(
           field: StudioDriverKeyValues.timelineDetailField(detail.field),
           revision: detail.revision,
@@ -331,41 +355,38 @@ TimelineItemFacts _timelineItemFacts(TimelineMessagePayload payload) {
         ),
     ],
     attachments: [
-      for (final attachment in item.attachments)
+      for (final attachment in attachments)
         TimelineAttachmentFacts(
           id: attachment.id,
           modality: attachment.modality.name,
           filename: attachment.filename ?? '',
           byteSize: attachment.byteSize,
-        ),
-      // 可空工具附件的空集合必须带元素类型：无上下文的 `const []` 会让
-      // `??` 的 LUB 退化成 `List<dynamic>`，元素随之变成 dynamic，`modality.name`
-      // 就按实例查找 `AttachmentModalityView` 而抛 NoSuchMethodError。
-      for (final attachment
-          in tool?.attachments ?? const <ThreadAttachmentView>[])
-        TimelineAttachmentFacts(
-          id: attachment.id,
-          modality: attachment.modality.name,
-          filename: attachment.filename ?? '',
-          byteSize: attachment.byteSize,
-          source: 'tool',
+          source: tool == null ? null : 'tool',
         ),
     ],
     tool: tool == null
         ? null
         : TimelineToolFacts(
-            name: tool.name,
-            status: item.status,
-            callId: tool.callId ?? tool.toolCallId,
-            arguments: tool.arguments,
-            result: tool.result,
-            progressBytes: _utf8Bytes(tool.result ?? ''),
+            name: tool.invocation.name,
+            status: status,
+            callId: tool.invocation.callId ?? tool.invocation.toolCallId,
+            arguments:
+                item.fieldFor(const ThreadToolArgumentsFieldView())?.text ?? '',
+            result: result,
+            progressBytes: _utf8Bytes(result ?? ''),
             itemRevision: item.revision,
-            denialReason: tool.denialReason,
-            workingDirectory: tool.workingDirectory,
-            exitCode: tool.exitCode,
+            denialReason: switch (tool.state) {
+              ConversationToolDenied(:final reason) => reason,
+              _ => null,
+            },
+            workingDirectory: tool.invocation.workingDirectory,
+            exitCode: switch (tool.state) {
+              ConversationToolSucceeded(:final output) => output.exitCode,
+              ConversationToolFailed(:final output) => output?.exitCode,
+              _ => null,
+            },
             attachments: [
-              for (final attachment in tool.attachments)
+              for (final attachment in attachments)
                 TimelineAttachmentFacts(
                   id: attachment.id,
                   modality: attachment.modality.name,
@@ -379,9 +400,9 @@ TimelineItemFacts _timelineItemFacts(TimelineMessagePayload payload) {
         : TimelineUserInputFacts(
             interactionId: userInput.interactionId,
             state: switch (userInput.state) {
-              PendingThreadToolUserInputView() => 'pending',
-              ResolvedThreadToolUserInputView() => 'resolved',
-              CancelledThreadToolUserInputView() => 'cancelled',
+              ConversationUserInputPending() => 'pending',
+              ConversationUserInputResolved() => 'resolved',
+              ConversationUserInputCancelled() => 'cancelled',
             },
             isPlanConfirmation: receipt != null,
             planDecision: receipt?.decision.name,
@@ -391,16 +412,88 @@ TimelineItemFacts _timelineItemFacts(TimelineMessagePayload payload) {
 
 int _utf8Bytes(String text) => utf8.encode(text).length;
 
+// Diagnostic labels retain the journey vocabulary, not a retired read model.
+// Every value is derived on demand from this exact typed item, without I/O.
+String _itemKind(ConversationDescriptor descriptor) => switch (descriptor) {
+  ConversationTextDescriptor(:final channel) => switch (channel) {
+    ThreadTextChannel.user => 'userMessage',
+    ThreadTextChannel.parentAgent => 'parentAgentMessage',
+    ThreadTextChannel.commentary ||
+    ThreadTextChannel.finalAnswer => 'agentMessage',
+  },
+  ConversationThinkingDescriptor() => 'reasoning',
+  ConversationToolDescriptor() => 'toolCall',
+  ConversationAgentDescriptor() => 'agent',
+  ConversationTurnDescriptor() => 'turn',
+  ConversationInferenceDescriptor() => 'inference',
+  ConversationSkillDescriptor() => 'skill',
+  ConversationRawDescriptor() => 'raw',
+  ConversationFileDescriptor() => 'file',
+  ConversationContextCompactionDescriptor() => 'contextCompaction',
+};
+
+String _itemStatus(ConversationDescriptor descriptor) => switch (descriptor) {
+  ConversationTextDescriptor(:final lifecycle) ||
+  ConversationThinkingDescriptor(:final lifecycle) => lifecycle.status,
+  ConversationToolDescriptor(:final state) => switch (state) {
+    ConversationToolQueued() => 'queued',
+    ConversationToolCancelling() => 'cancelling',
+    ConversationToolInterrupted() => 'interrupted',
+    ConversationToolStarted() => 'started',
+    ConversationToolStreaming() => 'streaming',
+    ConversationToolAwaitingApproval() => 'awaitingApproval',
+    ConversationToolApproved() => 'approved',
+    ConversationToolRunning() => 'running',
+    ConversationToolSucceeded() => 'succeeded',
+    ConversationToolFailed() => 'failed',
+    ConversationToolDenied() => 'denied',
+    ConversationToolCancelled() => 'cancelled',
+  },
+  ConversationAgentDescriptor(:final value) => switch (value.lifecycle) {
+    QueuedThreadAgentView() => 'queued',
+    RunningThreadAgentView() => 'running',
+    SucceededThreadAgentView() => 'succeeded',
+    DeniedThreadAgentView() => 'denied',
+    CancelledThreadAgentView() => 'cancelled',
+    FailedThreadAgentView() => 'failed',
+  },
+  ConversationTurnDescriptor(:final value) => value.state.status.name,
+  ConversationInferenceDescriptor(:final value) => switch (value.lifecycle) {
+    RunningThreadInferenceView() => 'running',
+    CompletedThreadInferenceView() => 'completed',
+    FailedThreadInferenceView() => 'failed',
+    CancelledThreadInferenceView() => 'cancelled',
+  },
+  ConversationSkillDescriptor() ||
+  ConversationFileDescriptor() ||
+  ConversationRawDescriptor() ||
+  ConversationContextCompactionDescriptor() => 'completed',
+};
+
+String _itemText(ConversationItem item) => switch (item.descriptor) {
+  ConversationTextDescriptor() => timelineText(item),
+  ConversationRawDescriptor(:final notice) => notice,
+  ConversationAgentDescriptor(:final value) => switch (value.lifecycle) {
+    SucceededThreadAgentView(:final summary) => summary,
+    DeniedThreadAgentView(:final reason) ||
+    CancelledThreadAgentView(:final reason) => reason,
+    FailedThreadAgentView(:final error) => error,
+    QueuedThreadAgentView() || RunningThreadAgentView() => '',
+  },
+  ConversationSkillDescriptor(:final value) => value.name,
+  _ => '',
+};
+
 ComposerThreadState _newThreadComposer(
   AnyworkClient client,
   SelectionStoreState selection,
 ) {
   final projectId = selection.selectedProjectId;
-  final draft = client.startDraft.state;
+  final draft = client.drafts.startDraft.state;
   final text = draft.forProject(projectId).text;
   final attachments = projectId == null
       ? const ComposerThreadState.idle()
-      : client.attachments.state.newThread(projectId);
+      : client.drafts.attachments.state.newThread(projectId);
   final submitting = draft.submitting || attachments.isSubmissionPending;
   if (!submitting && attachments is FailedComposerThreadState) {
     return FailedComposerThreadState(
@@ -456,19 +549,28 @@ Map<String, int> _connectionCounts(AnyworkClient client) {
   for (final store in client.ownedSessionCosts) {
     counts.add(store.state.sync);
   }
-  for (final session in client.sessionStates) {
+  for (final session in client.conversations.sessionStates) {
     counts.add(session.sync);
   }
   return counts.toJson();
 }
 
-Map<String, Object?> _projectionRevisions(AnyworkClient client) {
+Map<String, Object?> _projectionRevisions(
+  AnyworkClient client,
+  String? presentationThreadId,
+) {
   final settings = client.settings.state;
   final selection = client.selection.state;
-  final selected = selection.selectedThreadId;
-  final session = selected == null || selection.needsOpen
+  final visible = client.conversations.visibleThreadId.value;
+  final selected =
+      presentationThreadId ?? visible ?? selection.selectedThreadId;
+  final session =
+      selected == null ||
+          (presentationThreadId == null &&
+              visible == null &&
+              selection.needsOpen)
       ? null
-      : client.sessionState(selected);
+      : client.conversations.sessionState(selected);
   final skills = [
     for (final store in client.ownedSkills)
       if (store.state.value != null) store.state.revision,
@@ -488,7 +590,7 @@ Map<String, Object?> _projectionRevisions(AnyworkClient client) {
     'agentProfiles': settings.agentProfiles?.revision,
     'bots': client.bots.state.revision,
     'threadDirectory': client.threadDirectory.state.revision,
-    'selectedThread': session?.workspace?.revision,
+    'presentationThread': session?.workspace?.revision,
     'skills': {
       'scopeCount': skills.length,
       'maxRevision': _maxRevision(skills),

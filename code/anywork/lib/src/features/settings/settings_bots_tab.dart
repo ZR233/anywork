@@ -15,16 +15,19 @@ import '../../presentation/providers/account_domains.dart';
 import '../../shared/studio_driver_keys.dart';
 import '../../shared/model_route_selector.dart';
 import 'settings_agent_routes.dart';
+import '../shell/studio_shell.dart' show AgentWorkspacePane;
 
 import 'package:anywork_client/studio_client.dart';
 
 import 'settings_common.dart';
 import 'settings_scope.dart';
 import 'settings_views.dart';
+import '../../app/routing/app_route.dart';
 
 part 'settings_bots_editor.dart';
 part 'settings_bots_detail.dart';
 part 'settings_bots_registration.dart';
+part 'settings_bot_conversation_page.dart';
 
 /// 飞书中国版开发者后台固定入口；仅本机点击打开，不携带凭据或票据。
 const _feishuDeveloperConsoleUrl = 'https://open.feishu.cn/app';
@@ -110,6 +113,24 @@ class _BotsTabState extends ConsumerState<BotsTab> {
         ref.watch(feishuClientAvailableProvider).asData?.value == true;
     final snapshot = view.snapshot ?? const BotsStateSnapshot.empty();
     final selected = _selectedBot(snapshot);
+    if (widget.botId != null && view.loaded && selected == null) {
+      return SettingsPane(
+        header: SettingsHeader(
+          title: context.l10n.settingsBotsTitle,
+          subtitle: context.l10n.botsPlatformFeishu,
+          leading: BackButton(
+            key: StudioDriverKeys.botsBack,
+            onPressed: () => context.pop(),
+          ),
+        ),
+        children: [
+          Text(
+            context.l10n.settingsBotsOperationFailed,
+            key: const ValueKey('bot-destination-unavailable'),
+          ),
+        ],
+      );
+    }
     final registration = snapshot.registration;
     final registering = switch (registration?.status) {
       BotRegistrationPreparing() ||
@@ -132,7 +153,7 @@ class _BotsTabState extends ConsumerState<BotsTab> {
             : IconButton(
                 key: StudioDriverKeys.botsBack,
                 tooltip: MaterialLocalizations.of(context).backButtonTooltip,
-                onPressed: () => Navigator.of(context).pop(),
+                onPressed: () => context.pop(),
                 icon: const Icon(Icons.arrow_back),
               ),
         trailing: selected != null
@@ -229,11 +250,10 @@ class _BotsTabState extends ConsumerState<BotsTab> {
                 );
               }
             },
-            onSelectChat: (id) => context.pushNamed(
-              'bot-details',
-              pathParameters: {'botId': selected.id},
-              queryParameters: {'chatId': id},
-            ),
+            onSelectChat: (id) => BotPlatformToolsRoute(
+              botId: selected.id,
+              chatId: id,
+            ).push(context),
             onEnabled: (enabled) => _run(
               () => _client.botsCommands.setEnabled(
                 botId: selected.id,
@@ -330,8 +350,7 @@ class _BotsTabState extends ConsumerState<BotsTab> {
                 )
                 .toList(),
             selectedId: null,
-            onSelect: (id) =>
-                context.pushNamed('bot-details', pathParameters: {'botId': id}),
+            onSelect: (id) => BotDetailsRoute(botId: id).push(context),
           ),
         ],
       ],
@@ -520,10 +539,7 @@ class _BotsTabState extends ConsumerState<BotsTab> {
           .where((bot) => bot.appId == draft.appId)
           .firstOrNull;
       if (created != null) {
-        await context.pushNamed(
-          'bot-details',
-          pathParameters: {'botId': created.id},
-        );
+        await BotDetailsRoute(botId: created.id).push(context);
       }
     });
   }
@@ -673,18 +689,11 @@ class _BotsTabState extends ConsumerState<BotsTab> {
       );
       return;
     }
-    await _run(() async {
-      await _client.directoryCommands.selectThread(threadId);
-      if (!mounted) return;
-      await context.pushNamed(
-        'bot-chat',
-        pathParameters: {'botId': bot.id},
-        queryParameters: {
-          'chatId': conversation.chatId,
-          'title': conversation.name ?? bot.name,
-        },
-      );
-    });
+    await BotConversationRoute(
+      botId: bot.id,
+      chatId: conversation.chatId,
+      threadId: threadId,
+    ).push(context);
   }
 
   Future<void> _editBot(BotSnapshot bot) async {

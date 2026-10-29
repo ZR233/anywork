@@ -2,7 +2,7 @@ import 'dart:async';
 
 import 'package:anywork/src/app/app_graph.dart';
 import 'package:anywork/src/app/theme/material3_theme.dart';
-import 'package:anywork/src/features/interaction/composer_dock.dart';
+import 'package:anywork/src/features/conversation/composer/connectors/composer_dock_connector.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
 import 'package:anywork_client/studio_client.dart';
@@ -113,17 +113,18 @@ final class _Composer {
   final AppGraph graph;
   final _ScriptedTransport transport;
 
-  StudioThreadSession get owner => graph.client.session(_threadId);
+  ConversationSession get owner =>
+      graph.client.conversations.session(_threadId);
   ThreadWorkspace get workspace => owner.state.workspace!;
 
   /// 只替换 canonical 运行时中的执行/继续点/模型路由，其余事实保持真实。
-  void publish({
+  Future<void> publish({
     Object? execution = _unset,
     Object? continuation = _unset,
     Object? modelRoute = _unset,
-  }) {
+  }) async {
     final runtime = workspace.runtime;
-    owner.applySnapshot(
+    await transport.publishWorkspace(
       workspace.copyWith(
         runtime: runtime.copyWith(
           execution: identical(execution, _unset)
@@ -165,18 +166,25 @@ Future<_Composer> _composer(WidgetTester tester) async {
   );
   await pumpClientFuture(
     tester,
-    graph.client.directoryCommands.selectThread(_threadId),
+    (graph..setConversationPageVisible(true)).client.directoryCommands
+        .selectThread(_threadId),
     'select composer thread',
   );
   await pumpClientUntil(
     tester,
-    () => graph.client.session(_threadId).state.hasSnapshot,
+    () => graph.client.conversations.session(_threadId).state.hasSnapshot,
     'composer thread snapshot',
   );
   // 后续停止与继续都以该会话已保存的路由版本作为 CAS 基线。
   await pumpClientUntil(
     tester,
-    () => graph.client.session(_threadId).state.runtime?.modelRoute != null,
+    () =>
+        graph.client.conversations
+            .session(_threadId)
+            .state
+            .runtime
+            ?.modelRoute !=
+        null,
     'composer model route',
   );
   return _Composer(graph, transport);
@@ -221,7 +229,7 @@ Future<void> _pumpSized(
           body: SizedBox(
             width: width,
             height: height,
-            child: ComposerDock(threadId: threadId),
+            child: ComposerDockConnector(threadId: threadId),
           ),
         ),
       ),
@@ -260,7 +268,7 @@ void main() {
     expect(find.byKey(StudioDriverKeys.composerContinue), findsNothing);
 
     // 运行中空草稿：中性停止。
-    composer.publish(execution: _running);
+    await composer.publish(execution: _running);
     await tester.pump();
     expect(find.byKey(StudioDriverKeys.composerStop), findsOneWidget);
     expect(find.byKey(StudioDriverKeys.composerSubmit), findsNothing);
@@ -286,7 +294,7 @@ void main() {
     expect(find.byKey(StudioDriverKeys.composerContinue), findsNothing);
 
     // 观察到执行结束并留下未认领继续点：显示继续与已知中断原因。
-    composer.publish(execution: null, continuation: _continuation);
+    await composer.publish(execution: null, continuation: _continuation);
     await tester.pump();
     expect(find.byKey(StudioDriverKeys.composerStopping), findsNothing);
     expect(find.byKey(StudioDriverKeys.composerContinue), findsOneWidget);
@@ -326,7 +334,7 @@ void main() {
     expect(find.byKey(StudioDriverKeys.composerContinue), findsNothing);
 
     // 新轮次出现：回到运行中的停止入口。
-    composer.publish(execution: _running, continuation: null);
+    await composer.publish(execution: _running, continuation: null);
     await tester.pump();
     expect(find.byKey(StudioDriverKeys.composerContinuing), findsNothing);
     expect(find.byKey(StudioDriverKeys.composerStop), findsOneWidget);
@@ -336,7 +344,7 @@ void main() {
   testWidgets('保存与模型阻塞显示 typed 原因并禁用继续，草稿保留', (tester) async {
     final composer = await _composer(tester);
     await _pump(tester, composer);
-    composer.publish(execution: null, continuation: _continuation);
+    await composer.publish(execution: null, continuation: _continuation);
     await tester.pump();
     await tester.enterText(
       find.byKey(StudioDriverKeys.composerInput),
@@ -345,7 +353,7 @@ void main() {
     await tester.pump();
 
     final route = composer.workspace.runtime.modelRoute!;
-    composer.publish(
+    await composer.publish(
       modelRoute: ThreadModelRouteView(
         accountId: route.accountId,
         modelId: route.modelId,
@@ -380,12 +388,12 @@ void main() {
     // 硬保存故障同样阻塞继续，并保留运行中的停止入口。
     await tester.enterText(find.byKey(StudioDriverKeys.composerInput), '');
     await tester.pump();
-    composer.publish(
+    await composer.publish(
       execution: _running,
       modelRoute: route,
       continuation: null,
     );
-    composer.owner.applySnapshot(
+    await composer.transport.publishWorkspace(
       composer.workspace.copyWith(
         storage: const ThreadStorageStateView(
           fault: ThreadHistoryFault.writeFailed,
@@ -417,7 +425,7 @@ void main() {
   testWidgets('停止与继续被拒绝显示 typed 文案且不清草稿', (tester) async {
     final composer = await _composer(tester);
     await _pump(tester, composer);
-    composer.publish(execution: _running);
+    await composer.publish(execution: _running);
     await tester.pump();
     await tester.enterText(find.byKey(StudioDriverKeys.composerInput), 'draft');
     await tester.pump();
@@ -445,7 +453,7 @@ void main() {
     );
 
     composer.transport.stopError = null;
-    composer.publish(execution: null, continuation: _continuation);
+    await composer.publish(execution: null, continuation: _continuation);
     await tester.pump();
     await tester.enterText(
       find.byKey(StudioDriverKeys.composerInput),
@@ -529,13 +537,13 @@ void main() {
   testWidgets('点击停止固定的执行编号不会在排队期间被重选', (tester) async {
     final composer = await _composer(tester);
     await _pump(tester, composer);
-    composer.publish(execution: _running);
+    await composer.publish(execution: _running);
     await tester.pump();
     expect(find.byKey(StudioDriverKeys.composerStop), findsOneWidget);
 
     // 界面渲染 exec-1；canonical 之后已推进到 exec-2。点击必须仍以 exec-1 为目标，
     // 由服务端判过时（而不是本地改选或静默停止新执行）。
-    composer.publish(
+    await composer.publish(
       execution: const AgentExecutionView(
         id: 'exec-2',
         phase: AgentExecutionPhase.running,
@@ -569,12 +577,12 @@ void main() {
   testWidgets('停止发送渲染时的执行编号，staleExecution 不重试且保留草稿', (tester) async {
     final composer = await _composer(tester);
     await _pump(tester, composer);
-    composer.publish(execution: _running);
+    await composer.publish(execution: _running);
     await tester.pump();
     expect(find.byKey(StudioDriverKeys.composerStop), findsOneWidget);
 
     // canonical 已推进到新执行，界面仍是上一帧的 exec-1。
-    composer.publish(
+    await composer.publish(
       execution: const AgentExecutionView(
         id: 'exec-2',
         phase: AgentExecutionPhase.running,
@@ -643,7 +651,7 @@ void main() {
   testWidgets('请求在途只禁用停止按钮，不显示正在停止', (tester) async {
     final composer = await _composer(tester);
     await _pump(tester, composer);
-    composer.publish(execution: _running);
+    await composer.publish(execution: _running);
     await tester.pump();
     final gate = Completer<void>();
     composer.transport.stopGate = gate;
@@ -688,7 +696,7 @@ void main() {
   testWidgets('canonical 阻塞优先于历史失败原因，两者同时可见', (tester) async {
     final composer = await _composer(tester);
     await _pump(tester, composer);
-    composer.publish(execution: null, continuation: _continuation);
+    await composer.publish(execution: null, continuation: _continuation);
     await tester.pump();
 
     // 先制造一次 typed 失败。
@@ -705,8 +713,7 @@ void main() {
     expect(find.byKey(const ValueKey('composer-failure')), findsOneWidget);
 
     // 随后出现保存阻塞：入口必须仍被禁用，且两条原因都在。
-    final session = composer.owner;
-    session.applySnapshot(
+    await composer.transport.publishWorkspace(
       composer.workspace.copyWith(
         storage: const ThreadStorageStateView(
           fault: ThreadHistoryFault.writeFailed,
@@ -738,7 +745,7 @@ void main() {
   testWidgets('运行中有草稿时 Escape 仍能停止当前执行', (tester) async {
     final composer = await _composer(tester);
     await _pump(tester, composer);
-    composer.publish(execution: _running);
+    await composer.publish(execution: _running);
     await tester.pump();
     await tester.enterText(
       find.byKey(StudioDriverKeys.composerInput),
@@ -772,7 +779,7 @@ void main() {
     );
 
     // 清理中再按 Escape 不重复发请求。
-    composer.publish(
+    await composer.publish(
       execution: const AgentExecutionView(
         id: 'exec-1',
         phase: AgentExecutionPhase.stopping,
@@ -790,7 +797,7 @@ void main() {
   testWidgets('运行中有草稿时停止请求在途禁用发送并显示进度', (tester) async {
     final composer = await _composer(tester);
     await _pump(tester, composer);
-    composer.publish(execution: _running);
+    await composer.publish(execution: _running);
     await tester.pump();
     await tester.enterText(
       find.byKey(StudioDriverKeys.composerInput),
@@ -863,7 +870,7 @@ void main() {
   testWidgets('canonical 阻塞、历史失败与中断原因三条原因同时可见', (tester) async {
     final composer = await _composer(tester);
     await _pump(tester, composer);
-    composer.publish(execution: null, continuation: _continuation);
+    await composer.publish(execution: null, continuation: _continuation);
     await tester.pump();
     expect(
       find.byKey(const ValueKey('composer-continuation-reason')),
@@ -886,7 +893,7 @@ void main() {
 
     // 随后出现 canonical 阻塞：准入由它决定，但另两条原因不得被吞掉。
     final route = composer.workspace.runtime.modelRoute!;
-    composer.publish(
+    await composer.publish(
       modelRoute: ThreadModelRouteView(
         accountId: route.accountId,
         modelId: route.modelId,
@@ -936,7 +943,7 @@ void main() {
   testWidgets('切换会话后迟到的停止回执不写进新会话', (tester) async {
     final composer = await _composer(tester);
     await _pump(tester, composer);
-    composer.publish(execution: _running);
+    await composer.publish(execution: _running);
     await tester.pump();
 
     // A 的停止请求挂起。
@@ -964,7 +971,10 @@ void main() {
     );
     await pumpClientUntil(
       tester,
-      () => composer.graph.client.session(_altThreadId).state.hasSnapshot,
+      () => composer.graph.client.conversations
+          .session(_altThreadId)
+          .state
+          .hasSnapshot,
       'alternate thread snapshot',
     );
     await _pumpThread(tester, composer, _altThreadId);
@@ -1006,7 +1016,7 @@ void main() {
   testWidgets('切回原会话仍恢复停止请求在途', (tester) async {
     final composer = await _composer(tester);
     await _pump(tester, composer);
-    composer.publish(execution: _running);
+    await composer.publish(execution: _running);
     await tester.pump();
     final gate = Completer<void>();
     composer.transport.stopGate = gate;
@@ -1027,7 +1037,10 @@ void main() {
     );
     await pumpClientUntil(
       tester,
-      () => composer.graph.client.session(_altThreadId).state.hasSnapshot,
+      () => composer.graph.client.conversations
+          .session(_altThreadId)
+          .state
+          .hasSnapshot,
       'alternate snapshot before returning',
     );
     await _pumpThread(tester, composer, _altThreadId);
@@ -1039,7 +1052,7 @@ void main() {
     await _pumpThread(tester, composer, _threadId);
     // 重新打开会话后 canonical 执行由快照恢复；这里显式保持同一执行身份，
     // 让断言的焦点落在「命令板能否恢复在途」而不是重新订阅的时序上。
-    composer.publish(execution: _running);
+    await composer.publish(execution: _running);
     await tester.pump();
     expect(
       find.byKey(StudioDriverKeys.composerStop),
@@ -1082,7 +1095,7 @@ void main() {
       reason: '迟到的停止失败也不得落到新会话',
     );
     // canonical 进入清理期后由投影给出「正在停止」，不依赖本地受理记忆。
-    composer.publish(
+    await composer.publish(
       execution: const AgentExecutionView(
         id: 'exec-1',
         phase: AgentExecutionPhase.stopping,
@@ -1101,7 +1114,7 @@ void main() {
   testWidgets('停止请求长时间未结算显示结果未确认并允许同一执行再试', (tester) async {
     final composer = await _composer(tester);
     await _pump(tester, composer);
-    composer.publish(execution: _running);
+    await composer.publish(execution: _running);
     await tester.pump();
     final gate = Completer<void>();
     composer.transport.stopGate = gate;
@@ -1205,7 +1218,7 @@ void main() {
   testWidgets('受理状态跨重建保持：切走再回仍显示正在停止', (tester) async {
     final composer = await _composer(tester);
     await _pump(tester, composer);
-    composer.publish(execution: _running);
+    await composer.publish(execution: _running);
     await tester.pump();
     // 回执立即返回（applied）：命令板进入 accepted、仍 pending 等 canonical 收敛。
     await tester.tap(find.byKey(StudioDriverKeys.composerStop));
@@ -1249,7 +1262,7 @@ void main() {
   testWidgets('canonical 进入清理后超过阈值也不显示结果未确认', (tester) async {
     final composer = await _composer(tester);
     await _pump(tester, composer);
-    composer.publish(execution: _running);
+    await composer.publish(execution: _running);
     await tester.pump();
     final gate = Completer<void>();
     composer.transport.stopGate = gate;
@@ -1262,7 +1275,7 @@ void main() {
     await tester.pump();
 
     // canonical 先进入清理期：执行已经在停，谈不上「结果未确认」。
-    composer.publish(
+    await composer.publish(
       execution: const AgentExecutionView(
         id: 'exec-1',
         phase: AgentExecutionPhase.stopping,
@@ -1298,7 +1311,7 @@ void main() {
   testWidgets('重建后按命令板登记时间立即判定结果未确认', (tester) async {
     final composer = await _composer(tester);
     await _pump(tester, composer);
-    composer.publish(execution: _running);
+    await composer.publish(execution: _running);
     await tester.pump();
 
     // 直接写入一条 20 秒前登记、尚未受理的停止命令：模拟重建后读到的历史在途。
@@ -1340,7 +1353,7 @@ void main() {
   testWidgets('命令板无停止条目时按 canonical 渲染', (tester) async {
     final composer = await _composer(tester);
     await _pump(tester, composer);
-    composer.publish(execution: _running);
+    await composer.publish(execution: _running);
     await tester.pump();
     await tester.tap(find.byKey(StudioDriverKeys.composerStop));
     await pumpClientUntil(
@@ -1350,7 +1363,7 @@ void main() {
     );
 
     // 执行结束、没有继续点：命令板条目随之清除，界面回到普通发送态。
-    composer.publish(execution: null, continuation: null);
+    await composer.publish(execution: null, continuation: null);
     await tester.pump();
     await tester.pump();
     expect(
@@ -1375,7 +1388,7 @@ void main() {
   testWidgets('受理回执已返回且清理未结束时不出现结果未确认', (tester) async {
     final composer = await _composer(tester);
     await _pump(tester, composer);
-    composer.publish(execution: _running);
+    await composer.publish(execution: _running);
     await tester.pump();
     // 回执立即返回（applied），canonical 执行仍在：命令板会继续 pending 等身份观察。
     await tester.tap(find.byKey(StudioDriverKeys.composerStop));
@@ -1409,7 +1422,7 @@ void main() {
   testWidgets('受理回执在阈值之后到达会清除未确认标记', (tester) async {
     final composer = await _composer(tester);
     await _pump(tester, composer);
-    composer.publish(execution: _running);
+    await composer.publish(execution: _running);
     await tester.pump();
     final gate = Completer<void>();
     composer.transport.stopGate = gate;
@@ -1467,7 +1480,7 @@ void main() {
         values: [issue],
       ),
     );
-    final owner = composer.graph.client.composer(_threadId);
+    final owner = composer.graph.client.drafts.composer(_threadId);
     owner.reportFailure(issue.blockedFailure());
     await _pump(tester, composer);
 
@@ -1536,6 +1549,122 @@ void main() {
     await _close(tester, composer);
   });
 
+  testWidgets('同一 Recovery 事实跨来源只渲一次，独特诊断与普通文案不去重', (tester) async {
+    final composer = await _composer(tester);
+    await _pump(tester, composer);
+    final projectId = composer.workspace.thread.projectId;
+    final issue = StudioRecoveryIssue(
+      id: 'shared-recovery-diagnostic',
+      scope: RecoveryIssueScope.thread,
+      category: RecoveryIssueCategory.repository,
+      impact: RecoveryIssueImpact.executionBlocked,
+      availableActions: const [RecoveryIssueAction.retry],
+      projectId: projectId,
+      threadId: _threadId,
+      detail: 'The shared worktree diagnostic',
+    );
+    final distinctIssue = StudioRecoveryIssue(
+      id: 'shared-recovery-diagnostic',
+      scope: RecoveryIssueScope.thread,
+      category: RecoveryIssueCategory.storage,
+      impact: RecoveryIssueImpact.executionBlocked,
+      availableActions: const [],
+      projectId: projectId,
+      threadId: _threadId,
+      detail: 'A distinct storage diagnostic sharing the id',
+    );
+    const neutralLabel =
+        'The last action could not be confirmed. '
+        'Check the session state before retrying.';
+
+    // 普通失败先各来一条：即使文案完全相同也不做字符串去重。
+    // 顺序注意：先 stop（不依赖 continuation），再 continue；把 continuation
+    // 置空的 publish 会让 continue 失败行失去归属。
+    await composer.publish(execution: _running);
+    await tester.pump();
+    composer.transport.stopError = const StudioFailure(
+      code: StudioFailureCode.busy,
+      message: 'plain duplicate',
+      retryable: true,
+      correlationId: 'plain-stop',
+    );
+    await tester.tap(find.byKey(StudioDriverKeys.composerStop));
+    await tester.pump();
+    await tester.pump();
+    await composer.publish(execution: null, continuation: _continuation);
+    await tester.pump();
+    composer.transport.continueError = const StudioFailure(
+      code: StudioFailureCode.busy,
+      message: 'plain duplicate',
+      retryable: true,
+      correlationId: 'plain-continue',
+    );
+    await tester.tap(find.byKey(StudioDriverKeys.composerContinue));
+    await tester.pump();
+    await tester.pump();
+    expect(
+      find.text(neutralLabel),
+      findsNWidgets(2),
+      reason: '普通失败同文案各自保留，不触发 Recovery 去重',
+    );
+
+    // continue 失败、canonical 阻塞与草稿失败随后携带同一完整 issue。
+    composer.transport.continueError = issue.blockedFailure();
+    await composer.publish(execution: null, continuation: _continuation);
+    await tester.pump();
+    await tester.tap(find.byKey(StudioDriverKeys.composerContinue));
+    await tester.pump();
+    await tester.pump();
+    final owner = composer.graph.client.drafts.composer(_threadId);
+    owner.reportFailure(issue.blockedFailure());
+    final current = composer.graph.client.recovery.state.value;
+    composer.graph.client.recovery.apply(
+      RecoveryStateSnapshot(
+        revision: (current?.revision ?? 0) + 1,
+        values: [issue],
+      ),
+    );
+    await tester.pump();
+    await tester.pump();
+    expect(
+      find.textContaining('shared-recovery-diagnostic'),
+      findsOneWidget,
+      reason: 'canonical/continue/draft 的同一 Recovery 事实只渲一次',
+    );
+    expect(
+      find.byKey(StudioDriverKeys.composerError),
+      findsNothing,
+      reason: 'Recovery 拒绝的草稿失败不重复渲染原始 SDK 文本',
+    );
+
+    // stop 失败也换成同一 issue：仍只有一行。
+    await composer.publish(execution: _running, continuation: null);
+    await tester.pump();
+    composer.transport.stopError = issue.blockedFailure();
+    await tester.tap(find.byKey(StudioDriverKeys.composerStop));
+    await tester.pump();
+    await tester.pump();
+    expect(find.textContaining('shared-recovery-diagnostic'), findsOneWidget);
+
+    // 同 ID 不同 category/detail/actions：独特诊断不被 id 去重。
+    composer.graph.client.recovery.apply(
+      RecoveryStateSnapshot(
+        revision: (current?.revision ?? 0) + 2,
+        values: [distinctIssue],
+      ),
+    );
+    await tester.pump();
+    await tester.pump();
+    expect(
+      find.textContaining('shared-recovery-diagnostic'),
+      findsNWidgets(2),
+      reason: '同 ID 但完整语义不同的诊断都保留',
+    );
+    expect(find.textContaining(issue.detail), findsOneWidget);
+    expect(find.textContaining(distinctIssue.detail), findsOneWidget);
+    await _close(tester, composer);
+  });
+
   testWidgets('受限尺寸下三类原因同时存在不溢出且可读', (tester) async {
     tester.view.physicalSize = const Size(320, 480);
     tester.view.devicePixelRatio = 1;
@@ -1549,7 +1678,7 @@ void main() {
       height: 480,
     );
     // 先制造中断原因与 typed 失败。
-    composer.publish(execution: null, continuation: _continuation);
+    await composer.publish(execution: null, continuation: _continuation);
     await tester.pump();
     composer.transport.continueError = const StudioFailure(
       code: StudioFailureCode.busy,
@@ -1563,7 +1692,7 @@ void main() {
     await tester.pump();
     // 再叠加 canonical 阻塞。
     final route = composer.workspace.runtime.modelRoute!;
-    composer.publish(
+    await composer.publish(
       modelRoute: ThreadModelRouteView(
         accountId: route.accountId,
         modelId: route.modelId,

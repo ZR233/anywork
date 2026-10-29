@@ -196,9 +196,9 @@ impl ChatFieldPreview {
 /// - `saved` is the save watermark: the history writer acknowledged this exact `revision` durable.
 ///   [`Session::confirm_saved`](crate::chat::Session::confirm_saved) only flips it, without changing
 ///   identity, order, revision, body or the execution lifecycle.
-/// - [`ChatItem::lifecycle`] is the execution terminal fact: the producer will not advance the
-///   content again. A terminal item is accepted without any save acknowledgement, and a late preview
-///   is rejected from this fact alone.
+/// - [`ChatItem::lifecycle`] is the execution terminal fact, not a final content revision. Later
+///   reliable terminal revisions remain legal. A terminal item is accepted without any save
+///   acknowledgement, and a late speculative streaming preview is rejected from this fact alone.
 ///
 /// `fields` holds the bounded preview values that are actually shown; the complete body of an
 /// omitted field is read by identity through

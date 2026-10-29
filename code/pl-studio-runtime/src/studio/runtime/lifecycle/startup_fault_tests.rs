@@ -17,6 +17,20 @@ fn options(home: &Path) -> StudioRuntimeOptions {
     }
 }
 
+// Startup assertions need a durable fence while the runtime remains writable.
+// The production shutdown stage also stops the writer and cannot serve this role.
+async fn flush_current_writes(runtime: &StudioRuntime) -> Result<()> {
+    runtime.store.thread_persistence().wait_for_drain().await?;
+    let repository = runtime.agent_facility.persistence.lock().await.clone();
+    if let Some(repository) = repository {
+        repository
+            .flush()
+            .await
+            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    }
+    Ok(())
+}
+
 fn cold_session(paths: &StudioPaths) -> Result<crate::studio::paths::SessionPaths> {
     paths.session_paths("project-cold", "cold")
 }
@@ -94,7 +108,7 @@ async fn canonical_project_without_sqlite_mirror_accepts_and_restores_new_thread
     let thread = runtime
         .create_thread("project-published", "incoming message")
         .await?;
-    let flushed = runtime.flush_persistence().await;
+    let flushed = flush_current_writes(&runtime).await;
     let shutdown = runtime.shutdown_runtime().await;
     flushed?;
     shutdown?;
@@ -190,7 +204,7 @@ async fn recovery_scope_and_execution_dependencies_survive_bot_materialization_a
     let bot_root = runtime
         .create_thread_with_id(bot_root_id, &project.id, "bot owner")
         .await?;
-    runtime.flush_persistence().await?;
+    flush_current_writes(&runtime).await?;
     let managed = runtime
         .store
         .workspace_identity(bot_root_id)
@@ -935,5 +949,53 @@ async fn layout_target_manifest_fault_does_not_reset_home() -> Result<()> {
         tokio::fs::read(session.history_database()).await?,
         b"history-bytes"
     );
+    Ok(())
+}
+
+/// The HTTP detail endpoint can be the first explicit access to an older v2
+/// history. It must prepare the same preserved content as pages and tails.
+#[tokio::test]
+async fn a_detail_first_request_prepares_existing_v2_history_without_activation() -> Result<()> {
+    use crate::studio::storage::history::HistoryStore;
+    use sea_orm::{ConnectionTrait, Database};
+
+    let temp = tempfile::tempdir()?;
+    let paths = seed(temp.path()).await?;
+    let path = cold_session(&paths)?.history_database();
+    let history = HistoryStore::open(&path, "cold").await?;
+    let mut item = pl_protocol::ThreadItem::completed_user_message(
+        "input-detail-first".into(),
+        "cold".into(),
+        "".into(),
+        "preserved detail 中文\n".into(),
+        vec![],
+        17,
+    );
+    item.ordinal = 1;
+    item.revision = 1;
+    history.commit(1, std::slice::from_ref(&item), &[]).await?;
+    drop(history);
+    let db = Database::connect(format!("sqlite://{}?mode=rw", path.display())).await?;
+    db.execute_unprepared("DROP TABLE seaql_migrations; ALTER TABLE history_input_identities DROP COLUMN request_digest; UPDATE history_meta SET schema_version=8").await?;
+    db.close().await?;
+    let runtime = StudioRuntime::initialize(options(temp.path())).await?;
+    let read = runtime
+        .read_timeline_detail(
+            "cold",
+            &item.id,
+            &pl_protocol::TimelineDetailQuery {
+                field: pl_protocol::ThreadContentField::Text,
+                revision: 1,
+                continuation: None,
+                max_bytes: None,
+            },
+        )
+        .await;
+    let shutdown = runtime.shutdown_runtime().await;
+    let detail = read?;
+    shutdown?;
+    assert_eq!(detail.text, "preserved detail 中文\n");
+    assert_eq!(detail.revision, 1);
+    assert!(detail.continuation.is_none());
     Ok(())
 }

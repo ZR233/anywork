@@ -88,6 +88,11 @@ class ModeEditorOwner extends ReadModel<ModeEditorState> {
   final List<_ModeEditorSnapshot> _redo = [];
 
   String? _modeId;
+  String? _openedModeId;
+
+  /// Identity that opened this editing session. Authored JSON may change the
+  /// document ID; a newly created draft starts a different editing session.
+  String? get openedModeId => _openedModeId;
   int _revision = 0;
   ModeDocument? _savedDocument;
   String _savedJson = '';
@@ -112,6 +117,7 @@ class ModeEditorOwner extends ReadModel<ModeEditorState> {
         _redo.clear();
         _savedDocument = null;
         _savedJson = '';
+        _openedModeId = null;
         source.close();
       }
     }();
@@ -133,6 +139,7 @@ class ModeEditorOwner extends ReadModel<ModeEditorState> {
         () => _client.transport.readThreadModeDefinition(id),
       );
       if (_closed || generation != _generation) return false;
+      _openedModeId = id;
       _adoptSnapshot(snapshot, resetHistory: true);
       return true;
     } catch (error) {
@@ -174,6 +181,7 @@ class ModeEditorOwner extends ReadModel<ModeEditorState> {
       ),
       editor: template?.editor ?? const ModeEditorLayout(),
     );
+    _openedModeId = id;
     _modeId = id;
     _revision = _client.modeCatalog.state.revision;
     _savedDocument = null;

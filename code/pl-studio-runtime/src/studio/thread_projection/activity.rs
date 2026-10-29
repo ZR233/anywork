@@ -1089,8 +1089,8 @@ fn tool_sources(
 /// 与上一条活动，不持有 Session、不 await、不读 SQL、不发帧。观察任务是这份助手的唯一持有者（每个
 /// 驻留 Thread 一份），订阅与快照投影调用同一个 [`project_activity`]，因此活动定义只有一处。
 ///
-/// 活动本体是有界 typed 摘要（稳定身份 + 前台 kind + 有界最新逻辑行 + 活跃工具条目），版本只按这些
-/// 已发布事实比较，不按整段正文比较；详情只保留共享观察句柄，正文在按身份读取时才物化。
+/// 活动本体是有界 typed 摘要（稳定身份 + 前台 kind + 有界最新逻辑行 + 活跃工具条目），版本覆盖这些
+/// 已发布事实及详情的共享进度版本，不按整段正文比较；详情只保留共享观察句柄，正文在按身份读取时才物化。
 ///
 /// 观察任务尚未接线时，读取路由可以用一份临时实例推导出与观察任务完全一致的当前活动与详情；接线后
 /// 路由只读观察任务保留的这份助手，不再推导。
@@ -1172,7 +1172,18 @@ impl ActivityProjection {
         } else {
             self.thinking_started_at = None;
         }
-        self.sync_detail(state, activity.as_ref());
+        let detail_changed = self.sync_detail(state, activity.as_ref());
+        if detail_changed
+            && let Some(act) = activity.as_mut()
+            && let Some(previous) = self.previous.as_ref()
+            && previous.identity == act.identity
+            && previous.revision == act.revision
+        {
+            act.revision = previous.revision.saturating_add(1);
+        }
+        if let (Some(detail), Some(activity)) = (self.detail.as_mut(), activity.as_ref()) {
+            detail.activity = activity.clone();
+        }
         self.previous = activity.clone();
         activity
     }
@@ -1194,11 +1205,12 @@ impl ActivityProjection {
         })
     }
 
-    /// 让驻留详情来源跟上已发布事实：只在来源签名或活跃工具条目变化时重建来源。
-    fn sync_detail(&mut self, state: &ThreadSnapshot, activity: Option<&ThreadActivity>) {
+    /// Refresh shared snapshots without materializing text. The returned change
+    /// covers detail versions as well as the lightweight activity body.
+    fn sync_detail(&mut self, state: &ThreadSnapshot, activity: Option<&ThreadActivity>) -> bool {
         let Some(activity) = activity else {
             self.detail = None;
-            return;
+            return false;
         };
         let attempt = activity_attempt(state, activity);
         let progress = attempt.and_then(|attempt| shared_progress(state, attempt));
@@ -1215,14 +1227,36 @@ impl ActivityProjection {
             .is_some_and(|detail| detail.source.same(&source))
         {
             let detail = self.detail.as_mut().expect("checked above");
+            let progress_version =
+                |progress: &ModelProgress| (progress.observation().generation, progress.version());
+            let mut changed = detail.progress.as_ref().map(progress_version)
+                != progress.as_ref().map(progress_version);
             // 共享句柄：克隆只增加一次 `Arc` 引用计数，正文不参与。
-            detail.activity = activity.clone();
             detail.progress = progress;
             if detail.tool_key != activity.tools.active {
                 detail.tool_key = activity.tools.active.clone();
                 detail.tools = tool_sources(state, &activity.tools.active);
+                changed = true;
+            } else {
+                for tool in &mut detail.tools {
+                    let next = tool.task_id.as_ref().and_then(|id| {
+                        state
+                            .tasks
+                            .get(id)
+                            .map(|_| state.tool_progress.get(id).cloned().unwrap_or_default())
+                    });
+                    if tool
+                        .task_output
+                        .as_ref()
+                        .map(pl_core::model::ToolProgress::version)
+                        != next.as_ref().map(pl_core::model::ToolProgress::version)
+                    {
+                        tool.task_output = next;
+                        changed = true;
+                    }
+                }
             }
-            return;
+            return changed;
         }
         self.detail = Some(ActivityDetailOwner {
             activity: activity.clone(),
@@ -1233,6 +1267,7 @@ impl ActivityProjection {
             tools: tool_sources(state, &activity.tools.active),
             source,
         });
+        true
     }
 
     /// 该助手当前驻留的字节：上一条活动摘要、当前活动本体与它捕获的详情来源。

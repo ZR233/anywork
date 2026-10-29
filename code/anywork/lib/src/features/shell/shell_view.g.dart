@@ -360,18 +360,18 @@ final class HeaderViewProvider
 
 String _$headerViewHash() => r'a9aa9bfd421dbab70fc84c4b0ff4730b9a31c2e6';
 
-/// 当前选中会话的输入区事实。草稿仍由 interaction 域覆盖；这里只提供 canonical 会话。
+/// 目的地会话的输入区事实。草稿仍由 interaction 域覆盖；这里只提供 canonical 会话。
 ///
 /// 不在这里持有 shell 租约：pane/预览也会观察它，不能因此拉起真实 Bridge。
 
-@ProviderFor(shellComposerWorkspace)
-final shellComposerWorkspaceProvider = ShellComposerWorkspaceProvider._();
+@ProviderFor(conversationWorkspace)
+final conversationWorkspaceProvider = ConversationWorkspaceFamily._();
 
-/// 当前选中会话的输入区事实。草稿仍由 interaction 域覆盖；这里只提供 canonical 会话。
+/// 目的地会话的输入区事实。草稿仍由 interaction 域覆盖；这里只提供 canonical 会话。
 ///
 /// 不在这里持有 shell 租约：pane/预览也会观察它，不能因此拉起真实 Bridge。
 
-final class ShellComposerWorkspaceProvider
+final class ConversationWorkspaceProvider
     extends
         $FunctionalProvider<
           AgentWorkspaceView?,
@@ -379,22 +379,29 @@ final class ShellComposerWorkspaceProvider
           AgentWorkspaceView?
         >
     with $Provider<AgentWorkspaceView?> {
-  /// 当前选中会话的输入区事实。草稿仍由 interaction 域覆盖；这里只提供 canonical 会话。
+  /// 目的地会话的输入区事实。草稿仍由 interaction 域覆盖；这里只提供 canonical 会话。
   ///
   /// 不在这里持有 shell 租约：pane/预览也会观察它，不能因此拉起真实 Bridge。
-  ShellComposerWorkspaceProvider._()
-    : super(
-        from: null,
-        argument: null,
-        retry: null,
-        name: r'shellComposerWorkspaceProvider',
-        isAutoDispose: true,
-        dependencies: null,
-        $allTransitiveDependencies: null,
-      );
+  ConversationWorkspaceProvider._({
+    required ConversationWorkspaceFamily super.from,
+    required (String, {bool needsOpen}) super.argument,
+  }) : super(
+         retry: null,
+         name: r'conversationWorkspaceProvider',
+         isAutoDispose: true,
+         dependencies: null,
+         $allTransitiveDependencies: null,
+       );
 
   @override
-  String debugGetCreateSourceHash() => _$shellComposerWorkspaceHash();
+  String debugGetCreateSourceHash() => _$conversationWorkspaceHash();
+
+  @override
+  String toString() {
+    return r'conversationWorkspaceProvider'
+        ''
+        '$argument';
+  }
 
   @$internal
   @override
@@ -404,7 +411,12 @@ final class ShellComposerWorkspaceProvider
 
   @override
   AgentWorkspaceView? create(Ref ref) {
-    return shellComposerWorkspace(ref);
+    final argument = this.argument as (String, {bool needsOpen});
+    return conversationWorkspace(
+      ref,
+      argument.$1,
+      needsOpen: argument.needsOpen,
+    );
   }
 
   /// {@macro riverpod.override_with_value}
@@ -414,10 +426,55 @@ final class ShellComposerWorkspaceProvider
       providerOverride: $SyncValueProvider<AgentWorkspaceView?>(value),
     );
   }
+
+  @override
+  bool operator ==(Object other) {
+    return other is ConversationWorkspaceProvider && other.argument == argument;
+  }
+
+  @override
+  int get hashCode {
+    return argument.hashCode;
+  }
 }
 
-String _$shellComposerWorkspaceHash() =>
-    r'dd7752a14f61a73d51c1e52e5a86ad266df852ea';
+String _$conversationWorkspaceHash() =>
+    r'580cd8e1ac24b0747f9068d58e305f19efc56b94';
+
+/// 目的地会话的输入区事实。草稿仍由 interaction 域覆盖；这里只提供 canonical 会话。
+///
+/// 不在这里持有 shell 租约：pane/预览也会观察它，不能因此拉起真实 Bridge。
+
+final class ConversationWorkspaceFamily extends $Family
+    with
+        $FunctionalFamilyOverride<
+          AgentWorkspaceView?,
+          (String, {bool needsOpen})
+        > {
+  ConversationWorkspaceFamily._()
+    : super(
+        retry: null,
+        name: r'conversationWorkspaceProvider',
+        dependencies: null,
+        $allTransitiveDependencies: null,
+        isAutoDispose: true,
+      );
+
+  /// 目的地会话的输入区事实。草稿仍由 interaction 域覆盖；这里只提供 canonical 会话。
+  ///
+  /// 不在这里持有 shell 租约：pane/预览也会观察它，不能因此拉起真实 Bridge。
+
+  ConversationWorkspaceProvider call(
+    String threadId, {
+    bool needsOpen = false,
+  }) => ConversationWorkspaceProvider._(
+    argument: (threadId, needsOpen: needsOpen),
+    from: this,
+  );
+
+  @override
+  String toString() => r'conversationWorkspaceProvider';
+}
 
 @ProviderFor(conversationActivityInput)
 final conversationActivityInputProvider = ConversationActivityInputFamily._();
@@ -484,7 +541,7 @@ final class ConversationActivityInputProvider
 }
 
 String _$conversationActivityInputHash() =>
-    r'd6c52770ced07c0680b3ee71ad75c84fefeb7644';
+    r'86e0ea96d5d9b162f333ec00331fb5de94a866c3';
 
 final class ConversationActivityInputFamily extends $Family
     with $FunctionalFamilyOverride<ConversationActivityInput?, String> {

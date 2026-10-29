@@ -198,6 +198,9 @@ capture 或通用会话临时目录；换位置时同时按本地真实目录调
   系统 IBus 和输入法引擎；它们的 config owner、引擎与凭据服务也须由本次进程树持有并回收。
   保留组词预览、确认后文本与未提交状态的实际证据；输入法的 Return 可能确认原始拼音，
   不应把「Return 必须输出汉字」当成所有输入法的通用判据。
+- IBus 子命令的参数并不保证支持 `--help`；例如 `ibus engine --help` 会把 `--help` 当作
+  待切换的引擎名并访问总线。准备阶段优先读取 man、安装文件或源码；任何可能访问 IBus
+  的命令都只在已核实的本次私有总线环境中执行，不用默认会话试探命令用法。
 
 ## 跨重启交互与 Driver 判定
 
@@ -269,6 +272,10 @@ capture 或通用会话临时目录；换位置时同时按本地真实目录调
   `open-settings`、`select-model`），这些代码只是记录，不会替你执行 UI 操作。
 - 完成后发送 `done\n`。harness 调用 `test_driver/manual_capture.dart` 保存最终截图和摘要，
   请求应用 shutdown；必须等待原任务终态，核对 `capture-stage.txt` 的 `shutdown_completed`。
+- 自写脚本连接 `run-gui --driver --native-launch` 时，`requestData('shutdown')` 只证明资源排空，
+  之后仍须发送现有 `request-app-exit`，由中央协调器调用 native `finishExit`。不能把前者的
+  `clean/drained` 或 xtask 退出码当作原生进程退出成功；以 `--native-exit-report` 的真实退出码、
+  后代回收及取消字段核验。漏发退出请求会触发已武装的原生期限，不应据此修改产品退出逻辑。
 - 失败或取消也要回收：优先向本次伪终端发送 Ctrl-C，让 harness 清理；必要时使用任务取消
   并等待终态。核对本次所属 Flutter、DTD、GUI、fixture、Driver 与 Xvfb 进程是否退出。
   不使用无差别 `pkill`，不杀用户已有桌面或无关任务；仍有残留则明确报告并按所有权处理。

@@ -772,39 +772,16 @@ fn read_mode_observation(home: &Path, thread_id: &str) -> Result<ModeObservation
 }
 
 async fn read_mode_observation_async(home: &Path, thread_id: &str) -> Result<ModeObservation> {
-    let sessions = home.join("v2/sessions");
-    let mut matching = Vec::new();
-    if sessions.is_dir() {
-        for entry in fs::read_dir(&sessions)? {
-            let path = entry?.path().join("history.sqlite");
-            if !path.is_file() {
-                continue;
-            }
-            let mut connection = SqliteConnection::connect_with(
-                &SqliteConnectOptions::new().filename(&path).read_only(true),
-            )
-            .await?;
-            let owner = sea_orm::sqlx::query("SELECT thread_id FROM history_meta WHERE id=1")
-                .fetch_optional(&mut connection)
-                .await?
-                .map(|row| row.try_get::<String, _>("thread_id"))
-                .transpose()?;
-            connection.close().await?;
-            if owner.as_deref() == Some(thread_id) {
-                matching.push(path);
-            }
-        }
-    }
-    ensure!(
-        matching.len() == 1,
-        "expected one history.sqlite for mode-editor Thread, found {}",
-        matching.len()
-    );
-    let path = matching.remove(0);
+    let path = history_lock_database(home)?;
     let mut connection = SqliteConnection::connect_with(
         &SqliteConnectOptions::new().filename(&path).read_only(true),
     )
     .await?;
+    let owner: String = sea_orm::sqlx::query("SELECT thread_id FROM history_meta WHERE id=1")
+        .fetch_one(&mut connection)
+        .await?
+        .try_get("thread_id")?;
+    ensure!(owner == thread_id, "history belongs to another Thread");
     let checkpoint_payload: String =
         sea_orm::sqlx::query("SELECT payload FROM session_checkpoint WHERE id=1")
             .fetch_one(&mut connection)
@@ -848,7 +825,7 @@ async fn read_mode_observation_async(home: &Path, thread_id: &str) -> Result<Mod
         .as_array()
         .context("instruction blocks missing")?
         .iter()
-        .find(|block| block["source"]["kind"] == "executionProfile")
+        .find(|block| block["source"]["kind"] == "modeDefinition")
         .and_then(|block| block["content"].as_str())
         .context("saved Mode instruction block missing")?
         .to_owned();

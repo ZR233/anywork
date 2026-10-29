@@ -72,7 +72,7 @@ class _AccountsConnectorState extends ConsumerState<AccountsConnector> {
   }
 
   Future<void> _navigate(void Function(AccountsViewModel owner) action) async {
-    if (!await confirmLeaveAccountsEditor(context, ref) || !mounted) return;
+    if (!await confirmLeaveAccountsEditor(context) || !mounted) return;
     action(ref.read(accountsViewModelProvider.notifier));
   }
 

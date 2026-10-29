@@ -484,6 +484,7 @@ class WaitEventsJourney {
         'exec': execAtReturn,
       },
     };
+    await _requirePreservedWaitExpansion(firstWaitItemId, 'sleepFirst');
     await _expandHistoryWait(firstWaitItemId, 'sleep-first-history');
   }
 
@@ -587,6 +588,7 @@ class WaitEventsJourney {
         'sleep': sleepAtReturn,
       },
     };
+    await _requirePreservedWaitExpansion(waitItemId, 'toolFirst');
     await _expandHistoryWait(waitItemId, 'tool-first-history');
   }
 
@@ -674,6 +676,39 @@ class WaitEventsJourney {
     }
     checks['childSleepStillVisible'] =
         _toolByCallPrefix(settled, 'child-parent-sleep-t') != null;
+    final childId = child['threadId'] as String;
+    await _tap('agent-switcher');
+    await _tap('agent-thread-$childId');
+    final childView = await waitFor(
+      (snapshot) =>
+          workspaceOf(snapshot)?['threadId'] == childId &&
+          TimelineObservation.optional(snapshot)?.threadId == childId &&
+          TimelineObservation.optional(snapshot)?.ready == true,
+      'child_readonly_view',
+      timeout: const Duration(seconds: 30),
+    );
+    await driver.waitFor(find.byValueKey('agent-readonly-panel'));
+    await driver.waitForAbsent(find.byValueKey('composer-input'));
+    await driver.waitForAbsent(find.byValueKey('composer-submit'));
+    checks['childReadOnlyViewer'] =
+        (workspaceOf(childView)?['composer'] as Map?)?['mode'] ==
+        'runtimeDriven';
+    if (checks['childReadOnlyViewer'] != true) {
+      throw StateError('child view exposed an editable composer');
+    }
+    await capture('child-readonly');
+    await _tap('agent-switcher');
+    await _tap('agent-thread-$rootThreadId');
+    await waitFor(
+      (snapshot) =>
+          workspaceOf(snapshot)?['threadId'] == rootThreadId &&
+          TimelineObservation.optional(snapshot)?.threadId == rootThreadId &&
+          TimelineObservation.optional(snapshot)?.ready == true,
+      'child_return_root',
+      timeout: const Duration(seconds: 30),
+    );
+    await driver.waitFor(find.byValueKey('composer-input'));
+    checks['childReturnRoot'] = true;
     final confirm = await _submit(
       '$_markChildConfirm confirm the child report arrived once',
       'child_confirm',
@@ -1115,6 +1150,30 @@ class WaitEventsJourney {
     }
   }
 
+  /// Observe the completed widgets before any history collapse/reopen can
+  /// recreate them. ToolProbe observes real frames and the SDK controllers.
+  Future<void> _requirePreservedWaitExpansion(
+    String itemId,
+    String label,
+  ) async {
+    final panel = await _tileExpanded(
+      find.byValueKey('wait-expand:$itemId'),
+      '${label}_preserved_wait',
+    );
+    final diagnostics = await _tileExpanded(
+      find.byValueKey('wait-diagnostics:$itemId'),
+      '${label}_preserved_diagnostics',
+    );
+    checks['${label}WaitExpansionPreserved'] = panel;
+    checks['${label}DiagnosticsExpansionPreserved'] = diagnostics;
+    if (!panel || !diagnostics) {
+      throw StateError(
+        '$label completion reset expanded wait widgets: '
+        'panel=$panel, diagnostics=$diagnostics',
+      );
+    }
+  }
+
   Future<void> _expandHistoryWait(String? itemId, String label) async {
     if (itemId == null || itemId.isEmpty) {
       checks['${label}WaitItemId'] = false;
@@ -1146,9 +1205,8 @@ class WaitEventsJourney {
       final summary = 'timeline-activity-summary-${group.id}';
       final summaryFinder = find.byValueKey(summary);
       await driver.waitFor(summaryFinder, timeout: const Duration(seconds: 10));
-      final summaryHeader = _headerOf(summaryFinder);
-      await _scrollHeaderIntoView(summaryHeader);
-      await driver.rawTap(summaryHeader);
+      await _scrollHeaderIntoView(summaryFinder);
+      await driver.rawTap(summaryFinder);
       await waitFor(
         (snapshot) {
           final current = TimelineObservation.optional(snapshot);
@@ -1307,9 +1365,8 @@ class WaitEventsJourney {
     final summary = 'timeline-activity-summary-$groupId';
     final summaryFinder = find.byValueKey(summary);
     await driver.waitFor(summaryFinder, timeout: const Duration(seconds: 10));
-    final summaryHeader = _headerOf(summaryFinder);
-    await _scrollHeaderIntoView(summaryHeader);
-    await driver.rawTap(summaryHeader);
+    await _scrollHeaderIntoView(summaryFinder);
+    await driver.rawTap(summaryFinder);
     await waitFor(
       (snapshot) {
         final current = TimelineObservation.optional(snapshot);
@@ -1321,15 +1378,8 @@ class WaitEventsJourney {
     );
   }
 
-  /// ListTile ancestor of a summary text key such as
-  /// `timeline-activity-summary-<id>`. Wait-card panels already contain their
-  /// ListTile, so their header is a descendant of the ExpansionTile.
-  SerializableFinder _headerOf(SerializableFinder child) => find.ancestor(
-    of: child,
-    matching: find.byType('ListTile'),
-    firstMatchOnly: true,
-  );
-
+  /// Activity summary keys identify the real InkWell control. Wait-card
+  /// panels still use the ListTile inside their official ExpansionTile.
   Future<void> _scrollHeaderIntoView(SerializableFinder header) async {
     await driver.scrollUntilVisible(
       find.byValueKey('timeline-scrollable'),

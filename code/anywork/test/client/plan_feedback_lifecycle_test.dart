@@ -1,3 +1,5 @@
+import 'support/recording_demo_transport.dart';
+
 import 'support/test_statistics_feed.dart';
 
 import 'dart:async';
@@ -5,10 +7,10 @@ import 'dart:async';
 import 'package:anywork/src/app/app_graph.dart';
 import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/domain/models/studio_models.dart';
-import 'package:anywork/src/features/interaction/plan_confirmation_dock.dart';
+import 'package:anywork/src/features/conversation/interactions/connectors/plan_confirmation_connector.dart';
 import 'package:anywork/src/features/shell/studio_shell.dart';
-import 'package:anywork/src/features/timeline/timeline_view.dart';
-import 'package:anywork/src/infrastructure/frb/studio_api.dart';
+import 'package:anywork/src/features/conversation/timeline/views/plan_detail_view.dart';
+import 'package:anywork/src/features/conversation/timeline/connectors/plan_detail_connector.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork_client/studio_client.dart';
 import 'package:flutter/foundation.dart';
@@ -18,14 +20,14 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'support/pump_client_future.dart';
 
-/// 计划详情头部右内边距（`PlanDetailPanel` 头部的
+/// 计划详情头部右内边距（`PlanDetailView` 头部的
 /// `EdgeInsets.fromLTRB(16, 12, 8, 12)`）。
 const _planHeaderContentInset = 8.0;
 
 /// 根因回归：阅读布局（并排 / 全宽 / 窄窗 / 计划详情关开）只改变几何。
 ///
 /// 变化的是 [StudioWorkspaceBody.readingArea]；反馈栏始终是同一个子位置，因此真实
-/// `PlanConfirmationDock` 的草稿、错误与在途决定锁必须在切换后仍然存在。旧实现把整个
+/// `PlanConfirmationConnector` 的草稿、错误与在途决定锁必须在切换后仍然存在。旧实现把整个
 /// `conversation`（时间线 + 输入栏）交给两个不同父节点，切换时重建 State，这三项全部丢失。
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -50,22 +52,26 @@ void main() {
       clientId: 'plan-feedback',
     );
     await graph.client.bootstrap();
-    await graph.client.directoryCommands.selectThread(threadId);
-    await graph.client.session(threadId).source.waitFor((s) => s.hasSnapshot);
+    await (graph..setConversationPageVisible(true)).client.directoryCommands
+        .selectThread(threadId);
+    await graph.client.conversations
+        .session(threadId)
+        .source
+        .waitFor((s) => s.hasSnapshot);
 
     /// 用 Client 自己的 canonical 状态入口投递一份待确认计划：这是运行时帧走的同一
     /// reducer，测试不去伪造第二个会话事实源。
     var interaction = _planInteraction(threadId);
-    void publishPlan(PendingInteraction next) {
+    Future<void> publishPlan(PendingInteraction next) async {
       interaction = next;
       transport.echo = next;
-      final session = graph.client.session(threadId);
-      session.applySnapshot(
+      final session = graph.client.conversations.session(threadId);
+      await transport.publishWorkspace(
         session.state.workspace!.copyWith(interactions: [next]),
       );
     }
 
-    publishPlan(interaction);
+    await publishPlan(interaction);
 
     var plan = interaction.planConfirmation!;
     var split = true;
@@ -90,7 +96,7 @@ void main() {
                     readingArea: planOpen
                         ? _planReadingArea(split: split, markdown: planMarkdown)
                         : const SizedBox.shrink(),
-                    footer: PlanConfirmationDock(
+                    footer: PlanConfirmationConnector(
                       threadId: threadId,
                       plan: plan,
                       enabled: true,
@@ -105,7 +111,7 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    final dock = tester.state<State>(find.byType(PlanConfirmationDock));
+    final dock = tester.state<State>(find.byType(PlanConfirmationConnector));
 
     // 共享 footer 的动作组必须沿输入框右缘，且主/次操作同高同基线、组内间距 8px。
     final inputRect = tester.getRect(
@@ -149,7 +155,7 @@ void main() {
       });
       await tester.pumpAndSettle();
       expect(
-        tester.state<State>(find.byType(PlanConfirmationDock)),
+        tester.state<State>(find.byType(PlanConfirmationConnector)),
         same(dock),
         reason: '阅读布局变化不得重建反馈栏 State',
       );
@@ -218,13 +224,13 @@ void main() {
       correlationId: 'plan-feedback-stale',
     );
     transport.gate = Completer<void>();
-    publishPlan(_planInteraction(threadId, suffix: '-next'));
+    await publishPlan(_planInteraction(threadId, suffix: '-next'));
     rebuild(() => plan = interaction.planConfirmation!);
     await tester.pumpAndSettle();
     await tester.enterText(input, 'next decision');
     await tester.tap(find.byKey(const ValueKey('plan-submit-revision')));
     await tester.pump();
-    publishPlan(_planInteraction(threadId, suffix: '-later'));
+    await publishPlan(_planInteraction(threadId, suffix: '-later'));
     rebuild(() => plan = interaction.planConfirmation!);
     await tester.pumpAndSettle();
     transport.gate!.complete();
@@ -262,12 +268,16 @@ void main() {
       clientId: 'plan-actions-layout',
     );
     await graph.client.bootstrap();
-    await graph.client.directoryCommands.selectThread(threadId);
-    await graph.client.session(threadId).source.waitFor((s) => s.hasSnapshot);
+    await (graph..setConversationPageVisible(true)).client.directoryCommands
+        .selectThread(threadId);
+    await graph.client.conversations
+        .session(threadId)
+        .source
+        .waitFor((s) => s.hasSnapshot);
     final interaction = _planInteraction(threadId);
     transport.echo = interaction;
-    final planSession = graph.client.session(threadId);
-    planSession.applySnapshot(
+    final planSession = graph.client.conversations.session(threadId);
+    await transport.publishWorkspace(
       planSession.state.workspace!.copyWith(interactions: [interaction]),
     );
     final plan = interaction.planConfirmation!;
@@ -298,7 +308,7 @@ void main() {
                 height: 900,
                 child: StudioWorkspaceBody(
                   readingArea: readingArea,
-                  footer: PlanConfirmationDock(
+                  footer: PlanConfirmationConnector(
                     threadId: threadId,
                     plan: plan,
                     enabled: true,
@@ -466,7 +476,7 @@ void expectPlanHeaderAnchoredToContentEdge(
   WidgetTester tester, {
   required String reason,
 }) {
-  final panel = tester.getRect(find.byType(PlanDetailPanel));
+  final panel = tester.getRect(find.byType(PlanDetailView));
   final close = tester.getRect(
     find.byKey(const ValueKey('plan-details-close')),
   );
@@ -488,7 +498,7 @@ Widget _planReadingArea({
   required String markdown,
   double panelWidth = 420,
 }) {
-  final panel = PlanDetailPanel(
+  final panel = PlanDetailConnector(
     identity: 'interaction:1',
     markdown: markdown,
     awaitingConfirmation: true,
@@ -531,9 +541,7 @@ PendingInteraction _planInteraction(String threadId, {String suffix = ''}) {
 ///
 /// 成功分支返回「已受理、canonical 尚未移除」的回执：这正是 UI 必须在成功后继续禁锁、
 /// 等待交互流收敛的真实语义（thread_commands 的 future 只表示 accepted）。
-class _PlanFeedbackTransport extends DemoStudioTransport {
-  _PlanFeedbackTransport() : super(lspActivityLoop: false);
-
+class _PlanFeedbackTransport extends RecordingDemoTransport {
   int respondCalls = 0;
   Object? failure;
 

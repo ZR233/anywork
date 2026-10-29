@@ -17,6 +17,7 @@ import 'studio_host_lifecycle.dart';
 import 'app_graph.dart';
 import 'studio_shutdown.dart';
 import 'theme/material3_theme.dart';
+import 'routing/app_route.dart';
 
 class AnyworkApp extends ConsumerStatefulWidget {
   const AnyworkApp({super.key, this.enableDesktopTray = false});
@@ -31,16 +32,33 @@ class AnyworkApp extends ConsumerStatefulWidget {
 
 class _AnyworkAppState extends ConsumerState<AnyworkApp> {
   late final GoRouter _router;
+  late final AppGraph _graph;
 
   @override
   void initState() {
     super.initState();
-    unawaited(ref.read(appGraphProvider).initialize());
-    _router = createApplicationRouter(ref);
+    _graph = ref.read(appGraphProvider);
+    unawaited(_graph.initialize());
+    _router = createApplicationRouter();
+    _router.routerDelegate.addListener(_syncConversationRoute);
+  }
+
+  void _syncConversationRoute() {
+    if (_router.routerDelegate.currentConfiguration.isEmpty) return;
+    final state = _router.routerDelegate.state;
+    _graph.client.selection.beginNavigation();
+    _graph.setConversationPageVisible(
+      state.name == StudioRoute.name || state.name == BotConversationRoute.name,
+      threadId: state.name == BotConversationRoute.name
+          ? state.pathParameters['threadId']!
+          : null,
+    );
   }
 
   @override
   void dispose() {
+    _router.routerDelegate.removeListener(_syncConversationRoute);
+    _graph.setConversationPageVisible(false);
     _router.dispose();
     super.dispose();
   }
@@ -94,6 +112,7 @@ class _StudioLifecycleCoordinatorState
   late final StudioTransport _api;
   late final StudioShutdownProgressState _shutdownProgress;
   late final StudioExitCoordinator _coordinator;
+  late final AppGraph _graph;
 
   @override
   void initState() {
@@ -103,6 +122,13 @@ class _StudioLifecycleCoordinatorState
     _api = ref.read(appGraphProvider).client.transport;
     _shutdownProgress = ref.read(studioShutdownProgressStateProvider.notifier);
     final graph = ref.read(appGraphProvider);
+    _graph = graph;
+    final lifecycle = WidgetsBinding.instance.lifecycleState;
+    graph.setHostVisible(
+      lifecycle != AppLifecycleState.hidden &&
+          lifecycle != AppLifecycleState.paused &&
+          lifecycle != AppLifecycleState.detached,
+    );
     _coordinator = StudioExitCoordinator(
       _api,
       // dispose 之后 overlay 与 account container 均已销毁：不再向已销毁的
@@ -129,6 +155,13 @@ class _StudioLifecycleCoordinatorState
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _graph.setHostVisible(true);
+    } else if (state == AppLifecycleState.hidden ||
+        state == AppLifecycleState.paused ||
+        state == AppLifecycleState.detached) {
+      _graph.setHostVisible(false);
+    }
     // 隐藏到托盘会进入 hidden/inactive，而不是 detached：只有真实 engine
     // detach 才进入退出协调器，隐藏不会取消正在运行的 Turn、工具或保存。
     if (state == AppLifecycleState.detached) {

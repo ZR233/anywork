@@ -361,30 +361,32 @@ class ModelRoleSelector extends StatelessWidget {
               child: CircularProgressIndicator(strokeWidth: 1.5),
             ),
           ),
-        ModelRouteSelector(
-          selectorKey: StudioDriverKeys.model,
-          options: options,
-          accountId: accountId,
-          modelId: modelId,
-          fieldLabel: context.l10n.statusPlannerModel,
-          tooltip:
-              selectionBlockedReason ??
-              filterMessage ??
-              context.l10n.statusPlannerModel,
-          unresolvedLabel: filterMessage,
-          labelMaxWidth: 140,
-          // Pending is an optimistic projection, not a lock.  The controller
-          // supersedes older route intents by stable target identity, so users
-          // can select A -> B -> C without waiting for each Bridge round trip.
-          enabled: enabled && selectionBlockedReason == null,
-          onBlockedTap: selectionBlockedReason == null
-              ? null
-              : () => explain(selectionBlockedReason),
-          onSelected: (option) async {
-            await onModelSelected?.call(option.accountId, option.modelId);
-          },
-          optionKeyBuilder: (option) =>
-              StudioDriverKeys.modelOption(option.accountId, option.modelId),
+        Flexible(
+          child: ModelRouteSelector(
+            selectorKey: StudioDriverKeys.model,
+            options: options,
+            accountId: accountId,
+            modelId: modelId,
+            fieldLabel: context.l10n.statusPlannerModel,
+            tooltip:
+                selectionBlockedReason ??
+                filterMessage ??
+                context.l10n.statusPlannerModel,
+            unresolvedLabel: filterMessage,
+            labelMaxWidth: 140,
+            // Pending is an optimistic projection, not a lock.  The controller
+            // supersedes older route intents by stable target identity, so users
+            // can select A -> B -> C without waiting for each Bridge round trip.
+            enabled: enabled && selectionBlockedReason == null,
+            onBlockedTap: selectionBlockedReason == null
+                ? null
+                : () => explain(selectionBlockedReason),
+            onSelected: (option) async {
+              await onModelSelected?.call(option.accountId, option.modelId);
+            },
+            optionKeyBuilder: (option) =>
+                StudioDriverKeys.modelOption(option.accountId, option.modelId),
+          ),
         ),
       ],
     );

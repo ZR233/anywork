@@ -1626,7 +1626,13 @@ class SkillActivityJourney {
   ) async {
     if (group.expanded) return;
     final summary = find.byValueKey('timeline-activity-summary-${group.id}');
-    await _tapHeader(summary, 'group ${group.id}');
+    await driver.scrollUntilVisible(
+      find.byValueKey('timeline-scrollable'),
+      summary,
+      dyScroll: -80,
+      timeout: const Duration(seconds: 15),
+    );
+    await driver.rawTap(summary, timeout: const Duration(seconds: 20));
     await waitFor(
       (snapshot) {
         final timeline = TimelineObservation.optional(snapshot);
@@ -1645,7 +1651,13 @@ class SkillActivityJourney {
     final group = timeline.presentationFor(sourceId);
     if (!group.expanded) return;
     final summary = find.byValueKey('timeline-activity-summary-${group.id}');
-    await _tapHeader(summary, 'group ${group.id}');
+    await driver.scrollUntilVisible(
+      find.byValueKey('timeline-scrollable'),
+      summary,
+      dyScroll: -80,
+      timeout: const Duration(seconds: 15),
+    );
+    await driver.rawTap(summary, timeout: const Duration(seconds: 20));
     await waitFor(
       (snapshot) {
         final timeline = TimelineObservation.optional(snapshot);
@@ -1756,7 +1768,7 @@ class SkillActivityJourney {
     );
   }
 
-  /// Taps the real header `ListTile` of [child] (a group summary or a member row)
+  /// Taps the real header `ListTile` of a member row.
   /// after bringing it into the visible range of its own scrollable.
   Future<void> _tapHeader(SerializableFinder child, String label) async {
     final header = find.ancestor(
@@ -1943,10 +1955,6 @@ class SkillActivityJourney {
 
   Future<void> tap(String key) async {
     await mark('tap_$key');
-    if (key.startsWith('timeline-activity-summary-')) {
-      await _tapHeader(find.byValueKey(key), key);
-      return;
-    }
     await driver.rawTap(
       find.byValueKey(key),
       timeout: const Duration(seconds: 60),

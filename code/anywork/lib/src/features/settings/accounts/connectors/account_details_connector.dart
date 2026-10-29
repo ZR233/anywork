@@ -83,12 +83,12 @@ class _AccountDetailsConnectorState
         return AccountDetailsView(
           value: owner.presentation(catalog: models?.catalog, acp: acp?.panel),
           onBack: () async {
-            if (await confirmLeaveAccountsEditor(context, ref) && mounted) {
+            if (await confirmLeaveAccountsEditor(context) && mounted) {
               navigation.back();
             }
           },
           onEdit: () async {
-            if (await confirmLeaveAccountsEditor(context, ref) && mounted) {
+            if (await confirmLeaveAccountsEditor(context) && mounted) {
               navigation.edit(widget.account);
             }
           },

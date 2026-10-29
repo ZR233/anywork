@@ -2344,101 +2344,6 @@ class FrbStudioTransport
   }
 
   @override
-  Stream<ThreadStreamFrame> subscribeThread(String threadId) {
-    late final StreamController<ThreadStreamFrame> controller;
-    frb.BridgeEventSubscription? handle;
-    StreamSubscription<frb.BridgeThreadStreamEnvelope>? subscription;
-
-    Future<void> release() async {
-      // 只有 native cancel 真正 ACK 才丢弃强引用并 dispose；抛错/超时保留 handle，owner
-      // 仍强持有 opaque 句柄直到确认或进程终止，绝不先清后 cancel 让对象被 GC/finalizer。
-      final activeHandle = handle;
-      if (activeHandle != null) {
-        if (RustLib.instance.initialized) {
-          await activeHandle.cancel();
-        }
-        handle = null;
-        activeHandle.dispose();
-      }
-      // native 已 ACK 后 handle 已清；若 Dart 订阅取消抛错则保留这一活动层，不二次
-      // cancel/dispose，也不把已 ACK 的 native 变成伪 pending。
-      final activeSubscription = subscription;
-      if (activeSubscription != null) {
-        await activeSubscription.cancel();
-        subscription = null;
-      }
-    }
-
-    final tracked = _DartSubscription(
-      'thread',
-      release,
-      _forgetDartSubscription,
-    );
-    _trackDartSubscription(tracked);
-
-    Future<void> start() async {
-      try {
-        // 关闭/封闭/已取消时不创建新桥订阅；_ensureReady 也不在退出后被调用。
-        if (tracked.cancelRequested || _closing || _dartSubscriptionsSealed) {
-          return;
-        }
-        await _ensureReady();
-        if (tracked.cancelRequested || _dartSubscriptionsSealed || _closing) {
-          return;
-        }
-        final created = await _bridgeCall(
-          () => frb_thread_sub.subscribeThread(threadId: threadId),
-        );
-        // await create 期间关闭：句柄交给 owner 的 release 闭包，由 registry 持有并等
-        // cancel 完成，绝不在这里自行 dispose 后误报 settled。
-        handle = created;
-        if (tracked.cancelRequested || _dartSubscriptionsSealed || _closing) {
-          return;
-        }
-        subscription = created.threadStream().listen(
-          (envelope) => envelope.when(
-            data: (update) => controller.add(_threadStreamFrameFromFrb(update)),
-            failure: (error) => controller.addError(_studioFailure(error)),
-            closed: controller.close,
-          ),
-          onError: (Object error, StackTrace stackTrace) =>
-              controller.addError(_studioFailure(error), stackTrace),
-          onDone: controller.close,
-        );
-      } catch (error, stackTrace) {
-        if (!tracked.cancelRequested) {
-          // create/stream attach 已确定失败；先结束创建决策，避免 controller.close 等待
-          // 的 onCancel 反向等待本 start future 的 finally。
-          tracked.markCreated();
-          controller.addError(_studioFailure(error), stackTrace);
-          await controller.close();
-        }
-      } finally {
-        // 封闭/退出中：即使本 entry 尚未收到取消请求，也启动唯一 owned cancellation，
-        // 保证任何已建立（或迟到）的 native 句柄都被释放，绝不让 owner 逃逸 settle 检查。
-        if (_dartSubscriptionsSealed || _closing) {
-          unawaited(tracked.beginCancel());
-        }
-        // 无论是否创建成功都完成创建闩：取消不必永远等待一个不会发生的创建。
-        tracked.markCreated();
-      }
-    }
-
-    controller = StreamController<ThreadStreamFrame>(
-      onListen: () => unawaited(start()),
-      onCancel: () async {
-        try {
-          await tracked.beginCancel();
-        } on Object {
-          // 具体（脱敏）错因与堆栈已由 owner 保留，用于关闭报告的同步诊断；onCancel
-          // 不抛出，避免未 await 的 cancel 变成未处理异步错误。失败即保留 pending owner。
-        }
-      },
-    );
-    return controller.stream;
-  }
-
-  @override
   Future<ThreadActivityDetail> readThreadActivityDetail(
     String threadId,
     String activityId,
@@ -2455,12 +2360,69 @@ class FrbStudioTransport
   }
 
   @override
-  Future<StudioTimelineConnection> openTimeline(String threadId) async {
+  Future<ConversationFeed> openConversationFeed(String threadId) async {
     await _ensureReady();
-    final timeline = await _bridgeCall(
-      () => frb_chat.openTimeline(threadId: threadId),
+    frb_chat.BridgeConversationFeed? handle;
+    FrbConversationFeed? adapter;
+    final tracked = _DartSubscription(
+      'conversation:$threadId',
+      () async {
+        final active = handle;
+        final ownedAdapter = adapter;
+        if (ownedAdapter != null) {
+          await ownedAdapter._releaseNative();
+        } else if (active != null) {
+          active.requestClose();
+          await active.close();
+          active.dispose();
+        }
+      },
+      _forgetDartSubscription,
+      retryFailedRelease: true,
     );
-    return FrbTimelineConnection(timeline);
+    _trackDartSubscription(tracked);
+    try {
+      handle = await _bridgeCall(
+        () => frb_chat.openConversationFeed(threadId: threadId),
+      );
+      final feed = FrbConversationFeed(handle!);
+      adapter = feed;
+      // Register before awaiting open: exit must retain a late native owner.
+      tracked.markCreated();
+      feed._registration = tracked;
+      if (tracked.cancelRequested || _closing || _dartSubscriptionsSealed) {
+        feed.requestClose();
+        await feed.close();
+        throw _conversationClosedFailure;
+      }
+      if (feed.threadId != threadId || feed.subscriptionId.isEmpty) {
+        feed.requestClose();
+        await feed.close();
+        throw const StudioFailure(
+          code: StudioFailureCode.internal,
+          message: 'Conversation feed identity does not match its request',
+          retryable: false,
+          correlationId: 'client-conversation-identity',
+        );
+      }
+      return feed;
+    } catch (error, stack) {
+      tracked.markCreated();
+      if (handle != null && adapter == null) {
+        // A synchronous identity getter may fail after open. The registered owner
+        // still owns that native handle, even though no Dart feed was published.
+        try {
+          handle.requestClose();
+          await tracked.beginCancel();
+        } catch (_) {
+          // Failed release stays registered for runtime cleanup/retry.
+        }
+      }
+      Error.throwWithStackTrace(_studioFailure(error), stack);
+    } finally {
+      tracked.markCreated();
+      if (handle == null) await tracked.beginCancel();
+    }
   }
 
   @override

@@ -203,7 +203,7 @@ fn topic_token(topic: &pl_studio_runtime::StudioProductTopic) -> &'static str {
 ///
 /// 内容**不**经本流传送，也不再让客户端据此去重读历史页：内容有自己的通道
 /// `/api/v1/threads/{id}/timeline/events`（基线 + 连续补丁／显式重同步）与
-/// `/api/v1/threads/{id}/timeline`（无状态页），与 FRB 的 `BridgeTimeline` 用同一份共享会话事实。
+/// `/api/v1/threads/{id}/timeline`（无状态页），与 FRB 的 `BridgeConversationFeed` 用同一份共享会话事实。
 /// 旧 `itemStarted`/`itemDelta`/`itemCompleted` 事件已删除——内容只有这一条推送源。
 #[utoipa::path(
     get,

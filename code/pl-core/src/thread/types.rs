@@ -236,6 +236,10 @@ pub enum ModelExecutionPhase {
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ThreadSnapshot {
+    /// Live publication order within this owner incarnation, including previews.
+    /// Independent of committed effects and never persisted or compared across owners.
+    #[serde(skip)]
+    pub observation_revision: u64,
     /// Live executor retirement owned by this Thread; never part of a checkpoint.
     #[serde(skip)]
     pub tool_cleanup: ToolCleanupState,
@@ -520,6 +524,7 @@ impl ThreadSnapshot {
     /// terminal facts with [`Self::retain_live_facts`], while the effect-matched transfer state
     /// keeps them so a history writer can project its own effect.
     pub(crate) fn clear_ephemeral(&mut self) {
+        self.observation_revision = 0;
         self.model_progress = None;
         self.model_execution = None;
         self.tool_progress.clear();

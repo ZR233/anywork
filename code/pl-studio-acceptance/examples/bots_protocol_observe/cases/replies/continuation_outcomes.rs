@@ -25,7 +25,7 @@
 
 use super::super::Session;
 use super::card_stream::{ActionKind, Lifecycle, OperationStatus};
-use super::{answers_json, optional_title_step};
+use super::{answers_json, optional_title_step, wait_cancelled_turn};
 use crate::http;
 use crate::report::{self, CaseResult};
 use crate::thread_watch::ThreadWatch;
@@ -582,36 +582,6 @@ async fn wait_card_lifecycle(
     }
 }
 
-/// Waits for the newest canonical Turn item to be a cancelled one.
-async fn wait_cancelled_turn(
-    session: &Session,
-    thread_id: &str,
-    turn_id: &str,
-) -> Result<pl_protocol::CancelledTurnState> {
-    let deadline = std::time::Instant::now() + http::PREDICATE_TIMEOUT;
-    loop {
-        let page = session.http()?.read_timeline(thread_id, 100).await?;
-        let cancelled = page
-            .items
-            .iter()
-            .rev()
-            .find_map(|item| match item.preview.state() {
-                pl_protocol::ThreadItemState::Turn(turn) => match turn.state() {
-                    pl_protocol::TurnState::Cancelled(state) => Some(state.clone()),
-                    _ => None,
-                },
-                _ => None,
-            });
-        if let Some(state) = cancelled {
-            return Ok(state);
-        }
-        if std::time::Instant::now() >= deadline {
-            anyhow::bail!("the targeted Turn {turn_id} never reached a canonical cancelled state");
-        }
-        tokio::time::sleep(http::POLL).await;
-    }
-}
-
 /// Waits until one ordered model gate is really reached by the fixture.
 async fn wait_gate(stage: &'static ReplyStage, what: &str) -> Result<()> {
     tokio::time::timeout(http::PREDICATE_TIMEOUT, stage.wait_reached())
@@ -754,8 +724,14 @@ fn question_arguments(question_id: &str) -> String {
 }
 
 pub(crate) fn continuation_outcomes_model_steps() -> Vec<Step> {
-    let fail_continuation = answers_json(&[(QUESTION_FAIL, ANSWER_FAIL)]);
-    let cancel_continuation = answers_json(&[(QUESTION_CANCEL, ANSWER_CANCEL)]);
+    let fail_continuation = answers_json(
+        &format!("op-bots-cont-{QUESTION_FAIL}"),
+        &[(QUESTION_FAIL, ANSWER_FAIL)],
+    );
+    let cancel_continuation = answers_json(
+        &format!("op-bots-cont-{QUESTION_CANCEL}"),
+        &[(QUESTION_CANCEL, ANSWER_CANCEL)],
+    );
     let (cancel_before, cancel_after) = responses_authoritative_final(
         "",
         CANCEL_FINAL,

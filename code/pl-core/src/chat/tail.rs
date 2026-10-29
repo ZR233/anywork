@@ -174,8 +174,7 @@ pub enum ChatTailUpdate {
 /// [`RECENT_ITEMS`] items and [`RECENT_BYTES`] of preview bytes) is retained; a resynchronization
 /// replaces it outright instead of keeping a second newest page.
 pub struct ChatTail {
-    session: Option<Session>,
-    watch: watch::Receiver<ChatProgress>,
+    subscription: Option<TailSubscription>,
     /// The first frame, until the consumer takes it once.
     initial: Option<ChatTailBaseline>,
     /// The items this observation actually delivered, kept as its bounded continuity copy.
@@ -185,6 +184,13 @@ pub struct ChatTail {
     /// The highest version this observation has already looked at, whether or not it produced a
     /// frame. It is the level-triggered wake watermark, so a skipped version never re-fires the wait.
     seen: u64,
+}
+
+/// The live observation resources are acquired and released together. A closed tail can remain
+/// allocated without keeping either the session or a notification receiver alive.
+struct TailSubscription {
+    session: Session,
+    watch: watch::Receiver<ChatProgress>,
 }
 
 /// What one synchronous critical section resolved the pending version into.
@@ -213,8 +219,7 @@ impl ChatTail {
             .collect();
         let version = baseline.version;
         Self {
-            session: Some(session),
-            watch,
+            subscription: Some(TailSubscription { session, watch }),
             initial: Some(baseline),
             retained,
             delivered: version,
@@ -232,7 +237,7 @@ impl ChatTail {
     /// [`ChatError::Cancelled`] once the observation is closed, and [`ChatError::Conflict`] when the
     /// first frame was already taken — the frame is a single hand-off, not a repeatable getter.
     pub fn initial(&mut self) -> Result<ChatTailBaseline, ChatError> {
-        if self.session.is_none() {
+        if self.subscription.is_none() {
             return Err(ChatError::Cancelled);
         }
         self.initial.take().ok_or_else(|| {
@@ -252,16 +257,20 @@ impl ChatTail {
     /// frame has not been taken yet, and the host's own typed storage/preview failures for a
     /// resynchronization.
     pub async fn next(&mut self) -> Result<Option<ChatTailUpdate>, ChatError> {
+        if self.subscription.is_none() {
+            return Err(ChatError::Cancelled);
+        }
         if self.initial.is_some() {
             return Err(ChatError::Conflict(
                 "the captured first frame must be taken before awaiting tail updates".to_owned(),
             ));
         }
         loop {
-            let Some(session) = self.session.clone() else {
+            let Some(subscription) = &self.subscription else {
                 return Err(ChatError::Cancelled);
             };
-            if !self.wait_ready().await {
+            let session = subscription.session.clone();
+            if !self.wait_ready(&subscription.watch).await {
                 return Ok(None);
             }
             match self.frame(&session)? {
@@ -277,15 +286,16 @@ impl ChatTail {
         }
     }
 
-    /// Releases this observation's content baseline and its session reference.
+    /// Releases this observation's notification receiver, content baseline and session reference.
     ///
     /// The observation itself derives no background task, so a caller cancels a pending
     /// [`ChatTail::next`] future before closing or dropping it. Closing one observation stops
-    /// neither other observations nor the producer or the history writer.
+    /// neither other observations nor the producer or the history writer. Repeated calls are
+    /// harmless; keeping the closed object alive no longer declares observation demand.
     pub fn close(&mut self) {
+        self.subscription = None;
         self.retained.clear();
         self.initial = None;
-        self.session = None;
     }
 
     /// One synchronous commit point: diff the pending version against this observation's copy.
@@ -434,8 +444,8 @@ impl ChatTail {
     /// Lock-free readiness wait: only the version and boundary waterline are read.
     ///
     /// Returns `false` only when the session no longer publishes progress.
-    async fn wait_ready(&self) -> bool {
-        let mut waiter = self.watch.clone();
+    async fn wait_ready(&self, watch: &watch::Receiver<ChatProgress>) -> bool {
+        let mut waiter = watch.clone();
         // Anchored once, on the first observation of a pending coalesced change, and never restarted.
         let mut deadline: Option<tokio::time::Instant> = None;
         loop {

@@ -1,3 +1,5 @@
+import 'support/mapped_conversation_feed.dart';
+
 import 'support/test_statistics_feed.dart';
 
 import 'dart:async';
@@ -17,7 +19,7 @@ void main() {
     // A member of another root is not a target of the current root's menu.
     await client.directoryCommands.selectAgentThread(fixture.other.id);
     expect(fixture.transport.metadataReads, isEmpty);
-    expect(client.sessionStates, isEmpty);
+    expect(client.conversations.sessionStates, isEmpty);
 
     await client.directoryCommands.selectAgentThread(fixture.child.id);
     await _expectSelectedHistory(fixture);
@@ -34,7 +36,7 @@ void main() {
         needsOpen: true,
       );
       expect(fixture.transport.metadataReads, isEmpty);
-      expect(client.sessionStates, isEmpty);
+      expect(client.conversations.sessionStates, isEmpty);
 
       await client.directoryCommands.openSelectedThread();
       await _expectSelectedHistory(fixture);
@@ -74,7 +76,7 @@ void main() {
       );
       expect(client.selection.state.selectedThreadId, fixture.root.id);
       expect(client.threadDirectory.state.overlayThreads, isEmpty);
-      expect(client.sessionStates, isEmpty);
+      expect(client.conversations.sessionStates, isEmpty);
     }
     fixture.transport.respond = (_) async =>
         throw StateError('saved metadata unavailable');
@@ -86,7 +88,7 @@ void main() {
     expect(client.threadDirectory.state.overlayThreads, isEmpty);
     expect(client.threadDirectory.state.revision, 7);
     expect(fixture.transport.stateReads, isEmpty);
-    expect(fixture.transport.timelines, isEmpty);
+    expect(fixture.transport.feeds, isEmpty);
   });
 
   test(
@@ -144,10 +146,14 @@ void main() {
           isEmpty,
           reason: invalidation,
         );
-        expect(client.sessionStates, isEmpty, reason: invalidation);
+        expect(
+          client.conversations.sessionStates,
+          isEmpty,
+          reason: invalidation,
+        );
         expect(fixture.transport.metadataReads, [fixture.child.id]);
         expect(fixture.transport.stateReads, isEmpty, reason: invalidation);
-        expect(fixture.transport.timelines, isEmpty, reason: invalidation);
+        expect(fixture.transport.feeds, isEmpty, reason: invalidation);
       }
     },
   );
@@ -212,7 +218,11 @@ void main() {
         reason: action,
       );
       expect(client.findThread(fixture.child.id), isNull, reason: action);
-      expect(client.existingSession(fixture.child.id), isNull, reason: action);
+      expect(
+        client.conversations.existingSession(fixture.child.id),
+        isNull,
+        reason: action,
+      );
       expect(
         client.selection.state.selectedThreadId,
         isNot(fixture.child.id),
@@ -224,7 +234,7 @@ void main() {
         reason: action,
       );
       expect(
-        fixture.transport.timelines.map((timeline) => timeline.threadId),
+        fixture.transport.feeds.map((timeline) => timeline.threadId),
         isNot(contains(fixture.child.id)),
         reason: action,
       );
@@ -258,11 +268,14 @@ void main() {
       activation.complete();
       expect(await draftNavigation, isNull);
       await newer;
+      fixture.graph.setConversationPageVisible(true);
+      await client.conversations.session(fixture.other.id).content.ready;
       expect(client.selection.state.selectedProjectId, fixture.other.projectId);
       expect(client.selection.state.selectedThreadId, fixture.other.id);
-      expect(client.sessionStates.map((state) => state.threadId), [
-        fixture.other.id,
-      ]);
+      expect(
+        client.conversations.sessionStates.map((state) => state.threadId),
+        [fixture.other.id],
+      );
       expect(fixture.transport.stateReads, [fixture.other.id]);
     },
   );
@@ -317,7 +330,7 @@ void main() {
     oldReply.complete(fixture.child);
     expect(await oldNavigation, isNull);
     expect(client.threadDirectory.state.overlayThreads, isEmpty);
-    expect(client.sessionStates, isEmpty);
+    expect(client.conversations.sessionStates, isEmpty);
 
     final newer = client.directoryCommands.selectAgentThread(sibling.id);
     await newEntered.future;
@@ -334,11 +347,15 @@ void main() {
     creation.add(NewThreadStartSucceeded(result));
     expect(await created, same(result));
     expect(client.selection.state.needsOpen, isTrue);
-    expect(client.sessionStates, isEmpty);
+    expect(client.conversations.sessionStates, isEmpty);
     newReply.complete(sibling);
     await newer;
+    fixture.graph.setConversationPageVisible(true);
+    await client.conversations.session(sibling.id).content.ready;
     expect(client.selection.state.selectedThreadId, sibling.id);
-    expect(client.sessionStates.map((state) => state.threadId), [sibling.id]);
+    expect(client.conversations.sessionStates.map((state) => state.threadId), [
+      sibling.id,
+    ]);
     expect(fixture.transport.stateReads, [sibling.id]);
     expect(client.findThread(fixture.child.id), isNull);
   });
@@ -509,7 +526,7 @@ void main() {
     expect(stopping.isStopping, isTrue);
     expect(stopping == execution, isFalse);
     // Listing never opens a member: the row facts come from the directory.
-    expect(client.sessionStates, isEmpty);
+    expect(client.conversations.sessionStates, isEmpty);
     expect(client.selection.state.selectedThreadId, fixture.root.id);
   });
 }
@@ -573,38 +590,41 @@ Future<void> _expectLatestQueuedColdSelection({
     isEmpty,
     reason: 'An old read must not publish while the new command is still queued/reading',
   );
-  expect(client.sessionStates, isEmpty);
+  expect(client.conversations.sessionStates, isEmpty);
   expect(fixture.transport.stateReads, isEmpty);
-  expect(fixture.transport.timelines, isEmpty);
+  expect(fixture.transport.feeds, isEmpty);
   if (newFails) {
     newReply.completeError(newError);
     expect(await newNavigation, same(newError));
     expect(client.selection.state.selectedThreadId, fixture.root.id);
     expect(client.threadDirectory.state.overlayThreads, isEmpty);
-    expect(client.sessionStates, isEmpty);
+    expect(client.conversations.sessionStates, isEmpty);
     expect(fixture.transport.stateReads, isEmpty);
-    expect(fixture.transport.timelines, isEmpty);
+    expect(fixture.transport.feeds, isEmpty);
   } else {
     newReply.complete(sibling);
     expect(await newNavigation, isNull);
-    final session = client.existingSession(sibling.id)!;
+    fixture.graph.setConversationPageVisible(true);
+    final session = client.conversations.existingSession(sibling.id)!;
     await session.source.waitFor((state) => state.workspace != null);
-    await session.timeline.state.waitFor(
-      (state) => state.snapshot is StudioTimelineBaselineFrame,
+    await session.content.state.waitFor(
+      (state) => state.snapshot is ConversationBaselineFrame,
     );
     expect(client.selection.state.selectedThreadId, sibling.id);
     expect(
       client.threadDirectory.state.overlayThreads.map((thread) => thread.id),
       [sibling.id],
     );
-    expect(client.sessionStates.map((state) => state.threadId), [sibling.id]);
+    expect(client.conversations.sessionStates.map((state) => state.threadId), [
+      sibling.id,
+    ]);
     expect(fixture.transport.stateReads, [sibling.id]);
-    expect(fixture.transport.timelines.map((timeline) => timeline.threadId), [
+    expect(fixture.transport.feeds.map((timeline) => timeline.threadId), [
       sibling.id,
     ]);
   }
   expect(client.findThread(fixture.child.id), isNull);
-  expect(client.existingSession(fixture.child.id), isNull);
+  expect(client.conversations.existingSession(fixture.child.id), isNull);
   expect(fixture.transport.metadataReads, [fixture.child.id, sibling.id]);
   expect(fixture.transport.submitCalls, 0);
   expect(fixture.transport.restoreCalls, 0);
@@ -653,10 +673,12 @@ StudioThread _secondColdChild(_ColdFixture fixture) {
 
 Future<void> _expectSelectedHistory(_ColdFixture fixture) async {
   final client = fixture.graph.client;
-  final session = client.existingSession(fixture.child.id)!;
+  expect(fixture.transport.feeds, isEmpty, reason: '选择身份本身不产生 GUI 内容需求');
+  fixture.graph.setConversationPageVisible(true);
+  final session = client.conversations.existingSession(fixture.child.id)!;
   await session.source.waitFor((state) => state.workspace != null);
-  await session.timeline.state.waitFor(
-    (state) => state.snapshot is StudioTimelineBaselineFrame,
+  await session.content.state.waitFor(
+    (state) => state.snapshot is ConversationBaselineFrame,
   );
   expect(client.selection.state.selectedThreadId, fixture.child.id);
   expect(client.selection.state.needsOpen, isFalse);
@@ -674,12 +696,12 @@ Future<void> _expectSelectedHistory(_ColdFixture fixture) async {
     7,
     reason: 'A one-member metadata read does not advance the paged directory watermark',
   );
-  expect(client.sessionStates.map((state) => state.threadId), [
+  expect(client.conversations.sessionStates.map((state) => state.threadId), [
     fixture.child.id,
   ]);
   expect(fixture.transport.metadataReads, [fixture.child.id]);
   expect(fixture.transport.stateReads, [fixture.child.id]);
-  expect(fixture.transport.timelines.map((timeline) => timeline.threadId), [
+  expect(fixture.transport.feeds.map((timeline) => timeline.threadId), [
     fixture.child.id,
   ]);
   expect(fixture.transport.submitCalls, 0);
@@ -838,19 +860,18 @@ final class _ColdSelectionTransport extends RecordingDemoTransport {
   }
 
   @override
-  Stream<ThreadStreamFrame> subscribeThread(String threadId) {
+  Future<ConversationFeed> openConversationFeed(String threadId) async {
     stateReads.add(threadId);
     final saved =
         savedThreadOverrides[threadId] ?? (threadId == child.id ? child : null);
-    return super
-        .subscribeThread(threadId)
-        .map(
-          (frame) => switch (frame) {
-            ThreadSnapshotFrame(:final workspace) when saved != null =>
-              ThreadSnapshotFrame(workspace: workspace.copyWith(thread: saved)),
-            _ => frame,
-          },
-        );
+    return MappedConversationFeed(
+      await super.openConversationFeed(threadId),
+      (frame) => switch (frame) {
+        ThreadSnapshotFrame(:final workspace) when saved != null =>
+          ThreadSnapshotFrame(workspace: workspace.copyWith(thread: saved)),
+        _ => frame,
+      },
+    );
   }
 
   @override

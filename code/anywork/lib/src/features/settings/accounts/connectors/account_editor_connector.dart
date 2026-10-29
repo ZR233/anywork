@@ -139,7 +139,7 @@ class _AccountEditorConnectorState
             },
             modelActions: accountModelActions(context, ref),
             onSave: _save,
-            onCancel: () => confirmLeaveAccountsEditor(context, ref),
+            onCancel: () => confirmLeaveAccountsEditor(context),
           );
         }
         if (value.acp case final account?) {
@@ -159,7 +159,7 @@ class _AccountEditorConnectorState
               }
             },
             onSave: _save,
-            onCancel: () => confirmLeaveAccountsEditor(context, ref),
+            onCancel: () => confirmLeaveAccountsEditor(context),
           );
         }
         return Center(
@@ -174,7 +174,7 @@ class _AccountEditorConnectorState
                       child: Text(AppLocalizations.of(context).accountsRetry),
                     ),
                     TextButton(
-                      onPressed: () => confirmLeaveAccountsEditor(context, ref),
+                      onPressed: () => confirmLeaveAccountsEditor(context),
                       child: Text(AppLocalizations.of(context).commonCancel),
                     ),
                   ],

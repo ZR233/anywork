@@ -6,64 +6,57 @@
 import '../../../frb_generated.dart';
 import '../types/attachment.dart';
 import '../types/chat.dart';
+import '../types/chat/descriptor.dart';
+import '../types/delegation.dart';
 import '../types/error.dart';
+import '../types/runtime.dart';
+import '../types/thread_activity.dart';
 import '../types/thread_stream.dart';
 import '../types/thread_stream/item.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `begin_call`, `begin_next`, `content`, `ensure_first_frame_delivered`, `initial_required`, `lock_tail`, `next_busy`, `timeline_closed`
-// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `NextGuard`, `TimelineActivity`, `TimelineCall`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `drop`, `drop`, `drop`
-// These functions are ignored (category: IgnoreBecauseOwnerTyShouldIgnore): `default`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `drop`
 
-Future<BridgeTimeline> openTimeline({required String threadId}) => RustLib
-    .instance
-    .api
-    .crateApiStudioHandlersChatOpenTimeline(threadId: threadId);
+/// Opens exactly one native combined feed, without a second tail or a separately rebuilt baseline.
+/// Cancellation before publication drops the native feed through its own RAII boundary.
+Future<BridgeConversationFeed> openConversationFeed({
+  required String threadId,
+}) => RustLib.instance.api.crateApiStudioHandlersChatOpenConversationFeed(
+  threadId: threadId,
+);
 
-// Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<BridgeTimeline>>
-abstract class BridgeTimeline implements RustOpaqueInterface {
-  /// Idempotent close: reject new calls, wait for every registered call, then release the baseline,
-  /// the tail observation and the session reference.
-  ///
-  /// A second close observes the same `closing` flag and the same drain condition, so it can never
-  /// confirm earlier than the first.
+// Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<BridgeConversationFeed>>
+abstract class BridgeConversationFeed implements RustOpaqueInterface {
+  /// Acknowledges the sent contiguous prefix. Wrong identity and future sequences are rejected;
+  /// repeated old prefixes are idempotent. Closing takes precedence over argument checks.
+  void acknowledge({
+    required String subscriptionId,
+    required BigInt deliverySequence,
+  });
+
+  /// Joins retained work and closes native capabilities. Cancelled close waits can be repeated;
+  /// failed closes retain the original owner and diagnostic in the opening registry.
   Future<void> close();
 
-  /// Hands the captured first frame over, once.
-  ///
-  /// The baseline is moved out and the handle keeps no second copy, so a long-lived connection costs
-  /// one bounded continuity baseline instead of "first page + continuity copy". A closed handle and
-  /// an already-delivered first frame are distinct typed errors.
-  Future<BridgeTimelineBaseline> initial();
+  /// Installs the sole producer and sink atomically with respect to close. A second consumer is a
+  /// Conflict; a sealed handle always returns Cancelled first. Producer exit drops the sink.
+  Stream<BridgeConversationFrame> events();
 
-  /// Waits for, and returns, the next frame of this connection.
-  ///
-  /// `Ok(None)` only means the session no longer publishes progress; an error is never turned into a
-  /// normal end of content.
-  ///
-  /// The first frame must already be handed over by [`BridgeTimeline::initial`], otherwise this
-  /// returns a typed `Conflict` without touching the tail lock: a Dart pump that calls `next` first
-  /// cannot bypass the single hand-off. `page`/`read_detail` do not require it. A second concurrent
-  /// call returns `Busy`, and a closed handle always returns `Cancelled` before any of these checks.
-  Future<BridgeTimelineUpdate?> next();
-
-  /// Reads one stateless page: newest, or strictly older than the opaque `before` token.
-  ///
-  /// It never waits for a pending `next`.
+  /// Stateless query on the captured Session; never waits for receive or ACK credit.
   Future<BridgeTimelinePage> page({String? before, int? limit});
 
-  /// Reads one bounded block of a field's complete body.
-  ///
-  /// It never waits for a pending `next`.
+  /// Reads one bounded field block; cancellation drops the registered query future, not a detached
+  /// task. Already accepted synchronous DB work remains owned by the existing pool.
   Future<BridgeTimelineDetailChunk> readDetail({
     required String itemId,
     required BridgeTimelineDetailQuery query,
   });
 
-  /// Synchronously rejects new calls and cancels in-flight waits.
-  ///
-  /// The shared `Session`, its Turn and the history writer keep running.
+  /// Seals admission and wakes credit, receive and query waits without issuing business cancellation.
   void requestClose();
+
+  String subscriptionId();
+
+  String threadId();
 }

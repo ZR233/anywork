@@ -34,6 +34,7 @@ import '../widgets/mode_editor_panes.dart';
 import '../widgets/mode_stage_detail_panel.dart';
 import '../widgets/mode_transition_detail_panel.dart';
 import '../widgets/mode_workflow_canvas.dart';
+import '../../../app/routing/app_route.dart';
 
 /// 宽屏（画布与右侧详情并排）与窄屏（详情作为子路由页面）的断点。
 const double modeWorkspaceWideBreakpoint = 960;
@@ -156,7 +157,7 @@ class _ModeWorkspacePageState extends ConsumerState<ModeWorkspacePage>
   }
 
   Future<void> _reload() async {
-    if (!await confirmLeaveModeEditor(context, ref) || !mounted) return;
+    if (!await confirmLeaveModeEditor(context) || !mounted) return;
     final owner = ref.read(anyworkClientProvider).modeEditor;
     final l10n = context.l10n;
     final reloaded = await owner.reload();
@@ -196,7 +197,7 @@ class _ModeWorkspacePageState extends ConsumerState<ModeWorkspacePage>
   Future<void> _duplicateMode() async {
     final owner = ref.read(anyworkClientProvider).modeEditor;
     if (owner.state.document == null) return;
-    if (!await confirmLeaveModeEditor(context, ref) || !mounted) return;
+    if (!await confirmLeaveModeEditor(context) || !mounted) return;
     final document = owner.state.document;
     if (document == null) return;
     final l10n = context.l10n;
@@ -217,10 +218,7 @@ class _ModeWorkspacePageState extends ConsumerState<ModeWorkspacePage>
     );
     if (!mounted) return;
     _showNotice(l10n.modeEditorCopyCreated);
-    context.pushReplacementNamed(
-      'mode-workspace',
-      pathParameters: {'modeId': id},
-    );
+    ModeWorkspaceRoute(modeId: id).pushReplacement(context);
   }
 
   Future<void> _copyJson() async {
@@ -354,20 +352,19 @@ class _ModeWorkspacePageState extends ConsumerState<ModeWorkspacePage>
       return;
     }
     _narrowDetailOpen = true;
-    final query = switch (selection) {
-      ModeStageSelection(:final stateId) => {'stage': stateId},
-      ModeTransitionSelection(:final sourceStateId, :final targetStateId) => {
-        'edge': 'edge:$sourceStateId->$targetStateId',
-      },
+    final route = switch (selection) {
+      ModeStageSelection(:final stateId) => ModeDetailRoute(
+        modeId: widget.modeId,
+        stage: stateId,
+      ),
+      ModeTransitionSelection(:final sourceStateId, :final targetStateId) =>
+        ModeDetailRoute(
+          modeId: widget.modeId,
+          edge: 'edge:$sourceStateId->$targetStateId',
+        ),
     };
     unawaited(
-      context
-          .pushNamed<void>(
-            'mode-detail',
-            pathParameters: {'modeId': widget.modeId},
-            queryParameters: query,
-          )
-          .whenComplete(() => _narrowDetailOpen = false),
+      route.push<void>(context).whenComplete(() => _narrowDetailOpen = false),
     );
   }
 
@@ -490,11 +487,7 @@ class _ModeWorkspacePageState extends ConsumerState<ModeWorkspacePage>
       toolbarHeight: 64,
       leading: BackButton(
         key: ModeEditorKeys.backButton,
-        onPressed: () async {
-          if (!await confirmLeaveModeEditor(context, ref)) return;
-          if (!mounted) return;
-          if (this.context.canPop()) this.context.pop();
-        },
+        onPressed: () => context.pop(),
       ),
       titleSpacing: 0,
       title: Row(
