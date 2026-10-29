@@ -1488,6 +1488,11 @@ async fn apply_batch(
         }
         completed += 1;
     }
+    // Includes complete orphan lines left by failed savepoints. No SQL success or receipt
+    // can escape before every segment touched by this batch crosses its file barrier.
+    log.sync_pending().await?;
+    // Keep the final SQLite maintenance and commit adjacent, rather than parking its worker
+    // behind log I/O after the last SQL statement. The file barrier still precedes all SQL success.
     if changes.performance {
         #[cfg(feature = "benchmarks")]
         shared
@@ -1495,9 +1500,6 @@ async fn apply_batch(
             .increment(observation::Metric::PerformanceTrimSql);
         performance::trim(&tx).await?;
     }
-    // Includes complete orphan lines left by failed savepoints. No SQL success or receipt
-    // can escape before every segment touched by this batch crosses its file barrier.
-    log.sync_pending().await?;
     tx.commit().await?;
     #[cfg(feature = "benchmarks")]
     shared
