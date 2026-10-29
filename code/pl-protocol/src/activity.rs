@@ -1,10 +1,12 @@
 //! 当前执行活动的 typed 实时投影契约。
 //!
-//! 活动与 Timeline 内容是两条正交的事实：内容只决定有哪些条目，活动只描述“当前在做什么”。
-//! 活动快照与活动帧只携带小型 typed 摘要与身份，**不重复传正文**；完整 reasoning、输出正文、
-//! 工具参数与流式输出按活动身份通过 [`ThreadActivityDetailQuery`] 按需读取 canonical 事实。
+//! 活动拥有当前正文与工具进度；Timeline 只接收不可变完成事实。活动内容通过有界事件帧交付，
+//! SDK 在所属 Repository 唯一归约。首次观察和恢复使用分块 snapshot，不通过 revision 后查询正文。
 
 use serde::{Deserialize, Serialize};
+
+mod delivery;
+pub use delivery::*;
 
 /// 活动摘要保留的最大字符数（按字符边界截断，保留行首）。
 ///

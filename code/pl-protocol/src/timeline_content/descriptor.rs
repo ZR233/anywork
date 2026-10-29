@@ -3,21 +3,24 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    ThreadAgentItem, ThreadAttachment, ThreadContentLifecycle, ThreadContextCompactionItem,
-    ThreadFileItem, ThreadInferenceItem, ThreadRawItemOrigin, ThreadSkillItem, ThreadTextChannel,
-    ThreadToolFailure, ThreadTurnItem, ThreadWaitPresentation,
+    BudgetLimitedTurnState, CancelledThreadAgent, CancelledThreadContent, CancelledThreadInference,
+    CancelledTurnState, CompletedThreadContent, CompletedThreadInference, CompletedTurnState,
+    DeniedThreadAgent, FailedThreadAgent, FailedThreadContent, FailedThreadInference,
+    FailedTurnState, SucceededThreadAgent, ThreadAgentIdentity, ThreadAttachment,
+    ThreadContextCompactionItem, ThreadFileItem, ThreadRawItemOrigin, ThreadSkillItem,
+    ThreadTextChannel, ThreadToolFailure, ThreadWaitPresentation,
 };
 
-/// 条目的稳定身份、当前轮次关联与权威时间。
+/// 条目的稳定身份与发布时已经确定的来源；完成序号独立于执行 ordinal。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TimelineItemHeader {
     pub id: String,
     pub thread_id: String,
-    pub turn_id: String,
-    pub ordinal: u64,
-    pub created_at: i64,
-    pub updated_at: i64,
+    pub turn_id: Option<String>,
+    pub append_seq: u64,
+    pub source_effect_seq: Option<u64>,
+    pub sealed_at: Option<i64>,
 }
 
 /// 描述不含字段正文，也不以空正文的持久化值充当读取模型。
@@ -33,12 +36,13 @@ pub enum TimelineDescriptor {
     Thinking(TimelineThinkingDescriptor),
     Tool(TimelineToolDescriptor),
     Raw(TimelineRawDescriptor),
-    Agent(ThreadAgentItem),
-    Turn(ThreadTurnItem),
-    Inference(ThreadInferenceItem),
+    Agent(TimelineAgentDescriptor),
+    Turn(TimelineTurnDescriptor),
+    Inference(TimelineInferenceDescriptor),
     Skill(ThreadSkillItem),
     File(ThreadFileItem),
     ContextCompaction(ThreadContextCompactionItem),
+    Plan(TimelinePlanDescriptor),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -46,13 +50,109 @@ pub enum TimelineDescriptor {
 pub struct TimelineTextDescriptor {
     pub channel: ThreadTextChannel,
     pub attachments: Vec<ThreadAttachment>,
-    pub lifecycle: ThreadContentLifecycle,
+    pub outcome: TimelineContentOutcome,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TimelineThinkingDescriptor {
-    pub lifecycle: ThreadContentLifecycle,
+    pub outcome: TimelineContentOutcome,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    content = "data",
+    rename_all = "camelCase",
+    deny_unknown_fields
+)]
+pub enum TimelineContentOutcome {
+    Completed(CompletedThreadContent),
+    Failed(FailedThreadContent),
+    Cancelled(CancelledThreadContent),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TimelineAgentDescriptor {
+    pub identity: ThreadAgentIdentity,
+    pub outcome: TimelineAgentOutcome,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    content = "data",
+    rename_all = "camelCase",
+    deny_unknown_fields
+)]
+pub enum TimelineAgentOutcome {
+    Succeeded(SucceededThreadAgent),
+    Denied(DeniedThreadAgent),
+    Cancelled(CancelledThreadAgent),
+    Failed(FailedThreadAgent),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TimelineTurnDescriptor {
+    pub input_id: Option<String>,
+    pub outcome: TimelineTurnOutcome,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    content = "data",
+    rename_all = "camelCase",
+    deny_unknown_fields
+)]
+pub enum TimelineTurnOutcome {
+    Completed(CompletedTurnState),
+    Failed(FailedTurnState),
+    Cancelled(CancelledTurnState),
+    BudgetLimited(BudgetLimitedTurnState),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TimelineInferenceDescriptor {
+    pub inference_id: String,
+    pub model: String,
+    pub outcome: TimelineInferenceOutcome,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    content = "data",
+    rename_all = "camelCase",
+    deny_unknown_fields
+)]
+pub enum TimelineInferenceOutcome {
+    Completed(CompletedThreadInference),
+    Failed(FailedThreadInference),
+    Cancelled(CancelledThreadInference),
+}
+
+/// 文档正文与自由反馈在 PlanDocument / PlanFeedback 字段中，遵守统一预览预算。
+/// 迁移无法恢复的文档版本与摘要保持未知，不从当前计划补填。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TimelinePlanDescriptor {
+    pub interaction_id: String,
+    pub document_version: Option<u64>,
+    pub content_hash: Option<String>,
+    pub decision: TimelinePlanDecision,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum TimelinePlanDecision {
+    Approved,
+    RevisionRequested,
+    Cancelled,
+    Resolved,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -99,13 +199,10 @@ pub struct TimelineToolInvocation {
     deny_unknown_fields
 )]
 pub enum TimelineToolState {
-    Queued,
-    Cancelling,
-    Started,
-    Streaming,
-    AwaitingApproval,
-    Approved,
-    Running,
+    /// 后台任务已经受理并返回的启动收据，最终结果使用另一个稳定完成身份。
+    BackgroundStarted {
+        started_at: i64,
+    },
     Interrupted {
         interrupted_at: i64,
         reason: String,
@@ -164,7 +261,6 @@ pub struct TimelineQuestionDescriptor {
     deny_unknown_fields
 )]
 pub enum TimelineUserInputState {
-    Pending,
     Cancelled,
     Resolved {
         answers: Vec<TimelineAnswerDescriptor>,

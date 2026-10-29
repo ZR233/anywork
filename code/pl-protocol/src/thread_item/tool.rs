@@ -92,6 +92,16 @@ pub struct ThreadToolUserInput {
     interaction_id: String,
     questions: Vec<UserQuestion>,
     state: ThreadToolUserInputState,
+    /// 本次确认所绑定的文档身份；旧事实缺少版本时保持未知。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    plan_document: Option<ThreadPlanDocumentIdentity>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadPlanDocumentIdentity {
+    pub version: Option<u64>,
+    pub content_hash: String,
 }
 
 impl ThreadToolUserInput {
@@ -104,7 +114,17 @@ impl ThreadToolUserInput {
             interaction_id,
             questions,
             state,
+            plan_document: None,
         }
+    }
+
+    pub fn with_plan_document(mut self, identity: ThreadPlanDocumentIdentity) -> Self {
+        self.plan_document = Some(identity);
+        self
+    }
+
+    pub fn plan_document(&self) -> Option<&ThreadPlanDocumentIdentity> {
+        self.plan_document.as_ref()
     }
 
     pub fn interaction_id(&self) -> &str {

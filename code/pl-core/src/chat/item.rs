@@ -1,8 +1,11 @@
-//! 稳定身份、字段身份与有界预览的条目表示。
+//! 稳定身份、字段身份与有界预览的完成条目表示。
 //!
-//! 一个条目是「静态结构 + 若干按身份版本化的正文域」：`meta` 承载产品静态结构，`fields` 承载
-//! 可流式推进的正文。每个字段同时记录**完整正文**的 UTF-8 字节数，因此有界预览截断正文时不会
-//! 改写原始长度、顺序、revision 或字段身份，详情读取也能按该长度声明省略量。
+//! 一条完成条目是不可变的最小完成事实：静态结构（`meta`）、若干完整正文域（`fields`），以及
+//! 发布时已经确定的顺序、来源与封口元数据。完成事实不携带 streaming／terminal／saved／revision
+//! 等执行或保存水位：封口后的记录永远不会再被改写，同一身份的重复发布只能幂等或冲突。
+//!
+//! 每个字段同时记录**完整正文**的 UTF-8 字节数，因此有界预览截断正文时不会改写原始长度、顺序或
+//! 字段身份，详情读取也能按该长度声明省略量。
 
 use std::{
     collections::BTreeMap,
@@ -84,9 +87,9 @@ pub enum ChatField {
     /// A host-defined content region: an opaque, product-agnostic domain key.
     ///
     /// Core never interprets the key or infers a domain from the field's text, so a product can give
-    /// distinct streaming content that is not a provider presentation part (for example tool
+    /// distinct completion content that is not a provider presentation part (for example tool
     /// arguments versus a tool result) its own stable field without decoding the body or stuffing a
-    /// dynamic domain into `meta` and copying the whole item per token.
+    /// dynamic domain into `meta` and copying the whole item per update.
     Host(Arc<str>),
 }
 
@@ -132,29 +135,7 @@ impl fmt::Display for ChatField {
 /// Field identity for the item's primary body.
 pub const CHAT_BODY_FIELD: ChatField = ChatField::Body;
 
-/// Execution terminal fact of one timeline item, independent of the save watermark.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum ChatLifecycle {
-    /// Still executing: a later revision of the same identity may still advance the content.
-    Streaming,
-    /// The producer will not advance this identity again. A late preview or a different body at this
-    /// identity is rejected from this fact alone, independent of any save acknowledgement.
-    Terminal,
-}
-
-impl ChatLifecycle {
-    /// Reports whether the item reached its execution terminal fact.
-    pub const fn is_terminal(self) -> bool {
-        matches!(self, Self::Terminal)
-    }
-
-    /// Reports whether the identity may still advance its content.
-    pub const fn is_streaming(self) -> bool {
-        matches!(self, Self::Streaming)
-    }
-}
-
-/// One content field of an item: the bounded preview value plus the complete length it came from.
+/// One content field of a record: the bounded preview value plus the complete length it came from.
 ///
 /// The two facts live together on purpose. A preview that truncates the body must not rewrite the
 /// original length, so a detail reference can always state how many bytes exist, and reconciling a
@@ -184,21 +165,14 @@ impl ChatFieldPreview {
     }
 }
 
-/// One timeline item as a set of typed, independently versioned content fields.
+/// One immutable completion record of the timeline.
 ///
-/// Four independent facts are in play, none of which substitutes for another:
-///
-/// - `revision` is this item's content version. It advances with the streamed content and is the
-///   commit point one delivered [`TailChange::UpdateItem`](crate::chat::TailChange::UpdateItem)
-///   validates and applies once.
-/// - [`ChatTailBaseline::version`](crate::chat::ChatTailBaseline::version) is the subscription's
-///   continuity watermark. Its `from`/`to` refer to that and never to any item's content version.
-/// - `saved` is the save watermark: the history writer acknowledged this exact `revision` durable.
-///   [`Session::confirm_saved`](crate::chat::Session::confirm_saved) only flips it, without changing
-///   identity, order, revision, body or the execution lifecycle.
-/// - [`ChatItem::lifecycle`] is the execution terminal fact, not a final content revision. Later
-///   reliable terminal revisions remain legal. A terminal item is accepted without any save
-///   acknowledgement, and a late speculative streaming preview is rejected from this fact alone.
+/// Every field is a publish-time fact. `append_seq` is the completion order the session assigned in
+/// one short critical section; `source_effect_seq` and `sealed_at` are optional provenance the
+/// producer already knew when it sealed the item — a migration that cannot confirm them keeps them
+/// `None` instead of disguising a last-write time as a sealing time. Nothing here may be advanced,
+/// patched or removed after publication: republishing the same identity is idempotent only with the
+/// same payload, and a different payload is a contract error.
 ///
 /// `fields` holds the bounded preview values that are actually shown; the complete body of an
 /// omitted field is read by identity through
@@ -207,66 +181,131 @@ impl ChatFieldPreview {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChatItem {
     pub item_id: String,
-    pub turn_id: String,
-    pub order: u64,
-    /// Content version of this item. It advances with the streamed content and stays independent of
-    /// the save or execution watermark.
-    pub revision: u64,
+    /// The Turn this completion belongs to, when the producer knew it at seal time. The consuming
+    /// Turn of an accepted input is not patched in later.
+    pub turn_id: Option<String>,
+    /// Completion order assigned by the session: strictly positive, strictly increasing, never
+    /// greater than the signed 64-bit range the store keeps.
+    pub append_seq: u64,
+    /// Provenance of the effect that produced this completion, when the producer tracks one.
+    pub source_effect_seq: Option<u64>,
+    /// Unix seconds at which the producer sealed this completion, when known.
+    pub sealed_at: Option<i64>,
     pub fields: BTreeMap<ChatField, ChatFieldPreview>,
     pub meta: Arc<[u8]>,
-    /// Save watermark: the history writer acknowledged this exact `revision` durable. Independent of
-    /// [`ChatItem::lifecycle`].
-    pub saved: bool,
-    /// Execution terminal fact, independent of the content revision and of `saved`.
-    pub lifecycle: ChatLifecycle,
 }
 
-/// 构造一条**完整**条目所需的全部事实。
+/// Everything needed to construct one complete, sequenced record.
 ///
-/// 用命名字段而不是一长串位置参数：预览与完整长度由 [`ChatFieldPreview::complete`] 从各字段正文推导，
-/// 保存水位与执行终态是两个独立事实，调用点必须各自点名，不能靠位置或布尔顺序表达。
+/// Named fields instead of positional arguments: the previews and complete lengths are derived from
+/// each field body by [`ChatFieldPreview::complete`], so a caller cannot pair a truncated block with
+/// an invented total.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChatItemParts {
     pub item_id: String,
-    pub turn_id: String,
-    pub order: u64,
-    pub revision: u64,
+    pub turn_id: Option<String>,
+    pub append_seq: u64,
+    pub source_effect_seq: Option<u64>,
+    pub sealed_at: Option<i64>,
     pub fields: BTreeMap<ChatField, Arc<ContentBlock>>,
     pub meta: Arc<[u8]>,
-    pub saved: bool,
-    pub lifecycle: ChatLifecycle,
+}
+
+/// One complete, not-yet-sequenced completion input for [`Session::publish_batch`].
+///
+/// A draft is the frozen payload the producer prepared when its effect completed. It carries no
+/// `append_seq`: the session validates the whole batch and assigns consecutive sequences in one
+/// short critical section, so the completion order is the publication order, not the start order.
+///
+/// [`Session::publish_batch`]: crate::chat::Session::publish_batch
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChatDraft {
+    pub item_id: String,
+    pub turn_id: Option<String>,
+    pub source_effect_seq: Option<u64>,
+    pub sealed_at: Option<i64>,
+    pub fields: BTreeMap<ChatField, Arc<ContentBlock>>,
+    pub meta: Arc<[u8]>,
+}
+
+impl ChatDraft {
+    /// A draft with an identity, no body fields and empty static metadata.
+    pub fn new(item_id: impl Into<String>) -> Self {
+        Self {
+            item_id: item_id.into(),
+            turn_id: None,
+            source_effect_seq: None,
+            sealed_at: None,
+            fields: BTreeMap::new(),
+            meta: Arc::from(Vec::new()),
+        }
+    }
+
+    /// Binds the Turn this completion belongs to.
+    pub fn with_turn_id(mut self, turn_id: impl Into<String>) -> Self {
+        self.turn_id = Some(turn_id.into());
+        self
+    }
+
+    /// Attaches the provenance of the effect that produced this completion.
+    pub fn with_source_effect_seq(mut self, source_effect_seq: u64) -> Self {
+        self.source_effect_seq = Some(source_effect_seq);
+        self
+    }
+
+    /// Attaches the Unix-second sealing time.
+    pub fn with_sealed_at(mut self, sealed_at: i64) -> Self {
+        self.sealed_at = Some(sealed_at);
+        self
+    }
+
+    /// Replaces the static metadata.
+    pub fn with_meta(mut self, meta: Arc<[u8]>) -> Self {
+        self.meta = meta;
+        self
+    }
+
+    /// Adds one complete content field.
+    pub fn with_field(mut self, field: ChatField, block: Arc<ContentBlock>) -> Self {
+        self.fields.insert(field, block);
+        self
+    }
+
+    /// Adds one complete text field.
+    pub fn with_text(self, field: ChatField, text: &str) -> Self {
+        self.with_field(field, ContentBlock::from_text(text))
+    }
 }
 
 impl ChatItem {
-    /// Builds a complete item: every field preview holds the whole body.
+    /// Builds a complete record: every field preview holds the whole body.
     pub fn complete(parts: ChatItemParts) -> Self {
         Self {
             item_id: parts.item_id,
             turn_id: parts.turn_id,
-            order: parts.order,
-            revision: parts.revision,
+            append_seq: parts.append_seq,
+            source_effect_seq: parts.source_effect_seq,
+            sealed_at: parts.sealed_at,
             fields: parts
                 .fields
                 .into_iter()
                 .map(|(field, block)| (field, ChatFieldPreview::complete(block)))
                 .collect(),
             meta: parts.meta,
-            saved: parts.saved,
-            lifecycle: parts.lifecycle,
         }
     }
 
-    /// Preview block of one field, if this item carries it.
+    /// Preview block of one field, if this record carries it.
     pub fn field(&self, field: &ChatField) -> Option<&Arc<ContentBlock>> {
         self.fields.get(field).map(|preview| &preview.block)
     }
 
-    /// Every preview field of this item, in field identity order.
+    /// Every preview field of this record, in field identity order.
     pub fn field_previews(&self) -> impl Iterator<Item = (&ChatField, &ChatFieldPreview)> {
         self.fields.iter()
     }
 
-    /// Complete UTF-8 byte length of one field, if this item carries it.
+    /// Complete UTF-8 byte length of one field, if this record carries it.
     pub fn field_total_bytes(&self, field: &ChatField) -> Option<u64> {
         self.fields.get(field).map(|preview| preview.total_bytes)
     }
@@ -278,7 +317,7 @@ impl ChatItem {
             .is_some_and(ChatFieldPreview::is_complete)
     }
 
-    /// Bytes omitted from the bounded preview of this item; zero means every field is complete.
+    /// Bytes omitted from the bounded previews of this record; zero means every field is complete.
     pub fn omitted_bytes(&self) -> u64 {
         self.fields.values().fold(0u64, |total, preview| {
             total.saturating_add(preview.omitted_bytes())
@@ -290,62 +329,51 @@ impl ChatItem {
         self.omitted_bytes() == 0
     }
 
-    /// Reports whether this item reached its execution terminal fact.
-    pub fn is_terminal(&self) -> bool {
-        self.lifecycle.is_terminal()
-    }
-
-    /// Reports whether the identity may still advance its content.
-    pub fn is_streaming(&self) -> bool {
-        self.lifecycle.is_streaming()
-    }
-
-    /// Reports whether the history writer acknowledged this exact revision durable.
-    pub fn is_saved(&self) -> bool {
-        self.saved
-    }
-
-    /// The item's primary body block, if it has one.
+    /// The record's primary body block, if it has one.
     pub fn body(&self) -> Option<&Arc<ContentBlock>> {
         self.field(&ChatField::Body)
     }
 
-    /// One provider part's block, if this item carries it.
+    /// One provider part's block, if this record carries it.
     pub fn part(&self, part: PresentationPart) -> Option<&Arc<ContentBlock>> {
         self.field(&ChatField::Part(part))
     }
 
-    /// Bytes of the previewed body UTF-8 this item actually retains.
+    /// Bytes of the previewed body UTF-8 this record actually retains.
     pub(crate) fn content_bytes(&self) -> usize {
         self.fields.values().fold(0usize, |total, preview| {
             total.saturating_add(preview.block.len())
         })
     }
 
-    /// Conservative, deterministic cost of the structure this item cannot shrink.
+    /// Conservative, deterministic cost of the structure this record cannot shrink.
     ///
     /// The preview budget is an admission estimate, not an allocator or wire measurement: it must
-    /// still account for the parts a preview can never trim, otherwise a host can "fit" an item only by
-    /// declaring an unbounded number of empty or short fields. Counted here:
+    /// still account for the parts a preview can never trim, otherwise a host can "fit" a record
+    /// only by declaring an unbounded number of empty or short fields. Counted here:
     ///
-    /// - the static `meta` bytes the item carries verbatim;
-    /// - the item and Turn identities (their real UTF-8 bytes);
-    /// - one fixed item record estimate ([`ITEM_STRUCTURE_BYTES`]) for the ordered record itself: the
-    ///   field map spine, order/revision, save and lifecycle facts, and the identity/block handles;
-    /// - one fixed field estimate ([`FIELD_STRUCTURE_BYTES`]) per content region, covering the field key
-    ///   slot, its block handle, the declared complete length and the detail reference it can produce;
-    /// - the real UTF-8 bytes of a [`ChatField::Host`] key. Fixed discriminators and their index digits
-    ///   are covered by the per-field estimate.
+    /// - the static `meta` bytes the record carries verbatim;
+    /// - the item identity and, when known, the Turn identity (their real UTF-8 bytes);
+    /// - one fixed record estimate ([`ITEM_STRUCTURE_BYTES`]) for the ordered record itself: the
+    ///   field map spine, the completion sequence and the optional provenance slots;
+    /// - one fixed field estimate ([`FIELD_STRUCTURE_BYTES`]) per content region, covering the field
+    ///   key slot, its block handle, the declared complete length and the detail reference it can
+    ///   produce;
+    /// - the real UTF-8 bytes of a [`ChatField::Host`] key. Fixed discriminators and their index
+    ///   digits are covered by the per-field estimate.
     ///
     /// The fixed coefficients are deterministic, additive and non-negative round numbers. They are an
-    /// *admission estimate* for one item's non-shrinkable part, not a bound on the Rust heap layout,
-    /// the wire encoding or the process RSS: they only have to be stable and comparable so a page, the
-    /// hot preview cache and a subscription copy all charge the same non-shrinkable cost.
+    /// *admission estimate* for one record's non-shrinkable part, not a bound on the Rust heap
+    /// layout, the wire encoding or the process RSS: they only have to be stable and comparable so a
+    /// page, a baseline and a completion batch all charge the same non-shrinkable cost.
     pub fn preview_structure_bytes(&self) -> usize {
+        let identities = self
+            .item_id
+            .len()
+            .saturating_add(self.turn_id.as_ref().map_or(0, String::len));
         let total = ITEM_STRUCTURE_BYTES
             .saturating_add(self.meta.len())
-            .saturating_add(self.item_id.len())
-            .saturating_add(self.turn_id.len());
+            .saturating_add(identities);
         let mut fields = FIELD_STRUCTURE_BYTES.saturating_mul(self.fields.len());
         for field in self.fields.keys() {
             fields = fields.saturating_add(field.key_bytes());
@@ -353,21 +381,28 @@ impl ChatItem {
         total.saturating_add(fields)
     }
 
-    /// Bytes resident for this item: the non-shrinkable structure plus the body UTF-8 it keeps.
+    /// Bytes resident for this record: the non-shrinkable structure plus the body UTF-8 it keeps.
     pub(crate) fn resident_bytes(&self) -> usize {
         self.preview_structure_bytes()
             .saturating_add(self.content_bytes())
     }
 }
 
-/// Fixed admission estimate of one item record, excluding identity text and field regions.
+/// Fixed admission estimate of one record, excluding identity text and field regions.
 const ITEM_STRUCTURE_BYTES: usize = 128;
 /// Fixed admission estimate of one content field: key slot, block handle, complete length, detail ref.
 const FIELD_STRUCTURE_BYTES: usize = 128;
 
-/// Whether two items carry the same field content.
-pub(crate) fn same_content(left: &ChatItem, right: &ChatItem) -> bool {
-    left.meta == right.meta
+/// Whether two records of one identity carry the same sealed payload.
+///
+/// The completion sequence is deliberately excluded: it is placement, not payload. Bodies are
+/// compared by shared block first, so reconciling the session's own records costs reference checks
+/// instead of re-reading text.
+pub(crate) fn same_payload(left: &ChatItem, right: &ChatItem) -> bool {
+    left.turn_id == right.turn_id
+        && left.source_effect_seq == right.source_effect_seq
+        && left.sealed_at == right.sealed_at
+        && left.meta == right.meta
         && left.fields.len() == right.fields.len()
         && left.fields.iter().all(|(field, preview)| {
             right
@@ -377,65 +412,16 @@ pub(crate) fn same_content(left: &ChatItem, right: &ChatItem) -> bool {
         })
 }
 
-/// Merges candidates of one identity into one ordered, de-duplicated list.
-///
-/// A newer revision wins outright. At the same revision a strictly more complete preview wins per
-/// field, but the independent state facts are reconciled monotonically (a save acknowledgement only
-/// flips false -> true, an execution terminal fact only advances streaming -> terminal), so a more
-/// complete body never rolls back a newer save watermark or terminal fact carried by another
-/// candidate.
-pub(crate) fn merge_items(items: impl IntoIterator<Item = ChatItem>) -> Vec<ChatItem> {
-    let mut merged = BTreeMap::<String, ChatItem>::new();
-    for item in items {
-        let key = item.item_id.clone();
-        if let Some(slot) = merged.get_mut(&key) {
-            merge_into(slot, item);
-            continue;
-        }
-        merged.insert(key, item);
-    }
-    let mut items: Vec<_> = merged.into_values().collect();
-    items.sort_by(|left, right| {
-        left.order
-            .cmp(&right.order)
-            .then_with(|| left.item_id.cmp(&right.item_id))
-    });
-    items
-}
-
-/// Folds one candidate of the same identity into `slot`.
-pub(crate) fn merge_into(slot: &mut ChatItem, item: ChatItem) {
-    if slot.revision > item.revision {
-        return;
-    }
-    if slot.revision < item.revision {
-        *slot = item;
-        return;
-    }
-    let saved = slot.saved || item.saved;
-    let lifecycle = slot.lifecycle.max(item.lifecycle);
-    overlay_complete_fields(slot, &item);
-    slot.saved = saved;
-    slot.lifecycle = lifecycle;
-}
-
-/// Upgrades only the preview values of `slot` from a strictly more complete copy at the same
-/// revision, never the independent state facts.
-pub(crate) fn overlay_complete_fields(slot: &mut ChatItem, complete: &ChatItem) {
-    if complete.revision != slot.revision {
-        return;
-    }
-    for (field, candidate) in &complete.fields {
-        match slot.fields.get_mut(field) {
-            Some(existing) => {
-                if !existing.is_complete() && candidate.block.len() > existing.block.len() {
-                    existing.block = candidate.block.clone();
-                    existing.total_bytes = existing.total_bytes.max(candidate.total_bytes);
-                }
-            }
-            None => {
-                slot.fields.insert(field.clone(), candidate.clone());
-            }
-        }
-    }
+/// Whether one draft carries exactly the payload of an already-sealed record.
+pub(crate) fn draft_matches_record(draft: &ChatDraft, record: &ChatItem) -> bool {
+    record.turn_id == draft.turn_id
+        && record.source_effect_seq == draft.source_effect_seq
+        && record.sealed_at == draft.sealed_at
+        && record.meta == draft.meta
+        && record.fields.len() == draft.fields.len()
+        && draft.fields.iter().all(|(field, block)| {
+            record.fields.get(field).is_some_and(|preview| {
+                Arc::ptr_eq(&preview.block, block) || preview.block.as_ref() == block.as_ref()
+            })
+        })
 }

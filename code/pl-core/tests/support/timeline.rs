@@ -1,7 +1,8 @@
-//! Shared test environment for the public Timeline content API.
+//! Shared test environment for the public Timeline completion API.
 //!
-//! The fakes only provide storage and a controllable read barrier; the merge, page selection,
-//! continuity and detail rules under test stay in production code.
+//! The fakes only provide storage and controllable read barriers; the admission, merge, page
+//! selection, catch-up and detail rules under test stay in production code. `Stored` exposes a
+//! writer-side handle so a test can land committed rows exactly like the real history writer does.
 #![allow(dead_code)]
 
 use std::{
@@ -14,67 +15,128 @@ use std::{
 
 use pl_core::{
     chat::{
-        ChatCursor, ChatError, ChatField, ChatHistory, ChatHistoryPage, ChatItem, ChatLifecycle,
-        Session, presentation_item_id, presentation_prefix,
+        ChatCursor, ChatDraft, ChatError, ChatField, ChatHistory, ChatHistoryPage, ChatItem,
+        ChatItemParts, Session, TimelineEpoch, presentation_item_id, presentation_prefix,
     },
     model::ContentBlock,
 };
 use tokio::sync::Semaphore;
 
-/// In-memory durable history: a keyset store keyed by order.
-#[derive(Debug, Default)]
+/// In-memory durable history: a keyset store keyed by completion sequence.
+#[derive(Debug, Clone, Default)]
 pub struct Stored {
-    pub items: BTreeMap<u64, ChatItem>,
+    map: Arc<Mutex<BTreeMap<u64, ChatItem>>>,
 }
 
 impl Stored {
-    pub fn with(items: impl IntoIterator<Item = ChatItem>) -> Self {
-        let mut stored = Self::default();
-        for item in items {
-            stored.insert(item);
+    pub fn with(records: impl IntoIterator<Item = ChatItem>) -> Self {
+        let stored = Self::default();
+        for record in records {
+            stored.insert(record);
         }
         stored
     }
 
-    pub fn insert(&mut self, item: ChatItem) {
-        self.items.insert(item.order, item);
+    /// The writer-side landing of one committed record.
+    pub fn insert(&self, record: ChatItem) {
+        self.map
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .insert(record.append_seq, record);
+    }
+
+    pub fn len(&self) -> usize {
+        self.map
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .len()
+    }
+
+    pub fn remove(&self, append_seq: u64) {
+        self.map
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .remove(&append_seq);
+    }
+
+    pub fn by_id(&self, item_id: &str) -> Option<ChatItem> {
+        self.map
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .values()
+            .find(|record| record.item_id == item_id)
+            .cloned()
+    }
+
+    fn rows(&self, keep: impl Fn(&ChatItem) -> bool) -> BTreeMap<u64, ChatItem> {
+        self.map
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .values()
+            .filter(|record| keep(record))
+            .map(|record| (record.append_seq, record.clone()))
+            .collect()
     }
 }
 
 impl ChatHistory for Stored {
-    async fn latest_allocated_order(&self) -> Result<u64, ChatError> {
-        Ok(self.items.keys().next_back().copied().unwrap_or(0))
+    async fn latest_append_seq(&self) -> Result<u64, ChatError> {
+        Ok(self
+            .map
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .keys()
+            .next_back()
+            .copied()
+            .unwrap_or(0))
     }
 
     async fn page(
         &self,
         before: Option<&ChatCursor>,
+        ceiling: u64,
         limit: usize,
     ) -> Result<ChatHistoryPage, ChatError> {
         let mut selected: Vec<ChatItem> = self
-            .items
-            .values()
-            .filter(|item| before.is_none_or(|boundary| ChatCursor::of(item) < *boundary))
+            .rows(|record| {
+                record.append_seq <= ceiling
+                    && before.is_none_or(|boundary| record.append_seq < boundary.append_seq)
+            })
+            .into_values()
             .rev()
-            .take(limit + 1)
-            .cloned()
+            .take(limit.saturating_add(1))
             .collect();
-        // `has_older` comes from the real extra row, never from the page being short.
-        let has_older = selected.len() > limit;
+        // `has_more` comes from the real extra row, never from the page being short.
+        let has_more = selected.len() > limit;
         selected.truncate(limit);
         selected.reverse();
         Ok(ChatHistoryPage {
             items: selected,
-            has_older,
+            has_more,
+        })
+    }
+
+    async fn page_after(
+        &self,
+        after: u64,
+        ceiling: u64,
+        limit: usize,
+    ) -> Result<ChatHistoryPage, ChatError> {
+        let mut selected: Vec<ChatItem> = self
+            .rows(|record| record.append_seq > after && record.append_seq <= ceiling)
+            .into_values()
+            .take(limit.saturating_add(1))
+            .collect();
+        let has_more = selected.len() > limit;
+        selected.truncate(limit);
+        Ok(ChatHistoryPage {
+            items: selected,
+            has_more,
         })
     }
 
     async fn item(&self, item_id: &str) -> Result<Option<ChatItem>, ChatError> {
-        Ok(self
-            .items
-            .values()
-            .find(|item| item.item_id == item_id)
-            .cloned())
+        Ok(self.by_id(item_id))
     }
 }
 
@@ -109,12 +171,15 @@ impl HistoryGate {
     }
 }
 
-/// Storage whose page and item reads can be held open at a known point.
-#[derive(Debug)]
+/// Storage whose page, page_after and item reads can be held open at a known point.
+#[derive(Debug, Clone)]
 pub struct GatedHistory {
     inner: Stored,
     pub page_gate: Option<Arc<HistoryGate>>,
+    pub after_gate: Option<Arc<HistoryGate>>,
     pub item_gate: Option<Arc<HistoryGate>>,
+    pub captured_item_gate: Option<Arc<HistoryGate>>,
+    capture_next_item: Arc<AtomicBool>,
 }
 
 impl GatedHistory {
@@ -122,28 +187,51 @@ impl GatedHistory {
         Self {
             inner,
             page_gate: None,
+            after_gate: None,
             item_gate: None,
+            captured_item_gate: None,
+            capture_next_item: Arc::new(AtomicBool::new(true)),
         }
     }
 }
 
 impl ChatHistory for GatedHistory {
-    async fn latest_allocated_order(&self) -> Result<u64, ChatError> {
-        self.inner.latest_allocated_order().await
+    async fn latest_append_seq(&self) -> Result<u64, ChatError> {
+        self.inner.latest_append_seq().await
     }
 
     async fn page(
         &self,
         before: Option<&ChatCursor>,
+        ceiling: u64,
         limit: usize,
     ) -> Result<ChatHistoryPage, ChatError> {
         if let Some(gate) = &self.page_gate {
             gate.pause().await;
         }
-        self.inner.page(before, limit).await
+        self.inner.page(before, ceiling, limit).await
+    }
+
+    async fn page_after(
+        &self,
+        after: u64,
+        ceiling: u64,
+        limit: usize,
+    ) -> Result<ChatHistoryPage, ChatError> {
+        if let Some(gate) = &self.after_gate {
+            gate.pause().await;
+        }
+        self.inner.page_after(after, ceiling, limit).await
     }
 
     async fn item(&self, item_id: &str) -> Result<Option<ChatItem>, ChatError> {
+        if let Some(gate) = &self.captured_item_gate {
+            let item = self.inner.item(item_id).await?;
+            if self.capture_next_item.swap(false, Ordering::SeqCst) {
+                gate.pause().await;
+            }
+            return Ok(item);
+        }
         if let Some(gate) = &self.item_gate {
             gate.pause().await;
         }
@@ -152,7 +240,7 @@ impl ChatHistory for GatedHistory {
 }
 
 /// Counts complete-by-identity reads so a test can prove a detail read hits storage exactly once.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Counting {
     inner: Stored,
     pub item_reads: Arc<AtomicUsize>,
@@ -168,16 +256,26 @@ impl Counting {
 }
 
 impl ChatHistory for Counting {
-    async fn latest_allocated_order(&self) -> Result<u64, ChatError> {
-        self.inner.latest_allocated_order().await
+    async fn latest_append_seq(&self) -> Result<u64, ChatError> {
+        self.inner.latest_append_seq().await
     }
 
     async fn page(
         &self,
         before: Option<&ChatCursor>,
+        ceiling: u64,
         limit: usize,
     ) -> Result<ChatHistoryPage, ChatError> {
-        self.inner.page(before, limit).await
+        self.inner.page(before, ceiling, limit).await
+    }
+
+    async fn page_after(
+        &self,
+        after: u64,
+        ceiling: u64,
+        limit: usize,
+    ) -> Result<ChatHistoryPage, ChatError> {
+        self.inner.page_after(after, ceiling, limit).await
     }
 
     async fn item(&self, item_id: &str) -> Result<Option<ChatItem>, ChatError> {
@@ -188,11 +286,13 @@ impl ChatHistory for Counting {
     }
 }
 
-/// Records the largest page a storage double was ever asked for, to prove bounded reads.
-#[derive(Debug)]
+/// Records the largest page and after-range a storage double was ever asked for, to prove bounded
+/// reads.
+#[derive(Debug, Clone)]
 pub struct BoundedReads {
     inner: Stored,
     pub largest_page: Arc<Mutex<usize>>,
+    pub largest_after: Arc<Mutex<usize>>,
 }
 
 impl BoundedReads {
@@ -200,18 +300,20 @@ impl BoundedReads {
         Self {
             inner,
             largest_page: Arc::new(Mutex::new(0)),
+            largest_after: Arc::new(Mutex::new(0)),
         }
     }
 }
 
 impl ChatHistory for BoundedReads {
-    async fn latest_allocated_order(&self) -> Result<u64, ChatError> {
-        self.inner.latest_allocated_order().await
+    async fn latest_append_seq(&self) -> Result<u64, ChatError> {
+        self.inner.latest_append_seq().await
     }
 
     async fn page(
         &self,
         before: Option<&ChatCursor>,
+        ceiling: u64,
         limit: usize,
     ) -> Result<ChatHistoryPage, ChatError> {
         {
@@ -221,44 +323,23 @@ impl ChatHistory for BoundedReads {
                 .unwrap_or_else(|error| error.into_inner());
             *largest = (*largest).max(limit);
         }
-        self.inner.page(before, limit).await
+        self.inner.page(before, ceiling, limit).await
     }
 
-    async fn item(&self, item_id: &str) -> Result<Option<ChatItem>, ChatError> {
-        self.inner.item(item_id).await
-    }
-}
-
-/// A host codec that never bounds anything.
-///
-/// The shared single-item limit is checked on whatever a host returns, so an override like this must
-/// still be reported as a resource limit instead of handing the session an oversized preview.
-#[derive(Debug)]
-pub struct IgnoresBudget {
-    inner: Stored,
-}
-
-impl IgnoresBudget {
-    pub fn new(inner: Stored) -> Self {
-        Self { inner }
-    }
-}
-
-impl ChatHistory for IgnoresBudget {
-    fn bounded(&self, item: &ChatItem) -> Result<ChatItem, ChatError> {
-        Ok(item.clone())
-    }
-
-    async fn latest_allocated_order(&self) -> Result<u64, ChatError> {
-        self.inner.latest_allocated_order().await
-    }
-
-    async fn page(
+    async fn page_after(
         &self,
-        before: Option<&ChatCursor>,
+        after: u64,
+        ceiling: u64,
         limit: usize,
     ) -> Result<ChatHistoryPage, ChatError> {
-        self.inner.page(before, limit).await
+        {
+            let mut largest = self
+                .largest_after
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            *largest = (*largest).max(limit);
+        }
+        self.inner.page_after(after, ceiling, limit).await
     }
 
     async fn item(&self, item_id: &str) -> Result<Option<ChatItem>, ChatError> {
@@ -266,98 +347,8 @@ impl ChatHistory for IgnoresBudget {
     }
 }
 
-/// Storage whose host codec bounds every field preview to a small budget.
-///
-/// This is the documented host hook (`ChatHistory::bounded`), reduced so a test can observe a capped
-/// preview while the original body keeps growing; the merge and continuity rules stay in production.
-#[derive(Debug)]
-pub struct Bounded {
-    inner: Stored,
-    cap: usize,
-}
-
-impl Bounded {
-    pub fn new(inner: Stored, cap: usize) -> Self {
-        Self { inner, cap }
-    }
-}
-
-impl ChatHistory for Bounded {
-    fn bounded(&self, item: &ChatItem) -> Result<ChatItem, ChatError> {
-        let mut preview = item.clone();
-        for value in preview.fields.values_mut() {
-            let (block, _kept) = ContentBlock::prefix_at(&value.block, self.cap);
-            value.block = block;
-        }
-        Ok(preview)
-    }
-
-    async fn latest_allocated_order(&self) -> Result<u64, ChatError> {
-        self.inner.latest_allocated_order().await
-    }
-
-    async fn page(
-        &self,
-        before: Option<&ChatCursor>,
-        limit: usize,
-    ) -> Result<ChatHistoryPage, ChatError> {
-        self.inner.page(before, limit).await
-    }
-
-    async fn item(&self, item_id: &str) -> Result<Option<ChatItem>, ChatError> {
-        self.inner.item(item_id).await
-    }
-}
-
-/// Storage that answers a bounded number of reads and then fails.
-///
-/// It proves a resynchronization capture is reported as a typed failure instead of a fake end of
-/// content.
-#[derive(Debug)]
-pub struct FailAfter {
-    inner: Stored,
-    remaining: Arc<AtomicUsize>,
-}
-
-impl FailAfter {
-    pub fn new(inner: Stored, successes: usize) -> Self {
-        Self {
-            inner,
-            remaining: Arc::new(AtomicUsize::new(successes)),
-        }
-    }
-}
-
-impl ChatHistory for FailAfter {
-    async fn latest_allocated_order(&self) -> Result<u64, ChatError> {
-        self.inner.latest_allocated_order().await
-    }
-
-    async fn page(
-        &self,
-        before: Option<&ChatCursor>,
-        limit: usize,
-    ) -> Result<ChatHistoryPage, ChatError> {
-        if self.remaining.load(Ordering::SeqCst) == 0 {
-            return Err(ChatError::History(
-                std::io::Error::other("unreadable timeline page").into(),
-            ));
-        }
-        self.remaining.fetch_sub(1, Ordering::SeqCst);
-        self.inner.page(before, limit).await
-    }
-
-    async fn item(&self, item_id: &str) -> Result<Option<ChatItem>, ChatError> {
-        self.inner.item(item_id).await
-    }
-}
-
-/// Storage whose next page read fails on demand and then reads normally again.
-///
-/// This is the capture boundary a resynchronization waits on: the observation must come out of a
-/// failed capture exactly as it went in, and the retry of the very same range must be able to
-/// succeed. A permanently failing store cannot show the second half of that.
-#[derive(Debug)]
+/// Fails the next page read once with a typed storage failure.
+#[derive(Debug, Clone)]
 pub struct FailsOnce {
     inner: Stored,
     pub fail_next_page: Arc<AtomicBool>,
@@ -373,13 +364,14 @@ impl FailsOnce {
 }
 
 impl ChatHistory for FailsOnce {
-    async fn latest_allocated_order(&self) -> Result<u64, ChatError> {
-        self.inner.latest_allocated_order().await
+    async fn latest_append_seq(&self) -> Result<u64, ChatError> {
+        self.inner.latest_append_seq().await
     }
 
     async fn page(
         &self,
         before: Option<&ChatCursor>,
+        ceiling: u64,
         limit: usize,
     ) -> Result<ChatHistoryPage, ChatError> {
         if self.fail_next_page.swap(false, Ordering::SeqCst) {
@@ -387,7 +379,16 @@ impl ChatHistory for FailsOnce {
                 std::io::Error::other("unreadable timeline page").into(),
             ));
         }
-        self.inner.page(before, limit).await
+        self.inner.page(before, ceiling, limit).await
+    }
+
+    async fn page_after(
+        &self,
+        after: u64,
+        ceiling: u64,
+        limit: usize,
+    ) -> Result<ChatHistoryPage, ChatError> {
+        self.inner.page_after(after, ceiling, limit).await
     }
 
     async fn item(&self, item_id: &str) -> Result<Option<ChatItem>, ChatError> {
@@ -398,97 +399,83 @@ impl ChatHistory for FailsOnce {
 /// Static metadata that carries no product structure.
 pub fn empty_meta() -> Arc<[u8]> {
     static EMPTY: OnceLock<Arc<[u8]>> = OnceLock::new();
-    EMPTY.get_or_init(|| Arc::from(b"{}".as_slice())).clone()
+    EMPTY.get_or_init(|| Arc::from(b"{}".to_vec())).clone()
 }
 
-/// A complete item with one body field.
-pub fn item(order: u64, revision: u64, text: &str, terminal: bool) -> ChatItem {
-    identified(&format!("item-{order}"), order, revision, text, terminal)
+/// One explicit, distinct run generation for a test session.
+pub fn epoch(name: &str) -> TimelineEpoch {
+    TimelineEpoch::new(name).expect("a test epoch is non-empty")
 }
 
-/// A complete item with an explicit identity and one body field.
-pub fn identified(
+/// One complete completion draft with a body field.
+pub fn draft(item_id: &str, text: &str) -> ChatDraft {
+    ChatDraft::new(item_id)
+        .with_meta(empty_meta())
+        .with_text(ChatField::Body, text)
+}
+
+/// One complete completion draft with an explicit Turn binding.
+pub fn draft_with_turn(item_id: &str, text: &str, turn_id: &str) -> ChatDraft {
+    draft(item_id, text).with_turn_id(turn_id)
+}
+
+/// One complete completion draft with arbitrary field contents.
+pub fn draft_with_fields(
     item_id: &str,
-    order: u64,
-    revision: u64,
-    text: &str,
-    terminal: bool,
-) -> ChatItem {
-    let mut fields = BTreeMap::new();
-    fields.insert(ChatField::Body, ContentBlock::from_text(text));
-    ChatItem::complete(pl_core::chat::ChatItemParts {
+    fields: impl IntoIterator<Item = (ChatField, String)>,
+) -> ChatDraft {
+    let mut builder = ChatDraft::new(item_id).with_meta(empty_meta());
+    for (field, text) in fields {
+        builder = builder.with_text(field, &text);
+    }
+    builder
+}
+
+/// One complete sequenced record with a body field, as the store keeps it.
+pub fn record(append_seq: u64, text: &str) -> ChatItem {
+    record_identified(&format!("item-{append_seq}"), append_seq, text)
+}
+
+/// One complete sequenced record with an explicit identity, as the store keeps it.
+pub fn record_identified(item_id: &str, append_seq: u64, text: &str) -> ChatItem {
+    ChatItem::complete(ChatItemParts {
         item_id: item_id.to_owned(),
-        turn_id: "turn-1".to_owned(),
-        order,
-        revision,
-        fields,
+        turn_id: None,
+        append_seq,
+        source_effect_seq: None,
+        sealed_at: None,
+        fields: [(ChatField::Body, ContentBlock::from_text(text))].into(),
         meta: empty_meta(),
-        saved: false,
-        lifecycle: if terminal {
-            ChatLifecycle::Terminal
-        } else {
-            ChatLifecycle::Streaming
-        },
     })
 }
 
-/// A complete item with arbitrary field contents.
-pub fn with_fields(
+/// One complete sequenced record with arbitrary field contents, as the store keeps it.
+pub fn record_with_fields(
     item_id: &str,
-    order: u64,
-    revision: u64,
+    append_seq: u64,
     fields: impl IntoIterator<Item = (ChatField, String)>,
-    terminal: bool,
 ) -> ChatItem {
     let fields = fields
         .into_iter()
         .map(|(field, text)| (field, ContentBlock::from_text(&text)))
         .collect();
-    ChatItem::complete(pl_core::chat::ChatItemParts {
+    ChatItem::complete(ChatItemParts {
         item_id: item_id.to_owned(),
-        turn_id: "turn-1".to_owned(),
-        order,
-        revision,
+        turn_id: None,
+        append_seq,
+        source_effect_seq: None,
+        sealed_at: None,
         fields,
         meta: empty_meta(),
-        saved: false,
-        lifecycle: if terminal {
-            ChatLifecycle::Terminal
-        } else {
-            ChatLifecycle::Streaming
-        },
     })
 }
 
-/// The same identity with `delta` appended to its body along the shared block chain.
-///
-/// The append keeps the producer's block lineage, so a reader receives a typed append instead of an
-/// authoritative replacement — exactly what a streamed revision looks like.
-pub fn appended(previous: &ChatItem, revision: u64, delta: &str) -> ChatItem {
-    let body = previous
-        .body()
-        .expect("the fixture item carries a body field");
-    let block = ContentBlock::append(body, delta);
-    let mut next = previous.clone();
-    next.revision = revision;
-    // A streamed revision is unacknowledged until the writer confirms exactly it.
-    next.saved = false;
-    next.fields.insert(
-        ChatField::Body,
-        pl_core::chat::ChatFieldPreview {
-            total_bytes: block.len() as u64,
-            block,
-        },
-    );
-    next
+/// The body text actually shown for one record.
+pub fn body_text(record: &ChatItem) -> String {
+    record.body().map_or_else(String::new, |block| block.text())
 }
 
-/// The body text actually shown for one item.
-pub fn body_text(item: &ChatItem) -> String {
-    item.body().map_or_else(String::new, |block| block.text())
-}
-
-/// One attempt's streamed output identity.
+/// One attempt's completion identity.
 pub fn presentation(attempt: &str, provider_item: &str) -> String {
     presentation_item_id(
         attempt,
@@ -503,45 +490,47 @@ pub fn attempt_prefix(attempt: &str) -> String {
     presentation_prefix(attempt)
 }
 
-/// Takes the one-shot first frame off an observation.
+/// Takes the one-shot first frame off a subscription.
 pub fn take_initial(tail: &mut pl_core::chat::ChatTail) -> pl_core::chat::ChatTailBaseline {
     tail.initial()
-        .expect("the observation hands its first frame over once")
+        .expect("the subscription hands its first frame over once")
 }
 
-/// A preview-only copy of `item`: each field keeps at most `keep` bytes plus its complete length.
-///
-/// This is what a host codec returns when the body does not fit the display budget, so a test can hold
-/// an incomplete preview in memory without inventing a second content source.
-pub fn preview_of(item: &ChatItem, keep: usize) -> ChatItem {
-    let mut preview = item.clone();
-    for value in preview.fields.values_mut() {
-        let (block, _kept) = ContentBlock::prefix_at(&value.block, keep);
-        value.block = block;
+/// Publishes one batch, lands every returned record in the store and confirms the durable prefix,
+/// exactly the sequence the real writer performs.
+pub async fn publish_and_commit(
+    session: &Session,
+    stored: &Stored,
+    batch: Vec<ChatDraft>,
+) -> Arc<[Arc<ChatItem>]> {
+    let records = session
+        .publish_batch(batch)
+        .await
+        .expect("the completion batch is admitted");
+    for published in records.iter() {
+        stored.insert((**published).clone());
     }
-    preview
+    if let Some(last) = records.last() {
+        session
+            .confirm_durable(last.append_seq)
+            .expect("the durable prefix is confirmed");
+    }
+    records
 }
 
-/// A complete item that the writer already acknowledged.
-pub fn saved_item(order: u64, revision: u64, text: &str, terminal: bool) -> ChatItem {
-    let mut item = item(order, revision, text, terminal);
-    item.saved = true;
-    item
-}
-
-/// The session's current hot preview page, newest last.
+/// The session's current visible completion page, newest last.
 pub async fn visible(session: &Session, limit: usize) -> Vec<ChatItem> {
     session
         .page(pl_core::chat::ChatPageRequest::latest().with_limit(limit))
         .await
-        .expect("preview page is readable")
+        .expect("completion page is readable")
         .items
 }
 
-/// One visible item by identity.
+/// One visible record by identity.
 pub async fn visible_item(session: &Session, item_id: &str) -> Option<ChatItem> {
     visible(session, 100)
         .await
         .into_iter()
-        .find(|item| item.item_id == item_id)
+        .find(|record| record.item_id == item_id)
 }
