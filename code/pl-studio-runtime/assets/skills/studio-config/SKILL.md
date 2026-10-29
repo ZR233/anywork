@@ -238,4 +238,4 @@ effort = "high"
 4. Reference tokens via `bearer_token_env`; never paste raw tokens.
 5. Add accounts from Settings or a template (`deepseek`, `openai`, `zhipu`, ...) rather than hand-writing catalog metadata.
 6. After external edits, use explicit reload and confirm the canonical settings reflect the change. If validation fails, preserve the original settings and report the error; do not restart as a repair step.
-7. For work-mode JSON, use the runtime's schema/validate command before saving. Built-in IDs are never valid save targets.
+7. Work-mode JSON validation and schema are exposed by the Settings editor and the runtime APIs `validate_thread_mode_definition` and `thread_mode_definition_schema`, not a standalone shell command. External edits require explicit reload; built-in IDs are never valid save targets.

@@ -9,8 +9,8 @@ description: 编写、修改、封装或审查 Rust unsafe、unsafe trait/impl�
 
 ## 按需阅读
 
-- 新增或改变非安全边界：完整阅读[契约与证明](references/contracts-and-proofs.md)。
-- FFI、FRB、系统 API、外部缓冲区、回调或资源句柄：同时完整阅读[FFI 与外部边界](references/ffi-and-foreign-boundaries.md)。
+- 非安全边界可参考[契约与证明](references/contracts-and-proofs.md)。
+- FFI、FRB、系统 API、外部缓冲区、回调或资源句柄可参考[FFI 与外部边界](references/ffi-and-foreign-boundaries.md)。
 - 证明涉及同步、取消或跨线程共享：同时使用 `rust-concurrency-safety`。
 
 ## 责任与证明
@@ -21,6 +21,7 @@ description: 编写、修改、封装或审查 Rust unsafe、unsafe trait/impl�
 
 ## 验收
 
-从每个安全入口追踪正常、错误、取消、panic 与并发路径，直到最终释放。实质改变安全契约时，由具备相应能力的独立审查者核对证明；这是技术验证，不另设人工授权流程，也不授予提交或发布权限。
+内存安全证明覆盖安全入口的正常、错误、取消、panic 与并发路径，直到最终释放。
+独立复核可帮助发现证明缺口，本技能不规定必须采用的审查角色或轮次。
 
 测试按 `test-quality` 从合法入口验证行为，不能故意违反 unsafe 调用前置条件制造未定义行为。Miri、sanitizer、模型检查和测试只能补充证据，不能替代安全证明。

@@ -11,7 +11,7 @@
 - 真实厂商验收使用 `cargo xtask run-gui --driver`，不把模拟通过外推为真实模型兼容。
   用户数据根已被其它 Studio 占用时，使用受保护的配置/Profile 副本与同一凭据关联建立独立验收
   home，进程级指定 ANYWORK_HOME；不复制正在写入的历史库，不修改用户密钥或原历史。
-  使用外部 helper 模式的 Linux Studio/Server 入口按根 `AGENTS.md` 预先安装 remote helper；
+  使用外部 helper 模式的 Linux Studio/Server 入口需要 PATH 中存在匹配的 remote helper；
   桌面 xtask 入口使用 bundle 内的 `data/remote-helper/`，不能以 PATH 中的程序代替资源校验。
 
 Markdown 排版定向复核可运行 `cargo xtask manual-gui --scenario markdown-layout`，
