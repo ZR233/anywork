@@ -93,6 +93,7 @@ process-wrap = { version = "10.0.1", features = ["tokio1"] }
 lsp-server = "0.10"
 lsp-types = "0.97.0"
 toml = "1.1.8"
+version-migrate = "=0.21.0"
 pretty_assertions = "1.4.1"
 # SQLite does not need SQLx TLS; enabling it would add rustls ring beside reqwest's AWS-LC provider.
 sea-orm = { version = "2.0.4", default-features = false, features = [

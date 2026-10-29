@@ -34,7 +34,15 @@ impl StudioStartupError {
 
     pub(crate) fn input(step: &'static str, source: impl Into<anyhow::Error>) -> Self {
         let source = source.into();
-        let kind = if is_storage_migration(&source) {
+        let kind = if has_document_chain_error(&source) {
+            StudioStartupErrorKind::Internal
+        } else if source
+            .chain()
+            .any(|cause| cause.is::<crate::toml_schema::DocumentMigrationFailed>())
+            && has_environment_error(&source)
+        {
+            StudioStartupErrorKind::Environment
+        } else if is_storage_migration(&source) {
             StudioStartupErrorKind::Migration
         } else if has_environment_error(&source) {
             StudioStartupErrorKind::Environment
@@ -100,6 +108,7 @@ pub(crate) fn cleanup_error(error: impl Into<anyhow::Error>) -> anyhow::Error {
 pub(crate) fn input_error(error: impl Into<anyhow::Error>) -> anyhow::Error {
     let error = error.into();
     if is_bundled_agent_error(&error)
+        || has_document_chain_error(&error)
         || is_storage_migration(&error)
         || has_environment_error(&error)
     {
@@ -117,6 +126,13 @@ fn is_bundled_agent_error(error: &anyhow::Error) -> bool {
     })
 }
 
+fn has_document_chain_error(error: &anyhow::Error) -> bool {
+    error.is::<crate::toml_schema::DocumentChainInvalid>()
+        || error
+            .chain()
+            .any(|cause| cause.is::<crate::toml_schema::DocumentChainInvalid>())
+}
+
 fn is_session_layout_migration(error: &anyhow::Error) -> bool {
     error.is::<crate::studio::store::SessionLayoutMigrationFailed>()
         || error.is::<crate::studio::agent_host::worktree_lease::WorktreeLeaseMigrationFailed>()
@@ -126,7 +142,8 @@ fn is_session_layout_migration(error: &anyhow::Error) -> bool {
 }
 
 fn is_storage_migration(error: &anyhow::Error) -> bool {
-    error.is::<StorageMigrationFailed>()
+    error.is::<crate::toml_schema::DocumentMigrationFailed>()
+        || error.is::<StorageMigrationFailed>()
         || error
             .chain()
             .any(|cause| cause.is::<crate::studio::AccountUsageCacheMigrationError>())
@@ -190,5 +207,52 @@ fn sqlite_data_error(error: &DbErr) -> bool {
         },
         DbErr::Type(_) | DbErr::Json(_) => true,
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn document_errors_never_become_automatic_data_reset() {
+        let error = crate::toml_schema::migration_error(
+            Path::new("catalog.toml"),
+            "catalog",
+            Some(5),
+            4,
+            "admission",
+            anyhow::anyhow!("unsupported document schema"),
+        );
+        let error = input_error(data_error(error));
+        assert_eq!(
+            StudioStartupError::input("catalog", error).kind,
+            StudioStartupErrorKind::Migration
+        );
+    }
+
+    #[test]
+    fn document_context_preserves_environment_and_internal_classification() {
+        let error = crate::toml_schema::migration_error(
+            Path::new("settings.toml"),
+            "settings",
+            Some(1),
+            2,
+            "commit",
+            std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+        );
+        assert_eq!(
+            StudioStartupError::input("settings", input_error(error)).kind,
+            StudioStartupErrorKind::Environment
+        );
+        let error = crate::ConfigRuntimeError::Migration(crate::toml_schema::chain_error(
+            "settings",
+            anyhow::anyhow!("bad path"),
+        ));
+        assert_eq!(
+            StudioStartupError::input("settings", input_error(error)).kind,
+            StudioStartupErrorKind::Internal
+        );
     }
 }

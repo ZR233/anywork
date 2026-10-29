@@ -35,6 +35,36 @@ fn cold_session(paths: &StudioPaths) -> Result<crate::studio::paths::SessionPath
     paths.session_paths("project-cold", "cold")
 }
 
+fn write_account_usage_settings_fixture(paths: &StudioPaths, value: &str) -> Result<()> {
+    #[derive(serde::Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct SettingEntryFixture {
+        key: String,
+        value: String,
+        updated_at: i64,
+    }
+
+    #[derive(serde::Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct SettingsFixture {
+        schema_version: u32,
+        revision: u64,
+        entries: Vec<SettingEntryFixture>,
+    }
+
+    let contents = toml::to_string(&SettingsFixture {
+        schema_version: 1,
+        revision: 2,
+        entries: vec![SettingEntryFixture {
+            key: "observed:accountUsage:v2".into(),
+            value: value.into(),
+            updated_at: 22,
+        }],
+    })?;
+    std::fs::write(paths.settings_file(), contents)?;
+    Ok(())
+}
+
 #[test]
 fn agent_declaration_invariant_errors_are_internal_and_never_data_recovery_inputs() {
     let config_error = crate::ConfigRuntimeError::BundledAgentCatalog(anyhow::Error::new(
@@ -361,11 +391,7 @@ async fn account_usage_v2_load_migration_preserves_unbound_money_and_survives_re
     let home = temp.path().join("home");
     let paths = seed(&home).await?;
     let legacy = r#"{"state":{"kind":"ready","data":{"revision":19,"updatedAt":22,"lastCheckedAt":22,"value":{"configFingerprint":"legacy-inputs","usages":[{"accountId":"legacy-balance","revision":9,"updatedAt":22,"lastOperationId":"legacy-check","state":{"kind":"ready","data":{"data":{"kind":"deepSeekBalance","data":{"is_available":true,"balances":[{"currency":"USD","total_balance":"1.000001","granted_balance":"0.000001","topped_up_balance":"1.000000"},{"currency":"CNY","total_balance":"7.25","granted_balance":"2.00","topped_up_balance":"5.25"}]}}}}}]}}}}"#;
-    let store = crate::StudioStore::open(paths.database()).await?;
-    store
-        .save_setting("observed:accountUsage:v2", legacy)
-        .await?;
-    store.close().await?;
+    write_account_usage_settings_fixture(&paths, legacy)?;
 
     let runtime = StudioRuntime::initialize(options(&home)).await?;
     assert!(runtime.runtime_snapshot().await?.startup_recovery.is_none());
@@ -375,8 +401,11 @@ async fn account_usage_v2_load_migration_preserves_unbound_money_and_survives_re
         .await?
         .expect("migrated setting");
     let document: serde_json::Value = serde_json::from_str(&upgraded)?;
-    assert_eq!(document["formatVersion"], 3);
+    assert!(document.get("formatVersion").is_none());
     assert_eq!(document["legacyUnbound"].as_str(), Some(legacy));
+    let current_settings: toml::Table =
+        toml::from_str(&std::fs::read_to_string(paths.settings_file())?)?;
+    assert_eq!(current_settings["schemaVersion"].as_integer(), Some(2));
     assert_eq!(
         runtime
             .store
@@ -409,11 +438,8 @@ async fn account_usage_future_cache_version_fails_migration_without_resetting_us
     let paths = seed(&home).await?;
     let future = r#"{"formatVersion":999,"futurePayload":"preserve exactly"}"#;
     let catalog = std::fs::read(paths.catalog_file())?;
-    let store = crate::StudioStore::open(paths.database()).await?;
-    store
-        .save_setting("observed:accountUsage:v2", future)
-        .await?;
-    store.close().await?;
+    write_account_usage_settings_fixture(&paths, future)?;
+    let original_settings = std::fs::read(paths.settings_file())?;
     let error = match StudioRuntime::initialize(options(&home)).await {
         Ok(runtime) => {
             runtime.shutdown_runtime().await?;
@@ -422,12 +448,8 @@ async fn account_usage_future_cache_version_fails_migration_without_resetting_us
         Err(error) => error,
     };
     assert_eq!(error.kind, StudioStartupErrorKind::Migration);
-    let store = crate::StudioStore::open(paths.database()).await?;
-    assert_eq!(
-        store.load_setting("observed:accountUsage:v2").await?,
-        Some(future.into())
-    );
-    store.close().await?;
+    assert_eq!(std::fs::read(paths.settings_file())?, original_settings);
+    assert!(!home.join("startup-backups").exists());
     assert_eq!(std::fs::read(paths.catalog_file())?, catalog);
     assert_eq!(
         std::fs::read(home.join("agents/preserved.bin"))?,
@@ -437,39 +459,53 @@ async fn account_usage_future_cache_version_fails_migration_without_resetting_us
 }
 
 #[tokio::test]
-async fn corrupted_global_inputs_backup_once_and_preserve_external_data() -> Result<()> {
-    for fault in [
-        "config",
-        "product",
-        "calls",
-        "log",
-        "cache",
-        "agent",
-        "catalog",
-        "settings",
-        "workspaces",
-    ] {
+async fn canonical_toml_document_faults_fail_migration_without_backup_or_rewrite() -> Result<()> {
+    for name in ["catalog", "settings", "workspaces"] {
+        for (case, bytes) in [
+            ("future-version", b"schemaVersion = 99\n".as_slice()),
+            ("malformed", b"schemaVersion = [\n".as_slice()),
+        ] {
+            let temp = tempfile::tempdir()?;
+            let home = temp.path().join("home");
+            let paths = seed(&home).await?;
+            let path = match name {
+                "catalog" => paths.catalog_file(),
+                "settings" => paths.settings_file(),
+                "workspaces" => paths.workspaces_file(),
+                _ => unreachable!(),
+            };
+            std::fs::write(&path, bytes)?;
+            let original = std::fs::read(&path)?;
+            let error = StudioRuntime::initialize(options(&home))
+                .await
+                .err()
+                .unwrap_or_else(|| panic!("{name} {case} must refuse startup"));
+            assert_eq!(
+                error.kind,
+                StudioStartupErrorKind::Migration,
+                "{name} {case}"
+            );
+            assert_eq!(std::fs::read(&path)?, original, "{name} {case}");
+            assert!(
+                !home.join("startup-backups").exists(),
+                "{name} {case} must not trigger a global backup"
+            );
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn configuration_agent_and_cache_migration_faults_preserve_originals() -> Result<()> {
+    for fault in ["config", "agent", "cache"] {
         let temp = tempfile::tempdir()?;
         let home = temp.path().join("home");
         let paths = seed(&home).await?;
-        let workspace = temp.path().join("workspace");
-        std::fs::create_dir_all(&workspace)?;
-        std::fs::write(workspace.join("work.txt"), b"user work")?;
         let broken = match fault {
             "config" => home.join("config.toml"),
-            "product" => paths.database(),
-            "calls" => paths.calls_database(),
-            "log" => paths.calls_dir().join("logs/calls-0000020000-000001.jsonl"),
             "agent" => home.join("agents/user.toml"),
-            "catalog" => paths.catalog_file(),
-            "settings" => paths.settings_file(),
-            "workspaces" => paths.workspaces_file(),
             "cache" => {
-                let store = crate::StudioStore::open(paths.database()).await?;
-                store
-                    .save_setting("observed:accountUsage:v2", "invalid json")
-                    .await?;
-                store.close().await?;
+                write_account_usage_settings_fixture(&paths, "invalid json")?;
                 paths.settings_file()
             }
             _ => unreachable!(),
@@ -478,6 +514,38 @@ async fn corrupted_global_inputs_backup_once_and_preserve_external_data() -> Res
             std::fs::create_dir_all(broken.parent().expect("fault parent"))?;
             std::fs::write(&broken, b"invalid persistent data\n")?;
         }
+        let original = std::fs::read(&broken)?;
+        let error = StudioRuntime::initialize(options(&home))
+            .await
+            .err()
+            .unwrap_or_else(|| panic!("{fault} migration fault must refuse startup"));
+        assert_eq!(error.kind, StudioStartupErrorKind::Migration, "{fault}");
+        assert_eq!(std::fs::read(&broken)?, original, "{fault}");
+        assert!(
+            !home.join("startup-backups").exists(),
+            "{fault} must not trigger a global backup"
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn corrupted_global_inputs_backup_once_and_preserve_external_data() -> Result<()> {
+    for fault in ["product", "calls", "log"] {
+        let temp = tempfile::tempdir()?;
+        let home = temp.path().join("home");
+        let paths = seed(&home).await?;
+        let workspace = temp.path().join("workspace");
+        std::fs::create_dir_all(&workspace)?;
+        std::fs::write(workspace.join("work.txt"), b"user work")?;
+        let broken = match fault {
+            "product" => paths.database(),
+            "calls" => paths.calls_database(),
+            "log" => paths.calls_dir().join("logs/calls-0000020000-000001.jsonl"),
+            _ => unreachable!(),
+        };
+        std::fs::create_dir_all(broken.parent().expect("fault parent"))?;
+        std::fs::write(&broken, b"invalid persistent data\n")?;
         let original = std::fs::read(&broken)?;
         let runtime = StudioRuntime::initialize(options(&home)).await?;
         let snapshot = runtime.runtime_snapshot().await?;
@@ -710,8 +778,8 @@ async fn parallel_environment_failure_blocks_reset_and_releases_instance_lock() 
 #[tokio::test]
 async fn default_failure_does_not_create_a_second_backup() -> Result<()> {
     let temp = tempfile::tempdir()?;
-    seed(temp.path()).await?;
-    std::fs::write(temp.path().join("config.toml"), b"first failure")?;
+    let paths = seed(temp.path()).await?;
+    std::fs::write(paths.database(), b"first failure")?;
     let home = temp.path().to_owned();
     let observer = Arc::new(move |stage| {
         if stage == StudioStartupStage::Resetting {
@@ -723,7 +791,7 @@ async fn default_failure_does_not_create_a_second_backup() -> Result<()> {
         .await
         .err()
         .expect("default failed");
-    assert_eq!(error.kind, StudioStartupErrorKind::PersistentData);
+    assert_eq!(error.kind, StudioStartupErrorKind::Migration);
     assert_eq!(
         std::fs::read_dir(temp.path().join("startup-backups"))?.count(),
         1
@@ -943,6 +1011,19 @@ async fn layout_target_manifest_fault_does_not_reset_home() -> Result<()> {
         .err()
         .expect("bad target manifest must fail initialize");
     assert_eq!(error.kind, StudioStartupErrorKind::Migration);
+    let mut cause = std::error::Error::source(&error);
+    let mut has_document_migration_failure = false;
+    while let Some(error) = cause {
+        if error
+            .downcast_ref::<crate::toml_schema::DocumentMigrationFailed>()
+            .is_some()
+        {
+            has_document_migration_failure = true;
+            break;
+        }
+        cause = std::error::Error::source(error);
+    }
+    assert!(has_document_migration_failure);
     assert!(!temp.path().join("startup-backups").exists());
     assert_eq!(tokio::fs::read(session.session_manifest()).await?, original);
     assert_eq!(

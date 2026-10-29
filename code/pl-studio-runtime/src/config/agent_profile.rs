@@ -45,16 +45,60 @@ pub struct AgentProfileCatalog {
 
 impl AgentProfileCatalog {
     /// Startup validates every owned profile before publishing a mixed configuration.
-    pub(crate) fn validate_for_startup(paths: &ConfigPaths) -> Result<()> {
+    pub(crate) fn validate_for_startup(
+        paths: &ConfigPaths,
+    ) -> std::result::Result<(), super::ConfigRuntimeError> {
         let entries = match fs::read_dir(paths.agents_dir()) {
             Ok(entries) => entries,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-            Err(error) => return Err(error.into()),
+            Err(error) => return Err(PureError::from(error).into()),
         };
         for entry in entries {
-            let path = entry?.path();
+            let path = entry.map_err(PureError::from)?.path();
             if path.extension().and_then(|value| value.to_str()) == Some("toml") {
-                load_user_profile(&path, true)?;
+                let bytes = fs::read(&path).map_err(PureError::from)?;
+                let content = std::str::from_utf8(&bytes).map_err(|error| {
+                    super::ConfigRuntimeError::Migration(crate::toml_schema::migration_error(
+                        &path,
+                        "agent-profile",
+                        None,
+                        1,
+                        "UTF-8",
+                        error,
+                    ))
+                })?;
+                let document = super::document_migration::load_current_profile(&path, content)
+                    .map_err(super::ConfigRuntimeError::Migration)?;
+                let profile = document.into_profile().map_err(|error| {
+                    super::ConfigRuntimeError::Migration(crate::toml_schema::migration_error(
+                        &path,
+                        "agent-profile",
+                        Some(1),
+                        1,
+                        "validate",
+                        error,
+                    ))
+                })?;
+                let fields = (|| {
+                    let profile_id =
+                        path.file_stem()
+                            .and_then(|name| name.to_str())
+                            .ok_or_else(|| {
+                                PureError::ConfigError("Agent Profile filename is not UTF-8".into())
+                            })?;
+                    validate_user_agent_profile_id(profile_id)?;
+                    validate_user_profile_fields(profile_id, &profile)
+                })();
+                fields.map_err(|error| {
+                    super::ConfigRuntimeError::Migration(crate::toml_schema::migration_error(
+                        &path,
+                        "agent-profile",
+                        Some(1),
+                        1,
+                        "validate",
+                        error,
+                    ))
+                })?;
             }
         }
         Ok(())
@@ -196,16 +240,19 @@ pub fn save_user_agent_profile(
 ) -> Result<bool> {
     validate_user_agent_profile_id(profile_id)?;
     validate_user_profile(profile_id, profile, config)?;
-    let content = toml::to_string_pretty(profile).map_err(|error| {
-        PureError::ConfigError(format!(
-            "failed to serialize Agent Profile `{profile_id}`: {error}"
-        ))
-    })?;
+    let content = super::document_migration::ProfileV1::from_current(profile)
+        .and_then(|document| document.encode())
+        .map_err(|error| {
+            PureError::ConfigError(format!(
+                "failed to serialize Agent Profile `{profile_id}`: {error}"
+            ))
+        })?;
     let directory = paths.agents_dir();
     fs::create_dir_all(&directory)?;
     let path = directory.join(format!("{profile_id}.toml"));
     let changed = match fs::read_to_string(&path) {
-        Ok(existing) => toml::from_str::<UserAgentProfile>(&existing)
+        Ok(existing) => super::document_migration::load_current_profile(&path, &existing)
+            .and_then(|document| document.into_profile())
             .map(|existing| existing != *profile)
             .unwrap_or(true),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
@@ -353,6 +400,13 @@ fn load_user_profile(path: &Path, include_disabled: bool) -> Result<Option<Agent
     if !profile.enabled && !include_disabled {
         return Ok(None);
     }
+    let revision = pl_core::context::content_hash(
+        toml::to_string(&profile)
+            .map_err(|error| {
+                PureError::ConfigError(format!("failed to serialize Profile revision: {error}"))
+            })?
+            .as_bytes(),
+    );
     let snapshot = AgentProfileSnapshot {
         profile_id: profile_id.to_string(),
         display_name: profile.display_name,
@@ -363,7 +417,8 @@ fn load_user_profile(path: &Path, include_disabled: bool) -> Result<Option<Agent
         model_id: profile.model_id,
         effort: profile.effort.map(|effort| effort.as_str().to_string()),
         source: path.to_string_lossy().into_owned(),
-        revision: pl_core::context::content_hash(content.as_bytes()),
+        // Revision describes the business Profile, independent of its TOML schema header.
+        revision,
         content_hash: String::new(),
         system: false,
         enabled: profile.enabled,
@@ -372,24 +427,10 @@ fn load_user_profile(path: &Path, include_disabled: bool) -> Result<Option<Agent
     Ok(Some(with_content_hash(snapshot)))
 }
 
-/// Validates a migration candidate's fields and references before publishing any new bytes.
-pub(super) fn validate_profile_content(
-    profile_id: &str,
-    content: &str,
-    config: &StudioConfig,
-) -> Result<UserAgentProfile> {
-    let profile = parse_profile_content(profile_id, content)?;
-    config.models.route_availability(&ModelRouteConfig {
-        account_id: profile.account_id.clone(),
-        model_id: profile.model_id.clone(),
-        effort: profile.effort.clone(),
-    })?;
-    Ok(profile)
-}
-
 fn parse_profile_content(profile_id: &str, content: &str) -> Result<UserAgentProfile> {
     validate_user_agent_profile_id(profile_id)?;
-    let profile: UserAgentProfile = toml::from_str(content)
+    let profile = super::document_migration::load_current_profile(Path::new(profile_id), content)
+        .and_then(|document| document.into_profile())
         .map_err(|_| PureError::ConfigError(format!("invalid Agent Profile TOML: {profile_id}")))?;
     validate_user_profile_fields(profile_id, &profile)?;
     Ok(profile)
@@ -414,7 +455,10 @@ fn validate_user_profile(
         .map(|_| ())
 }
 
-fn validate_user_profile_fields(profile_id: &str, profile: &UserAgentProfile) -> Result<()> {
+pub(super) fn validate_user_profile_fields(
+    profile_id: &str,
+    profile: &UserAgentProfile,
+) -> Result<()> {
     for (field, value) in [
         ("display_name", profile.display_name.as_str()),
         ("description", profile.description.as_str()),

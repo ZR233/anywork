@@ -9,16 +9,18 @@
 //! 文件使用版本化 schema、CAS revision 与原子写入；运行期热集合（`ProductEventBus`）
 //! 仍在内存中先行，本模块只承载已提交为目录事实的冷摘要。
 
-use std::path::{Path, PathBuf};
+mod schema;
+
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
 
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Result, ensure};
 use pl_protocol::studio::{ThreadDirectoryMatchFields, ThreadDirectoryQuery};
 use pl_protocol::{Thread, ThreadModeId, ThreadStatus, ThreadWorkspaceMode};
+use version_migrate::Versioned;
 
 use super::toml_store::{self, RevisionedDocument};
-
-pub(in crate::studio) const CATALOG_SCHEMA_VERSION: u32 = 4;
+use crate::toml_schema;
 
 /// 一个会话的轻量目录摘要。
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -114,16 +116,20 @@ impl CatalogEntry {
 }
 
 /// `catalog.toml` 的持久化文档。
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct CatalogDocument {
-    schema_version: u32,
     revision: u64,
     entries: Vec<CatalogEntry>,
 }
 
+impl Versioned for CatalogDocument {
+    const VERSION: &'static str = schema::CatalogV4::VERSION;
+}
+
 impl RevisionedDocument for CatalogDocument {
     const KIND: &'static str = "Studio catalog";
+    const VERSION_KEY: &'static str = schema::SCHEMA_KEY;
 
     fn revision_mut(&mut self) -> &mut u64 {
         &mut self.revision
@@ -145,20 +151,18 @@ impl CatalogStore {
     pub(in crate::studio) async fn load(path: PathBuf) -> Result<Self> {
         let document = match tokio::fs::read_to_string(&path).await {
             Ok(content) => {
-                let (document, migrate) =
-                    decode(&path, &content).map_err(crate::studio::startup::data_error)?;
-                if migrate {
-                    let bytes = toml::to_string_pretty(&document)?;
+                let loaded = schema::load_document(&path, &content)?;
+                if loaded.migrated {
+                    let bytes = toml_schema::encode(&loaded.document, schema::SCHEMA_KEY)?;
                     let path = path.clone();
                     tokio::task::spawn_blocking(move || {
                         pl_tool::workspace::write_file_atomically(&path, bytes.as_bytes())
                     })
                     .await??;
                 }
-                document
+                loaded.document
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => CatalogDocument {
-                schema_version: CATALOG_SCHEMA_VERSION,
                 revision: 1,
                 entries: Vec::new(),
             },
@@ -358,77 +362,6 @@ impl CatalogStore {
     }
 }
 
-fn decode(path: &Path, content: &str) -> Result<(CatalogDocument, bool)> {
-    let mut legacy: toml::Value = toml::from_str(content)?;
-    let version = legacy
-        .get("schemaVersion")
-        .and_then(toml::Value::as_integer)
-        .context("Studio catalog schema version is missing")?;
-    if (1..3).contains(&version)
-        && let Some(entries) = legacy
-            .get_mut("entries")
-            .and_then(toml::Value::as_array_mut)
-    {
-        for entry in entries {
-            let entry = entry.as_table_mut().context("invalid catalog entry")?;
-            entry.insert("delegationMode".into(), "profile".into());
-            entry.insert("delegationPreference".into(), "balanced".into());
-        }
-    }
-    if (1..4).contains(&version)
-        && let Some(entries) = legacy
-            .get_mut("entries")
-            .and_then(toml::Value::as_array_mut)
-    {
-        for entry in entries {
-            let entry = entry.as_table_mut().context("invalid catalog entry")?;
-            ensure!(
-                !entry.contains_key("explicitlyClosed"),
-                "old catalog contains unversioned close intent"
-            );
-            entry.insert("explicitlyClosed".into(), false.into());
-        }
-    }
-    let mut document: CatalogDocument = legacy
-        .try_into()
-        .with_context(|| format!("invalid Studio catalog {}", path.display()))?;
-    // v1 lacks the last accepted user timestamp; v2 lacks frozen delegation provenance.
-    // Normalize only at this version boundary; opening commits the representation atomically.
-    ensure!(
-        (1..=CATALOG_SCHEMA_VERSION).contains(&document.schema_version),
-        "unsupported Studio catalog schema in {}",
-        path.display()
-    );
-    document.schema_version = CATALOG_SCHEMA_VERSION;
-    ensure!(document.revision >= 1, "Studio catalog revision is invalid");
-    let mut seen = std::collections::BTreeSet::new();
-    for entry in &document.entries {
-        ensure!(
-            seen.insert(entry.id.as_str()),
-            "Studio catalog has a duplicate Thread identity"
-        );
-        ensure!(
-            !entry.id.is_empty() && entry.agent_path == entry.id,
-            "Studio catalog entry identity is inconsistent"
-        );
-        ensure!(
-            entry.workspace_mode != ThreadWorkspaceMode::Worktree
-                || !entry.workspace_path.is_empty(),
-            "Studio worktree catalog entry has no workspace address"
-        );
-        if entry.parent_thread_id.is_none() {
-            ensure!(
-                entry.root_thread_id == entry.id,
-                "Studio root catalog entry is not its own root"
-            );
-        }
-    }
-    if document.entries.is_empty() && document.revision > 1 {
-        bail!("Studio catalog lost all entries without a fresh install");
-    }
-    Ok((document, version < i64::from(CATALOG_SCHEMA_VERSION)))
-}
-
 fn page_threads(
     mut entries: Vec<CatalogEntry>,
     cursor: Option<&(i64, String)>,
@@ -454,4 +387,111 @@ fn sort_desc(entries: &mut [CatalogEntry]) {
             .cmp(&left.directory_sort_time())
             .then_with(|| right.id.cmp(&left.id))
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::toml_schema::DocumentMigrationFailed;
+
+    fn current_entry() -> CatalogEntry {
+        CatalogEntry {
+            explicitly_closed: false,
+            id: "thread-a".into(),
+            project_id: "project-a".into(),
+            title: "Root".into(),
+            mode: ThreadModeId::simple(),
+            workspace_mode: ThreadWorkspaceMode::Local,
+            delegation_mode: pl_protocol::DelegationMode::Profile,
+            delegation_preference: pl_protocol::DelegationPreference::Balanced,
+            frozen_model: None,
+            workspace_path: "/tmp/a".into(),
+            parent_thread_id: None,
+            root_thread_id: "thread-a".into(),
+            role: "root".into(),
+            agent_path: "thread-a".into(),
+            status: ThreadStatus::Idle,
+            created_at: 10,
+            updated_at: 20,
+            last_user_message_at: Some(15),
+            archived: false,
+        }
+    }
+
+    #[tokio::test]
+    async fn current_bytes_are_not_rewritten_and_keep_revision() {
+        let dir = tempfile::tempdir().expect("temp");
+        let path = dir.path().join("catalog.toml");
+        let document = CatalogDocument {
+            revision: 7,
+            entries: vec![current_entry()],
+        };
+        let encoded = toml_schema::encode(&document, schema::SCHEMA_KEY).expect("encode");
+        tokio::fs::write(&path, &encoded).await.expect("write");
+        let store = CatalogStore::load(path.clone())
+            .await
+            .expect("load current");
+        assert_eq!(store.lock().revision, 7);
+        assert_eq!(
+            tokio::fs::read_to_string(&path).await.expect("read"),
+            encoded
+        );
+
+        store.upsert(current_entry()).await.expect("idempotent");
+        assert_eq!(store.lock().revision, 7);
+        assert_eq!(
+            tokio::fs::read_to_string(&path).await.expect("read"),
+            encoded
+        );
+    }
+
+    #[tokio::test]
+    async fn old_catalog_upgrades_once_and_keeps_revision() {
+        let dir = tempfile::tempdir().expect("temp");
+        let path = dir.path().join("catalog.toml");
+        let raw = "schemaVersion = 2\nrevision = 4\n\n[[entries]]\nid = \"thread-a\"\nprojectId = \"project-a\"\ntitle = \"Root\"\nmode = \"mode.simple\"\nworkspaceMode = \"local\"\nworkspacePath = \"/tmp/a\"\nrootThreadId = \"thread-a\"\nrole = \"root\"\nagentPath = \"thread-a\"\nstatus = \"idle\"\ncreatedAt = 10\nupdatedAt = 20\narchived = false\n";
+        tokio::fs::write(&path, raw).await.expect("write v2");
+        let store = CatalogStore::load(path.clone()).await.expect("upgrade");
+        let first = tokio::fs::read_to_string(&path).await.expect("upgraded");
+        let table: toml::Table = toml::from_str(&first).expect("toml");
+        assert_eq!(
+            table["schemaVersion"].as_integer(),
+            Some(i64::from(
+                schema::current_version().expect("catalog integer version")
+            ))
+        );
+        assert_eq!(table["revision"].as_integer(), Some(4));
+        assert_eq!(
+            table["entries"][0]["delegationMode"].as_str(),
+            Some("profile")
+        );
+        assert_eq!(
+            table["entries"][0]["explicitlyClosed"].as_bool(),
+            Some(false)
+        );
+        drop(store);
+        let store = CatalogStore::load(path.clone()).await.expect("reopen");
+        assert_eq!(store.lock().revision, 4);
+        assert_eq!(
+            tokio::fs::read_to_string(&path).await.expect("stable"),
+            first
+        );
+    }
+
+    #[tokio::test]
+    async fn validation_failure_leaves_original_bytes() {
+        let dir = tempfile::tempdir().expect("temp");
+        let path = dir.path().join("catalog.toml");
+        let raw = "schemaVersion = 4\nrevision = 2\nentries = []\n";
+        tokio::fs::write(&path, raw).await.expect("write");
+        let error = CatalogStore::load(path.clone())
+            .await
+            .err()
+            .expect("empty catalog");
+        assert!(error.is::<DocumentMigrationFailed>());
+        assert_eq!(
+            tokio::fs::read_to_string(&path).await.expect("unchanged"),
+            raw
+        );
+    }
 }

@@ -177,6 +177,11 @@ jobs:
       - name: Test pl-patch semantics
         run: cargo test -p pl-patch
 
+      # TOML schema admission and credential/file commit recovery also depend on the
+      # Windows atomic replacement boundary; Linux-only Studio tests are not sufficient.
+      - name: Test Studio migrations and recovery on Windows
+        run: cargo test --locked -p pl-studio-runtime --lib
+
   studio-server-linux:
     name: Studio server (Linux)
     runs-on: ubuntu-latest

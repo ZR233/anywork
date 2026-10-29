@@ -3,17 +3,18 @@
 //! 旧 `projects` 表属于旧会话版本，v2 不导入；普通目录读取只访问本文件。
 //! 写路径与 catalog 一样使用单锁读取-修改-原子替换，`revision` 单调递增并保证同内容幂等。
 
-use std::path::{Path, PathBuf};
+mod schema;
+
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
 
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Result, bail};
+use version_migrate::Versioned;
 
 use crate::studio::records::ProjectRecord;
 use crate::studio::store::StudioStore;
 use crate::studio::store::directory::DirectoryDelta;
 use crate::studio::toml_store::{self, RevisionedDocument};
-
-pub(in crate::studio) const WORKSPACES_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -43,16 +44,17 @@ impl WorkspaceEntry {
     }
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, Versioned)]
+#[versioned(version = "1.0.0")]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct WorkspacesDocument {
-    schema_version: u32,
     revision: u64,
     workspaces: Vec<WorkspaceEntry>,
 }
 
 impl RevisionedDocument for WorkspacesDocument {
     const KIND: &'static str = "Studio workspaces";
+    const VERSION_KEY: &'static str = schema::SCHEMA_KEY;
 
     fn revision_mut(&mut self) -> &mut u64 {
         &mut self.revision
@@ -68,9 +70,8 @@ pub(in crate::studio) struct WorkspaceStore {
 impl WorkspaceStore {
     pub(in crate::studio) async fn load(path: PathBuf) -> Result<Self> {
         let document = match tokio::fs::read_to_string(&path).await {
-            Ok(content) => decode(&path, &content).map_err(crate::studio::startup::data_error)?,
+            Ok(content) => schema::load_document(&path, &content)?.document,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => WorkspacesDocument {
-                schema_version: WORKSPACES_SCHEMA_VERSION,
                 revision: 1,
                 workspaces: Vec::new(),
             },
@@ -207,32 +208,6 @@ impl WorkspaceStore {
     }
 }
 
-fn decode(path: &Path, content: &str) -> Result<WorkspacesDocument> {
-    let document: WorkspacesDocument = toml::from_str(content)
-        .with_context(|| format!("invalid Studio workspaces {}", path.display()))?;
-    ensure!(
-        document.schema_version == WORKSPACES_SCHEMA_VERSION,
-        "unsupported Studio workspaces schema in {}",
-        path.display()
-    );
-    ensure!(
-        document.revision >= 1,
-        "Studio workspaces revision is invalid"
-    );
-    let mut seen = std::collections::BTreeSet::new();
-    for entry in &document.workspaces {
-        ensure!(
-            !entry.id.is_empty() && !entry.path.is_empty(),
-            "Studio workspace identity is incomplete"
-        );
-        ensure!(
-            seen.insert(entry.id.as_str()),
-            "Studio workspaces contain a duplicate Project identity"
-        );
-    }
-    Ok(document)
-}
-
 impl StudioStore {
     pub(in crate::studio) fn workspaces(&self) -> &WorkspaceStore {
         &self.workspaces
@@ -249,4 +224,60 @@ fn ensure_identity_stable(existing: &WorkspaceEntry, next: &WorkspaceEntry) -> R
         );
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::toml_schema::{self, DocumentMigrationFailed};
+
+    fn current_entry() -> WorkspaceEntry {
+        WorkspaceEntry {
+            id: "project-a".into(),
+            name: "A".into(),
+            path: "/tmp/a".into(),
+            ssh_alias: Some("host".into()),
+            created_at: 1,
+            updated_at: 2,
+            last_opened_at: Some(3),
+            closed: false,
+        }
+    }
+
+    #[tokio::test]
+    async fn current_bytes_are_not_rewritten() {
+        let dir = tempfile::tempdir().expect("temp");
+        let path = dir.path().join("workspaces.toml");
+        let document = WorkspacesDocument {
+            revision: 5,
+            workspaces: vec![current_entry()],
+        };
+        let encoded = toml_schema::encode(&document, schema::SCHEMA_KEY).expect("encode");
+        tokio::fs::write(&path, &encoded).await.expect("write");
+        let store = WorkspaceStore::load(path.clone())
+            .await
+            .expect("load current");
+        assert_eq!(store.lock().revision, 5);
+        assert_eq!(
+            tokio::fs::read_to_string(&path).await.expect("read"),
+            encoded
+        );
+    }
+
+    #[tokio::test]
+    async fn incomplete_identity_leaves_original_bytes() {
+        let dir = tempfile::tempdir().expect("temp");
+        let path = dir.path().join("workspaces.toml");
+        let raw = "schemaVersion = 1\nrevision = 1\n\n[[workspaces]]\nid = \"\"\nname = \"A\"\npath = \"/tmp/a\"\ncreatedAt = 1\nupdatedAt = 1\n";
+        tokio::fs::write(&path, raw).await.expect("write");
+        let error = WorkspaceStore::load(path.clone())
+            .await
+            .err()
+            .expect("invalid identity");
+        assert!(error.is::<DocumentMigrationFailed>());
+        assert_eq!(
+            tokio::fs::read_to_string(&path).await.expect("unchanged"),
+            raw
+        );
+    }
 }

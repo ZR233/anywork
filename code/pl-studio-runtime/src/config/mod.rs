@@ -10,6 +10,7 @@ mod profiles_resource;
 pub use instruction::{DEFAULT_PROJECT_DOC_MAX_BYTES, InstructionsConfig};
 mod bot_credentials;
 mod credential;
+mod document_migration;
 mod execution;
 pub mod mcp;
 pub use execution::RuntimeConfig;
