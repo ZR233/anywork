@@ -13,6 +13,9 @@ use serde::{Deserialize, Serialize};
 pub use serde_json::Error as ReportDecodeError;
 
 pub const TOOL_FINISH_TURN: &str = "finish_turn";
+/// Producer-owned report identity; historical and unknown versions remain opaque.
+pub const FINISH_TURN_FORMAT: &str = "pl.tool.finish-turn";
+pub const FINISH_TURN_VERSION: u32 = 2;
 
 /// Full report, retained without truncation or whitespace normalization.
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
@@ -103,37 +106,14 @@ enum InvalidReview {
     Version,
 }
 
-/// Reads an immutable saved report without granting execution authority.
-/// # Errors
-/// Returns a decoding error for a malformed recognized payload.
-pub fn saved_message(payload: &OpaquePayload) -> Result<Option<String>, ReportDecodeError> {
-    Ok(saved_report(payload)?.map(|report| report.message))
-}
-
-/// Decodes historical v1 as message only; body text never implies a review disposition.
+/// Decodes only the current saved report without granting execution authority.
 /// # Errors
 /// Returns a decoding error for a malformed recognized payload.
 pub fn saved_report(payload: &OpaquePayload) -> Result<Option<SavedFinishTurn>, ReportDecodeError> {
-    if payload.format() != "pl.tool.finish-turn" {
+    if payload.format() != FINISH_TURN_FORMAT || payload.version() != FINISH_TURN_VERSION {
         return Ok(None);
     }
-    match payload.version() {
-        1 => {
-            #[derive(Deserialize)]
-            #[serde(deny_unknown_fields)]
-            struct LegacyReport {
-                message: String,
-            }
-            let report: LegacyReport = serde_json::from_str(payload.content())?;
-            Ok(Some(SavedFinishTurn {
-                message: report.message,
-                review: None,
-                feedback_message: None,
-            }))
-        }
-        2 => serde_json::from_str(payload.content()).map(Some),
-        _ => Ok(None),
-    }
+    serde_json::from_str(payload.content()).map(Some)
 }
 
 /// Registers explicit Turn-ending authority.
@@ -212,8 +192,8 @@ impl Tool for FinishTurnTool {
             review: report.review,
         };
         let payload = OpaquePayload::new(
-            "pl.tool.finish-turn",
-            2,
+            FINISH_TURN_FORMAT,
+            FINISH_TURN_VERSION,
             serde_json::to_string(&saved).map_err(ToolError::new)?,
         )
         .map_err(ToolError::new)?;
@@ -224,5 +204,69 @@ impl Tool for FinishTurnTool {
             }],
         )
         .ending_turn())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn current_saved_report_preserves_full_message_and_review() {
+        let saved = SavedFinishTurn {
+            message: " \n完整报告\n".repeat(4096),
+            review: Some(ReviewResult {
+                disposition: ReviewDisposition::NeedsChanges,
+                summary: "必须修复".into(),
+                reviewed_version: "commit:1234".into(),
+            }),
+            feedback_message: Some("冻结身份与原始回送正文\n".into()),
+        };
+        let payload = OpaquePayload::new(
+            FINISH_TURN_FORMAT,
+            FINISH_TURN_VERSION,
+            serde_json::to_string(&saved).unwrap(),
+        )
+        .unwrap();
+        let original = payload.clone();
+        let report = saved_report(&payload).unwrap().unwrap();
+        assert_eq!(report.message, saved.message);
+        assert_eq!(report.feedback_message, saved.feedback_message);
+        let review = report.review.unwrap();
+        assert_eq!(review.disposition, ReviewDisposition::NeedsChanges);
+        assert_eq!(review.summary, "必须修复");
+        assert_eq!(review.reviewed_version, "commit:1234");
+        assert_eq!(payload, original);
+    }
+
+    #[test]
+    fn saved_report_does_not_interpret_retired_or_unknown_payloads() {
+        for (format, version) in [
+            (FINISH_TURN_FORMAT, 1),
+            (FINISH_TURN_FORMAT, FINISH_TURN_VERSION + 1),
+            ("different.format", FINISH_TURN_VERSION),
+        ] {
+            // Even recognizable report text is not authority to reinterpret another version.
+            let payload = OpaquePayload::new(format, version, r#"{"message":"approved"}"#).unwrap();
+            assert!(saved_report(&payload).unwrap().is_none());
+        }
+        let malformed = OpaquePayload::new(
+            FINISH_TURN_FORMAT,
+            FINISH_TURN_VERSION,
+            r#"{"review":null}"#,
+        )
+        .unwrap();
+        assert!(saved_report(&malformed).is_err());
+
+        let ordinary = OpaquePayload::new(
+            FINISH_TURN_FORMAT,
+            FINISH_TURN_VERSION,
+            r#"{"message":"approved","review":null,"feedbackMessage":null}"#,
+        )
+        .unwrap();
+        let report = saved_report(&ordinary).unwrap().unwrap();
+        assert_eq!(report.message, "approved");
+        assert!(report.review.is_none());
+        assert!(report.feedback_message.is_none());
     }
 }

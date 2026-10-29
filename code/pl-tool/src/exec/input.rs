@@ -77,7 +77,7 @@ impl ExecInputError {
         };
         let output = serde_json::to_string(&receipt)
             .map_err(ToolError::new)
-            .and_then(|text| super::output::receipt_output("pl.tool.exec", text));
+            .and_then(|text| super::output::receipt_output(super::EXEC_OUTPUT_FORMAT, text));
         match output {
             Ok(output) => ToolError::new(self).with_output(output),
             Err(error) => error,

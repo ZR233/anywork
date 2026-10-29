@@ -15,6 +15,9 @@ use std::path::PathBuf;
 pub use thread::{CommandAccess, CommandOutputArchive, ExecFailure, ThreadExecTool};
 pub const TOOL_EXEC: &str = "exec";
 pub const TOOL_WRITE_STDIN: &str = "write_stdin";
+/// Producer-owned command receipt identity; consumers only decode this version.
+pub const EXEC_OUTPUT_FORMAT: &str = "pl.tool.exec";
+pub const EXEC_OUTPUT_VERSION: u32 = 2;
 const DEFAULT_TIMEOUT_SECS: u64 = 60;
 /// `maxOutputChars` 缺省/上限对应的模型可见正文预算，单位是**字节**（见 [`ExecInput`]）。
 ///

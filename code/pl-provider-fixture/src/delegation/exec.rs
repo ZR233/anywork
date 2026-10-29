@@ -32,26 +32,27 @@ impl ProcessState {
 }
 
 #[derive(Deserialize)]
-struct Preview {
-    state: ProcessState,
-    stdout: String,
-    stderr: String,
-    archived: bool,
-}
-
-#[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Stream {
     content: String,
     was_truncated: bool,
-    original_length: usize,
+    original_bytes: usize,
+    displayed_bytes: usize,
+    omitted_bytes: Option<usize>,
+    text_lossy: bool,
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct Record {
+    process_started: Option<bool>,
+    exit_code: Option<i32>,
     state: ProcessState,
     stdout: Stream,
     stderr: Stream,
+    stdout_confirmed_bytes: u64,
+    stderr_confirmed_bytes: u64,
+    capture_status: String,
 }
 
 #[derive(Deserialize, PartialEq)]
@@ -99,15 +100,29 @@ pub(super) fn first<T: DeserializeOwned>(text: &str) -> Result<T> {
         .context("decode first tool JSON value")
 }
 
-fn clean_stream(stream: Stream) -> Result<String> {
+fn clean_stream(stream: Stream, confirmed_bytes: u64) -> Result<String> {
     require(
-        !stream.was_truncated && stream.original_length == stream.content.len(),
-        "exec stream was truncated or has inconsistent byte count",
+        !stream.was_truncated
+            && !stream.text_lossy
+            && stream.omitted_bytes == Some(0)
+            && stream.original_bytes == stream.content.len()
+            && stream.displayed_bytes == stream.content.len()
+            && u64::try_from(stream.original_bytes).ok() == Some(confirmed_bytes),
+        "exec stream was truncated, lossy, or has inconsistent byte count",
     )?;
     Ok(stream.content)
 }
 
-fn stdout(stdout: String, stderr: String) -> Result<String> {
+fn consume_record(record: Record) -> Result<String> {
+    record.state.successful()?;
+    require(
+        record.process_started == Some(true)
+            && record.exit_code == Some(0)
+            && record.capture_status == "complete",
+        "exec Record does not describe a successful complete process capture",
+    )?;
+    let stdout = clean_stream(record.stdout, record.stdout_confirmed_bytes)?;
+    let stderr = clean_stream(record.stderr, record.stderr_confirmed_bytes)?;
     require(
         stdout.len() + stderr.len() < 8192,
         "synthetic exec exceeded its bounded output contract",
@@ -134,7 +149,7 @@ fn complete_payload(
     for index in 0..8 {
         require(
             page.format == "pl.tool.exec"
-                && page.version == 1
+                && page.version == 2
                 && page.total_bytes == total
                 && !page.content.is_empty()
                 && page.content.len() <= 8192
@@ -247,11 +262,7 @@ pub(super) fn read_stdout(flow: &Flow<'_>, label: &str, command: String) -> Prog
                     )?;
                     let record: Record =
                         serde_json::from_str(&content).context("decode complete exec Record")?;
-                    record.state.successful()?;
-                    complete = Some(stdout(
-                        clean_stream(record.stdout)?,
-                        clean_stream(record.stderr)?,
-                    )?);
+                    complete = Some(consume_record(record)?);
                     break;
                 }
                 TaskStatus::Failed | TaskStatus::Cancelled | TaskStatus::Interrupted => {
@@ -264,12 +275,11 @@ pub(super) fn read_stdout(flow: &Flow<'_>, label: &str, command: String) -> Prog
         }
         complete.context("exec did not finish after eight bounded waits")?
     } else {
-        let preview: Preview = first(&text)?;
-        preview.state.successful()?;
-        // Commands emit bounded text. Archived marks a reliable copy, not
-        // truncation; consumers validate the actual stdout below in either case.
-        let _archived = preview.archived;
-        stdout(preview.stdout, preview.stderr)?
+        let record: Record = first(&text)?;
+        consume_record(record)?
     };
     Ok(output)
 }
+
+#[cfg(test)]
+mod tests;

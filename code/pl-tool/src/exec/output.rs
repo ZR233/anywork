@@ -262,7 +262,12 @@ pub(super) fn projection(
         next_action,
     };
     let text = serde_json::to_string(&record).map_err(ToolError::new)?;
-    let payload = OpaquePayload::new("pl.tool.exec", 2, text.clone()).map_err(ToolError::new)?;
+    let payload = OpaquePayload::new(
+        super::EXEC_OUTPUT_FORMAT,
+        super::EXEC_OUTPUT_VERSION,
+        text.clone(),
+    )
+    .map_err(ToolError::new)?;
     // Only decoded stdout/stderr text consumes the body budget. Metadata, reliable-resource
     // references and JSON escaping are additional protocol content; never trim the body again.
     let mut content = vec![ContextContent::Text {
@@ -353,7 +358,7 @@ pub fn permission_denied(source: impl std::error::Error + Send + Sync + 'static)
     };
     let output = serde_json::to_string(&receipt)
         .map_err(ToolError::new)
-        .and_then(|text| receipt_output("pl.tool.exec", text));
+        .and_then(|text| receipt_output(super::EXEC_OUTPUT_FORMAT, text));
     match output {
         Ok(output) => ToolError::new(source).with_output(output),
         Err(error) => error,
@@ -404,7 +409,7 @@ pub(super) fn start_error(
     };
     let output = serde_json::to_string(&receipt)
         .map_err(ToolError::new)
-        .and_then(|text| receipt_output("pl.tool.exec", text));
+        .and_then(|text| receipt_output(super::EXEC_OUTPUT_FORMAT, text));
     let error = if cancelled {
         ToolError::new(pl_core::thread::ThreadError::Cancelled)
     } else {
@@ -418,7 +423,8 @@ pub(super) fn start_error(
 
 /// Metadata-only receipts do not consume the stdout/stderr body budget.
 pub(super) fn receipt_output(format: &'static str, text: String) -> Result<ToolOutput, ToolError> {
-    let payload = OpaquePayload::new(format, 2, text.clone()).map_err(ToolError::new)?;
+    let payload = OpaquePayload::new(format, super::EXEC_OUTPUT_VERSION, text.clone())
+        .map_err(ToolError::new)?;
     Ok(ToolOutput::new(
         payload,
         vec![ContextContent::Text {

@@ -279,27 +279,104 @@ fn terminal(delivery: &ToolDelivery, at: i64) -> Result<ThreadToolState, Project
 fn command_exit_code(delivery: &ToolDelivery) -> Option<i32> {
     let payload = delivery.output.payload();
     if !matches!(delivery.tool_id.as_str(), "exec" | "write_stdin")
-        || payload.format() != "pl.tool.exec"
-        || !matches!(payload.version(), 1 | 2)
+        || payload.format() != pl_tool::exec::EXEC_OUTPUT_FORMAT
+        || payload.version() != pl_tool::exec::EXEC_OUTPUT_VERSION
     {
         return None;
     }
-    if payload.version() == 2 {
-        #[derive(serde::Deserialize)]
-        #[serde(rename_all = "camelCase")]
-        struct CommandReceipt {
-            exit_code: Option<i32>,
-        }
-        return serde_json::from_str::<CommandReceipt>(payload.content())
-            .ok()?
-            .exit_code;
-    }
     #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
     struct CommandReceipt {
-        state: pl_tool::command::CommandProcessLifecycle,
+        exit_code: Option<i32>,
     }
     serde_json::from_str::<CommandReceipt>(payload.content())
         .ok()?
-        .state
-        .exit_code()
+        .exit_code
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pl_core::{
+        context::{ContextContent, OpaquePayload},
+        thread::ToolDeliveryTarget,
+        tool::{ToolOutput, opaque::ToolError},
+    };
+    use pl_tool::exec::{EXEC_OUTPUT_FORMAT, EXEC_OUTPUT_VERSION};
+
+    fn command_delivery(version: u32, content: &str) -> ToolDelivery {
+        let payload = OpaquePayload::new(EXEC_OUTPUT_FORMAT, version, content).unwrap();
+        ToolDelivery {
+            target: ToolDeliveryTarget::CallResult,
+            call_id: "command".into(),
+            tool_id: "exec".into(),
+            output: ToolOutput::new(payload, vec![]),
+            delivered_context: vec![ContextContent::Text {
+                text: "original delivered text".into(),
+            }],
+            outcome: ToolOutcome::Succeeded,
+        }
+    }
+
+    #[test]
+    fn current_command_exit_code_does_not_override_core_outcome() {
+        for tool in ["exec", "write_stdin"] {
+            let mut delivery = command_delivery(EXEC_OUTPUT_VERSION, r#"{"exitCode":7}"#);
+            delivery.tool_id = tool.into();
+            let ThreadToolState::Succeeded(projected) = terminal(&delivery, 1).unwrap() else {
+                panic!("process exit must not replace core's successful outcome");
+            };
+            assert_eq!(projected.output().exit_code(), Some(7));
+            assert_eq!(projected.output().result(), "original delivered text");
+
+            delivery.output = ToolOutput::new(
+                OpaquePayload::new(EXEC_OUTPUT_FORMAT, EXEC_OUTPUT_VERSION, r#"{"exitCode":0}"#)
+                    .unwrap(),
+                vec![],
+            );
+            delivery.outcome = ToolOutcome::Failed(std::sync::Arc::new(ToolError::new(
+                std::io::Error::other("archive failed after successful process exit"),
+            )));
+            let ThreadToolState::Failed(projected) = terminal(&delivery, 1).unwrap() else {
+                panic!("zero exit must not hide core's failure");
+            };
+            assert_eq!(projected.output().unwrap().exit_code(), Some(0));
+            assert_eq!(
+                projected.failure().message(),
+                "archive failed after successful process exit"
+            );
+        }
+    }
+
+    #[test]
+    fn noncurrent_command_receipts_remain_opaque() {
+        let legacy = r#"{"state":{"kind":"final","data":{"result":{"kind":"succeeded","data":{"exit_code":9}}}}}"#;
+        for (version, content) in [
+            (1, legacy),
+            (1, r#"{"exitCode":9}"#),
+            (EXEC_OUTPUT_VERSION + 1, r#"{"exitCode":9}"#),
+            (EXEC_OUTPUT_VERSION, legacy),
+            (EXEC_OUTPUT_VERSION, "invalid JSON"),
+        ] {
+            let delivery = command_delivery(version, content);
+            let original = delivery.output.payload().clone();
+            let ThreadToolState::Succeeded(projected) = terminal(&delivery, 1).unwrap() else {
+                panic!("unrecognized receipt must not change core outcome");
+            };
+            assert_eq!(projected.output().exit_code(), None);
+            assert_eq!(projected.output().result(), "original delivered text");
+            assert_eq!(delivery.output.payload(), &original);
+        }
+
+        let mut unrelated = command_delivery(EXEC_OUTPUT_VERSION, r#"{"exitCode":9}"#);
+        unrelated.tool_id = "different-tool".into();
+        assert_eq!(command_exit_code(&unrelated), None);
+        unrelated.tool_id = "exec".into();
+        unrelated.output = ToolOutput::new(
+            OpaquePayload::new("different.format", EXEC_OUTPUT_VERSION, r#"{"exitCode":9}"#)
+                .unwrap(),
+            vec![],
+        );
+        assert_eq!(command_exit_code(&unrelated), None);
+    }
 }

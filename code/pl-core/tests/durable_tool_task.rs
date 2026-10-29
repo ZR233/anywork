@@ -20,9 +20,9 @@ async fn sqlite_cold_store_reads_terminal_tool_payload_after_reopen() {
     let options = pl_core::persistence::SqliteSessionOptions { path };
     let store = SqliteSessionStore::open(options.clone()).await.unwrap();
     let mut task = TaskRecord {
-        id: "task:call-exec".into(),
-        call_id: "call-exec".into(),
-        tool_id: "exec".into(),
+        id: "task:call-result".into(),
+        call_id: "call-result".into(),
+        tool_id: "fixture-tool".into(),
         turn_id: "turn".into(),
         revision: 2,
         status: TaskStatus::Succeeded,
@@ -30,7 +30,7 @@ async fn sqlite_cold_store_reads_terminal_tool_payload_after_reopen() {
         acknowledgement: None,
         started_sequence: Some(1),
     };
-    let payload = OpaquePayload::new("pl.tool.exec", 1, "{\"stdout\":\"完整结果\"}").unwrap();
+    let payload = OpaquePayload::new("tests.tool-result", 7, "{\"message\":\"完整结果\"}").unwrap();
     let delivery = ToolDelivery {
         target: ToolDeliveryTarget::CallResult,
         call_id: task.call_id.clone(),
