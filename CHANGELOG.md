@@ -5,6 +5,38 @@ anywork release notes are generated from Conventional Commits by Release Please.
 以下已发布记录保留当时的名称与行为，不作为当前工程规范；当前架构演进规则见
 [AGENTS.md](AGENTS.md)，数据迁移契约及实现缺口见[存储设计](design/17-studio-storage.md)。
 
+## [6.34.0](https://github.com/ZR233/anywork/compare/v6.33.0...v6.34.0) (2026-10-29)
+
+
+### ⚠ BREAKING CHANGES
+
+* **studio:** 账号目录传输采用 schema19 模板描述符，补齐能力后的 enriched revision 为不透明身份值。 共享 Client mutation 在成功准入后的失败改为返回本次冻结 OperationState，准入前错误仍抛出。
+* **studio:** 移除 docx、pdf、powerpoint、xlsx 旧内置技能及 cargo xtask sync-skills，不保留别名；使用独立 office-* 能力，PDF 工作流限定为 Office 导出。
+* **studio:** 移除旧会话逐帧拉取与前端混合读取接口，改用有界类型化订阅、独立读取 DTO 和领域 Repository。GUI 仅为实际可见会话声明正文需求，其他消费者与可靠保存独立继续。
+* **studio:** release-gui stage 必须提供 --bundle <路径>，只消费预构建运行包，不再隐式编译 Flutter/Rust。
+
+### ci
+
+* **studio:** 优化缓存并拆分 Windows 发布检查点 ([#211](https://github.com/ZR233/anywork/issues/211)) ([bbffacc](https://github.com/ZR233/anywork/commit/bbffaccc485b4042631f606d145e0ed01402a6ad))
+
+
+### Features
+
+* **studio:** 完善 Task 职责与可靠审查回送 ([#210](https://github.com/ZR233/anywork/issues/210)) ([1c003d9](https://github.com/ZR233/anywork/commit/1c003d918229520e62fbd12edae0521c8dee3d56))
+* **studio:** 重构账号设置与统一 typed 导航 ([#213](https://github.com/ZR233/anywork/issues/213)) ([36bf9e3](https://github.com/ZR233/anywork/commit/36bf9e367f27d369e57e238c9c0f7fd995d04fd2))
+
+
+### Bug Fixes
+
+* **studio:** 修复 Windows 工作树会话初始化失败 ([#214](https://github.com/ZR233/anywork/issues/214)) ([4bcebff](https://github.com/ZR233/anywork/commit/4bcebff200196f547c3681ad20c8073093583fa3))
+
+
+### Refactoring
+
+* **studio:** 精简任务协作提示并明确工具参数语义 ([#219](https://github.com/ZR233/anywork/issues/219)) ([422f828](https://github.com/ZR233/anywork/commit/422f828bb536252ffea715356a752d3ffb1a8a64))
+* **studio:** 统一内置 Office 技能与动态发现 ([#215](https://github.com/ZR233/anywork/issues/215)) ([89482d7](https://github.com/ZR233/anywork/commit/89482d710d1c571dd8125209b688794db020c75e))
+* **studio:** 重构会话界面与订阅式消息流 ([#187](https://github.com/ZR233/anywork/issues/187)) ([d461dd9](https://github.com/ZR233/anywork/commit/d461dd9d14bfedfb3f5bafb2a66406a7ba75ae1d))
+
 ## [6.33.0](https://github.com/ZR233/anywork/compare/v6.32.0...v6.33.0) (2026-10-28)
 
 
