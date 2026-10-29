@@ -83,7 +83,10 @@ struct LiveSubscription {
     pending: VecDeque<ThreadSubscriptionUpdate>,
     /// Deadline of the current display-throttle window for a queue of only-coalescable frames.
     observation_due: Option<Instant>,
-    /// Highest committed effect sequence already forwarded to this subscriber.
+    /// Pending prefix whose delivery window is complete. Drain it before reading more owner frames
+    /// so a ready batch is bounded and later observations still get their own coalescing window.
+    ready_frames: usize,
+    /// Highest effect sequence covered by the baseline or applied from the owner's committed feed.
     applied: u64,
     /// Notification watermark: the strict `revision` counter seeded from the first snapshot.
     revision: u64,
@@ -189,7 +192,7 @@ impl LiveSubscription {
         })
     }
 
-    /// Queues the owner's retained terminal Turn while no Turn is active.
+    /// Queues a covered retained terminal Turn while no Turn is active.
     ///
     /// An active Turn is the snapshot's own fact and its lifecycle frames follow it, so nothing is
     /// replayed while one is running. The queued frame uses this subscription's own watermark, exactly
@@ -205,6 +208,14 @@ impl LiveSubscription {
         let Some(turn) = retained else {
             return;
         };
+        // Live, cold-seeded and prepare-behind terminal Turns all retain their source commit
+        // sequence in `Turn.revision`, not this subscription's notification revision. A watch may
+        // already hold a later Turn while its start/interactions are still unread in the feed.
+        // Mark that watch value seen above, but only announce it once the baseline or consumed
+        // commits cover it; every call rereads the value so feed progress can reconsider it.
+        if turn.revision > self.applied {
+            return;
+        }
         if self.active_turn.is_some() || self.terminal_delivered(&turn) {
             return;
         }
@@ -263,10 +274,11 @@ impl LiveSubscription {
         }
     }
 
-    /// Moves every frame the projection owner already broadcast into the pending queue.
+    /// Moves a bounded batch of already-broadcast owner frames into the pending queue.
     fn drain_feed(&mut self) -> FeedStep {
         let mut step = FeedStep::Idle;
-        loop {
+        // A continuously publishing owner must not keep one synchronous drain from returning.
+        for _ in 0..LIVE_PENDING_FRAMES {
             match self.read_feed() {
                 FeedRead::Event(event) => {
                     step = FeedStep::Frame;
@@ -280,6 +292,7 @@ impl LiveSubscription {
                 FeedRead::Closed => return FeedStep::Closed,
             }
         }
+        step
     }
 
     /// Waits for the next owner frame, a typed storage-state change or a terminal-Turn change.
@@ -419,6 +432,7 @@ impl LiveSubscription {
     fn lagged(&mut self, dropped: u64) {
         self.pending.clear();
         self.observation_due = None;
+        self.ready_frames = 0;
         self.epoch = self.epoch.saturating_add(1);
         self.push_frame(ThreadNotification::Lagged { dropped });
     }
@@ -478,6 +492,7 @@ impl LiveSubscription {
             let dropped = self.pending.len() as u64;
             self.pending.clear();
             self.observation_due = None;
+            self.ready_frames = 0;
             self.epoch = self.epoch.saturating_add(1);
             self.push_frame(ThreadNotification::Lagged { dropped });
         }
@@ -623,31 +638,44 @@ impl StudioThreadSubscription {
             if !live.started {
                 return Ok(Some(live.open(&runtime).await?));
             }
-            let step = live.drain_feed();
-            // A commit or an owner snapshot may have changed the storage state; refresh it from the
-            // typed coordinator facts before deciding whether the queue is only coalescable frames.
-            live.refresh_observations();
-            // A Turn that finished before this subscriber registered — or while it was parked — is
-            // the owner's retained terminal fact, not something the client may infer from content.
-            live.reflect_retained_turn();
+            let step = if live.ready_frames == 0 {
+                let step = live.drain_feed();
+                // A commit or an owner snapshot may have changed the storage state; refresh it from
+                // the typed coordinator facts before deciding whether to throttle this batch.
+                live.refresh_observations();
+                // A retained terminal Turn is an owner fact, never inferred from content.
+                live.reflect_retained_turn();
+                step
+            } else {
+                // Deliver the finite ready prefix without another window or more feed draining.
+                FeedStep::Idle
+            };
             if !live.pending.is_empty() {
-                // 未交付的一串帧里可能只有可合并的观察帧（活动/存储状态）。按显示节流等待
-                // 期间继续消费投影帧，既不让每个 token 都单独成帧，也不把一个已提交的事实留在队列里
-                // 等节流窗口。
-                if live.has_only_coalescable_frames() {
-                    let due = *live
-                        .observation_due
-                        .get_or_insert_with(|| Instant::now() + OBSERVATION_DELIVERY_INTERVAL);
-                    while Instant::now() < due {
-                        let remaining = due.saturating_duration_since(Instant::now());
-                        match tokio::time::timeout(remaining, live.wait_feed_or_storage()).await {
-                            Ok(FeedStep::Closed) | Err(_) => break,
-                            Ok(_) => {}
+                if live.ready_frames == 0 {
+                    // The deadline belongs to the subscription, not this recv future: cancellation
+                    // preserves both the pending facts and the time already spent waiting.
+                    if live.has_only_coalescable_frames() {
+                        let due = *live
+                            .observation_due
+                            .get_or_insert_with(|| Instant::now() + OBSERVATION_DELIVERY_INTERVAL);
+                        while Instant::now() < due && live.has_only_coalescable_frames() {
+                            match tokio::time::timeout_at(due, live.wait_feed_or_storage()).await {
+                                Ok(FeedStep::Closed) | Err(_) => break,
+                                Ok(_) => {}
+                            }
+                            // A watch wake can carry an authoritative terminal Turn. Reflect it
+                            // before checking whether this window may continue waiting.
+                            live.refresh_observations();
+                            live.reflect_retained_turn();
                         }
+                        live.refresh_observations();
                     }
-                    live.refresh_observations();
+                    // An expired window or an authoritative fact releases the whole current batch,
+                    // not just its first frame. No await separates sealing it from the first pop.
+                    live.observation_due = None;
+                    live.ready_frames = live.pending.len();
                 }
-                live.observation_due = None;
+                live.ready_frames -= 1;
                 let mut update = live.pending.pop_front();
                 if let Some(ThreadSubscriptionUpdate::Notification { notification }) = &mut update
                     && let ThreadNotification::ThreadRuntimeUpdated { runtime: observed } =
@@ -772,6 +800,7 @@ impl StudioRuntime {
                     baseline_catalog_revision: 0,
                     pending: VecDeque::new(),
                     observation_due: None,
+                    ready_frames: 0,
                     applied,
                     revision: applied,
                     epoch: 1,

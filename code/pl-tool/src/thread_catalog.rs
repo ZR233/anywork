@@ -70,10 +70,7 @@ impl ThreadBuiltin {
                 "exec",
                 "Execute one independent shell (cwd defaults to workspace root). timeoutSeconds is the total admission-to-exit budget and remains active after a task receipt. maxOutputChars caps combined stdout+stderr text at 65536 UTF-8 bytes; metadata, JSON escaping and protocol wrappers are additional. Results distinguish execution, capture and archive facts. stdoutFile/stderrFile are exact workspace-root-relative paths: read them with cwd omitted or set to '.', even when the original command used another cwd. Never reconstruct paths or repeat side effects to recover output; query the original receipt.",
             ),
-            Self::FinishTurn => schema::<crate::finish_turn::FinishTurnInput>(
-                "finish_turn",
-                "End this Turn with a complete Markdown report. Report results, evidence or problems requiring the parent. No message length limit. Do not repeat a final reply afterward; this does not declare the task complete.",
-            ),
+            Self::FinishTurn => crate::finish_turn::declaration(),
             Self::AskUser => schema::<crate::ask_user::AskUserInput>(
                 "request_user_input",
                 "Ask structured questions and suspend until the user answers or cancels.",

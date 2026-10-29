@@ -31,12 +31,19 @@ pub(super) fn project_completion(
 }
 
 fn completion_summary(delivery: &pl_core::thread::ToolDelivery) -> Option<String> {
-    if !matches!(delivery.outcome, ToolOutcome::Succeeded)
+    committed_finish(delivery).map(|report| report.message)
+}
+
+pub(crate) fn committed_finish(
+    delivery: &pl_core::thread::ToolDelivery,
+) -> Option<pl_tool::finish_turn::SavedFinishTurn> {
+    if delivery.tool_id != pl_tool::finish_turn::TOOL_FINISH_TURN
+        || !matches!(delivery.outcome, ToolOutcome::Succeeded)
         || delivery.output.control() != pl_core::tool::ToolControl::EndTurn
     {
         return None;
     }
-    pl_tool::finish_turn::saved_message(delivery.output.payload())
+    pl_tool::finish_turn::saved_report(delivery.output.payload())
         .ok()
         .flatten()
 }

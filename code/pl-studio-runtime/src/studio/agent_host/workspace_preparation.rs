@@ -34,19 +34,11 @@ pub(in crate::studio) struct WorkspacePreparation<'a> {
     /// For a managed caller checkout, retain its existing pool's repository rather than nesting
     /// another pool inside the caller worktree. This is not the spawn HEAD source.
     pub caller_repository_root: Option<PathBuf>,
-    /// review Profile 的被审目标；产品层完成关系与可用性校验后传入。
-    pub review_target: Option<ReviewWorkspaceTarget>,
 }
 
 /// A prepared ownership lease is promoted exactly once, before child publication.
 pub(in crate::studio) struct PreparedWorktree {
     pub lease: WorktreeLease,
-}
-
-/// The reviewed agent's full actual assignment; no missing lease implies caller session_root.
-pub(in crate::studio) struct ReviewWorkspaceTarget {
-    pub agent_id: String,
-    pub assignment: AgentWorkspaceAssignmentSnapshot,
 }
 
 pub(in crate::studio) async fn prepare_workspace(
@@ -81,22 +73,9 @@ pub(in crate::studio) async fn prepare_workspace(
             None,
         ),
         AgentWorkspaceMode::Review => {
-            let target = request.review_target.ok_or_else(|| {
-                lifecycle_error("review workspace requires a reviewed agent workspace")
-            })?;
-            (
-                AgentWorkspaceAssignmentSnapshot {
-                    mode,
-                    project_root: target.assignment.project_root,
-                    root: target.assignment.root,
-                    writable_paths: None,
-                    worktree: target.assignment.worktree,
-                    review_target: Some(pl_protocol::AgentReviewTargetSnapshot {
-                        agent_id: target.agent_id,
-                    }),
-                },
-                None,
-            )
+            return Err(lifecycle_error(
+                "review creation must consume its verified target assignment",
+            ));
         }
         AgentWorkspaceMode::Directory => {
             let writable_paths = writable_paths
@@ -679,6 +658,28 @@ pub(in crate::studio) async fn root_session_workspace_root(
         })
         .await?;
     Ok(PathBuf::from(lease.path))
+}
+
+pub(in crate::studio) fn validate_root_session_lease(
+    lease: &WorktreeLease,
+    project: &ProjectRecord,
+    root_thread_id: &str,
+) -> std::result::Result<(), WorktreeError> {
+    lease.validate_identity()?;
+    if lease.owner_kind != WorktreeLeaseOwnerKind::Session
+        || lease.owner_thread_id != root_thread_id
+        || lease.project_id != project.id
+        || lease.ssh_alias != project.ssh_alias
+        || matches!(
+            lease.state,
+            WorktreeLeaseState::Cleaned | WorktreeLeaseState::CleanupRequested
+        )
+    {
+        return Err(WorktreeError::IdentityMismatch(
+            "owner/project/remote target differs from the root lease".into(),
+        ));
+    }
+    Ok(())
 }
 
 async fn prepare_repository_worktree_pool(

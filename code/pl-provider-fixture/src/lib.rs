@@ -168,7 +168,7 @@ pub fn gui_markdown_answer() -> String {
 /// control/observation routes, and it verifies the real requests against them.
 /// The GUI side is driven by the optional delegation Driver
 /// (`--delegation-driver`), or by the manual flow when it is absent.
-pub const GUI_SCENARIOS: [&str; 31] = [
+pub const GUI_SCENARIOS: [&str; 32] = [
     "gui",
     "markdown-layout",
     "single-instance",
@@ -198,6 +198,7 @@ pub const GUI_SCENARIOS: [&str; 31] = [
     "delegation-window",
     "delegation-enablement",
     "delegation-recovery",
+    "delegation-review-feedback",
     "delegation-worktree",
     "acp-auto-install",
 ];

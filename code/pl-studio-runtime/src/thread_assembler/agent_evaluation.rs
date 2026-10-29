@@ -197,15 +197,20 @@ impl AgentServices {
     }
 }
 
-fn validate_idle(snapshot: &ThreadSnapshot) -> Result<()> {
+pub(crate) fn validate_idle(snapshot: &ThreadSnapshot) -> Result<()> {
     ensure!(
-        !matches!(
-            snapshot.input_execution,
-            InputExecution::Interrupting { .. }
-        ) && !snapshot
-            .turns
-            .iter()
-            .any(|turn| turn.state == TurnState::Running)
+        snapshot.execution.is_none()
+            && snapshot.model_execution.is_none()
+            && snapshot.pending_tool_commits.is_empty()
+            && snapshot.deliveries.is_empty()
+            && !matches!(
+                snapshot.input_execution,
+                InputExecution::Interrupting { .. }
+            )
+            && !snapshot
+                .turns
+                .iter()
+                .any(|turn| turn.state == TurnState::Running)
             && !snapshot
                 .tasks
                 .values()
@@ -252,6 +257,10 @@ impl StudioThreadAssembler {
             .clone()
             .run(
                 caller.clone(),
+                format!(
+                    "evaluate:{}",
+                    pl_core::context::content_hash(serde_json::to_string(&request)?.as_bytes())
+                ),
                 move || {
                     owner.ensure_agent_admission_open(&root)?;
                     ensure!(

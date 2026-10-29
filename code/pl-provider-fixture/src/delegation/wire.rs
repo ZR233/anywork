@@ -7,13 +7,13 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
 
 #[derive(Debug, Deserialize)]
-pub(super) struct Request {
+pub(crate) struct Request {
     pub model: String,
-    pub input: Vec<Item>,
+    pub(super) input: Vec<Item>,
     #[serde(default)]
-    pub tools: Vec<Function>,
+    pub(super) tools: Vec<Function>,
     pub tool_choice: Option<Value>,
-    pub reasoning: Option<Reasoning>,
+    pub(super) reasoning: Option<Reasoning>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -67,7 +67,7 @@ pub(super) struct Item {
 }
 
 #[derive(Debug)]
-pub(super) enum ToolCallOutput {
+pub(crate) enum ToolCallOutput {
     Immediate(String),
     Pending {
         task_id: String,
@@ -166,7 +166,7 @@ impl Request {
             .unwrap_or_default()
     }
 
-    pub fn expected_completion(&self) -> Result<Option<CompletionExpectation>> {
+    pub(super) fn expected_completion(&self) -> Result<Option<CompletionExpectation>> {
         let Ok((_, prompt)) = self.prompt() else {
             return Ok(None);
         };
@@ -248,7 +248,7 @@ impl Request {
         Ok(Some((call_index, ToolCallOutput::Immediate(text))))
     }
 
-    pub fn task_completion_after(
+    pub(super) fn task_completion_after(
         &self,
         call_index: usize,
         task_id: &str,
@@ -337,7 +337,10 @@ impl Request {
                     && text.contains("\"commitSequence\"")
             })
             .map(|text| {
-                serde_json::from_str(&text).context("decode complete production terminal report")
+                let mut report: Report = serde_json::from_str(&text)
+                    .context("decode complete production terminal report")?;
+                report.raw = text;
+                Ok(report)
             })
             .collect::<Result<_>>()?;
         let mut identities = std::collections::BTreeSet::new();
@@ -407,32 +410,42 @@ pub(super) struct Route {
     pub effort: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub(super) struct Spawn {
+pub(crate) struct Spawn {
     pub agent_id: String,
     pub profile_id: String,
-    pub model: Route,
+    pub(super) model: Route,
     pub message_accepted: bool,
     pub message_sequence: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub(super) struct Report {
+pub(crate) struct Report {
+    /// Exact model-visible producer bytes, never a reserialized approximation.
+    #[serde(skip)]
+    pub raw: String,
     pub child_id: String,
     pub commit_sequence: u64,
+    #[serde(deserialize_with = "super::review_wire::terminal_turn")]
     pub turn: Turn,
+    pub turn_id: String,
+    #[serde(deserialize_with = "super::review_wire::required_option")]
+    pub input_id: Option<String>,
     pub message: String,
-    pub messages: Vec<MessageIdentity>,
+    pub(super) messages: Vec<MessageIdentity>,
     pub running_tasks: Vec<String>,
     pub pending_interactions: Vec<String>,
-    pub permissions: Vec<Permission>,
+    pub(super) permissions: Vec<Permission>,
+    pub review: Option<super::review_wire::Review>,
+    pub last_tool: Option<serde::de::IgnoredAny>,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub(super) struct Turn {
+pub(crate) struct Turn {
+    #[serde(deserialize_with = "super::review_wire::required_option")]
     pub input_id: Option<String>,
     pub turn_id: String,
     pub state: TurnState,
@@ -440,7 +453,7 @@ pub(super) struct Turn {
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "kind", content = "value", rename_all = "camelCase")]
-pub(super) enum TurnState {
+pub(crate) enum TurnState {
     Running,
     Finished(String),
     Cancelled,
@@ -472,11 +485,13 @@ pub(super) enum PermissionState {
 }
 
 impl Report {
-    fn validate_identity(&self) -> Result<()> {
+    pub fn validate_identity(&self) -> Result<()> {
         ensure!(
             !self.child_id.trim().is_empty()
                 && self.commit_sequence > 0
-                && !self.turn.turn_id.trim().is_empty(),
+                && !self.turn_id.trim().is_empty()
+                && self.turn_id == self.turn.turn_id
+                && self.input_id == self.turn.input_id,
             "terminal report lacks committed child/Turn identity"
         );
         // A message-triggered Turn has no chat inputId. Never infer an input
@@ -488,6 +503,9 @@ impl Report {
                 .is_none_or(|id| !id.trim().is_empty()),
             "terminal report has an invalid optional chat input identity"
         );
+        if let Some(review) = &self.review {
+            review.require_valid(self)?;
+        }
         Ok(())
     }
 
@@ -640,6 +658,7 @@ pub(super) struct AgentRow {
     pub lifecycle: Lifecycle,
     pub pending_inputs: usize,
     pub running_tasks: usize,
+    #[serde(deserialize_with = "super::review_wire::required_option")]
     pub last_turn: Option<Turn>,
 }
 
@@ -764,12 +783,30 @@ pub(super) enum SavedItemState {
     Turn {
         data: SavedTurn,
     },
+    Text {
+        data: SavedText,
+    },
     // Non-Turn items are not evidence for a Turn. Their payload is irrelevant
     // to this projection; their thread/ordinal fields are still validated.
     // Internal tagging ignores their data object without treating malformed
     // known Turn data as an unknown variant.
     #[serde(other)]
     Other,
+}
+
+#[derive(Deserialize)]
+pub(super) struct SavedText {
+    pub channel: SavedTextChannel,
+    pub text: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) enum SavedTextChannel {
+    User,
+    ParentAgent,
+    Commentary,
+    Final,
 }
 
 #[derive(Deserialize)]

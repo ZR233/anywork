@@ -3,6 +3,33 @@ use super::errors::resource_error;
 use crate::thread_assembler::ThreadAssemblyError;
 use pl_tool::workspace::{SessionFiles, ToolWorkspace, WorkspaceMutability};
 
+/// Restricted restoration consumes only an already materialized local layout.
+pub(super) async fn verify_existing_session_files(
+    root: &std::path::Path,
+    thread_id: &str,
+) -> Result<(), ThreadAssemblyError> {
+    let files = SessionFiles::new(thread_id);
+    // Match prepare_session_files: uploads and the optional venv are lazy user resources.
+    for relative in [files.scratch(), files.artifacts(), files.commands()] {
+        let path = root.join(relative);
+        let canonical = tokio::fs::canonicalize(&path)
+            .await
+            .map_err(|error| resource_error("verify existing Thread session files", error))?;
+        if !canonical.starts_with(root)
+            || !tokio::fs::metadata(&canonical)
+                .await
+                .map_err(|error| resource_error("stat existing Thread session files", error))?
+                .is_dir()
+        {
+            return Err(ThreadAssemblyError::Workspace {
+                thread_id: thread_id.into(),
+                reason: "existing session layout is not a confined directory".into(),
+            });
+        }
+    }
+    Ok(())
+}
+
 /// Attaches [`SessionFiles::new`] using the original Thread identity.
 ///
 /// Call this before [`ToolWorkspace`] is cloned into a frozen tool binding so

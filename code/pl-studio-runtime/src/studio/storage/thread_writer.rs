@@ -199,6 +199,10 @@ fn classified(
 /// Reliable admission state owned by the session manager, not by a writer incarnation.
 pub(crate) struct HistoryChannel {
     #[cfg(test)]
+    pub(crate) effects_released: tokio::sync::watch::Sender<u64>,
+    #[cfg(test)]
+    pub(crate) terminal_parked: tokio::sync::watch::Sender<u64>,
+    #[cfg(test)]
     initialization_gate: Mutex<
         Option<(
             tokio::sync::oneshot::Sender<()>,
@@ -227,11 +231,212 @@ pub(crate) struct HistoryChannel {
     /// process limit fire at half the memory it names. They are charged to the owning Thread's
     /// budget instead, which is the enforced per-Thread gate (`StoragePressure::thread_bytes`).
     process_bytes: Arc<AtomicU64>,
+    /// Logical-source budget shared across joined storage-only writer replacements.
+    delivery_bytes: Arc<AtomicU64>,
     status: tokio::sync::watch::Sender<HistoryStatus>,
     pressure_changed: tokio::sync::watch::Sender<()>,
+    capacity_changed: Option<tokio::sync::watch::Sender<u64>>,
+}
+
+/// A managed producer releases its additional resident copy on success, error or cancellation.
+pub(crate) struct ReviewDeliveryRetention {
+    channel: Arc<HistoryChannel>,
+    bytes: u64,
+    coordinator: crate::studio::storage::coordinator::ThreadPersistenceCoordinator,
+    thread_id: String,
+}
+
+impl Drop for ReviewDeliveryRetention {
+    fn drop(&mut self) {
+        let progress = self
+            .channel
+            .progress
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.channel
+            .delivery_bytes
+            .fetch_sub(self.bytes, Ordering::AcqRel);
+        self.channel.release_process_bytes(self.bytes);
+        self.channel.report(&progress);
+        drop(progress);
+        self.coordinator
+            .release_delivery_channel(&self.thread_id, &self.channel);
+    }
 }
 
 impl HistoryChannel {
+    /// Actual retained capacity was returned, independently from whether the per-Thread status
+    /// also shrank (projection/delivery bytes may have changed concurrently). Atomic failed-claim
+    /// rollback stays local. A charged guard's teardown can also finish a refused resident check;
+    /// consumers must compare pre-attempt watermarks, never treat a notification alone as progress.
+    fn release_process_bytes(&self, bytes: u64) {
+        if bytes == 0 {
+            return;
+        }
+        self.process_bytes.fetch_sub(bytes, Ordering::AcqRel);
+        self.pressure_changed.send_replace(());
+        if let Some(capacity) = &self.capacity_changed {
+            capacity.send_modify(|revision| *revision = revision.wrapping_add(1));
+        }
+    }
+    #[cfg(test)]
+    pub(crate) fn retained_delivery_bytes(&self) -> u64 {
+        self.delivery_bytes.load(Ordering::Acquire)
+    }
+    pub(crate) fn with_capacity(
+        process_bytes: Arc<AtomicU64>,
+        capacity: tokio::sync::watch::Sender<u64>,
+    ) -> Self {
+        let mut channel = Self::new(process_bytes);
+        channel.capacity_changed = Some(capacity);
+        channel
+    }
+    pub(super) fn retain_terminal_bytes(&self, bytes: u64) -> Arc<AtomicU64> {
+        // These are already-existing immutable producer materials, not a fallible new copy.
+        // Keep their process charge until the last queue/transfer/operation reference is gone.
+        self.process_bytes.fetch_add(bytes, Ordering::AcqRel);
+        self.delivery_bytes.fetch_add(bytes, Ordering::AcqRel);
+        let progress = self
+            .progress
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.report(&progress);
+        self.delivery_bytes.clone()
+    }
+    pub(super) fn refresh_terminal_bytes(&self) {
+        let progress = self
+            .progress
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.report(&progress);
+    }
+    pub(crate) fn delivery_retry_mark(&self) -> (u64, u64, bool, u64, u64) {
+        let status = self.status.borrow();
+        (
+            status.committed_sequence,
+            status.fault_generation,
+            status.error.is_some(),
+            status.queued_bytes,
+            self.process_bytes.load(Ordering::Acquire),
+        )
+    }
+    pub(in crate::studio) fn terminal_material_bytes(
+        &self,
+        authority: &crate::thread_assembler::review_dispatch::TerminalAuthority,
+        original: &pl_core::thread::inbox::ThreadMessage,
+    ) -> u64 {
+        // The producer retains these materials only, not an effect, prepared items or checkpoint.
+        // The queue's normal prepared/effect accounting owns those until its durable ACK.
+        (original.payload.content().len() as u64)
+            .saturating_mul(2)
+            .saturating_add(original.id.len() as u64)
+            .saturating_add(original.source_id.len() as u64)
+            .saturating_add(authority.retained_bytes())
+            .saturating_add(4096)
+    }
+    /// Called under the coordinator registry boundary, with no channel lock. Reserving before
+    /// publishing the guard prevents an idle-row cleanup from orphaning a just-created producer.
+    pub(crate) fn charge_review_delivery(&self, bytes: u64) -> Result<()> {
+        anyhow::ensure!(
+            bytes <= MAX_HISTORY_THREAD_BYTES.min(MAX_HISTORY_PROCESS_BYTES),
+            crate::thread_assembler::review_dispatch::TerminalIntegrityError(
+                "terminal material exceeds the reliable byte ceiling"
+            )
+        );
+        anyhow::ensure!(
+            self.reserve(bytes),
+            crate::thread_assembler::review_dispatch::TerminalBudgetBlocked
+        );
+        if self
+            .delivery_bytes
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+                current
+                    .checked_add(bytes)
+                    .filter(|total| *total <= MAX_HISTORY_THREAD_BYTES)
+            })
+            .is_err()
+        {
+            // This undoes only this failed speculative claim; no retained capacity was freed.
+            self.process_bytes.fetch_sub(bytes, Ordering::AcqRel);
+            anyhow::bail!(crate::thread_assembler::review_dispatch::TerminalBudgetBlocked);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn retain_charged_review_delivery(
+        self: &Arc<Self>,
+        bytes: u64,
+        coordinator: crate::studio::storage::coordinator::ThreadPersistenceCoordinator,
+        thread_id: String,
+    ) -> Result<ReviewDeliveryRetention> {
+        let retained = ReviewDeliveryRetention {
+            channel: self.clone(),
+            bytes,
+            coordinator,
+            thread_id,
+        };
+        let progress = self
+            .progress
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let resident = progress
+            .effects
+            .iter()
+            .fold(progress.prepared_bytes, |total, effect| {
+                total.saturating_add(effect.bytes)
+            })
+            .saturating_add(progress.projection_bytes)
+            .saturating_add(self.delivery_bytes.load(Ordering::Acquire));
+        self.report(&progress);
+        drop(progress);
+        anyhow::ensure!(
+            resident <= MAX_HISTORY_THREAD_BYTES,
+            crate::thread_assembler::review_dispatch::TerminalBudgetBlocked
+        );
+        Ok(retained)
+    }
+
+    pub(crate) fn has_delivery_bytes(&self) -> bool {
+        self.delivery_bytes.load(Ordering::Acquire) > 0
+    }
+    pub(crate) fn shares_delivery_budget(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.delivery_bytes, &other.delivery_bytes)
+    }
+
+    /// The old physical workers were joined by the storage-only owner. Carry only the logical
+    /// producer budget/wakeup, never an old queue, core sequence or writer incarnation.
+    pub(crate) fn next_storage_channel(&self) -> Self {
+        let mut channel = Self::new(self.process_bytes.clone());
+        channel.delivery_bytes = self.delivery_bytes.clone();
+        channel.pressure_changed = self.pressure_changed.clone();
+        channel.capacity_changed = self.capacity_changed.clone();
+        channel
+    }
+    /// Wait only for an already handed-over effect, never for a producer's future projection.
+    pub(crate) async fn await_handoff_durable(&self, id: &str, sequence: u64) -> Result<()> {
+        ensure!(
+            sequence <= self.handoff_ticket(),
+            "history wait precedes reliable handoff"
+        );
+        let mut status = self.subscribe();
+        loop {
+            {
+                let status = status.borrow_and_update();
+                if status.committed_sequence >= sequence {
+                    return Ok(());
+                }
+                if let Some(error) = &status.error {
+                    anyhow::bail!(
+                        "Thread {id} history did not become durable through {sequence}: {error}"
+                    );
+                }
+            }
+            status
+                .changed()
+                .await
+                .context("Thread history progress channel closed")?;
+        }
+    }
     pub(crate) fn is_stopping(&self) -> bool {
         self.stopping.is_cancelled()
     }
@@ -241,6 +446,10 @@ impl HistoryChannel {
         let (pressure_changed, _) = tokio::sync::watch::channel(());
         Self {
             #[cfg(test)]
+            effects_released: tokio::sync::watch::channel(0).0,
+            #[cfg(test)]
+            terminal_parked: tokio::sync::watch::channel(0).0,
+            #[cfg(test)]
             initialization_gate: Mutex::new(None),
             progress: Mutex::new(Progress::default()),
             changed: Arc::new(tokio::sync::Notify::new()),
@@ -249,8 +458,10 @@ impl HistoryChannel {
             worker_failure: Mutex::new(None),
             stopping: tokio_util::sync::CancellationToken::new(),
             process_bytes,
+            delivery_bytes: Arc::new(AtomicU64::new(0)),
             status,
             pressure_changed,
+            capacity_changed: None,
         }
     }
 
@@ -327,9 +538,8 @@ impl HistoryChannel {
                 .remove(operation_id)
                 .map_or(0, |output| output.retained())
         };
-        if retained > 0 {
-            self.process_bytes.fetch_sub(retained, Ordering::AcqRel);
-        }
+        // OutputBudget::release can be the only remaining producer event, even cross-Thread.
+        self.release_process_bytes(retained);
     }
 
     pub(crate) fn subscribe(&self) -> tokio::sync::watch::Receiver<HistoryStatus> {
@@ -477,6 +687,7 @@ impl HistoryChannel {
     }
 
     fn report(&self, progress: &Progress) {
+        let previous_bytes = self.status.borrow().queued_bytes;
         self.status.send_replace(HistoryStatus {
             fault_generation: progress.fault_generation,
             fault: progress.fault,
@@ -493,9 +704,15 @@ impl HistoryChannel {
                 .map(|queued| queued.bytes)
                 .sum::<u64>()
                 .saturating_add(progress.prepared_bytes)
+                .saturating_add(self.delivery_bytes.load(Ordering::Acquire))
                 .saturating_add(progress.projection_bytes),
         });
         self.pressure_changed.send_replace(());
+        if self.status.borrow().queued_bytes < previous_bytes
+            && let Some(capacity) = &self.capacity_changed
+        {
+            capacity.send_modify(|revision| *revision = revision.wrapping_add(1));
+        }
     }
 
     pub(crate) fn retry(&self, generation: u64) -> Result<()> {
@@ -1033,6 +1250,17 @@ async fn refresh_call_watermark(
 /// Performs one unit of durable work.
 async fn step(inner: &Inner) -> Result<Step> {
     let _single_writer = inner.channel.step_lock.lock().await;
+    {
+        let progress = lock_progress(inner);
+        // Another attached writer may have failed while this worker waited for step_lock.
+        // The pre-lock loop check is not permission to retry that newly published generation.
+        if progress.error.is_some()
+            && !progress.retry_requested
+            && progress.fault != Some(pl_protocol::studio::HistoryFault::QueueFull)
+        {
+            return Ok(Step::Idle);
+        }
+    }
     // 每个 effect 与它自己的候选 checkpoint 在同一次事务落盘：队列顺序即提交顺序，不再有单独的
     // checkpoint 选择、合并窗口或发布步骤。
     let next_effect = lock_progress(inner).effects.front().map(|queued| {
@@ -1062,10 +1290,7 @@ async fn step(inner: &Inner) -> Result<Step> {
             "history queue head changed before acknowledgement"
         );
         progress.prepared_bytes = progress.prepared_bytes.saturating_sub(prepared_bytes);
-        inner
-            .channel
-            .process_bytes
-            .fetch_sub(bytes, Ordering::AcqRel);
+        inner.channel.release_process_bytes(bytes);
         progress.durable = progress.durable.max(sequence);
         progress.last_progress_at = (!progress.effects.is_empty()).then(Instant::now);
     }
@@ -1073,6 +1298,14 @@ async fn step(inner: &Inner) -> Result<Step> {
     report(inner, &progress);
     drop(progress);
     inner.changed.notify_one();
+    #[cfg(test)]
+    {
+        // Publish only after the writer's own local and queued handles were both released.
+        // A terminal producer may still pin them; the history test distinguishes that owner.
+        drop(write);
+        drop(prepared);
+        inner.channel.effects_released.send_replace(sequence);
+    }
     Ok(Step::Progressed)
 }
 
@@ -1436,6 +1669,7 @@ impl ColdStore for ThreadStorageSink {
                 total.saturating_add(queued.bytes)
             })
             .saturating_add(progress.projection_bytes)
+            .saturating_add(self.0.channel.delivery_bytes.load(Ordering::Acquire))
             .saturating_add(reserved);
         StoragePressure {
             thread_bytes: bytes,
@@ -1632,6 +1866,14 @@ fn fact_receipts(
     prepared: &PreparedEffect,
 ) -> Result<Vec<crate::studio::storage::history::FactReceiptWrite>> {
     let mut receipts = Vec::new();
+    for fact in &prepared.review_delivery {
+        receipts.push(crate::studio::storage::history::FactReceiptWrite {
+            item_id: fact.message.id.clone(),
+            revision: 1,
+            kind: "reviewDeliveryException",
+            payload: serde_json::to_string(fact)?,
+        });
+    }
     if let Some(message) = &prepared.parent_report {
         receipts.push(crate::studio::storage::history::FactReceiptWrite {
             item_id: message.id.clone(),
@@ -1897,9 +2139,9 @@ pub(crate) mod storage_fault_tests {
 
     pub(crate) struct CloseFactoryFixture {
         pub(crate) factory: crate::studio::StudioThreadFactory,
-        writer: crate::studio::agent_host::ThreadWriteBehindWriter,
-        config: crate::config::ConfigRuntime,
-        events: crate::studio::ProductEventBus,
+        pub(in crate::studio) writer: crate::studio::agent_host::ThreadWriteBehindWriter,
+        pub(crate) config: crate::config::ConfigRuntime,
+        pub(crate) events: crate::studio::ProductEventBus,
         store: StudioStore,
         worktrees: crate::studio::agent_host::worktree_lease::WorktreeLeaseOwner,
     }
@@ -2075,6 +2317,8 @@ pub(crate) mod storage_fault_tests {
                 &child_site,
                 Some(child_receipt.clone()),
                 Some(pl_protocol::AgentReviewTargetSnapshot {
+                    baseline: None,
+                    feedback: None,
                     agent_id: "worktree-owner".into(),
                 }),
             ),
@@ -3028,6 +3272,187 @@ pub(crate) mod storage_fault_tests {
     }
 
     #[tokio::test]
+    async fn review_exception_cas_is_atomic_and_budget_survives_writer_replacement() -> Result<()> {
+        use crate::thread_assembler::{
+            agent_review::{ReviewDeliverySource, ReviewForward, ReviewForwardReason},
+            review_delivery::ReviewDeliveryException,
+        };
+        use pl_core::thread::extensions::ExtensionMutation;
+        let id = "review-cas-history";
+        let (_temp, store, sink) = sink(id).await?;
+        let thread = ThreadHandle::resume_without_model(id.into(), None)?;
+        thread
+            .attach_storage(ColdStoreHandle::new(sink.clone()))
+            .await?;
+        thread
+            .mutate_extensions(vec![ExtensionMutation::Put {
+                id: "fixture-original-source".into(),
+                expected_revision: None,
+                payload: OpaquePayload::text("original durable source"),
+            }])
+            .await?;
+        tokio::time::timeout(Duration::from_secs(5), thread.flush()).await??;
+        let history = store.history(id).await?;
+        let terminal = history.watermark().await?;
+        let body_budget = 256 * 1024;
+        let retained = store
+            .thread_persistence()
+            .retain_review_delivery(id, body_budget)?;
+        let fact = ReviewDeliveryException::from_forward(
+            id,
+            "saved-turn",
+            None,
+            terminal,
+            "executor",
+            ReviewDeliverySource::Reconciliation,
+            &ReviewForward::Unconfirmed {
+                message_id: crate::thread_assembler::agent_review::review_message_id(
+                    id,
+                    "saved-turn",
+                    terminal,
+                ),
+                reason: ReviewForwardReason::RecoveryRequiresScheduling,
+            },
+        )
+        .context("exception fixture")?
+        .into_fact()?;
+        let path = store
+            .session_paths("project-test", id)?
+            .root()
+            .join("history.sqlite");
+        let db = Database::connect(
+            crate::studio::paths::sqlite_file_options(
+                &path,
+                crate::studio::paths::SqliteFileMode::Create,
+                |options| options,
+            )
+            .await?,
+        )
+        .await?;
+        db.execute_unprepared("CREATE TRIGGER reject_review_cas BEFORE INSERT ON history_fact_receipts WHEN NEW.kind='reviewDeliveryException' BEGIN SELECT RAISE(ABORT,'controlled review CAS failure'); END").await?;
+        let mut status = sink.0.channel.subscribe();
+        let records = thread
+            .mutate_extensions(vec![ExtensionMutation::Put {
+                id: fact.extension_id(),
+                expected_revision: None,
+                payload: fact.encode()?,
+            }])
+            .await?;
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while status.borrow_and_update().fault.is_none() {
+                status.changed().await?;
+            }
+            Ok::<_, tokio::sync::watch::error::RecvError>(())
+        })
+        .await??;
+        assert!(
+            history
+                .review_delivery_exception(&fact.message.id)
+                .await?
+                .is_none()
+        );
+        assert_eq!(history.watermark().await?, terminal);
+        assert!(
+            !history
+                .checkpoint()
+                .await?
+                .unwrap()
+                .state
+                .extensions
+                .contains_key(&fact.extension_id())
+        );
+        assert!(thread.flush().await.is_err());
+        let failed = status.borrow().clone();
+        db.execute_unprepared("DROP TRIGGER reject_review_cas")
+            .await?;
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            store
+                .thread_persistence()
+                .retry_history(id, failed.fault_generation),
+        )
+        .await??;
+        tokio::time::timeout(Duration::from_secs(5), thread.flush()).await??;
+        assert_eq!(
+            history
+                .review_delivery_exception(&fact.message.id)
+                .await?
+                .unwrap()
+                .message
+                .digest(),
+            fact.message.digest()
+        );
+        assert!(
+            history
+                .checkpoint()
+                .await?
+                .unwrap()
+                .state
+                .extensions
+                .contains_key(&fact.extension_id())
+        );
+        thread
+            .mutate_extensions(vec![ExtensionMutation::Delete {
+                id: fact.extension_id(),
+                expected_revision: records[&fact.extension_id()].revision,
+            }])
+            .await?;
+        thread.close().await?;
+        sink.0.channel.stop_and_join().await?;
+        let checkpoint = history
+            .checkpoint()
+            .await?
+            .context("closed CAS source checkpoint")?;
+        assert!(
+            !checkpoint
+                .state
+                .extensions
+                .contains_key(&fact.extension_id())
+        );
+        let reopened =
+            ThreadStorageSink::new(store.clone(), test_thread(id), Some(&checkpoint)).await?;
+        spawn_live_projection(&reopened);
+        assert!(!Arc::ptr_eq(&sink.0.channel, &reopened.0.channel));
+        assert!(sink.0.channel.shares_delivery_budget(&reopened.0.channel));
+        assert!(reopened.pressure(id).thread_bytes >= body_budget);
+        let before = reopened.0.channel.process_bytes.load(Ordering::Acquire);
+        assert!(
+            store
+                .thread_persistence()
+                .retain_review_delivery(id, MAX_HISTORY_THREAD_BYTES)
+                .is_err()
+        );
+        assert_eq!(
+            reopened.0.channel.process_bytes.load(Ordering::Acquire),
+            before
+        );
+        drop(retained);
+        assert!(!reopened.0.channel.has_delivery_bytes());
+        let resumed = ThreadHandle::resume_without_model(id.into(), Some(checkpoint))?;
+        resumed
+            .attach_storage(ColdStoreHandle::new(reopened.clone()))
+            .await?;
+        resumed.close().await?;
+        reopened.0.channel.stop_and_join().await?;
+        assert_eq!(
+            history
+                .review_delivery_exception(&fact.message.id)
+                .await?
+                .unwrap()
+                .message
+                .digest(),
+            fact.message.digest()
+        );
+        assert!(
+            store
+                .thread_persistence()
+                .retained_history_channel(id)
+                .is_none()
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn worker_join_failure_remains_a_failure_after_retry() -> Result<()> {
         let (_temp, _store, sink) = sink("retirement-worker-failure").await?;
         let channel = sink.0.channel.clone();
@@ -3361,7 +3786,7 @@ pub(crate) mod storage_fault_tests {
         )?;
         Arc::get_mut(&mut prepared)
             .context("new prepared effect unexpectedly shared")?
-            .parent_report = Some(message);
+            .parent_report = Some(Arc::new(message));
         sink.admit(&thread.id, terminal)?;
         sink.0.channel.prepare(prepared);
         sink.flush(&thread.id, sequence).await?;

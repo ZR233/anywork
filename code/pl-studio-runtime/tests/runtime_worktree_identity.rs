@@ -229,7 +229,7 @@ async fn existing_hot_spawn_and_cold_child_binding_do_not_depend_on_creation_bra
         let before = support::saved(&env.home, id).await?;
         let workspace = &before.checkpoint.state.extensions["studio.workspace"].payload;
         ensure!(
-            workspace.version() == 2,
+            workspace.version() == 3,
             "new child did not freeze the current receipt format"
         );
         let saved: pl_protocol::AgentWorkspaceAssignmentSnapshot =

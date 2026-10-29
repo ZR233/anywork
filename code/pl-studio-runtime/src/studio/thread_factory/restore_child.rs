@@ -3,6 +3,7 @@
 //! A `worktree` child whose saved receipt has no physical worktree is **not** silently rebuilt: a
 //! missing directory is a broken site and fails with a typed `Workspace` error that the activation
 //! path publishes as a Recovery diagnosis. Ordinary activation never recreates the saved site.
+use super::workspace_validation::{same_workspace_path, verify_worktree_declarations};
 use super::{StudioThreadFactory, errors::resource_error, thread_tools::ThreadToolAssembly};
 use crate::{
     agent::definition::VerifiedAgentIdentity,
@@ -20,6 +21,7 @@ impl StudioThreadFactory {
         request: ThreadPreparation,
     ) -> Result<StudioThreadSpec, ThreadAssemblyError> {
         let id = &request.identity.id;
+        let verified = request.workspace_owner.take_review();
         self.services
             .store
             .ensure_agent_execution_allowed(id)
@@ -40,15 +42,21 @@ impl StudioThreadFactory {
             ));
         }
         let protocol_thread: pl_protocol::Thread = thread.clone().into();
-        self.ensure_bot_execution_workspace(&protocol_thread, None)
-            .await?;
-        self.verify_execution_workspace(
-            &protocol_thread,
-            None,
-            super::ExecutionWorkspaceCheck::Prepare,
-        )
-        .await
-        .map_err(Self::workspace_usage_error)?;
+        if let Some(proof) = &verified {
+            proof
+                .recheck()
+                .map_err(|error| resource_error("recheck restricted local restoration", error))?;
+        } else {
+            self.ensure_bot_execution_workspace(&protocol_thread, None)
+                .await?;
+            self.verify_execution_workspace(
+                &protocol_thread,
+                None,
+                super::ExecutionWorkspaceCheck::Prepare,
+            )
+            .await
+            .map_err(Self::workspace_usage_error)?;
+        }
         let checkpoint =
             super::recovery::load_checkpoint_for_recovery(&self.services.store, &protocol_thread)
                 .await
@@ -65,21 +73,30 @@ impl StudioThreadFactory {
                 .await?;
             return Err(ThreadAssemblyError::Closed);
         }
-        let mut project = self.project_record(&thread.project_id).await?;
-        let workspace_usage = self
-            .reserve_thread_workspace_use(id, &thread.root_thread_id, &project)
-            .await
-            .map_err(Self::workspace_usage_error)?;
+        let mut project = match &verified {
+            Some(proof) => proof.project.clone(),
+            None => self.project_record(&thread.project_id).await?,
+        };
+        let workspace_usage = match &verified {
+            Some(proof) => proof.usage(),
+            None => self
+                .reserve_thread_workspace_use(id, &thread.root_thread_id, &project)
+                .await
+                .map_err(Self::workspace_usage_error)?,
+        };
         request.workspace_owner.retain(&workspace_usage);
-        let bot_root = self
-            .bind_bot_project(
+        let bot_root = if verified.is_some() {
+            None
+        } else {
+            self.bind_bot_project(
                 id,
                 &thread.root_thread_id,
                 &mut project,
                 &workspace_usage,
                 super::root_resources::BotWorkspacePreparation::Existing,
             )
-            .await?;
+            .await?
+        };
         let restored = checkpoint.state.clone();
         let saved = restored
             .extensions
@@ -90,6 +107,11 @@ impl StudioThreadFactory {
         let assignment: pl_protocol::AgentWorkspaceAssignmentSnapshot =
             crate::studio::workspace_receipt::from_payload(&saved.payload)
                 .map_err(|error| resource_error("decode saved workspace binding", error))?;
+        if let Some(proof) = &verified {
+            proof
+                .check_inputs(&project, &assignment)
+                .map_err(|error| resource_error("consume restricted local proof", error))?;
+        }
         let config = self
             .services
             .config_runtime
@@ -164,17 +186,25 @@ impl StudioThreadFactory {
             .clone()
             .unwrap_or_else(|| PathBuf::from(&root_thread.workspace_path));
         let project_copy = project.clone();
-        let root = tokio::task::spawn_blocking(move || {
-            Ok::<_, anyhow::Error>(match bot_root {
-                Some(root) => root,
-                None => crate::studio::agent_host::workspace_preparation::resolved_project_root(
-                    &project_copy,
-                )?,
+        let root = if verified.is_some() {
+            PathBuf::from(&assignment.project_root)
+        } else {
+            tokio::task::spawn_blocking(move || {
+                Ok::<_, anyhow::Error>(match bot_root {
+                    Some(root) => root,
+                    None => {
+                        crate::studio::agent_host::workspace_preparation::resolved_project_root(
+                            &project_copy,
+                        )?
+                    }
+                })
             })
-        })
-        .await?
-        .map_err(|error| resource_error("resolve restored session workspace", error))?;
-        let session_root =
+            .await?
+            .map_err(|error| resource_error("resolve restored session workspace", error))?
+        };
+        let session_root = if verified.is_some() {
+            PathBuf::from(&assignment.root)
+        } else {
             crate::studio::agent_host::workspace_preparation::root_session_workspace_root(
                 &self.services.store,
                 &self.services.worktrees,
@@ -184,7 +214,8 @@ impl StudioThreadFactory {
                 local_root,
             )
             .await
-            .map_err(|error| resource_error("resolve restored root session workspace", error))?;
+            .map_err(|error| resource_error("resolve restored root session workspace", error))?
+        };
         if std::path::Path::new(&assignment.project_root) != root {
             return Err(ThreadAssemblyError::Identity(
                 "saved child workspace has a different project root".into(),
@@ -196,8 +227,8 @@ impl StudioThreadFactory {
                 if std::path::Path::new(&assignment.root) == session_root
                     && assignment.worktree.is_none() => {}
             pl_protocol::AgentWorkspaceMode::Review => {
-                self.ensure_restored_review_workspace(&assignment, &thread, &project)
-                    .await?;
+                // Explicit activation prepares its real connection below, then validates the
+                // borrowed owner through the same factory boundary as hot review admission.
             }
             pl_protocol::AgentWorkspaceMode::Worktree => {
                 let receipt = assignment
@@ -207,21 +238,23 @@ impl StudioThreadFactory {
                     .ok_or_else(|| {
                         ThreadAssemblyError::Identity("invalid saved worktree receipt".into())
                     })?;
-                let verified = self
-                    .ensure_restored_child_worktree(receipt, &thread, &project)
-                    .await?;
-                // The workspace below is built from the saved assignment, so the directory that was
-                // actually verified must be exactly the one that assignment names; anything else would
-                // hand the child tools a root the identity checks never covered.
-                if !same_workspace_path(
-                    &verified.path,
-                    &assignment.root,
-                    project.ssh_alias.is_some(),
-                ) {
-                    return Err(ThreadAssemblyError::Identity(
+                if verified.is_none() {
+                    let verified = self
+                        .ensure_restored_child_worktree(receipt, &thread, &project)
+                        .await?;
+                    // The workspace below is built from the saved assignment, so the directory that was
+                    // actually verified must be exactly the one that assignment names; anything else would
+                    // hand the child tools a root the identity checks never covered.
+                    if !same_workspace_path(
+                        &verified.path,
+                        &assignment.root,
+                        project.ssh_alias.is_some(),
+                    ) {
+                        return Err(ThreadAssemblyError::Identity(
                         "the verified child worktree is not the saved workspace assignment root"
                             .into(),
                     ));
+                    }
                 }
             }
             pl_protocol::AgentWorkspaceMode::Unrestricted
@@ -237,9 +270,11 @@ impl StudioThreadFactory {
             ));
         }
         let workspace = super::child_resources::assigned_workspace(&assignment, workspace_mode);
-        self.assign_workspace_use(&workspace_usage, &project, workspace.root())
-            .await
-            .map_err(Self::workspace_usage_error)?;
+        if verified.is_none() {
+            self.assign_workspace_use(&workspace_usage, &project, workspace.root())
+                .await
+                .map_err(Self::workspace_usage_error)?;
+        }
 
         let resources = FileResourceStore::new(
             self.services
@@ -251,6 +286,7 @@ impl StudioThreadFactory {
         );
         let mut prepared = self
             .prepare_thread_tools(ThreadToolAssembly {
+                verified_local: verified.as_ref(),
                 assignment: Some(&assignment),
                 workspace_usage: workspace_usage.clone(),
                 thread_id: id,
@@ -265,6 +301,20 @@ impl StudioThreadFactory {
                 helper_source: self.services.helper_source.clone(),
             })
             .await?;
+        if let Some(proof) = &verified {
+            proof.confirm_published().map_err(|error| {
+                resource_error("confirm restricted local binding provenance", error)
+            })?;
+        }
+        let review_check = if assignment.mode == pl_protocol::AgentWorkspaceMode::Review {
+            Some(
+                self.verify_review_workspace(id, &assignment)
+                    .await
+                    .map_err(|error| resource_error("verify restored review workspace", error))?,
+            )
+        } else {
+            None
+        };
         if request.cancellation.is_cancelled() {
             return Err(ThreadAssemblyError::Closed);
         }
@@ -310,39 +360,14 @@ impl StudioThreadFactory {
             capacity: Default::default(),
             cold_store: Some(pl_core::thread::cold::ColdStoreHandle::new(persistence)),
         };
-        Ok(prepared.tools.install(spec))
-    }
-
-    /// Creation and restoration borrow the same target's full frozen actual assignment. A missing
-    /// lease never means caller session_root, and review of a borrower never transfers ownership.
-    async fn ensure_restored_review_workspace(
-        &self,
-        assignment: &pl_protocol::AgentWorkspaceAssignmentSnapshot,
-        thread: &crate::studio::ThreadRecord,
-        project: &crate::studio::ProjectRecord,
-    ) -> Result<(), ThreadAssemblyError> {
-        let target = assignment
-            .review_target
-            .as_ref()
-            .ok_or_else(|| ThreadAssemblyError::Identity("review target is missing".into()))?;
-        let caller = thread
-            .parent_thread_id
-            .as_deref()
-            .ok_or(ThreadAssemblyError::ChildDepth)?;
-        let parent = self.thread_record(caller).await?;
-        let frozen = self
-            .resolve_review_target(&target.agent_id, caller, &parent, project)
-            .await?;
-        if assignment.root != frozen.assignment.root
-            || assignment.project_root != frozen.assignment.project_root
-            || assignment.worktree != frozen.assignment.worktree
-            || assignment.writable_paths.is_some()
-        {
-            return Err(ThreadAssemblyError::Identity(
-                "review target actual assignment differs from the original frozen borrow".into(),
-            ));
+        Self::configure_review_finish(&mut prepared.tools, id, &profile, &assignment)?;
+        if let Some(check) = review_check {
+            check
+                .confirm()
+                .await
+                .map_err(|error| resource_error("recheck restored review workspace", error))?;
         }
-        Ok(())
+        Ok(prepared.tools.install(spec))
     }
 
     /// Verifies and reuses the original child site; missing or cleaned sites are never rebuilt.
@@ -381,8 +406,9 @@ impl StudioThreadFactory {
         lease
             .validate_identity()
             .map_err(|error| resource_error("validate restored child worktree lease", error))?;
-        verify_worktree_declarations(&lease, receipt, thread, project, &repository_root)
-            .map_err(|reason| missing(&reason))?;
+        verify_worktree_declarations(&lease, receipt, thread, project, &repository_root).map_err(
+            |error| resource_error("validate restored child worktree declarations", error),
+        )?;
         let manager = crate::studio::agent_host::workspace_preparation::manager_from_lease(
             &self.services.store,
             &self.services.ssh_manager,
@@ -420,70 +446,6 @@ impl StudioThreadFactory {
         .await
         .map(|(repository, manager, _)| (repository, manager))
         .map_err(|error| resource_error("resolve restored child repository", error))
-    }
-}
-
-/// Binds a lease and its frozen receipt to the child, its project and the resolved repository.
-///
-/// These are the facts that do not depend on the physical site: ownership, root session, project,
-/// remote target, the repository the current Project resolves
-/// to today, and the frozen receipt's repository, path and base commit.
-fn verify_worktree_declarations(
-    lease: &crate::studio::agent_host::worktree_lease::WorktreeLease,
-    receipt: &pl_protocol::AgentWorktreeSnapshot,
-    owner: &crate::studio::ThreadRecord,
-    project: &crate::studio::ProjectRecord,
-    repository_root: &std::path::Path,
-) -> Result<(), String> {
-    use crate::studio::agent_host::worktree_lease::WorktreeLeaseOwnerKind;
-    let remote = project.ssh_alias.is_some();
-    if lease.owner_kind != WorktreeLeaseOwnerKind::Child || lease.owner_thread_id != owner.id {
-        return Err("the saved worktree lease belongs to a different workspace owner".into());
-    }
-    if lease.root_thread_id != owner.root_thread_id {
-        return Err("the saved worktree lease belongs to a different root session".into());
-    }
-    if lease.project_id != project.id {
-        return Err("the saved worktree lease belongs to a different project".into());
-    }
-    // The remote target the lease runs on must be the one the Project names, or the site could be a
-    // same-looking path on a different host.
-    if lease.ssh_alias != project.ssh_alias {
-        return Err("the saved worktree lease runs on a different remote target".into());
-    }
-    if !same_workspace_path(
-        &lease.repository_root,
-        &repository_root.to_string_lossy(),
-        remote,
-    ) {
-        return Err("the saved worktree lease is outside this project's repository".into());
-    }
-    if !same_workspace_path(&lease.repository_root, &receipt.repository_root, remote) {
-        return Err("the saved lease and its receipt name different repositories".into());
-    }
-    if !same_workspace_path(&lease.path, &receipt.path, remote) {
-        return Err("the saved lease and its receipt name different worktree paths".into());
-    }
-    if lease.base_commit != receipt.base_commit {
-        return Err(
-            "the saved lease and its receipt were created from different base commits".into(),
-        );
-    }
-    Ok(())
-}
-
-/// Remote paths compare by their normalized text; local paths compare as paths.
-fn same_workspace_path(left: &str, right: &str, remote: bool) -> bool {
-    if remote {
-        match (
-            pl_tool::remote::normalize_remote_absolute_path(left),
-            pl_tool::remote::normalize_remote_absolute_path(right),
-        ) {
-            (Ok(left), Ok(right)) => left == right,
-            _ => false,
-        }
-    } else {
-        std::path::Path::new(left) == std::path::Path::new(right)
     }
 }
 

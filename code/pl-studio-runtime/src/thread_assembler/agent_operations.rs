@@ -17,8 +17,21 @@ use tokio::{
 struct Jobs {
     closing: bool,
     tasks: JoinSet<()>,
-    callers: BTreeMap<Id, String>,
-    failure: Option<Arc<JoinError>>,
+    callers: BTreeMap<Id, OperationIdentity>,
+    failure: BTreeMap<OperationIdentity, Arc<JoinError>>,
+    background_failure: BTreeMap<OperationIdentity, Arc<ServiceError>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct OperationIdentity {
+    caller: String,
+    key: OperationKey,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum OperationKey {
+    Call(String),
+    Review(String),
 }
 
 #[derive(Debug, Default)]
@@ -50,11 +63,129 @@ impl Drop for Shared {
 pub(super) struct AgentOperations(Arc<Shared>);
 
 impl AgentOperations {
+    pub(super) fn terminal_blocked(&self, caller: &str, producer: &str) -> bool {
+        self.0
+            .jobs()
+            .background_failure
+            .contains_key(&OperationIdentity {
+                caller: caller.into(),
+                key: OperationKey::Review(producer.into()),
+            })
+    }
+    pub(super) fn resume_terminal(&self, caller: &str, producer: &str) {
+        self.0.jobs().background_failure.remove(&OperationIdentity {
+            caller: caller.into(),
+            key: OperationKey::Review(producer.into()),
+        });
+        self.0.changed.notify_waiters();
+    }
+    pub(super) fn block_terminal(
+        &self,
+        caller: &str,
+        producer: &str,
+        error: &anyhow::Error,
+        first: &mut Option<Vec<String>>,
+    ) {
+        let current = error
+            .chain()
+            .take(4)
+            .map(|error| error.to_string().chars().take(512).collect::<String>())
+            .collect::<Vec<_>>();
+        // An ACK failure may subsequently expose its retained receiver's cleanup failure.
+        // Keep the first causal episode as well as the latest stage, within the same eight-layer
+        // bound; a later cleanup error must not erase the original delivery diagnostic.
+        let initial = first.get_or_insert_with(|| current.clone());
+        let diagnostic = if initial == &current {
+            current.join(": ")
+        } else {
+            initial
+                .iter()
+                .chain(&current)
+                .take(8)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(": ")
+        };
+        let identity = OperationIdentity {
+            caller: caller.into(),
+            key: OperationKey::Review(producer.into()),
+        };
+        self.0.jobs().background_failure.insert(
+            identity,
+            Arc::new(ServiceError(anyhow::anyhow!(diagnostic))),
+        );
+        self.0.changed.notify_waiters();
+    }
+    pub(super) fn has_failed_producer(&self, caller: &str) -> bool {
+        let jobs = self.0.jobs();
+        jobs.background_failure
+            .keys()
+            .chain(jobs.failure.keys())
+            .any(|identity| {
+                identity.caller == caller && matches!(identity.key, OperationKey::Review(_))
+            })
+    }
+    /// Register a host producer without making the projection wait for its own later effects.
+    /// The same JoinSet owns cancellation, panics and shutdown; a failed producer blocks joins.
+    pub(super) async fn start(
+        &self,
+        caller: String,
+        producer: String,
+        admit: impl FnOnce() -> Result<()>,
+        operation: impl Future<Output = Result<()>> + Send + 'static,
+    ) -> Result<()> {
+        let mut driver = self.0.driver.lock().await;
+        let mut jobs = self.0.jobs();
+        ensure!(!jobs.closing, "collaboration operation owner is closing");
+        let identity = OperationIdentity {
+            caller,
+            key: OperationKey::Review(producer),
+        };
+        if jobs.callers.values().any(|running| running == &identity) {
+            // An explicit registration retry asks the SAME retained job to reconsider its block;
+            // it never detaches/replaces that job or its frozen authority. Real recovery also has
+            // independent history/capacity notifications and does not depend on this request.
+            jobs.background_failure.remove(&identity);
+            drop(jobs);
+            self.0.changed.notify_waiters();
+            return Ok(());
+        }
+        admit()?;
+        if driver.is_none() {
+            *driver = Some(tokio::spawn(drive(Arc::downgrade(&self.0))));
+        }
+        let owner = Arc::downgrade(&self.0);
+        let result_identity = identity.clone();
+        let task = jobs.tasks.spawn(async move {
+            let result = operation.await;
+            if let Some(owner) = owner.upgrade() {
+                let mut jobs = owner.jobs();
+                match result {
+                    Err(error) => {
+                        jobs.background_failure
+                            .insert(result_identity, Arc::new(ServiceError(error)));
+                    }
+                    Ok(()) => {
+                        // Only a successful replay of this exact producer can discharge its
+                        // earlier error; an unrelated caller's join never consumes it.
+                        jobs.background_failure.remove(&result_identity);
+                        jobs.failure.remove(&result_identity);
+                    }
+                }
+                owner.changed.notify_waiters();
+            }
+        });
+        jobs.callers.insert(task.id(), identity);
+        drop(jobs);
+        self.0.wake.wake();
+        Ok(())
+    }
     /// Register under the same boundary as the final admission check. Dropping a caller's wait
     /// cannot remove the job, its operation permits, or the retained transaction conclusion.
     pub(super) async fn run<T>(
         &self,
         caller: String,
+        operation_id: String,
         admit: impl FnOnce() -> Result<()>,
         operation: impl Future<Output = Result<T>> + Send + 'static,
     ) -> Result<T>
@@ -66,22 +197,30 @@ impl AgentOperations {
             let mut driver = self.0.driver.lock().await;
             let mut jobs = self.0.jobs();
             ensure!(!jobs.closing, "collaboration operation owner is closing");
-            if let Some(error) = jobs.failure.take() {
-                return Err(anyhow::Error::new(error));
-            }
+            let identity = OperationIdentity {
+                caller,
+                key: OperationKey::Call(operation_id),
+            };
             admit()?;
             if driver.is_none() {
                 // Retain the completion driver before admitting its first worker. It never owns
                 // the registry strongly and never takes a lifecycle or per-agent operation gate.
                 *driver = Some(tokio::spawn(drive(Arc::downgrade(&self.0))));
             }
+            let completed_identity = identity.clone();
+            let retained_owner = Arc::downgrade(&self.0);
             let task = jobs.tasks.spawn(async move {
                 let outcome = operation
                     .await
                     .map_err(|error| Arc::new(ServiceError(error)));
+                if outcome.is_ok()
+                    && let Some(owner) = retained_owner.upgrade()
+                {
+                    owner.jobs().failure.remove(&completed_identity);
+                }
                 let _ = publication.send(outcome);
             });
-            jobs.callers.insert(task.id(), caller);
+            jobs.callers.insert(task.id(), identity);
         }
         self.0.wake.wake();
         result
@@ -96,9 +235,34 @@ impl AgentOperations {
             tokio::pin!(changed);
             changed.as_mut().enable();
             {
-                let mut jobs = self.0.jobs();
-                if !jobs.callers.values().any(|caller| caller == root) {
-                    return match jobs.failure.take() {
+                let jobs = self.0.jobs();
+                if let Some(error) = jobs
+                    .background_failure
+                    .iter()
+                    .find(|(identity, _)| identity.caller == root)
+                    .map(|(_, error)| error.clone())
+                {
+                    return Err(anyhow::Error::new(error));
+                }
+                if !jobs
+                    .callers
+                    .values()
+                    .any(|identity| identity.caller == root)
+                {
+                    if let Some(error) = jobs
+                        .background_failure
+                        .iter()
+                        .find(|(identity, _)| identity.caller == root)
+                        .map(|(_, error)| error.clone())
+                    {
+                        return Err(anyhow::Error::new(error));
+                    }
+                    return match jobs
+                        .failure
+                        .iter()
+                        .find(|(identity, _)| identity.caller == root)
+                        .map(|(_, error)| error.clone())
+                    {
                         Some(error) => Err(anyhow::Error::new(error)),
                         None => Ok(()),
                     };
@@ -114,11 +278,29 @@ impl AgentOperations {
         self.0.wake.wake();
         let mut driver = self.0.driver.lock().await;
         if let Some(task) = driver.as_mut() {
-            let joined = task.await;
-            *driver = None;
-            joined.context("collaboration completion driver failed")?;
+            loop {
+                let changed = self.0.changed.notified();
+                tokio::pin!(changed);
+                changed.as_mut().enable();
+                if let Some(error) = self.0.jobs().background_failure.values().next().cloned() {
+                    // A blocked terminal still owns its JoinSet job and history references.
+                    // Returning a close failure must not take/drop the completion driver.
+                    return Err(anyhow::Error::new(error));
+                }
+                tokio::select! {
+                        joined = &mut *task => {
+                *driver = None;
+                joined.context("collaboration completion driver failed")?;
+                            break;
+                        }
+                        () = &mut changed => {},
+                    }
+            }
         }
-        match self.0.jobs().failure.take() {
+        if let Some(error) = self.0.jobs().background_failure.values().next().cloned() {
+            return Err(anyhow::Error::new(error));
+        }
+        match self.0.jobs().failure.values().next().cloned() {
             Some(error) => Err(anyhow::Error::new(error)),
             None => Ok(()),
         }
@@ -139,7 +321,9 @@ async fn drive(owner: Weak<Shared>) {
                 Err(error) => {
                     let id = error.id();
                     tracing::error!(%error, "collaboration operation task failed");
-                    jobs.failure.get_or_insert_with(|| Arc::new(error));
+                    if let Some(identity) = jobs.callers.get(&id).cloned() {
+                        jobs.failure.insert(identity, Arc::new(error));
+                    }
                     id
                 }
             };

@@ -5,10 +5,13 @@ mod agent_close;
 mod agent_close_recovery;
 mod agent_evaluation;
 mod agent_operations;
+pub(crate) mod agent_review;
 mod agent_services;
 mod agents;
 mod delegation_models;
 pub(crate) mod observation;
+pub(crate) mod review_delivery;
+pub(crate) mod review_dispatch;
 pub use activation::{StudioActivationFactory, ThreadActivation, ThreadPreparation};
 mod interaction_key;
 mod user_input;
@@ -264,6 +267,7 @@ impl std::fmt::Debug for RejectedToolRetention {
 }
 #[derive(Debug)]
 struct Preparation {
+    purpose: Option<activation::ActivationPurpose>,
     parent_id: Option<String>,
     cancellation: tokio_util::sync::CancellationToken,
     result: Option<tokio::sync::watch::Receiver<Option<ActivationOutcome>>>,
@@ -631,6 +635,7 @@ impl StudioThreadAssembler {
         state.creating.insert(
             id.to_owned(),
             Preparation {
+                purpose: None,
                 parent_id: parent.map(str::to_owned),
                 cancellation: Default::default(),
                 result: None,
@@ -850,19 +855,31 @@ impl StudioThreadAssembler {
     /// # Errors
     /// Returns in-progress assembly or the actual Thread shutdown failure.
     pub async fn close(&self, id: &str) -> Result<(), ThreadAssemblyError> {
-        let _operation = self.agent_operation(id).await;
-        self.close_with_permit(id).await
+        let operation = self.agent_operation(id).await;
+        self.close_with_permit(id, operation).await
     }
 
     /// The caller retains this identity's operation permit, including cold close restoration.
-    async fn close_with_permit(&self, id: &str) -> Result<(), ThreadAssemblyError> {
+    async fn close_with_permit(
+        &self,
+        id: &str,
+        operation: tokio::sync::OwnedMutexGuard<()>,
+    ) -> Result<(), ThreadAssemblyError> {
         let _seal = self.seal_agent_operation(id);
+        drop(operation);
+        self.retry_failed_review_deliveries(id)
+            .await
+            .map_err(|source| ThreadAssemblyError::Resource {
+                operation: "recover failed terminal review producer",
+                source: source.into(),
+            })?;
         self.join_root_operations(id)
             .await
             .map_err(|source| ThreadAssemblyError::Resource {
                 operation: "join root collaboration operations",
                 source: source.into(),
             })?;
+        let operation = self.agent_operation(id).await;
         let preparation = {
             self.0
                 .state()
@@ -877,11 +894,16 @@ impl StudioThreadAssembler {
         if self.0.state().preparing_children.contains_key(id) {
             return Err(ThreadAssemblyError::Preparing(id.into()));
         }
-        self.close_thread(id).await?;
+        self.close_thread(id, operation).await?;
         self.discard_unpublished_child(id).await
     }
 
-    async fn close_thread(&self, id: &str) -> Result<(), ThreadAssemblyError> {
+    async fn close_thread(
+        &self,
+        id: &str,
+        operation: tokio::sync::OwnedMutexGuard<()>,
+    ) -> Result<(), ThreadAssemblyError> {
+        let _seal = self.seal_agent_operation(id);
         loop {
             let changed = self.0.changed.notified();
             tokio::pin!(changed);
@@ -949,6 +971,38 @@ impl StudioThreadAssembler {
         };
         self.attach_close_storage(id).await?;
         self.prepare_close(id, &thread).await?;
+        // Pause queued execution and let the admitted execution settle while application CAS is
+        // still available. A terminal producer must be able to save its diagnostic before this
+        // core/writer is retired; closing the core first would force it to recreate its own source.
+        if thread.snapshot().lifecycle == ThreadLifecycle::Open {
+            thread.interrupt_turn(None).await?;
+            let mut updates = thread.subscribe();
+            while thread.snapshot().execution.is_some() {
+                if updates.next().await.is_none() {
+                    return Err(ThreadAssemblyError::Closed);
+                }
+            }
+        }
+        if self.0.state().observation.is_some() {
+            self.synchronize_observation(id).await?;
+        }
+        drop(operation);
+        self.join_root_operations(id)
+            .await
+            .map_err(|source| ThreadAssemblyError::Resource {
+                operation: "join review producers before core shutdown",
+                source: source.into(),
+            })?;
+        let operation = self.agent_operation(id).await;
+        if self
+            .0
+            .state()
+            .entries
+            .get(id)
+            .is_some_and(|entry| !Arc::ptr_eq(&entry.incarnation, &incarnation))
+        {
+            return Box::pin(self.close_thread(id, operation)).await;
+        }
         if self.close_storage_binding(id)?.is_some() {
             self.close_storage_core(id).await?;
         } else if thread.snapshot().lifecycle != ThreadLifecycle::Closed {
@@ -958,6 +1012,28 @@ impl StudioThreadAssembler {
             {
                 return Err(error.into());
             }
+        }
+        if self.0.state().observation.is_some() {
+            self.synchronize_observation(id).await?;
+        }
+        // Core shutdown can itself publish a terminal. Its producer is registered before the
+        // projection ACK. Join outside this gate: storage-only repair may need that same gate.
+        drop(operation);
+        self.join_root_operations(id)
+            .await
+            .map_err(|source| ThreadAssemblyError::Resource {
+                operation: "join terminal review delivery",
+                source: source.into(),
+            })?;
+        let operation = self.agent_operation(id).await;
+        if self
+            .0
+            .state()
+            .entries
+            .get(id)
+            .is_some_and(|entry| !Arc::ptr_eq(&entry.incarnation, &incarnation))
+        {
+            return Box::pin(self.close_thread(id, operation)).await;
         }
         self.drain_observation(id).await?;
         self.join_close_storage(id).await?;
@@ -1010,19 +1086,8 @@ impl StudioThreadAssembler {
             cancellation.cancel();
         }
 
-        let evaluation_failure = self.close_agent_operations().await.err();
-
         let mut covered: BTreeSet<String> = BTreeSet::new();
         let mut failures = Vec::new();
-        if let Some(error) = evaluation_failure {
-            failures.push((
-                "agent-operations".into(),
-                ThreadAssemblyError::Resource {
-                    operation: "join collaboration operations",
-                    source: error.into(),
-                },
-            ));
-        }
 
         // 第一轮：独立森林/orphan 关闭与「全部已准入 creating/preparing 真实排空」的全局最终 ACK
         // 并发推进——独立资源先开始自身 close，不被全局 ACK 前置阻塞；全局 ACK 又保证最终成功前
@@ -1048,6 +1113,19 @@ impl StudioThreadAssembler {
                 .close_independent_batch(roots, orphan_unpublished)
                 .await;
             failures.extend(batch_failures);
+        }
+        // Closing a core can still publish its final normal finish. Keep the retained operation
+        // owner open until every such producer has registered and its source owner has drained.
+        if failures.is_empty()
+            && let Err(source) = self.close_agent_operations().await
+        {
+            failures.push((
+                "agent-operations".into(),
+                ThreadAssemblyError::Resource {
+                    operation: "join collaboration operations",
+                    source: source.into(),
+                },
+            ));
         }
         failures
     }

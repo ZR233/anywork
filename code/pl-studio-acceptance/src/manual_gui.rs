@@ -127,7 +127,7 @@ pub(crate) struct ManualGuiOptions {
     /// group. Only valid with `--scenario acp-auto-install`.
     #[arg(long, value_name = "PHASE", value_parser = ["first", "cancel"])]
     pub(crate) acp_install_from: Option<String>,
-    /// Optional session-owned Dart Driver for the dedicated delegation scenes.
+    /// Optional Dart Driver for delegation scenes, including review-feedback.
     /// Arguments: VM URL, project, phase evidence directory, environment, phase,
     /// fixture origin. It must not shut down the application; the harness does.
     #[arg(long, value_name = "PATH")]
@@ -826,13 +826,8 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
                     | "stress-body-large"
                     | "wait-events"
                     | "acp-auto-install"
-                    | "delegation-routing"
-                    | "delegation-lifecycle"
-                    | "delegation-window"
-                    | "delegation-enablement"
-                    | "delegation-recovery"
-                    | "delegation-worktree"
-            ),
+            )
+            || pl_provider_fixture::delegation::Scenario::parse(&options.scenario).is_some(),
         "--retain-environment is supported by --scenario gui, single-instance, tool-scroll, \
          timeline-history, stress-body-large, wait-events, acp-auto-install and the delegation scenes"
     );

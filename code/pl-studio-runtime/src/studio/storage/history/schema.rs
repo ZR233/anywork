@@ -38,6 +38,9 @@ impl MigratorTraitSelf for Migrator {
             Box::new(ProducerPayloads {
                 thread_id: self.thread_id.clone(),
             }),
+            Box::new(ReviewReceipt {
+                thread_id: self.thread_id.clone(),
+            }),
             Box::new(ModelAccess {
                 thread_id: self.thread_id.clone(),
             }),
@@ -66,6 +69,7 @@ const WORKSPACE_RECEIPT: &str = "m20261026_000007a_history_workspace_receipt";
 pub(super) const EXECUTION_IDENTITY: &str = "m20261026_000008_history_execution_identity";
 const RETIRE_ORDINALS: &str = "m20261027_000001_history_retire_ordinals";
 const PRODUCER_PAYLOADS: &str = "m20261027_000002_history_producer_payloads";
+const REVIEW_RECEIPT: &str = "m20261027_000003_history_review_receipt";
 
 // Content preparation and current-only readers share the same lifecycle boundary.
 fn is_lifecycle_migration(name: &str) -> bool {
@@ -638,6 +642,29 @@ impl MigrationTrait for ModelAccess {
 
 struct WorkspaceReceipt {
     thread_id: String,
+}
+
+/// Explicit representation maintenance also runs for databases that already applied workspace v2.
+struct ReviewReceipt {
+    thread_id: String,
+}
+impl MigrationName for ReviewReceipt {
+    fn name(&self) -> &str {
+        REVIEW_RECEIPT
+    }
+}
+#[sea_orm_migration::async_trait::async_trait]
+impl MigrationTrait for ReviewReceipt {
+    fn use_transaction(&self) -> Option<bool> {
+        Some(true)
+    }
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        WorkspaceReceipt {
+            thread_id: self.thread_id.clone(),
+        }
+        .up(manager)
+        .await
+    }
 }
 impl MigrationName for WorkspaceReceipt {
     fn name(&self) -> &str {

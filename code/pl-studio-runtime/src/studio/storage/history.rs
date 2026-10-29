@@ -21,6 +21,7 @@ const HISTORY_SCHEMA_VERSION: i64 = 9;
 mod checkpoint;
 mod parent_report;
 mod producer;
+mod review_delivery;
 mod schema;
 /// 单页返回的总 payload 字节预算；达到预算即停止装入更多条目。
 const PAGE_BYTE_BUDGET: usize = 2 * 1024 * 1024;
@@ -1315,6 +1316,7 @@ impl HistoryStore {
             .collect()
     }
 
+    #[cfg(test)]
     pub(crate) async fn terminal_report_sequence(&self, turn_id: &str) -> Result<Option<u64>> {
         let Some(connection) = self.reader().await? else {
             return Ok(None);
@@ -2393,18 +2395,23 @@ async fn write_fact_receipt(
     let revision = integer(receipt.revision)?;
     let existing = db
         .query_one_raw(statement(
-            "SELECT digest FROM history_fact_receipts WHERE item_id=? AND revision=?",
+            "SELECT digest,kind FROM history_fact_receipts WHERE item_id=? AND revision=?",
             vec![receipt.item_id.clone().into(), revision.into()],
         ))
         .await?;
     if let Some(row) = existing {
         let stored: String = row.try_get("", "digest")?;
         ensure!(
-            stored == digest,
+            stored == digest && row.try_get::<String>("", "kind")? == receipt.kind,
             "durable fact receipt {}@{} conflicts with its recorded payload",
             receipt.item_id,
             receipt.revision
         );
+        if receipt.kind == "reviewDeliveryException" {
+            // This is an immutable producer fact, not a refreshed decision projection. Preserve
+            // the effect that first committed it even when the same carrier is replayed later.
+            return Ok(());
+        }
         db.execute_raw(statement(
             "UPDATE history_fact_receipts SET kind=?,payload=?,last_write_seq=?
              WHERE item_id=? AND revision=?",
@@ -2471,6 +2478,103 @@ fn kind_label(kind: ThreadItemKind) -> &'static str {
 mod storage_fault_tests {
     use super::*;
     use crate::studio::thread_projection::order;
+
+    /// Real SQLite representation maintenance must preserve old review history without granting
+    /// feedback/baselines, and roll back both the checkpoint and migration name on save failure.
+    #[tokio::test]
+    async fn review_receipt_upgrade_is_atomic_and_does_not_infer_authority() -> Result<()> {
+        use pl_core::{
+            context::OpaquePayload,
+            thread::{ThreadCheckpoint, ThreadSnapshot, extensions::ExtensionRecord},
+        };
+        for version in [1, 2] {
+            let directory = tempfile::tempdir()?;
+            let path = directory.path().join("history.sqlite");
+            let id = format!("review-receipt-v{version}");
+            let store = HistoryStore::open(&path, &id).await?;
+            let legacy = serde_json::json!({
+                "mode": "review", "projectRoot": "/project", "root": "/checkout",
+                "writablePaths": null,
+                "worktree": if version == 1 {
+                    serde_json::json!({"repositoryRoot":"/project", "path":"/checkout", "branch":"old-branch", "baseCommit":"abc"})
+                } else {
+                    serde_json::json!({"repositoryRoot":"/project", "path":"/checkout", "baseCommit":"abc"})
+                },
+                "reviewTarget": {"agentId":"original-executor"}
+            });
+            let checkpoint = ThreadCheckpoint::capture(
+                id.clone(),
+                0,
+                ThreadSnapshot {
+                    commit_sequence: 0,
+                    extensions: std::collections::BTreeMap::from([(
+                        "studio.workspace".into(),
+                        ExtensionRecord {
+                            revision: 7,
+                            payload: OpaquePayload::new(
+                                "pl.studio.workspace",
+                                version,
+                                serde_json::to_string(&legacy)?,
+                            )?,
+                        },
+                    )]),
+                    ..Default::default()
+                },
+            );
+            store.import_checkpoint(&checkpoint, &[]).await?;
+            let connection = store.writer().await?;
+            connection.db.execute_unprepared(
+                "DELETE FROM seaql_migrations WHERE version='m20261027_000003_history_review_receipt';
+                 CREATE TRIGGER reject_review_upgrade BEFORE UPDATE ON session_checkpoint
+                 BEGIN SELECT RAISE(ABORT, 'injected review checkpoint failure'); END;"
+            ).await?;
+            let error = schema::prepare(&connection.db, &id, schema::Preparation::Schema, None)
+                .await
+                .expect_err("checkpoint failure must fail the representation migration");
+            assert!(format!("{error:#}").contains("injected review checkpoint failure"));
+            let unchanged = checkpoint::read(&connection.db, &id)
+                .await?
+                .context("preserved checkpoint")?;
+            assert_eq!(
+                unchanged.state.extensions["studio.workspace"].payload,
+                checkpoint.state.extensions["studio.workspace"].payload
+            );
+            assert!(connection.db.query_one_raw(statement(
+                "SELECT version FROM seaql_migrations WHERE version='m20261027_000003_history_review_receipt'", vec![]
+            )).await?.is_none(), "a failed transaction cannot mark the migration applied");
+            connection
+                .db
+                .execute_unprepared("DROP TRIGGER reject_review_upgrade")
+                .await?;
+            schema::prepare(&connection.db, &id, schema::Preparation::Schema, None).await?;
+            let migrated = checkpoint::read(&connection.db, &id)
+                .await?
+                .context("migrated checkpoint")?;
+            let record = &migrated.state.extensions["studio.workspace"];
+            assert_eq!(
+                record.revision, 7,
+                "representation upgrade does not fabricate an application revision"
+            );
+            assert_eq!(record.payload.version(), 3);
+            let assignment = crate::studio::workspace_receipt::from_payload(&record.payload)?;
+            let target = assignment.review_target.context("preserved target")?;
+            assert_eq!(target.agent_id, "original-executor");
+            assert!(
+                target.feedback.is_none() && target.baseline.is_none(),
+                "old records cannot gain new authority"
+            );
+            assert_eq!(assignment.root, "/checkout");
+            assert_eq!(
+                assignment
+                    .worktree
+                    .context("preserved worktree")?
+                    .base_commit,
+                "abc"
+            );
+            assert_eq!(migrated.history_fence, checkpoint.history_fence);
+        }
+        Ok(())
+    }
 
     /// Content preparation is the only upgrade boundary for cold reads. The real SQLite failure
     /// occurs after DROP but before the format update, exercising the official step transaction.
@@ -3389,6 +3493,156 @@ mod storage_fault_tests {
             .await?;
         assert!(reopened.parent_report(2).await.is_err());
         drop(reopened);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn review_exception_receipts_are_atomic_immutable_and_bounded() -> Result<()> {
+        use crate::thread_assembler::{
+            agent_review::{ReviewDeliverySource, ReviewForward, ReviewForwardReason},
+            review_delivery::ReviewDeliveryException,
+        };
+        async fn commit(
+            store: &HistoryStore,
+            sequence: u64,
+            payload: &str,
+            id: &str,
+        ) -> Result<()> {
+            store
+                .commit_effect(
+                    sequence,
+                    EffectCommit {
+                        items: &[],
+                        rolled_back_turns: &Default::default(),
+                        identities: &[],
+                        messages: &[],
+                        receipts: &[FactReceiptWrite {
+                            item_id: id.into(),
+                            revision: 1,
+                            kind: "reviewDeliveryException",
+                            payload: payload.into(),
+                        }],
+                        tasks: &[],
+                        deliveries: &[],
+                        delivery_repairs: &[],
+                        attempt: None,
+                    },
+                )
+                .await
+        }
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("history.sqlite");
+        let store = HistoryStore::open(&path, "review-原文").await?;
+        save_receipt(&store, 1, "original-terminal").await?;
+        let make_fact = |turn: &str| -> Result<_> {
+            ReviewDeliveryException::from_forward(
+                "review-原文",
+                turn,
+                None,
+                1,
+                "executor",
+                ReviewDeliverySource::LiveTerminal,
+                &ReviewForward::Rejected {
+                    message_id: crate::thread_assembler::agent_review::review_message_id(
+                        "review-原文",
+                        turn,
+                        1,
+                    ),
+                    reason: ReviewForwardReason::TargetChanged,
+                },
+            )
+            .context("missing exception")?
+            .into_fact()
+        };
+        let fact = make_fact("turn-original")?;
+        let payload = serde_json::to_string(&fact)?;
+        store.writer().await?.db.execute_unprepared("CREATE TRIGGER reject_review_exception BEFORE INSERT ON history_fact_receipts WHEN NEW.kind='reviewDeliveryException' BEGIN SELECT RAISE(ABORT,'controlled exception rejection'); END").await?;
+        assert!(commit(&store, 2, &payload, &fact.message.id).await.is_err());
+        assert_eq!(store.watermark().await?, 1);
+        assert!(
+            store
+                .review_delivery_exception(&fact.message.id)
+                .await?
+                .is_none()
+        );
+        store
+            .writer()
+            .await?
+            .db
+            .execute_unprepared("DROP TRIGGER reject_review_exception")
+            .await?;
+        commit(&store, 2, &payload, &fact.message.id).await?;
+        // A later identical carrier cannot rewrite the original source effect watermark.
+        commit(&store, 3, &payload, &fact.message.id).await?;
+        let source = store
+            .writer()
+            .await?
+            .db
+            .query_one_raw(statement(
+                "SELECT last_write_seq FROM history_fact_receipts WHERE item_id=?",
+                vec![fact.message.id.clone().into()],
+            ))
+            .await?
+            .unwrap()
+            .try_get::<i64>("", "last_write_seq")?;
+        assert_eq!(source, 2);
+        let mut conflicting = fact.clone();
+        conflicting.message.context.clear();
+        assert!(
+            commit(
+                &store,
+                4,
+                &serde_json::to_string(&conflicting)?,
+                &fact.message.id
+            )
+            .await
+            .is_err()
+        );
+        assert_eq!(store.watermark().await?, 3);
+        let mut expected = std::collections::BTreeSet::from([fact.message.id.clone()]);
+        for number in 0..20 {
+            let next = make_fact(&format!("turn-{number}"))?;
+            commit(
+                &store,
+                number + 4,
+                &serde_json::to_string(&next)?,
+                &next.message.id,
+            )
+            .await?;
+            expected.insert(next.message.id);
+        }
+        drop(store);
+        let store = HistoryStore::open(&path, "review-原文").await?;
+        assert_eq!(
+            store
+                .review_delivery_exception(&fact.message.id)
+                .await?
+                .unwrap()
+                .message
+                .digest(),
+            fact.message.digest()
+        );
+        let mut cursor = String::new();
+        let mut actual = std::collections::BTreeSet::new();
+        loop {
+            let page = store.review_delivery_exceptions(&cursor).await?;
+            assert!(page.len() <= 16);
+            if page.is_empty() {
+                break;
+            }
+            for fact in page {
+                cursor = fact.message.id.clone();
+                assert!(actual.insert(fact.message.id));
+            }
+        }
+        assert_eq!(actual, expected);
+        store.writer().await?.db.execute_unprepared("UPDATE history_fact_receipts SET payload='{}' WHERE kind='reviewDeliveryException'").await?;
+        assert!(
+            store
+                .review_delivery_exception(&fact.message.id)
+                .await
+                .is_err()
+        );
         Ok(())
     }
 

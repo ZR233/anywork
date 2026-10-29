@@ -282,7 +282,35 @@ pub(in crate::studio) struct PreparedEffect {
     /// The canonical items the effect committed, in the order the durable rows are written.
     pub(in crate::studio) items: Vec<ThreadItem>,
     /// Exact terminal handoff, committed in the same history transaction as its terminal effect.
-    pub(in crate::studio) parent_report: Option<pl_core::thread::inbox::ThreadMessage>,
+    pub(in crate::studio) parent_report: Option<Arc<pl_core::thread::inbox::ThreadMessage>>,
+    pub(in crate::studio) terminal_retention:
+        Option<std::sync::Arc<crate::thread_assembler::review_dispatch::TerminalMaterialRetention>>,
+    /// Immutable diagnostics produced by application CAS changes in this very effect.
+    pub(in crate::studio) review_delivery:
+        Vec<crate::thread_assembler::review_delivery::ReviewDeliveryFact>,
+}
+
+fn review_delivery_facts(
+    thread_id: &str,
+    effect: &ThreadEffectBatch,
+) -> anyhow::Result<Vec<crate::thread_assembler::review_delivery::ReviewDeliveryFact>> {
+    use crate::thread_assembler::review_delivery::{EXTENSION_PREFIX, ReviewDeliveryFact};
+    let mut facts = Vec::new();
+    for change in effect.extensions.iter() {
+        if let pl_core::thread::extensions::ExtensionChange::Put { id, record } = change
+            && id.starts_with(EXTENSION_PREFIX)
+        {
+            let fact = ReviewDeliveryFact::decode(&record.payload)?;
+            anyhow::ensure!(
+                fact.extension_id() == *id
+                    && fact.message.source_id == format!("studio.review:{thread_id}")
+                    && fact.terminal_sequence < effect.sequence,
+                "review delivery carrier provenance mismatch"
+            );
+            facts.push(fact);
+        }
+    }
+    Ok(facts)
 }
 
 impl PreparedEffect {
@@ -294,10 +322,10 @@ impl PreparedEffect {
     /// builds a batch and the writer that budgets it can never drift into two formulas for one
     /// fact. It stays the established conservative estimate rather than a claim of exact physical
     /// memory: the items are summed by the free `retained_bytes` item estimate below (every
-    /// variable-length body plus each item's fixed shell), and a terminal parent report is charged
-    /// as `content * 2 + id + 256` —
-    /// the report's context carries a second copy of the same content text, and the fixed term
-    /// covers the message shell and the short identity fields that are not summed individually.
+    /// variable-length body plus each item's fixed shell), and each report-like message is charged as
+    /// `content * 2 + id + 256` — its context carries a second copy of the same content text, and the
+    /// fixed term covers the message shell and short identity fields. A parent report already held by
+    /// `terminal_retention` is excluded here because that managed owner carries its one charge.
     /// Nothing is serialized, no second budget account is created, and the arithmetic saturates.
     ///
     /// Shell contract: the value includes each item's and the report's own shell, but not the
@@ -305,15 +333,25 @@ impl PreparedEffect {
     /// (`(capacity - len) * size_of::<ThreadItem>()`) on top of this method; an empty batch
     /// without a report still estimates at zero.
     pub(in crate::studio) fn retained_bytes(&self) -> u64 {
-        retained_bytes(&self.items).saturating_add(self.parent_report.as_ref().map_or(
-            0,
-            |message| {
+        let parent_report = self.parent_report.as_ref().map_or(0, |message| {
+            if self.terminal_retention.is_some() {
+                0
+            } else {
                 (message.payload.content().len() as u64)
                     .saturating_mul(2)
                     .saturating_add(message.id.len() as u64)
                     .saturating_add(256)
-            },
-        ))
+            }
+        });
+        let review_delivery = self.review_delivery.iter().fold(0_u64, |bytes, fact| {
+            bytes
+                .saturating_add((fact.message.payload.content().len() as u64).saturating_mul(2))
+                .saturating_add(fact.message.id.len() as u64)
+                .saturating_add(256)
+        });
+        retained_bytes(&self.items)
+            .saturating_add(parent_report)
+            .saturating_add(review_delivery)
     }
 }
 
@@ -831,6 +869,7 @@ pub(in crate::studio) struct TurnResult {
     /// Tail of the visible commentary, used only when the Turn committed no final text.
     commentary: BTreeMap<(u64, String), String>,
     last_tool: Option<(u64, ThreadToolItem)>,
+    pub(in crate::studio) finish: Option<pl_tool::finish_turn::SavedFinishTurn>,
 }
 
 impl TurnResult {
@@ -884,6 +923,19 @@ impl TurnResult {
         }
         if let Some((_, tool)) = &self.last_tool {
             bytes = bytes.saturating_add(tool_bytes(tool));
+        }
+        if let Some(finish) = &self.finish {
+            bytes = bytes
+                .saturating_add(finish.message.len() as u64)
+                .saturating_add(
+                    finish
+                        .feedback_message
+                        .as_ref()
+                        .map_or(0, |body| body.len()) as u64,
+                )
+                .saturating_add(finish.review.as_ref().map_or(0, |review| {
+                    review.summary.len() + review.reviewed_version.len()
+                }) as u64);
         }
         bytes
     }
@@ -1254,6 +1306,8 @@ impl LiveProjection {
         effect: &ThreadEffectBatch,
         state: &ThreadSnapshot,
     ) -> Result<Arc<PreparedEffect>, ProjectionError> {
+        let review_delivery =
+            review_delivery_facts(&thread.id, effect).map_err(ProjectionError::ReviewDelivery)?;
         self.turn_failures
             .retain(|turn, _| state.turns.iter().any(|record| &record.turn_id == turn));
         if let Some(attempt) = &effect.attempt {
@@ -1406,10 +1460,19 @@ impl LiveProjection {
         for item in &items {
             self.record(item.clone())?;
         }
+        for delivery in effect.deliveries.iter() {
+            if let Some(finish) = super::completions::committed_finish(delivery)
+                && let Some(turn) = state.live_calls.get(&delivery.call_id)
+            {
+                self.results.entry(turn.clone()).or_default().finish = Some(finish);
+            }
+        }
         Ok(Arc::new(PreparedEffect {
             sequence: effect.sequence,
             items,
             parent_report: None,
+            terminal_retention: None,
+            review_delivery,
         }))
     }
 

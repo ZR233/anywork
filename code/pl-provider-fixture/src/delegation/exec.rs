@@ -1,6 +1,9 @@
-//! Consume only the two current exec projections; ACKs never establish Git facts.
-use super::*;
+//! Consume only the two current exec projections; ACKs never establish command facts.
+use super::flow::*;
+use anyhow::{Context, Result};
+use serde::Deserialize;
 use serde::de::DeserializeOwned;
+use serde_json::{Value, json};
 
 #[derive(Deserialize)]
 #[serde(tag = "kind", content = "data", rename_all = "camelCase")]
@@ -174,6 +177,11 @@ pub(super) fn exec<T: DeserializeOwned>(
     label: &str,
     command: String,
 ) -> Progress<T> {
+    let output = read_stdout(flow, label, command)?;
+    Ok(serde_json::from_str(&output).context("decode synthetic command stdout")?)
+}
+
+pub(super) fn read_stdout(flow: &Flow<'_>, label: &str, command: String) -> Progress<String> {
     let arguments = json!({"command":command,"cwd":".","timeoutSeconds":60,"maxOutputChars":12000});
     let text = flow.raw(label, "exec", arguments.clone())?;
     let id = format!("{}-{label}", flow.prefix);
@@ -258,10 +266,10 @@ pub(super) fn exec<T: DeserializeOwned>(
     } else {
         let preview: Preview = first(&text)?;
         preview.state.successful()?;
-        // The command emits one small JSON document. Archived marks a reliable
-        // copy, not truncation; decode the complete stdout below in either case.
+        // Commands emit bounded text. Archived marks a reliable copy, not
+        // truncation; consumers validate the actual stdout below in either case.
         let _archived = preview.archived;
         stdout(preview.stdout, preview.stderr)?
     };
-    Ok(serde_json::from_str(&output).context("decode synthetic command stdout")?)
+    Ok(output)
 }

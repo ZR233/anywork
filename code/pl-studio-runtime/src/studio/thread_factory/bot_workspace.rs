@@ -231,6 +231,28 @@ mod migration_tests {
     #[tokio::test]
     async fn bot_workspace_migration_admission_preserves_rejected_bindings_and_owns_first_copy()
     -> Result<()> {
+        // This private resource-factory test starts after the upstream review admission boundary.
+        // Its synthetic delivery identity supplies that boundary's input; it does not prove a
+        // model completed a Turn or that the host generated review authority end to end.
+        fn migration_review_target(agent_id: &str) -> pl_protocol::AgentReviewTargetSnapshot {
+            pl_protocol::AgentReviewTargetSnapshot {
+                agent_id: agent_id.into(),
+                feedback: None,
+                baseline: Some(pl_protocol::AgentReviewBaseline {
+                    turn_id: format!("migration-fixture-terminal:{agent_id}"),
+                    input_id: None,
+                    terminal_sequence: 1,
+                    commit_sequence: 1,
+                    input_ordinal: 0,
+                    message_sequence: 0,
+                    consumed_messages: 0,
+                    wake_messages_through: 0,
+                    execution_sequence: 0,
+                    continuation_id: None,
+                }),
+            }
+        }
+
         let temp = tempfile::tempdir()?;
         let business = temp.path().join("business");
         tokio::fs::create_dir_all(&business).await?;
@@ -322,6 +344,9 @@ mod migration_tests {
             )?,
             writable_paths: None,
             review_target_agent_id: None,
+            review_feedback: None,
+            review_target: None,
+            review_workspace: None,
             metadata: pl_core::context::OpaquePayload::text("migration fixture"),
         };
         let rejected = StudioChildResources::prepare(factory, &request, &profile).await;
@@ -424,10 +449,30 @@ mod migration_tests {
             .await?;
         request.id = "rejected-review".into();
         request.review_target_agent_id = Some(other.id.clone());
-        assert!(matches!(
-            StudioChildResources::prepare(factory, &request, &profile).await,
-            Err(ThreadAssemblyError::Workspace { .. })
-        ));
+        request.review_target = Some(migration_review_target(&other.id));
+        request.review_workspace = Some(pl_protocol::AgentWorkspaceAssignmentSnapshot {
+            mode: AgentWorkspaceMode::Directory,
+            project_root: other.workspace_path.clone(),
+            root: other.workspace_path.clone(),
+            writable_paths: None,
+            worktree: None,
+            review_target: None,
+        });
+        let original_binding = store.workspace_identity(&other.id).await?;
+        let original_project = store.read_project(&root.project_id).await?;
+        let rejected = StudioChildResources::prepare(factory, &request, &profile).await;
+        assert!(
+            matches!(&rejected, Err(ThreadAssemblyError::Workspace { .. })),
+            "cross-root review rejection must precede migration: {:?}",
+            rejected.err()
+        );
+        assert_eq!(store.workspace_identity(&other.id).await?, original_binding);
+        assert_eq!(
+            store.read_project(&root.project_id).await?,
+            original_project
+        );
+        assert!(factory.services.worktrees.snapshot().is_empty());
+        assert!(!fixture.workspace_is_busy(&request.id));
         assert!(store.workspace_identity(&request.id).await?.is_none());
         assert!(!tokio::fs::try_exists(managed.join(SessionFiles::new(&request.id).root())).await?);
 
@@ -547,6 +592,7 @@ mod migration_tests {
         };
         profile.config.skills.enabled = false;
         let mut prepared = Vec::new();
+        let mut prepared_workspace = None;
         for (id, mode, reviewed) in [
             ("new-bot-directory", AgentWorkspaceMode::Directory, None),
             (
@@ -558,6 +604,8 @@ mod migration_tests {
             request.id = id.into();
             request.workspace_owner = Default::default();
             request.review_target_agent_id = reviewed.map(str::to_owned);
+            request.review_target = reviewed.map(migration_review_target);
+            request.review_workspace = reviewed.and(prepared_workspace.clone());
             profile.profile.workspace_mode = mode;
             let spec = StudioChildResources::prepare(factory, &request, &profile).await?;
             let registered = factory
@@ -574,6 +622,13 @@ mod migration_tests {
                 .map_err(anyhow::Error::msg)?;
             assert_eq!(assignment.root, managed.to_string_lossy());
             assert_ne!(registered.workspace_path, assignment.root);
+            if let Some(target) = &request.review_target {
+                assert_eq!(assignment.review_target.as_ref(), Some(target));
+                let reviewed_workspace = request.review_workspace.as_ref().unwrap();
+                assert_eq!(assignment.root, reviewed_workspace.root);
+                assert_eq!(assignment.project_root, reviewed_workspace.project_root);
+            }
+            prepared_workspace = Some(assignment);
             let extensions = spec.initial_extensions.clone();
             drop(spec);
             request.workspace_owner = Default::default();

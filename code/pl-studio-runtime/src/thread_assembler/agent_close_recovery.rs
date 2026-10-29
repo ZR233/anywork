@@ -42,6 +42,7 @@ impl StudioThreadAssembler {
                 .operations
                 .run(
                     root,
+                    "resume-close".into(),
                     move || {
                         ensure!(!admission.0.state().closing, "child close owner is closing");
                         Ok(())
