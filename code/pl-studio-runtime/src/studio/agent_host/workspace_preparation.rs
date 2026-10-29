@@ -308,7 +308,7 @@ pub(in crate::studio) async fn manager_from_lease(
     )
     .await?;
     if let Some(identity) = store.workspace_identity(&lease.owner_thread_id).await?
-        && (endpoint != identity.endpoint || identity.root != lease.path)
+        && (endpoint != identity.endpoint || !identity.matches_root(&lease.path))
     {
         return Err(lifecycle_error(
             "worktree lease endpoint changed from its frozen physical identity",
@@ -326,7 +326,7 @@ pub(in crate::studio) async fn cleanup_identity(
     lease.validate_identity()?;
     if let Some(identity) = store.workspace_identity(&lease.owner_thread_id).await? {
         anyhow::ensure!(
-            identity.root == lease.path
+            identity.matches_root(&lease.path)
                 && matches!(identity.endpoint, WorkspaceEndpoint::Ssh { .. })
                     == lease.ssh_alias.is_some(),
             "worktree physical binding no longer matches its lease"
@@ -617,7 +617,7 @@ pub(in crate::studio) async fn root_session_workspace_root(
         WorktreeError::IdentityMismatch("root worktree has no frozen physical identity".into())
     })?;
     anyhow::ensure!(
-        frozen.root == lease.path,
+        frozen.matches_root(&lease.path),
         WorktreeError::IdentityMismatch(
             "root worktree path differs from its frozen identity".into()
         )

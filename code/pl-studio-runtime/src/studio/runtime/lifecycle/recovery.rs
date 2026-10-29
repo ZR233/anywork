@@ -459,7 +459,7 @@ impl StudioRuntime {
             crate::studio::agent_host::workspace_preparation::cleanup_identity(&self.store, &lease)
                 .await?;
         anyhow::ensure!(
-            endpoint == identity.endpoint && identity.root == lease.path,
+            endpoint == identity.endpoint && identity.matches_root(&lease.path),
             WorktreeError::IdentityMismatch(
                 "physical cleanup endpoint differs from the original binding".into()
             )
