@@ -17,6 +17,17 @@ impl StudioRuntime {
         scope: ArchiveScope,
         threads: &[ThreadRecord],
     ) -> Result<ThreadArchiveOperation> {
+        for thread in threads {
+            ensure!(
+                self.bots.runtime_released()
+                    || self
+                        .bots
+                        .config_for_thread(&thread.root_thread_id)
+                        .await?
+                        .is_none(),
+                "archive cannot confirm bot input materialization has stopped and joined"
+            );
+        }
         let previous = self.store.thread_archive(&scope).await?;
         if let Some(operation) = &previous
             && operation.phase != ArchivePhase::Published
@@ -31,13 +42,19 @@ impl StudioRuntime {
                 .map(|thread| &thread.id)
                 .collect::<std::collections::BTreeSet<_>>();
             ensure!(
-                actual == expected,
+                expected.is_subset(&actual),
                 "archive scope changed while cleanup was pending"
             );
-            return Ok(operation.clone());
+            if actual == expected {
+                return Ok(operation.clone());
+            }
+            ensure!(
+                operation.phase == ArchivePhase::Sealed,
+                "archive gained a member after durable save confirmation"
+            );
         }
         for pending in self.store.thread_archives().await? {
-            if pending.phase != ArchivePhase::Published {
+            if pending.phase != ArchivePhase::Published && pending.scope != scope {
                 ensure!(
                     !pending
                         .members
@@ -47,8 +64,15 @@ impl StudioRuntime {
                 );
             }
         }
-        let mut members = Vec::new();
+        let mut members = previous
+            .as_ref()
+            .filter(|operation| operation.phase != ArchivePhase::Published)
+            .map(|operation| operation.members.clone())
+            .unwrap_or_default();
         for thread in threads {
+            if members.iter().any(|member| member.thread_id == thread.id) {
+                continue;
+            }
             let execution = match self.store.workspace_identity(&thread.id).await? {
                 Some(identity) => identity,
                 None => {
@@ -129,40 +153,7 @@ impl StudioRuntime {
         for index in 0..operation.members.len() {
             let member = operation.members[index].clone();
             if !member.execution_cleaned {
-                let files = SessionFiles::new(&member.thread_id);
-                match &member.execution.endpoint {
-                    WorkspaceEndpoint::Local => {
-                        let backend = SessionTempBackend::Local(Path::new(&member.execution.root));
-                        backend.migrate(&files).await?;
-                        backend.remove(&files).await?;
-                    }
-                    WorkspaceEndpoint::Ssh { .. } => {
-                        let profile = self
-                            .ssh_manager
-                            .list_servers()
-                            .await
-                            .into_iter()
-                            .find(|entry| {
-                                WorkspaceEndpoint::from_profile(Some(&entry.profile))
-                                    == member.execution.endpoint
-                            })
-                            .context("archive frozen SSH endpoint is no longer configured")?
-                            .profile;
-                        let host = self
-                            .ssh_manager
-                            .open_workspace_host(&profile.alias, member.execution.root.clone())
-                            .await?;
-                        ensure!(
-                            WorkspaceEndpoint::from_profile(Some(&host.profile))
-                                == member.execution.endpoint
-                                && host.files.canonical_path() == member.execution.root,
-                            "archive SSH endpoint or canonical root changed"
-                        );
-                        let backend = SessionTempBackend::Ssh(&host.files);
-                        backend.migrate(&files).await?;
-                        backend.remove(&files).await?;
-                    }
-                }
+                clean_execution_temp(&self.ssh_manager, &member).await?;
                 operation.members[index].execution_cleaned = true;
                 operation.changed()?;
                 self.store.save_thread_archive(operation).await?;
@@ -214,5 +205,121 @@ impl StudioRuntime {
         operation.phase = ArchivePhase::Published;
         operation.changed()?;
         self.store.save_thread_archive(operation).await
+    }
+}
+
+async fn clean_execution_temp(
+    ssh: &pl_tool::remote::SshManager,
+    member: &ArchiveMember,
+) -> Result<()> {
+    let files = SessionFiles::new(&member.thread_id);
+    match &member.execution.endpoint {
+        WorkspaceEndpoint::Local => {
+            let backend = SessionTempBackend::Local(Path::new(&member.execution.root));
+            backend.migrate(&files).await?;
+            backend.remove(&files).await?;
+        }
+        WorkspaceEndpoint::Ssh { .. } => {
+            let profile = ssh
+                .list_servers()
+                .await
+                .into_iter()
+                .find(|entry| {
+                    WorkspaceEndpoint::from_profile(Some(&entry.profile))
+                        == member.execution.endpoint
+                })
+                .context("archive frozen SSH endpoint is no longer configured")?
+                .profile;
+            let host = ssh
+                .open_workspace_host(&profile.alias, member.execution.root.clone())
+                .await?;
+            ensure!(
+                WorkspaceEndpoint::from_profile(Some(&host.profile)) == member.execution.endpoint
+                    && host.files.canonical_path() == member.execution.root,
+                "archive SSH endpoint or canonical root changed"
+            );
+            let backend = SessionTempBackend::Ssh(&host.files);
+            backend.migrate(&files).await?;
+            backend.remove(&files).await?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(all(test, unix))]
+mod ssh_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn archive_temp_ssh_identity_change_and_disconnect_preserve_cleanup_responsibility()
+    -> Result<()> {
+        use pl_tool::remote::{SshConfigFile, SshManager, SshServerProfile};
+        let temp = tempfile::tempdir()?;
+        let config = temp.path().join("ssh-config");
+        // `-F` uses only this fixture. No user SSH config, keys, agent or known_hosts are read.
+        tokio::fs::write(&config,
+            "Host *\n  UserKnownHostsFile /dev/null\n  GlobalKnownHostsFile /dev/null\n  IdentityAgent none\n  IdentityFile none\n  IdentitiesOnly yes\n").await?;
+        let ssh = SshManager::new(None, None).with_ssh_config(SshConfigFile::at(&config));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let profile = SshServerProfile {
+            alias: "isolated-archive".into(),
+            host_name: "127.0.0.1".into(),
+            port: listener.local_addr()?.port(),
+            username: "isolated-fixture".into(),
+            identity_file: None,
+        };
+        let host_session = temp.path().join("session");
+        tokio::fs::create_dir_all(host_session.join("temp")).await?;
+        tokio::fs::write(host_session.join("temp/transfer"), b"owned").await?;
+        let member = ArchiveMember {
+            thread_id: "ssh-thread".into(),
+            workspace_id: "workspace".into(),
+            host_temp: host_session.join("temp"),
+            host_session,
+            execution: WorkspaceIdentity::canonical(
+                WorkspaceEndpoint::from_profile(Some(&profile)),
+                "/isolated/workspace".into(),
+            )?,
+            host_cleaned: false,
+            execution_cleaned: false,
+        };
+        let mut changed = profile.clone();
+        changed.username = "different-identity".into();
+        ssh.save_server(changed).await?;
+        let mismatch = clean_execution_temp(&ssh, &member).await.unwrap_err();
+        assert!(mismatch.to_string().contains("frozen SSH endpoint"));
+        ssh.save_server(profile).await?;
+        let mut peer = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await?;
+            drop(stream); // Real SSH transport loss before a helper can report any path fact.
+            Ok::<_, std::io::Error>(())
+        });
+        let outcome = tokio::time::timeout(
+            std::time::Duration::from_secs(20),
+            clean_execution_temp(&ssh, &member),
+        )
+        .await;
+        ssh.shutdown().await?;
+        match tokio::time::timeout(std::time::Duration::from_secs(2), &mut peer).await {
+            Ok(joined) => joined??,
+            Err(_) => {
+                peer.abort();
+                let _ = peer.await;
+                anyhow::bail!("isolated SSH fixture was never contacted: {outcome:?}");
+            }
+        }
+        let error = outcome?.expect_err("transport loss is not PathNotFound or archive success");
+        assert!(
+            error
+                .downcast_ref::<pl_tool::remote::RemoteClientError>()
+                .is_some(),
+            "the original transport error must survive the archive boundary"
+        );
+        assert!(!member.execution_cleaned && !member.host_cleaned);
+        assert_eq!(
+            tokio::fs::read(member.host_temp.join("transfer")).await?,
+            b"owned"
+        );
+        Ok(())
     }
 }

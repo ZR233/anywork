@@ -151,7 +151,7 @@ impl StudioStore {
             .collect()
     }
 
-    pub(in crate::studio) async fn ensure_archive_execution_allowed(
+    pub(crate) async fn ensure_archive_execution_allowed(
         &self,
         workspace_id: &str,
         thread_id: Option<&str>,
@@ -167,6 +167,8 @@ impl StudioStore {
                     .members
                     .iter()
                     .any(|member| member.thread_id == id)
+                    || matches!(&operation.scope, ArchiveScope::Thread(root)
+                        if self.catalog().get(id).is_some_and(|thread| thread.root_thread_id == *root))
             });
             ensure!(
                 !workspace && !member,

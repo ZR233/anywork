@@ -413,14 +413,18 @@ impl StudioRuntime {
         operation_id: String,
         thread_id: String,
     ) -> Result<Option<ArchiveThreadCommandReply>> {
-        let root_operation = self.threads.agent_operation(&thread_id).await;
         let Some((thread, roots, thread_tree)) = self.load_thread_archive_scope(&thread_id).await?
         else {
             return Ok(None);
         };
-        let _pins = self
-            .residency
-            .pin_many(thread_tree.iter().map(|thread| thread.id.clone()));
+        let scope = self
+            .threads
+            .seal_archive_scope(std::slice::from_ref(&thread_id))?;
+        let mut admitted_ids = scope.thread_ids();
+        admitted_ids.extend(thread_tree.iter().map(|thread| thread.id.clone()));
+        admitted_ids.sort();
+        admitted_ids.dedup();
+        let _pins = self.residency.pin_many(admitted_ids.iter().cloned());
         let root_index = roots.iter().position(|candidate| candidate.id == thread_id);
         let next_root = root_index
             .and_then(|index| {
@@ -430,33 +434,41 @@ impl StudioRuntime {
             })
             .or_else(|| root_index.is_none().then(|| roots.first()).flatten())
             .cloned();
-        let removed_thread_ids = thread_tree
-            .iter()
-            .map(|candidate| candidate.id.clone())
-            .collect::<Vec<_>>();
-        let _child_seals = self
-            .threads
-            .seal_agent_operations(
-                &removed_thread_ids
-                    .iter()
-                    .filter(|id| **id != thread_id)
-                    .cloned()
-                    .collect::<Vec<_>>(),
-            )
-            .await;
-        let _root_seal = self.threads.seal_agent_operation(&thread_id);
-        drop(root_operation);
-        let mut archive = self
-            .freeze_thread_archive(ArchiveScope::Thread(thread_id.clone()), &thread_tree)
+        self.freeze_thread_archive(ArchiveScope::Thread(thread_id.clone()), &thread_tree)
             .await?;
-        for id in &removed_thread_ids {
+        for id in &admitted_ids {
             self.title_tasks
                 .cancel(id, ThreadTitleCancellationCause::ThreadArchive)
                 .await;
         }
         // 归档先结束整棵树的活动工作（design/01 §1.4）：中断当前 Turn、丢弃未消费输入，
         // 再有界等待收束；无法结束时返回类型化失败并保留会话现场。
-        self.end_thread_tree_work(&removed_thread_ids).await?;
+        self.end_thread_tree_work(&admitted_ids).await?;
+        tokio::time::timeout(
+            self.archive_settle_timeout(),
+            self.threads.drain_archive_preparations(&scope),
+        )
+        .await
+        .context("archive preparations did not join")??;
+        let (_, _, settled_tree) = self
+            .load_thread_archive_scope(&thread_id)
+            .await?
+            .context("sealed archive root disappeared")?;
+        anyhow::ensure!(
+            settled_tree
+                .iter()
+                .all(|thread| admitted_ids.contains(&thread.id)),
+            "archive member has no frozen preparation responsibility"
+        );
+        // A preparation may have durably published just before the registry seal. Preserve its
+        // original physical binding before any deletion; unpublished failures were joined above.
+        let mut archive = self
+            .freeze_thread_archive(ArchiveScope::Thread(thread_id.clone()), &settled_tree)
+            .await?;
+        let removed_thread_ids = settled_tree
+            .iter()
+            .map(|thread| thread.id.clone())
+            .collect::<Vec<_>>();
         // 关闭与保存不得探测或清理物理工作树；目录归档只在整棵树关闭成功后发布。
         self.retire_archived_thread_tree(&removed_thread_ids)
             .await?;
@@ -736,8 +748,8 @@ impl StudioRuntime {
     ///
     /// 只复用既有能力：`ThreadHandle::interrupt_turn(None)` 停止当前正在执行的那个 Turn
     /// （不指定预期身份），`ThreadHandle::discard_input(id)` 逐条丢弃尚未消费的输入。
-    /// 等待期间以 `thread_is_busy` 为唯一判定，不引入第二份并发状态；不得无限自旋，也
-    /// 不得在仍 busy 时继续归档。
+    /// 此处只收束可见工作，不是准备资源、工具生产者或 writer 的最终 ACK；后续仍必须
+    /// drain_archive_preparations 与 close_tree 成功，才能清理 temp。
     ///
     /// 并发契约：`archive_thread` 与所有输入提交入口（`prompt_runner/submit.rs` 的
     /// `submit_prompt*`、`threads.rs` 的 `start_new_thread`）都在同一把 `lifecycle_lock`

@@ -178,6 +178,27 @@ async fn cleanup_spawn_failure(
 }
 
 impl AgentHost {
+    async fn ensure_archive_execution_admission(
+        owner: &StudioThreadAssembler,
+        id: &str,
+    ) -> Result<(), ToolError> {
+        let services = { owner.0.state().agent_services.clone() };
+        if let Some(services) = services {
+            let record = services
+                .store
+                .read_thread(id)
+                .await
+                .map_err(|error| ToolError::new(super::agent_services::ServiceError(error)))?
+                .ok_or_else(|| ToolError::new(ControlError::Missing(id.to_owned())))?;
+            services
+                .store
+                .ensure_archive_execution_allowed(&record.workspace_id, Some(id))
+                .await
+                .map_err(|error| ToolError::new(super::agent_services::ServiceError(error)))?;
+        }
+        Ok(())
+    }
+
     async fn spawn_owned(
         &self,
         owner: StudioThreadAssembler,
@@ -188,6 +209,7 @@ impl AgentHost {
         owner
             .ensure_agent_admission_open(&context.thread_id)
             .map_err(ToolError::new)?;
+        Self::ensure_archive_execution_admission(&owner, &context.thread_id).await?;
         let (factory, reservation) = owner.reserve_child(&context).map_err(ToolError::new)?;
         if request.review_target_agent_id.as_deref() == Some(context.thread_id.as_str()) {
             return Err(ToolError::new(ThreadAssemblyError::ReviewTargetInvalid(
@@ -458,6 +480,8 @@ impl AgentControlHost for AgentHost {
 
     async fn send(&self, caller: &str, message: AgentMessage) -> Result<ToolOutput, ToolError> {
         let owner = self.owner()?;
+        Self::ensure_archive_execution_admission(&owner, caller).await?;
+        Self::ensure_archive_execution_admission(&owner, &message.target).await?;
         let services = owner.0.state().agent_services.clone();
         if let Some(services) = &services {
             services

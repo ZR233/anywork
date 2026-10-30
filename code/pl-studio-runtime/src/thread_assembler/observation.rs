@@ -421,6 +421,7 @@ impl StudioThreadAssembler {
 
 #[cfg(test)]
 mod storage_fault_tests {
+    mod archive_scope;
     mod cold_parent_report;
 
     use super::*;
