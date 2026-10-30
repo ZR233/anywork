@@ -40,11 +40,12 @@ Feishu bots live in `<home>/data/bots/<bot-id>/` with versioned `config.toml` an
 
 ## Format Rules
 
-- TOML with snake_case keys; the current runtime accepts `schema_version = 27`. Changing the version number alone does not migrate a configuration.
+- TOML with snake_case keys; the current runtime accepts `schema_version = 28`. Changing the version number alone does not migrate a configuration.
 - A missing file means in-memory defaults shown in Settings; nothing is written until you save.
 - Known version upgrades preserve user settings and credential associations through migration. Startup migrates schema 18 to 19 by removing only `planner` from `disabled_system_agents`, then migrates 19 to 20 by copying the old `planner` route to `mode.simple` and `mode.task` before deleting it from child routes. Migration runs before recovery; a reset is never a substitute for a supported migration.
 - Schema 21 to 22 migrates model declarations from `slug` to `model_id`. Schema 22 to 23 migrates `models.providers` to `models.accounts`, `preset`/`adapter` to `template`/`protocol`, and route/Profile `provider`/`model` to `account_id`/`model_id`. Account and template ID values, endpoint, headers, model overrides and user choices are preserved. Older supported versions continue through these steps; changing only the version number is invalid.
 - Schema 26 to 27 converts each account's `disabled_models` into `model_enabled_overrides` entries with value `false`, removes the old field, and leaves other models automatic. It uses the normal protected backup and recoverable migration, preserving identity, credentials, routes and other overrides. Normal configuration only uses the new map.
+- Schema 27 to 28 removes `skills.user_dir` while preserving the remaining skill settings and all account/credential associations. User discovery uses only the standard user-home `.agents/skills` directory. Old private skills are preserved separately, never copied into or merged with the standard directory.
 - Main configuration, user Profiles and credential associations use a recoverable migration operation. Protected original bytes are backed up before replacement; interrupted commits finish their recorded operation, candidate bytes and target version before preparing a later upgrade. Profiles have their own `schema_version = 1`: an unversioned historical Profile is imported independently even when the main configuration is already current. Old/current identity keys with equal values can be normalized; conflicts or incomplete identities are rejected. No unchanged main configuration is rewritten just because a Profile needs upgrading. Existing v2 model-route/Profile extensions, typed bills and call records migrate at their versioned storage boundary without activating all sessions or rewriting opaque vendor payloads.
 - Each active TOML document has an independent positive-integer root schema, separate from content revisions. Typed migration paths use `version-migrate`; its semantic versions are an in-memory boundary detail, never a new disk format. A current file is not rewritten on read. Missing/invalid headers (except the explicit unversioned Profile import), unsupported/future versions, malformed files and migration validation failures stop the affected load as `Migration`, preserve the file and operation, and never trigger backup-and-defaults recovery. Do not change a version number by hand or delete a migration journal to bypass a failure.
 - Unrelated unrecoverable global database corruption retains its existing one-time startup backup and recovery policy: `config.toml`, `agents/`, `modes/` and current `data/` are preserved under `<home>/startup-backups/<unique-id>/original/` before initializing defaults. The durable `startup-recovery.toml` journal resumes an interrupted recovery and the UI reports its location. Permission, capacity, file-lock, credential-service and internal failures stop initialization without resetting. System credentials, old-version directories, remote connection configuration and physical project/worktree directories are preserved. Individual session read failures and isolated invalid Bots do not reset global data.
@@ -202,7 +203,7 @@ a system child route is optional and, when present, is an explicit override. `ef
 must match the model's supported effort candidates.
 
 ```toml
-schema_version = 27
+schema_version = 28
 
 [deepseek_web_search]
 enabled = true
