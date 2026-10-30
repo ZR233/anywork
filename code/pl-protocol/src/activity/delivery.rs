@@ -7,7 +7,9 @@ use super::{ThreadActivity, ThreadActivityToolState};
 
 /// Text bytes in one content frame; metadata has its own enclosing frame budget.
 pub const ACTIVITY_TEXT_FRAME_BYTES: usize = 64 * 1024;
-pub const ACTIVITY_FRAME_BYTES: usize = 256 * 1024;
+/// Enclosing metadata budget calibrated to the documented 128k-token / 2,000-member
+/// streaming workload; text chunks remain independently bounded at 64 KiB.
+pub const ACTIVITY_FRAME_BYTES: usize = 320 * 1024;
 
 /// Stable region identity. Its type, rather than an ID convention or localized label, determines
 /// where the SDK applies text.

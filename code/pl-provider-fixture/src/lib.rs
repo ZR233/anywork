@@ -682,10 +682,13 @@ pub const GUI_STRESS_BODY_LARGE_TOKENS_PER_SECOND: u64 = 2_500;
 /// history entries instead of on one body streamed as many deltas.
 pub const GUI_TIMELINE_HISTORY_PROMPT: &str = "Generate the local timeline history fixture";
 /// Timeline items one `timeline-history` reply delivers.
-pub const GUI_TIMELINE_HISTORY_ITEMS: usize = 20_000;
-/// Keeps provider output active during native history and retry interactions.
-/// The separate `stress` scenario retains its 5,000-item/s performance baseline.
-pub const GUI_TIMELINE_HISTORY_TOKENS_PER_SECOND: u64 = 1_000;
+pub const GUI_TIMELINE_HISTORY_ITEMS: usize = 2_000;
+/// Public-model single-response output baseline; see design/24-testing.md §24.6.
+/// The fixed `" a"` payload is audited with the named o200k_base reference encoding.
+pub const GUI_STREAMING_OUTPUT_REFERENCE_TOKENS: usize = 128_000;
+/// A second, single-item output lets native paging overlap real provider work
+/// without treating unfinished text as already-completed history.
+pub const GUI_TIMELINE_STREAM_PROMPT: &str = "Stream the local timeline reading fixture";
 
 /// Realtime acceptance prompts. Each prompt drives one deterministic state of the
 /// realtime journey; the tool follow-up steps reuse the same prompt text so the
@@ -2451,17 +2454,9 @@ fn gui_stress_body_script_with(prompt: &str, pad: usize, tokens_per_second: u64)
     ]
 }
 
-/// Timeline-history script: one completion returns the shared multi-item stream.
-///
-/// The volume step replays the existing [`Reply::PacedSse`] stream with
-/// [`GUI_TIMELINE_HISTORY_ITEMS`] items, so it needs no second stream generator
-/// and no follow-up sessions: the multi-session stress script stays the only
-/// place that scripts later turns. Only that step is required. The title steps
-/// stay optional like the other GUI journeys, and nothing is scripted after the
-/// reply because the timeline acceptance reads the persisted history from a cold
-/// restart instead of asking the provider for more. A second submission
-/// therefore matches no step and is rejected explicitly rather than answered
-/// from a nearby script.
+/// Two finite calls: a realistic completed-history seed, then one long body
+/// during independent paging. Each call stays within the same public output
+/// baseline; the original 20k stress script is not a delivery gate.
 pub fn gui_timeline_history_script() -> Vec<Step> {
     let title_prompt = session_title_prompt(GUI_TIMELINE_HISTORY_PROMPT);
     vec![
@@ -2480,10 +2475,7 @@ pub fn gui_timeline_history_script() -> Vec<Step> {
             Protocol::ResponsesHttp,
             GUI_TIMELINE_HISTORY_PROMPT,
             1,
-            Reply::PacedSse {
-                events: GUI_TIMELINE_HISTORY_ITEMS,
-                tokens_per_second: GUI_TIMELINE_HISTORY_TOKENS_PER_SECOND,
-            },
+            gui_streaming_output_reply(GUI_TIMELINE_HISTORY_ITEMS, 1),
         ),
         Step::prompt(
             Protocol::ResponsesHttp,
@@ -2496,7 +2488,91 @@ pub fn gui_timeline_history_script() -> Vec<Step> {
             )),
         )
         .optional(),
+        Step::prompt(
+            Protocol::ResponsesHttp,
+            GUI_TIMELINE_STREAM_PROMPT,
+            3,
+            gui_streaming_output_reply(1, 15),
+        ),
     ]
+}
+
+/// Deterministic output-limit load over the existing paced SSE fixture transport.
+/// Each response has exactly the reference payload token total, independently
+/// from the number of items or wire envelopes. It is not a tokenizer for providers.
+pub fn gui_streaming_output_reply(item_count: usize, step_millis: u64) -> Reply {
+    const CHUNK_TOKENS: usize = 64;
+    assert!(item_count > 0 && GUI_STREAMING_OUTPUT_REFERENCE_TOKENS.is_multiple_of(item_count));
+    let per_item = GUI_STREAMING_OUTPUT_REFERENCE_TOKENS / item_count;
+    assert!(per_item.is_multiple_of(CHUNK_TOKENS));
+    let text = " a".repeat(per_item);
+    let mut events = vec![json!({
+        "type": "response.created",
+        "response": {"id": "realistic-output", "model": "fixture-model"}
+    })];
+    for ordinal in 0..item_count {
+        let item_id = format!("realistic-item-{ordinal}");
+        let part_id = format!("realistic-part-{ordinal}");
+        events.push(match ordinal % 4 {
+            0 | 1 => json!({
+                "type": "response.output_item.added", "output_index": ordinal,
+                "item": {"id": item_id, "type": "message", "role": "assistant",
+                         "phase": if ordinal % 4 == 0 {"final_answer"} else {"commentary"},
+                         "content": []}
+            }),
+            _ => json!({
+                "type": "response.output_item.added", "output_index": ordinal,
+                "item": {"id": item_id, "type": "reasoning", "summary": [], "content": []}
+            }),
+        });
+        for _ in 0..per_item / CHUNK_TOKENS {
+            let delta = " a".repeat(CHUNK_TOKENS);
+            events.push(match ordinal % 4 {
+                0 | 1 => json!({
+                    "type": "response.output_text.delta", "item_id": item_id,
+                    "output_index": ordinal, "content_index": 0, "delta": delta
+                }),
+                2 => json!({
+                    "type": "response.reasoning_summary_text.delta", "item_id": item_id,
+                    "output_index": ordinal, "summary_index": 0, "delta": delta
+                }),
+                _ => json!({
+                    "type": "response.reasoning_text.delta", "item_id": item_id,
+                    "output_index": ordinal, "content_index": 0, "delta": delta
+                }),
+            });
+        }
+        let item = match ordinal % 4 {
+            0 | 1 => json!({
+                "id": item_id, "type": "message", "role": "assistant",
+                "phase": if ordinal % 4 == 0 {"final_answer"} else {"commentary"},
+                "content": [{"id": part_id, "type": "output_text", "text": text}]
+            }),
+            2 => json!({
+                "id": item_id, "type": "reasoning",
+                "summary": [{"id": part_id, "type": "summary_text", "text": text}]
+            }),
+            _ => json!({
+                "id": item_id, "type": "reasoning",
+                "content": [{"id": part_id, "type": "reasoning_text", "text": text}]
+            }),
+        };
+        events.push(json!({
+            "type": "response.output_item.done", "output_index": ordinal, "item": item
+        }));
+    }
+    events.push(json!({
+        "type": "response.completed",
+        "response": {"id": "realistic-output", "model": "fixture-model",
+                     "usage": {"input_tokens": 1,
+                               "output_tokens": GUI_STREAMING_OUTPUT_REFERENCE_TOKENS,
+                               "total_tokens": GUI_STREAMING_OUTPUT_REFERENCE_TOKENS + 1}}
+    }));
+    Reply::PacedEvents {
+        initial_delay_ms: 0,
+        step_millis,
+        events,
+    }
 }
 
 pub fn gui_statistics_script() -> Vec<Step> {

@@ -6,7 +6,9 @@ import '../../observation/latest_value.dart';
 import '../domain/activity_content.dart';
 
 const activityTextFrameBytes = 64 * 1024;
-const activityFrameBytes = 256 * 1024;
+// Matches the protocol's calibrated 128k-token / 2,000-member metadata envelope.
+// Text chunks and the aggregate staging budget retain their independent limits.
+const activityFrameBytes = 320 * 1024;
 
 /// Single writer for current activity. Its byte budget is independent of resource permits.
 /// Begin and Text return only after staging accepts the frame; this is the point at which

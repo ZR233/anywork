@@ -6,7 +6,8 @@ mod support;
 
 use anyhow::{Context, Result, ensure};
 use pl_protocol::{
-    ActivityContentFrame, ThreadWorkspaceMode, TimelineCompletionCursor, TimelineTailUpdate,
+    ActivityContentFrame, ThreadNotification, ThreadSubscriptionUpdate, ThreadWorkspaceMode,
+    TimelineCompletionCursor, TimelineTailUpdate, TurnState,
 };
 use pl_studio_runtime::{ConversationEvent, ConversationFeed};
 use std::{collections::HashSet, time::Duration};
@@ -187,6 +188,153 @@ async fn saved_nonempty_feed_resets_only_the_completion_epoch_after_restart() ->
         }
         restored.close().await?;
         Ok(())
+    }
+    .await;
+    env.finish(result).await
+}
+
+#[tokio::test]
+async fn realistic_output_limit_single_item() -> Result<()> {
+    observe_realistic_output_limit(1).await
+}
+
+#[tokio::test]
+async fn realistic_output_limit_many_items() -> Result<()> {
+    observe_realistic_output_limit(2_000).await
+}
+
+async fn observe_realistic_output_limit(item_count: usize) -> Result<()> {
+    // " a" is one token in the audited o200k_base reference encoding. These are
+    // payload tokens, not a claim about every provider's framing/billing.
+    const OUTPUT_TOKENS: usize = pl_provider_fixture::GUI_STREAMING_OUTPUT_REFERENCE_TOKENS;
+    let prompt = format!("realistic-output-{item_count}");
+    let env = Environment::new(
+        vec![prompt_step(
+            &prompt,
+            0,
+            pl_provider_fixture::gui_streaming_output_reply(item_count, 1),
+        )],
+        vec![],
+    )
+    .await?;
+    let result = async {
+        let thread = env.start(ThreadWorkspaceMode::Worktree, &prompt).await?;
+        let mut feed = env
+            .runtime
+            .open_conversation_feed(&thread.thread.id, None)
+            .await?;
+        let input_id = format!("input-{prompt}");
+        let mut events = 0usize;
+        let mut through = 0;
+        let mut terminal = false;
+        let mut last_activity_parts = (0, 0, 0);
+        let mut peak_metadata_bytes = 0;
+        let mut completed_items = 0;
+        let mut completed_body_bytes = 0;
+        let observed = tokio::time::timeout(Duration::from_secs(120), async {
+            while !terminal || completed_items < item_count {
+                let event = feed
+                    .recv()
+                    .await
+                    .with_context(|| {
+                        format!(
+                            "paced feed receive failed after {events} events, through={through}, \
+                             activity parts={last_activity_parts:?}, \
+                             peak Begin bytes={peak_metadata_bytes}"
+                        )
+                    })?
+                    .context("paced feed ended before all completed facts arrived")?;
+                events += 1;
+                let update = match event {
+                    ConversationEvent::State { update } => {
+                        if let ThreadSubscriptionUpdate::Notification { notification } = *update
+                            && let ThreadNotification::TurnCompleted { turn } =
+                                notification.notification
+                            && turn.input_id.as_deref() == Some(input_id.as_str())
+                        {
+                            ensure!(matches!(turn.state, TurnState::Completed(_)));
+                            terminal = true;
+                        }
+                        None
+                    }
+                    ConversationEvent::ContentBaseline { baseline } => {
+                        through = baseline.completed_cursor.append_seq;
+                        None
+                    }
+                    ConversationEvent::ActivityContent { frame, completed } => {
+                        if matches!(&frame, ActivityContentFrame::Begin { .. }) {
+                            peak_metadata_bytes =
+                                peak_metadata_bytes.max(serde_json::to_vec(&frame)?.len());
+                        }
+                        if let ActivityContentFrame::Begin {
+                            reasoning,
+                            response,
+                            tools,
+                            ..
+                        } = frame
+                        {
+                            last_activity_parts = (reasoning.len(), response.len(), tools.len());
+                        }
+                        completed.map(|update| *update)
+                    }
+                    ConversationEvent::ContentUpdate { update } => Some(update),
+                };
+                if let Some(update) = update {
+                    let TimelineTailUpdate::Batch {
+                        from_seq,
+                        through_seq,
+                        items,
+                        ..
+                    } = update
+                    else {
+                        anyhow::bail!("paced completion stream unexpectedly reset");
+                    };
+                    ensure!(from_seq == through);
+                    for item in items {
+                        through += 1;
+                        ensure!(item.header.append_seq == through);
+                        if matches!(
+                            &item.descriptor,
+                            pl_protocol::TimelineDescriptor::Text(text)
+                                if matches!(text.channel,
+                                    pl_protocol::ThreadTextChannel::Final
+                                    | pl_protocol::ThreadTextChannel::Commentary)
+                        ) || matches!(
+                            &item.descriptor,
+                            pl_protocol::TimelineDescriptor::Thinking(_)
+                        ) {
+                            completed_items += 1;
+                            completed_body_bytes +=
+                                item.fields
+                                    .iter()
+                                    .filter(|field| {
+                                        matches!(field.field,
+                                        pl_protocol::ThreadContentField::Text
+                                        | pl_protocol::ThreadContentField::ThinkingSummary { .. }
+                                        | pl_protocol::ThreadContentField::ThinkingContent { .. })
+                                    })
+                                    .map(|field| field.total_bytes)
+                                    .sum::<u64>();
+                        }
+                    }
+                    ensure!(through == through_seq);
+                }
+            }
+            ensure!(completed_items == item_count);
+            ensure!(completed_body_bytes == (OUTPUT_TOKENS * 2) as u64);
+            Ok::<_, anyhow::Error>(())
+        })
+        .await
+        .context("paced fixture feed exceeded its bounded observation deadline")
+        .and_then(|result| result);
+        eprintln!(
+            "realistic output: items={item_count}, reference_tokens={OUTPUT_TOKENS}, \
+             completed_items={completed_items}, body_bytes={completed_body_bytes}, \
+             peak_begin_bytes={peak_metadata_bytes}, parts={last_activity_parts:?}"
+        );
+        let closed = feed.close().await;
+        observed.with_context(|| format!("feed close after observation: {closed:?}"))?;
+        closed
     }
     .await;
     env.finish(result).await

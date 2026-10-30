@@ -37,6 +37,65 @@ Matcher failure(ActivityRecoveryReason reason) => throwsA(
 );
 
 void main() {
+  test(
+    '128k reference-token output with 2000 members is admitted atomically',
+    () {
+      final owner = ActivityContentOwner(maxContentBytes: 2 * 1024 * 1024);
+      // Canonical-ID-shaped values, not tiny test IDs. The payload is audited
+      // with the named reference tokenizer; this is not universal billing data.
+      final ids = [
+        for (var index = 0; index < 2000; index++)
+          'realistic-item-$index'.padLeft(80, 'x'),
+      ];
+      final body = List.filled(64, ' a').join();
+      owner.accept(
+        ActivityBegin(
+          generation: 'gen',
+          revision: 1,
+          baseRevision: null,
+          activity: null,
+          reasoning: const [],
+          response: [
+            for (final id in ids)
+              ActivityPartMetadata(
+                itemId: id,
+                complete: true,
+                totalBytes: body.length,
+              ),
+          ],
+          tools: const [],
+          totalBytes: ids.length * body.length,
+        ),
+      );
+      expect(owner.current, isNull);
+      for (final id in ids) {
+        owner.accept(
+          text(
+            1,
+            ActivityReplace(
+              ActivityRegion(ActivityRegionKind.response, id),
+              body,
+            ),
+          ),
+        );
+      }
+      expect(owner.current, isNull);
+      owner.publish(owner.prepareCommit(commit(1)));
+      expect(owner.current!.response.map((part) => part.itemId), ids);
+      expect(
+        owner.current!.response,
+        everyElement(
+          isA<ThreadActivityContentPart>().having(
+            (part) => part.text,
+            'text',
+            body,
+          ),
+        ),
+      );
+      expect(owner.hasStaging, isFalse);
+    },
+  );
+
   test('multiple staged frames are accepted without publication until prepared commit is published', () {
     final owner = ActivityContentOwner(maxContentBytes: 2048);
     final observed = <CurrentActivity?>[];

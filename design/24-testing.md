@@ -77,3 +77,21 @@ Widget Previewer 可以提供纯呈现证据，不装配 Client 或 Rust bridge 
 - 机器人本地协议对端、真实平台授权和客户端渲染是不同边界，见 [27](./27-bots.md#279-验收边界)。模拟平台或 CLI 自发自读不能证明真实产品回复；真实账号操作仍受明确授权与凭据脱敏约束。
 - ACP 安装和认证观察见 [28](./28-acp.md)。受控网络对端不授权关闭 TLS 校验或扩大生产下载来源。
 - 工作树关闭、存储迁移、上下文恢复及账号隔离的行为分别由对应产品设计定义。本地样例、旧接口结果和未完成采集不构成这些行为已经验证的证据。
+
+## 24.6 流式输出的现实规模基准
+
+本次 Issue #220 容量范围采用 2026-10-30 查证的常用高性能模型常规单次输出上限，而不是用累计历史条数代替一次模型输出：
+
+| 官方来源 | 当前查证型号及公开最大输出 | 使用边界 |
+| --- | --- | --- |
+| [OpenAI 模型页](https://developers.openai.com/api/docs/models/gpt-6.1-sol)、[Astra](https://developers.openai.com/api/docs/models/gpt-6-astra) | GPT-6.1 Sol、GPT-6 Astra：128,000 tokens | [reasoning 规则](https://developers.openai.com/api/docs/guides/reasoning)：限制包括思考，不等于全部可见回答 |
+| [Claude 模型对照](https://platform.claude.com/docs/en/models/overview)、[流式示例](https://platform.claude.com/docs/en/build-with-claude/streaming) | Opus 5.5、Sonnet 5.5、Fable 5.1：128K；示例使用 `max_tokens=128000` | [thinking 规则](https://platform.claude.com/docs/en/build-with-claude/extended-thinking)：思考占用输出预算 |
+| [Gemini 3.1 Pro](https://ai.google.dev/gemini-api/docs/models/gemini-3.1-pro-preview)、[Gemini 4 Argon](https://ai.google.dev/gemini-api/docs/models/gemini-4-argon) | 常规单次同步/流式 65,536 tokens | [long decode](https://ai.google.dev/gemini-api/docs/long-decode) 的更高上限需要后台续接；1,048,576 是共享窗口，不冒充普通单次输出 |
+
+选取上述常规范围中的 128,000 output tokens，分别验证长正文和较低成员数的密集形态。固定正文以公开 tokenizer 的具名 encoding 实测，记录包版本、正文散列、每项与合计 token、UTF-8 字节、item/part 数和真实 Begin 大小；不得把 fixture 的 `events`、名义 `tokens_per_second` 或模拟 usage 字段当成 tokenizer 证据。具名参考 encoding 的计数不能冒充所有厂商的真实计费。
+
+初始对照使用单个 item 的 128,000 参考 token 正文，以及 2,000 个各 64 参考 token 的 item，后者比旧场景少一个数量级但总正文仍位于同一基准。这是可复现的验收形态，不是声称供应商最多只能返回 2,000 项；token 上限本身没有给出严格 item 数、ID 大小或 UTF-8 比率。元数据与正文两个维度均须在真实调用运行期间持续消费的 Runtime/Bridge/SDK 路径验证；单层通过不能替代下游预算或原生显示。
+
+元数据 enclosing frame 与文本块是独立边界：本轮调整前分别为 256 KiB 和 64 KiB，不能混写。新的元数据预算应依据上述实际编码及 SDK 结构计费的峰值确定，保持明确、有界的错误与关闭行为；工具输出及跨调用历史仍由各自预算管理。20k+ 微小 item 的原失败证据保留，但只按其极端碎片化形态列已知限制，不得以“20k 必然超过模型 token 上限”为理由降级。现实形态若仍失败，必须修复后再交付。
+
+初始真实 Runtime 对照中，单 item 的完整 256,000 字节正文通过，Begin 峰值 1,187 字节；2,000 item 形态在旧 256 KiB 限额处失败，最后已交付的 Begin 为 261,842 字节、1,847 个 part。因此先将双端 enclosing frame 校准至 320 KiB（以 64 KiB 为单位的最小下一档），保留 64 KiB 文本块、独立总内容预算及所有错误/关闭检查，再以同一固定正文完整重验。若校准后的声明范围仍不能通过，不继续上调来追逐规模，转而修复成员交接或有界分块。通过只能证明此 token 基准与已测形态，不能把尚未实现的逐成员早发布或 20k 密集历史报告为已修复。
