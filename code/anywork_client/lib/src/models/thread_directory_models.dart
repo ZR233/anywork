@@ -389,7 +389,9 @@ class DirectoryQuery {
       return false;
     }
     final term = search?.trim().toLowerCase() ?? '';
-    final project = projects.where((p) => p.id == thread.workspaceId).firstOrNull;
+    final project = projects
+        .where((p) => p.id == thread.workspaceId)
+        .firstOrNull;
     return term.isEmpty ||
         thread.title.toLowerCase().contains(term) ||
         (project != null &&

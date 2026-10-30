@@ -1056,7 +1056,8 @@ class BridgeStartBotRegistrationRequest {
   });
 
   @override
-  int get hashCode => operationId.hashCode ^ name.hashCode ^ workspaceId.hashCode;
+  int get hashCode =>
+      operationId.hashCode ^ name.hashCode ^ workspaceId.hashCode;
 
   @override
   bool operator ==(Object other) =>

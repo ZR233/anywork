@@ -10395,7 +10395,7 @@ abstract class AppLocalizations {
   /// No description provided for @recoveryOwnerThread.
   ///
   /// In en, this message translates to:
-  /// **'Session {threadId} · project {workspaceId}'**
+  /// **'Session {threadId} · workspace {workspaceId}'**
   String recoveryOwnerThread(String threadId, String workspaceId);
 
   /// No description provided for @recoveryUnknownOwner.

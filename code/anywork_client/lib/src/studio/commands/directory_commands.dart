@@ -80,7 +80,10 @@ class DirectoryCommands extends ReadModel<DirectoryCommandState> {
     return _navigate((_) async {
       final thread = _directoryThread(threadId);
       if (thread == null) return;
-      _throwIfAccessBlocked(workspaceId: thread.workspaceId, threadId: threadId);
+      _throwIfAccessBlocked(
+        workspaceId: thread.workspaceId,
+        threadId: threadId,
+      );
       final selection = _client.selection.state;
       if (selection.selectedThreadId == threadId) {
         _client.selection.markOpened();
@@ -252,7 +255,10 @@ class DirectoryCommands extends ReadModel<DirectoryCommandState> {
       );
       final thread = await _api.restoreThread(threadId);
       if (!_ownsNavigation(intent)) return;
-      _throwIfAccessBlocked(workspaceId: thread.workspaceId, threadId: thread.id);
+      _throwIfAccessBlocked(
+        workspaceId: thread.workspaceId,
+        threadId: thread.id,
+      );
       _client.selection.selectThread(
         workspaceId: thread.workspaceId,
         threadId: thread.id,
@@ -483,7 +489,10 @@ class DirectoryCommands extends ReadModel<DirectoryCommandState> {
     if (threadId == null) {
       _client.selection.selectProject(workspaceId);
     } else {
-      _client.selection.selectThread(workspaceId: workspaceId, threadId: threadId);
+      _client.selection.selectThread(
+        workspaceId: workspaceId,
+        threadId: threadId,
+      );
     }
   }
 
@@ -558,7 +567,10 @@ class DirectoryCommands extends ReadModel<DirectoryCommandState> {
     required String? workspaceId,
     String? threadId,
   }) {
-    final issue = _executionBlocker(workspaceId: workspaceId, threadId: threadId);
+    final issue = _executionBlocker(
+      workspaceId: workspaceId,
+      threadId: threadId,
+    );
     if (issue != null) throw issue.blockedFailure();
   }
 

@@ -42,7 +42,8 @@ final class StartSessionDraftImpl extends ReadModel<StartSessionDraft>
         .firstOrNull;
     if (workspace?.isStandalone == true && mode.isWorktree) return;
     final project = state.forProject(workspaceId);
-    if (project.workspaceMode == mode && state.projects.containsKey(workspaceId))
+    if (project.workspaceMode == mode &&
+        state.projects.containsKey(workspaceId))
       return;
     _editProject(workspaceId, project.copyWith(workspaceMode: mode));
   }
@@ -158,7 +159,9 @@ final class StartSessionDraftImpl extends ReadModel<StartSessionDraft>
       draftId: 'start:$workspaceId',
       revision: state.revision,
     );
-    final attachmentStamp = _dependencies.attachments.newThreadStamp(workspaceId);
+    final attachmentStamp = _dependencies.attachments.newThreadStamp(
+      workspaceId,
+    );
     if (_unknown[workspaceId] == (stamp, attachmentStamp)) {
       throw StateError('The previous submission outcome is unknown');
     }

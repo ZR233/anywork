@@ -317,7 +317,8 @@ class AnyworkClient {
     final selected = selection.state;
     final selectedRoot = findThread(selected.selectedThreadId ?? '')
         ?.effectiveRootThreadId;
-    if (topic is SkillsTopic && topic.workspaceId == selected.selectedProjectId ||
+    if (topic is SkillsTopic &&
+            topic.workspaceId == selected.selectedProjectId ||
         topic is SessionCostsTopic && topic.rootThreadId == selectedRoot) {
       // Admission may have failed before a topic owner existed. Retry logical
       // demand here rather than asking an observer to create that owner.

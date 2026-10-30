@@ -5838,7 +5838,7 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String recoveryOwnerThread(String threadId, String workspaceId) {
-    return 'Session $threadId · project $workspaceId';
+    return 'Session $threadId · workspace $workspaceId';
   }
 
   @override

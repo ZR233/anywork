@@ -95,7 +95,9 @@ class StudioRecoveryIssue {
       switch (scope) {
         RecoveryIssueScope.application => true,
         RecoveryIssueScope.project =>
-          threadId == null && workspaceId != null && this.workspaceId == workspaceId,
+          threadId == null &&
+              workspaceId != null &&
+              this.workspaceId == workspaceId,
         RecoveryIssueScope.thread =>
           threadId != null &&
               this.threadId == threadId &&

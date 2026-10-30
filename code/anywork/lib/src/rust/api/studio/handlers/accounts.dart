@@ -18,10 +18,11 @@ Future<BridgeSkillsStateSnapshot> readSkillsState({
   workspaceId: workspaceId,
 );
 
-Future<BridgeSkillsStateSnapshot> discoverSkills({required String workspaceId}) =>
-    RustLib.instance.api.crateApiStudioHandlersAccountsDiscoverSkills(
-      workspaceId: workspaceId,
-    );
+Future<BridgeSkillsStateSnapshot> discoverSkills({
+  required String workspaceId,
+}) => RustLib.instance.api.crateApiStudioHandlersAccountsDiscoverSkills(
+  workspaceId: workspaceId,
+);
 
 Future<BridgeSkillSearchResult> searchSkills({
   required String workspaceId,

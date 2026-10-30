@@ -123,6 +123,12 @@ final class NewThreadPreparation {
       failure == other.failure;
 
   @override
-  int get hashCode =>
-      Object.hash(workspaceId, inputId, workspaceMode, progress, phase, failure);
+  int get hashCode => Object.hash(
+    workspaceId,
+    inputId,
+    workspaceMode,
+    progress,
+    phase,
+    failure,
+  );
 }

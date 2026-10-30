@@ -5521,7 +5521,7 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String recoveryOwnerThread(String threadId, String workspaceId) {
-    return '会话 $threadId · 项目 $workspaceId';
+    return '会话 $threadId · 工作区 $workspaceId';
   }
 
   @override

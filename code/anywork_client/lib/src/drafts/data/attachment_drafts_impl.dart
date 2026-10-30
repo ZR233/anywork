@@ -745,7 +745,11 @@ final class AttachmentDraftsImpl extends ReadModel<AttachmentDraftBoard>
     // Session resources were promoted before acceptance. Staging remains
     // immutable and reusable while any logical draft still owns the same ID.
     if (released.isNotEmpty) {
-      await _cleanupOrphans(released, workspaceId: workspaceId, threadId: threadId);
+      await _cleanupOrphans(
+        released,
+        workspaceId: workspaceId,
+        threadId: threadId,
+      );
     }
   }
 
@@ -756,7 +760,11 @@ final class AttachmentDraftsImpl extends ReadModel<AttachmentDraftBoard>
   }) async {
     final released = _ownership.discardDraft(binding.draftId);
     binding.write(const ComposerThreadState.idle());
-    await _cleanupOrphans(released, workspaceId: workspaceId, threadId: threadId);
+    await _cleanupOrphans(
+      released,
+      workspaceId: workspaceId,
+      threadId: threadId,
+    );
   }
 
   Future<void> discardProject(String workspaceId) async {
