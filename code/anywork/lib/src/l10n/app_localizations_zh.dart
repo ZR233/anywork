@@ -5570,47 +5570,8 @@ class AppLocalizationsZh extends AppLocalizations {
   String get usageCallId => '调用';
 
   @override
-  String get usageFirstOutput => '首内容来源';
-
-  @override
-  String get usageSourceUnobserved => '未观测到可见内容';
-
-  @override
-  String get usageSourceIncremental => '增量内容';
-
-  @override
-  String get usageSourceCompletedToolInput => '首次完整工具参数观测';
-
-  @override
-  String get usageSourceLegacyUnknown => '历史来源未知';
-
-  @override
   String get usageFirstOutputNote =>
       '完成项表示客户端首次观测到完整工具参数，并非供应商首 token；decode 耗时可为 0。';
-
-  @override
-  String get usageMetricAvailable => '可用';
-
-  @override
-  String get usageMetricNotCollected => '未采集计时';
-
-  @override
-  String get usageMetricNoVisibleOutput => '未观测到可见输出';
-
-  @override
-  String get usageMetricMissingOutput => '输出用量未知';
-
-  @override
-  String get usageMetricZeroOutput => '报告输出为 0';
-
-  @override
-  String get usageMetricInvalidUsage => '用量矛盾或溢出';
-
-  @override
-  String get usageMetricInvalidTiming => '计时无效';
-
-  @override
-  String get usageMetricLegacyUnknown => '历史计时来源未知';
 
   @override
   String get usageStatusLegacyUnknown => '历史用量状态未知';

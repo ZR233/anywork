@@ -12,30 +12,6 @@ String usageReportStatusLabel(BuildContext context, UsageReportStatus status) =>
       UsageReportStatus.invalid => context.l10n.usageStatusInvalid,
     };
 
-String firstOutputSourceLabel(BuildContext context, FirstOutputSource source) =>
-    switch (source) {
-      FirstOutputSource.unobserved => context.l10n.usageSourceUnobserved,
-      FirstOutputSource.incremental => context.l10n.usageSourceIncremental,
-      FirstOutputSource.completedToolInput =>
-        context.l10n.usageSourceCompletedToolInput,
-      FirstOutputSource.legacyUnknown => context.l10n.usageSourceLegacyUnknown,
-    };
-
-/// Availability is a canonical typed fact, never reclassified from token or timing values.
-String metricAvailabilityLabel(
-  BuildContext context,
-  MetricAvailability availability,
-) => switch (availability) {
-  MetricAvailability.available => context.l10n.usageMetricAvailable,
-  MetricAvailability.notCollected => context.l10n.usageMetricNotCollected,
-  MetricAvailability.noVisibleOutput => context.l10n.usageMetricNoVisibleOutput,
-  MetricAvailability.missingOutput => context.l10n.usageMetricMissingOutput,
-  MetricAvailability.zeroOutput => context.l10n.usageMetricZeroOutput,
-  MetricAvailability.invalidUsage => context.l10n.usageMetricInvalidUsage,
-  MetricAvailability.invalidTiming => context.l10n.usageMetricInvalidTiming,
-  MetricAvailability.legacyUnknown => context.l10n.usageMetricLegacyUnknown,
-};
-
 String usageOutcomeLabel(BuildContext context, UsageTerminalStatus outcome) =>
     switch (outcome) {
       UsageTerminalStatus.succeeded => context.l10n.usageOutcomeSucceeded,

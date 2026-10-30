@@ -10488,89 +10488,11 @@ abstract class AppLocalizations {
   /// **'Call'**
   String get usageCallId;
 
-  /// No description provided for @usageFirstOutput.
-  ///
-  /// In en, this message translates to:
-  /// **'First content source'**
-  String get usageFirstOutput;
-
-  /// No description provided for @usageSourceUnobserved.
-  ///
-  /// In en, this message translates to:
-  /// **'No visible content observed'**
-  String get usageSourceUnobserved;
-
-  /// No description provided for @usageSourceIncremental.
-  ///
-  /// In en, this message translates to:
-  /// **'Incremental content'**
-  String get usageSourceIncremental;
-
-  /// No description provided for @usageSourceCompletedToolInput.
-  ///
-  /// In en, this message translates to:
-  /// **'First complete tool input observed'**
-  String get usageSourceCompletedToolInput;
-
-  /// No description provided for @usageSourceLegacyUnknown.
-  ///
-  /// In en, this message translates to:
-  /// **'Historical source unknown'**
-  String get usageSourceLegacyUnknown;
-
   /// No description provided for @usageFirstOutputNote.
   ///
   /// In en, this message translates to:
   /// **'A completed item marks the client’s first observation of complete tool input, not the provider’s first token; decode time can be 0.'**
   String get usageFirstOutputNote;
-
-  /// No description provided for @usageMetricAvailable.
-  ///
-  /// In en, this message translates to:
-  /// **'Available'**
-  String get usageMetricAvailable;
-
-  /// No description provided for @usageMetricNotCollected.
-  ///
-  /// In en, this message translates to:
-  /// **'Timing not collected'**
-  String get usageMetricNotCollected;
-
-  /// No description provided for @usageMetricNoVisibleOutput.
-  ///
-  /// In en, this message translates to:
-  /// **'No visible output observed'**
-  String get usageMetricNoVisibleOutput;
-
-  /// No description provided for @usageMetricMissingOutput.
-  ///
-  /// In en, this message translates to:
-  /// **'Output usage unknown'**
-  String get usageMetricMissingOutput;
-
-  /// No description provided for @usageMetricZeroOutput.
-  ///
-  /// In en, this message translates to:
-  /// **'Reported output is 0'**
-  String get usageMetricZeroOutput;
-
-  /// No description provided for @usageMetricInvalidUsage.
-  ///
-  /// In en, this message translates to:
-  /// **'Inconsistent or overflowing usage'**
-  String get usageMetricInvalidUsage;
-
-  /// No description provided for @usageMetricInvalidTiming.
-  ///
-  /// In en, this message translates to:
-  /// **'Invalid timing'**
-  String get usageMetricInvalidTiming;
-
-  /// No description provided for @usageMetricLegacyUnknown.
-  ///
-  /// In en, this message translates to:
-  /// **'Historical timing source unknown'**
-  String get usageMetricLegacyUnknown;
 
   /// No description provided for @usageStatusLegacyUnknown.
   ///

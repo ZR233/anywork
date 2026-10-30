@@ -667,15 +667,12 @@ impl ThreadObservations {
             let child = pl_protocol::Thread::from(child);
             // Parent recovery explicitly prepares its cold children's storage before projecting
             // their facts. It never activates a child, rebuilds its workspace or asks a model.
-            // Keep checkpoint migration's large future out of the enclosing activation future;
-            // legacy decoding still runs inline with the same owner and cancellation boundary.
-            let Some(checkpoint) = Box::pin(
+            let Some(checkpoint) =
                 crate::studio::thread_factory::recovery::load_checkpoint_for_recovery(
                     &services.store,
                     &child,
-                ),
-            )
-            .await?
+                )
+                .await?
             else {
                 continue;
             };

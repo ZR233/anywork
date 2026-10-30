@@ -13,7 +13,7 @@ impl MigratorTraitSelf for PublishedV9 {
             execution_identity: self
                 .checkpoint
                 .as_ref()
-                .map(|checkpoint| (checkpoint.clone(), checkpoint.clone())),
+                .map(|checkpoint| std::sync::Arc::new((checkpoint.clone(), checkpoint.clone()))),
         }
         .migrations()
         .into_iter()
@@ -87,7 +87,7 @@ async fn v9(path: &Path, cold: bool) -> Result<DatabaseConnection> {
             .await?
             .context("prepared recovery checkpoint")?;
         PublishedV9 {
-            checkpoint: Some(checkpoint),
+            checkpoint: Some(*checkpoint),
         }
         .up(&db, None)
         .await?;

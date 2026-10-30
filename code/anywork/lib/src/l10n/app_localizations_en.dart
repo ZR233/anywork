@@ -5890,48 +5890,8 @@ class AppLocalizationsEn extends AppLocalizations {
   String get usageCallId => 'Call';
 
   @override
-  String get usageFirstOutput => 'First content source';
-
-  @override
-  String get usageSourceUnobserved => 'No visible content observed';
-
-  @override
-  String get usageSourceIncremental => 'Incremental content';
-
-  @override
-  String get usageSourceCompletedToolInput =>
-      'First complete tool input observed';
-
-  @override
-  String get usageSourceLegacyUnknown => 'Historical source unknown';
-
-  @override
   String get usageFirstOutputNote =>
       'A completed item marks the client’s first observation of complete tool input, not the provider’s first token; decode time can be 0.';
-
-  @override
-  String get usageMetricAvailable => 'Available';
-
-  @override
-  String get usageMetricNotCollected => 'Timing not collected';
-
-  @override
-  String get usageMetricNoVisibleOutput => 'No visible output observed';
-
-  @override
-  String get usageMetricMissingOutput => 'Output usage unknown';
-
-  @override
-  String get usageMetricZeroOutput => 'Reported output is 0';
-
-  @override
-  String get usageMetricInvalidUsage => 'Inconsistent or overflowing usage';
-
-  @override
-  String get usageMetricInvalidTiming => 'Invalid timing';
-
-  @override
-  String get usageMetricLegacyUnknown => 'Historical timing source unknown';
 
   @override
   String get usageStatusLegacyUnknown => 'Historical usage status unknown';
