@@ -323,7 +323,35 @@ async fn build(
     journal: &mut Journal,
 ) -> Result<()> {
     let roots = [backup.join("v2"), backup.join("studio/v2")];
-    let has_v2 = journal.roots.iter().take(2).any(|root| root.present);
+    // Directory existence is not installation evidence: a cache-only v2 home never owned
+    // canonical state. Conversely, any other material must not be adopted as a fresh install.
+    let mut has_v2 = false;
+    for root in &roots {
+        if !root.try_exists()? {
+            continue;
+        }
+        validate_family(&root.join("studio.sqlite"))?;
+        validate_family(&root.join("calls/calls.sqlite"))?;
+        for entry in std::fs::read_dir(root)? {
+            let entry = entry?;
+            if !entry.file_type()?.is_dir()
+                || !matches!(
+                    entry.file_name().to_str(),
+                    Some("model-catalogs" | "acp-probe" | "attachment-drafts")
+                )
+            {
+                has_v2 = true;
+            }
+        }
+    }
+    if has_v2 {
+        for name in ["studio.sqlite", "calls/calls.sqlite"] {
+            ensure!(
+                existing_candidates(&roots, name)?.len() == 1,
+                "v2 authoritative {name} missing or duplicated"
+            );
+        }
+    }
     for name in ["settings.toml", "workspaces.toml", "catalog.toml"] {
         let candidates = existing_candidates(&roots, name)?;
         if has_v2 {
@@ -487,23 +515,19 @@ async fn build(
                 })
                 .collect::<std::io::Result<Vec<_>>>()?;
             ensure!(
-                candidates.len() <= 1,
-                "both flat and grouped v2 session exist: {}",
+                candidates.len() == 1,
+                "registered v2 session source missing or duplicated: {}",
                 entry.id
             );
-            if let Some(item) = legacy_journal.get(&entry.id) {
+            if let Some(item) = legacy_journal.get(&entry.id)
+                && item.phase != LegacyPhase::Planned
+            {
                 ensure!(
-                    !candidates.is_empty(),
-                    "legacy layout journal source and target are both missing"
+                    candidates[0]
+                        .components()
+                        .any(|part| part.as_os_str() == "projects"),
+                    "legacy layout journal says moved but only source exists"
                 );
-                if item.phase != LegacyPhase::Planned {
-                    ensure!(
-                        candidates[0]
-                            .components()
-                            .any(|part| part.as_os_str() == "projects"),
-                        "legacy layout journal says moved but only source exists"
-                    );
-                }
             }
             let original_manifest = SessionManifest::from_thread(&entry.to_thread());
             if let Some(mapping) = journal.bot_roots.iter().find(|mapping| {
@@ -516,7 +540,8 @@ async fn build(
             }
             let expected = SessionManifest::from_thread(&entry.to_thread());
             let target = stage.session_paths(&entry.workspace_id, &entry.id)?;
-            if let Some(source) = candidates.first() {
+            {
+                let source = &candidates[0];
                 ensure_tree_safe(paths.home(), source).await?;
                 let manifest_path = source.join("session.toml");
                 if let Some(content) = optional_text(&manifest_path).await? {

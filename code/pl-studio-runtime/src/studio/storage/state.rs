@@ -252,7 +252,9 @@ impl StateStore {
         Ok(())
     }
 
-    async fn load_legacy(&self) -> Result<Option<ThreadCheckpoint>> {
+    /// Shared by explicit recovery and layout-migration evidence gathering only. Normal reads
+    /// remain SQLite-only; both migration entries verify versions, Thread identity and all bodies.
+    pub(in crate::studio) async fn load_legacy(&self) -> Result<Option<ThreadCheckpoint>> {
         let mut primary_error = None;
         for path in [self.path(), self.previous_path()] {
             let content = match tokio::fs::read_to_string(&path).await {

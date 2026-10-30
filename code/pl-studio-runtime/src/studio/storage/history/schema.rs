@@ -167,6 +167,22 @@ pub(super) async fn inspect_existing(path: &Path, thread_id: &str) -> Result<()>
     Ok(())
 }
 
+/// Layout evidence may consult TOML only after proving this is an initialized, supported history
+/// family for the same Thread. An arbitrary empty/unversioned SQLite file is not that window.
+pub(crate) async fn validate_layout_source(db: &DatabaseConnection, thread_id: &str) -> Result<()> {
+    preflight(db, thread_id).await?;
+    ensure!(
+        db.query_one_raw(statement(
+            "SELECT thread_id FROM history_meta WHERE id=1",
+            vec![]
+        ))
+        .await?
+        .is_some(),
+        "layout source has no initialized history identity"
+    );
+    Ok(())
+}
+
 async fn preflight(db: &DatabaseConnection, thread_id: &str) -> Result<()> {
     let migrator = Migrator {
         thread_id: thread_id.to_owned(),
