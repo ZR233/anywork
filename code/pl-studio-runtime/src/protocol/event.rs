@@ -3,9 +3,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::statistics::StudioModelPerformanceSnapshot;
 use crate::{
-    AccountUsageStateSnapshot, PersistenceStateSnapshot, WorkspaceRecord, SkillsStateSnapshot,
+    AccountUsageStateSnapshot, PersistenceStateSnapshot, SkillsStateSnapshot,
     StudioAgentDirectoryEntry, StudioLspHealth, StudioMcpHealth, StudioRecoveryIssue,
-    StudioUpdateStateSnapshot,
+    StudioUpdateStateSnapshot, WorkspaceRecord,
 };
 
 /// Studio 产品级事件信封。

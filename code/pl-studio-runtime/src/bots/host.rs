@@ -103,7 +103,11 @@ impl BotSessionHost for StudioBotSessionHost {
 }
 
 impl StudioBotSessionHost {
-    async fn ensure_tools_enabled(&self, workspace_id: &str, bot_id: &str) -> Result<(), ToolError> {
+    async fn ensure_tools_enabled(
+        &self,
+        workspace_id: &str,
+        bot_id: &str,
+    ) -> Result<(), ToolError> {
         let allowed = self
             .runtime
             .authorized_bots(workspace_id)

@@ -7,8 +7,8 @@ use pl_protocol::studio::{
     SetBotEnabledRequest, SetBotTrustedChatRequest, SetBotTrustedUserRequest,
     StartBotRegistrationRequest, StudioError,
 };
-use pl_studio_runtime::WorkspaceRecord;
 use pl_studio_runtime::StudioThreadDirectoryPage;
+use pl_studio_runtime::WorkspaceRecord;
 use reqwest::StatusCode;
 use reqwest::redirect::Policy as RedirectPolicy;
 use serde::Serialize;

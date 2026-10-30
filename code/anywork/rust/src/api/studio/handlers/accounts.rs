@@ -16,7 +16,9 @@ fn owned_skills_state(
     bridge_skills_state(state)
 }
 
-pub async fn discover_skills(workspace_id: String) -> Result<BridgeSkillsStateSnapshot, BridgeError> {
+pub async fn discover_skills(
+    workspace_id: String,
+) -> Result<BridgeSkillsStateSnapshot, BridgeError> {
     let bridge = active_bridge().await?;
     Ok(skills_state(
         bridge.studio.discover_skills(&workspace_id).await?,

@@ -110,7 +110,8 @@ impl StudioRecoveryRegistry {
                         issue.thread_id.as_deref() == Some(thread.id.as_str())
                             && (issue.workspace_id.is_none()
                                 || thread.workspace_id.is_empty()
-                                || issue.workspace_id.as_deref() == Some(thread.workspace_id.as_str()))
+                                || issue.workspace_id.as_deref()
+                                    == Some(thread.workspace_id.as_str()))
                     }
                 };
                 applies

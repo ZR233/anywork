@@ -3214,7 +3214,9 @@ async fn shared_recovery_entry_commits_saved_representations_before_publishing()
     drop(store);
 
     let reopened = crate::studio::StudioStore::open(&database_path).await?;
-    let history = reopened.history_for(&thread.workspace_id, &thread.id).await?;
+    let history = reopened
+        .history_for(&thread.workspace_id, &thread.id)
+        .await?;
     let saved = history.checkpoint().await?.context("reopened checkpoint")?;
     assert_eq!(
         crate::studio::delegation::saved(&saved.state)?,
@@ -3540,7 +3542,9 @@ async fn legacy_native_compaction_receipt_upgrades_sources_through_the_history_u
 
     // 真实共同恢复入口：旧库结构升级必须能从 v1 原生回执恢复来源而不是先硬失败。
     let reopened = crate::studio::StudioStore::open(&database_path).await?;
-    let upgraded = reopened.history_for(&thread.workspace_id, &thread.id).await?;
+    let upgraded = reopened
+        .history_for(&thread.workspace_id, &thread.id)
+        .await?;
     let checkpoint =
         crate::studio::thread_factory::recovery::load_checkpoint_for_recovery(&reopened, &thread)
             .await?

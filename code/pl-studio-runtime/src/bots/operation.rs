@@ -1416,7 +1416,8 @@ impl BotOperationOwner {
             operation_id,
             ..
         } = request;
-        let mut config = BotConfigFile::new(self.bot_id.clone(), name, workspace_id, app_id.clone())?;
+        let mut config =
+            BotConfigFile::new(self.bot_id.clone(), name, workspace_id, app_id.clone())?;
         config.model_route = Some(self.runtime.default_model_route()?);
         if let Some(open_id) = trusted_open_id {
             config.feishu_mut().trusted_open_ids.insert(open_id);
