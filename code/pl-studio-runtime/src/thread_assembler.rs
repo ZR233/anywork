@@ -600,7 +600,10 @@ impl StudioThreadAssembler {
             return Err(ThreadAssemblyError::Identity(id.into()));
         }
         let mut state = self.0.state();
-        if state.closing {
+        if state.closing
+            || state.sealed_agents.contains_key(id)
+            || parent.is_some_and(|parent| state.sealed_agents.contains_key(parent))
+        {
             return Err(ThreadAssemblyError::Closed);
         }
         if state.creating.contains_key(id) || state.entries.contains_key(id) {

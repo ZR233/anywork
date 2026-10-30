@@ -342,13 +342,40 @@ impl StudioRuntime {
             .map(|thread| thread.id.clone())
             .collect::<Vec<_>>();
         roots.sort();
-        let mut root_operations = Vec::new();
-        for root in &roots {
-            root_operations.push(self.threads.agent_operation(root).await);
+        // Project archives still reject active work; they do not interrupt an active Turn.
+        for thread in &threads {
+            if thread.visibility == ThreadVisibility::Active
+                && self.thread_is_busy(&thread.id).await?
+            {
+                bail!("project has an active turn");
+            }
         }
-        // A spawn admitted before these permits may just have published another child. Re-read
-        // the directory only after root preparation is ordered, then seal children in stable order.
+        let scope = self.threads.seal_archive_scope(&roots)?;
+        let mut admitted_ids = scope.thread_ids();
+        admitted_ids.extend(threads.iter().map(|thread| thread.id.clone()));
+        admitted_ids.sort();
+        admitted_ids.dedup();
+        let _pins = self.residency.pin_many(admitted_ids.iter().cloned());
+        self.freeze_thread_archive(ArchiveScope::Workspace(workspace_id.into()), &threads)
+            .await?;
+        for id in &admitted_ids {
+            self.title_tasks
+                .cancel(id, ThreadTitleCancellationCause::ProjectArchive)
+                .await;
+        }
+        tokio::time::timeout(
+            self.archive_settle_timeout(),
+            self.threads.drain_archive_preparations(&scope),
+        )
+        .await
+        .context("project archive preparations did not join")??;
         let threads = self.load_project_archive_scope(workspace_id).await?;
+        ensure!(
+            threads
+                .iter()
+                .all(|thread| admitted_ids.contains(&thread.id)),
+            "project archive member has no frozen preparation responsibility"
+        );
         let thread_ids = threads
             .iter()
             .map(|thread| thread.id.clone())
@@ -357,18 +384,6 @@ impl StudioRuntime {
             .iter()
             .filter(|thread| thread.visibility == ThreadVisibility::Active)
             .collect::<Vec<_>>();
-        let _pins = self.residency.pin_many(thread_ids.iter().cloned());
-        let child_ids = threads
-            .iter()
-            .filter(|thread| thread.parent_thread_id.is_some())
-            .map(|thread| thread.id.clone())
-            .collect::<Vec<_>>();
-        let _child_seals = self.threads.seal_agent_operations(&child_ids).await;
-        let _root_seals = roots
-            .iter()
-            .map(|root| self.threads.seal_agent_operation(root))
-            .collect::<Vec<_>>();
-        drop(root_operations);
         for thread in &active_threads {
             match self.thread_is_busy(&thread.id).await {
                 Ok(false) => {}

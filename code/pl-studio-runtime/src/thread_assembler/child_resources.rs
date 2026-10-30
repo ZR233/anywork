@@ -95,6 +95,7 @@ impl super::StudioThreadAssembler {
     pub(super) fn publish_child_resources(&self, id: &str) -> Result<(), ThreadAssemblyError> {
         let mut state = self.0.state();
         if state.closing
+            || state.sealed_agents.contains_key(id)
             || state
                 .preparing_children
                 .get(id)
