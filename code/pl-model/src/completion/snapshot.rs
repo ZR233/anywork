@@ -11,6 +11,7 @@ pub struct CompletionResponseSnapshot {
     model_observation: Option<pl_protocol::InferenceModelObservation>,
     output: Vec<CompletionResponseOutputSnapshot>,
     accounting: pl_protocol::InferenceAccounting,
+    timing: Option<pl_protocol::InferenceTiming>,
 }
 
 impl CompletionResponseSnapshot {
@@ -33,6 +34,10 @@ impl CompletionResponseSnapshot {
     /// Final accounting, including missing usage and disabled pricing states.
     pub fn accounting(&self) -> &pl_protocol::InferenceAccounting {
         &self.accounting
+    }
+
+    pub fn timing(&self) -> Option<pl_protocol::InferenceTiming> {
+        self.timing
     }
 }
 
@@ -183,6 +188,7 @@ pub fn completion_response_snapshot(
         model_observation: response.model_observation.clone(),
         output,
         accounting: response.accounting.clone(),
+        timing: response.timing,
     }
 }
 

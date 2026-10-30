@@ -6,6 +6,7 @@ pub mod admission;
 mod background;
 mod cancellation;
 mod checkpoint;
+pub(crate) mod checkpoint_usage;
 pub mod cold;
 pub mod context_preparation;
 mod continuation;

@@ -29,6 +29,7 @@ import '../../shared/studio_chrome.dart';
 import '../../shared/studio_driver_keys.dart';
 import '../../shared/delegation_labels.dart';
 import 'agent_switcher_menu.dart';
+import 'recovery_issue_indicator.dart';
 import '../../shared/studio_driver_state.dart';
 import '../../presentation/providers/studio_update_controller.dart';
 import '../settings/settings_common.dart';

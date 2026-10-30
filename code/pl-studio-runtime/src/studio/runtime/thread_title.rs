@@ -382,7 +382,10 @@ async fn generate_title(
         prompt_cache_policy: None,
         prefix_changed_reason: None,
         orchestration: Default::default(),
-        timing: None,
+        timing: match &result {
+            Ok(response) => response.timing(),
+            Err(failure) => failure.timing,
+        },
         recorded_at: crate::studio::unix_seconds(),
     };
     let key = "studio.auxiliary-billing.title";

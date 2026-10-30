@@ -461,6 +461,7 @@ ThreadRuntimeView _threadRuntimeFromFrb(frb.BridgeThreadRuntimeSnapshot value) {
       .toList(growable: false);
   final costLabel = formatRuntimeCosts(estimatedCosts);
   return ThreadRuntimeView(
+    usageDiagnostics: threadUsageDiagnosticsFromFrb(usage.diagnostics),
     modelId: usage.modelId,
     modelRoute: value.modelRoute == null
         ? null
@@ -533,6 +534,8 @@ ThreadRuntimeView _threadRuntimeFromFrb(frb.BridgeThreadRuntimeSnapshot value) {
     reasoningTokens: _exactTimelineInt(usage.reasoningTokens, 'state counter'),
     inferenceCount: _exactTimelineInt(usage.inferenceCount, 'state counter'),
     cacheUsage: CacheUsageView(
+      sampleCount: usage.cacheUsage.sampleCount.toInt(),
+      legacySampleCountUnknown: usage.cacheUsage.legacySampleCountUnknown,
       inputTokens: _exactTimelineInt(
         usage.cacheUsage.inputTokens,
         'state counter',

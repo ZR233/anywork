@@ -100,7 +100,7 @@ pub struct ThreadPersistenceSnapshot {
     /// Checkpoint revision being serialized or synced; absent when nothing is in flight or unknown.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub state_saving_revision: Option<u64>,
-    /// Newest checkpoint revision already published as `state.toml`; absent when unknown.
+    /// Newest checkpoint revision committed with history; absent when unknown.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub state_durable_revision: Option<u64>,
     /// Newest effect sequence admitted for the history write; absent when unknown.
@@ -109,12 +109,6 @@ pub struct ThreadPersistenceSnapshot {
     /// Newest effect sequence whose history write completed; absent when unknown.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub history_durable_sequence: Option<u64>,
-    /// Newest effect sequence admitted for the call write; absent when unknown.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub calls_admitted_sequence: Option<u64>,
-    /// Newest effect sequence whose call write completed; absent when unknown.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub calls_durable_sequence: Option<u64>,
     /// Queued effects plus one for a retained checkpoint publication.
     pub pending_operations: u64,
     /// Encoded bytes of the queued effects.

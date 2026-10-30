@@ -6,6 +6,8 @@
 //! claim the same point, recovery never executes anything by itself and never repeats a tool, and a
 //! claimed continuation only authorizes a model request once its own commit is durable.
 
+#[path = "support/legacy_usage.rs"]
+mod legacy_usage;
 mod support;
 #[path = "support/tool.rs"]
 mod tool_support;
@@ -1878,6 +1880,7 @@ async fn a_schema_4_checkpoint_defaults_the_new_fields_and_invents_no_continuati
     // Rewrite the envelope into the schema-4 shape: every field this schema never had is absent.
     let mut value = serde_json::to_value(&checkpoint).unwrap();
     value["schemaVersion"] = serde_json::json!(4);
+    legacy_usage::flatten(&mut value);
     {
         let state = value["state"].as_object_mut().expect("state object");
         state.remove("continuation");

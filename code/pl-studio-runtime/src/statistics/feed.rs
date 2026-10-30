@@ -125,17 +125,17 @@ pub(crate) struct StatisticsPublisher {
 }
 
 impl StatisticsPublisher {
-    pub(crate) fn new(owner_epoch: String) -> Self {
+    pub(crate) fn new(owner_epoch: String, snapshot: &StudioModelPerformanceSnapshot) -> Self {
         let initial = Arc::new(StatisticsPublication {
             owner_epoch: owner_epoch.clone(),
-            publication_revision: 0,
+            publication_revision: snapshot.revision,
             summaries_revision: 0,
             history_revision: 0,
-            summaries: Arc::new(Vec::new()),
-            history: Arc::new(Vec::new()),
-            statistics_pending: false,
-            statistics_gap: false,
-            read_failed: false,
+            summaries: Arc::clone(&snapshot.summaries),
+            history: Arc::clone(&snapshot.history),
+            statistics_pending: snapshot.statistics_pending,
+            statistics_gap: snapshot.statistics_gap,
+            read_failed: snapshot.read_failed,
         });
         let (latest, _) = watch::channel(initial);
         Self {
@@ -146,22 +146,13 @@ impl StatisticsPublisher {
 
     /// Publishes the exact materials and flags already adopted by the owner.
     ///
-    /// Unchanged material retains its `Arc` and revision. `send_replace` retains the latest
-    /// publication even when no feed currently has a receiver.
+    /// The owner preserves equal material identities before calling this method. The feed only
+    /// shares those frozen arrays; it neither compares their contents nor clones their rows.
+    /// `send_replace` retains the latest publication even when no feed has a receiver.
     pub(crate) fn publish(&self, snapshot: &StudioModelPerformanceSnapshot) {
         let previous = self.latest.borrow().clone();
-        let summaries_changed = previous.summaries.as_ref() != &snapshot.summaries;
-        let history_changed = previous.history.as_ref() != &snapshot.history;
-        let summaries = if summaries_changed {
-            Arc::new(snapshot.summaries.clone())
-        } else {
-            Arc::clone(&previous.summaries)
-        };
-        let history = if history_changed {
-            Arc::new(snapshot.history.clone())
-        } else {
-            Arc::clone(&previous.history)
-        };
+        let summaries_changed = !Arc::ptr_eq(&previous.summaries, &snapshot.summaries);
+        let history_changed = !Arc::ptr_eq(&previous.history, &snapshot.history);
         let next = StatisticsPublication {
             owner_epoch: self.owner_epoch.clone(),
             publication_revision: snapshot.revision,
@@ -171,8 +162,8 @@ impl StatisticsPublisher {
             history_revision: previous
                 .history_revision
                 .saturating_add(u64::from(history_changed)),
-            summaries,
-            history,
+            summaries: Arc::clone(&snapshot.summaries),
+            history: Arc::clone(&snapshot.history),
             statistics_pending: snapshot.statistics_pending,
             statistics_gap: snapshot.statistics_gap,
             read_failed: snapshot.read_failed,
@@ -186,35 +177,6 @@ impl StatisticsPublisher {
         if !unchanged {
             self.latest.send_replace(Arc::new(next));
         }
-    }
-
-    /// Publishes status-only owner changes without comparing or cloning retained material.
-    pub(crate) fn publish_status(
-        &self,
-        publication_revision: u64,
-        statistics_pending: bool,
-        statistics_gap: bool,
-        read_failed: bool,
-    ) {
-        let previous = self.latest.borrow().clone();
-        let unchanged = previous.publication_revision == publication_revision
-            && previous.statistics_pending == statistics_pending
-            && previous.statistics_gap == statistics_gap
-            && previous.read_failed == read_failed;
-        if unchanged {
-            return;
-        }
-        self.latest.send_replace(Arc::new(StatisticsPublication {
-            owner_epoch: self.owner_epoch.clone(),
-            publication_revision,
-            summaries_revision: previous.summaries_revision,
-            history_revision: previous.history_revision,
-            summaries: Arc::clone(&previous.summaries),
-            history: Arc::clone(&previous.history),
-            statistics_pending,
-            statistics_gap,
-            read_failed,
-        }));
     }
 
     pub(crate) fn subscribe(&self) -> StatisticsFeed {

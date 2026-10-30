@@ -1,10 +1,16 @@
 import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/features/settings/statistics/connectors/statistics_connector.dart';
 import 'package:anywork/src/features/settings/statistics/view_models/statistics_repository_provider.dart';
+import 'package:anywork/src/features/settings/statistics/view_models/statistics_view_model.dart';
+import 'package:anywork/src/features/settings/statistics/widgets/statistics_history_widgets.dart';
+import 'package:anywork/src/features/settings/statistics/widgets/statistics_summary_widgets.dart';
+import 'package:anywork/src/features/settings/statistics/state/statistics_view_state.dart';
+import 'package:anywork/src/features/settings/statistics/views/statistics_view.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
 import 'package:anywork_client/statistics.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -14,6 +20,569 @@ import 'package:flutter_test/flutter_test.dart';
 /// bootstrap fixture 构造 GUI 数据。它保护 view model 到纯 View 的筛选与身份映射。
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+
+  testWidgets(
+    'View reuses options, overview and scroll body for status-only publications',
+    (tester) async {
+      tester.view.devicePixelRatio = 1;
+      tester.view.physicalSize = const Size(1200, 1600);
+      addTearDown(tester.view.reset);
+      final base = _snapshot();
+      final initial = StatisticsSnapshot(
+        ownerEpoch: base.ownerEpoch,
+        feedId: base.feedId,
+        publicationRevision: 1,
+        summariesRevision: 1,
+        historyRevision: 1,
+        summaries: base.summaries,
+        history: List.generate(
+          3000,
+          (index) =>
+              _windowSample(index, base.history[index % base.history.length]),
+        ),
+        statisticsPending: false,
+        statisticsGap: false,
+        readFailed: false,
+      );
+      final theme = pureStudioTheme();
+      var oldCallbacks = 0;
+      var newCallbacks = 0;
+      Future<void> pump(
+        StatisticsSnapshot snapshot, {
+        Locale locale = const Locale('en'),
+        ThemeData? presentationTheme,
+        String? modelFilter,
+        List<StatisticsSample>? filtered,
+        ValueChanged<String?>? onModelChanged,
+      }) async {
+        await tester.pumpWidget(
+          MaterialApp(
+            locale: locale,
+            theme: presentationTheme ?? theme,
+            localizationsDelegates: AppLocalizations.localizationsDelegates,
+            supportedLocales: AppLocalizations.supportedLocales,
+            home: Scaffold(
+              body: StatisticsView(
+                state: StatisticsViewState(
+                  repository: StatisticsRepositoryState(
+                    snapshot: snapshot,
+                    connection: const StatisticsConnectionState(
+                      phase: StatisticsConnectionPhase.ready,
+                    ),
+                  ),
+                  modelFilter: modelFilter,
+                  effortFilter: null,
+                  mismatchesOnly: false,
+                  filteredHistory: filtered ?? snapshot.history,
+                ),
+                visible: true,
+                onModelChanged: onModelChanged ?? (_) {},
+                onEffortChanged: (_) {},
+                onMismatchesOnlyChanged: (_) {},
+                onRetry: () {},
+              ),
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+      }
+
+      await pump(initial, onModelChanged: (_) => oldCallbacks++);
+      final header = tester.widget<StatisticsHistoryHeader>(
+        find.byType(StatisticsHistoryHeader),
+      );
+      final summary = tester.widget<StatisticsSummarySection>(
+        find.byType(StatisticsSummarySection),
+      );
+      final overview = tester.widget<DataTable>(find.byType(DataTable));
+      final body = tester.widget<CustomScrollView>(
+        find.byKey(StudioDriverKeys.statisticsHistory),
+      );
+      expect(header.options.models, hasLength(2));
+      expect(header.options.efforts, hasLength(2));
+      expect(() => header.options.models.clear(), throwsUnsupportedError);
+      final list = tester.widget<SliverList>(find.byType(SliverList));
+      expect((list.delegate as SliverChildBuilderDelegate).childCount, 3000);
+
+      final statusOnly = initial.withPublication(
+        StatisticsFeedIdentity(
+          ownerEpoch: initial.ownerEpoch,
+          feedId: initial.feedId,
+          deliverySequence: 2,
+          publicationRevision: 2,
+          summariesRevision: initial.summariesRevision,
+          historyRevision: initial.historyRevision,
+          summaryCount: initial.summaries.length,
+          historyCount: initial.history.length,
+          statisticsPending: true,
+          statisticsGap: true,
+          readFailed: true,
+        ),
+      );
+      await pump(statusOnly, onModelChanged: (_) => newCallbacks++);
+      expect(
+        find.byKey(const ValueKey('statistics-status-gap')),
+        findsOneWidget,
+      );
+      expect(
+        tester.widget<StatisticsHistoryHeader>(
+          find.byType(StatisticsHistoryHeader),
+        ),
+        same(header),
+      );
+      expect(
+        tester.widget<StatisticsSummarySection>(
+          find.byType(StatisticsSummarySection),
+        ),
+        same(summary),
+      );
+      expect(tester.widget<DataTable>(find.byType(DataTable)), same(overview));
+      expect(
+        tester.widget<CustomScrollView>(
+          find.byKey(StudioDriverKeys.statisticsHistory),
+        ),
+        same(body),
+      );
+      // This is the real View's cached header, not a ViewModel identity assertion.
+      header.onChanged(initial.history.first.filterKey);
+      expect(oldCallbacks, 0);
+      expect(newCallbacks, 1);
+
+      final filtered = StatisticsMaterial.freeze(
+        initial.history.where(
+          (sample) => sample.filterKey == initial.history.first.filterKey,
+        ),
+      );
+      await pump(
+        statusOnly,
+        modelFilter: initial.history.first.filterKey,
+        filtered: filtered,
+      );
+      final selectedHeader = tester.widget<StatisticsHistoryHeader>(
+        find.byType(StatisticsHistoryHeader),
+      );
+      expect(selectedHeader.value, initial.history.first.filterKey);
+      expect(selectedHeader.options, same(header.options));
+      expect(tester.widget<DataTable>(find.byType(DataTable)), same(overview));
+
+      await pump(initial, locale: const Locale('zh'));
+      final localizedHeader = tester.widget<StatisticsHistoryHeader>(
+        find.byType(StatisticsHistoryHeader),
+      );
+      expect(localizedHeader.options, same(header.options));
+      final localized = AppLocalizations.of(
+        tester.element(find.byType(StatisticsHistoryHeader)),
+      );
+      expect(
+        find.text(localized.settingsStatisticsHistoryTitle),
+        findsOneWidget,
+      );
+      expect(
+        find.text(localized.settingsStatisticsSummaryTitle),
+        findsOneWidget,
+      );
+      expect(
+        tester.widget<DataTable>(find.byType(DataTable)),
+        isNot(same(overview)),
+      );
+
+      final changedTheme = theme.copyWith(
+        textTheme: theme.textTheme.copyWith(
+          titleMedium: theme.textTheme.titleMedium!.copyWith(letterSpacing: 3),
+        ),
+      );
+      await pump(
+        initial,
+        locale: const Locale('zh'),
+        presentationTheme: changedTheme,
+      );
+      expect(
+        tester
+            .widget<StatisticsHistoryHeader>(
+              find.byType(StatisticsHistoryHeader),
+            )
+            .options,
+        same(header.options),
+      );
+      expect(
+        tester
+            .widget<Text>(find.text(localized.settingsStatisticsHistoryTitle))
+            .style!
+            .letterSpacing,
+        3,
+      );
+
+      tester.view.physicalSize = const Size(360, 1600);
+      await tester.pumpAndSettle();
+      expect(
+        tester
+            .widget<StatisticsHistoryHeader>(
+              find.byType(StatisticsHistoryHeader),
+            )
+            .options,
+        same(header.options),
+      );
+      expect(
+        tester
+            .widget<StatisticsSummarySection>(
+              find.byType(StatisticsSummarySection),
+            )
+            .compact,
+        isTrue,
+      );
+      tester.view.physicalSize = const Size(1200, 1600);
+      await tester.pumpAndSettle();
+      final wideSummary = tester.widget<StatisticsSummarySection>(
+        find.byType(StatisticsSummarySection),
+      );
+
+      final revisionOnly = StatisticsSnapshot(
+        ownerEpoch: initial.ownerEpoch,
+        feedId: initial.feedId,
+        publicationRevision: 3,
+        summariesRevision: initial.summariesRevision,
+        historyRevision: 2,
+        summaries: initial.summaries,
+        history: initial.history,
+        statisticsPending: false,
+        statisticsGap: false,
+        readFailed: false,
+      );
+      await pump(revisionOnly);
+      final revisedOptions = tester
+          .widget<StatisticsHistoryHeader>(find.byType(StatisticsHistoryHeader))
+          .options;
+      expect(revisedOptions, isNot(same(header.options)));
+      expect(
+        tester.widget<StatisticsSummarySection>(
+          find.byType(StatisticsSummarySection),
+        ),
+        same(wideSummary),
+      );
+      await pump(
+        StatisticsSnapshot(
+          ownerEpoch: 'new-view-owner',
+          feedId: 'new-view-feed',
+          publicationRevision: 1,
+          summariesRevision: 1,
+          historyRevision: 2,
+          summaries: initial.summaries,
+          history: initial.history,
+          statisticsPending: false,
+          statisticsGap: false,
+          readFailed: false,
+        ),
+      );
+      expect(
+        tester
+            .widget<StatisticsHistoryHeader>(
+              find.byType(StatisticsHistoryHeader),
+            )
+            .options,
+        isNot(same(revisedOptions)),
+      );
+      expect(
+        tester.widget<StatisticsSummarySection>(
+          find.byType(StatisticsSummarySection),
+        ),
+        isNot(same(wideSummary)),
+      );
+
+      final changed = StatisticsSnapshot(
+        ownerEpoch: initial.ownerEpoch,
+        feedId: initial.feedId,
+        publicationRevision: 3,
+        summariesRevision: 2,
+        historyRevision: 2,
+        summaries: const [],
+        history: [initial.history.first],
+        statisticsPending: false,
+        statisticsGap: false,
+        readFailed: false,
+      );
+      await pump(changed);
+      final changedHeader = tester.widget<StatisticsHistoryHeader>(
+        find.byType(StatisticsHistoryHeader),
+      );
+      expect(changedHeader.options, isNot(same(header.options)));
+      expect(changedHeader.options.models, hasLength(1));
+      expect(changedHeader.options.efforts, hasLength(1));
+      expect(
+        tester.widget<StatisticsSummarySection>(
+          find.byType(StatisticsSummarySection),
+        ),
+        isNot(same(summary)),
+      );
+      expect(find.byType(DataTable), findsNothing);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  for (final wide in [false, true]) {
+    testWidgets(
+      '${wide ? "wide" : "compact"} history copies the typed first-content source',
+      (tester) async {
+        String? copied;
+        tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+          SystemChannels.platform,
+          (call) async {
+            if (call.method == 'Clipboard.setData') {
+              copied =
+                  (call.arguments as Map<Object?, Object?>)['text'] as String;
+            }
+            if (call.method == 'Clipboard.hasStrings') {
+              return <String, bool>{'value': copied?.isNotEmpty ?? false};
+            }
+            return null;
+          },
+        );
+        addTearDown(
+          () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+            SystemChannels.platform,
+            null,
+          ),
+        );
+        tester.view.devicePixelRatio = 1;
+        tester.view.physicalSize = Size(wide ? 1100 : 360, 1000);
+        addTearDown(tester.view.reset);
+        final sample = _windowSample(
+          0,
+          _snapshot().history.first,
+          firstOutputSource: FirstOutputSource.completedToolInput,
+        );
+        await tester.pumpWidget(
+          MaterialApp(
+            locale: const Locale('en'),
+            theme: pureStudioTheme(),
+            localizationsDelegates: AppLocalizations.localizationsDelegates,
+            supportedLocales: AppLocalizations.supportedLocales,
+            home: Scaffold(
+              body: SingleChildScrollView(
+                child: wide
+                    ? StatisticsWideHistoryRow(sample: sample)
+                    : StatisticsCompactHistoryCard(sample: sample),
+              ),
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+        const sourceText =
+            'First content source: First complete tool input observed';
+        final source = find.byWidgetPredicate(
+          (widget) => widget is SelectableText && widget.data == sourceText,
+        );
+        expect(source, findsOneWidget);
+        final editable = tester.state<EditableTextState>(
+          find.descendant(of: source, matching: find.byType(EditableText)),
+        );
+        editable.selectAll(SelectionChangedCause.keyboard);
+        editable.copySelection(SelectionChangedCause.keyboard);
+        await tester.pump();
+        expect(copied, sourceText);
+        expect(
+          find.byTooltip(
+            'A completed item marks the client’s first observation of complete tool input, '
+            'not the provider’s first token; decode time can be 0.',
+          ),
+          findsOneWidget,
+        );
+        expect(tester.takeException(), isNull);
+      },
+    );
+  }
+
+  test('status publications reuse filtered materials, filter and epoch changes do not', () {
+    final snapshot = _snapshot();
+    final repository = _FixtureStatisticsRepository(snapshot);
+    final container = ProviderContainer(
+      overrides: [statisticsRepositoryProvider.overrideWithValue(repository)],
+    );
+    addTearDown(container.dispose);
+    final subscription = container.listen(
+      statisticsViewModelProvider,
+      (_, _) {},
+    );
+    addTearDown(subscription.close);
+    final model = container.read(statisticsViewModelProvider.notifier);
+    expect(
+      container.read(statisticsViewModelProvider).filteredHistory,
+      same(snapshot.history),
+    );
+
+    final first = snapshot.history.first;
+    model.selectModel(first.filterKey);
+    final modelOnly = container
+        .read(statisticsViewModelProvider)
+        .filteredHistory;
+    // Same account/model, two distinct efforts remain separate calls.
+    expect(modelOnly.map((item) => item.callId), ['call-1', 'call-2']);
+    model.selectEffort(first.effortKey);
+    final filtered = container
+        .read(statisticsViewModelProvider)
+        .filteredHistory;
+    expect(filtered.map((item) => item.callId), ['call-1']);
+
+    final statusOnly = snapshot.withPublication(
+      StatisticsFeedIdentity(
+        ownerEpoch: snapshot.ownerEpoch,
+        feedId: snapshot.feedId,
+        deliverySequence: 2,
+        publicationRevision: 2,
+        summariesRevision: snapshot.summariesRevision,
+        historyRevision: snapshot.historyRevision,
+        summaryCount: snapshot.summaries.length,
+        historyCount: snapshot.history.length,
+        statisticsPending: true,
+        statisticsGap: true,
+        readFailed: false,
+      ),
+    );
+    repository.publish(statusOnly);
+    expect(
+      container.read(statisticsViewModelProvider).filteredHistory,
+      same(filtered),
+    );
+    expect(() => filtered.clear(), throwsUnsupportedError);
+
+    model.selectEffort(snapshot.history[1].effortKey);
+    final unspecified = container
+        .read(statisticsViewModelProvider)
+        .filteredHistory;
+    expect(unspecified.map((item) => item.callId), ['call-2']);
+    expect(unspecified, isNot(same(filtered)));
+    model.selectEffort(first.effortKey);
+    final selectedAgain = container
+        .read(statisticsViewModelProvider)
+        .filteredHistory;
+
+    // Even deliberately reused material objects may not carry a cache across an owner epoch.
+    repository.publish(
+      StatisticsSnapshot(
+        ownerEpoch: 'new-owner',
+        feedId: 'new-feed',
+        publicationRevision: 1,
+        summariesRevision: 1,
+        historyRevision: 1,
+        summaries: snapshot.summaries,
+        history: snapshot.history,
+        statisticsPending: false,
+        statisticsGap: false,
+        readFailed: false,
+      ),
+    );
+    final newOwner = container
+        .read(statisticsViewModelProvider)
+        .filteredHistory;
+    expect(newOwner, isNot(same(selectedAgain)));
+    expect(newOwner.map((item) => item.callId), ['call-1']);
+
+    repository.publish(
+      StatisticsSnapshot(
+        ownerEpoch: 'new-owner',
+        feedId: 'new-feed',
+        publicationRevision: 2,
+        summariesRevision: 1,
+        historyRevision: 2,
+        summaries: snapshot.summaries,
+        history: [snapshot.history[1]],
+        statisticsPending: false,
+        statisticsGap: false,
+        readFailed: false,
+      ),
+    );
+    final replaced = container.read(statisticsViewModelProvider);
+    expect(replaced.effortFilter, isNull);
+    expect(replaced.filteredHistory.map((item) => item.callId), ['call-2']);
+    expect(replaced.filteredHistory, isNot(same(newOwner)));
+  });
+
+  testWidgets(
+    'history preserves unknown versus zero, source and copyable call identity',
+    (tester) async {
+      Future<void> pump(int? output, MetricAvailability availability) async {
+        final sample = StatisticsSample(
+          threadId: 'thread-observed',
+          callId: 'call-observed',
+          purpose: 'compaction',
+          firstOutputSource: FirstOutputSource.completedToolInput,
+          usageStatus: UsageReportStatus.partial,
+          ttftAvailability: MetricAvailability.available,
+          throughputAvailability: availability,
+          completedAt: DateTime.utc(2026, 2, 1),
+          accountId: 'account-a',
+          accountDisplayName: 'Alpha',
+          modelId: 'shared-model',
+          sentModel: 'shared-model',
+          reportedModel: 'shared-model',
+          modelMatchState: StatisticsModelMatchState.matched,
+          effort: 'high',
+          completionTokens: output,
+          ttftMillis: 100,
+          decodeMillis: 0,
+          totalResponseMillis: 100,
+          tokensPerSecond: null,
+        );
+        await tester.pumpWidget(
+          MaterialApp(
+            locale: const Locale('en'),
+            theme: pureStudioTheme(),
+            localizationsDelegates: AppLocalizations.localizationsDelegates,
+            supportedLocales: AppLocalizations.supportedLocales,
+            home: Scaffold(
+              body: SingleChildScrollView(
+                child: SizedBox(
+                  width: 320,
+                  child: StatisticsCompactHistoryCard(sample: sample),
+                ),
+              ),
+            ),
+          ),
+        );
+        await tester.pump();
+      }
+
+      await pump(null, MetricAvailability.missingOutput);
+      expect(find.text('Unknown'), findsOneWidget);
+      expect(find.textContaining('Output usage unknown'), findsOneWidget);
+      expect(
+        find.byWidgetPredicate(
+          (widget) =>
+              widget is SelectableText &&
+              widget.data?.contains('First complete tool input observed') ==
+                  true,
+        ),
+        findsOneWidget,
+      );
+      expect(find.textContaining('compaction'), findsOneWidget);
+      final identity = tester.widget<SelectableText>(
+        find.byWidgetPredicate(
+          (widget) =>
+              widget is SelectableText &&
+              widget.data == 'Thread: thread-observed\nCall: call-observed',
+        ),
+      );
+      expect(identity.data, 'Thread: thread-observed\nCall: call-observed');
+      expect(
+        find.byTooltip(
+          'A completed item marks the client’s first observation of complete tool input, '
+          'not the provider’s first token; decode time can be 0.',
+        ),
+        findsOneWidget,
+      );
+      expect(tester.takeException(), isNull);
+
+      await pump(0, MetricAvailability.invalidUsage);
+      expect(find.text('Unknown'), findsNothing);
+      expect(find.text('0'), findsOneWidget);
+      // The typed reason must be displayed as received, not guessed from output == 0.
+      expect(
+        find.textContaining('Inconsistent or overflowing usage'),
+        findsOneWidget,
+      );
+      expect(find.textContaining('Reported output is 0'), findsNothing);
+      expect(tester.takeException(), isNull);
+    },
+  );
 
   testWidgets(
     'statistics groups by account model and filters effort separately',
@@ -155,27 +724,51 @@ void main() {
 
     expect(
       find.byKey(
-        StudioDriverKeys.statisticsHistoryRow(
-          'account-a',
-          'shared-model',
-          'high',
-          0,
+        const ValueKey(
+          'statistics-history-call:["thread-statistics","call-1"]',
         ),
       ),
       findsOneWidget,
     );
     expect(
-      find.byWidgetPredicate((widget) {
-        final key = widget.key?.toString() ?? '';
-        return key.contains('statistics-history-row') &&
-            !key.contains('"high"');
-      }),
-      findsNothing,
+      find.byWidgetPredicate(
+        (widget) =>
+            widget is StatisticsCompactHistoryCard ||
+            widget is StatisticsWideHistoryRow,
+      ),
+      findsOneWidget,
     );
     expect(find.byKey(StudioDriverKeys.statisticsFilter), findsOneWidget);
     expect(find.byKey(StudioDriverKeys.statisticsMismatchOnly), findsOneWidget);
   });
 }
+
+StatisticsSample _windowSample(
+  int index,
+  StatisticsSample source, {
+  FirstOutputSource? firstOutputSource,
+}) => StatisticsSample(
+  threadId: source.threadId,
+  callId: 'window-call-$index',
+  purpose: source.purpose,
+  firstOutputSource: firstOutputSource ?? source.firstOutputSource,
+  usageStatus: source.usageStatus,
+  ttftAvailability: source.ttftAvailability,
+  throughputAvailability: source.throughputAvailability,
+  completedAt: source.completedAt,
+  accountId: source.accountId,
+  accountDisplayName: source.accountDisplayName,
+  modelId: source.modelId,
+  sentModel: source.sentModel,
+  reportedModel: source.reportedModel,
+  modelMatchState: source.modelMatchState,
+  effort: source.effort,
+  completionTokens: source.completionTokens,
+  ttftMillis: source.ttftMillis,
+  decodeMillis: source.decodeMillis,
+  totalResponseMillis: source.totalResponseMillis,
+  tokensPerSecond: source.tokensPerSecond,
+);
 
 Future<void> _pumpStatistics(
   WidgetTester tester,
@@ -255,6 +848,13 @@ StatisticsSnapshot _snapshot() {
     summaries: [summary],
     history: [
       StatisticsSample(
+        threadId: 'thread-statistics',
+        callId: 'call-1',
+        purpose: 'primary',
+        firstOutputSource: FirstOutputSource.incremental,
+        usageStatus: UsageReportStatus.reported,
+        ttftAvailability: MetricAvailability.available,
+        throughputAvailability: MetricAvailability.available,
         completedAt: now,
         accountId: 'account-a',
         accountDisplayName: 'Alpha',
@@ -270,6 +870,13 @@ StatisticsSnapshot _snapshot() {
         tokensPerSecond: 100,
       ),
       StatisticsSample(
+        threadId: 'thread-statistics',
+        callId: 'call-2',
+        purpose: 'primary',
+        firstOutputSource: FirstOutputSource.incremental,
+        usageStatus: UsageReportStatus.reported,
+        ttftAvailability: MetricAvailability.available,
+        throughputAvailability: MetricAvailability.available,
         completedAt: now.subtract(const Duration(minutes: 1)),
         accountId: 'account-a',
         accountDisplayName: 'Alpha',
@@ -286,6 +893,13 @@ StatisticsSnapshot _snapshot() {
       ),
       // 缺失配置模型的旧记录只用发送别名显示，不得合并进配置模型汇总。
       StatisticsSample(
+        threadId: 'thread-statistics',
+        callId: 'call-3',
+        purpose: null,
+        firstOutputSource: FirstOutputSource.legacyUnknown,
+        usageStatus: UsageReportStatus.legacyUnknown,
+        ttftAvailability: MetricAvailability.legacyUnknown,
+        throughputAvailability: MetricAvailability.legacyUnknown,
         completedAt: now.subtract(const Duration(minutes: 2)),
         accountId: 'account-a',
         accountDisplayName: 'Alpha',
@@ -317,7 +931,8 @@ final class _FixtureStatisticsRepository implements StatisticsRepository {
          connection: StatisticsConnectionState(phase: phase, failure: failure),
        );
 
-  final StatisticsRepositoryState _state;
+  StatisticsRepositoryState _state;
+  final _listeners = <void Function(StatisticsRepositoryState)>{};
   int visibleDemands = 0;
   int retryCalls = 0;
 
@@ -327,7 +942,22 @@ final class _FixtureStatisticsRepository implements StatisticsRepository {
   @override
   StatisticsObservation observe(
     void Function(StatisticsRepositoryState state) listener,
-  ) => _FixtureObservation(_state);
+  ) {
+    _listeners.add(listener);
+    return _FixtureObservation(_state, () => _listeners.remove(listener));
+  }
+
+  void publish(StatisticsSnapshot snapshot) {
+    _state = StatisticsRepositoryState(
+      snapshot: snapshot,
+      connection: const StatisticsConnectionState(
+        phase: StatisticsConnectionPhase.ready,
+      ),
+    );
+    for (final listener in _listeners.toList()) {
+      listener(_state);
+    }
+  }
 
   @override
   StatisticsVisibilityLease acquireVisibleDemand() {
@@ -346,13 +976,15 @@ final class _FixtureStatisticsRepository implements StatisticsRepository {
 }
 
 final class _FixtureObservation implements StatisticsObservation {
-  const _FixtureObservation(this.initialState);
+  const _FixtureObservation(this.initialState, this._onCancel);
+
+  final void Function() _onCancel;
 
   @override
   final StatisticsRepositoryState initialState;
 
   @override
-  void cancel() {}
+  void cancel() => _onCancel();
 }
 
 final class _FixtureVisibilityLease implements StatisticsVisibilityLease {

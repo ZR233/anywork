@@ -192,6 +192,7 @@ impl ModelTurnClient {
             (Ok(response), Err(source)) => Err(crate::completion::CompletionFailure {
                 source: Box::new(source),
                 accounting: Box::new(response.accounting),
+                timing: response.timing,
                 model_observation: response.model_observation.map(Box::new),
                 presentation_items: response.presentation_items,
                 partial_progress: Some(Box::new(response.observation.into())),
@@ -208,6 +209,7 @@ impl ModelTurnClient {
                         },
                     ))),
                     accounting: failure.accounting,
+                    timing: failure.timing,
                     model_observation: failure.model_observation,
                     presentation_items: failure.presentation_items,
                     partial_progress: failure.partial_progress,

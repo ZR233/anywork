@@ -13,6 +13,7 @@ use pl_core::chat::{Session, WeakSession};
 use pl_core::thread::UsageSummary;
 use tokio::sync::{Notify, watch};
 
+use crate::studio::storage::calls::CallsStore;
 use crate::studio::storage::history::{HistoryStore, HistoryStoreShare};
 use crate::studio::storage::thread_writer::HistoryChannel;
 
@@ -26,13 +27,19 @@ pub(crate) struct ThreadPersistenceMetrics {
     pub(crate) state_durable_revision: u64,
     pub(crate) history_admitted_sequence: u64,
     pub(crate) history_durable_sequence: u64,
-    pub(crate) calls_admitted_sequence: u64,
-    pub(crate) calls_durable_sequence: u64,
     pub(crate) pending_operations: u64,
     pub(crate) pending_bytes: u64,
     pub(crate) in_flight_bytes: u64,
     pub(crate) oldest_pending_age_millis: Option<u64>,
     pub(crate) pressure_paused: bool,
+}
+
+/// One owner's absolute reliable-history state.
+pub(crate) struct ThreadPersistenceReport {
+    pub(crate) pending: Vec<u64>,
+    pub(crate) pending_checkpoint: bool,
+    pub(crate) error: Option<String>,
+    pub(crate) metrics: ThreadPersistenceMetrics,
 }
 
 /// Process-wide persistence pressure plus the per-Thread watermarks behind it.
@@ -49,9 +56,9 @@ pub(crate) struct ThreadPersistenceSnapshot {
     pub(crate) pressure_paused: bool,
     pub(crate) threads: Vec<pl_protocol::ThreadPersistenceSnapshot>,
     /// Newest call-write ticket admitted by the global call recorder.
-    pub(crate) calls_admitted_sequence: u64,
-    /// Newest call-write ticket the global call recorder made durable.
-    pub(crate) calls_durable_sequence: u64,
+    pub(crate) calls_admitted_ticket: u64,
+    /// Newest call-write ticket processed, including explicit rejection; not proof of durability.
+    pub(crate) calls_processed_ticket: u64,
     /// Call mutations still queued in the global recorder.
     pub(crate) calls_pending_operations: u64,
     /// Encoded bytes of the call mutations still queued.
@@ -73,8 +80,8 @@ pub(crate) struct ThreadPersistenceSnapshot {
 /// The call recorder is a single global writer, so any Thread's writer reports the same values.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct CallsQueueMetrics {
-    pub(crate) admitted_sequence: u64,
-    pub(crate) durable_sequence: u64,
+    pub(crate) admitted_ticket: u64,
+    pub(crate) processed_ticket: u64,
     pub(crate) pending_operations: u64,
     pub(crate) pending_bytes: u64,
     pub(crate) in_flight_bytes: u64,
@@ -87,7 +94,7 @@ pub(crate) struct CallsQueueMetrics {
 /// Watermarks reported by one per-Thread writer incarnation.
 #[derive(Debug, Clone, Default)]
 struct IncarnationStatus {
-    /// Admitted effects this incarnation still owes an ordered history/calls write.
+    /// Admitted effects this incarnation still owes an ordered history write.
     pending: BTreeMap<u64, ()>,
     /// Whether this incarnation still owes the publication of a retained checkpoint.
     pending_checkpoint: bool,
@@ -151,8 +158,16 @@ type RetryGate = (
     tokio::sync::oneshot::Receiver<()>,
 );
 
+#[cfg(test)]
+type CallsSampleGate = (
+    tokio::sync::oneshot::Sender<()>,
+    std::sync::mpsc::Receiver<()>,
+);
+
 #[derive(Debug)]
 struct Inner {
+    #[cfg(test)]
+    aggregate_count: AtomicU64,
     #[cfg(test)]
     release_gate: Mutex<
         Option<(
@@ -162,6 +177,8 @@ struct Inner {
     >,
     #[cfg(test)]
     retry_gate: Mutex<Option<RetryGate>>,
+    #[cfg(test)]
+    calls_sample_gate: Mutex<Option<CallsSampleGate>>,
     threads: Mutex<BTreeMap<String, ThreadStatus>>,
     /// Last cumulative usage summary per Thread.
     ///
@@ -209,9 +226,13 @@ impl Default for ThreadPersistenceCoordinator {
         let (capacity, _) = watch::channel(0);
         Self(Arc::new(Inner {
             #[cfg(test)]
+            aggregate_count: AtomicU64::new(0),
+            #[cfg(test)]
             release_gate: Mutex::new(None),
             #[cfg(test)]
             retry_gate: Mutex::new(None),
+            #[cfg(test)]
+            calls_sample_gate: Mutex::new(None),
             threads: Mutex::new(BTreeMap::new()),
             usage: Mutex::new(BTreeMap::new()),
             calls: Mutex::new(CallsQueueMetrics::default()),
@@ -560,14 +581,12 @@ impl ThreadPersistenceCoordinator {
         }
     }
 
-    pub(crate) fn update(
+    pub(crate) fn report(
         &self,
         thread_id: &str,
         owner: usize,
-        pending: impl IntoIterator<Item = u64>,
-        pending_checkpoint: bool,
-        error: Option<String>,
-        metrics: ThreadPersistenceMetrics,
+        report: ThreadPersistenceReport,
+        calls: Option<&CallsStore>,
     ) {
         {
             let mut threads = self
@@ -584,10 +603,14 @@ impl ThreadPersistenceCoordinator {
             let Some(incarnation) = status.incarnations.get_mut(&owner) else {
                 return;
             };
-            incarnation.pending = pending.into_iter().map(|sequence| (sequence, ())).collect();
-            incarnation.pending_checkpoint = pending_checkpoint;
-            incarnation.error = error;
-            incarnation.metrics = metrics;
+            incarnation.pending = report
+                .pending
+                .into_iter()
+                .map(|sequence| (sequence, ()))
+                .collect();
+            incarnation.pending_checkpoint = report.pending_checkpoint;
+            incarnation.error = report.error;
+            incarnation.metrics = report.metrics;
             // A cancelled initializer has not adopted a predecessor's obligations merely by
             // reserving an identity. Retire its stopped predecessor only after a real queue report
             // proves that every owed fact is either adopted by this incarnation or already durable.
@@ -610,6 +633,19 @@ impl ThreadPersistenceCoordinator {
                 .collect::<Vec<_>>();
             for id in covered {
                 status.incarnations.remove(&id);
+            }
+            if let Some(calls) = calls {
+                // Validate the owner before sampling. Keep threads -> calls and adopt both
+                // observations before publishing once; history-only reports retain global calls.
+                let mut current = self
+                    .0
+                    .calls
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let metrics = calls.metrics();
+                #[cfg(test)]
+                self.pause_after_calls_sample();
+                *current = metrics;
             }
         }
         self.refresh();
@@ -641,7 +677,7 @@ impl ThreadPersistenceCoordinator {
                 status.channel = Arc::new(status.channel.next_storage_channel());
             }
             anyhow::ensure!(!status.channel.is_stopping(), "history writer is stopping");
-            // Queue adoption is confirmed by update(), not by this preparation reservation.
+            // Queue adoption is confirmed by report(), not by this preparation reservation.
             let superseded: Vec<usize> = status
                 .incarnations
                 .iter()
@@ -840,13 +876,19 @@ impl ThreadPersistenceCoordinator {
             .insert(thread_id.to_owned(), summary);
     }
 
-    /// Publishes the global call-write queue pressure observed by the reporting writer.
-    pub(crate) fn report_calls(&self, metrics: CallsQueueMetrics) {
-        *self
-            .0
-            .calls
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = metrics;
+    /// Samples and adopts global call-write pressure under one ordered boundary.
+    pub(crate) fn report_calls(&self, calls: &CallsStore) {
+        {
+            let mut current = self
+                .0
+                .calls
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let metrics = calls.metrics();
+            #[cfg(test)]
+            self.pause_after_calls_sample();
+            *current = metrics;
+        }
         self.refresh();
     }
 
@@ -855,17 +897,36 @@ impl ThreadPersistenceCoordinator {
     /// Watch-driven publishers call this from inside their own wakeup path; reporting
     /// unchanged metrics would `refresh()` (which always notifies) and wake the publisher
     /// again, so only real progress may re-enter the watch.
-    pub(crate) fn refresh_calls_metrics(&self, metrics: CallsQueueMetrics) -> bool {
-        let changed = *self
-            .0
-            .calls
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            != metrics;
+    pub(crate) fn refresh_calls_metrics(&self, calls: &CallsStore) -> bool {
+        let changed = {
+            let mut current = self
+                .0
+                .calls
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let metrics = calls.metrics();
+            #[cfg(test)]
+            self.pause_after_calls_sample();
+            if *current == metrics {
+                false
+            } else {
+                *current = metrics;
+                true
+            }
+        };
         if changed {
-            self.report_calls(metrics);
+            self.refresh();
         }
         changed
+    }
+
+    #[cfg(test)]
+    fn pause_after_calls_sample(&self) {
+        let gate = self.0.calls_sample_gate.lock().unwrap().take();
+        if let Some((entered, release)) = gate {
+            let _ = entered.send(());
+            let _ = release.recv();
+        }
     }
 
     /// Seeds the summary from a loaded checkpoint without overwriting a fresher reported value.
@@ -910,8 +971,8 @@ impl ThreadPersistenceCoordinator {
             }
             let queue = self.queue_snapshot();
             tracing::debug!(
-                calls_admitted = snapshot.calls_admitted_sequence,
-                calls_durable = snapshot.calls_durable_sequence,
+                calls_admitted = snapshot.calls_admitted_ticket,
+                calls_processed = snapshot.calls_processed_ticket,
                 calls_oldest_pending_age_millis = ?snapshot.calls_oldest_pending_age_millis,
                 pending_operations = queue.pending_operations,
                 pending_bytes = queue.pending_bytes,
@@ -930,6 +991,8 @@ impl ThreadPersistenceCoordinator {
 
     /// Re-aggregates the process-wide observation from the per-Thread status and recovery map.
     fn refresh(&self) {
+        #[cfg(test)]
+        self.0.aggregate_count.fetch_add(1, Ordering::Relaxed);
         // Capture inside watch's publication lock so an older aggregate cannot
         // overtake a newer one. All callers release registry/calls locks first.
         self.0.state.send_modify(|snapshot| {
@@ -982,8 +1045,8 @@ fn aggregate(
     // 显式恢复诊断暴露，不升级为进程级阻塞错误。
     let recovery = crate::studio::storage::state::checkpoint_recovery_snapshot();
     let mut snapshot = ThreadPersistenceSnapshot {
-        calls_admitted_sequence: calls.admitted_sequence,
-        calls_durable_sequence: calls.durable_sequence,
+        calls_admitted_ticket: calls.admitted_ticket,
+        calls_processed_ticket: calls.processed_ticket,
         calls_pending_operations: calls.pending_operations,
         calls_pending_bytes: calls.pending_bytes,
         calls_in_flight_bytes: calls.in_flight_bytes,
@@ -1050,8 +1113,6 @@ fn aggregate(
                     state_durable_revision: live.then_some(metrics.state_durable_revision),
                     history_admitted_sequence: live.then_some(metrics.history_admitted_sequence),
                     history_durable_sequence: live.then_some(metrics.history_durable_sequence),
-                    calls_admitted_sequence: live.then_some(metrics.calls_admitted_sequence),
-                    calls_durable_sequence: live.then_some(metrics.calls_durable_sequence),
                     pending_operations: metrics.pending_operations,
                     pending_bytes: metrics.pending_bytes,
                     oldest_pending_age_millis: metrics.oldest_pending_age_millis,
@@ -1080,4 +1141,183 @@ fn aggregate(
     // 会让与之无关的 `wait_for_drain`（runtime shutdown/drain）因别人的恢复诊断失败，
     // 而真实 writer 失败仍通过各 incarnation 的 `failure()` 照常阻断 drain。
     snapshot
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn history_report() -> ThreadPersistenceReport {
+        ThreadPersistenceReport {
+            pending: vec![3],
+            pending_checkpoint: false,
+            error: Some("retained failure".into()),
+            metrics: ThreadPersistenceMetrics {
+                fault_generation: 4,
+                history_admitted_sequence: 3,
+                history_durable_sequence: 2,
+                pending_operations: 1,
+                pending_bytes: 17,
+                ..Default::default()
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn joint_report_publishes_one_coherent_owned_snapshot() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        // Prepare a real source without starting its worker: observations cannot race a drain.
+        let calls = CallsStore::prepare(&directory.path().join("calls.sqlite")).await?;
+        calls.mark_statistics_gap();
+        let coordinator = ThreadPersistenceCoordinator::default();
+        let _registration = coordinator.claim("joint-report", 7)?;
+        let before = coordinator.0.aggregate_count.load(Ordering::Relaxed);
+        coordinator.report("joint-report", 7, history_report(), Some(&calls));
+        assert_eq!(
+            coordinator.0.aggregate_count.load(Ordering::Relaxed),
+            before + 1
+        );
+        let snapshot = coordinator.snapshot();
+        assert_eq!(snapshot.pending_commits, 1);
+        assert_eq!(snapshot.pending_bytes, 17);
+        assert_eq!(snapshot.calls_admitted_ticket, calls.admitted_ticket());
+        assert_eq!(snapshot.calls_processed_ticket, calls.processed_ticket());
+        assert!(snapshot.statistics_gap);
+        let thread = &snapshot.threads[0];
+        assert_eq!(thread.history_admitted_sequence, Some(3));
+        assert_eq!(thread.history_durable_sequence, Some(2));
+        assert_eq!(thread.last_error.as_deref(), Some("retained failure"));
+
+        let adopted_calls = coordinator.0.calls.lock().unwrap().clone();
+        calls.replace_session_usage(super::super::calls::SessionUsageProjection {
+            root_thread_id: "joint-report".into(),
+            thread_id: "joint-report".into(),
+            revision: 1,
+            has_unpriced_usage: false,
+            purpose_costs: vec![],
+        })?;
+        assert!(calls.admitted_ticket() > snapshot.calls_admitted_ticket);
+        // This gate would be consumed by any actual sample. Pre-release it so an accidental
+        // history-only/stale sample fails the assertion instead of blocking the test.
+        let (entered, mut sampled) = tokio::sync::oneshot::channel();
+        let (release, waiting) = std::sync::mpsc::channel();
+        release.send(())?;
+        *coordinator.0.calls_sample_gate.lock().unwrap() = Some((entered, waiting));
+        let mut historical = history_report();
+        historical.pending = vec![4];
+        historical.metrics.history_admitted_sequence = 4;
+        historical.metrics.history_durable_sequence = 3;
+        coordinator.report("joint-report", 7, historical, None);
+        assert_eq!(*coordinator.0.calls.lock().unwrap(), adopted_calls);
+        let history_only = coordinator.snapshot();
+        assert_eq!(
+            history_only.calls_admitted_ticket,
+            snapshot.calls_admitted_ticket
+        );
+        assert_eq!(history_only.threads[0].history_admitted_sequence, Some(4));
+        assert_eq!(history_only.threads[0].history_durable_sequence, Some(3));
+        assert_eq!(
+            coordinator.0.aggregate_count.load(Ordering::Relaxed),
+            before + 2
+        );
+        // A stale/unregistered incarnation owns neither history nor the authority to sample calls.
+        coordinator.report("joint-report", 8, history_report(), Some(&calls));
+        coordinator.report("unregistered", 7, history_report(), Some(&calls));
+        assert!(matches!(
+            sampled.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+        ));
+        assert!(
+            coordinator
+                .0
+                .calls_sample_gate
+                .lock()
+                .unwrap()
+                .take()
+                .is_some()
+        );
+        assert_eq!(coordinator.snapshot(), history_only);
+        assert_eq!(
+            coordinator.0.aggregate_count.load(Ordering::Relaxed),
+            before + 2
+        );
+        calls.close().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn calls_sampling_and_adoption_are_ordered_across_all_entrypoints() -> Result<()> {
+        fn publish(coordinator: &ThreadPersistenceCoordinator, calls: &CallsStore, entry: usize) {
+            match entry {
+                0 => coordinator.report("ordered", 7, history_report(), Some(calls)),
+                1 => coordinator.report_calls(calls),
+                2 => {
+                    coordinator.refresh_calls_metrics(calls);
+                }
+                _ => unreachable!(),
+            }
+        }
+
+        for entry in 0..3 {
+            let directory = tempfile::tempdir()?;
+            let calls = CallsStore::prepare(&directory.path().join("calls.sqlite")).await?;
+            let coordinator = ThreadPersistenceCoordinator::default();
+            let _registration = coordinator.claim("ordered", 7)?;
+            let (entered, sampled) = tokio::sync::oneshot::channel();
+            let (release, waiting) = std::sync::mpsc::channel();
+            *coordinator.0.calls_sample_gate.lock().unwrap() = Some((entered, waiting));
+            let first = tokio::task::spawn_blocking({
+                let coordinator = coordinator.clone();
+                let calls = calls.clone();
+                move || publish(&coordinator, &calls, entry)
+            });
+            tokio::time::timeout(std::time::Duration::from_secs(5), sampled).await??;
+            // The source was really sampled, but adoption is paused. No other entrypoint may
+            // sample/adopt a newer value and then be overwritten by this older observation.
+            let serialized = matches!(
+                coordinator.0.calls.try_lock(),
+                Err(std::sync::TryLockError::WouldBlock)
+            );
+            calls.mark_statistics_gap();
+            let second = tokio::task::spawn_blocking({
+                let coordinator = coordinator.clone();
+                let calls = calls.clone();
+                move || publish(&coordinator, &calls, (entry + 1) % 3)
+            });
+            release.send(())?;
+            tokio::time::timeout(std::time::Duration::from_secs(5), first).await??;
+            tokio::time::timeout(std::time::Duration::from_secs(5), second).await??;
+            assert!(
+                serialized,
+                "entrypoint {entry} released the calls boundary after sampling"
+            );
+            assert!(coordinator.snapshot().statistics_gap);
+            assert!(coordinator.0.calls.lock().unwrap().statistics_gap);
+            calls.close().await?;
+        }
+        // A stable source must not create watch feedback. Unconditional reports still aggregate.
+        let directory = tempfile::tempdir()?;
+        let calls = CallsStore::prepare(&directory.path().join("calls.sqlite")).await?;
+        let coordinator = ThreadPersistenceCoordinator::default();
+        let before = coordinator.0.aggregate_count.load(Ordering::Relaxed);
+        assert!(!coordinator.refresh_calls_metrics(&calls));
+        assert_eq!(
+            coordinator.0.aggregate_count.load(Ordering::Relaxed),
+            before
+        );
+        calls.mark_statistics_gap();
+        assert!(coordinator.refresh_calls_metrics(&calls));
+        assert!(!coordinator.refresh_calls_metrics(&calls));
+        assert_eq!(
+            coordinator.0.aggregate_count.load(Ordering::Relaxed),
+            before + 1
+        );
+        coordinator.report_calls(&calls);
+        assert_eq!(
+            coordinator.0.aggregate_count.load(Ordering::Relaxed),
+            before + 2
+        );
+        calls.close().await?;
+        Ok(())
+    }
 }

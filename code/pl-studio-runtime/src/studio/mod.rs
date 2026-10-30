@@ -1,5 +1,8 @@
 pub(crate) mod agent_close;
 mod agent_host;
+#[cfg(feature = "benchmarks")]
+#[doc(hidden)]
+pub mod benchmark;
 pub(crate) mod catalog;
 pub(crate) mod delegation;
 pub(crate) mod entity;

@@ -10,6 +10,7 @@ mod parameter;
 mod pricing;
 mod profile_error;
 mod selection;
+pub mod usage;
 
 pub use capabilities::{
     ModelCapabilities, ModelInputCapability, ModelInputLimits, ModelInputSource, ModelModality,

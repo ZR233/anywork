@@ -17,6 +17,13 @@ use super::queue::{QueuedMutation, queue_directory, queue_worktree_lease, try_co
 use super::state::update_healthy_state;
 use super::worker::supervise_writer;
 
+#[cfg(test)]
+pub(super) struct LeaseAckGate {
+    pub(super) state: crate::studio::agent_host::worktree_lease::WorktreeLeaseState,
+    pub(super) entered: tokio::sync::oneshot::Sender<()>,
+    pub(super) release: tokio::sync::oneshot::Receiver<()>,
+}
+
 pub(super) struct WriterShared {
     #[cfg(test)]
     pub(super) lease_ticket_gate: Mutex<
@@ -26,12 +33,7 @@ pub(super) struct WriterShared {
         )>,
     >,
     #[cfg(test)]
-    pub(super) cleaned_ack_gate: Mutex<
-        Option<(
-            tokio::sync::oneshot::Sender<()>,
-            tokio::sync::oneshot::Receiver<()>,
-        )>,
-    >,
+    pub(super) lease_ack_gate: Mutex<Option<LeaseAckGate>>,
     pub(super) store: StudioStore,
     pub(super) queue: Mutex<VecDeque<QueuedMutation>>,
     /// 已从 queue 取出、但尚未 durable 的 typed mutation 副本。
@@ -93,7 +95,7 @@ impl ThreadWriteBehindWriter {
                 #[cfg(test)]
                 lease_ticket_gate: Mutex::new(None),
                 #[cfg(test)]
-                cleaned_ack_gate: Mutex::new(None),
+                lease_ack_gate: Mutex::new(None),
                 store,
                 queue: Mutex::new(VecDeque::new()),
                 inflight: Mutex::new(VecDeque::new()),
@@ -605,6 +607,295 @@ mod storage_fault_tests {
     }
 
     #[tokio::test]
+    async fn verified_binding_confirmation_requires_exact_lease_and_execution_use() -> Result<()> {
+        use crate::studio::agent_host::worktree_lease::{WorkspaceEndpoint, WorkspaceIdentity};
+        let temp = tempfile::tempdir()?;
+        let store = StudioStore::open(temp.path().join("studio/v2/studio.sqlite")).await?;
+        let writer = ThreadWriteBehindWriter::new(store.clone());
+        let owner = WorktreeLeaseOwner::new(writer.clone());
+        let mut expected = lease(temp.path(), "verified-child");
+        owner.record_durable(expected.clone()).await?;
+        let identity =
+            WorkspaceIdentity::canonical(WorkspaceEndpoint::Local, expected.path.clone())?;
+        let usage = owner.reserve_workspace(&expected.owner_thread_id, WorkspaceEndpoint::Local)?;
+        assert!(
+            owner
+                .confirm_verified_binding(&expected, &usage)
+                .await
+                .is_err()
+        );
+        owner.assign_workspace(&usage, identity.clone())?;
+        let foreign_owner = WorktreeLeaseOwner::new(writer.clone());
+        let foreign =
+            foreign_owner.reserve_workspace(&expected.owner_thread_id, WorkspaceEndpoint::Local)?;
+        foreign_owner.assign_workspace(&foreign, identity.clone())?;
+        assert!(
+            owner
+                .confirm_verified_binding(&expected, &foreign)
+                .await
+                .is_err()
+        );
+        let wrong_owner = owner.reserve_workspace("another-child", WorkspaceEndpoint::Local)?;
+        owner.assign_workspace(&wrong_owner, identity.clone())?;
+        assert!(
+            owner
+                .confirm_verified_binding(&expected, &wrong_owner)
+                .await
+                .is_err()
+        );
+        let wrong_path =
+            owner.reserve_workspace(&expected.owner_thread_id, WorkspaceEndpoint::Local)?;
+        owner.assign_workspace(
+            &wrong_path,
+            WorkspaceIdentity::canonical(
+                WorkspaceEndpoint::Local,
+                temp.path().to_string_lossy().into_owned(),
+            )?,
+        )?;
+        assert!(
+            owner
+                .confirm_verified_binding(&expected, &wrong_path)
+                .await
+                .is_err()
+        );
+        let cleanup_use = owner.cleanup_resolution(&expected.owner_thread_id, identity.clone())?;
+        assert!(
+            owner
+                .confirm_verified_binding(&expected, &cleanup_use)
+                .await
+                .is_err()
+        );
+        let mut changed = expected.clone();
+        changed.base_commit = "b".repeat(40);
+        assert!(
+            owner
+                .confirm_verified_binding(&changed, &usage)
+                .await
+                .is_err()
+        );
+        for state in [
+            WorktreeLeaseState::CleanupRequested,
+            WorktreeLeaseState::Cleaned,
+        ] {
+            let previous = expected.clone();
+            expected.transition(state);
+            owner.record_durable(expected.clone()).await?;
+            assert!(
+                owner
+                    .confirm_verified_binding(&previous, &usage)
+                    .await
+                    .is_err()
+            );
+            assert!(
+                owner
+                    .confirm_verified_binding(&expected, &usage)
+                    .await
+                    .is_err()
+            );
+            assert_eq!(owner.get(&expected.owner_thread_id), Some(expected.clone()));
+        }
+        expected.transition(WorktreeLeaseState::Preserved);
+        owner.record_durable(expected.clone()).await?;
+        let active = owner.confirm_verified_binding(&expected, &usage).await?;
+        assert_eq!(active.state, WorktreeLeaseState::Active);
+        assert_eq!(active.revision, expected.revision + 1);
+        assert_eq!(
+            owner.confirm_verified_binding(&active, &usage).await?,
+            active
+        );
+        owner.restore_workspace_seal(&active.owner_thread_id, identity)?;
+        assert!(
+            owner
+                .confirm_verified_binding(&active, &usage)
+                .await
+                .is_err()
+        );
+        assert_eq!(owner.get(&active.owner_thread_id), Some(active));
+        writer.shutdown().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn verified_binding_and_active_reentry_wait_for_the_exact_ack() -> Result<()> {
+        use crate::studio::agent_host::worktree_lease::{WorkspaceEndpoint, WorkspaceIdentity};
+        let temp = tempfile::tempdir()?;
+        let store = StudioStore::open(temp.path().join("studio/v2/studio.sqlite")).await?;
+        let writer = ThreadWriteBehindWriter::new(store.clone());
+        let owner = WorktreeLeaseOwner::new(writer.clone());
+        let prepared = lease(temp.path(), "ack-child");
+        owner.record_durable(prepared.clone()).await?;
+        let usage = owner.reserve_workspace(&prepared.owner_thread_id, WorkspaceEndpoint::Local)?;
+        owner.assign_workspace(
+            &usage,
+            WorkspaceIdentity::canonical(WorkspaceEndpoint::Local, prepared.path.clone())?,
+        )?;
+        let (entered, waiting) = tokio::sync::oneshot::channel();
+        let (release, released) = tokio::sync::oneshot::channel();
+        *writer.shared.lease_ack_gate.lock().unwrap() = Some(LeaseAckGate {
+            state: WorktreeLeaseState::Active,
+            entered,
+            release: released,
+        });
+        let confirming_owner = owner.clone();
+        let confirming_usage = usage.clone();
+        let confirming = tokio::spawn(async move {
+            confirming_owner
+                .confirm_verified_binding(&prepared, &confirming_usage)
+                .await
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(5), waiting).await??;
+        let active = owner.get("ack-child").context("admitted Active lease")?;
+        assert!(!owner.is_durable(&active));
+        assert!(!confirming.is_finished());
+        let mut reentry = Box::pin(owner.confirm_verified_binding(&active, &usage));
+        assert!(futures::poll!(&mut reentry).is_pending());
+        // Cancelling one waiter must not lose the admitted write or bypass its original ACK.
+        confirming.abort();
+        assert!(confirming.await.unwrap_err().is_cancelled());
+        assert!(futures::poll!(&mut reentry).is_pending());
+        release.send(()).unwrap();
+        assert_eq!(reentry.await?, active);
+        assert!(owner.is_durable(&active));
+        assert_eq!(
+            crate::studio::agent_host::worktree_lease::load_leases(&store).await?,
+            vec![active]
+        );
+        writer.shutdown().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn verified_binding_propagates_the_writer_failure_without_acknowledging() -> Result<()> {
+        use crate::studio::agent_host::worktree_lease::{WorkspaceEndpoint, WorkspaceIdentity};
+        let temp = tempfile::tempdir()?;
+        let store = StudioStore::open(temp.path().join("studio/v2/studio.sqlite")).await?;
+        let writer = ThreadWriteBehindWriter::new(store.clone());
+        let owner = WorktreeLeaseOwner::new(writer.clone());
+        let prepared = lease(temp.path(), "conflicting-durable-binding");
+        owner.record_durable(prepared.clone()).await?;
+        let usage = owner.reserve_workspace(&prepared.owner_thread_id, WorkspaceEndpoint::Local)?;
+        owner.assign_workspace(
+            &usage,
+            WorkspaceIdentity::canonical(WorkspaceEndpoint::Local, prepared.path.clone())?,
+        )?;
+        // A conflicting durable revision is a real writer failure, not a test replacement
+        // for the confirmation operation or its ACK.
+        let mut conflicting = prepared.clone();
+        conflicting.transition(WorktreeLeaseState::Active);
+        conflicting.base_commit = "b".repeat(40);
+        crate::studio::store::object::put_object(
+            store.database(),
+            &prepared.owner_thread_id,
+            &conflicting,
+            1,
+        )
+        .await?;
+        let failure = owner
+            .confirm_verified_binding(&prepared, &usage)
+            .await
+            .unwrap_err();
+        assert!(failure.downcast_ref::<crate::PureError>().is_some());
+        assert!(
+            failure.to_string().contains("revision conflicts"),
+            "{failure:#}"
+        );
+        let admitted = owner.get(&prepared.owner_thread_id).unwrap();
+        assert!(!owner.is_durable(&admitted));
+        assert_eq!(
+            crate::studio::agent_host::worktree_lease::load_leases(&store).await?,
+            vec![conflicting]
+        );
+        assert!(writer.shutdown().await.is_err());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn failed_session_retention_follows_only_the_original_confirmed_binding() -> Result<()> {
+        use crate::studio::agent_host::worktree_lease::{WorkspaceEndpoint, WorkspaceIdentity};
+        let temp = tempfile::tempdir()?;
+        let store = StudioStore::open(temp.path().join("studio/v2/studio.sqlite")).await?;
+        let writer = ThreadWriteBehindWriter::new(store.clone());
+        let owner = WorktreeLeaseOwner::new(writer.clone());
+        let mut prepared = lease(temp.path(), "failed-root");
+        prepared.owner_kind = WorktreeLeaseOwnerKind::Session;
+        prepared.root_thread_id = prepared.owner_thread_id.clone();
+        prepared.path = WorktreeManager::allocate_path(
+            temp.path(),
+            &prepared.root_thread_id,
+            &WorktreeOwnership::Session {
+                thread_id: prepared.owner_thread_id.clone(),
+            },
+        )
+        .to_string_lossy()
+        .into_owned();
+        owner.record_durable(prepared.clone()).await?;
+        let identity =
+            WorkspaceIdentity::canonical(WorkspaceEndpoint::Local, prepared.path.clone())?;
+        let usage = owner.reserve_workspace(&prepared.owner_thread_id, WorkspaceEndpoint::Local)?;
+        owner.assign_workspace(&usage, identity.clone())?;
+        let active = owner.confirm_verified_binding(&prepared, &usage).await?;
+        let mut retained = owner.preserve_failed_session_binding(&prepared).await?;
+        assert_eq!(retained.state, WorktreeLeaseState::Preserved);
+        assert_eq!(retained.revision, active.revision + 1);
+        assert!(owner.is_durable(&retained));
+        assert_eq!(
+            owner.preserve_failed_session_binding(&prepared).await?,
+            retained
+        );
+        let mut other_binding = prepared.clone();
+        other_binding.base_commit = "b".repeat(40);
+        assert!(
+            owner
+                .preserve_failed_session_binding(&other_binding)
+                .await
+                .is_err()
+        );
+        let mut conflicting_revision = retained.clone();
+        conflicting_revision.state = WorktreeLeaseState::Active;
+        assert!(
+            owner
+                .preserve_failed_session_binding(&conflicting_revision)
+                .await
+                .is_err()
+        );
+        for state in [
+            WorktreeLeaseState::CleanupRequested,
+            WorktreeLeaseState::Cleaned,
+        ] {
+            retained.transition(state);
+            owner.record_durable(retained.clone()).await?;
+            assert!(
+                owner
+                    .preserve_failed_session_binding(&prepared)
+                    .await
+                    .is_err()
+            );
+            assert_eq!(owner.get(&prepared.owner_thread_id), Some(retained.clone()));
+        }
+        retained.transition(WorktreeLeaseState::Active);
+        owner.record_durable(retained.clone()).await?;
+        drop(usage);
+        let removing = owner.begin_workspace_cleanup(&prepared.owner_thread_id, &identity, None)?;
+        assert!(
+            owner
+                .preserve_failed_session_binding(&prepared)
+                .await
+                .is_err()
+        );
+        drop(removing);
+        owner.restore_workspace_seal(&prepared.owner_thread_id, identity)?;
+        assert!(
+            owner
+                .preserve_failed_session_binding(&prepared)
+                .await
+                .is_err()
+        );
+        assert_eq!(owner.get(&prepared.owner_thread_id), Some(retained));
+        writer.shutdown().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn cleaned_reentry_waits_for_its_completion_commit_and_ack() -> Result<()> {
         use crate::agent::worktree::WorktreeCleanupPolicy;
         use crate::studio::agent_host::workspace_preparation::cleanup_workspace;
@@ -706,7 +997,11 @@ mod storage_fault_tests {
         let manager = WorktreeManager::new(temp.path().to_owned(), io.clone());
         let (entered, waiting) = tokio::sync::oneshot::channel();
         let (release, released) = tokio::sync::oneshot::channel();
-        *writer.shared.cleaned_ack_gate.lock().unwrap() = Some((entered, released));
+        *writer.shared.lease_ack_gate.lock().unwrap() = Some(LeaseAckGate {
+            state: WorktreeLeaseState::Cleaned,
+            entered,
+            release: released,
+        });
         let cleanup_leases = leases.clone();
         let cleanup_store = store.clone();
         let cleanup_manager = manager.clone();
@@ -728,7 +1023,9 @@ mod storage_fault_tests {
             .context("cancelled completion phase")?;
         // A subsequent logical observation must not bypass the pending receipt.
         cleaned.transition(WorktreeLeaseState::Cleaned);
-        leases.record(cleaned.clone())?;
+        let mut pending = Box::pin(leases.record_durable(cleaned.clone()));
+        assert!(futures::poll!(&mut pending).is_pending());
+        drop(pending); // The queued completion remains owned by the writer.
         let mut retry = Box::pin(cleanup_workspace(
             &store,
             &leases,

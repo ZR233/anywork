@@ -216,12 +216,14 @@ impl StudioThreadFactory {
             )
             .await
             .map_err(|error| resource_error("resolve restored root session workspace", error))?
+            .0
         };
         if std::path::Path::new(&assignment.project_root) != root {
             return Err(ThreadAssemblyError::Identity(
                 "saved child workspace has a different project root".into(),
             ));
         }
+        let mut verified_lease = verified.as_ref().and_then(|proof| proof.verified_lease());
         match assignment.mode {
             pl_protocol::AgentWorkspaceMode::Unrestricted
             | pl_protocol::AgentWorkspaceMode::Directory
@@ -256,6 +258,7 @@ impl StudioThreadFactory {
                             .into(),
                     ));
                     }
+                    verified_lease = Some(verified);
                 }
             }
             pl_protocol::AgentWorkspaceMode::Unrestricted
@@ -367,6 +370,16 @@ impl StudioThreadFactory {
                 .confirm()
                 .await
                 .map_err(|error| resource_error("recheck restored review workspace", error))?;
+        }
+        if let Some(lease) = verified_lease {
+            self.confirm_worktree_binding(
+                &lease,
+                spec.workspace_usage
+                    .as_ref()
+                    .expect("child preparation use"),
+            )
+            .await
+            .map_err(|error| resource_error("confirm restored child worktree binding", error))?;
         }
         Ok(prepared.tools.install(spec))
     }

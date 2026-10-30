@@ -123,8 +123,13 @@ async fn persist(store: &HistoryStore, state: ThreadSnapshot, append: bool) -> R
                 delivery_repairs: &[],
                 attempt: None,
             },
+            crate::studio::storage::history::AccountingCommit {
+                facts: &crate::studio::thread_projection::PreparedAccounting::prepare(&effect)?,
+                material_changed: true,
+            },
         )
         .await
+        .map(|_| ())
 }
 
 #[tokio::test]
@@ -1534,6 +1539,10 @@ async fn mode_binding_recovery_replaces_unknown_snapshot_and_keeps_initial_conte
                 delivery_repairs: &[],
                 attempt: None,
             },
+            crate::studio::storage::history::AccountingCommit {
+                facts: &crate::studio::thread_projection::PreparedAccounting::prepare(&effect)?,
+                material_changed: true,
+            },
         )
         .await?;
     drop(history);
@@ -2755,7 +2764,7 @@ async fn restore_pre_timeline_history_fixture(
     Ok(())
 }
 
-async fn downgrade_checkpoint_to_schema_four(path: &std::path::Path) -> Result<String> {
+async fn downgrade_checkpoint_to_schema_five(path: &std::path::Path) -> Result<String> {
     use sea_orm::{DatabaseBackend, Statement};
     let db = raw_database(path).await?;
     let row = db
@@ -2767,11 +2776,8 @@ async fn downgrade_checkpoint_to_schema_four(path: &std::path::Path) -> Result<S
         .context("saved checkpoint")?;
     let mut legacy: serde_json::Value =
         serde_json::from_str(&row.try_get::<String>("", "payload")?)?;
-    legacy["schemaVersion"] = serde_json::json!(4);
-    let saved = legacy["state"].as_object_mut().context("saved state")?;
-    for field in ["execution", "executionSequence", "continuation"] {
-        saved.remove(field);
-    }
+    super::history::legacy_usage::flatten(&mut legacy);
+    legacy["schemaVersion"] = serde_json::json!(5);
     let encoded = serde_json::to_string(&legacy)?;
     db.execute_raw(Statement::from_sql_and_values(
         DatabaseBackend::Sqlite,
@@ -2818,7 +2824,7 @@ async fn checkpoint_envelope_upgrade_is_atomic_and_preserves_v2_history() -> Res
     let before = history.checkpoint().await?.context("saved checkpoint")?;
     drop(history);
 
-    let encoded = downgrade_checkpoint_to_schema_four(&path).await?;
+    let encoded = downgrade_checkpoint_to_schema_five(&path).await?;
     let db = raw_database(&path).await?;
     db.execute_unprepared(
         "CREATE TRIGGER reject_envelope_upgrade BEFORE UPDATE ON session_checkpoint
@@ -2862,9 +2868,11 @@ async fn checkpoint_envelope_upgrade_is_atomic_and_preserves_v2_history() -> Res
         .checkpoint()
         .await?
         .context("upgraded checkpoint")?;
+    let mut expected = before.clone();
+    expected.state.usage_summary.diagnostics.legacy_unknown = true;
     assert_eq!(
         serde_json::to_value(&after)?,
-        serde_json::to_value(&before)?
+        serde_json::to_value(&expected)?
     );
     let bytes = serde_json::to_vec(&after)?;
     reopened.prepare_activation().await?;
@@ -2886,7 +2894,7 @@ async fn checkpoint_envelope_upgrade_is_atomic_and_preserves_v2_history() -> Res
                 .context("cold checkpoint after upgrade")?
                 .0
         )?,
-        serde_json::to_value(before)?
+        serde_json::to_value(expected)?
     );
     Ok(())
 }
@@ -2961,13 +2969,13 @@ async fn cold_child_open_and_parent_recovery_prepare_checkpoint_envelopes() -> R
         persist(&history, saved_state(BTreeMap::new()), true).await?;
         let path = store.session_paths(&project.id, id)?.history_database();
         drop(history);
-        downgrade_checkpoint_to_schema_four(&path).await?;
+        downgrade_checkpoint_to_schema_five(&path).await?;
         children.push((child, path));
     }
     let root_path = store
         .session_paths(&project.id, &root.id)?
         .history_database();
-    downgrade_checkpoint_to_schema_four(&root_path).await?;
+    downgrade_checkpoint_to_schema_five(&root_path).await?;
     drop(store);
     let runtime = crate::StudioRuntime::initialize(options()).await?;
     let result = async {
@@ -3585,8 +3593,8 @@ async fn legacy_native_compaction_receipt_upgrades_sources_through_the_history_u
         receipt.revision,
         before.state.extensions[crate::compaction::LATEST_RECEIPT].revision
     );
-    assert_eq!(receipt.payload.version(), 3);
-    let decoded = crate::compaction::decode_receipt(3, receipt.payload.content())?;
+    assert_eq!(receipt.payload.version(), 4);
+    let decoded = crate::compaction::decode_receipt(4, receipt.payload.content())?;
     assert_eq!(decoded.inference_id, "compact-call");
     assert_eq!(upgraded.watermark().await?, 1);
 
@@ -3601,7 +3609,7 @@ async fn legacy_native_compaction_receipt_upgrades_sources_through_the_history_u
         anyhow::bail!("migrated compaction record is not opaque");
     };
     assert_eq!(payload.format(), "pl.model.compaction");
-    assert_eq!(payload.version(), 3, "原生 checkpoint 升级到当前结构");
+    assert_eq!(payload.version(), 4, "原生 checkpoint 升级到当前结构");
     let native: serde_json::Value = serde_json::from_str(payload.content())?;
     assert_eq!(native["binding"]["accountId"], "deepseek");
     assert_eq!(native["binding"]["modelId"], "deepseek-flash");
@@ -3930,6 +3938,14 @@ async fn studio_databases_adopt_current_files_and_refuse_future_writes() -> Resu
                     if family == "history" {
                         restore_pre_timeline_history_fixture(&db, 8).await?;
                     } else {
+                        if family == "calls" {
+                            // v9 requires its ledger; restore the actual published v8 shape.
+                            db.execute_unprepared(
+                                "ALTER TABLE legacy_call_fences RENAME TO call_watermarks;
+                                 UPDATE calls_meta SET schema_version=8 WHERE id=1;",
+                            )
+                            .await?;
+                        }
                         db.execute_unprepared("DROP TABLE seaql_migrations").await?;
                     }
                     db.close().await?;
@@ -3958,7 +3974,7 @@ async fn studio_databases_adopt_current_files_and_refuse_future_writes() -> Resu
             } else if fault == "checkpoint" {
                 let mut checkpoint =
                     ThreadCheckpoint::capture("adoption".into(), 0, ThreadSnapshot::default());
-                checkpoint.schema_version = 6;
+                checkpoint.schema_version = ThreadCheckpoint::SCHEMA_VERSION + 1;
                 let payload = serde_json::to_string(&checkpoint)?;
                 db.execute_raw(Statement::from_sql_and_values(DatabaseBackend::Sqlite,
                     "INSERT INTO session_checkpoint(id,revision,context_revision,context_count,payload,payload_hash) VALUES(1,0,0,0,?,?)",

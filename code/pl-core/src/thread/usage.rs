@@ -1,155 +1,187 @@
 //! Portable cumulative accounting for the plain SQLite Thread store.
-//!
-//! The model adapter freezes the selected model and context capacity before dispatch. Terminal
-//! attempts carry service-reported token counters. This fold uses only those core facts, so a
-//! product can read the same absolute totals from a hot snapshot and a restored checkpoint.
 
 use super::{AttemptOutcome, ThreadEffectBatch, UsageSummary};
 use crate::model::ModelUsage;
+use crate::usage::{UsageOutcome, UsageSource};
 
 pub(crate) fn fold_effect(summary: &mut UsageSummary, effect: &ThreadEffectBatch) {
     if effect.sequence <= summary.applied_sequence {
         return;
     }
-    if let Some(turn) = &effect.turn
-        && summary.turn_id != turn.turn_id
-    {
-        summary.turn_id.clone_from(&turn.turn_id);
-        summary.turn_completion_tokens = 0;
-        summary.turn_response_millis = 0;
-    }
     if let Some(attempt) = &effect.attempt {
-        // The binding facts are projected as one group: a newer attempt either replaces all of them
-        // or, without a binding, leaves them all unknown. No value may survive from an earlier model.
-        let binding = attempt.usage_binding.as_ref();
-        summary.model = binding.map_or_else(String::new, |binding| binding.model.clone());
-        summary.context_window = binding.and_then(|binding| binding.context_window);
-        summary.max_context_window = binding.and_then(|binding| binding.max_context_window);
-        summary.auto_compact_limit = binding.and_then(|binding| binding.auto_compact_limit);
-        match &attempt.outcome {
-            AttemptOutcome::Running => {}
-            AttemptOutcome::Interrupted => {
-                summary.has_incomplete_usage = true;
-                summary.has_unpriced_usage = true;
-                summary.cache_incomplete = true;
+        // Admission replaces the entire binding, including unknown values.
+        summary.binding = attempt.usage_binding.clone();
+        let missing = ModelUsage::default();
+        let terminal: Option<(&ModelUsage, UsageOutcome)> = match &attempt.outcome {
+            AttemptOutcome::Running => None,
+            AttemptOutcome::Interrupted => Some((&missing, UsageOutcome::Interrupted)),
+            AttemptOutcome::Committed(output) => Some((&output.usage, UsageOutcome::Succeeded)),
+            AttemptOutcome::Rejected { output, .. } => {
+                Some((&output.usage, UsageOutcome::Rejected))
             }
-            AttemptOutcome::Committed(output) | AttemptOutcome::Rejected { output, .. } => {
-                add_usage(summary, &output.usage, &attempt.turn_id);
-            }
-            AttemptOutcome::Failed(error) => {
-                add_usage(summary, &error.usage, &attempt.turn_id);
-            }
-            AttemptOutcome::Cancelled { result } => match result {
-                Ok(output) => add_usage(summary, &output.usage, &attempt.turn_id),
-                Err(error) => add_usage(summary, &error.usage, &attempt.turn_id),
-            },
+            AttemptOutcome::Failed(error) => Some((&error.usage, UsageOutcome::Failed)),
+            AttemptOutcome::Cancelled { result } => Some((
+                match result {
+                    Ok(output) => &output.usage,
+                    Err(error) => &error.usage,
+                },
+                UsageOutcome::Cancelled,
+            )),
+        };
+        if let Some((usage, outcome)) = terminal {
+            summary.add_usage(
+                usage,
+                UsageSource {
+                    thread_id: effect.thread_id.clone(),
+                    call_id: attempt.attempt_id.clone(),
+                    turn_id: Some(attempt.turn_id.clone()),
+                    effect_sequence: effect.sequence,
+                    observed_at: effect.committed_at,
+                    purpose: None,
+                    outcome,
+                },
+                true,
+                None, // Plain storage has no timing: retain the last valid paired sample.
+            );
+            summary.pricing.incomplete = true;
         }
     }
     summary.applied_sequence = effect.sequence;
 }
 
-fn add_usage(summary: &mut UsageSummary, usage: &ModelUsage, turn_id: &str) {
-    let input = usage.input_tokens.unwrap_or(0);
-    let output = usage.output_tokens.unwrap_or(0);
-    let derived_total = usage
-        .input_tokens
-        .zip(usage.output_tokens)
-        .and_then(|(input, output)| input.checked_add(output));
-    let total = usage.total_tokens.or(derived_total);
-    let invalid_cache = usage.input_tokens.is_some_and(|input| {
-        usage
-            .cache_read_tokens
-            .unwrap_or(0)
-            .checked_add(usage.cache_write_tokens.unwrap_or(0))
-            .is_none_or(|cached| cached > input)
-    });
-    let invalid_reasoning = usage
-        .output_tokens
-        .zip(usage.reasoning_tokens)
-        .is_some_and(|(output, reasoning)| reasoning > output);
-    let reported_sides = usage.input_tokens.is_some() && usage.output_tokens.is_some();
-    let invalid_total = reported_sides
-        && (derived_total.is_none()
-            || usage
-                .total_tokens
-                .is_some_and(|reported| Some(reported) != derived_total));
-    let valid = !invalid_total && !invalid_cache && !invalid_reasoning;
-    let complete = reported_sides && valid;
-    summary.has_incomplete_usage |= !complete || usage.cache_read_tokens.is_none();
-    add_counter(
-        &mut summary.inference_count,
-        1,
-        &mut summary.has_incomplete_usage,
-    );
-    add_counter(
-        &mut summary.prompt_tokens,
-        input,
-        &mut summary.has_incomplete_usage,
-    );
-    add_counter(
-        &mut summary.completion_tokens,
-        output,
-        &mut summary.has_incomplete_usage,
-    );
-    add_counter(
-        &mut summary.cached_prompt_tokens,
-        usage.cache_read_tokens.unwrap_or(0),
-        &mut summary.has_incomplete_usage,
-    );
-    add_counter(
-        &mut summary.cache_write_tokens,
-        usage.cache_write_tokens.unwrap_or(0),
-        &mut summary.has_incomplete_usage,
-    );
-    add_counter(
-        &mut summary.reasoning_tokens,
-        usage.reasoning_tokens.unwrap_or(0),
-        &mut summary.has_incomplete_usage,
-    );
-    if let Some(total) = total {
-        add_counter(
-            &mut summary.total_tokens,
-            total,
-            &mut summary.has_incomplete_usage,
-        );
-        if valid {
-            summary.latest_context_tokens = total;
-        }
-    }
-    if summary.turn_id == turn_id {
-        add_counter(
-            &mut summary.turn_completion_tokens,
-            output,
-            &mut summary.has_incomplete_usage,
-        );
-    }
-    // pl-core has no provider price table; products may enrich pricing in their own writer.
-    summary.has_unpriced_usage = true;
-    if let (Some(input), Some(read)) = (usage.input_tokens, usage.cache_read_tokens)
-        && read <= input
-        && usage
-            .cache_write_tokens
-            .is_none_or(|write| write <= input - read)
-    {
-        add_counter(
-            &mut summary.cache_input_tokens,
-            input,
-            &mut summary.cache_incomplete,
-        );
-        add_counter(
-            &mut summary.cache_read_tokens,
-            read,
-            &mut summary.cache_incomplete,
-        );
-    } else {
-        summary.cache_incomplete = true;
-    }
-    summary.has_incomplete_usage |= summary.cache_incomplete;
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{ModelError, ModelFailureKind, ModelStepOutput, ModelUsageBinding};
+    use crate::thread::{ModelOutputViolation, journal::AttemptUpdate};
+    use crate::usage::UsageThroughputSummary;
+    use std::sync::Arc;
 
-fn add_counter(target: &mut u64, increment: u64, incomplete: &mut bool) {
-    match target.checked_add(increment) {
-        Some(value) => *target = value,
-        None => *incomplete = true,
+    #[test]
+    fn terminal_mapping_retains_identity_while_running_only_replaces_binding() {
+        let usage = ModelUsage {
+            input_tokens: Some(4),
+            output_tokens: Some(2),
+            cache_read_tokens: Some(0),
+            ..Default::default()
+        };
+        let output = ModelStepOutput {
+            attempt_id: "attempt".into(),
+            base_context_revision: 0,
+            content: Vec::new(),
+            tool_calls: Vec::new(),
+            private_context: None,
+            usage: usage.clone(),
+        };
+        let error = Arc::new(ModelError {
+            details: None,
+            kind: ModelFailureKind::Unavailable,
+            usage: Box::new(usage),
+            source: None,
+        });
+        for (outcome, expected) in [
+            (
+                AttemptOutcome::Committed(output.clone()),
+                UsageOutcome::Succeeded,
+            ),
+            (
+                AttemptOutcome::Rejected {
+                    output: output.clone(),
+                    reason: ModelOutputViolation::EmptyCallIdentity,
+                },
+                UsageOutcome::Rejected,
+            ),
+            (AttemptOutcome::Failed(error.clone()), UsageOutcome::Failed),
+            (
+                AttemptOutcome::Cancelled {
+                    result: Ok(output.clone()),
+                },
+                UsageOutcome::Cancelled,
+            ),
+            (
+                AttemptOutcome::Cancelled {
+                    result: Err(error.clone()),
+                },
+                UsageOutcome::Cancelled,
+            ),
+            (AttemptOutcome::Interrupted, UsageOutcome::Interrupted),
+        ] {
+            let mut summary = UsageSummary::default();
+            let binding = ModelUsageBinding {
+                route_identity: Some("route".into()),
+                model: "model".into(),
+                context_window: Some(100),
+                max_context_window: Some(200),
+                auto_compact_limit: Some(80),
+            };
+            summary.throughput = UsageThroughputSummary {
+                turn_id: "previous".into(),
+                completion_tokens: 20,
+                response_millis: 30,
+            };
+            let previous_throughput = summary.throughput.clone();
+            let mut effect = ThreadEffectBatch {
+                thread_id: "thread".into(),
+                sequence: 1,
+                committed_at: 123,
+                attempt: Some(AttemptUpdate {
+                    request_metadata: None,
+                    usage_binding: Some(binding.clone()),
+                    tool_projection: None,
+                    turn_id: "turn".into(),
+                    attempt_id: "attempt".into(),
+                    retry_of: None,
+                    input_revision: 0,
+                    tools: Default::default(),
+                    outcome: AttemptOutcome::Running,
+                    input_estimate: None,
+                }),
+                ..Default::default()
+            };
+            fold_effect(&mut summary, &effect);
+            assert_eq!(summary.binding, Some(binding));
+            assert_eq!(summary.totals.inference_count, 0);
+            assert!(summary.context.latest_call.is_none());
+            assert!(!summary.pricing.incomplete);
+            assert_eq!(summary.throughput, previous_throughput);
+            // An unbound terminal attempt clears the whole earlier binding group.
+            let attempt = effect.attempt.as_mut().unwrap();
+            attempt.usage_binding = None;
+            attempt.outcome = outcome;
+            effect.sequence = 2;
+            fold_effect(&mut summary, &effect);
+            assert_eq!(summary.binding, None);
+            assert_eq!(summary.totals.inference_count, 1);
+            assert!(summary.pricing.incomplete);
+            assert_eq!(summary.throughput, previous_throughput);
+            let observation = summary.context.latest_call.as_ref().unwrap();
+            assert_eq!(
+                observation.source,
+                UsageSource {
+                    thread_id: "thread".into(),
+                    call_id: "attempt".into(),
+                    turn_id: Some("turn".into()),
+                    effect_sequence: 2,
+                    observed_at: 123,
+                    purpose: None,
+                    outcome: expected,
+                }
+            );
+            assert_eq!(
+                summary.totals.total_tokens,
+                if expected == UsageOutcome::Interrupted {
+                    0
+                } else {
+                    6
+                }
+            );
+            assert_eq!(
+                summary.diagnostics.missing_calls,
+                u64::from(expected == UsageOutcome::Interrupted)
+            );
+            let saved = summary.clone();
+            fold_effect(&mut summary, &effect);
+            assert_eq!(summary, saved);
+        }
     }
 }

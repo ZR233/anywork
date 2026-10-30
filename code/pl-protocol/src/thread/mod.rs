@@ -287,6 +287,7 @@ pub struct ThreadModelRouteSnapshot {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ThreadRuntimeUsage {
+    pub diagnostics: crate::ThreadUsageDiagnostics,
     #[serde(default)]
     pub has_incomplete_usage: bool,
     pub model_id: String,
@@ -336,6 +337,8 @@ pub struct ThreadRuntimeUsage {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct CacheUsageSummary {
+    pub sample_count: u64,
+    pub legacy_sample_count_unknown: bool,
     /// 计入累计的有效样本 input 总量，已包含 cache read。
     #[serde(default)]
     pub input_tokens: u64,

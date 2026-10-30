@@ -12,7 +12,7 @@ use pl_core::model::{
 use serde::{Deserialize, Serialize};
 
 /// Current version of the persisted model failure receipt.
-pub const FAILURE_RECEIPT_VERSION: u32 = 4;
+pub const FAILURE_RECEIPT_VERSION: u32 = 5;
 
 /// Version of the prepared-request record owned by this crate.
 pub const REQUEST_RECEIPT_VERSION: u32 = 2;
@@ -106,6 +106,7 @@ pub struct ModelResponseReceipt {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelFailureReceipt {
+    pub timing: Option<pl_protocol::InferenceTiming>,
     #[serde(default)]
     pub provider_failure: Option<pl_protocol::ProviderFailure>,
     #[serde(default)]
@@ -198,6 +199,7 @@ pub(super) fn failure_error(
     let model_observation = failure.model_observation().cloned();
     let mut failure = failure;
     let receipt = ModelFailureReceipt {
+        timing: failure.timing,
         provider_failure: failure.source.provider_failure_ref().cloned(),
         message: failure.source.to_string(),
         binding,
@@ -223,10 +225,12 @@ pub(super) fn postprocess_failure_error(
     binding: ModelCallBinding,
     accounting: crate::completion::InferenceAccounting,
     model_observation: Option<crate::completion::InferenceModelObservation>,
+    timing: Option<pl_protocol::InferenceTiming>,
     partial_progress: Option<ModelProgress>,
     error: ModelError,
 ) -> ModelError {
     let receipt = ModelFailureReceipt {
+        timing,
         provider_failure: None,
         message: error.to_string(),
         binding,

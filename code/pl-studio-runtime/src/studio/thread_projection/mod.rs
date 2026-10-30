@@ -1,6 +1,9 @@
 //! Product timeline projections read core facts and never drive models, tools or persistence reducers.
+mod accounting;
 mod billing;
+pub(crate) use accounting::PreparedAccounting;
 pub(crate) use billing::AuxiliaryBillingReceipt;
+#[cfg(test)]
 pub(in crate::studio) use billing::billing_facts;
 mod activity;
 pub(in crate::studio) use activity::{ActivityProjection, ActivitySnapshot, project_activity};
@@ -28,7 +31,9 @@ pub(in crate::studio) use live::retained_bytes;
 #[cfg(test)]
 pub(in crate::studio) use live::LIVE_ITEM_WINDOW;
 mod runtime;
+mod usage_projection;
 pub(in crate::studio) use runtime::{fold_effect_accounting, project_runtime};
+pub(in crate::studio) use usage_projection::usage_status;
 mod snapshot;
 pub(in crate::studio) use snapshot::{project_snapshot, saved_mode, status, storage_state};
 pub(in crate::studio) mod order;

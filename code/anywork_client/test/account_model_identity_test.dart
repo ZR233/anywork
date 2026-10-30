@@ -95,6 +95,13 @@ void main() {
 
   test('历史样本按同一复合身份筛选并保留冻结诊断', () {
     final matched = StatisticsSample(
+      threadId: 'thread-statistics',
+      callId: 'call-1',
+      purpose: 'primary',
+      firstOutputSource: FirstOutputSource.incremental,
+      usageStatus: UsageReportStatus.reported,
+      ttftAvailability: MetricAvailability.available,
+      throughputAvailability: MetricAvailability.available,
       completedAt: DateTime.utc(2026, 1, 1),
       accountId: 'account-a',
       accountDisplayName: 'Alpha',
@@ -114,10 +121,33 @@ void main() {
     expect(matched.displayModel, 'shared-model');
     // 发送别名不参与身份。
     expect(matched.filterKey, isNot(contains('shared-model-0724')));
+    final source = [matched];
+    final snapshot = StatisticsSnapshot(
+      ownerEpoch: 'owner',
+      feedId: 'feed',
+      publicationRevision: 1,
+      summariesRevision: 1,
+      historyRevision: 1,
+      summaries: [alpha],
+      history: source,
+      statisticsPending: false,
+      statisticsGap: false,
+      readFailed: false,
+    );
+    source.clear();
+    expect(snapshot.history, [matched]);
+    expect(() => snapshot.history.add(matched), throwsUnsupportedError);
   });
 
   test('没有配置模型证据的旧记录保持未知身份，不并入新账号模型', () {
     final legacy = StatisticsSample(
+      threadId: 'thread-statistics',
+      callId: 'call-2',
+      purpose: null,
+      firstOutputSource: FirstOutputSource.legacyUnknown,
+      usageStatus: UsageReportStatus.legacyUnknown,
+      ttftAvailability: MetricAvailability.legacyUnknown,
+      throughputAvailability: MetricAvailability.legacyUnknown,
       completedAt: DateTime.utc(2026, 1, 1),
       accountId: 'account-a',
       accountDisplayName: 'Alpha',

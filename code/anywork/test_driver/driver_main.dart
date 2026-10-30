@@ -384,6 +384,12 @@ Future<String> _handleDriverData(String? message) async {
         'history': [
           for (final sample in performance.history)
             {
+              'threadId': sample.threadId,
+              'callId': sample.callId,
+              'purpose': sample.purpose,
+              'firstOutputSource': sample.firstOutputSource.name,
+              'ttftAvailability': sample.ttftAvailability.name,
+              'throughputAvailability': sample.throughputAvailability.name,
               'accountId': sample.accountId,
               'accountDisplayName': sample.accountDisplayName,
               'modelId': sample.modelId,

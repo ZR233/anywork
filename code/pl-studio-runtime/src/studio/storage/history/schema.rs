@@ -48,6 +48,12 @@ impl MigratorTraitSelf for Migrator {
             Box::new(AtomicTimeline {
                 thread_id: self.thread_id.clone(),
             }),
+            Box::new(MeteringFacts {
+                thread_id: self.thread_id.clone(),
+            }),
+            Box::new(CombinedContent {
+                thread_id: self.thread_id.clone(),
+            }),
             Box::new(ProjectKind {
                 thread_id: self.thread_id.clone(),
             }),
@@ -81,6 +87,8 @@ const RETIRE_ORDINALS: &str = "m20261027_000001_history_retire_ordinals";
 const PRODUCER_PAYLOADS: &str = "m20261027_000002_history_producer_payloads";
 const REVIEW_RECEIPT: &str = "m20261027_000003_history_review_receipt";
 const ATOMIC_TIMELINE: &str = "m20261027_000004_history_atomic_timeline";
+const METERING_FACTS: &str = "m20261028_000001_history_metering_facts";
+const COMBINED_CONTENT: &str = "m20261028_000002_history_combined_content";
 const PROJECT_KIND: &str = "m20261027_000004_history_project_kind";
 
 // Content preparation and current-only readers share the same lifecycle boundary.
@@ -192,22 +200,26 @@ async fn preflight(db: &DatabaseConnection, thread_id: &str) -> Result<()> {
         "unsupported history schema {version}; existing data preserved"
     );
     let atomic_pending = pending.iter().any(|step| step.name() == ATOMIC_TIMELINE);
+    let metering_pending = pending.iter().any(|step| step.name() == METERING_FACTS);
+    let combined_pending = pending.iter().any(|step| step.name() == COMBINED_CONTENT);
     let retire_pending = pending.iter().any(|step| step.name() == RETIRE_ORDINALS);
     // Format and migration bookkeeping must describe the same content boundary. Lifecycle
     // recovery being pending never excuses a completed content step with an older marker.
     ensure!(
         match version {
-            1..=8 => retire_pending && atomic_pending,
-            9 => atomic_pending,
-            HISTORY_SCHEMA_VERSION => !atomic_pending && !retire_pending,
+            1..=8 => retire_pending && atomic_pending && metering_pending && combined_pending,
+            9 => !retire_pending && atomic_pending && metering_pending && combined_pending,
+            10 => !retire_pending && (!atomic_pending || !metering_pending) && combined_pending,
+            HISTORY_SCHEMA_VERSION => {
+                !retire_pending && !atomic_pending && !metering_pending && !combined_pending
+            }
             _ => false,
         },
         "history format conflicts with completed migrations; existing data preserved"
     );
     ensure!(
-        version == HISTORY_SCHEMA_VERSION
-            || !SchemaManager::new(db).has_table("timeline_records").await?,
-        "pending atomic timeline migration already has its output table; existing data preserved"
+        SchemaManager::new(db).has_table("timeline_records").await? == !atomic_pending,
+        "atomic timeline migration conflicts with its output table; existing data preserved"
     );
     ensure!(
         row.try_get::<String>("", "thread_id")? == thread_id,
@@ -238,10 +250,18 @@ async fn preflight(db: &DatabaseConnection, thread_id: &str) -> Result<()> {
                 "current history table {table} is missing; existing data preserved"
             );
         }
-    } else if version == 9 {
+    } else if version == 9 || (version == 10 && atomic_pending) {
         validate_v9_tables(db).await?;
-    } else if version == HISTORY_SCHEMA_VERSION {
+    } else if version == 10 || version == HISTORY_SCHEMA_VERSION {
         validate_tables(db).await?;
+        if version == 10 {
+            validate_timeline_data(db, thread_id).await?;
+        }
+    }
+    if version == 10 && !metering_pending {
+        checkpoint::read(db, thread_id).await?;
+    }
+    if version == HISTORY_SCHEMA_VERSION {
         ensure!(
             pending
                 .iter()
@@ -262,7 +282,8 @@ async fn preflight(db: &DatabaseConnection, thread_id: &str) -> Result<()> {
         {
             let checkpoint_version: i64 = row.try_get("", "version")?;
             ensure!(
-                (1..=5).contains(&checkpoint_version),
+                (1..=i64::from(pl_core::thread::ThreadCheckpoint::SCHEMA_VERSION))
+                    .contains(&checkpoint_version),
                 "unsupported checkpoint schema {checkpoint_version}; existing data preserved"
             );
         }
@@ -378,6 +399,42 @@ async fn validate_tables(db: &impl ConnectionTrait) -> Result<()> {
     )
     .await?;
     Ok(())
+}
+
+/// Reuse the canonical record decoder without rewriting or aggregating existing completions.
+/// Preparation may inspect every record, but bounds full payload memory to one ordinary page.
+async fn validate_timeline_data(db: &impl ConnectionTrait, thread_id: &str) -> Result<()> {
+    ensure!(
+        db.query_one_raw(statement(
+            "SELECT 1 FROM timeline_records WHERE append_seq<=0 LIMIT 1",
+            vec![],
+        ))
+        .await?
+        .is_none(),
+        "timeline append sequence must be positive; existing data preserved"
+    );
+    let ceiling = super::timeline::latest_append_seq(db).await?;
+    let mut after = 0;
+    loop {
+        let page = super::timeline::page_after(
+            db,
+            thread_id,
+            after,
+            ceiling,
+            pl_core::chat::MAX_PAGE_ITEMS,
+        )
+        .await?;
+        for item in &page.items {
+            ensure!(
+                after.checked_add(1) == Some(item.append_seq),
+                "timeline append sequence is not contiguous; existing data preserved"
+            );
+            after = item.append_seq;
+        }
+        if !page.has_more {
+            return Ok(());
+        }
+    }
 }
 
 /// Published v9 shape, also used by RetireOrdinals. Never add current-format tables here:
@@ -582,6 +639,31 @@ async fn has_unique_key(
 }
 
 struct RetireOrdinals;
+struct MeteringFacts {
+    thread_id: String,
+}
+impl MigrationName for MeteringFacts {
+    fn name(&self) -> &str {
+        METERING_FACTS
+    }
+}
+#[sea_orm_migration::async_trait::async_trait]
+impl MigrationTrait for MeteringFacts {
+    fn use_transaction(&self) -> Option<bool> {
+        Some(true)
+    }
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        let db = manager.get_connection();
+        checkpoint::migrate_envelope(db, &self.thread_id)
+            .await
+            .map_err(conversion)?;
+        super::producer::migrate(db, &self.thread_id)
+            .await
+            .map_err(conversion)?;
+        set_version(db, 10).await
+    }
+}
+
 struct ProducerPayloads {
     thread_id: String,
 }
@@ -616,7 +698,10 @@ impl MigrationTrait for RetireOrdinals {
         validate_v9_tables(db).await.map_err(conversion)?;
         db.execute_unprepared("DROP TABLE IF EXISTS history_ordinals")
             .await?;
-        set_version(db, 9).await
+        if version(db).await? < 9 {
+            set_version(db, 9).await?;
+        }
+        Ok(())
     }
 }
 
@@ -638,9 +723,19 @@ impl MigrationTrait for AtomicTimeline {
 
     async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
         let db = manager.get_connection();
-        if version(db).await? != 9 {
+        let source_version = version(db).await?;
+        let metering_applied = Migrator {
+            thread_id: self.thread_id.clone(),
+            execution_identity: None,
+        }
+        .get_applied_migrations_read_only(db)
+        .await?
+        .iter()
+        .any(|step| step.name() == METERING_FACTS);
+        if source_version != 9 && !(source_version == 10 && metering_applied) {
             return Err(DbErr::Migration(
-                "atomic timeline migration requires history format 9".into(),
+                "atomic timeline migration requires history format 9 or metering-applied format 10"
+                    .into(),
             ));
         }
         validate_v9_tables(db).await.map_err(conversion)?;
@@ -648,6 +743,50 @@ impl MigrationTrait for AtomicTimeline {
             .await
             .map_err(conversion)?;
         validate_tables(db).await.map_err(conversion)?;
+        set_version(db, 10).await
+    }
+}
+
+struct CombinedContent {
+    thread_id: String,
+}
+
+impl MigrationName for CombinedContent {
+    fn name(&self) -> &str {
+        COMBINED_CONTENT
+    }
+}
+
+#[sea_orm_migration::async_trait::async_trait]
+impl MigrationTrait for CombinedContent {
+    fn use_transaction(&self) -> Option<bool> {
+        Some(true)
+    }
+
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        let db = manager.get_connection();
+        let migrator = Migrator {
+            thread_id: self.thread_id.clone(),
+            execution_identity: None,
+        };
+        if version(db).await? != 10
+            || migrator
+                .get_pending_migrations_read_only(db)
+                .await?
+                .iter()
+                .any(|step| step.name() != COMBINED_CONTENT && !is_lifecycle_migration(step.name()))
+        {
+            return Err(DbErr::Migration(
+                "combined history content requires both completed format 10 content steps".into(),
+            ));
+        }
+        validate_tables(db).await.map_err(conversion)?;
+        validate_timeline_data(db, &self.thread_id)
+            .await
+            .map_err(conversion)?;
+        checkpoint::read(db, &self.thread_id)
+            .await
+            .map_err(conversion)?;
         set_version(db, HISTORY_SCHEMA_VERSION).await
     }
 }

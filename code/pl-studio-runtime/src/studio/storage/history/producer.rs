@@ -173,9 +173,10 @@ mod tests {
             );
         }
         state.extension_sequence = 7;
-        state.usage_summary.inference_count = 5;
+        state.usage_summary.totals.inference_count = 5;
         state
             .usage_summary
+            .pricing
             .estimated_costs
             .push(pl_core::thread::UsageCost {
                 currency: "CNY".into(),
@@ -207,6 +208,32 @@ mod tests {
         ))
     }
 
+    async fn restore_published_v9(db: &impl ConnectionTrait) -> Result<()> {
+        let count: i64 = db
+            .query_one_raw(statement(
+                "SELECT COUNT(*) AS count FROM timeline_records",
+                vec![],
+            ))
+            .await?
+            .context("fixture timeline output")?
+            .try_get("", "count")?;
+        assert_eq!(
+            count, 0,
+            "legacy fixture must not discard completed history"
+        );
+        db.execute_unprepared(
+            "DELETE FROM seaql_migrations WHERE version IN (
+                'm20261027_000002_history_producer_payloads',
+                'm20261027_000004_history_atomic_timeline',
+                'm20261028_000001_history_metering_facts',
+                'm20261028_000002_history_combined_content');
+             DROP TABLE timeline_records;
+             UPDATE history_meta SET schema_version=9;",
+        )
+        .await?;
+        Ok(())
+    }
+
     #[tokio::test]
     async fn producer_content_preparation_is_atomic_preserving_and_shared_with_toml_import()
     -> Result<()> {
@@ -216,11 +243,10 @@ mod tests {
         let connection = store.writer().await?;
         let db = &connection.db;
         let old = legacy_checkpoint()?;
-        checkpoint::write(db, &old, None).await?;
-        db.execute_unprepared("INSERT INTO session_costs VALUES('null','CNY',8.25);
-            DELETE FROM seaql_migrations WHERE version IN ('m20261027_000002_history_producer_payloads','m20261027_000004_history_atomic_timeline');
-            DROP TABLE timeline_records;
-            UPDATE history_meta SET schema_version=9;").await?;
+        checkpoint::write(db, &old, None, None).await?;
+        db.execute_unprepared("INSERT INTO session_costs VALUES('null','CNY',8.25);")
+            .await?;
+        restore_published_v9(db).await?;
         // Unknown envelope extensions and exact numeric tokens survive known-field replacement.
         let mut saved = raw(db).await?;
         let mut metadata: serde_json::Value = serde_json::from_str(&saved.0)?;
@@ -266,10 +292,12 @@ mod tests {
         ))
         .await?;
         let rejected = raw(db).await?;
+        let error = schema::prepare(db, "producer", schema::Preparation::Schema, None)
+            .await
+            .expect_err("unsupported required producer version must fail");
         assert!(
-            schema::prepare(db, "producer", schema::Preparation::Schema, None)
-                .await
-                .is_err()
+            format!("{error:#}").contains("unsupported auxiliary billing version"),
+            "unexpected producer version error: {error:#}"
         );
         assert_eq!(raw(db).await?, rejected);
         db.execute_raw(statement(
@@ -278,10 +306,12 @@ mod tests {
         ))
         .await?;
         db.execute_unprepared("CREATE TRIGGER reject_producer BEFORE UPDATE ON current_context BEGIN SELECT RAISE(ABORT,'producer fault'); END").await?;
+        let error = schema::prepare(db, "producer", schema::Preparation::Schema, None)
+            .await
+            .expect_err("injected producer update failure must roll back the content step");
         assert!(
-            schema::prepare(db, "producer", schema::Preparation::Schema, None)
-                .await
-                .is_err()
+            format!("{error:#}").contains("producer fault"),
+            "unexpected producer transaction error: {error:#}"
         );
         assert_eq!(
             raw(db).await?,
@@ -306,7 +336,7 @@ mod tests {
         else {
             anyhow::bail!("assistant")
         };
-        assert_eq!(payload.version(), 4);
+        assert_eq!(payload.version(), 5);
         let assistant: serde_json::Value = serde_json::from_str(payload.content())?;
         assert_eq!(
             assistant["receipt"]["response"]["vendorExtension"],
@@ -314,7 +344,7 @@ mod tests {
         );
         for record in current.state.extensions.values() {
             assert_eq!(record.revision, 7);
-            assert_eq!(record.payload.version(), 3);
+            assert_eq!(record.payload.version(), 4);
             assert!(crate::studio::producer_migration::normalize(&record.payload)?.is_none());
         }
         let auxiliary = &current.state.extensions["studio.auxiliary-billing.title"].payload;
@@ -340,10 +370,8 @@ mod tests {
             123,
             &current.state.usage_summary,
         )?;
-        db.execute_unprepared("DELETE FROM seaql_migrations WHERE version IN ('m20261027_000002_history_producer_payloads','m20261027_000004_history_atomic_timeline');
-            DROP TABLE timeline_records;
-            UPDATE history_meta SET schema_version=9;
-            CREATE TRIGGER no_current_checkpoint_rewrite BEFORE UPDATE ON session_checkpoint BEGIN SELECT RAISE(ABORT,'current checkpoint rewritten'); END;
+        restore_published_v9(db).await?;
+        db.execute_unprepared("CREATE TRIGGER no_current_checkpoint_rewrite BEFORE UPDATE ON session_checkpoint BEGIN SELECT RAISE(ABORT,'current checkpoint rewritten'); END;
             CREATE TRIGGER no_current_context_rewrite BEFORE UPDATE ON current_context BEGIN SELECT RAISE(ABORT,'current context rewritten'); END;").await?;
         schema::prepare(db, "producer", schema::Preparation::Schema, None).await?;
         assert_eq!(
@@ -383,6 +411,7 @@ mod tests {
         imported.prepare_activation().await?;
         let mut legacy =
             serde_json::to_value(toml::from_str::<toml::Value>(&toml::to_string(&old)?)?)?;
+        super::legacy_usage::flatten(&mut legacy);
         legacy["schemaVersion"] = json!(4);
         tokio::fs::write(
             import_dir.path().join("state.toml"),

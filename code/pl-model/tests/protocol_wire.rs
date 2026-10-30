@@ -1447,8 +1447,8 @@ async fn tool_replay_survives_checkpoint_without_reexecuting_tools_or_failed_out
                 ContextContent::Opaque { payload } if payload.format() == "pl.model.assistant" => {
                     assert_eq!(
                         payload.version(),
-                        4,
-                        "NoCharge requires the new frame version"
+                        5,
+                        "timing provenance requires the new frame version"
                     );
                     let frame: Value = serde_json::from_str(payload.content()).unwrap();
                     Some(
@@ -1668,6 +1668,10 @@ async fn auxiliary_requests_keep_frozen_replay_and_mutated_input_is_rejected() {
             .await
             .unwrap();
         assert_eq!(summary.text, "summary");
+        assert_eq!(
+            summary.timing.unwrap().first_output_source,
+            pl_protocol::FirstOutputSource::Incremental
+        );
         let records = fixture.recorded();
         let body = &records[1].body;
         if protocol == Protocol::Chat {
@@ -2129,7 +2133,7 @@ async fn paced_body_reports_timing_for_throughput_diagnostics() {
     );
     assert!(timing.has_throughput_sample());
     assert_eq!(
-        timing.throughput_output_tokens(&result.accounting.usage),
+        pl_model::model::usage::throughput_output_tokens(timing, &result.accounting.usage),
         Some(output_tokens)
     );
     // The fixture's nominal frame schedule is not a precision contract for the
@@ -2400,6 +2404,10 @@ async fn metadata_only_stream_keeps_total_response_time_without_a_first_token() 
         .timing
         .expect("a normalized terminal event still yields the total response window");
     assert_eq!(
+        timing.first_output_source,
+        pl_protocol::FirstOutputSource::Unobserved
+    );
+    assert_eq!(
         timing.ttft_millis, None,
         "metadata is not a first output increment"
     );
@@ -2414,11 +2422,72 @@ async fn metadata_only_stream_keeps_total_response_time_without_a_first_token() 
     assert_eq!(result.accounting.usage.output_tokens, Some(6));
     assert!(timing.has_throughput_sample());
     assert_eq!(
-        timing.throughput_output_tokens(&result.accounting.usage),
+        pl_model::model::usage::throughput_output_tokens(timing, &result.accounting.usage),
         Some(6),
         "an unknown first token must not suppress output throughput"
     );
     fixture.finish().await.unwrap();
+}
+
+#[tokio::test]
+async fn complete_tool_items_and_terminal_backfill_observe_first_output() {
+    for (terminal_only, incremental) in [(false, false), (true, false), (false, true)] {
+        let item = json!({
+            "type":"function_call", "id":"tool-item", "call_id":"tool-call",
+            "name":"query", "arguments":"{\"q\":1}"
+        });
+        let mut events = vec![
+            json!({"type":"response.created","response":{"id":"tool-timing","model":"fixture-model"}}),
+            json!({"type":"response.output_item.added","output_index":0,"item":{
+                "type":"function_call", "id":"tool-item","call_id":"tool-call","name":"query","arguments":""
+            }}),
+        ];
+        if incremental {
+            events.push(json!({"type":"response.function_call_arguments.delta",
+                "item_id":"tool-item","output_index":0,"delta":"{\"q\":1}"}));
+        }
+        if !terminal_only {
+            events.push(json!({"type":"response.output_item.done","output_index":0,"item":item}));
+        }
+        events.push(json!({"type":"response.completed","response":{
+            "id":"tool-timing","model":"fixture-model","output":[item],
+            "usage":{"input_tokens":4,"output_tokens":6}
+        }}));
+        let fixture = FixtureServer::start(vec![Step::prompt(
+            Protocol::ResponsesHttp,
+            "complete tool timing",
+            0,
+            Reply::PacedEvents {
+                initial_delay_ms: 0,
+                step_millis: 10,
+                events,
+            },
+        )])
+        .await
+        .unwrap();
+        let result = complete(
+            &fixture,
+            model("fixture-model", ModelTransportProfile::responses_http()),
+            request("complete tool timing"),
+            ModelSession::default(),
+        )
+        .await;
+        assert_eq!(result.tool_calls.len(), 1);
+        let timing = result.timing.unwrap();
+        assert_eq!(
+            timing.first_output_source,
+            if incremental {
+                pl_protocol::FirstOutputSource::Incremental
+            } else {
+                pl_protocol::FirstOutputSource::CompletedToolInput
+            }
+        );
+        assert_eq!(
+            timing.ttft_millis.unwrap() + timing.decode_millis.unwrap(),
+            timing.response_millis
+        );
+        fixture.finish().await.unwrap();
+    }
 }
 
 #[tokio::test]
@@ -2473,7 +2542,7 @@ async fn untrustworthy_usage_never_becomes_a_throughput_sample() {
     assert!(timing.has_throughput_sample());
     assert!(timing.ttft_millis.is_some());
     assert_eq!(
-        timing.throughput_output_tokens(&invalid.accounting.usage),
+        pl_model::model::usage::throughput_output_tokens(timing, &invalid.accounting.usage),
         None,
         "an invalid usage report cannot produce throughput"
     );
@@ -2493,7 +2562,7 @@ async fn untrustworthy_usage_never_becomes_a_throughput_sample() {
         "the total response window exists even without an output count"
     );
     assert_eq!(
-        timing.throughput_output_tokens(&missing.accounting.usage),
+        pl_model::model::usage::throughput_output_tokens(timing, &missing.accounting.usage),
         None,
         "a missing output count is not a zero-token sample"
     );
@@ -4003,6 +4072,14 @@ async fn native_compaction_returns_checkpoint_and_retains_reported_usage() {
         matches!(compacted.item, ModelContextItem::Compaction { encrypted_content } if encrypted_content == "fixture-checkpoint")
     );
     assert_eq!(compacted.accounting.usage.input_tokens, Some(20));
+    let timing = compacted
+        .timing
+        .expect("native compaction keeps executor timing");
+    assert_eq!(
+        timing.first_output_source,
+        pl_protocol::FirstOutputSource::Unobserved
+    );
+    assert_eq!(timing.ttft_millis, None);
     let records = fixture.finish().await.unwrap();
     assert_eq!(records.len(), 2);
     assert_eq!(records[0].body["tools"], records[1].body["tools"]);
@@ -4149,8 +4226,9 @@ async fn native_checkpoint_replay_requires_bound_origin_and_explicit_model_famil
     let ContextContent::Opaque { payload } = &context.records[0].content[0] else {
         panic!("native material missing")
     };
-    assert_eq!(payload.version(), 3);
+    assert_eq!(payload.version(), 4);
     let written: Value = serde_json::from_str(payload.content()).unwrap();
+    assert_eq!(written["timing"]["firstOutputSource"], "unobserved");
     assert_eq!(written["item"]["encryptedContent"], "origin-bound-material");
     assert_eq!(written["compatibilityFamily"], "explicit-fixture-family");
     let written_bytes = payload.content().to_owned();
@@ -4245,7 +4323,7 @@ async fn native_checkpoint_replay_requires_bound_origin_and_explicit_model_famil
                 source_id: "model.compaction".into(),
             },
             content: vec![ContextContent::Opaque {
-                payload: OpaquePayload::new("pl.model.compaction", 4, written_bytes)
+                payload: OpaquePayload::new("pl.model.compaction", 5, written_bytes)
                     .expect("future payload is valid"),
             }],
             tool_calls: vec![],
@@ -4324,7 +4402,7 @@ async fn native_checkpoint_replay_requires_bound_origin_and_explicit_model_famil
     let ContextContent::Opaque { payload } = &record.content[0] else {
         panic!("migrated material missing")
     };
-    assert_eq!(payload.version(), 3);
+    assert_eq!(payload.version(), 4);
     let upgraded: Value = serde_json::from_str(payload.content()).unwrap();
     assert_eq!(
         upgraded["item"]["encryptedContent"],
@@ -5141,6 +5219,10 @@ async fn compaction_keeps_recent_execution_proof_without_reexecuting_the_tool() 
         revision: state.context.revision + 1,
         records: compacted.replacement.records.clone().into(),
     };
+    assert_eq!(
+        compacted.timing.unwrap().first_output_source,
+        pl_protocol::FirstOutputSource::Incremental
+    );
     assert!(
         reduced
             .records
@@ -5223,8 +5305,8 @@ async fn provider_context_overflow_is_typed_and_keeps_the_original_receipt() {
         assert_eq!(error.kind, pl_core::model::ModelFailureKind::ContextLimit);
         assert_eq!(
             error.details.as_ref().unwrap().version(),
-            4,
-            "NoCharge requires the new failure receipt version"
+            5,
+            "timing provenance requires the new failure receipt version"
         );
         let receipt = pl_model::runtime::model_failure_receipt(&error)
             .unwrap()

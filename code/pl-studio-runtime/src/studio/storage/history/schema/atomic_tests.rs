@@ -17,7 +17,39 @@ impl MigratorTraitSelf for PublishedV9 {
         }
         .migrations()
         .into_iter()
-        .filter(|migration| migration.name() != ATOMIC_TIMELINE)
+        .filter(|migration| {
+            !matches!(
+                migration.name(),
+                ATOMIC_TIMELINE | METERING_FACTS | COMBINED_CONTENT
+            )
+        })
+        .collect()
+    }
+}
+
+/// The two actually published v10 sources share a number, not a content boundary.
+/// Run the real named steps and official bookkeeping, excluding only the unpublished content.
+struct PublishedV10 {
+    atomic: bool,
+}
+
+impl MigratorTraitSelf for PublishedV10 {
+    fn migrations(&self) -> Vec<Box<dyn MigrationTrait>> {
+        Migrator {
+            thread_id: THREAD.into(),
+            execution_identity: None,
+        }
+        .migrations()
+        .into_iter()
+        .filter(|migration| {
+            migration.name() != COMBINED_CONTENT
+                && migration.name()
+                    != if self.atomic {
+                        METERING_FACTS
+                    } else {
+                        ATOMIC_TIMELINE
+                    }
+        })
         .collect()
     }
 }
@@ -39,7 +71,7 @@ async fn v9(path: &Path, cold: bool) -> Result<DatabaseConnection> {
             0,
             pl_core::thread::ThreadSnapshot::default(),
         );
-        checkpoint::write(&db, &checkpoint, None).await?;
+        checkpoint::write(&db, &checkpoint, None, None).await?;
         // Lifecycle preparation may normalize the checkpoint before execution identity recovery.
         // Supply the actual post-preparation representation as the explicit recovery candidate.
         let lifecycle_steps = published
@@ -848,6 +880,8 @@ async fn atomic_timeline_upgrades_complete_v9_and_pending_cold_store() -> Result
         prepare(&db, THREAD, Preparation::Schema, None).await?;
         assert_eq!(version(&db).await?, HISTORY_SCHEMA_VERSION);
         assert!(applied(&db, ATOMIC_TIMELINE).await?);
+        assert!(applied(&db, METERING_FACTS).await?);
+        assert!(applied(&db, COMBINED_CONTENT).await?);
         assert_eq!(applied(&db, PROJECT_KIND).await?, !cold);
         assert_eq!(applied(&db, MODEL_ACCESS).await?, !cold);
         validate_current(&db, THREAD).await?;
@@ -857,6 +891,232 @@ async fn atomic_timeline_upgrades_complete_v9_and_pending_cold_store() -> Result
         db.close().await?;
     }
     Ok(())
+}
+
+#[tokio::test]
+async fn combined_content_upgrades_both_published_v10_sources_without_rewriting_facts() -> Result<()>
+{
+    use crate::studio::runtime::chat_item::completion_draft;
+    use pl_core::chat::ChatItemParts;
+
+    for atomic in [false, true] {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("history.sqlite");
+        let db = v9(&path, true).await?;
+        let store = HistoryStore::open(&path, THREAD).await?;
+        let mut input = ThreadItem::completed_user_message(
+            "original-input".into(),
+            THREAD.into(),
+            String::new(),
+            "正文\n  keep exact bytes".into(),
+            vec![],
+            17,
+        );
+        input.ordinal = 41;
+        input.revision = 3;
+        store.upsert_item(&db, 7, input.clone()).await?;
+        let mut state = pl_core::thread::ThreadSnapshot {
+            commit_sequence: 7,
+            ..Default::default()
+        };
+        state.usage_summary.applied_sequence = 7;
+        state.usage_summary.totals.inference_count = 3;
+        state.usage_summary.totals.prompt_tokens = 103;
+        state.usage_summary.totals.completion_tokens = 29;
+        state.usage_summary.totals.total_tokens = 132;
+        state
+            .usage_summary
+            .pricing
+            .estimated_costs
+            .push(pl_core::thread::UsageCost {
+                currency: "USD".into(),
+                amount: 1.25,
+            });
+        let saved = pl_core::thread::ThreadCheckpoint::capture(THREAD.into(), 7, state);
+        checkpoint::write(&db, &saved, None, None).await?;
+        db.execute_unprepared(
+            "UPDATE history_meta SET applied_write_seq=7;
+             INSERT INTO session_costs VALUES('main','USD',1.25)",
+        )
+        .await?;
+        // Encode the old schema-5 body, not just an old header on a current usage layout.
+        let row = db
+            .query_one_raw(statement("SELECT payload FROM session_checkpoint", vec![]))
+            .await?
+            .context("saved checkpoint")?;
+        let mut legacy: serde_json::Value =
+            serde_json::from_str(&row.try_get::<String>("", "payload")?)?;
+        super::super::legacy_usage::flatten(&mut legacy);
+        legacy["schemaVersion"] = 5.into();
+        let payload = serde_json::to_string(&legacy)?;
+        db.execute_raw(statement(
+            "UPDATE session_checkpoint SET payload=?,payload_hash=?",
+            vec![
+                payload.clone().into(),
+                pl_core::context::content_hash(payload.as_bytes()).into(),
+            ],
+        ))
+        .await?;
+
+        PublishedV10 { atomic }.up(&db, Some(1)).await?;
+        assert_eq!(version(&db).await?, 10);
+        assert_eq!(applied(&db, ATOMIC_TIMELINE).await?, atomic);
+        assert_eq!(applied(&db, METERING_FACTS).await?, !atomic);
+        assert!(!applied(&db, COMBINED_CONTENT).await?);
+        if atomic {
+            // A completion published after backfill has no legacy source row. It must survive
+            // metering byte-for-byte, with its original identity, sequence and provenance.
+            let complete = ThreadItem::completed_user_message(
+                "frozen-only".into(),
+                THREAD.into(),
+                String::new(),
+                "完整原子载荷 ".repeat(4096),
+                vec![],
+                23,
+            );
+            let draft = completion_draft(&complete, 7)?;
+            let record = ChatItem::complete(ChatItemParts {
+                item_id: draft.item_id,
+                turn_id: draft.turn_id,
+                append_seq: 2,
+                source_effect_seq: draft.source_effect_seq,
+                sealed_at: draft.sealed_at,
+                fields: draft.fields,
+                meta: draft.meta,
+            });
+            super::super::timeline::append_records(&db, THREAD, &[record], true).await?;
+        }
+        preflight(&db, THREAD).await?;
+        assert!(
+            validate_current(&db, THREAD).await.is_err(),
+            "v10 is never a normal-reader format"
+        );
+        let identity_before = db.query_one_raw(statement(
+            "SELECT json_array(database_id,thread_id,applied_write_seq) AS fact FROM history_meta",
+            vec![],
+        )).await?.context("source identity")?.try_get::<String>("", "fact")?;
+        let items_before = rows_as_facts(&db,
+            "SELECT json_array(ordinal,item_id,revision,payload,last_write_seq) AS fact FROM history_items ORDER BY ordinal"
+        ).await?;
+        let frozen_before = if atomic {
+            rows_as_facts(&db,
+                "SELECT json_array(append_seq,record_id,turn_id,source_effect_seq,sealed_at,kind,payload) AS fact FROM timeline_records ORDER BY append_seq"
+            ).await?
+        } else {
+            Vec::new()
+        };
+        let metering_before = if !atomic {
+            Some(
+                rows_as_facts(
+                    &db,
+                    "SELECT json_array(payload,payload_hash) AS fact FROM session_checkpoint",
+                )
+                .await?,
+            )
+        } else {
+            None
+        };
+
+        // Real content preparation must run the missing step from either published source.
+        // A later failure leaves that step committed, never a partially published combination.
+        db.execute_unprepared(
+            "CREATE TRIGGER fail_combined_marker BEFORE UPDATE OF schema_version ON history_meta
+             WHEN NEW.schema_version=11
+             BEGIN SELECT RAISE(ABORT,'injected combined marker failure'); END",
+        )
+        .await?;
+        let error = prepare(&db, THREAD, Preparation::Schema, None)
+            .await
+            .expect_err("combination publication must be transactional");
+        assert!(format!("{error:#}").contains("injected combined marker failure"));
+        assert_eq!(version(&db).await?, 10);
+        assert!(applied(&db, ATOMIC_TIMELINE).await?);
+        assert!(applied(&db, METERING_FACTS).await?);
+        let before_failure = schema_state(&db).await?;
+        let error = prepare(&db, THREAD, Preparation::Schema, None)
+            .await
+            .expect_err("failed combination must be retryable without rebuilding content");
+        assert!(format!("{error:#}").contains("injected combined marker failure"));
+        assert_eq!(schema_state(&db).await?, before_failure);
+        assert!(!applied(&db, COMBINED_CONTENT).await?);
+        db.execute_unprepared("DROP TRIGGER fail_combined_marker")
+            .await?;
+        prepare(&db, THREAD, Preparation::Schema, None).await?;
+        assert_eq!(version(&db).await?, HISTORY_SCHEMA_VERSION);
+        assert!(applied(&db, ATOMIC_TIMELINE).await?);
+        assert!(applied(&db, METERING_FACTS).await?);
+        assert!(applied(&db, COMBINED_CONTENT).await?);
+        assert!(!applied(&db, PROJECT_KIND).await?);
+        assert!(!applied(&db, MODEL_ACCESS).await?);
+        let mut expected = saved.clone();
+        expected.state.usage_summary.diagnostics.legacy_unknown = true;
+        assert_eq!(
+            serde_json::to_value(
+                checkpoint::read(&db, THREAD)
+                    .await?
+                    .context("upgraded checkpoint")?
+            )?,
+            serde_json::to_value(expected)?,
+        );
+        assert_eq!(rows_as_facts(&db,
+            "SELECT json_array(database_id,thread_id,applied_write_seq) AS fact FROM history_meta"
+        ).await?, [identity_before]);
+        assert_eq!(rows_as_facts(&db,
+            "SELECT json_array(ordinal,item_id,revision,payload,last_write_seq) AS fact FROM history_items ORDER BY ordinal"
+        ).await?, items_before);
+        assert_eq!(
+            rows_as_facts(
+                &db,
+                "SELECT json_array(purpose,currency,amount) AS fact FROM session_costs"
+            )
+            .await?,
+            [r#"["main","USD",1.25]"#]
+        );
+        let page = super::super::timeline::page(&db, THREAD, None, 2, 10).await?;
+        assert_eq!(page.items.len(), if atomic { 2 } else { 1 });
+        assert_eq!(page.items[0].item_id, "original-input");
+        assert_eq!(page.items[0].append_seq, 1);
+        assert_eq!(page.items[0].source_effect_seq, None);
+        assert_eq!(page.items[0].sealed_at, None);
+        assert_eq!(
+            page.items[0]
+                .fields
+                .values()
+                .map(|field| field.block.text())
+                .collect::<Vec<_>>()
+                .join(""),
+            "正文\n  keep exact bytes",
+        );
+        if atomic {
+            assert_eq!(rows_as_facts(&db,
+                "SELECT json_array(append_seq,record_id,turn_id,source_effect_seq,sealed_at,kind,payload) AS fact FROM timeline_records ORDER BY append_seq"
+            ).await?, frozen_before);
+        }
+        if let Some(before) = metering_before {
+            assert_eq!(
+                rows_as_facts(
+                    &db,
+                    "SELECT json_array(payload,payload_hash) AS fact FROM session_checkpoint"
+                )
+                .await?,
+                before,
+                "already upgraded metering is not rewritten"
+            );
+        }
+        let prepared = schema_state(&db).await?;
+        prepare(&db, THREAD, Preparation::Schema, None).await?;
+        assert_eq!(schema_state(&db).await?, prepared);
+        db.close().await?;
+    }
+    Ok(())
+}
+
+async fn rows_as_facts(db: &DatabaseConnection, query: &str) -> Result<Vec<String>> {
+    db.query_all_raw(statement(query, vec![]))
+        .await?
+        .into_iter()
+        .map(|row| Ok(row.try_get("", "fact")?))
+        .collect()
 }
 
 #[tokio::test]
@@ -887,6 +1147,9 @@ async fn atomic_timeline_rejects_marker_schema_and_identity_conflicts() -> Resul
     for corruption in [
         "UPDATE history_meta SET schema_version=10",
         "INSERT INTO seaql_migrations(version,applied_at) VALUES('m20261027_000004_history_atomic_timeline',0)",
+        "INSERT INTO seaql_migrations(version,applied_at) VALUES('m20261028_000001_history_metering_facts',0)",
+        "INSERT INTO seaql_migrations(version,applied_at) VALUES('m20261028_000002_history_combined_content',0)",
+        "DELETE FROM seaql_migrations WHERE version='m20261027_000001_history_retire_ordinals'",
         "CREATE TABLE timeline_records(append_seq INTEGER PRIMARY KEY)",
         "DROP TABLE history_tool_tasks",
         "UPDATE history_meta SET schema_version=999",
@@ -895,14 +1158,19 @@ async fn atomic_timeline_rejects_marker_schema_and_identity_conflicts() -> Resul
         let directory = tempfile::tempdir()?;
         let db = v9(&directory.path().join("history.sqlite"), true).await?;
         db.execute_unprepared(corruption).await?;
+        let before = schema_state(&db).await?;
         assert!(
             preflight(&db, THREAD).await.is_err(),
             "must reject {corruption}"
         );
+        assert_eq!(schema_state(&db).await?, before);
         db.close().await?;
     }
     for corruption in [
         "DELETE FROM seaql_migrations WHERE version='m20261027_000004_history_atomic_timeline'",
+        "DELETE FROM seaql_migrations WHERE version='m20261028_000001_history_metering_facts'",
+        "DELETE FROM seaql_migrations WHERE version='m20261028_000002_history_combined_content'",
+        "UPDATE history_meta SET schema_version=10",
         "UPDATE history_meta SET schema_version=9",
         "DROP TABLE timeline_records",
     ] {
@@ -910,11 +1178,58 @@ async fn atomic_timeline_rejects_marker_schema_and_identity_conflicts() -> Resul
         let db = v9(&directory.path().join("history.sqlite"), true).await?;
         prepare(&db, THREAD, Preparation::Schema, None).await?;
         db.execute_unprepared(corruption).await?;
+        let before = schema_state(&db).await?;
         assert!(
             preflight(&db, THREAD).await.is_err(),
             "must reject {corruption}"
         );
+        assert_eq!(schema_state(&db).await?, before);
         db.close().await?;
+    }
+    for atomic in [false, true] {
+        let shape_corruption = if atomic {
+            "DROP TABLE timeline_records"
+        } else {
+            "CREATE TABLE timeline_records(append_seq INTEGER PRIMARY KEY)"
+        };
+        let source_corruption = if atomic {
+            "DELETE FROM seaql_migrations WHERE version='m20261027_000004_history_atomic_timeline'"
+        } else {
+            "DELETE FROM seaql_migrations WHERE version='m20261028_000001_history_metering_facts'"
+        };
+        let data_corruption = if atomic {
+            "INSERT INTO timeline_records VALUES(1,'damaged',NULL,NULL,NULL,'text','{}')"
+        } else {
+            "DROP TABLE history_tool_tasks"
+        };
+        for corruption in [
+            shape_corruption,
+            source_corruption,
+            data_corruption,
+            "INSERT INTO seaql_migrations(version,applied_at) VALUES('m20261028_000002_history_combined_content',0)",
+            "DELETE FROM seaql_migrations WHERE version='m20261027_000001_history_retire_ordinals'",
+            "UPDATE history_meta SET schema_version=11",
+        ] {
+            let directory = tempfile::tempdir()?;
+            let db = v9(&directory.path().join("history.sqlite"), true).await?;
+            PublishedV10 { atomic }.up(&db, Some(1)).await?;
+            db.execute_unprepared(corruption).await?;
+            let before = schema_state(&db).await?;
+            assert!(
+                prepare(&db, THREAD, Preparation::Schema, None)
+                    .await
+                    .is_err(),
+                "must reject v10 atomic={atomic}: {corruption}",
+            );
+            assert_eq!(schema_state(&db).await?, before);
+            if atomic && corruption == data_corruption {
+                assert_eq!(
+                    rows_as_facts(&db, "SELECT payload AS fact FROM timeline_records").await?,
+                    ["{}"],
+                );
+            }
+            db.close().await?;
+        }
     }
     Ok(())
 }

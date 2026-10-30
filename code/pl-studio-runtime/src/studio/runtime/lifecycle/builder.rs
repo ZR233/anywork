@@ -104,6 +104,7 @@ impl StudioRuntime {
             crate::studio::thread_factory::StudioThreadServices {
                 store: store.clone(),
                 worktrees: worktrees.clone(),
+                recovery: recovery.clone(),
                 product_events: product_events.clone(),
                 config_runtime: config_runtime.clone(),
                 mcp_runtime: mcp.clone(),

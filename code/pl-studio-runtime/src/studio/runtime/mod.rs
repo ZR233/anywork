@@ -401,7 +401,7 @@ impl StudioRuntime {
     pub fn persistence_queue_snapshot(&self) -> pl_protocol::PersistenceQueueSnapshot {
         self.store
             .thread_persistence()
-            .report_calls(self.store.calls().metrics());
+            .report_calls(self.store.calls());
         self.store.thread_persistence().queue_snapshot()
     }
 

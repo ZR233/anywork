@@ -303,6 +303,7 @@ fn revision_bytes(id: &str) -> u64 {
 pub(in crate::studio) struct PreparedEffect {
     /// Effect sequence this batch belongs to; the writer matches it against its admission queue.
     pub(in crate::studio) sequence: u64,
+    pub(in crate::studio) accounting: Arc<super::PreparedAccounting>,
     /// The canonical items the effect committed, in the order the durable rows are written.
     pub(in crate::studio) items: Vec<ThreadItem>,
     /// The frozen completion records this batch published atomically before the handoff.
@@ -379,8 +380,8 @@ impl PreparedEffect {
     ///
     /// Shell contract: the value includes each item's and the report's own shell, but not the
     /// `items` vector's allocation — a caller holding that vector charges only its spare capacity
-    /// (`(capacity - len) * size_of::<ThreadItem>()`) on top of this method; an empty batch
-    /// without a report still estimates at zero.
+    /// (`(capacity - len) * size_of::<ThreadItem>()`) on top of this method. Even an empty
+    /// content batch retains its prepared accounting material and its corresponding charge.
     pub(in crate::studio) fn retained_bytes(&self) -> u64 {
         let parent_report = self.parent_report_retained_bytes();
         let review_delivery = self.review_delivery.iter().fold(0_u64, |bytes, fact| {
@@ -403,6 +404,7 @@ impl PreparedEffect {
                 .saturating_add(RETAINED_ITEM_OVERHEAD)
         });
         retained_bytes(&self.items)
+            .saturating_add(self.accounting.retained_bytes())
             .saturating_add(parent_report)
             .saturating_add(review_delivery)
             .saturating_add(completions)
@@ -1360,6 +1362,7 @@ impl LiveProjection {
         state: &ThreadSnapshot,
         deliver: bool,
     ) -> Result<(Option<Vec<LiveEvent>>, Arc<PreparedEffect>), ProjectionError> {
+        let accounting = Arc::new(super::PreparedAccounting::prepare(effect)?);
         let turns = self.prepare_turn_frames(thread, effect, state, deliver)?;
         let (items, review_delivery, completion_drafts) =
             self.project(thread, effect, state).await?;
@@ -1368,6 +1371,7 @@ impl LiveProjection {
         self.retire_effect_source(effect)?;
         let prepared = Arc::new(PreparedEffect {
             sequence: effect.sequence,
+            accounting,
             items,
             completions: Arc::from(Vec::new()),
             completion_drafts: Some(completion_drafts),
@@ -1405,11 +1409,13 @@ impl LiveProjection {
         effect: &ThreadEffectBatch,
         state: &ThreadSnapshot,
     ) -> Result<Arc<PreparedEffect>, ProjectionError> {
+        let accounting = Arc::new(super::PreparedAccounting::prepare(effect)?);
         let (items, review_delivery, completion_drafts) =
             self.project(thread, effect, state).await?;
         self.retire_effect_source(effect)?;
         let prepared = Arc::new(PreparedEffect {
             sequence: effect.sequence,
+            accounting,
             items,
             completions: Arc::from(Vec::new()),
             completion_drafts: Some(completion_drafts),

@@ -667,12 +667,15 @@ impl ThreadObservations {
             let child = pl_protocol::Thread::from(child);
             // Parent recovery explicitly prepares its cold children's storage before projecting
             // their facts. It never activates a child, rebuilds its workspace or asks a model.
-            let Some(checkpoint) =
+            // Keep checkpoint migration's large future out of the enclosing activation future;
+            // legacy decoding still runs inline with the same owner and cancellation boundary.
+            let Some(checkpoint) = Box::pin(
                 crate::studio::thread_factory::recovery::load_checkpoint_for_recovery(
                     &services.store,
                     &child,
-                )
-                .await?
+                ),
+            )
+            .await?
             else {
                 continue;
             };
@@ -1107,14 +1110,10 @@ impl LiveOwner {
             self.pending.is_none(),
             "a retained handoff must finish before projecting another effect"
         );
-        let mut usage = self.usage.clone();
-        let projected = async {
-            crate::studio::thread_projection::fold_effect_accounting(&mut usage, effect)?;
-            self.projection
-                .prepare(&self.thread, effect, &write.checkpoint.state, deliver)
-                .await
-        }
-        .await;
+        let projected = self
+            .projection
+            .prepare(&self.thread, effect, &write.checkpoint.state, deliver)
+            .await;
         let (changes, prepared) = match projected {
             Ok(projected) => projected,
             Err(error) => {
@@ -1128,7 +1127,7 @@ impl LiveOwner {
                 return Err(anyhow::anyhow!("live Thread projection failed: {error}"));
             }
         };
-        self.usage = usage;
+        prepared.accounting.fold_into(&mut self.usage);
         // The folded commit is already resident in the shared session, so this owner retains the
         // whole handoff — the original write, the prepared batch, the delivery decision it made and
         // its mode — before the first await of the parent-report preparation. A failure, a
@@ -1205,6 +1204,15 @@ impl LiveOwner {
         }
         self.prepare_parent_report(services).await?;
         self.prepare_terminal_delivery(services)?;
+        if let Some(pending) = &self.pending
+            && pending.mode == HandoffMode::Live
+        {
+            billing::record(
+                &services.performance,
+                &self.thread.root_thread_id,
+                &pending.prepared.accounting,
+            )?;
+        }
         self.handover_pending()
     }
 
@@ -2255,7 +2263,6 @@ impl ProjectionWorker {
         //
         // The association the owner was installed with is what identifies a parent or a billing
         // root; it never changes for a Thread, so a commit does not re-read the directory DTO for it.
-        let owner_product = live.thread.clone();
         let mut newest_commit_at = 0_i64;
         loop {
             // The retained handoff is completed before any new queue work: its write is the very
@@ -2281,11 +2288,6 @@ impl ProjectionWorker {
                 // re-decided delivery — only the report preparation and the handoff are retried.
                 let _parent_report = live.finish_pending(services).await?;
                 if mode == HandoffMode::Live {
-                    billing::record(
-                        &services.performance,
-                        &owner_product.root_thread_id,
-                        &write.effect,
-                    )?;
                     newest_commit_at = newest_commit_at.max(write.effect.committed_at);
                 }
                 transfer_terminal(services, state).await?;
@@ -2299,11 +2301,6 @@ impl ProjectionWorker {
                 continue;
             }
             live.advance(services, id.as_str(), &write).await?;
-            billing::record(
-                &services.performance,
-                &owner_product.root_thread_id,
-                &write.effect,
-            )?;
             newest_commit_at = newest_commit_at.max(write.effect.committed_at);
             transfer_terminal(services, state).await?;
         }
@@ -3917,6 +3914,7 @@ mod storage_fault_tests {
             crate::studio::thread_factory::StudioThreadServices {
                 store: store.clone(),
                 worktrees: worktrees.clone(),
+                recovery: recovery.clone(),
                 product_events: events.clone(),
                 config_runtime: config.clone(),
                 mcp_runtime: pl_tool::mcp::McpRuntime::new(pl_tool::mcp::McpConnector::default())
@@ -4688,6 +4686,7 @@ mod storage_fault_tests {
             turn_id: "pruned-turn".into(),
             accounting: Default::default(),
             model_observation: None,
+            timing: None,
             implementation: Some("native".into()),
             error: None,
         };
@@ -4721,7 +4720,7 @@ mod storage_fault_tests {
         };
         let mut usage = Default::default();
         crate::studio::thread_projection::fold_effect_accounting(&mut usage, &effect)?;
-        assert_eq!(usage.inference_count, 1);
+        assert_eq!(usage.totals.inference_count, 1);
         let mut projection = LiveProjection::new();
         projection
             .bind_execution_history(channel.order_index(), store.history(&thread.id).await?)?;

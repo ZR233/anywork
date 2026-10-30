@@ -545,6 +545,34 @@ class HistoryFaultJourney {
     } on Object {
       checks['pauseReasonVisible'] = false;
     }
+    checks['reliableHistoryDiagnosticsVisible'] = false;
+    checks['noDiagnosticCallsWatermark'] = false;
+    if (checks['pauseReasonVisible'] == true) {
+      await _tap('persistence-diagnostics-toggle');
+      // This journey runs Profile/AOT, where debug render trees are unavailable.
+      // The isolated fixture owns exactly one Thread; use its real queue values
+      // and ordinary Driver Text lookup, not a synthetic diagnostic projection.
+      final queue = jsonDecode(
+        await driver.requestData('persistence-queue'),
+      ) as Map<String, dynamic>;
+      final row = (queue['threads'] as List).single as Map<String, dynamic>;
+      if (row['fault'] != 'writeFailed') {
+        throw StateError('expected the real history write failure: $row');
+      }
+      final expected =
+          '$threadId · state '
+          '${row['stateDurable'] ?? '?'}/${row['stateDirty'] ?? '?'} · history '
+          '${row['historyDurable'] ?? '?'}/${row['historyAdmitted'] ?? '?'}'
+          ' · History save failed';
+      final finder = find.text(expected);
+      await driver.waitFor(finder, timeout: const Duration(seconds: 10));
+      final displayed = await driver.getText(finder);
+      checks['reliableHistoryDiagnosticsVisible'] = displayed == expected;
+      checks['noDiagnosticCallsWatermark'] = !displayed.contains(' · calls ');
+      await File('${output.path}/history-fault-diagnostics-text.txt')
+          .writeAsString(displayed);
+      await shot('reliable-diagnostics');
+    }
     // The answer check is scoped to the faulted turn: the priming turn's
     // legitimate answer must not count, and no answer of *this* turn may exist.
     final answersAtBoundary = _answerCountForTurn(boundary, turn);

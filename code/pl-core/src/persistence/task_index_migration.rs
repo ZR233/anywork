@@ -28,6 +28,10 @@ pub(super) async fn convert_checkpoints(
             let thread_id: String = row.try_get("", "thread_id")?;
             after.clone_from(&thread_id);
             let indexed: i64 = row.try_get("", "schema_version")?;
+            if indexed == 6 {
+                super::thread_checkpoint::decode_checkpoint(row, &thread_id)?;
+                continue;
+            }
             if indexed == current {
                 super::thread_checkpoint::decode_checkpoint_at_schema(row, &thread_id, 5)?;
                 continue;
@@ -69,14 +73,21 @@ pub(super) async fn convert_checkpoints(
                     "checkpoint ownership or fence mismatch".into(),
                 ));
             }
-            let encoded = if indexed == 4 {
+            let encoded = if indexed >= 4 {
                 // Schema 5 only adds fields with explicit defaults. Preserve every saved field,
                 // including producer extensions, instead of reserializing through a moving model.
                 let mut migrated = header;
                 migrated["schemaVersion"] = serde_json::json!(5);
                 serde_json::to_string(&migrated)?
             } else {
-                serde_json::to_string(&checkpoint)?
+                let mut migrated = serde_json::to_value(&checkpoint)?;
+                migrated["schemaVersion"] = serde_json::json!(5);
+                // The named schema-5 step must retain its fixed flat usage target.
+                migrated["state"]["usageSummary"] = header["state"]
+                    .get("usageSummary")
+                    .cloned()
+                    .unwrap_or_else(|| serde_json::json!({}));
+                serde_json::to_string(&migrated)?
             };
             let encoded_hash = crate::context::content_hash(encoded.as_bytes());
             tx.execute_raw(sqlite::statement(

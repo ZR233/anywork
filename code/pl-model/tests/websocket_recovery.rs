@@ -105,8 +105,8 @@ async fn declared_remote_tools_with_response_events_are_not_replayed() {
             .unwrap_err();
         assert!(failure.is_transient_model_transport());
         assert_eq!(
-            failure.accounting.usage.status(),
-            pl_protocol::UsageStatus::Missing
+            pl_model::model::usage::analyze(&failure.accounting.usage).status,
+            pl_core::usage::UsageStatus::Missing
         );
         let progress = failure.partial_progress.unwrap();
         assert_eq!(progress.observation().generation, 0);
@@ -1221,6 +1221,15 @@ async fn cancellation_during_read_or_backoff_keeps_receipt_and_next_turn_uses_fr
         let receipt = pl_model::runtime::model_failure_receipt(error)
             .unwrap()
             .unwrap();
+        let timing = receipt.timing.expect("cancelled transport timing retained");
+        assert_eq!(
+            timing.first_output_source,
+            pl_protocol::FirstOutputSource::Incremental
+        );
+        assert_eq!(
+            timing.ttft_millis.unwrap() + timing.decode_millis.unwrap(),
+            timing.response_millis
+        );
         let progress = receipt.partial_progress.unwrap();
         if backoff {
             assert!(

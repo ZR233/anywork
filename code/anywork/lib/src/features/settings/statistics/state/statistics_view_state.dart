@@ -8,7 +8,7 @@ final class StatisticsViewState {
     required this.effortFilter,
     required this.mismatchesOnly,
     required Iterable<StatisticsSample> filteredHistory,
-  }) : filteredHistory = List.unmodifiable(filteredHistory);
+  }) : filteredHistory = StatisticsMaterial.freeze(filteredHistory);
 
   final StatisticsRepositoryState repository;
   final String? modelFilter;
