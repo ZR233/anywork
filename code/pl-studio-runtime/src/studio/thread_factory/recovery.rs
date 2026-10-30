@@ -1,6 +1,6 @@
 //! Current-layout checkpoint loading for cold Threads.
 //!
-//! Old shared journals remain isolated outside v2; checkpoints are validated on explicit activation.
+//! Pre-v2 shared journals remain isolated; current checkpoints are validated on explicit activation.
 //!
 //! Which entries may touch storage:
 //!
@@ -45,11 +45,10 @@ pub(crate) async fn load_checkpoint_for_recovery(
     thread: &pl_protocol::Thread,
 ) -> Result<Option<ThreadCheckpoint>> {
     let history = store.history_for(&thread.workspace_id, &thread.id).await?;
-    let Some(_) = store
-        .state_for(&thread.workspace_id, &thread.id)?
-        .prepare_recovery(&history)
-        .await?
-    else {
+    let state = store.state_for(&thread.workspace_id, &thread.id)?;
+    // File import owns a full checkpoint and nests SQLite preparation. Keep that future out of
+    // each enclosing parent-recovery/activation frame, including composed subscription polls.
+    let Some(_) = Box::pin(state.prepare_recovery(&history)).await? else {
         return Ok(None);
     };
     history.prepare_model_access().await
