@@ -1,8 +1,8 @@
 // Opt-in native journey for the persisted long timeline history.
 //
 // 两个阶段由协调器分别启动，共享同一隔离 home：
-//   live    通过真实 composer 提交 `timeline-history` 剧本，等待 Turn 完成且
-//           persistence ready/pendingCommits 0，再从最新小页按需逐页读取更早内容。
+//   live    通过真实 composer 提交 2000 项历史，完成并持久化后真实离页/返回，
+//           在独立的单项长正文调用期间分页；再次离页/返回后记录最新小页和深页。
 //          同时记录真实持久化项目与会话身份，作为冷启动的唯一目标。
 //   restart 冷启动同一 home：冷启动允许从无选择的启动页开始（design/26 §26.9），
 //          因此这里通过正常侧栏选择与打开动作恢复首轮同一项目与会话，核对打开后
@@ -22,9 +22,10 @@ import 'timeline_streaming_journey.dart';
 
 /// 与 `pl_provider_fixture::GUI_TIMELINE_HISTORY_PROMPT` 完全一致的剧本提示词。
 const _prompt = 'Generate the local timeline history fixture';
-const _items = 20000;
+const _streamPrompt = 'Stream the local timeline reading fixture';
+const _items = 2000;
 
-/// 深页预算：每页最多 32 条，20000 条共约 625 页；这里逐页读取固定页数以证明真实
+/// 深页预算：每页最多 32 条，2000 条共约 63 页；这里逐页读取固定页数以证明真实
 /// 页边界与顺序，不把“读到 EOF”当作时延预算内的必要条件。
 const _deepPages = 40;
 
@@ -76,10 +77,6 @@ Future<void> main(List<String> args) async {
       await stage('project_opened');
       await _submit(driver, _prompt);
       await stage('prompt_submitted');
-      report['streamingHistory'] = await observeStreamingHistory(
-        driver,
-        output,
-      );
       // Turn 正常完成是独立事实：status 必须是 completed，且不再 busy。
       final completed = await _waitFor(
         driver,
@@ -105,6 +102,48 @@ Future<void> main(List<String> args) async {
         );
       }
       await stage('turn_completed');
+      final seedDurable = await _waitFor(
+        driver,
+        (snapshot) =>
+            _generationSettled(snapshot) &&
+            _durable(snapshot) &&
+            !_isBusy(snapshot) &&
+            _lastTurnStatus(snapshot) == 'completed',
+        'seed_durable',
+        timeout: const Duration(seconds: 300),
+      );
+      report['seed'] = <String, Object?>{
+        'expectedIndependentItems': _items,
+        'expectedReferenceTokensPerItem': 64,
+        'expectedReferenceTokens': _items * 64,
+        'settled': _snapshotSummary(seedDurable),
+      };
+      // 换代只能来自真实路由撤销展示需求，再加入同一会话。
+      report['seedReattach'] = await _reattachThroughSettings(
+        driver,
+        seedDurable,
+      );
+      await _submit(driver, _streamPrompt);
+      await stage('stream_prompt_submitted');
+      report['streamingHistory'] = await observeStreamingHistory(
+        driver,
+        output,
+      );
+      final streamDurable = await _waitFor(
+        driver,
+        (snapshot) =>
+            _generationSettled(snapshot) &&
+            _durable(snapshot) &&
+            !_isBusy(snapshot) &&
+            _lastTurnStatus(snapshot) == 'completed',
+        'stream_durable',
+        timeout: const Duration(seconds: 300),
+      );
+      // returnLive 保留已加载窗口；跨重启对照的小页必须由另一次真实 reattach 建立。
+      report['comparisonReattach'] = await _reattachThroughSettings(
+        driver,
+        streamDurable,
+      );
     }
     // 持久化收束是另一个独立事实：ready 且 pendingCommits == 0 之后才允许正常退出。
     final settled = await _waitFor(
@@ -144,7 +183,7 @@ Future<void> main(List<String> args) async {
       'pixelsAtTop': (latestScroll.pixels ?? 1).abs() <= 0.5,
       'hasOlder': latest.hasOlder,
     };
-    // 20k 条持久化历史意味着最新小页之后仍有更早内容；这也证明“最新小页”不是
+    // 2000 条持久化历史意味着最新小页之后仍有更早内容；这也证明“最新小页”不是
     // 唯一一页全量加载。
     final latestOk =
         latest.isLive &&
@@ -173,11 +212,18 @@ Future<void> main(List<String> args) async {
     for (var page = 1; page <= _deepPages; page++) {
       if (!previous.hasOlder) break;
       final before = previous;
+      var validated = before;
       await driver.requestData('load-older');
       final next = await _waitFor(
         driver,
         (snapshot) {
           final timeline = TimelineObservation.optional(snapshot);
+          if (timeline != null) {
+            // Loading snapshots also retain completed atoms. Protect newly
+            // observed atoms in every subsequent snapshot of this page.
+            _requireFrozenCoverage(validated, timeline);
+            validated = timeline;
+          }
           return timeline != null &&
               !timeline.loadingOlder &&
               timeline.itemCount > before.itemCount &&
@@ -187,7 +233,7 @@ Future<void> main(List<String> args) async {
         timeout: const Duration(seconds: 60),
       );
       final after = TimelineObservation.parse(next);
-      after.requireConsistentIds();
+      _requireFrozenCoverage(before, after);
       final delivered = after.itemCount - before.itemCount;
       final retained = before.itemIds.every(after.itemIds.contains);
       final prepended =
@@ -229,13 +275,14 @@ Future<void> main(List<String> args) async {
         'hasOlder': after.hasOlder,
         'mode': after.mode,
         'generation': after.generation,
+        'timelineEpoch': after.timelineEpoch,
+        'frozenFieldsRetained': true,
         'retained': retained,
         'prepended': prepended,
         'orderAscending': after.appendSeqAscending,
         'cursorMoved': cursorMoved,
       });
       previous = after;
-      if (after.itemCount > _items) break;
     }
     report['paging'] = <String, Object?>{
       'pages': pages,
@@ -248,7 +295,7 @@ Future<void> main(List<String> args) async {
           ? null
           : previous.itemIds.first,
       'loadedItems': previous.itemCount,
-      // 真实分页深度（不是全量 20k/EOF 的证明：20k 条远多于本轮预算页数）。
+      // 真实分页深度；2000 项库存足够读取 40 个 partial pages，不要求 EOF。
       'partialDepthPages': pages.length,
       'reachedEnd': !previous.hasOlder,
       'hasOlder': previous.hasOlder,
@@ -258,13 +305,15 @@ Future<void> main(List<String> args) async {
     };
     report['latestPageOk'] = latestOk;
     report['pagingOk'] =
-        pages.isNotEmpty &&
+        pages.length == _deepPages &&
         !duplicateIdentity &&
         !orderViolation &&
         !cursorStalled &&
         pageGrowthViolations.isEmpty &&
         previous.mode == latest.mode &&
-        previous.generation == latest.generation;
+        previous.generation == latest.generation &&
+        previous.timelineEpoch == latest.timelineEpoch &&
+        previous.hasOlder;
     report['pass'] = latestOk && (report['pagingOk'] == true);
     await File(
       '${output.path}/timeline-history-$phase.json',
@@ -278,6 +327,40 @@ Future<void> main(List<String> args) async {
       '${output.path}/timeline-history-$phase.json',
     ).writeAsString('${const JsonEncoder.withIndent('  ').convert(report)}\n');
     await stage('journey_complete');
+  } on Object catch (error) {
+    report['failure'] = '$error';
+    // Seed completion and route reattach also consume the real source. Preserve
+    // its notice before shutdown, while keeping the original failure outermost.
+    try {
+      final failed = await driver.readSnapshot();
+      if ((failed['timeline'] as Map?)?['connection'] == 'failed') {
+        final evidence = <String, Object?>{
+          'failure': '$error',
+          'snapshot': _snapshotSummary(failed),
+        };
+        try {
+          evidence['connectionNotice'] = await driver.getText(
+            find.descendant(
+              of: find.descendant(
+                of: find.byValueKey('timeline-connection-notice'),
+                matching: find.byType('Expanded'),
+              ),
+              matching: find.byType('Text'),
+            ),
+          );
+          await File('${output.path}/timeline-history-$phase-source-failed.png')
+              .writeAsBytes(await driver.screenshot());
+        } catch (diagnosticError) {
+          evidence['diagnosticError'] = '$diagnosticError';
+        }
+        report['sourceFailure'] = evidence;
+        await File('${output.path}/timeline-history-$phase-source-failed.json')
+            .writeAsString(jsonEncode(evidence));
+      }
+    } catch (diagnosticError) {
+      report['failureDiagnosticError'] = '$diagnosticError';
+    }
+    rethrow;
   } finally {
     // 正常关闭必须走产品自己的退出协调器：OS 退出码由协调器核对。
     try {
@@ -337,7 +420,7 @@ Future<void> main(List<String> args) async {
 
 /// 首轮记录冷启动必须复现的**完整**事实：最新小页身份、每页有序身份、游标与边界。
 ///
-/// 40 页 × 每页 ≤32 条的有序 ID 是透明证据，不是把 20k 条全部缓存到前端。
+/// 40 页 × 每页 ≤32 条的有序 ID 是透明证据，不把全部 2000 项缓存当成前提。
 Future<void> _verifyCrossRestartBaseline(
   Map<String, Object?> report,
   Directory output,
@@ -376,6 +459,7 @@ Future<void> _verifyCrossRestartBaseline(
           'page': page['page'],
           'itemIds': page['itemIds'],
           'delivered': page['delivered'],
+          'timelineEpoch': page['timelineEpoch'],
           'olderCursorAfter': page['olderCursorAfter'],
           'hasOlder': page['hasOlder'],
         },
@@ -386,7 +470,7 @@ Future<void> _verifyCrossRestartBaseline(
   ).writeAsString('${const JsonEncoder.withIndent('  ').convert(baseline)}\n');
 }
 
-/// 冷启动必须复现同一份 canonical 页：最新小页身份、每页**有序** ID、游标与边界。
+/// 冷启动必须复现同一份 canonical 页；opaque 游标只在同 epoch 内逐字比较。
 Future<void> _compareWithFirstRun(
   Map<String, Object?> report,
   Directory output,
@@ -414,6 +498,13 @@ Future<void> _compareWithFirstRun(
     for (final id in (value as List? ?? const [])) '$id',
   ];
 
+  bool validCursorBoundary(Object? cursor, Object? hasOlder) =>
+      switch (hasOlder) {
+        true => cursor is String && cursor.isNotEmpty,
+        false => cursor == null,
+        _ => false,
+      };
+
   // 打开后的真实身份必须就是首轮同一持久化项目与会话：值相等的 id，不是“某个
   // 项目/会话”。缺失与不符都直接失败。
   final identityMatches =
@@ -439,6 +530,19 @@ Future<void> _compareWithFirstRun(
     final cold = pages[index];
     final firstIds = ids(first['itemIds']);
     final coldIds = ids(cold['itemIds']);
+    final firstEpoch = first['timelineEpoch'];
+    final coldEpoch = cold['timelineEpoch'];
+    final epochsValid =
+        firstEpoch is String &&
+        firstEpoch.isNotEmpty &&
+        coldEpoch is String &&
+        coldEpoch.isNotEmpty;
+    final cursorComparable = epochsValid && firstEpoch == coldEpoch;
+    final firstCursor = first['olderCursorAfter'];
+    final coldCursor = cold['olderCursorAfter'];
+    final cursorBoundariesValid =
+        validCursorBoundary(firstCursor, first['hasOlder']) &&
+        validCursorBoundary(coldCursor, cold['hasOlder']);
     comparisons.add(<String, Object?>{
       'page': index + 1,
       'sameOrderedIds': _sameIds(firstIds, coldIds),
@@ -447,7 +551,17 @@ Future<void> _compareWithFirstRun(
       'baselineFirstId': firstIds.isEmpty ? null : firstIds.first,
       'baselineLastId': firstIds.isEmpty ? null : firstIds.last,
       'sameDelivered': first['delivered'] == cold['delivered'],
-      'sameOlderCursor': first['olderCursorAfter'] == cold['olderCursorAfter'],
+      'baselineTimelineEpoch': firstEpoch,
+      'coldStartTimelineEpoch': coldEpoch,
+      'epochsValid': epochsValid,
+      'olderCursorComparable': cursorComparable,
+      'olderCursorComparison': !epochsValid
+          ? 'invalidEpoch'
+          : cursorComparable
+          ? 'sameEpochExactToken'
+          : 'differentEpochNotByteComparable',
+      'sameOlderCursor': cursorComparable ? firstCursor == coldCursor : null,
+      'cursorBoundariesValid': cursorBoundariesValid,
       'sameHasOlder': first['hasOlder'] == cold['hasOlder'],
     });
   }
@@ -464,7 +578,10 @@ Future<void> _compareWithFirstRun(
         (entry) =>
             entry['sameOrderedIds'] == true &&
             entry['sameDelivered'] == true &&
-            entry['sameOlderCursor'] == true &&
+            entry['epochsValid'] == true &&
+            entry['cursorBoundariesValid'] == true &&
+            (entry['olderCursorComparable'] == false ||
+                entry['sameOlderCursor'] == true) &&
             entry['sameHasOlder'] == true,
       );
   report['restartComparison'] = <String, Object?>{
@@ -499,6 +616,92 @@ bool _sameIds(List<String> left, List<String> right) {
     if (left[index] != right[index]) return false;
   }
   return true;
+}
+
+void _requireFrozenCoverage(
+  TimelineObservation before,
+  TimelineObservation after,
+) {
+  before.requireConsistentIds();
+  after.requireConsistentIds();
+  final oldIds = before.itemIds.toSet();
+  if (before.timelineEpoch == null ||
+      after.threadId != before.threadId ||
+      after.generation != before.generation ||
+      after.timelineEpoch != before.timelineEpoch ||
+      oldIds.length != before.itemCount ||
+      after.itemIds.toSet().length != after.itemCount ||
+      !after.appendSeqAscending ||
+      !_sameIds(
+        before.itemIds,
+        after.itemIds.where(oldIds.contains).toList(),
+      )) {
+    throw StateError('Page replaced, duplicated or reordered completed atoms');
+  }
+  for (final item in before.items) {
+    final retained = after.item(item.id);
+    if (retained == null ||
+        jsonEncode(item.frozenFields()) !=
+            jsonEncode(retained.frozenFields())) {
+      throw StateError('Page changed frozen completed atom ${item.id}');
+    }
+  }
+}
+
+Future<Map<String, Object?>> _reattachThroughSettings(
+  FlutterDriverSession driver,
+  Map<String, dynamic> before,
+) async {
+  final previous = TimelineObservation.parse(before);
+  final identity = readOpenedTimelineIdentity(before);
+  await _tap(driver, 'settings-open');
+  await driver.waitFor(
+    find.byValueKey('settings-back'),
+    timeout: const Duration(seconds: 30),
+  );
+  final detached = await _waitFor(
+    driver,
+    (snapshot) => TimelineObservation.optional(snapshot) == null,
+    'settings_detached',
+  );
+  await _tap(driver, 'settings-back');
+  final stability = TimelineViewportStability();
+  final reopened = await _waitFor(driver, (snapshot) {
+    final timeline = TimelineObservation.optional(snapshot);
+    return timeline != null &&
+        timeline.threadId == previous.threadId &&
+        timeline.generation > previous.generation &&
+        timeline.isLive &&
+        stability.accept(snapshot) &&
+        TimelineScrollObservation.parse(snapshot).atLiveEdge;
+  }, 'settings_reattached');
+  final currentIdentity = readOpenedTimelineIdentity(reopened);
+  if (!identity.consistent ||
+      !currentIdentity.consistent ||
+      identity.projectId != currentIdentity.projectId ||
+      identity.threadId != currentIdentity.threadId ||
+      identity.facts['projectPath'] != currentIdentity.facts['projectPath']) {
+    throw StateError('Settings return opened a different persisted identity');
+  }
+  final current = TimelineObservation.parse(reopened);
+  current.requireConsistentIds();
+  if (!current.hasOlder ||
+      current.olderCursor == null ||
+      current.timelineEpoch == null) {
+    throw StateError('Reattached baseline lacks a real older page boundary');
+  }
+  return <String, Object?>{
+    'method': 'settings-open/settings-back',
+    'before': previous.summary(),
+    'detached': _snapshotSummary(detached),
+    'after': current.summary(),
+    'hiddenOwners': [
+      for (final owner in current.hiddenPresentationItems)
+        <String, Object?>{'id': owner.id, 'memberIds': owner.memberIds},
+    ],
+    'identity': currentIdentity.toJson(),
+    'freshGeneration': true,
+  };
 }
 
 Future<void> _openProject(FlutterDriverSession driver, String project) async {
@@ -587,6 +790,11 @@ Future<Map<String, dynamic>> _waitFor(
   Map<String, dynamic>? last;
   while (DateTime.now().isBefore(deadline)) {
     last = await driver.readSnapshot();
+    if ((last['timeline'] as Map?)?['connection'] == 'failed') {
+      throw StateError(
+        'timeline-history source failed at $label: ${_snapshotSummary(last)}',
+      );
+    }
     if (predicate(last)) return last;
     await Future<void>.delayed(const Duration(milliseconds: 150));
   }

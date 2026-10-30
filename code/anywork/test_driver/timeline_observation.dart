@@ -278,6 +278,7 @@ final class TimelineObservation {
     required this.hasNewOutput,
     required this.items,
     required this.presentationItems,
+    required this.hiddenPresentationItems,
   });
 
   /// 当前快照里的展示事实；`timeline` 为 null（没有展示）时返回 null。
@@ -312,21 +313,23 @@ final class TimelineObservation {
       }
       itemIds.add(id);
     }
-    final rawPresentation = map['presentationItems'];
-    if (rawPresentation is! List) {
-      throw StateError('timeline.presentationItems is missing');
-    }
-    final presentation = <TimelinePresentationObservation>[];
-    for (final value in rawPresentation) {
-      if (value is! Map) {
-        throw StateError('timeline presentation item is not an object');
+    List<TimelinePresentationObservation> presentations(String field) {
+      final rawPresentation = map[field];
+      if (rawPresentation is! List) {
+        throw StateError('timeline.$field is missing');
       }
-      presentation.add(
-        TimelinePresentationObservation.parse(value.cast<String, dynamic>()),
-      );
+      return List.unmodifiable([
+        for (final value in rawPresentation)
+          if (value is Map)
+            TimelinePresentationObservation.parse(value.cast<String, dynamic>())
+          else
+            throw StateError('timeline.$field item is not an object'),
+      ]);
     }
+
     return TimelineObservation._(
-      presentationItems: List.unmodifiable(presentation),
+      presentationItems: presentations('presentationItems'),
+      hiddenPresentationItems: presentations('hiddenPresentationItems'),
       threadId: _string(map, 'threadId', 'timeline'),
       generation: _int(map, 'generation', 'timeline'),
       ready: _bool(map, 'ready', 'timeline'),
@@ -374,6 +377,7 @@ final class TimelineObservation {
   final bool hasNewOutput;
   final List<TimelineItemObservation> items;
   final List<TimelinePresentationObservation> presentationItems;
+  final List<TimelinePresentationObservation> hiddenPresentationItems;
 
   TimelinePresentationObservation presentationFor(String sourceId) =>
       presentationItems.singleWhere(
@@ -426,7 +430,11 @@ final class TimelineObservation {
     };
     final assigned = <String>{};
     final presentationIds = <String>{};
-    for (final group in presentationItems) {
+    if (presentationItems.any((group) => group.kind == 'hidden') ||
+        hiddenPresentationItems.any((group) => group.kind != 'hidden')) {
+      throw StateError('Visible and hidden presentation owners are mixed');
+    }
+    for (final group in [...presentationItems, ...hiddenPresentationItems]) {
       if (!presentationIds.add(group.id) || group.memberIds.isEmpty) {
         throw StateError(
           'Duplicate or empty timeline presentation: ${group.id}',

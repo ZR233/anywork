@@ -10,8 +10,8 @@ import '../domain/models/timeline_commands.dart';
 
 /// 一个展示代次的只读事实（design/26 §26.9）。
 ///
-/// 身份与数量来自当前 stock controller 的真实消息集合，不从状态流猜测；`items` 是同一批
-/// Message 的轻量 typed 预览诊断，只用于验收旅程，不是第二份业务事实源。
+/// `items` 来自当前 lease 的完整原子集合；可见 owner 来自 stock controller 的真实消息，
+/// hidden owner 从同一 lease 读取。只用于验收，不保留第二份业务事实源。
 final class TimelineDisplayFacts {
   TimelineDisplayFacts({
     required this.threadId,
@@ -31,8 +31,10 @@ final class TimelineDisplayFacts {
     required this.hasNewOutput,
     List<TimelineItemFacts> items = const [],
     List<TimelinePresentationFacts> presentationItems = const [],
+    List<TimelinePresentationFacts> hiddenPresentationItems = const [],
   }) : items = List.unmodifiable(items),
-       presentationItems = List.unmodifiable(presentationItems);
+       presentationItems = List.unmodifiable(presentationItems),
+       hiddenPresentationItems = List.unmodifiable(hiddenPresentationItems);
 
   final String threadId;
   final int generation;
@@ -51,6 +53,7 @@ final class TimelineDisplayFacts {
   final bool hasNewOutput;
   final List<TimelineItemFacts> items;
   final List<TimelinePresentationFacts> presentationItems;
+  final List<TimelinePresentationFacts> hiddenPresentationItems;
 }
 
 /// GUI groups have their own identity; members still denote individual canonical records.
@@ -1253,6 +1256,19 @@ abstract final class StudioDriverState {
       'presentationItemCount': timeline.presentationItems.length,
       'presentationItems': [
         for (final item in timeline.presentationItems)
+          {
+            'id': item.id,
+            'kind': item.kind,
+            'firstAppendSeq': item.firstAppendSeq,
+            'memberIds': item.memberIds,
+            'visibleMemberIds': item.visibleMemberIds,
+            'skillPairs': item.skillPairs,
+            'expanded': item.expanded,
+            'issueCount': item.issueCount,
+          },
+      ],
+      'hiddenPresentationItems': [
+        for (final item in timeline.hiddenPresentationItems)
           {
             'id': item.id,
             'kind': item.kind,

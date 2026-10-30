@@ -104,6 +104,8 @@ SDK 的唯一消费 owner 准备整帧，唯一 presentation consumer 接纳完�
 
 Flutter Model 先按原子分类/相邻分组，再映射 Flyer Message。用户输入和完整助手文本独立展示并分隔活动组；同 Turn 的相邻完成思考、执行和技能可组成一张 CustomMessage。问答、计划、压缩和终止回执独立；不解析 ID 文本或本地化标题猜来源。正文含多个附件仍为一个原子/展示项，内部复用媒体组件，不制造附件兄弟拓扑。
 
+推理统计与正常完成的轮次回执可由 hidden 展示 owner 持有，不生成 Flyer Message；恢复来源仍保留独立展示。隐藏只影响展示，原子顺序、完成游标、冻结字段与 owner 关系完整保留。
+
 `projectAppend` 只观察现有尾组，最多返回一个边界替换和若干新增；`projectPrepend` 对首组对称。不拆旧组、不把新项拉回跨正文的旧组、不做成员迁移、全历史 diff 或通用重排。组内技能/工具配对及静态摘要只由本组稳定成员纯计算。
 
 组初建选已见原子作为固定 anchorRecordId，之后两端扩展保留该 ID；单活动原子即使用组壳，第二项到来不换消息类型。页边界不是组边界，整页可能全并入首组而不新增 Chat Message，但原子 beforeCursor 必须推进；摘要只描述已加载成员，不冒称未知历史总数。
@@ -123,5 +125,7 @@ Markdown、回答和 Plan 卡片的视觉归 [19](./19-studio-ui.md)。完成与
 ## 26.9 只读展示诊断
 
 诊断从公开状态派生，不建立第二事实源或控制业务。分别记录已接纳原子数、展示项/组数、原子分页及连续 cursor、完成发布至接收/Model/controller/首帧延迟、页查询延迟、build/raster、预览/pending/在途字节、实时全文发送量、数据库事务与写入量。
+
+展示诊断的 `items` 来自当前 lease 的完整原子集合；`presentationItems` 仅记录真实 Flyer Message 的 owner，`hiddenPresentationItems` 从同一 lease 的已有 hidden owner 读取，并按 owner 身份去重。两类成员必须无重复、无遗漏地覆盖已加载原子；不能只按可见消息数判断历史完整，也不为诊断给隐藏原子制造消息。全部诊断只在读取时借用现有 owner，序列化后不保留引用。
 
 无新完成原子或分页时，token、计时和保存 ACK 的历史 controller 操作应为零；活动更新及展开的实时详情 query 应为零。区分原生、静态概念稿、模拟供应商、真实供应商及平台覆盖，不以日志采集或组件构建成功替代人工观察结论。

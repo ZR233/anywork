@@ -247,6 +247,15 @@ TimelineDisplayFacts? _timelineFacts(
   final view = owner.source.value;
   if (view == null || view.threadId != threadId) return null;
   final lease = owner.lease(threadId);
+  final hidden = <String, TimelineEntry>{};
+  if (lease != null) {
+    for (final atom in lease.items) {
+      final entry = lease.presentationFor(atom.id);
+      if (entry != null && entry.kind == TimelineEntryKind.hidden) {
+        hidden[entry.id] = entry;
+      }
+    }
+  }
   return TimelineDisplayFacts(
     threadId: view.threadId,
     generation: lease?.generation ?? view.generation,
@@ -277,22 +286,27 @@ TimelineDisplayFacts? _timelineFacts(
       for (final message in lease?.controller.messages ?? const <Message>[])
         if (timelineEntryOf(message) case final item?
             when message.id == item.id)
-          TimelinePresentationFacts(
-            id: item.id,
-            kind: item.kind.name,
-            firstAppendSeq: item.position.$1,
-            memberIds: item.memberIds,
-            visibleMemberIds: item.visibleMemberIds,
-            skillPairs: {
-              for (final id in item.visibleMemberIds)
-                id: ?item.pairedToolId(id),
-            },
-            expanded: item.expanded,
-            issueCount: item.issueCount,
-          ),
+          _timelinePresentationFacts(item),
+    ],
+    hiddenPresentationItems: [
+      for (final item in hidden.values) _timelinePresentationFacts(item),
     ],
   );
 }
+
+TimelinePresentationFacts _timelinePresentationFacts(TimelineEntry item) =>
+    TimelinePresentationFacts(
+      id: item.id,
+      kind: item.kind.name,
+      firstAppendSeq: item.position.$1,
+      memberIds: item.memberIds,
+      visibleMemberIds: item.visibleMemberIds,
+      skillPairs: {
+        for (final id in item.visibleMemberIds) id: ?item.pairedToolId(id),
+      },
+      expanded: item.expanded,
+      issueCount: item.issueCount,
+    );
 
 /// 只读滚动几何：每次诊断请求**现场**读当前展示 lease 实测挂载的标准 controller。
 ///

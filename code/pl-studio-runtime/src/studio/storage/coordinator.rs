@@ -145,6 +145,12 @@ struct ThreadStatus {
     channel: Arc<HistoryChannel>,
 }
 
+#[cfg(test)]
+type RetryGate = (
+    tokio::sync::oneshot::Sender<()>,
+    tokio::sync::oneshot::Receiver<()>,
+);
+
 #[derive(Debug)]
 struct Inner {
     #[cfg(test)]
@@ -154,6 +160,8 @@ struct Inner {
             std::sync::mpsc::Receiver<()>,
         )>,
     >,
+    #[cfg(test)]
+    retry_gate: Mutex<Option<RetryGate>>,
     threads: Mutex<BTreeMap<String, ThreadStatus>>,
     /// Last cumulative usage summary per Thread.
     ///
@@ -202,6 +210,8 @@ impl Default for ThreadPersistenceCoordinator {
         Self(Arc::new(Inner {
             #[cfg(test)]
             release_gate: Mutex::new(None),
+            #[cfg(test)]
+            retry_gate: Mutex::new(None),
             threads: Mutex::new(BTreeMap::new()),
             usage: Mutex::new(BTreeMap::new()),
             calls: Mutex::new(CallsQueueMetrics::default()),
@@ -430,8 +440,12 @@ impl ThreadPersistenceCoordinator {
             .map(|status| status.channel.clone())
             .ok_or_else(|| anyhow::anyhow!("Thread has no pending history recovery"))?;
         let mut updates = channel.subscribe();
+        let mut reports = self.subscribe();
         channel.retry(generation)?;
         loop {
+            // Register the report observation before checking its rows; no watch
+            // borrow or registry lock is held while waiting for either source.
+            drop(reports.borrow_and_update());
             let status = updates.borrow_and_update().clone();
             if status.fault_generation != generation {
                 bail!(
@@ -440,13 +454,73 @@ impl ThreadPersistenceCoordinator {
                 );
             }
             if status.fault.is_none() {
-                return Ok(());
+                #[cfg(test)]
+                {
+                    let gate = self.0.retry_gate.lock().unwrap().take();
+                    if let Some((entered, released)) = gate {
+                        let _ = entered.send(());
+                        released.await?;
+                    }
+                }
+                let pending_reports = self
+                    .0
+                    .threads
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .get(thread_id)
+                    .is_some_and(|thread| {
+                        thread.incarnations.values().any(|incarnation| {
+                            incarnation.metrics.fault_generation <= generation
+                                && incarnation.metrics.fault
+                                    == Some(pl_protocol::studio::HistoryFault::QueueFull)
+                        })
+                    });
+                if !pending_reports {
+                    // Rows may have changed just before their publisher entered refresh.
+                    // Publish them here as well; refresh serializes capture and publication.
+                    self.refresh();
+                    if !updates
+                        .has_changed()
+                        .map_err(|_| anyhow::anyhow!("history status channel closed"))?
+                    {
+                        if channel.stopping.is_cancelled() {
+                            bail!("history writer is stopping");
+                        }
+                        return Ok(());
+                    }
+                    // A newer shared fault can arrive between the first status read
+                    // and the report check. Validate its generation before returning.
+                    continue;
+                }
             }
-            updates
-                .changed()
-                .await
-                .map_err(|_| anyhow::anyhow!("history status channel closed"))?;
+            tokio::select! {
+                result = updates.changed() => {
+                    result.map_err(|_| anyhow::anyhow!("history status channel closed"))?;
+                },
+                result = reports.changed() => {
+                    result.map_err(|_| anyhow::anyhow!("Thread persistence progress channel closed"))?;
+                },
+                () = channel.stopping.cancelled() => bail!("history writer is stopping"),
+            }
         }
+    }
+    #[cfg(test)]
+    pub(crate) fn pause_retry_before_reports(
+        &self,
+    ) -> (
+        tokio::sync::oneshot::Receiver<()>,
+        tokio::sync::oneshot::Sender<()>,
+    ) {
+        let (entered, observed) = tokio::sync::oneshot::channel();
+        let (release, released) = tokio::sync::oneshot::channel();
+        let previous = self
+            .0
+            .retry_gate
+            .lock()
+            .unwrap()
+            .replace((entered, released));
+        assert!(previous.is_none());
+        (observed, release)
     }
     pub(crate) fn subscribe(&self) -> watch::Receiver<ThreadPersistenceSnapshot> {
         self.0.state.subscribe()
@@ -856,7 +930,9 @@ impl ThreadPersistenceCoordinator {
 
     /// Re-aggregates the process-wide observation from the per-Thread status and recovery map.
     fn refresh(&self) {
-        let snapshot = {
+        // Capture inside watch's publication lock so an older aggregate cannot
+        // overtake a newer one. All callers release registry/calls locks first.
+        self.0.state.send_modify(|snapshot| {
             let threads = self
                 .0
                 .threads
@@ -867,9 +943,8 @@ impl ThreadPersistenceCoordinator {
                 .calls
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            aggregate(&threads, &calls)
-        };
-        self.0.state.send_replace(snapshot);
+            *snapshot = aggregate(&threads, &calls);
+        });
     }
 }
 

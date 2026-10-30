@@ -1083,6 +1083,15 @@ void main() {
       'feedback': '  historical feedback\n',
     });
     final typed = observation.TimelineObservation.parse(json);
+    typed.requireConsistentIds();
+    expect(typed.hiddenPresentationItems.single.kind, 'hidden');
+    expect(typed.hiddenPresentationItems.single.memberIds, ['turn-completed']);
+    final lease = timeline.lease('thread')!;
+    expect(
+      lease.controller.messages.map((message) => message.id),
+      isNot(contains(typed.hiddenPresentationItems.single.id)),
+      reason: '只读诊断不能为 hidden owner 制造 Flyer Message',
+    );
     expect(typed.item('plan-approved')!.plan!.toJson(), approved);
     expect(typed.item('plan-approved')!.frozenFields()['plan'], approved);
     expect(typed.item('plan-cancelled')!.plan!.documentVersion, isNull);
@@ -1090,7 +1099,7 @@ void main() {
     expect(typed.item('qa-plan-legacy')!.plan, isNull);
     final timelineJson = json['timeline'] as Map<String, dynamic>;
     expect(timelineJson['timelineEpoch'], 'facts-epoch');
-    expect(timelineJson['completedThrough'], 8);
+    expect(timelineJson['completedThrough'], 9);
     expect(itemOf('cm')['appendSeq'], 1);
     expect(itemOf('cm')['sourceEffectSeq'], 101);
     expect(itemOf('cm')['sealedAt'], isNull);
@@ -1591,7 +1600,7 @@ ConversationBaseline _factsBaseline() => ConversationBaseline(
   timelineEpoch: 'facts-epoch',
   completedCursor: const ConversationCompletionCursor(
     timelineEpoch: 'facts-epoch',
-    appendSeq: 8,
+    appendSeq: 9,
   ),
   before: null,
   hasOlder: false,
@@ -1669,6 +1678,21 @@ ConversationBaseline _factsBaseline() => ConversationBaseline(
             agentSessionPlanApproveAnswer,
           ],
         },
+      ),
+    ),
+    conversationFixture(
+      id: 'turn-completed',
+      threadId: 'thread',
+      turnId: 'turn',
+      appendSeq: 9,
+      descriptor: const ConversationTurnDescriptor(
+        outcome: ConversationTurnCompleted(
+          CompletedStudioTurnState(
+            startedAt: null,
+            completedAt: 1,
+            completion: StudioTurnCompletion.normal,
+          ),
+        ),
       ),
     ),
   ],

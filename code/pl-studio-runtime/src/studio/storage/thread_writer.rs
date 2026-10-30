@@ -962,7 +962,7 @@ pub(crate) struct HistoryChannel {
     /// Registration and explicit stop share this gate, including cancellation during startup.
     workers: tokio::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>,
     worker_failure: Mutex<Option<Arc<tokio::task::JoinError>>>,
-    stopping: tokio_util::sync::CancellationToken,
+    pub(super) stopping: tokio_util::sync::CancellationToken,
     /// The process-wide reliable budget, shared by every Thread's channel.
     ///
     /// It charges exactly two things, each byte once: the effects the channels hold, each at the
@@ -2082,7 +2082,7 @@ fn report(inner: &Inner, progress: &Progress) {
     );
 }
 
-fn clear_recovered_fault(progress: &mut Progress) {
+fn clear_recovered_fault(progress: &mut Progress) -> bool {
     if progress.retry_requested
         && progress.durable >= progress.fault_target
         && progress.published_revision >= progress.fault_target
@@ -2093,6 +2093,9 @@ fn clear_recovered_fault(progress: &mut Progress) {
         // The retry named this generation and the fixed target really landed, so an explicit
         // continue would be accepted now: that verified fact is what the UI is allowed to show.
         progress.fault_recovered = true;
+        true
+    } else {
+        false
     }
 }
 
@@ -2180,6 +2183,7 @@ impl ThreadStorageSink {
             channel: channel.clone(),
             call_observer_stop,
         });
+        let mut history_updates = channel.subscribe();
         // Report the shared queue only after this incarnation has initialized its durable fence.
         // Registration alone cannot discharge a predecessor's obligations: this report proves
         // which retained facts are adopted and which have already become durable.
@@ -2200,22 +2204,45 @@ impl ThreadStorageSink {
         let observer_stop = channel.stopping.clone();
         workers.push(tokio::spawn(async move {
             let mut durable_tickets = calls.subscribe_durable_ticket();
-            loop {
+            'calls: loop {
                 tokio::select! {
                     () = refresh_call_watermark(&calls, &observer) => {},
                     _ = stop_observer.changed() => break,
                     () = observer_stop.cancelled() => break,
                 }
-                tokio::select! {
-                    Ok(()) = durable_tickets.changed() => {},
-                    _ = tokio::time::sleep(Duration::from_secs(15)) => {
-                        if let Some(inner) = observer.upgrade()
-                            && let Ok(history) = history_store(&inner).await {
-                            publish_accounting(&inner, &history).await;
-                        }
-                    },
-                    _ = stop_observer.changed() => break,
-                    () = observer_stop.cancelled() => break,
+                let accounting_tick = tokio::time::sleep(Duration::from_secs(15));
+                tokio::pin!(accounting_tick);
+                loop {
+                    tokio::select! {
+                        result = durable_tickets.changed() => {
+                            if result.is_err() {
+                                break 'calls;
+                            }
+                            continue 'calls;
+                        },
+                        result = history_updates.changed() => {
+                            let Some(inner) = observer.upgrade() else {
+                                break 'calls;
+                            };
+                            if result.is_err() {
+                                break 'calls;
+                            }
+                            // Each incarnation owns its report even when another worker settles
+                            // the shared fault. History changes neither query calls nor postpone
+                            // the existing accounting deadline.
+                            let progress = lock_progress(&inner);
+                            report(&inner, &progress);
+                        },
+                        _ = &mut accounting_tick => {
+                            if let Some(inner) = observer.upgrade()
+                                && let Ok(history) = history_store(&inner).await {
+                                publish_accounting(&inner, &history).await;
+                            }
+                            continue 'calls;
+                        },
+                        _ = stop_observer.changed() => break 'calls,
+                        () = observer_stop.cancelled() => break 'calls,
+                    }
                 }
             }
         }));
@@ -2243,6 +2270,10 @@ impl ThreadStorageSink {
                 if inner.channel.stopping.is_cancelled() || Arc::strong_count(&inner) == 1 {
                     let progress = lock_progress(&inner);
                     if progress.effects.is_empty() && progress.error.is_none() {
+                        // Another incarnation may have completed the shared queue.
+                        // Publish this owner's final obligations before detach,
+                        // even if cancellation already ended its observer.
+                        report(&inner, &progress);
                         return;
                     }
                 }
@@ -2352,7 +2383,14 @@ async fn refresh_call_watermark(
 async fn step(inner: &Inner) -> Result<Step> {
     let _single_writer = inner.channel.step_lock.lock().await;
     {
-        let progress = lock_progress(inner);
+        let mut progress = lock_progress(inner);
+        // An explicit retry may arrive after QueueFull's fixed fence already
+        // committed. Settle it even when no later effect can trigger a commit.
+        if progress.fault == Some(pl_protocol::studio::HistoryFault::QueueFull)
+            && clear_recovered_fault(&mut progress)
+        {
+            report(inner, &progress);
+        }
         // Another attached writer may have failed while this worker waited for step_lock.
         // The pre-lock loop check is not permission to retry that newly published generation.
         if progress.error.is_some()
@@ -7704,6 +7742,10 @@ pub(crate) mod storage_fault_tests {
             refused.fault,
             Some(pl_protocol::studio::HistoryFault::QueueFull)
         );
+        // Both live incarnations observe the same real fault before recovery.
+        // Neither may leave its own coordinator report blocked after it clears.
+        let overlapping =
+            ThreadStorageSink::new(store.clone(), sink.0.thread.clone(), None).await?;
 
         // Every call returns: its result is admitted while the process budget is still full, which
         // only works because the reservation it was made under is transferred onto the fact.
@@ -7764,13 +7806,49 @@ pub(crate) mod storage_fault_tests {
             )
             .await?;
         }
-        tokio::time::timeout(
+        // Force the late-retry ordering: QueueFull allows the writer to commit
+        // the fixed target before the explicit recovery request is accepted.
+        let mut drained = channel.subscribe();
+        await_durable(
             Duration::from_secs(10),
+            "parallel reservations durable before retry",
+            async {
+                loop {
+                    let status = drained.borrow_and_update().clone();
+                    if status.committed_sequence == 4 && status.queued_records == 0 {
+                        break;
+                    }
+                    drained.changed().await?;
+                }
+                Ok::<(), anyhow::Error>(())
+            },
+            || channel_facts(sink),
+        )
+        .await??;
+        {
+            let progress = lock_progress(&sink.0);
+            assert_eq!(
+                progress.fault,
+                Some(pl_protocol::studio::HistoryFault::QueueFull)
+            );
+            assert_eq!(progress.fault_generation, refused.fault_generation);
+            assert_eq!(progress.fault_target, 3);
+            assert!(progress.published_revision >= progress.fault_target);
+            assert!(!progress.retry_requested);
+        }
+        await_durable(
+            Duration::from_secs(10),
+            "parallel reservations recover already-durable target",
             store
                 .thread_persistence()
                 .retry_history(&sink.0.thread.id, refused.fault_generation),
+            || channel_facts(sink),
         )
         .await??;
+        assert!(
+            store.thread_persistence().snapshot().error.is_none(),
+            "all live writer reports must reflect the recovered shared fault"
+        );
         for (index, sink) in sinks.iter().enumerate() {
             let target = if index == 0 { 4 } else { 3 };
             sink.flush(&sink.0.thread.id, target).await?;
@@ -7787,6 +7865,7 @@ pub(crate) mod storage_fault_tests {
             baseline,
             "once every fact is durable and every call ended, the process gauge is back to baseline"
         );
+        drop(overlapping);
         Ok(())
     }
 
@@ -8783,6 +8862,112 @@ pub(crate) mod storage_fault_tests {
         .await
         .context("call writer did not advance the resumed ticket")?;
         assert!(calls.statistics_gap());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn recovery_rechecks_new_faults_and_stop_after_the_channel_clears() -> Result<()> {
+        for stopping in [false, true] {
+            let id = if stopping {
+                "recovery-stop"
+            } else {
+                "recovery-new-generation"
+            };
+            let (_temp, store, sink) = sink(id).await?;
+            let channel = &sink.0.channel;
+            channel
+                .process_bytes
+                .store(MAX_HISTORY_PROCESS_BYTES, Ordering::Release);
+            let first = ticket(id, 1);
+            assert!(sink.admit(id, first.clone()).is_err());
+            let failed = channel.subscribe().borrow().clone();
+            let generation = failed.fault_generation;
+            channel.process_bytes.store(0, Ordering::Release);
+            sink.admit(id, first)?;
+            let (entered, release) = store.thread_persistence().pause_retry_before_reports();
+            let coordinator = store.thread_persistence().clone();
+            let recovery =
+                tokio::spawn(async move { coordinator.retry_history(id, generation).await });
+            tokio::time::timeout(Duration::from_secs(5), entered).await??;
+            if stopping {
+                // Keep this owner's pre-commit report visible while its observer is
+                // being cancelled. The worker's final report must discharge it.
+                store.thread_persistence().update(
+                    id,
+                    sink.0.owner,
+                    [1],
+                    false,
+                    failed.error,
+                    ThreadPersistenceMetrics {
+                        fault_generation: generation,
+                        fault: failed.fault,
+                        state_dirty_revision: 1,
+                        history_admitted_sequence: 1,
+                        pending_operations: 1,
+                        ..Default::default()
+                    },
+                );
+                channel.stop_and_join().await?;
+            } else {
+                channel
+                    .process_bytes
+                    .store(MAX_HISTORY_PROCESS_BYTES, Ordering::Release);
+                assert!(sink.admit(id, ticket(id, 2)).is_err());
+                channel.process_bytes.store(0, Ordering::Release);
+            }
+            release
+                .send(())
+                .map_err(|_| anyhow::anyhow!("recovery check lost its owner"))?;
+            let error = tokio::time::timeout(Duration::from_secs(5), recovery)
+                .await??
+                .expect_err("a changed recovery boundary must not return success");
+            if stopping {
+                assert!(error.to_string().contains("stopping"));
+            } else {
+                assert!(error.to_string().contains("generation changed"));
+                let next = channel.subscribe().borrow().fault_generation;
+                assert!(next > generation);
+                sink.admit(id, ticket(id, 2))?;
+                tokio::time::timeout(
+                    Duration::from_secs(5),
+                    store.thread_persistence().retry_history(id, next),
+                )
+                .await??;
+                channel.stop_and_join().await?;
+            }
+            assert!(store.thread_persistence().snapshot().error.is_none());
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn empty_queue_retry_does_not_clear_a_ticket_contract_failure() -> Result<()> {
+        let (_temp, store, sink) = sink("ticket-contract").await?;
+        assert!(
+            sink.admit("ticket-contract", ticket("another-thread", 1))
+                .is_err()
+        );
+        let failed = sink.0.channel.subscribe().borrow().clone();
+        assert_eq!(
+            failed.fault,
+            Some(pl_protocol::studio::HistoryFault::WriteFailed)
+        );
+        assert_eq!(failed.queued_records, 0);
+        sink.0.channel.retry(failed.fault_generation)?;
+        // Exercise the worker after the retry, with equal zero watermarks but no
+        // successful write that could repair the rejected ticket's contract.
+        assert!(matches!(step(&sink.0).await?, Step::Idle));
+        let pressure = sink.pressure("ticket-contract");
+        assert!(pressure.error.is_some());
+        assert_eq!(
+            pressure.fault,
+            Some(pl_core::thread::cold::StorageFaultKind::WriteFailed)
+        );
+        assert_eq!(pressure.recovered_generation, None);
+        assert_eq!(
+            store.history("ticket-contract").await?.watermark().await?,
+            0
+        );
         Ok(())
     }
 

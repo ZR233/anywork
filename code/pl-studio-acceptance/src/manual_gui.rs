@@ -2608,8 +2608,8 @@ fn run_timeline_history_scenario(
                         .get("growthViolations")
                         .and_then(serde_json::Value::as_array)
                         .is_some_and(Vec::is_empty),
-                "timeline-history {phase} paging did not prove 40 real partial pages over a \
-                 20k-item history: {}",
+                "timeline-history {phase} paging did not prove 40 real partial pages over the \
+                 seeded history: {}",
                 serde_json::json!({
                     "pageCount": page_count,
                     "partialDepthPages": partial_depth,
@@ -2624,7 +2624,8 @@ fn run_timeline_history_scenario(
                         .get("streamingHistory")
                         .and_then(|value| value.get("pass"))
                         == Some(&serde_json::Value::Bool(true)),
-                    "timeline-history did not prove streaming freeze and native page retry"
+                    "timeline-history did not prove live-output growth during independent paging \
+                     and completed-atom immutability"
                 );
                 // 首轮真实 snapshot 是冷启动目标身份的**唯一**来源；baseline 与报告必须
                 // 指向同一身份，否则后续冷启动可能打开别的东西却仍然“通过”。
@@ -3609,6 +3610,11 @@ fn fixture_config(
         field: pl_model::model::ReasoningInterleavedField::ReasoningContent,
     });
     model.display_name = "Local GUI fixture".into();
+    if ready.scenario == "timeline-history" {
+        model.context_window = Some(1_050_000);
+        model.max_context_window = Some(1_050_000);
+        model.max_output_tokens = Some(128_000);
+    }
     if matches!(
         ready.scenario.as_str(),
         "storage-compaction" | "call-lifecycle-recovery" | "plan-recovery"

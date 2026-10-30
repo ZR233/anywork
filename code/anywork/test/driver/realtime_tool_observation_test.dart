@@ -51,6 +51,7 @@ Map<String, dynamic> _snapshot({
     'hasNewOutput': false,
     'items': items,
     'presentationItems': <Object?>[],
+    'hiddenPresentationItems': <Object?>[],
   },
   'conversationActivity': activityTools == null
       ? null

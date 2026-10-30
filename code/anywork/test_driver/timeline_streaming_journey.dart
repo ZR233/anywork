@@ -6,9 +6,8 @@ import 'package:flutter_driver/flutter_driver.dart';
 import 'flutter_driver_session.dart';
 import 'pointer_scroll.dart';
 import 'timeline_observation.dart';
-import 'tool_probe.dart';
 
-/// Real paced output, explicit page boundaries, frozen coverage and UI recovery.
+/// Real paced output overlaps independent durable page reads in one generation.
 /// No product state, storage rows or loading flags are injected.
 Future<Map<String, Object?>> observeStreamingHistory(
   FlutterDriverSession driver,
@@ -27,8 +26,51 @@ Future<Map<String, Object?>> observeStreamingHistory(
         scroll?.generation == content?.generation;
   }
 
-  String body(Map<String, dynamic> state) =>
-      jsonEncode((state['timeline'] as Map)['items']);
+  TimelineObservation? lastContent;
+  void retainCompleted(TimelineObservation current) {
+    current.requireConsistentIds();
+    final previous = lastContent;
+    if (current.timelineEpoch == null ||
+        current.itemIds.toSet().length != current.itemCount ||
+        !current.appendSeqAscending) {
+      throw StateError(
+        'Completed timeline lacks epoch or unique ordered atoms',
+      );
+    }
+    if (previous != null) {
+      final oldIds = previous.itemIds.toSet();
+      final retainedOrder = current.itemIds.where(oldIds.contains).toList();
+      if (current.threadId != previous.threadId ||
+          current.generation != previous.generation ||
+          current.timelineEpoch != previous.timelineEpoch ||
+          jsonEncode(retainedOrder) != jsonEncode(previous.itemIds)) {
+        throw StateError('Streaming/page update replaced frozen coverage');
+      }
+      for (final item in previous.items) {
+        final retained = current.item(item.id);
+        if (retained == null ||
+            jsonEncode(item.frozenFields()) !=
+                jsonEncode(retained.frozenFields())) {
+          throw StateError(
+            'Streaming/page update changed frozen atom ${item.id}',
+          );
+        }
+      }
+    }
+    lastContent = current;
+  }
+
+  _ResponseProgress? activity;
+  _ResponseProgress? readProgress(Map<String, dynamic> state) {
+    final current = _ResponseProgress.optional(state);
+    final previous = activity;
+    if (current != null && previous != null) {
+      current.requireContinuationOf(previous);
+    }
+    if (current != null) activity = current;
+    return current;
+  }
+
   Future<Map<String, dynamic>> until(
     String stage,
     bool Function(Map<String, dynamic>) ready,
@@ -37,7 +79,6 @@ Future<Map<String, Object?>> observeStreamingHistory(
     Map<String, Object?>? lastObservation;
     while (DateTime.now().isBefore(deadline)) {
       final state = await driver.readSnapshot();
-      if (ready(state)) return state;
       final timeline = state['timeline'] as Map?;
       lastObservation = <String, Object?>{
         'olderErrorCode': timeline?['olderErrorCode'],
@@ -50,6 +91,43 @@ Future<Map<String, Object?>> observeStreamingHistory(
         'loadingOlder': timeline?['loadingOlder'],
         'busy': busy(state),
       };
+      if (timeline?['connection'] == 'failed') {
+        // Read the product's existing error notice, not a second error source.
+        // Keep the failed connection as the cause even if diagnostics fail.
+        try {
+          lastObservation['connectionNotice'] = await driver.getText(
+            find.descendant(
+              of: find.descendant(
+                of: find.byValueKey('timeline-connection-notice'),
+                matching: find.byType('Expanded'),
+              ),
+              matching: find.byType('Text'),
+            ),
+          );
+          await File('${output.path}/timeline-streaming-connection-failed.png')
+              .writeAsBytes(await driver.screenshot());
+        } catch (error) {
+          lastObservation['diagnosticError'] = '$error';
+        }
+        await File('${output.path}/timeline-streaming-connection-failed.json')
+            .writeAsString(jsonEncode(lastObservation));
+        throw StateError(
+          'Streaming history connection failed: $stage; '
+          'lastObservation=${jsonEncode(lastObservation)}',
+        );
+      }
+      final content = TimelineObservation.optional(state);
+      if (content?.ready == true) {
+        retainCompleted(content!);
+        if (content.olderError != null) {
+          throw StateError(
+            'Independent durable page failed: $stage; '
+            'lastObservation=${jsonEncode(lastObservation)}',
+          );
+        }
+      }
+      readProgress(state);
+      if (ready(state)) return state;
       await Future<void>.delayed(const Duration(milliseconds: 50));
     }
     throw StateError(
@@ -58,79 +136,106 @@ Future<Map<String, Object?>> observeStreamingHistory(
     );
   }
 
-  await until(
+  final running = await until(
     'live content',
     (state) =>
         busy(state) &&
         settled(state) &&
-        (TimelineScrollObservation.parse(state).maxScrollExtent ?? 0) > 400,
+        TimelineObservation.parse(state).isLive &&
+        TimelineObservation.parse(state).hasOlder &&
+        readProgress(state) != null,
   );
+  final initial = TimelineObservation.parse(running);
+  final initialActivity = readProgress(running)!;
   await driver.sendCommand(
     PointerScroll(find.byValueKey('timeline-scrollable'), -240),
   );
-  await until(
+  final firstHistory = await until(
     'History during output',
     (state) =>
         busy(state) &&
         settled(state) &&
         TimelineObservation.parse(state).isHistory,
   );
-  // Rejoin Live during output to establish a fresh latest page before reading
-  // back beyond the hot window. This is the normal UI action, not a new seed.
-  final previous = TimelineObservation.parse(await driver.readSnapshot());
+  final beforeReturn = TimelineObservation.parse(firstHistory);
   await driver.rawTap(find.byValueKey('timeline-return-live'));
-  await until(
-    'fresh latest during output',
+  final returned = await until(
+    'return Live during output',
     (state) =>
         busy(state) &&
         settled(state) &&
         TimelineObservation.parse(state).isLive &&
-        TimelineObservation.parse(state).generation > previous.generation,
+        TimelineScrollObservation.parse(state).atLiveEdge,
   );
+  final returnedLive = TimelineObservation.parse(returned);
+  if (returnedLive.generation != beforeReturn.generation ||
+      returnedLive.timelineEpoch != beforeReturn.timelineEpoch ||
+      returnedLive.olderCursor != beforeReturn.olderCursor ||
+      returnedLive.hasOlder != beforeReturn.hasOlder ||
+      returnedLive.hasNewOutput) {
+    throw StateError('Return Live replaced the page window or reading intent');
+  }
   await driver.sendCommand(
     PointerScroll(find.byValueKey('timeline-scrollable'), -240),
   );
   await until(
-    'reading fresh history',
+    'reading History again',
     (state) =>
         busy(state) &&
         settled(state) &&
         TimelineObservation.parse(state).isHistory,
   );
-  Map<String, dynamic>? frozen;
-  for (var read = 0; read < 8; read++) {
-    await driver.requestData('load-older');
-    final state = await until('page $read', settled);
-    if (!busy(state)) throw StateError('No real streaming/page overlap');
-    if (TimelineObservation.parse(state).olderError != null) {
-      frozen = state;
-      break;
-    }
-  }
-  if (frozen == null) {
-    throw StateError('Streaming history did not expose its page boundary');
-  }
-  final start = TimelineObservation.parse(frozen);
-  final failureCode = (frozen['timeline'] as Map)['olderErrorCode'];
-  final failureCorrelation =
-      (frozen['timeline'] as Map)['olderErrorCorrelationId'];
-  final continuityExpired =
-      failureCode == 'protocol' &&
-      failureCorrelation == 'timeline-page-continuity';
-  if (failureCode != 'busy' && !continuityExpired) {
-    throw StateError(
-      'Unexpected page failure $failureCode/$failureCorrelation: '
-      '${start.olderError}',
+  final pages = <Map<String, Object?>>[];
+  // Durable inventory was produced by the preceding, completed 2000-item call.
+  // Every read must succeed while this separate single response keeps growing.
+  for (var read = 1; read <= 3; read++) {
+    final beforeState = await until(
+      'before page $read',
+      (state) => busy(state) && settled(state) && readProgress(state) != null,
     );
+    final before = TimelineObservation.parse(beforeState);
+    final beforeActivity = readProgress(beforeState)!;
+    if (!before.isHistory || !before.hasOlder || before.olderCursor == null) {
+      throw StateError('Streaming page has no durable History boundary');
+    }
+    final pageResult = jsonDecode(await driver.requestData('load-older'));
+    final afterState = await until('page $read with response growth', (state) {
+      final current = TimelineObservation.parse(state);
+      final progress = readProgress(state);
+      return busy(state) &&
+          settled(state) &&
+          current.itemCount > before.itemCount &&
+          progress != null &&
+          progress.text.length > beforeActivity.text.length;
+    });
+    final after = TimelineObservation.parse(afterState);
+    final afterActivity = readProgress(afterState)!;
+    final delivered = after.itemCount - before.itemCount;
+    if (!after.isHistory ||
+        delivered < 1 ||
+        delivered > 32 ||
+        after.itemIds.first == before.itemIds.first ||
+        after.itemIds.last != before.itemIds.last ||
+        after.olderCursor == before.olderCursor ||
+        !after.hasOlder ||
+        after.olderCursor == null) {
+      throw StateError('Streaming page did not prepend 1..32 durable atoms');
+    }
+    pages.add(<String, Object?>{
+      'page': read,
+      'requestResult': pageResult,
+      'before': before.summary(),
+      'after': after.summary(),
+      'delivered': delivered,
+      'itemIds': after.itemIds,
+      'busyBeforeAndAfter': true,
+      'activityBefore': beforeActivity.summary(),
+      'activityAfter': afterActivity.summary(),
+      'responseGrew': true,
+      'frozenFieldsRetained': true,
+    });
   }
-  start.requireConsistentIds();
-  if (!start.hasOlder || start.olderCursor == null || !start.isHistory) {
-    throw StateError('Uncommitted preview range was mistaken for EOF');
-  }
-  await driver.waitFor(
-    find.byValueKey('timeline-retry-older'),
-    timeout: const Duration(seconds: 10),
-  );
+  final start = lastContent!;
   await File('${output.path}/streaming-history-boundary.png')
       .writeAsBytes(await driver.screenshot());
   final completed = await until('background completion', (state) {
@@ -144,75 +249,31 @@ Future<Map<String, Object?>> observeStreamingHistory(
   });
   final end = TimelineObservation.parse(completed);
   if (!end.isHistory ||
-      end.generation != start.generation ||
-      end.timelineEpoch != start.timelineEpoch ||
-      body(frozen) != body(completed) ||
-      !end.hasNewOutput) {
-    throw StateError('Background output changed the frozen History');
+      !end.hasNewOutput ||
+      end.itemCount <= start.itemCount ||
+      end.items.last.appendSeq <= start.items.last.appendSeq) {
+    throw StateError('History did not retain and append completed live output');
+  }
+  final responses = end.items
+      .where(
+        (item) =>
+            item.appendSeq > start.items.last.appendSeq && item.isFinalAnswer,
+      )
+      .toList();
+  if (responses.length != 1) {
+    throw StateError('Single response did not become one completed final atom');
+  }
+  final response = responses.single;
+  // Timeline atoms publish bounded previews; detail metadata declares the full
+  // body length. Omitted preview bytes do not mean the stored body was lost.
+  final responseBytes = response.textTotalBytes ?? response.textBytes;
+  if (responseBytes != 128000 * 2) {
+    throw StateError(
+      'Completed reference body is incomplete: '
+      'bytes=$responseBytes',
+    );
   }
   await File('${output.path}/streaming-history-frozen.png')
-      .writeAsBytes(await driver.screenshot());
-  final retryAdmission = await driver.sendCommand(
-    ToolProbe(find.byValueKey('timeline-retry-older'), 'retryOlder'),
-  );
-  final retrySamples = retryAdmission['samples'] as List;
-  if (!retrySamples.any(
-        (value) =>
-            value['threadId'] == start.threadId &&
-            value['generation'] == start.generation &&
-            value['loadingOlder'] == true &&
-            value['olderErrorCode'] == null,
-      ) ||
-      retrySamples.last['loadingOlder'] != false) {
-    throw StateError('Retry UI did not publish admission and completion');
-  }
-  final retried = await until('retry after admission', (state) {
-    if (!settled(state)) return false;
-    final content = TimelineObservation.parse(state);
-    final timeline = state['timeline'] as Map;
-    return (content.olderError == null &&
-            content.itemCount > start.itemCount) ||
-        (timeline['olderErrorCode'] == 'protocol' &&
-            timeline['olderErrorCorrelationId'] == 'timeline-page-continuity');
-  });
-  final retry = TimelineObservation.parse(retried);
-  retry.requireConsistentIds();
-  if (start.timelineEpoch == null) {
-    throw StateError('Timeline epoch is missing before the page retry');
-  }
-  if (retry.generation != start.generation ||
-      !retry.isHistory ||
-      retry.timelineEpoch != start.timelineEpoch ||
-      !start.itemIds.every(retry.itemIds.contains) ||
-      jsonEncode(
-            retry.itemIds
-                .where(start.itemIds.toSet().contains)
-                .toList(growable: false),
-          ) !=
-          jsonEncode(start.itemIds) ||
-      !retry.appendSeqAscending ||
-      retry.itemCount - start.itemCount > 32) {
-    throw StateError('Retry lost or replaced the frozen display');
-  }
-  for (final id in start.itemIds) {
-    final before = start.item(id);
-    final after = retry.item(id);
-    if (before == null ||
-        after == null ||
-        jsonEncode(before.frozenFields()) != jsonEncode(after.frozenFields())) {
-      throw StateError('Retry changed frozen completed atom $id');
-    }
-  }
-  final coverageExpired = retry.olderError != null;
-  if (coverageExpired &&
-      (body(frozen) != body(retried) ||
-          retry.itemCount != start.itemCount ||
-          retry.olderCursor != start.olderCursor ||
-          !retry.hasOlder ||
-          !retry.hasNewOutput)) {
-    throw StateError('Expired coverage changed the frozen History');
-  }
-  await File('${output.path}/streaming-history-retry.png')
       .writeAsBytes(await driver.screenshot());
   await driver.rawTap(find.byValueKey('timeline-return-live'));
   final stability = TimelineViewportStability();
@@ -221,35 +282,109 @@ Future<Map<String, Object?>> observeStreamingHistory(
     (state) =>
         stability.accept(state) &&
         TimelineObservation.parse(state).isLive &&
-        TimelineScrollObservation.parse(state).atLiveEdge &&
-        TimelineObservation.parse(state).generation > start.generation,
+        TimelineScrollObservation.parse(state).atLiveEdge,
   );
   final live = TimelineObservation.parse(latest);
-  if (!live.itemIds.last.contains('stress-item-19999') ||
-      live.items.last.appendSeq <= start.items.last.appendSeq) {
-    throw StateError('Return Live did not reveal genuinely newer output');
+  if (live.generation != end.generation ||
+      live.timelineEpoch != end.timelineEpoch ||
+      jsonEncode(live.itemIds) != jsonEncode(end.itemIds) ||
+      live.olderCursor != end.olderCursor ||
+      live.hasOlder != end.hasOlder ||
+      live.hasNewOutput) {
+    throw StateError('Return Live replaced the completed loaded window');
   }
   await File('${output.path}/streaming-history-live.png')
       .writeAsBytes(await driver.screenshot());
   final report = <String, Object?>{
-    'busyDuringFailure': busy(frozen),
-    'failure': '${start.olderError}',
-    'failureCode': failureCode,
-    'failureCorrelationId': failureCorrelation,
-    'boundary': continuityExpired ? 'coverageExpired' : 'storageBusy',
-    'retryAdmission': retryAdmission,
-    'before': start.summary(),
-    'frozenAfterCompletion': end.summary(),
-    'bodyUnchanged': body(frozen) == body(completed),
-    'retryOutcome': coverageExpired ? 'coverageExpired' : 'pageAppended',
-    'retryErrorCode': (retried['timeline'] as Map)['olderErrorCode'],
-    'retryErrorCorrelationId':
-        (retried['timeline'] as Map)['olderErrorCorrelationId'],
-    'retried': retry.summary(),
+    'referenceTokens': 128000,
+    'independentItems': 1,
+    'initial': initial.summary(),
+    'initialActivity': initialActivity.summary(),
+    'firstReturnLive': returnedLive.summary(),
+    'pages': pages,
+    'beforeCompletion': start.summary(),
+    'completedInHistory': end.summary(),
+    'completedResponseId': response.id,
+    'completedResponseBytes': responseBytes,
+    'completedResponsePreviewBytes': response.textBytes,
+    'completedResponseOmittedPreviewBytes': response.omittedBytes,
+    'frozenFieldsRetained': true,
     'returnedLive': live.summary(),
     'pass': true,
   };
   await File('${output.path}/streaming-history.json')
       .writeAsString(const JsonEncoder.withIndent('  ').convert(report));
   return report;
+}
+
+/// The existing typed currentActivity projection carries original model part
+/// identity. Only growth of that same response proves output/page overlap.
+final class _ResponseProgress {
+  _ResponseProgress({
+    required this.identity,
+    required this.turnId,
+    required this.executionId,
+    required this.itemId,
+    required this.text,
+  });
+
+  static _ResponseProgress? optional(Map<String, dynamic> state) {
+    final observation = conversationActivityContentObservation(state);
+    if (observation == null) return null;
+    final activity = jsonDecode(observation) as Map;
+    final parts = activity['responseParts'] as List;
+    if (parts.isEmpty) return null;
+    if (parts.length != 1) {
+      throw StateError('Single-item stream published multiple response parts');
+    }
+    final part = parts.single as Map;
+    final identity = activity['identity'];
+    final turnId = activity['turnId'];
+    final executionId = activity['executionId'];
+    final itemId = part['itemId'];
+    final text = part['text'];
+    if (identity is! String ||
+        identity.isEmpty ||
+        turnId is! String ||
+        turnId.isEmpty ||
+        (executionId != null && executionId is! String) ||
+        itemId is! String ||
+        itemId.isEmpty ||
+        text is! String) {
+      throw StateError('Streaming response lacks typed activity/part identity');
+    }
+    return _ResponseProgress(
+      identity: identity,
+      turnId: turnId,
+      executionId: executionId as String?,
+      itemId: itemId,
+      text: text,
+    );
+  }
+
+  final String identity;
+  final String turnId;
+  final String? executionId;
+  final String itemId;
+  final String text;
+
+  void requireContinuationOf(_ResponseProgress previous) {
+    if (identity != previous.identity ||
+        turnId != previous.turnId ||
+        executionId != previous.executionId ||
+        itemId != previous.itemId ||
+        !text.startsWith(previous.text)) {
+      throw StateError(
+        'Streaming activity/response changed identity or regressed',
+      );
+    }
+  }
+
+  Map<String, Object?> summary() => <String, Object?>{
+    'identity': identity,
+    'turnId': turnId,
+    'executionId': executionId,
+    'itemId': itemId,
+    'responseBytes': utf8.encode(text).length,
+  };
 }
