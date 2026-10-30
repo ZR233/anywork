@@ -100,6 +100,33 @@ fn current_main(paths: &ConfigPaths) -> Result<(StudioConfig, Option<String>)> {
     Ok((config, Some(digest(&bytes))))
 }
 
+/// Decodes a main snapshot guarded by a Profile-only resource journal.
+///
+/// This continuation boundary may admit schema 27 only after the journal's
+/// unchanged-main hash has been checked against the exact on-disk bytes.
+/// Ordinary current-main reads continue to require schema 28.
+fn unchanged_profile_main(paths: &ConfigPaths, expected_hash: &str) -> Result<StudioConfig> {
+    let bytes = fs::read(paths.config_file())?;
+    ensure!(
+        digest(&bytes) == expected_hash,
+        "unchanged main snapshot conflicts with journal"
+    );
+    let (config, source, migrated) = main_document(paths.config_file(), &bytes)?;
+    if source == crate::config::STUDIO_CONFIG_SCHEMA_VERSION && !migrated {
+        let (current, hash) = current_main(paths)?;
+        ensure!(
+            hash.as_deref() == Some(expected_hash),
+            "unchanged main snapshot conflicts with journal"
+        );
+        return Ok(current);
+    }
+    ensure!(
+        source == 27 && migrated,
+        "unchanged main snapshot is not an admitted Profile-journal version"
+    );
+    Ok(config)
+}
+
 fn validate_profile(
     path: &Path,
     content: &[u8],
@@ -326,6 +353,11 @@ fn validate_resources(journal: &Journal) -> Result<()> {
             journal.unchanged_main_hash.is_none(),
             "a replaced main cannot also be an unchanged guard"
         );
+    } else {
+        ensure!(
+            journal.unchanged_main_hash.is_some(),
+            "a Profile-only resource journal requires its unchanged main hash"
+        );
     }
     Ok(())
 }
@@ -390,12 +422,11 @@ fn commit(
         );
         (config, None)
     } else {
-        let (config, hash) = current_main(paths)?;
-        ensure!(
-            hash == journal.unchanged_main_hash,
-            "unchanged main snapshot conflicts with journal"
-        );
-        (config, hash)
+        let hash = journal
+            .unchanged_main_hash
+            .as_deref()
+            .context("Profile-only resource journal has no unchanged main hash")?;
+        (unchanged_profile_main(paths, hash)?, Some(hash.to_owned()))
     };
     for (entry, plan) in journal.resources.iter().zip(&verified) {
         if entry.document == DocumentFamily::Profile {
@@ -450,9 +481,9 @@ fn commit(
         );
     }
     if main.is_none() {
-        let (_, final_hash) = current_main(paths)?;
+        let final_hash = digest(&fs::read(paths.config_file())?);
         ensure!(
-            final_hash == main_guard,
+            Some(final_hash) == main_guard,
             "main snapshot changed before migration confirmation"
         );
     }
@@ -495,6 +526,112 @@ workspace_mode = "directory"
             .unwrap();
         fs::create_dir_all(store.paths().agents_dir()).unwrap();
         (directory, store)
+    }
+
+    fn write_schema27_profile_journal(store: &ConfigStore) -> (Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>) {
+        let paths = store.paths();
+        let mut main: toml::Value =
+            toml::from_str(&fs::read_to_string(paths.config_file()).unwrap()).unwrap();
+        main["schema_version"] = 27.into();
+        let main_bytes = toml::to_string(&main).unwrap().into_bytes();
+        fs::write(paths.config_file(), &main_bytes).unwrap();
+
+        let profile_path = paths.agents_dir().join("saved.toml");
+        let profile_original = IMPORT.as_bytes().to_vec();
+        let profile_document = load_profile(
+            &profile_path,
+            std::str::from_utf8(&profile_original).unwrap(),
+        )
+        .unwrap();
+        let profile_candidate = profile_document.document.encode().unwrap().into_bytes();
+        fs::write(&profile_path, &profile_original).unwrap();
+
+        let plan = ResourcePlan {
+            relative_path: "agents/saved.toml".into(),
+            original: profile_original.clone(),
+            candidate: profile_candidate.clone(),
+        };
+        let directory = operation_dir(paths);
+        write_protected(&directory, ORIGINAL_DIR_NAME, &plan, &plan.original).unwrap();
+        write_protected(&directory, CANDIDATE_DIR_NAME, &plan, &plan.candidate).unwrap();
+        let journal = Journal {
+            version: VERSION,
+            operation_id: "schema-27-profile-only".into(),
+            phase: MigrationPhase::Prepared,
+            unchanged_main_hash: Some(digest(&main_bytes)),
+            resources: vec![resource(&plan, DocumentFamily::Profile, None, 1)],
+        };
+        write_journal(&directory, &journal).unwrap();
+        let journal_bytes = fs::read(directory.join(JOURNAL_FILE_NAME)).unwrap();
+        (
+            main_bytes,
+            profile_original,
+            profile_candidate,
+            journal_bytes,
+        )
+    }
+
+    #[test]
+    fn schema27_profile_only_journal_resumes_then_upgrades_main_to_current() {
+        let (_directory, store) = fixture();
+        let paths = store.paths();
+        let (main_before, _profile_original, profile_candidate, _journal_bytes) =
+            write_schema27_profile_journal(&store);
+
+        let loaded = store.load_for_startup().unwrap();
+
+        assert_eq!(
+            loaded.schema_version,
+            crate::config::STUDIO_CONFIG_SCHEMA_VERSION
+        );
+        assert_eq!(
+            toml::from_str::<toml::Value>(&fs::read_to_string(paths.config_file()).unwrap())
+                .unwrap()["schema_version"],
+            crate::config::STUDIO_CONFIG_SCHEMA_VERSION.into()
+        );
+        assert_ne!(fs::read(paths.config_file()).unwrap(), main_before);
+        assert_eq!(
+            fs::read(paths.agents_dir().join("saved.toml")).unwrap(),
+            profile_candidate
+        );
+        assert!(!operation_dir(paths).exists());
+        assert_eq!(store.load_for_startup().unwrap(), loaded);
+        assert!(!operation_dir(paths).exists());
+    }
+
+    #[test]
+    fn schema27_profile_only_journal_preserves_resources_on_external_main_edit() {
+        let (_directory, store) = fixture();
+        let paths = store.paths();
+        let (_main_before, profile_original, profile_candidate, journal_before) =
+            write_schema27_profile_journal(&store);
+        let external_main = {
+            let mut bytes = fs::read(paths.config_file()).unwrap();
+            bytes.extend_from_slice(b"\n# concurrent external edit\n");
+            bytes
+        };
+        fs::write(paths.config_file(), &external_main).unwrap();
+
+        assert!(store.load_for_startup().is_err());
+
+        assert_eq!(fs::read(paths.config_file()).unwrap(), external_main);
+        assert_eq!(
+            fs::read(paths.agents_dir().join("saved.toml")).unwrap(),
+            profile_original
+        );
+        let directory = operation_dir(paths);
+        assert_eq!(
+            fs::read(directory.join(JOURNAL_FILE_NAME)).unwrap(),
+            journal_before
+        );
+        assert_eq!(
+            fs::read(directory.join(CANDIDATE_DIR_NAME).join("agents/saved.toml")).unwrap(),
+            profile_candidate
+        );
+        assert_eq!(
+            fs::read(directory.join(ORIGINAL_DIR_NAME).join("agents/saved.toml")).unwrap(),
+            profile_original
+        );
     }
 
     #[test]
