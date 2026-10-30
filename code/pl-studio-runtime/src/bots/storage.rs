@@ -2479,6 +2479,12 @@ mod tests {
             let directory = tempfile::tempdir()?;
             let path = directory.path().join("ledger.sqlite");
             let original = open_bot_state(&path).await?;
+            original.execute_unprepared(
+                "INSERT INTO inbound_work(identity,workspace_id,text,status,diagnostic,updated_at)
+                 VALUES('current-inbound','current-workspace','preserved input','replied','preserved diagnostic',42);
+                 INSERT INTO thread_bindings(chat_id,thread_id,workspace_id,created_at)
+                 VALUES('current-chat','current-thread','current-workspace',42)",
+            ).await?;
             original
                 .execute_unprepared("DROP TABLE seaql_migrations")
                 .await?;
@@ -2490,6 +2496,45 @@ mod tests {
                     .await?
                     .is_some()
             );
+            let inbound = adopted
+                .query_one_raw(statement(
+                    "SELECT workspace_id,text,diagnostic FROM inbound_work WHERE identity='current-inbound'",
+                    vec![],
+                ))
+                .await?
+                .expect("current inbound survived migration record adoption");
+            assert_eq!(
+                inbound.try_get::<String>("", "workspace_id")?,
+                "current-workspace"
+            );
+            assert_eq!(inbound.try_get::<String>("", "text")?, "preserved input");
+            assert_eq!(
+                inbound.try_get::<String>("", "diagnostic")?,
+                "preserved diagnostic"
+            );
+            let binding = adopted
+                .query_one_raw(statement(
+                    "SELECT workspace_id,thread_id FROM thread_bindings WHERE chat_id='current-chat'",
+                    vec![],
+                ))
+                .await?
+                .expect("current binding survived migration record adoption");
+            assert_eq!(
+                binding.try_get::<String>("", "workspace_id")?,
+                "current-workspace"
+            );
+            assert_eq!(
+                binding.try_get::<String>("", "thread_id")?,
+                "current-thread"
+            );
+            for table in ["inbound_work", "thread_bindings"] {
+                assert!(
+                    !sea_orm_migration::SchemaManager::new(&adopted)
+                        .has_column(table, "project_id")
+                        .await?,
+                    "current adoption must not recreate retired ownership columns"
+                );
+            }
             if fault == "format" {
                 adopted
                     .execute_unprepared("UPDATE bot_meta SET schema_version=999")

@@ -145,10 +145,16 @@ impl MigrationTrait for WorkspaceOwnership {
             ))
             .await?
             .ok_or_else(|| DbErr::Migration("missing bot ledger version".into()))?;
-        if row.try_get::<i64>("", "schema_version")? != 6 {
-            return Err(DbErr::Migration(
-                "workspace ownership requires the published v6 ledger".into(),
-            ));
+        match row.try_get::<i64>("", "schema_version")? {
+            // Preflight validated the current tables and ownership columns. Only the official
+            // migration records need adoption; never reconstruct or downgrade a current ledger.
+            BOT_STATE_SCHEMA_VERSION => return Ok(()),
+            6 => {}
+            _ => {
+                return Err(DbErr::Migration(
+                    "workspace ownership requires the published v6 ledger".into(),
+                ));
+            }
         }
         for table in ["inbound_work", "thread_bindings"] {
             if !manager.has_column(table, "project_id").await?
@@ -175,6 +181,18 @@ impl MigrationTrait for LedgerSchema {
     }
     async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
         let db = manager.get_connection();
+        if manager.has_table("bot_meta").await?
+            && let Some(row) = db
+                .query_one_raw(statement(
+                    "SELECT schema_version FROM bot_meta WHERE id=1",
+                    vec![],
+                ))
+                .await?
+            && row.try_get::<i64>("", "schema_version")? == BOT_STATE_SCHEMA_VERSION
+        {
+            // A current ledger without migration records is already validated by preflight.
+            return Ok(());
+        }
         db.execute_unprepared(
             "CREATE TABLE IF NOT EXISTS bot_meta (
             id INTEGER PRIMARY KEY CHECK (id = 1),
