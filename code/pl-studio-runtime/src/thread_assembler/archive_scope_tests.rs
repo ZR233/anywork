@@ -49,6 +49,11 @@ async fn archive_seals_and_cancels_before_waiting_on_a_preparer_owned_root_permi
     let permit = owner.agent_operation("root").await;
     let scope = owner.seal_archive_scope(&["root".into()]).unwrap();
     assert!(
+        !root_cancel.is_cancelled(),
+        "seal must not cancel before durable scope commit"
+    );
+    scope.cancel_preparations();
+    assert!(
         root_cancel.is_cancelled(),
         "broadcast must precede the permit wait"
     );
@@ -170,6 +175,7 @@ async fn archive_closure_keeps_unpublished_resources_until_the_real_disposal_ack
         );
     }
     let scope = owner.seal_archive_scope(&["root".into()]).unwrap();
+    scope.cancel_preparations();
     assert!(preparation_cancel.is_cancelled() && child_cancel.is_cancelled());
     assert_eq!(
         scope.thread_ids(),

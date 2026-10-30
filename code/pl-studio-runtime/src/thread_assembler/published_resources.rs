@@ -21,9 +21,16 @@ pub(crate) struct ArchiveScopeSeal {
     members: Vec<(usize, String)>,
     identities: Vec<(String, Option<String>, String)>,
     private_ids: Vec<String>,
+    cancellation: Vec<tokio_util::sync::CancellationToken>,
 }
 
 impl ArchiveScopeSeal {
+    /// The caller has durably committed the complete original scope before this broadcast.
+    pub(crate) fn cancel_preparations(&self) {
+        for token in &self.cancellation {
+            token.cancel();
+        }
+    }
     pub(crate) fn thread_ids(&self) -> Vec<String> {
         self.members.iter().map(|(_, id)| id.clone()).collect()
     }
@@ -75,13 +82,13 @@ fn seal(registry: &Arc<Registry>, state: &mut State, ids: Vec<String>) -> AgentO
 
 impl StudioThreadAssembler {
     /// Capture all admitted owners and seal their admission in the same short registry lock.
-    /// Cancellation is broadcast outside the lock, before acquiring any operation permit.
+    /// No cancellation or permit wait precedes the caller's complete durable scope commit.
     pub(crate) fn seal_archive_scope(
         &self,
         roots: &[String],
     ) -> Result<ArchiveScopeSeal, ThreadAssemblyError> {
         use std::collections::{BTreeMap, BTreeSet};
-        let (scope, cancellation) = {
+        let scope = {
             let mut state = self.0.state();
             let mut parents = BTreeMap::<String, Option<String>>::new();
             let mut observe = |id: &str, parent: Option<&str>| {
@@ -193,19 +200,14 @@ impl StudioThreadAssembler {
                 .map(|(id, depth)| (depth, id))
                 .collect::<Vec<_>>();
             members.sort_by(|left, right| right.0.cmp(&left.0).then_with(|| left.1.cmp(&right.1)));
-            (
-                ArchiveScopeSeal {
-                    admission: seal(&self.0, &mut state, ids),
-                    members,
-                    identities,
-                    private_ids,
-                },
+            ArchiveScopeSeal {
+                admission: seal(&self.0, &mut state, ids),
+                members,
+                identities,
+                private_ids,
                 cancellation,
-            )
+            }
         };
-        for token in cancellation {
-            token.cancel();
-        }
         Ok(scope)
     }
 

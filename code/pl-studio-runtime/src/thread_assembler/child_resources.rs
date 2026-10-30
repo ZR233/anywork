@@ -197,6 +197,44 @@ impl super::StudioThreadAssembler {
             *retirement = Some(disposition);
             disposition
         };
+        let retain_disposition = async {
+            if let Some(services) = &services
+                && services
+                    .store
+                    .thread_preparation(id)
+                    .await
+                    .map_err(retirement_error)?
+                    .is_some()
+            {
+                use crate::studio::store::thread_preparation::PreparationDisposition;
+                services
+                    .store
+                    .set_preparation_disposition(
+                        id,
+                        match disposition {
+                            pl_tool::collaboration::thread::WorkspaceRelease::Preserve => {
+                                PreparationDisposition::ArchivePreserve
+                            }
+                            pl_tool::collaboration::thread::WorkspaceRelease::Cleanup => {
+                                PreparationDisposition::Remove
+                            }
+                        },
+                    )
+                    .await
+                    .map_err(retirement_error)?;
+            }
+            Ok::<(), ThreadAssemblyError>(())
+        }
+        .await;
+        if let Err(error) = retain_disposition {
+            if disposition == pl_tool::collaboration::thread::WorkspaceRelease::Cleanup {
+                *pending
+                    .retirement
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+            }
+            return Err(error);
+        }
         let usage = pending.workspace.take();
         if let Err(error) = pending
             .factory

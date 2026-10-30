@@ -441,6 +441,14 @@ impl StudioThreadFactory {
                 }
             }
         }
+        self.services
+            .store
+            .set_preparation_disposition(
+                &record.identity.thread_id,
+                crate::studio::store::thread_preparation::PreparationDisposition::ArchivePreserve,
+            )
+            .await
+            .map_err(|error| resource_error("retain private archive temp responsibility", error))?;
         StudioChildResources::discard_unpublished(
             self,
             &record.identity.thread_id,

@@ -805,3 +805,6 @@ async fn standalone_start_directory_creation_failure_is_not_published() -> Resul
     runtime.shutdown_runtime().await?;
     Ok(())
 }
+
+#[path = "archive_responsibility_tests.rs"]
+mod archive_responsibility;

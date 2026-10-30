@@ -106,6 +106,45 @@ impl StudioChildFactory for SpawnFactory {
     }
 }
 
+/// Product environment replacement only; reservation, spawn ownership and failed disposal remain real.
+pub(crate) async fn spawn_failed_archive_fixture(
+    owner: StudioThreadAssembler,
+    root: String,
+    factory: impl StudioChildFactory,
+) -> Result<ToolOutput, ToolError> {
+    owner.0.state().child_factory = Some(crate::thread_assembler::children::ChildFactory::new(
+        factory,
+    ));
+    let context = pl_core::tool::opaque::CallContext {
+        grant: Default::default(),
+        context: Default::default(),
+        history_fence: 0,
+        model_projection: None,
+        tasks: None,
+        thread_id: root.clone(),
+        turn_id: "fixture".into(),
+        call_id: "archive-first-write".into(),
+        cancellation: Default::default(),
+        extensions: Arc::new(BTreeMap::new()),
+        catalog: Arc::from([]),
+        extension_sequence: 0,
+    };
+    let request = AgentSpawn {
+        profile_id: "fixture".into(),
+        model_selection: None,
+        task_summary: "archive first write".to_owned().try_into().unwrap(),
+        message: "never delivered".into(),
+        writable_paths: None,
+        review_target_agent_id: None,
+        review_feedback: None,
+        metadata: serde_json::Value::Null,
+    };
+    let permit = owner.agent_operation(&root).await;
+    AgentHost(Arc::downgrade(&owner.0))
+        .spawn_owned(owner, context, request, permit)
+        .await
+}
+
 #[tokio::test]
 async fn archive_spawn_publication_failure_releases_child_permit_and_joins_root_spawn() {
     let root = tempfile::tempdir().unwrap();

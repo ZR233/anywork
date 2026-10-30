@@ -18,6 +18,7 @@ pub(super) enum CloseStorage {
     Execution {
         completion: AttachmentCompletion,
         binding: Option<Arc<ThreadStorageBinding>>,
+        preparation_storage: Option<String>,
         observation_installed: bool,
         joined: bool,
     },
@@ -105,6 +106,18 @@ impl StudioThreadAssembler {
         }
         let services =
             { self.0.state().agent_services.clone() }.ok_or(ThreadAssemblyError::Closed)?;
+        if services
+            .store
+            .thread_preparation(&record.id)
+            .await
+            .map_err(preparation_storage_error)?
+            .is_some_and(|owner| !owner.published)
+        {
+            return Err(ThreadAssemblyError::Identity(
+                "private preparation requires its original storage receipt, not a cold owner"
+                    .into(),
+            ));
+        }
         let checkpoint = services
             .store
             .history_for(&record.workspace_id, &record.id)
@@ -129,6 +142,7 @@ impl StudioThreadAssembler {
         storage: pl_core::thread::cold::ColdStoreHandle,
     ) -> Result<(), ThreadAssemblyError> {
         let services = { self.0.state().agent_services.clone() };
+        let mut preparation_storage = None;
         if let Some(services) = &services
             && services
                 .store
@@ -137,11 +151,18 @@ impl StudioThreadAssembler {
                 .map_err(preparation_storage_error)?
                 .is_some_and(|record| !record.published)
         {
+            let incarnation = crate::studio::new_id("preparation-storage");
+            let through = self
+                .observed_thread(id)
+                .ok_or(ThreadAssemblyError::Closed)?
+                .snapshot()
+                .commit_sequence;
             services
                 .store
-                .require_preparation_save(id)
+                .require_preparation_save(id, &incarnation, through)
                 .await
                 .map_err(preparation_storage_error)?;
+            preparation_storage = Some(incarnation);
         }
         let (thread, channel) = {
             let state = self.0.state();
@@ -174,6 +195,7 @@ impl StudioThreadAssembler {
             .close_storage = Some(CloseStorage::Execution {
             completion: completion.clone(),
             binding,
+            preparation_storage,
             observation_installed: false,
             joined: false,
         });
@@ -197,13 +219,8 @@ impl StudioThreadAssembler {
                 .thread_preparation(id)
                 .await
                 .map_err(preparation_storage_error)?
-                .is_some()
+                .is_some_and(|record| !record.published)
         {
-            services
-                .store
-                .confirm_preparation_save(id)
-                .await
-                .map_err(preparation_storage_error)?;
             services
                 .store
                 .confirm_preparation_stop(id)
@@ -385,13 +402,74 @@ impl StudioThreadAssembler {
     }
 
     pub(super) async fn join_close_storage(&self, id: &str) -> Result<(), ThreadAssemblyError> {
+        let original = {
+            let state = self.0.state();
+            match state
+                .entries
+                .get(id)
+                .and_then(|entry| entry.close_storage.as_ref())
+            {
+                Some(CloseStorage::Execution {
+                    preparation_storage: Some(token),
+                    ..
+                }) => state
+                    .agent_services
+                    .clone()
+                    .map(|services| (services, token.clone())),
+                _ => None,
+            }
+        };
+        let original = match original {
+            Some((services, token))
+                if services
+                    .store
+                    .thread_preparation(id)
+                    .await
+                    .map_err(preparation_storage_error)?
+                    .is_some_and(|record| !record.published) =>
+            {
+                Some((services, token))
+            }
+            _ => None,
+        };
+        let through = if original.is_some() {
+            let thread = self
+                .observed_thread(id)
+                .ok_or(ThreadAssemblyError::Closed)?;
+            if thread.snapshot().lifecycle != ThreadLifecycle::Closed {
+                return Err(ThreadAssemblyError::Preparing(id.into()));
+            }
+            thread.snapshot().commit_sequence
+        } else {
+            0
+        };
+        if let Some((services, token)) = &original {
+            services
+                .store
+                .target_preparation_save(id, token, through)
+                .await
+                .map_err(preparation_storage_error)?;
+        }
         if let Some(binding) = self.close_storage_binding(id)? {
+            if original.is_some() {
+                self.observed_thread(id)
+                    .ok_or(ThreadAssemblyError::Closed)?
+                    .flush()
+                    .await?;
+            }
             binding.channel.stop_and_join().await.map_err(|source| {
                 ThreadAssemblyError::Resource {
                     operation: "join close-only Thread storage",
                     source: source.into_boxed_dyn_error(),
                 }
             })?;
+        }
+        if let Some((services, token)) = original {
+            services
+                .store
+                .confirm_preparation_save(id, &token, through)
+                .await
+                .map_err(preparation_storage_error)?;
         }
         if let Some(CloseStorage::Execution { joined, .. }) = self
             .0

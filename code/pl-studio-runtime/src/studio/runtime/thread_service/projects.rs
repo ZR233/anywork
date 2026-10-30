@@ -365,6 +365,7 @@ impl StudioRuntime {
             )
             .await?;
         admitted_ids.extend(frozen.thread_ids());
+        scope.cancel_preparations();
         admitted_ids.sort();
         admitted_ids.dedup();
         let _bot_archive = self.bots.quiesce_archive_threads(&admitted_ids).await?;

@@ -1,11 +1,11 @@
 //! Original private assembly ownership, before catalog publication. Not a second directory.
 use super::{
     StudioStore,
-    object::{PersistedStudioObject, load_object, put_object},
+    object::{PersistedStudioObject, decode_object, load_object, put_object},
 };
 use crate::studio::agent_host::worktree_lease::WorkspaceIdentity;
 use anyhow::{Context, Result, ensure};
-use sea_orm::TransactionTrait;
+use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, TransactionTrait};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -35,6 +35,26 @@ pub(crate) enum PreparationSave {
     Confirmed,
 }
 
+/// Physical disposal is independent of producer retirement and of the archive operation's first
+/// successful write. Only Remove+retired or TempCleaned proves no disposable responsibility remains.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum PreparationDisposition {
+    Pending,
+    Remove,
+    ArchivePreserve,
+    TempCleaned,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct PreparationStorage {
+    pub incarnation: String,
+    pub required_through: u64,
+    /// Written only by that incarnation after Closed, its original flush and writer join.
+    pub closed_receipt: Option<u64>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct ThreadPreparationRecord {
@@ -42,6 +62,8 @@ pub(crate) struct ThreadPreparationRecord {
     pub revision: u64,
     pub binding: PreparationBinding,
     pub save: PreparationSave,
+    pub storage: Option<PreparationStorage>,
+    pub disposition: PreparationDisposition,
     pub stopped: bool,
     pub retired: bool,
     pub published: bool,
@@ -51,7 +73,7 @@ impl PersistedStudioObject for ThreadPreparationRecord {
     type PersistenceDto = Self;
     const OWNER_KIND: &'static str = "thread";
     const OBJECT_KIND: &'static str = "threadPreparation";
-    const SCHEMA_VERSION: i64 = 1;
+    const SCHEMA_VERSION: i64 = 2;
     fn revision(&self) -> u64 {
         self.revision
     }
@@ -83,6 +105,31 @@ impl PersistedStudioObject for ThreadPreparationRecord {
             !self.stopped || self.save != PreparationSave::Required,
             "preparation stop precedes save ACK"
         );
+        match (&self.storage, self.save) {
+            (None, PreparationSave::Unattached) => {}
+            (Some(storage), save) => {
+                ensure!(
+                    save != PreparationSave::Unattached,
+                    "attached obligation cannot be unattached"
+                );
+                ensure!(
+                    !storage.incarnation.is_empty(),
+                    "missing storage incarnation"
+                );
+                ensure!(
+                    (save == PreparationSave::Confirmed)
+                        == storage
+                            .closed_receipt
+                            .is_some_and(|through| through >= storage.required_through),
+                    "preparation save does not match its original closed receipt"
+                );
+            }
+            _ => anyhow::bail!("private save has no original storage obligation"),
+        }
+        ensure!(
+            self.disposition != PreparationDisposition::TempCleaned || self.retired,
+            "temp cleanup precedes original resource retirement"
+        );
         Ok(())
     }
 }
@@ -93,6 +140,18 @@ impl StudioStore {
         id: &str,
     ) -> Result<Option<ThreadPreparationRecord>> {
         load_object(self.database(), id).await
+    }
+
+    pub(crate) async fn thread_preparations(&self) -> Result<Vec<ThreadPreparationRecord>> {
+        use crate::studio::entity::studio_object;
+        studio_object::Entity::find()
+            .filter(studio_object::Column::OwnerKind.eq(ThreadPreparationRecord::OWNER_KIND))
+            .filter(studio_object::Column::ObjectKind.eq(ThreadPreparationRecord::OBJECT_KIND))
+            .all(self.database())
+            .await?
+            .into_iter()
+            .map(decode_object::<ThreadPreparationRecord>)
+            .collect()
     }
 
     pub(crate) async fn begin_thread_preparation(
@@ -122,6 +181,8 @@ impl StudioStore {
                 revision: 1,
                 binding: PreparationBinding::Unbound,
                 save: PreparationSave::Unattached,
+                storage: None,
+                disposition: PreparationDisposition::Pending,
                 stopped: false,
                 retired: false,
                 published: published_root,
@@ -186,23 +247,132 @@ impl StudioStore {
         .await
     }
 
-    pub(crate) async fn require_preparation_save(&self, id: &str) -> Result<()> {
+    pub(crate) async fn require_preparation_save(
+        &self,
+        id: &str,
+        incarnation: &str,
+        through: u64,
+    ) -> Result<()> {
         self.change_preparation(id, |value| {
             ensure!(
                 !value.stopped,
                 "stopped private preparation cannot attach execution storage"
             );
+            ensure!(
+                value.storage.is_none(),
+                "original storage obligation already exists"
+            );
             value.save = PreparationSave::Required;
+            value.storage = Some(PreparationStorage {
+                incarnation: incarnation.into(),
+                required_through: through,
+                closed_receipt: None,
+            });
             Ok(())
         })
         .await
     }
 
-    pub(crate) async fn confirm_preparation_save(&self, id: &str) -> Result<()> {
+    pub(crate) async fn target_preparation_save(
+        &self,
+        id: &str,
+        incarnation: &str,
+        through: u64,
+    ) -> Result<()> {
         self.change_preparation(id, |value| {
-            if value.save == PreparationSave::Required {
-                value.save = PreparationSave::Confirmed;
-            }
+            let storage = value
+                .storage
+                .as_mut()
+                .context("missing original storage obligation")?;
+            ensure!(
+                storage.incarnation == incarnation,
+                "storage incarnation changed"
+            );
+            ensure!(
+                through >= storage.required_through,
+                "original save watermark regressed"
+            );
+            storage.required_through = through;
+            Ok(())
+        })
+        .await
+    }
+
+    pub(crate) async fn confirm_preparation_save(
+        &self,
+        id: &str,
+        incarnation: &str,
+        through: u64,
+    ) -> Result<()> {
+        self.change_preparation(id, |value| {
+            let storage = value
+                .storage
+                .as_mut()
+                .context("missing original storage obligation")?;
+            ensure!(
+                storage.incarnation == incarnation,
+                "storage incarnation changed"
+            );
+            ensure!(
+                through >= storage.required_through,
+                "original save watermark is unconfirmed"
+            );
+            storage.closed_receipt = Some(through);
+            value.save = PreparationSave::Confirmed;
+            Ok(())
+        })
+        .await
+    }
+
+    pub(crate) async fn set_preparation_disposition(
+        &self,
+        id: &str,
+        disposition: PreparationDisposition,
+    ) -> Result<()> {
+        self.change_preparation(id, |value| {
+            ensure!(
+                value.disposition != PreparationDisposition::ArchivePreserve
+                    || disposition == PreparationDisposition::ArchivePreserve,
+                "archive preserve responsibility cannot become ordinary removal"
+            );
+            ensure!(
+                !value.retired
+                    || value.disposition == disposition
+                    || value.disposition == PreparationDisposition::Pending,
+                "completed original disposal cannot change policy"
+            );
+            ensure!(
+                disposition != PreparationDisposition::TempCleaned,
+                "cleanup requires both temp ACKs"
+            );
+            value.disposition = disposition;
+            Ok(())
+        })
+        .await
+    }
+
+    pub(crate) async fn confirm_preparation_temp_cleanup(
+        &self,
+        identity: &PreparationIdentity,
+        binding: &PreparationBinding,
+    ) -> Result<()> {
+        self.change_preparation(&identity.thread_id, |value| {
+            ensure!(
+                value.identity == *identity && value.binding == *binding,
+                "temp cleanup owner changed"
+            );
+            ensure!(
+                value.stopped && value.retired && value.save != PreparationSave::Required,
+                "original stop/save/retirement ACK is pending"
+            );
+            ensure!(
+                matches!(
+                    value.disposition,
+                    PreparationDisposition::ArchivePreserve | PreparationDisposition::TempCleaned
+                ),
+                "temp cleanup has no archive preserve responsibility"
+            );
+            value.disposition = PreparationDisposition::TempCleaned;
             Ok(())
         })
         .await
@@ -234,6 +404,13 @@ impl StudioStore {
 
     pub(crate) async fn publish_preparation(&self, id: &str) -> Result<()> {
         self.change_preparation(id, |value| {
+            ensure!(
+                !matches!(
+                    value.disposition,
+                    PreparationDisposition::ArchivePreserve | PreparationDisposition::TempCleaned
+                ),
+                "archive preserve responsibility cannot be discharged by publication"
+            );
             value.published = true;
             Ok(())
         })
