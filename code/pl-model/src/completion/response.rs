@@ -91,6 +91,7 @@ pub struct CompletionFailure {
     #[source]
     pub source: Box<PureError>,
     pub accounting: Box<InferenceAccounting>,
+    pub timing: Option<InferenceTiming>,
     pub model_observation: Option<Box<InferenceModelObservation>>,
     /// All provider output items received before this invocation failed.
     pub presentation_items: Vec<CompletionPresentationItem>,
@@ -109,6 +110,7 @@ impl CompletionFailure {
         Self {
             source: Box::new(source),
             accounting,
+            timing: None,
             model_observation: None,
             presentation_items: Vec::new(),
             partial_progress: None,
@@ -158,6 +160,7 @@ impl CompletionFailure {
         Self {
             source: Box::new(source),
             accounting,
+            timing: None,
             model_observation: None,
             presentation_items: Vec::new(),
             partial_progress: None,
@@ -171,6 +174,7 @@ impl From<PureError> for CompletionFailure {
         Self {
             source: Box::new(source),
             accounting: Box::default(),
+            timing: None,
             model_observation: None,
             presentation_items: Vec::new(),
             partial_progress: None,

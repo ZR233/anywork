@@ -1222,6 +1222,7 @@ impl StudioRuntime {
     /// 服务 join，保证所有独立资源先收到取消。
     async fn broadcast_cancel(&self) {
         self.account_usage.request_close();
+        self.model_performance.request_close();
         use super::super::background_task;
         background_task::signal(&self.settings_refresh).await;
         background_task::signal(&self.recovery_task).await;

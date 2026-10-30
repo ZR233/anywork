@@ -24,14 +24,14 @@ impl StudioRuntime {
         thread: &pl_protocol::Thread,
         snapshot: Option<&pl_core::thread::ThreadSnapshot>,
     ) -> Result<()> {
-        let result = self
-            .thread_factory
-            .verify_execution_workspace(
-                thread,
-                snapshot,
-                crate::studio::thread_factory::ExecutionWorkspaceCheck::Prepare,
-            )
-            .await;
+        // Resource validation can retain a cold checkpoint while composing local/SSH IO.
+        // Keep that state out of both the live preflight and the ancestry loop's future.
+        let result = Box::pin(self.thread_factory.verify_execution_workspace(
+            thread,
+            snapshot,
+            crate::studio::thread_factory::ExecutionWorkspaceCheck::Prepare,
+        ))
+        .await;
         let state = self
             .recovery
             .apply_execution_workspace_check(thread, result.as_ref().err());
@@ -163,6 +163,7 @@ impl StudioRuntime {
         }
         // Call statistics are a lossy projection; they never hold up authoritative history.
         self.store.calls().stop_best_effort();
+        self.model_performance.close().await?;
         Ok(())
     }
 

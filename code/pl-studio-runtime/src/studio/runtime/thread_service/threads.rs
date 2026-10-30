@@ -175,7 +175,7 @@ impl StudioRuntime {
                     &report,
                 )
                 .await;
-            let mut lease = match created {
+            let lease = match created {
                 Ok(lease) => lease,
                 Err(error) => {
                     self.settle_session_worktree_failure(
@@ -186,16 +186,6 @@ impl StudioRuntime {
                     return Err(error);
                 }
             };
-            lease.transition(crate::studio::agent_host::worktree_lease::WorktreeLeaseState::Active);
-            if let Err(error) = self.agent_facility.worktrees.record(lease.clone()) {
-                self.agent_facility.worktrees.clear_creating(&thread_id);
-                self.preserve_session_worktree(
-                    Some(lease),
-                    Some("the session worktree lease could not be activated"),
-                )
-                .await;
-                return Err(error);
-            }
             session_lease = Some(lease);
         }
 
@@ -238,11 +228,18 @@ impl StudioRuntime {
         {
             self.thread_factory.clear_initial_route(&thread.id);
             self.clear_creating_session_worktree(&session_lease);
-            self.preserve_session_worktree(
-                session_lease.take(),
-                Some("the new session Thread was not published"),
-            )
-            .await;
+            let error = match self
+                .preserve_session_worktree(
+                    session_lease.take(),
+                    Some("the new session Thread was not published"),
+                )
+                .await
+            {
+                Ok(()) => error,
+                Err(retention) => error.context(format!(
+                    "failed to preserve new session worktree: {retention:#}"
+                )),
+            };
             return Err(error);
         }
         // 目录事实已提交：owner Thread 行已存在，创建窗口收束。
@@ -252,11 +249,18 @@ impl StudioRuntime {
             self.thread_factory.clear_initial_route(&thread.id);
             // 目录事实已发布：必须先按未启动会话补偿（关闭并归档），不能留下无法激活的
             // 已发布会话；会话自身 worktree 仍按 D6 只收束为 `preserved`。
-            self.preserve_session_worktree(
-                session_lease.take(),
-                Some("the new session Thread could not be activated"),
-            )
-            .await;
+            let error = match self
+                .preserve_session_worktree(
+                    session_lease.take(),
+                    Some("the new session Thread could not be activated"),
+                )
+                .await
+            {
+                Ok(()) => error,
+                Err(retention) => error.context(format!(
+                    "failed to preserve new session worktree: {retention:#}"
+                )),
+            };
             if let Err(cleanup_error) = self.compensate_unstarted_thread(&thread.id).await {
                 return Err(error.context(format!(
                     "failed to compensate new Thread {}: {cleanup_error:#}",
@@ -285,11 +289,18 @@ impl StudioRuntime {
             Ok(submission) => submission,
             Err(error) => {
                 // 已发布 Thread 的补偿归档后，会话自身 worktree 仍按 D6 保留现场等待显式清理。
-                self.preserve_session_worktree(
-                    session_lease.take(),
-                    Some("the first prompt of the new session was rejected"),
-                )
-                .await;
+                let error = match self
+                    .preserve_session_worktree(
+                        session_lease.take(),
+                        Some("the first prompt of the new session was rejected"),
+                    )
+                    .await
+                {
+                    Ok(()) => error,
+                    Err(retention) => error.context(format!(
+                        "failed to preserve new session worktree: {retention:#}"
+                    )),
+                };
                 if let Err(cleanup_error) = self.compensate_unstarted_thread(&thread.id).await {
                     return Err(error.context(format!(
                         "failed to compensate new Thread {}: {cleanup_error:#}",
@@ -554,27 +565,22 @@ impl StudioRuntime {
     /// 由 Recovery 显式清理（design/12 §12.5）。
     ///
     /// 收束成功后**立即**基于当前 durable lease 发布/刷新 Recovery 条目（含 preview），
-    /// 不依赖下一次启动审计；发布失败只记日志，不改变已经失败的创建命令结果。
+    /// 不依赖下一次启动审计；保留写入失败返回调用方，与原创建错误一起保留。
     async fn preserve_session_worktree(
         &self,
         lease: Option<crate::studio::agent_host::worktree_lease::WorktreeLease>,
         reason: Option<&str>,
-    ) {
-        use crate::studio::agent_host::worktree_lease::WorktreeLeaseState;
-        let Some(mut lease) = lease else {
-            return;
+    ) -> Result<()> {
+        let Some(lease) = lease else {
+            return Ok(());
         };
-        if lease.state != WorktreeLeaseState::Preserved {
-            lease.transition(WorktreeLeaseState::Preserved);
-            if let Err(error) = self.agent_facility.worktrees.record(lease.clone()) {
-                tracing::error!(
-                    error = %error,
-                    "failed to preserve the session worktree lease after a failed creation"
-                );
-                return;
-            }
-        }
-        self.publish_worktree_recovery(reason, &lease).await;
+        let retained = self
+            .agent_facility
+            .worktrees
+            .preserve_failed_session_binding(&lease)
+            .await?;
+        self.publish_worktree_recovery(reason, &retained).await;
+        Ok(())
     }
 
     /// 创建阶段失败的统一收束出口：清除创建中标记，并在现场被保留为 `preserved` 时立即

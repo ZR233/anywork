@@ -1,5 +1,6 @@
 mod activity;
 mod interaction;
+mod usage;
 
 pub(crate) use activity::activity_detail as bridge_activity_detail;
 pub(crate) use interaction::child_interaction as bridge_child_interaction;
@@ -478,6 +479,7 @@ fn workflow_run(value: WorkflowRuntimeRunSnapshot) -> BridgeWorkflowRun {
 
 fn runtime_usage(value: ThreadRuntimeUsage) -> BridgeThreadRuntimeUsage {
     BridgeThreadRuntimeUsage {
+        diagnostics: value.diagnostics.into(),
         has_incomplete_usage: value.has_incomplete_usage,
         model_id: value.model_id,
         context_window: value.context_window,
@@ -514,6 +516,8 @@ fn runtime_usage(value: ThreadRuntimeUsage) -> BridgeThreadRuntimeUsage {
 
 fn cache_usage(value: pl_protocol::CacheUsageSummary) -> BridgeCacheUsageSummary {
     BridgeCacheUsageSummary {
+        sample_count: value.sample_count,
+        legacy_sample_count_unknown: value.legacy_sample_count_unknown,
         input_tokens: value.input_tokens,
         cache_read_tokens: value.cache_read_tokens,
         hit_rate: value.hit_rate,

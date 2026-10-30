@@ -298,7 +298,9 @@ final class StatisticsRepositoryImpl implements StatisticsRepository {
   ) async {
     final connection = attempt.connection!;
     final previous = _state.value.snapshot;
-    final sameOwner = previous?.ownerEpoch == publication.ownerEpoch;
+    final sameOwner =
+        previous?.ownerEpoch == publication.ownerEpoch &&
+        previous?.feedId == publication.feedId;
     if (sameOwner) {
       if (publication.publicationRevision < previous!.publicationRevision ||
           publication.summariesRevision < previous.summariesRevision ||

@@ -258,7 +258,7 @@ fn legacy_tag(entry: &mut pl_core::storage::SessionEntry) {
 async fn make_v2_effects(db: &sea_orm::DatabaseConnection) {
     effect_fixture::rewrite_effects(db, legacy_tag).await;
     // Retain every previously published migration identity, as a real SeaORM-upgraded v12 does.
-    db.execute_unprepared("DELETE FROM seaql_migrations WHERE version='m20261026_000008_core_effect_batch_v1'; PRAGMA user_version=12").await.unwrap();
+    db.execute_unprepared("DELETE FROM seaql_migrations WHERE version IN ('m20261026_000008_core_effect_batch_v1','m20261026_000009_core_checkpoint_v6'); PRAGMA user_version=12").await.unwrap();
 }
 
 async fn stored_entries(db: &sea_orm::DatabaseConnection) -> Vec<pl_core::storage::SessionEntry> {

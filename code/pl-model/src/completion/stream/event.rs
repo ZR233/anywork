@@ -169,19 +169,26 @@ impl ToolInputDeltaPayload {
 }
 
 impl ModelStreamEvent {
-    pub(crate) fn starts_visible_output(&self) -> bool {
+    pub(crate) fn first_output_source(&self) -> Option<pl_protocol::FirstOutputSource> {
+        use pl_protocol::FirstOutputSource::{CompletedToolInput, Incremental};
         match self {
             Self::BlockDelta { delta, .. } | Self::ReasoningRawDelta { delta, .. } => {
-                !delta.is_empty()
+                (!delta.is_empty()).then_some(Incremental)
             }
-            Self::ToolInputDelta { payload_delta, .. } => !payload_delta.text().is_empty(),
+            Self::ToolInputDelta { payload_delta, .. } => {
+                (!payload_delta.text().is_empty()).then_some(Incremental)
+            }
+            Self::ToolInputCompleted { payload, .. } | Self::ToolCallReady { payload, .. } => {
+                payload
+                    .as_ref()
+                    .filter(|payload| !payload.text().is_empty())
+                    .map(|_| CompletedToolInput)
+            }
             Self::ResponseStarted { .. }
             | Self::ResponseModelObserved { .. }
             | Self::BlockOpened { .. }
             | Self::BlockClosed { .. }
             | Self::ToolInputStarted { .. }
-            | Self::ToolInputCompleted { .. }
-            | Self::ToolCallReady { .. }
             | Self::ToolCallCaller { .. }
             | Self::ResponsesContextItem { .. }
             | Self::PresentationItem { .. }
@@ -190,7 +197,7 @@ impl ModelStreamEvent {
             | Self::WebSearchCompleted { .. }
             | Self::Usage(_)
             | Self::Completed { .. }
-            | Self::Failed { .. } => false,
+            | Self::Failed { .. } => None,
         }
     }
 

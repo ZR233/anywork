@@ -266,6 +266,7 @@ impl ContextPreparationHook for StudioCompaction {
                     turn_id: turn_id.clone(),
                     accounting: result.accounting,
                     model_observation: result.model_observation,
+                    timing: result.timing,
                     implementation: Some(
                         match result.implementation {
                             ThreadCompactionStrategy::TextSummary => "textSummary",
@@ -320,6 +321,7 @@ impl ContextPreparationHook for StudioCompaction {
                         turn_id: turn_id.clone(),
                         accounting: receipt.accounting,
                         model_observation: receipt.model_observation,
+                        timing: receipt.timing,
                         implementation: None,
                         error: Some(receipt.message),
                     });
@@ -803,6 +805,7 @@ pub(crate) struct CompactionReceipt {
     pub context_window: Option<u64>,
     pub turn_id: String,
     pub accounting: pl_model::completion::InferenceAccounting,
+    pub timing: Option<pl_protocol::InferenceTiming>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_observation: Option<pl_protocol::InferenceModelObservation>,
     pub implementation: Option<String>,
@@ -810,8 +813,8 @@ pub(crate) struct CompactionReceipt {
 }
 
 impl CompactionReceipt {
-    /// v3 adds explicit no-charge accounting; native context-only checkpoints are unchanged.
-    pub(crate) const VERSION: u32 = 3;
+    /// v4 retains the executor's timing and explicit first-content provenance.
+    pub(crate) const VERSION: u32 = 4;
 
     pub(crate) fn into_payload(
         self,

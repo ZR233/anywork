@@ -433,6 +433,102 @@ void main() {
   );
 
   testWidgets(
+    'shell sidebar keeps running status beside advisory recovery diagnostic',
+    (tester) async {
+      final transport = RecordingDemoTransport();
+      final graph = AppGraph(
+        statisticsFeed: const TestStatisticsFeedPort(),
+        transport: transport,
+        clientId: 'sidebar-recovery-status',
+      );
+      addTearDown(() async {
+        await tester.pumpWidget(const SizedBox.shrink());
+        await pumpClientFuture(
+          tester,
+          graph.close(deadline: DateTime.now().add(const Duration(seconds: 5))),
+          'sidebar recovery status teardown',
+        );
+      });
+      await pumpClientFuture(
+        tester,
+        graph.client.bootstrap(),
+        'sidebar recovery status bootstrap',
+      );
+
+      final root = graph.client.threadDirectory.state.window.threads
+          .where((thread) => thread.isRoot)
+          .first;
+      final recoveryRevision = graph.client.recovery.state.revision;
+      graph.client.recovery.apply(
+        RecoveryStateSnapshot(
+          revision: recoveryRevision + 1,
+          values: [
+            StudioRecoveryIssue(
+              id: 'sidebar-running-advisory',
+              scope: RecoveryIssueScope.thread,
+              category: RecoveryIssueCategory.repository,
+              impact: RecoveryIssueImpact.advisory,
+              availableActions: const [],
+              projectId: root.projectId,
+              threadId: root.id,
+              detail: 'Repository observation is retrying',
+            ),
+          ],
+        ),
+      );
+      tester.view.physicalSize = const Size(1280, 900);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [appGraphProvider.overrideWithValue(graph)],
+          child: MaterialApp(
+            theme: pureStudioTheme(),
+            localizationsDelegates: AppLocalizations.localizationsDelegates,
+            supportedLocales: AppLocalizations.supportedLocales,
+            home: const StudioShell(),
+          ),
+        ),
+      );
+      final rootRow = find.byKey(StudioDriverKeys.threadRow(root.id));
+      await pumpClientUntil(
+        tester,
+        () => rootRow.evaluate().isNotEmpty,
+        'production sidebar renders root row',
+      );
+      // Let the shell's production topic observations pass their ten-second
+      // stability windows before introducing the continuously animated badge.
+      await tester.pumpAndSettle();
+      await tester.pump(const Duration(seconds: 10));
+      await tester.pumpAndSettle();
+      final directoryRevision =
+          graph.client.threadDirectory.state.window.revision;
+      graph.client.threadDirectory.applyDelta(
+        revision: directoryRevision + 1,
+        upserted: [root.copyWith(status: ThreadStatusView.running)],
+        removed: const [],
+      );
+      await tester.pump(const Duration(milliseconds: 100));
+
+      expect(
+        find.descendant(
+          of: rootRow,
+          matching: find.byType(CircularProgressIndicator),
+        ),
+        findsOneWidget,
+        reason: 'canonical running state keeps its activity badge',
+      );
+      expect(
+        find.descendant(of: rootRow, matching: find.byIcon(Icons.info_outline)),
+        findsOneWidget,
+        reason: 'advisory Recovery diagnostic is shown beside the status',
+      );
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
     'directory failure retains the shell and explicitly retries its topic',
     (tester) async {
       final transport = _DirectoryFailureTransport();

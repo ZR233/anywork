@@ -25,6 +25,7 @@ export 'package:anywork_client/studio_ports.dart';
 
 import '../../platform/error_log.dart';
 import 'studio_bridge_api.dart' as frb;
+import 'usage_diagnostics.dart';
 import '../../rust/api/studio/subscription/product_topic.dart' as frb_topic_sub;
 import '../../rust/api/studio/subscription/shutdown.dart' as frb_shutdown_sub;
 import '../../rust/api/studio/subscription/startup.dart' as frb_startup_sub;

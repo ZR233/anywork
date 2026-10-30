@@ -14,6 +14,14 @@ class StatisticsViewModel extends _$StatisticsViewModel {
   String? _modelFilter;
   String? _effortFilter;
   bool _mismatchesOnly = false;
+  StatisticsSnapshot? _reconciledSnapshot;
+  StatisticsSnapshot? _filteredSnapshot;
+  String? _filteredModel;
+  String? _filteredEffort;
+  bool _filteredMismatches = false;
+  List<StatisticsSample> _filteredHistory = StatisticsMaterial.freeze(
+    const <StatisticsSample>[],
+  );
 
   @override
   StatisticsViewState build() {
@@ -40,12 +48,14 @@ class StatisticsViewModel extends _$StatisticsViewModel {
   void selectModel(String? filter) {
     if (_modelFilter == filter) return;
     _modelFilter = filter;
+    _reconciledSnapshot = null;
     state = _derive(_repository.state);
   }
 
   void selectEffort(String? filter) {
     if (_effortFilter == filter) return;
     _effortFilter = filter;
+    _reconciledSnapshot = null;
     state = _derive(_repository.state);
   }
 
@@ -71,6 +81,17 @@ class StatisticsViewModel extends _$StatisticsViewModel {
         source.connection.phase != StatisticsConnectionPhase.ready) {
       return;
     }
+    final previous = _reconciledSnapshot;
+    if (previous != null &&
+        previous.ownerEpoch == snapshot.ownerEpoch &&
+        previous.feedId == snapshot.feedId &&
+        previous.historyRevision == snapshot.historyRevision &&
+        previous.summariesRevision == snapshot.summariesRevision &&
+        identical(previous.history, snapshot.history) &&
+        identical(previous.summaries, snapshot.summaries)) {
+      return;
+    }
+    _reconciledSnapshot = snapshot;
     final modelFilter = _modelFilter;
     if (modelFilter != null &&
         !snapshot.history.any((item) => item.filterKey == modelFilter) &&
@@ -86,20 +107,42 @@ class StatisticsViewModel extends _$StatisticsViewModel {
 
   StatisticsViewState _derive(StatisticsRepositoryState repository) {
     final snapshot = repository.snapshot;
-    final filtered = <StatisticsSample>[
-      for (final item in snapshot?.history ?? const <StatisticsSample>[])
-        if ((_modelFilter == null || item.filterKey == _modelFilter) &&
-            (_effortFilter == null || item.effortKey == _effortFilter) &&
-            (!_mismatchesOnly ||
-                item.modelMatchState == StatisticsModelMatchState.mismatched))
-          item,
-    ];
+    final previous = _filteredSnapshot;
+    final reuse =
+        previous?.ownerEpoch == snapshot?.ownerEpoch &&
+        previous?.feedId == snapshot?.feedId &&
+        previous?.historyRevision == snapshot?.historyRevision &&
+        identical(previous?.history, snapshot?.history) &&
+        _filteredModel == _modelFilter &&
+        _filteredEffort == _effortFilter &&
+        _filteredMismatches == _mismatchesOnly;
+    if (!reuse) {
+      final history = snapshot?.history ?? const <StatisticsSample>[];
+      _filteredHistory =
+          _modelFilter == null && _effortFilter == null && !_mismatchesOnly
+          ? StatisticsMaterial.freeze(history)
+          : StatisticsMaterial.freeze(
+              history.where(
+                (item) =>
+                    (_modelFilter == null || item.filterKey == _modelFilter) &&
+                    (_effortFilter == null ||
+                        item.effortKey == _effortFilter) &&
+                    (!_mismatchesOnly ||
+                        item.modelMatchState ==
+                            StatisticsModelMatchState.mismatched),
+              ),
+            );
+      _filteredSnapshot = snapshot;
+      _filteredModel = _modelFilter;
+      _filteredEffort = _effortFilter;
+      _filteredMismatches = _mismatchesOnly;
+    }
     return StatisticsViewState(
       repository: repository,
       modelFilter: _modelFilter,
       effortFilter: _effortFilter,
       mismatchesOnly: _mismatchesOnly,
-      filteredHistory: filtered,
+      filteredHistory: _filteredHistory,
     );
   }
 }

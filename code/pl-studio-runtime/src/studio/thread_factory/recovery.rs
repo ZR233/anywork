@@ -40,17 +40,22 @@ pub(crate) async fn load_checkpoint_read_only(
 /// here, in the single history writer transaction, before any owner or model sees the checkpoint.
 /// Root and child recovery share this boundary, so a saved v1 route or Agent Profile never stays in
 /// the old shape just because the Thread was not opened again by its previous owner.
-pub(crate) async fn load_checkpoint_for_recovery(
-    store: &StudioStore,
-    thread: &pl_protocol::Thread,
-) -> Result<Option<ThreadCheckpoint>> {
-    let history = store.history_for(&thread.project_id, &thread.id).await?;
-    let Some(_) = store
-        .state_for(&thread.project_id, &thread.id)?
-        .prepare_recovery(&history)
-        .await?
-    else {
-        return Ok(None);
-    };
-    history.prepare_model_access().await
+pub(crate) fn load_checkpoint_for_recovery<'a>(
+    store: &'a StudioStore,
+    thread: &'a pl_protocol::Thread,
+) -> impl std::future::Future<Output = Result<Option<ThreadCheckpoint>>> + Send + 'a {
+    // Cold root/child recovery owns the import/model-preparation state on the heap. Every
+    // activation and parent continuation shares this boundary; polling and cancellation stay
+    // with the caller, rather than creating an independently running recovery task.
+    Box::pin(async move {
+        let history = store.history_for(&thread.project_id, &thread.id).await?;
+        let Some(_) = store
+            .state_for(&thread.project_id, &thread.id)?
+            .prepare_recovery(&history)
+            .await?
+        else {
+            return Ok(None);
+        };
+        history.prepare_model_access().await
+    })
 }

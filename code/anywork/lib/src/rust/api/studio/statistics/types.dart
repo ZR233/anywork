@@ -5,6 +5,7 @@
 
 import '../../../frb_generated.dart';
 import '../types/error.dart';
+import '../types/thread_stream.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'package:freezed_annotation/freezed_annotation.dart' hide protected;
@@ -262,6 +263,13 @@ enum BridgeStatisticsModelMatchState {
 }
 
 class BridgeStatisticsSample {
+  final String threadId;
+  final String callId;
+  final String? purpose;
+  final BridgeFirstOutputSource firstOutputSource;
+  final BridgeUsageReportStatus usageStatus;
+  final BridgeMetricAvailability ttftAvailability;
+  final BridgeMetricAvailability throughputAvailability;
   final PlatformInt64 completedAt;
   final String accountId;
   final String accountDisplayName;
@@ -270,13 +278,20 @@ class BridgeStatisticsSample {
   final String? reportedModel;
   final BridgeStatisticsModelMatchState modelMatchState;
   final String? effort;
-  final BigInt completionTokens;
+  final BigInt? completionTokens;
   final BigInt? ttftMillis;
   final BigInt? decodeMillis;
   final BigInt? totalResponseMillis;
   final double? tokensPerSecond;
 
   const BridgeStatisticsSample({
+    required this.threadId,
+    required this.callId,
+    this.purpose,
+    required this.firstOutputSource,
+    required this.usageStatus,
+    required this.ttftAvailability,
+    required this.throughputAvailability,
     required this.completedAt,
     required this.accountId,
     required this.accountDisplayName,
@@ -285,7 +300,7 @@ class BridgeStatisticsSample {
     this.reportedModel,
     required this.modelMatchState,
     this.effort,
-    required this.completionTokens,
+    this.completionTokens,
     this.ttftMillis,
     this.decodeMillis,
     this.totalResponseMillis,
@@ -294,6 +309,13 @@ class BridgeStatisticsSample {
 
   @override
   int get hashCode =>
+      threadId.hashCode ^
+      callId.hashCode ^
+      purpose.hashCode ^
+      firstOutputSource.hashCode ^
+      usageStatus.hashCode ^
+      ttftAvailability.hashCode ^
+      throughputAvailability.hashCode ^
       completedAt.hashCode ^
       accountId.hashCode ^
       accountDisplayName.hashCode ^
@@ -313,6 +335,13 @@ class BridgeStatisticsSample {
       identical(this, other) ||
       other is BridgeStatisticsSample &&
           runtimeType == other.runtimeType &&
+          threadId == other.threadId &&
+          callId == other.callId &&
+          purpose == other.purpose &&
+          firstOutputSource == other.firstOutputSource &&
+          usageStatus == other.usageStatus &&
+          ttftAvailability == other.ttftAvailability &&
+          throughputAvailability == other.throughputAvailability &&
           completedAt == other.completedAt &&
           accountId == other.accountId &&
           accountDisplayName == other.accountDisplayName &&

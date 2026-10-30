@@ -5,6 +5,20 @@ anywork release notes are generated from Conventional Commits by Release Please.
 以下已发布记录保留当时的名称与行为，不作为当前工程规范；当前架构演进规则见
 [AGENTS.md](AGENTS.md)，数据迁移契约及实现缺口见[存储设计](design/17-studio-storage.md)。
 
+## [6.36.0](https://github.com/ZR233/anywork/compare/v6.35.0...v6.36.0) (2026-10-30)
+
+
+### ⚠ BREAKING CHANGES
+
+* **studio:** 移除逐 Thread callsAdmittedSequence/callsDurableSequence；全局内部处理票据明确为 processed_ticket，不再冒充成功耐久。
+
+### Bug Fixes
+
+* **studio:** 修复冷恢复异步链路栈溢出 ([#238](https://github.com/ZR233/anywork/issues/238)) ([3bbdbcf](https://github.com/ZR233/anywork/commit/3bbdbcf7ff210e62cf798aa936f627a75c446208))
+* **studio:** 精简统计调用历史行 ([#237](https://github.com/ZR233/anywork/issues/237)) ([22c3151](https://github.com/ZR233/anywork/commit/22c31517b81bb9a1c311659f79d2776be41ec41e))
+* **studio:** 统一工作树绑定生命周期与恢复诊断 ([#233](https://github.com/ZR233/anywork/issues/233)) ([e5bbbd2](https://github.com/ZR233/anywork/commit/e5bbbd2b1cac6e1a7227cc362e5b09811bb4b629)), closes [#231](https://github.com/ZR233/anywork/issues/231)
+* **studio:** 统一计量并简化调用诊断保存 ([#232](https://github.com/ZR233/anywork/issues/232)) ([53de19f](https://github.com/ZR233/anywork/commit/53de19f672ef29e74c83b6083ab3478f3063021d))
+
 ## [6.35.0](https://github.com/ZR233/anywork/compare/v6.34.0...v6.35.0) (2026-10-30)
 
 

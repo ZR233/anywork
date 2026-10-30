@@ -29,6 +29,7 @@ use std::sync::Arc;
 pub(in crate::studio) struct StudioThreadServices {
     pub store: StudioStore,
     pub worktrees: crate::studio::agent_host::worktree_lease::WorktreeLeaseOwner,
+    pub recovery: crate::studio::StudioRecoveryRegistry,
     pub product_events: ProductEventBus,
     pub config_runtime: crate::config::ConfigRuntime,
     pub mcp_runtime: pl_tool::mcp::McpRuntimeHandle,

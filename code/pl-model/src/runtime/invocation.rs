@@ -1,6 +1,6 @@
 use std::collections::HashMap;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use futures::StreamExt;
@@ -192,25 +192,30 @@ impl OpenAiTransport {
 #[derive(Debug, Clone)]
 struct InferenceTimer {
     started_at: tokio::time::Instant,
-    first_token_millis: Arc<AtomicU64>,
-    terminal_millis: Arc<AtomicU64>,
+    observation: Arc<Mutex<TimingObservation>>,
+}
+
+#[derive(Debug, Default)]
+struct TimingObservation {
+    first_output: Option<(u64, pl_protocol::FirstOutputSource)>,
+    terminal_millis: Option<u64>,
 }
 
 impl InferenceTimer {
-    const UNSET: u64 = u64::MAX;
-
     fn start() -> Self {
         Self {
             started_at: tokio::time::Instant::now(),
-            first_token_millis: Arc::new(AtomicU64::new(Self::UNSET)),
-            terminal_millis: Arc::new(AtomicU64::new(Self::UNSET)),
+            observation: Arc::new(Mutex::new(TimingObservation::default())),
         }
     }
 
     fn observe(&self, event: &crate::completion::stream::event::ModelStreamEvent) {
-        // One stream observes events in order; finish runs only after its collector returns. The
-        // cloned counters share this attempt's boundaries, never a retry's or a consumer's clock.
-        if self.terminal_millis.load(Ordering::Acquire) != Self::UNSET {
+        // Time and provenance publish as one observation, including across cloned stream owners.
+        let mut observation = self
+            .observation
+            .lock()
+            .expect("timing observation poisoned");
+        if observation.terminal_millis.is_some() {
             return;
         }
         if matches!(
@@ -218,52 +223,52 @@ impl InferenceTimer {
             crate::completion::stream::event::ModelStreamEvent::Completed { .. }
                 | crate::completion::stream::event::ModelStreamEvent::Failed { .. }
         ) {
-            self.terminal_millis.store(
-                duration_millis(self.started_at.elapsed()),
-                Ordering::Release,
-            );
+            observation.terminal_millis = Some(duration_millis(self.started_at.elapsed()));
             return;
         }
-        if !event.starts_visible_output() {
-            return;
+        if observation.first_output.is_none()
+            && let Some(source) = event.first_output_source()
+        {
+            observation.first_output = Some((duration_millis(self.started_at.elapsed()), source));
         }
-        let elapsed = duration_millis(self.started_at.elapsed());
-        let _ = self.first_token_millis.compare_exchange(
-            Self::UNSET,
-            elapsed,
-            Ordering::AcqRel,
-            Ordering::Acquire,
-        );
     }
 
     /// 本 attempt 起点到当前时刻（已到终态则到终态）的单调总响应耗时。
     fn response_millis(&self) -> u64 {
-        let terminal_millis = self.terminal_millis.load(Ordering::Acquire);
-        if terminal_millis == Self::UNSET {
-            duration_millis(self.started_at.elapsed())
-        } else {
-            terminal_millis
-        }
+        self.observation
+            .lock()
+            .expect("timing observation poisoned")
+            .terminal_millis
+            .unwrap_or_else(|| duration_millis(self.started_at.elapsed()))
     }
 
-    /// 归一化终态到达后的耗时事实；未观察到首个增量只让首字相关字段保持未知。
+    /// Freeze non-event termination before failure projection, tracing or retry backoff.
+    fn mark_terminal(&self) {
+        self.observation
+            .lock()
+            .expect("timing observation poisoned")
+            .terminal_millis
+            .get_or_insert_with(|| duration_millis(self.started_at.elapsed()));
+    }
+
+    /// 归一化终态到达后的耗时事实；未观察到首内容只让首字相关字段保持未知。
     ///
     /// 总响应耗时始终是消费方确认的终态边界，因此它不依赖首字；仅当首字晚于已记录的终态值
     /// 这类不一致边界出现时，才把首字整组视为未知，而不是伪造负的首字后耗时。
     fn finish(&self) -> Option<InferenceTiming> {
-        let response_millis = self.terminal_millis.load(Ordering::Acquire);
-        if response_millis == Self::UNSET {
-            return None;
-        }
-        let first_token_millis = self.first_token_millis.load(Ordering::Acquire);
-        let (ttft_millis, decode_millis) = match response_millis
-            .checked_sub(first_token_millis)
-            .filter(|_| first_token_millis != Self::UNSET)
-        {
-            Some(decode_millis) => (Some(first_token_millis), Some(decode_millis)),
-            None => (None, None),
+        let observation = self
+            .observation
+            .lock()
+            .expect("timing observation poisoned");
+        let response_millis = observation.terminal_millis?;
+        let (ttft_millis, decode_millis, first_output_source) = match observation.first_output {
+            Some((first, source)) if first <= response_millis => {
+                (Some(first), Some(response_millis - first), source)
+            }
+            _ => (None, None, pl_protocol::FirstOutputSource::Unobserved),
         };
         Some(InferenceTiming {
+            first_output_source,
             ttft_millis,
             decode_millis,
             response_millis,
@@ -456,6 +461,9 @@ impl InvocationRunner {
         let mut http_fallbacks = 0_u64;
         let mut refreshed_attachments = false;
         let mut last_model_observation = None;
+        // This generation remains the last actually attempted request throughout retry
+        // preparation/backoff. A cancellation must not replace its facts with an unsent attempt.
+        let mut retry_failure: Option<CompletionFailure> = None;
 
         loop {
             if context
@@ -464,11 +472,17 @@ impl InvocationRunner {
                 .is_some_and(|token| token.is_cancelled())
             {
                 context.close_live_usage();
-                return Err(CompletionFailure::cancelled(
-                    PureError::LlmError("model invocation cancelled".into()),
-                    Box::default(),
-                )
-                .with_optional_model_observation(last_model_observation));
+                let mut cancelled = retry_failure.take().unwrap_or_else(|| {
+                    CompletionFailure::cancelled(
+                        PureError::LlmError("model invocation cancelled".into()),
+                        Box::default(),
+                    )
+                    .with_optional_model_observation(last_model_observation)
+                });
+                cancelled.source =
+                    Box::new(PureError::LlmError("model invocation cancelled".into()));
+                cancelled.cancelled = true;
+                return Err(cancelled);
             }
             let transport = self.active_transport(&context.session);
             let max_retries = MODEL_MAX_RETRIES;
@@ -504,6 +518,7 @@ impl InvocationRunner {
             let request_started_at = self.clock.unix_seconds()?;
             let (result, retry_allowed, inference_timer) = match preparation {
                 Ok(()) => {
+                    drop(retry_failure.take());
                     attachments_prepared = true;
                     transport_attempts += 1;
                     let inference_timer = InferenceTimer::start();
@@ -511,6 +526,12 @@ impl InvocationRunner {
                         .run_stream_attempt(attempt_request, &context, trace, &inference_timer)
                         .await;
                     (result, retry_allowed, Some(inference_timer))
+                }
+                Err(error) if error.is_cancelled() && retry_failure.is_some() => {
+                    let mut previous = retry_failure.take().expect("checked previous attempt");
+                    previous.source = error.source;
+                    previous.cancelled = true;
+                    return Err(previous);
                 }
                 Err(error) => (Err(error), true, None),
             };
@@ -537,6 +558,7 @@ impl InvocationRunner {
                     return Ok(response);
                 }
                 Err(mut error) => {
+                    error.timing = inference_timer.and_then(|timer| timer.finish());
                     // 失败/取消的尝试不产生任何可确认的速度：在把它交给任何终态发布者或重试
                     // 换代之前，先整组撤销 live 用量与耗时，已收到的内容与回执不受影响。
                     context.close_live_usage();
@@ -603,6 +625,7 @@ impl InvocationRunner {
                 if let Err(cause) = context.begin_retry(&mut error) {
                     return Err(error.with_source(cause));
                 }
+                retry_failure = Some(error);
                 continue;
             }
             if recovery == pl_protocol::ProviderRecovery::RefreshAttachments
@@ -629,6 +652,7 @@ impl InvocationRunner {
                     .retain(|(fingerprint, _), _| *fingerprint != self.connection_fingerprint());
                 attachments_prepared = false;
                 refreshed_attachments = true;
+                retry_failure = Some(error);
                 continue;
             }
             if !error.is_transient_model_transport() {
@@ -678,22 +702,14 @@ impl InvocationRunner {
                 "模型连接中断，将在统一预算内重试当前请求"
             );
             if let Some(token) = &context.cancellation {
-                let model_observation = error.model_observation().cloned();
                 tokio::select! {
                     _ = tokio::time::sleep(delay) => {},
-                    _ = token.cancelled() => {
-                        context.close_live_usage();
-                        let mut cancelled = CompletionFailure::cancelled(
-                            PureError::LlmError("model invocation cancelled".into()),
-                            error.accounting,
-                        ).with_optional_model_observation(model_observation);
-                        cancelled.presentation_items = error.presentation_items;
-                        return Err(cancelled);
-                    },
+                    _ = token.cancelled() => {},
                 }
             } else {
                 tokio::time::sleep(delay).await;
             }
+            retry_failure = Some(error);
         }
     }
 
@@ -757,10 +773,13 @@ impl InvocationRunner {
         let opened = match context.cancellation.as_ref() {
             Some(token) => tokio::select! {
                 result = &mut opening => result,
-                _ = token.cancelled() => return (Err(CompletionFailure::cancelled(
-                    PureError::LlmError("model invocation cancelled".into()),
-                    Box::default(),
-                ).with_model_observation(model_observation.clone())), false),
+                _ = token.cancelled() => {
+                    inference_timer.mark_terminal();
+                    return (Err(CompletionFailure::cancelled(
+                        PureError::LlmError("model invocation cancelled".into()),
+                        Box::default(),
+                    ).with_model_observation(model_observation.clone())), false);
+                },
             },
             None => opening.await,
         };
@@ -793,12 +812,14 @@ impl InvocationRunner {
                                 progress.observe_response_millis(inference_timer.response_millis());
                             } else {
                                 // 传输层直接以错误结束这次流，没有经过 Failed 事件。
+                                inference_timer.mark_terminal();
                                 progress.close_live_usage();
                             }
                             event
                         }
                     })
                     .boxed();
+                let on_stream_end = || inference_timer.mark_terminal();
                 let result =
                     crate::completion::stream::collect_completion_event_stream_with_idle_timeout(
                         tracked_stream,
@@ -808,6 +829,7 @@ impl InvocationRunner {
                             trace_sink: context.trace_sink.clone(),
                             cancellation: context.cancellation.clone(),
                             model_observation: Some(model_observation),
+                            on_stream_end: &on_stream_end,
                         },
                         opened.idle_timeout,
                     )
@@ -815,10 +837,13 @@ impl InvocationRunner {
                 let retry_allowed = !replay_unsafe.load(Ordering::Acquire);
                 (result, retry_allowed)
             }
-            Err(error) => (
-                Err(CompletionFailure::from(error).with_model_observation(model_observation)),
-                true,
-            ),
+            Err(error) => {
+                inference_timer.mark_terminal();
+                (
+                    Err(CompletionFailure::from(error).with_model_observation(model_observation)),
+                    true,
+                )
+            }
         }
     }
 
@@ -1057,3 +1082,286 @@ fn duration_millis(duration: Duration) -> u64 {
 #[cfg(test)]
 #[path = "invocation_chatgpt_tests.rs"]
 mod chatgpt_tests;
+
+#[cfg(test)]
+mod timing_tests {
+    use super::InferenceTimer;
+    use crate::completion::stream::event::{ModelStreamEvent, ToolInputDeltaPayload};
+    use futures::{StreamExt, stream};
+    use pl_protocol::FirstOutputSource;
+    use std::time::Duration;
+
+    fn tool_event(ready: bool, text: Option<&str>) -> ModelStreamEvent {
+        let payload = text.map(|text| ToolInputDeltaPayload::FunctionArguments(text.into()));
+        if ready {
+            ModelStreamEvent::ToolCallReady {
+                stream_id: None,
+                item_id: "tool".into(),
+                call_id: None,
+                name: Some("query".into()),
+                payload,
+            }
+        } else {
+            ModelStreamEvent::ToolInputCompleted {
+                stream_id: None,
+                item_id: "tool".into(),
+                call_id: None,
+                name: Some("query".into()),
+                payload,
+            }
+        }
+    }
+
+    #[test]
+    fn complete_tool_input_observes_once_and_keeps_time_and_source_paired() {
+        for ready in [false, true] {
+            let timer = InferenceTimer::start();
+            assert_eq!(timer.finish(), None);
+            timer.observe(&tool_event(ready, Some("{\"q\":1}")));
+            let first = timer.observation.lock().unwrap().first_output;
+            timer
+                .clone()
+                .observe(&tool_event(!ready, Some("{\"q\":1}")));
+            timer.observe(&ModelStreamEvent::ReasoningRawDelta {
+                id: "reasoning".into(),
+                content_index: 0,
+                delta: "later".into(),
+                provider: None,
+            });
+            assert_eq!(timer.observation.lock().unwrap().first_output, first);
+            timer.observe(&ModelStreamEvent::Completed { response_id: None });
+            let timing = timer.finish().unwrap();
+            assert_eq!(
+                timing.first_output_source,
+                FirstOutputSource::CompletedToolInput
+            );
+            assert_eq!(timing.ttft_millis, first.map(|(millis, _)| millis));
+            assert_eq!(
+                timing.ttft_millis.unwrap() + timing.decode_millis.unwrap(),
+                timing.response_millis
+            );
+            timer.observe(&tool_event(ready, Some("ignored after terminal")));
+            assert_eq!(timer.finish(), Some(timing));
+        }
+    }
+
+    #[test]
+    fn incremental_input_wins_over_completion_and_metadata_never_starts_output() {
+        let timer = InferenceTimer::start();
+        for ready in [false, true] {
+            timer.observe(&tool_event(ready, None));
+            timer.observe(&tool_event(ready, Some("")));
+        }
+        timer.observe(&ModelStreamEvent::text_completed(
+            "text".into(),
+            pl_protocol::trace::TraceTextChannel::Final,
+            None,
+            None,
+        ));
+        timer.observe(&ModelStreamEvent::ReasoningRawDelta {
+            id: "reasoning".into(),
+            content_index: 0,
+            delta: String::new(),
+            provider: None,
+        });
+        assert_eq!(timer.observation.lock().unwrap().first_output, None);
+        timer.observe(&ModelStreamEvent::ToolInputDelta {
+            stream_id: None,
+            item_id: "tool".into(),
+            call_id: None,
+            name: None,
+            payload_delta: ToolInputDeltaPayload::CustomInput("query".into()),
+        });
+        timer.observe(&tool_event(true, Some("query")));
+        timer.observe(&ModelStreamEvent::Completed { response_id: None });
+        assert_eq!(
+            timer.finish().unwrap().first_output_source,
+            FirstOutputSource::Incremental
+        );
+
+        let empty = InferenceTimer::start();
+        empty.observe(&ModelStreamEvent::Completed { response_id: None });
+        let timing = empty.finish().unwrap();
+        assert_eq!(timing.first_output_source, FirstOutputSource::Unobserved);
+        assert_eq!((timing.ttft_millis, timing.decode_millis), (None, None));
+    }
+
+    #[tokio::test]
+    async fn non_event_stream_end_preserves_content_timing_and_freezes_once() {
+        use crate::completion::stream::{
+            CompletionEventStream, StreamCollectContext,
+            collect_completion_event_stream_with_idle_timeout,
+        };
+        use pl_protocol::{PureError, trace::TraceTextChannel};
+        use tokio_util::sync::CancellationToken;
+
+        for ending in ["error", "eof", "timeout", "cancel"] {
+            let mut timer = InferenceTimer::start();
+            let cancellation = CancellationToken::new();
+            let tail: CompletionEventStream = match ending {
+                "error" => stream::once(async {
+                    Err(PureError::Protocol("direct transport failure".into()))
+                })
+                .boxed(),
+                "eof" => stream::empty().boxed(),
+                _ => stream::pending().boxed(),
+            };
+            let events = stream::iter([
+                Ok(ModelStreamEvent::text_started(
+                    "text".into(),
+                    TraceTextChannel::Final,
+                    None,
+                )),
+                Ok(ModelStreamEvent::text_delta(
+                    "text".into(),
+                    TraceTextChannel::Final,
+                    "observed content".into(),
+                    None,
+                )),
+            ])
+            .chain(tail)
+            .inspect({
+                let timer = timer.clone();
+                let cancellation = cancellation.clone();
+                move |event| {
+                    if let Ok(event) = event {
+                        timer.observe(event);
+                        if ending == "cancel" && event.first_output_source().is_some() {
+                            cancellation.cancel();
+                        }
+                    }
+                }
+            })
+            .boxed();
+            let (event_tx, _receiver) = tokio::sync::broadcast::channel(16);
+            let on_stream_end = || timer.mark_terminal();
+            let failure = collect_completion_event_stream_with_idle_timeout(
+                events,
+                StreamCollectContext {
+                    event_tx: &event_tx,
+                    trace: None,
+                    trace_sink: None,
+                    cancellation: Some(cancellation),
+                    model_observation: None,
+                    on_stream_end: &on_stream_end,
+                },
+                Some(Duration::from_millis(1)),
+            )
+            .await
+            .expect_err("the stream has no terminal event");
+            assert_eq!(failure.is_cancelled(), ending == "cancel", "{ending}");
+            if ending == "error" {
+                assert!(failure.to_string().contains("direct transport failure"));
+            } else if ending == "eof" {
+                assert!(failure.to_string().contains("ended before completion"));
+            } else if ending == "timeout" {
+                assert!(failure.to_string().contains("idle timeout"));
+            }
+            let timing = timer.finish().expect("actual collector end must be timed");
+            assert_eq!(timing.first_output_source, FirstOutputSource::Incremental);
+            assert_eq!(
+                timing.ttft_millis.unwrap() + timing.decode_millis.unwrap(),
+                timing.response_millis,
+                "{ending}"
+            );
+            // Deterministically make a later observation differ, without a machine-speed bound.
+            timer.started_at -= Duration::from_secs(1);
+            timer.mark_terminal();
+            assert_eq!(timer.finish(), Some(timing), "{ending}");
+        }
+    }
+
+    #[tokio::test]
+    async fn cancellation_at_ready_retry_deadline_keeps_last_attempt_without_sending_again() {
+        use super::{InvocationRunner, ModelInvocationContext, ModelSession};
+        use crate::{
+            completion::{CompletionRequest, Message, MessageContent, MessageRole},
+            model::{ModelInfo, ModelTransportProfile},
+            protocol::ProtocolEndpoint,
+        };
+        use pl_provider_fixture::{FixtureServer, Protocol, Reply, Step, responses_text};
+        use std::future::{Future, poll_fn};
+        use std::task::Poll;
+        use tokio_util::sync::CancellationToken;
+
+        let mut events = responses_text("observed output", "failed-attempt", "retry-model");
+        events.pop();
+        events.push(serde_json::json!({
+            "type": "error", "error": {
+                "code": "server_error", "message": "retry later", "retry_after_ms": 30000
+            }
+        }));
+        let fixture = FixtureServer::start(vec![Step::prompt(
+            Protocol::ResponsesWebSocket,
+            "cancel at retry boundary",
+            0,
+            Reply::WebSocket(events),
+        )])
+        .await
+        .unwrap();
+        let mut model = ModelInfo::compatible("retry-model");
+        model
+            .binding
+            .set_transport(ModelTransportProfile::responses_websocket());
+        let runner = InvocationRunner::new_with_account_id(
+            "fixture",
+            ProtocolEndpoint::compatible("fixture", fixture.base_url()),
+            model,
+        )
+        .unwrap();
+        let session = ModelSession::default();
+        let cancellation = CancellationToken::new();
+        let progress = pl_core::model::ModelProgressSender::detached(1024 * 1024);
+        let invocation = runner.complete_inner(
+            CompletionRequest::builder()
+                .messages(vec![Message {
+                    role: MessageRole::User,
+                    content: MessageContent::text("cancel at retry boundary"),
+                    presentation: Default::default(),
+                    reasoning_content: None,
+                    tool_calls: None,
+                    tool_result: None,
+                    metadata: Default::default(),
+                }])
+                .build(),
+            ModelInvocationContext::new(session.clone())
+                .with_progress(Some(progress.clone()))
+                .with_cancellation(Some(cancellation.clone())),
+        );
+        tokio::pin!(invocation);
+        tokio::time::timeout(
+            Duration::from_secs(10),
+            poll_fn(|cx| {
+                assert!(invocation.as_mut().poll(cx).is_pending());
+                if progress.latest().observation().generation == 1 {
+                    Poll::Ready(())
+                } else {
+                    Poll::Pending
+                }
+            }),
+        )
+        .await
+        .unwrap();
+        // Own and stop polling the invocation while both readiness conditions are established.
+        // Neither the wall clock nor a scheduler race decides when the second request is sent.
+        tokio::time::pause();
+        tokio::time::advance(Duration::from_secs(31)).await;
+        cancellation.cancel();
+        let failure = invocation.await.unwrap_err();
+        tokio::time::resume();
+        assert!(failure.is_cancelled());
+        let timing = failure.timing.expect("last finished attempt remains timed");
+        assert_eq!(timing.first_output_source, FirstOutputSource::Incremental);
+        assert_eq!(
+            timing.ttft_millis.unwrap() + timing.decode_millis.unwrap(),
+            timing.response_millis
+        );
+        assert!(
+            timing.response_millis < 30_000,
+            "backoff is not response time"
+        );
+        assert_eq!(fixture.recorded().len(), 1, "no second request was sent");
+        session.close().await.unwrap();
+        assert_eq!(fixture.finish().await.unwrap().len(), 1);
+    }
+}

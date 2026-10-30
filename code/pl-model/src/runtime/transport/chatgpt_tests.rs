@@ -315,6 +315,7 @@ async fn transport_completion(
                 trace_sink: None,
                 cancellation: None,
                 model_observation: None,
+                on_stream_end: &|| {},
             },
             None,
         )

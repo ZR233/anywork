@@ -1630,7 +1630,7 @@ class AppLocalizationsEn extends AppLocalizations {
       'Unspecified / not recorded';
 
   @override
-  String get statisticsSpeed => 'Output TPS (incl. first token)';
+  String get statisticsSpeed => 'Output TPS (incl. first content)';
 
   @override
   String get statisticsSamples => 'Samples';
@@ -1639,7 +1639,7 @@ class AppLocalizationsEn extends AppLocalizations {
   String get statisticsOutputTokens => 'Output tokens';
 
   @override
-  String get statisticsAverageTtft => 'Average first token';
+  String get statisticsAverageTtft => 'Average first content';
 
   @override
   String get statisticsAverageResponse => 'Average total response';
@@ -1648,19 +1648,19 @@ class AppLocalizationsEn extends AppLocalizations {
   String get statisticsCompletedAt => 'Completed';
 
   @override
-  String get statisticsDecode => 'After first token';
+  String get statisticsDecode => 'After first content';
 
   @override
   String get statisticsTotalResponse => 'Total response';
 
   @override
   String statisticsTtftSampleCount(int count) {
-    return '$count first-token samples';
+    return '$count first-content samples';
   }
 
   @override
   String get settingsStatisticsThroughputNote =>
-      'Output TPS = provider-confirmed output tokens × 1000 ÷ total response time (including the first-token wait). Total response runs from the request that produced the result to its normalized terminal event; failed retries, backoff, tool execution and post-terminal collection or saving are excluded. The first token is the first non-empty text, reasoning or tool-input increment, and output may include reasoning tokens without double counting. The after-first-token time is diagnostic, not hardware decode time. Samples from the previous statistics definition were discarded; raw calls and billing remain.';
+      'Output TPS = provider-reported output tokens × 1000 ÷ total response time (including the first-content wait). Total response runs from the request that produced the result to its normalized terminal event; failed retries, backoff, tool execution and post-terminal collection or saving are excluded. First content is the client’s first observation of non-empty text, reasoning, tool-input increments or complete tool input; the source is shown per call, not claimed as the provider’s first token. Output may include reasoning tokens without double counting. Time after first content is diagnostic, may be 0, and is not hardware decode time. Missing historical counters, sources and timing remain unknown, not 0.';
 
   @override
   String get statusTurnQueued => 'Queued';
@@ -5936,4 +5936,147 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get recoveryNoAvailableActions => 'None currently available';
+
+  @override
+  String get usagePurpose => 'Purpose';
+
+  @override
+  String get usageUnknown => 'Unknown';
+
+  @override
+  String get usageThreadId => 'Thread';
+
+  @override
+  String get usageCallId => 'Call';
+
+  @override
+  String get usageFirstOutputNote =>
+      'A completed item marks the client’s first observation of complete tool input, not the provider’s first token; decode time can be 0.';
+
+  @override
+  String get usageStatusLegacyUnknown => 'Historical usage status unknown';
+
+  @override
+  String get usageStatusMissing => 'Usage not retained at completion';
+
+  @override
+  String get usageStatusPartial => 'Partial usage retained';
+
+  @override
+  String get usageStatusReported => 'Usage complete';
+
+  @override
+  String get usageStatusInvalid => 'Invalid usage';
+
+  @override
+  String get usageCumulativeTitle => 'Cumulative usage coverage';
+
+  @override
+  String get usageLatestTitle => 'Latest main-model call';
+
+  @override
+  String get usageIncompleteCalls => 'Incomplete calls';
+
+  @override
+  String get usageMissingCalls => 'Calls missing usage';
+
+  @override
+  String get usagePartialCalls => 'Calls with partial usage';
+
+  @override
+  String get usageInvalidCalls => 'Calls with invalid usage';
+
+  @override
+  String get usageOverflowCalls => 'Calls with overflow';
+
+  @override
+  String get usageHistoryUnknown =>
+      'Call counts, usage or purpose sources in older history cannot be proven; unknown is not 0.';
+
+  @override
+  String get usageCountsOverflowed =>
+      'Cumulative counts overflowed; displayed counts are not the complete total.';
+
+  @override
+  String get usageRecentGapsTitle => 'Recent gaps';
+
+  @override
+  String get usageRecentGaps => 'Recent gaps (at most 8, not the full history)';
+
+  @override
+  String get usageCumulativeNote =>
+      'Later complete calls do not erase cumulative gaps; the latest call’s completeness is shown separately.';
+
+  @override
+  String get usageCancelledNote =>
+      'A cancelled call only means the corresponding usage was not retained at completion; this does not establish that the provider did not send it.';
+
+  @override
+  String get usageCacheCoverage => 'Cache coverage samples (since upgrade)';
+
+  @override
+  String get usageCacheCoverageNote =>
+      'Only samples eligible for cache accumulation are counted; the sample count behind older cache totals cannot be inferred from post-upgrade counts.';
+
+  @override
+  String get usageCacheLegacyUnknown =>
+      'Older cache sample counts are unknown; the current count starts after the upgrade.';
+
+  @override
+  String get usageStatisticsGapNote =>
+      'A statistics synchronization gap is separate from unknown cumulative usage; recovered synchronization does not prove complete historical usage.';
+
+  @override
+  String get usageOutcomeSucceeded => 'Succeeded';
+
+  @override
+  String get usageOutcomeRejected => 'Rejected';
+
+  @override
+  String get usageOutcomeCancelled => 'Cancelled';
+
+  @override
+  String get usageOutcomeFailed => 'Failed';
+
+  @override
+  String get usageOutcomeInterrupted => 'Interrupted';
+
+  @override
+  String get usageOtherPurposeCalls => 'Calls with other purposes';
+
+  @override
+  String get usageGapUnreported => 'Not retained';
+
+  @override
+  String get usageGapInconsistent => 'Inconsistent';
+
+  @override
+  String get usageGapOverflow => 'Overflow';
+
+  @override
+  String get usageFieldInput => 'Input';
+
+  @override
+  String get usageFieldOutput => 'Output';
+
+  @override
+  String get usageFieldCacheRead => 'Cache read';
+
+  @override
+  String get usageFieldCacheWrite => 'Cache write';
+
+  @override
+  String get usageFieldReasoning => 'Reasoning';
+
+  @override
+  String get usageFieldTotal => 'Total';
+
+  @override
+  String get usageFieldInferenceCount => 'Call count';
+
+  @override
+  String get usageFieldCachePair => 'Cache counters';
+
+  @override
+  String get usageFieldThroughputPair => 'Throughput counters';
 }

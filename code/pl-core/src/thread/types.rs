@@ -452,69 +452,23 @@ pub struct UsageSummary {
     /// Highest committed effect sequence already folded into this summary.
     #[serde(default)]
     pub applied_sequence: u64,
-    /// Newest admitted model binding, projected before any response exists.
-    #[serde(default)]
-    pub model: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub context_window: Option<u64>,
-    /// Capacity the newest binding's model declares; unknown stays unknown.
-    ///
-    /// It is never derived from `context_window`: an effective window narrowed by configuration is
-    /// not evidence about what the model supports.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_context_window: Option<u64>,
-    /// Finally resolved automatic compaction threshold of the newest binding.
-    ///
-    /// Core only carries the frozen fact; it never recomputes a policy, so historical summaries keep
-    /// the threshold that was in effect when that request was admitted.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub auto_compact_limit: Option<u64>,
-    #[serde(default)]
-    pub inference_count: u64,
-    #[serde(default)]
-    pub prompt_tokens: u64,
-    #[serde(default)]
-    pub completion_tokens: u64,
-    #[serde(default)]
-    pub cached_prompt_tokens: u64,
-    #[serde(default)]
-    pub cache_write_tokens: u64,
-    #[serde(default)]
-    pub reasoning_tokens: u64,
-    #[serde(default)]
-    pub total_tokens: u64,
-    /// Valid cache samples only: input tokens, and the cache reads inside them.
-    #[serde(default)]
-    pub cache_input_tokens: u64,
-    #[serde(default)]
-    pub cache_read_tokens: u64,
-    #[serde(default)]
-    pub latest_context_tokens: u64,
-    #[serde(default)]
-    pub has_incomplete_usage: bool,
-    #[serde(default)]
-    pub has_unpriced_usage: bool,
-    #[serde(default)]
-    pub cache_incomplete: bool,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    /// Entire latest binding is replaced at admission, even if no response follows.
+    pub binding: Option<crate::model::ModelUsageBinding>,
+    pub totals: crate::usage::UsageTotals,
+    pub cache: crate::usage::UsageCacheSummary,
+    pub context: crate::usage::UsageContextSummary,
+    pub throughput: crate::usage::UsageThroughputSummary,
+    pub diagnostics: crate::usage::UsageDiagnostics,
+    pub pricing: UsagePricingSummary,
+}
+
+/// Products may enrich the common token reducer with frozen monetary contributions.
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsagePricingSummary {
+    pub incomplete: bool,
     pub estimated_costs: Vec<UsageCost>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub estimated_cache_savings: Vec<UsageCost>,
-    /// Output tokens accumulated for `turn_id`.
-    ///
-    /// A product with response timing may retain the last sampled Turn until the next Turn's first
-    /// complete throughput sample, instead of discarding it when an untimed request starts.
-    #[serde(default)]
-    pub turn_completion_tokens: u64,
-    /// Total response time paired with `turn_completion_tokens`.
-    ///
-    /// It is the throughput denominator, so a product without timing leaves it zero and the pair
-    /// stays unusable instead of contributing a one-sided numerator.
-    #[serde(default)]
-    pub turn_response_millis: u64,
-    /// Turn whose per-turn counters are currently accumulated.
-    #[serde(default)]
-    pub turn_id: String,
 }
 
 impl ThreadSnapshot {

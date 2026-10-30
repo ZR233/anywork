@@ -12,6 +12,7 @@ import '../../l10n/studio_l10n.dart';
 import '../../presentation/providers/client_provider.dart';
 import '../../presentation/providers/account_domains.dart';
 import '../../shared/studio_driver_keys.dart';
+import 'recovery_issue_indicator.dart';
 
 /// 智能体切换列表。
 ///
@@ -370,15 +371,14 @@ class _AgentSwitcherMenuState extends ConsumerState<AgentSwitcherMenu> {
       threadId: agent.threadId,
     ).firstOrNull;
     final error = agent.error;
-    final hasError = error != null || recoveryIssue != null;
+    final hasError = error != null;
     final summary = thread?.title.trim().isNotEmpty == true
         ? thread!.title
         : agent.task.trim().isNotEmpty
         ? agent.task
         : context.roleLabel(agent.role);
-    final status = recoveryIssue == null
-        ? error ?? context.threadStatusLabel(_agentThreadStatus(agent.state))
-        : context.recoveryIssueLabel(recoveryIssue);
+    final status =
+        error ?? context.threadStatusLabel(_agentThreadStatus(agent.state));
     final secondaryStyle = Theme.of(context).textTheme.labelSmall
         ?.copyWith(color: context.colors.onSurfaceVariant);
     final role = agent.role.trim();
@@ -459,6 +459,8 @@ class _AgentSwitcherMenuState extends ConsumerState<AgentSwitcherMenu> {
       trailingIcon: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
+          if (recoveryIssue != null)
+            RecoveryIssueIndicator(issue: recoveryIssue),
           if (recoveryIssue?.canRetry == true)
             IconButton(
               key: StudioDriverKeys.retryRecoveryIssue(recoveryIssue!.id),

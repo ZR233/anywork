@@ -4,6 +4,7 @@ import 'package:anywork_client/statistics_ports.dart';
 import '../../../rust/api/studio/statistics/feed.dart' as frb_statistics;
 import '../../../rust/api/studio/statistics/types.dart' as frb_types;
 import '../../../rust/api/studio/types/error.dart' as frb_error;
+import '../usage_diagnostics.dart';
 
 /// Native statistics adapter. It speaks only to the dedicated typed feed/scope API.
 final class FrbStatisticsFeedPort implements StatisticsFeedPort {
@@ -318,6 +319,15 @@ final class _FrbStatisticsReadScope implements StatisticsReadScope {
 
 StatisticsSample _sampleFromFrb(frb_types.BridgeStatisticsSample value) =>
     StatisticsSample(
+      threadId: value.threadId,
+      callId: value.callId,
+      purpose: value.purpose,
+      firstOutputSource: firstOutputSourceFromFrb(value.firstOutputSource),
+      usageStatus: usageReportStatusFromFrb(value.usageStatus),
+      ttftAvailability: metricAvailabilityFromFrb(value.ttftAvailability),
+      throughputAvailability: metricAvailabilityFromFrb(
+        value.throughputAvailability,
+      ),
       completedAt: DateTime.fromMillisecondsSinceEpoch(
         value.completedAt.toInt() * 1000,
       ),
@@ -337,7 +347,7 @@ StatisticsSample _sampleFromFrb(frb_types.BridgeStatisticsSample value) =>
           StatisticsModelMatchState.legacyUnknown,
       },
       effort: value.effort,
-      completionTokens: value.completionTokens.toInt(),
+      completionTokens: value.completionTokens?.toInt(),
       ttftMillis: value.ttftMillis?.toInt(),
       decodeMillis: value.decodeMillis?.toInt(),
       totalResponseMillis: value.totalResponseMillis?.toInt(),

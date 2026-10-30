@@ -572,7 +572,7 @@ pub(in crate::studio) async fn root_session_workspace_root(
     root: &crate::studio::ThreadRecord,
     project: &ProjectRecord,
     local_root: PathBuf,
-) -> Result<PathBuf> {
+) -> Result<(PathBuf, Option<WorktreeLease>)> {
     anyhow::ensure!(
         root.parent_thread_id.is_none()
             && root.id == root.root_thread_id
@@ -594,7 +594,7 @@ pub(in crate::studio) async fn root_session_workspace_root(
             frozen.as_ref().is_none_or(|identity| *identity == actual),
             WorktreeError::IdentityMismatch("local root path or endpoint changed".into())
         );
-        return Ok(PathBuf::from(actual.root));
+        return Ok((PathBuf::from(actual.root), None));
     }
     let lease = worktrees.get(&root.id).ok_or_else(|| {
         WorktreeError::IdentityMismatch("owner: root session lease is missing".into())
@@ -660,10 +660,10 @@ pub(in crate::studio) async fn root_session_workspace_root(
     manager
         .verify(&WorktreeHandle {
             path: PathBuf::from(&lease.path),
-            base_commit: lease.base_commit,
+            base_commit: lease.base_commit.clone(),
         })
         .await?;
-    Ok(PathBuf::from(lease.path))
+    Ok((PathBuf::from(&lease.path), Some(lease)))
 }
 
 pub(in crate::studio) fn validate_root_session_lease(

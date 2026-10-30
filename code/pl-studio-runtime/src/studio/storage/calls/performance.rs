@@ -11,6 +11,10 @@ pub(crate) const PERFORMANCE_SAMPLE_LIMIT: usize = 3_000;
 pub(super) struct PerformanceSample {
     pub(super) thread_id: String,
     pub(super) call_id: String,
+    pub(super) purpose: Option<String>,
+    pub(super) usage_status: pl_core::usage::UsageStatus,
+    pub(super) first_output_source: pl_protocol::FirstOutputSource,
+    pub(super) throughput_valid: bool,
     pub(super) completed_at: i64,
     pub(super) account_id: Option<String>,
     pub(super) account_display_name: Option<String>,
@@ -26,6 +30,18 @@ pub(super) struct PerformanceSample {
 
 /// 从轻量日志记录构造性能样本；旧统计口径的记录只保留为原始调用日志。
 pub(super) fn sample_from_record(record: &CallLogRecord) -> Option<PerformanceSample> {
+    sample_with_validity(record, record.throughput_sample().is_some())
+}
+
+/// Live writes consume a bound preparation fact, not a deserialized UsageStatus as proof.
+pub(super) fn sample_from_prepared(record: &PreparedRecord) -> Option<PerformanceSample> {
+    sample_with_validity(record, record.throughput_valid)
+}
+
+fn sample_with_validity(
+    record: &CallLogRecord,
+    throughput_valid: bool,
+) -> Option<PerformanceSample> {
     if !record.is_current_throughput_epoch() {
         return None;
     }
@@ -34,6 +50,14 @@ pub(super) fn sample_from_record(record: &CallLogRecord) -> Option<PerformanceSa
     Some(PerformanceSample {
         thread_id: record.thread_id.clone(),
         call_id: record.call_id.clone(),
+        purpose: record.purpose.clone(),
+        usage_status: record
+            .usage_status
+            .unwrap_or(pl_core::usage::UsageStatus::LegacyUnknown),
+        first_output_source: timing.map_or(pl_protocol::FirstOutputSource::Unobserved, |timing| {
+            timing.first_output_source
+        }),
+        throughput_valid,
         completed_at: record.recorded_at,
         account_id: record.account_id.clone(),
         account_display_name: record.account_display_name.clone(),
@@ -63,8 +87,8 @@ pub(super) async fn record(db: &impl ConnectionTrait, sample: &PerformanceSample
         "INSERT INTO performance_samples(
             thread_id,call_id,completed_at,account_id,account_display_name,
             model_id,sent_model,reported_model,effort,output_tokens,
-            ttft_millis,decode_millis,response_millis)
-         VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ttft_millis,decode_millis,response_millis,purpose,usage_status,first_output_source,throughput_valid)
+         VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
          ON CONFLICT(thread_id,call_id) DO UPDATE SET
             completed_at=excluded.completed_at,
             account_id=excluded.account_id,
@@ -76,7 +100,9 @@ pub(super) async fn record(db: &impl ConnectionTrait, sample: &PerformanceSample
             output_tokens=excluded.output_tokens,
             ttft_millis=excluded.ttft_millis,
             decode_millis=excluded.decode_millis,
-            response_millis=excluded.response_millis",
+            response_millis=excluded.response_millis,
+            purpose=excluded.purpose,usage_status=excluded.usage_status,
+            first_output_source=excluded.first_output_source,throughput_valid=excluded.throughput_valid",
         vec![
             sample.thread_id.clone().into(),
             sample.call_id.clone().into(),
@@ -91,10 +117,91 @@ pub(super) async fn record(db: &impl ConnectionTrait, sample: &PerformanceSample
             sample.ttft_millis.into(),
             sample.decode_millis.into(),
             sample.response_millis.into(),
+            sample.purpose.clone().into(),
+            enum_text(sample.usage_status)?.into(),
+            enum_text(sample.first_output_source)?.into(),
+            (sample.throughput_valid as i32).into(),
         ],
     ))
     .await?;
     Ok(())
+}
+
+fn enum_text(value: impl serde::Serialize) -> Result<String> {
+    Ok(serde_json::to_value(value)?
+        .as_str()
+        .context("expected enum string")?
+        .to_owned())
+}
+
+pub(super) async fn read_history(
+    db: &impl ConnectionTrait,
+    limit: u32,
+) -> Result<Vec<PerformanceSampleRow>> {
+    let rows = db.query_all_raw(statement(
+        "SELECT * FROM performance_samples ORDER BY completed_at DESC,thread_id DESC,call_id DESC LIMIT ?",
+        vec![i64::from(limit.min(PERFORMANCE_SAMPLE_LIMIT as u32)).into()]
+    )).await?;
+    rows.iter()
+        .map(|row| {
+            let optional = |name| -> Result<Option<u64>> {
+                row.try_get::<Option<i64>>("", name)?
+                    .map(u64::try_from)
+                    .transpose()
+                    .map_err(Into::into)
+            };
+            Ok(PerformanceSampleRow {
+                thread_id: row.try_get("", "thread_id")?,
+                call_id: row.try_get("", "call_id")?,
+                purpose: row.try_get("", "purpose")?,
+                completed_at: row.try_get("", "completed_at")?,
+                account_id: row
+                    .try_get::<Option<String>>("", "account_id")?
+                    .unwrap_or_default(),
+                account_display_name: row
+                    .try_get::<Option<String>>("", "account_display_name")?
+                    .unwrap_or_default(),
+                model_id: row.try_get("", "model_id")?,
+                sent_model: row
+                    .try_get::<Option<String>>("", "sent_model")?
+                    .unwrap_or_default(),
+                reported_model: row.try_get("", "reported_model")?,
+                effort: row.try_get("", "effort")?,
+                completion_tokens: optional("output_tokens")?,
+                usage_status: serde_json::from_value(serde_json::Value::String(
+                    row.try_get("", "usage_status")?,
+                ))?,
+                first_output_source: serde_json::from_value(serde_json::Value::String(
+                    row.try_get("", "first_output_source")?,
+                ))?,
+                ttft_millis: optional("ttft_millis")?,
+                decode_millis: optional("decode_millis")?,
+                response_millis: optional("response_millis")?,
+                has_throughput_sample: row.try_get::<i64>("", "throughput_valid")? != 0,
+            })
+        })
+        .collect()
+}
+
+pub(super) async fn read_summary(db: &impl ConnectionTrait) -> Result<Vec<PerformanceSummaryRow>> {
+    let rows = db
+        .query_all_raw(statement(
+            "SELECT account_id,COALESCE(MAX(account_display_name),'') AS account_display_name,
+                model_id,effort,COUNT(*) AS sample_count,
+                SUM(output_tokens) AS completion_tokens,
+                COALESCE(SUM(ttft_millis),0) AS total_ttft_millis,
+                COUNT(ttft_millis) AS ttft_sample_count,
+                SUM(response_millis) AS total_response_millis
+         FROM performance_samples
+         WHERE account_id IS NOT NULL AND account_id<>'' AND model_id IS NOT NULL AND model_id<>''
+           AND throughput_valid=1 AND output_tokens>0 AND response_millis>0
+           AND usage_status NOT IN ('invalid','legacyUnknown')
+         GROUP BY account_id,model_id,effort
+         ORDER BY account_id,model_id,effort IS NOT NULL,effort",
+            vec![],
+        ))
+        .await?;
+    rows.iter().map(performance_summary_row).collect()
 }
 
 /// 裁剪到固定上限；调用方与其它统计共用一个批次事务提交。
@@ -166,13 +273,89 @@ INSERT INTO performance_samples VALUES
 ";
 
     #[tokio::test]
+    async fn schema_seven_preserves_current_rows_without_inventing_raw_validity() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let path = temp.path().join("calls.sqlite");
+        schema::seed_version_for_test(&path, 7, CURRENT_EPOCH_SAMPLES).await?;
+        let db = Database::connect(
+            crate::studio::paths::sqlite_file_options(
+                &path,
+                crate::studio::paths::SqliteFileMode::Create,
+                |options| options,
+            )
+            .await?,
+        )
+        .await?;
+        db.execute_unprepared(
+            "UPDATE performance_samples SET output_tokens=NULL WHERE call_id='b'",
+        )
+        .await?;
+        db.close().await?;
+        let store = CallsStore::open(&path).await?;
+        let history = store.recent_performance_samples(100).await?;
+        assert_eq!(history.len(), 6);
+        let unknown = history.iter().find(|row| row.call_id == "b").unwrap();
+        assert_eq!(unknown.completion_tokens, None);
+        assert_eq!(unknown.response_millis, Some(100));
+        assert_eq!(
+            unknown.usage_status,
+            pl_core::usage::UsageStatus::LegacyUnknown
+        );
+        assert_eq!(
+            unknown.first_output_source,
+            pl_protocol::FirstOutputSource::LegacyUnknown
+        );
+        assert_eq!(unknown.purpose, None);
+        assert!(!unknown.has_throughput_sample);
+        let known = history.iter().find(|row| row.call_id == "a").unwrap();
+        assert_eq!(known.account_id, "deepseek");
+        assert_eq!(known.model_id.as_deref(), Some("deepseek-flash"));
+        assert_eq!(known.completion_tokens, Some(100));
+        assert!(
+            store
+                .read_statistics(StatisticsReadRequest {
+                    costs: false,
+                    performance: true,
+                })
+                .await?
+                .summary
+                .expect("performance summary requested")
+                .is_empty()
+        );
+        store.close().await?;
+        let reopened = CallsStore::open(&path).await?;
+        assert_eq!(reopened.recent_performance_samples(100).await?.len(), 6);
+        assert!(
+            reopened
+                .read_statistics(StatisticsReadRequest {
+                    costs: false,
+                    performance: true,
+                })
+                .await?
+                .summary
+                .expect("performance summary requested")
+                .is_empty()
+        );
+        reopened.close().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn previous_epoch_samples_are_discarded_instead_of_migrated() -> Result<()> {
         let temp = tempfile::tempdir()?;
         let path = temp.path().join("calls.sqlite");
         schema::seed_version_for_test(&path, 6, LEGACY_V6_SAMPLES).await?;
         let store = CallsStore::open(&path).await?;
         assert!(
-            store.performance_summary_rows().await?.is_empty(),
+            store
+                .read_statistics(StatisticsReadRequest {
+                    costs: false,
+                    performance: true,
+                })
+                .await?
+                .summary
+                .expect("performance summary requested")
+                .is_empty(),
             "the previous statistics epoch is dropped, never converted"
         );
         let kept = store
@@ -207,9 +390,26 @@ INSERT INTO performance_samples VALUES
     -> Result<()> {
         let temp = tempfile::tempdir()?;
         let path = temp.path().join("calls.sqlite");
-        schema::seed_version_for_test(&path, CALLS_SCHEMA_VERSION, CURRENT_EPOCH_SAMPLES).await?;
+        schema::seed_version_for_test(&path, 7, CURRENT_EPOCH_SAMPLES).await?;
         let store = CallsStore::open(&path).await?;
-        let summary = store.performance_summary_rows().await?;
+        // This fixture tests SQL grouping, not migration provenance. Mark only the
+        // deliberately paired artificial rows usable after the migration boundary.
+        store
+            .writer
+            .db
+            .execute_unprepared(
+                "UPDATE performance_samples SET usage_status='partial',throughput_valid=1
+             WHERE call_id IN ('a','b','c','d');",
+            )
+            .await?;
+        let summary = store
+            .read_statistics(StatisticsReadRequest {
+                costs: false,
+                performance: true,
+            })
+            .await?
+            .summary
+            .expect("performance summary requested");
         let flashes: Vec<_> = summary
             .iter()
             .filter(|row| row.account_id == "deepseek" && row.model_id == "deepseek-flash")
@@ -257,12 +457,15 @@ INSERT INTO performance_samples VALUES
     #[test]
     fn only_current_epoch_records_enter_the_performance_projection() {
         let mut record = CallLogRecord {
+            version: event::CALL_LOG_RECORD_VERSION,
             status: "committed".to_owned(),
+            usage_status: Some(pl_core::usage::UsageStatus::Partial),
             usage: Some(event::CallUsageRecord {
                 output_tokens: Some(100),
                 ..Default::default()
             }),
             timing: Some(event::CallTimingRecord {
+                first_output_source: pl_protocol::FirstOutputSource::Incremental,
                 ttft_millis: Some(200),
                 decode_millis: Some(800),
                 response_millis: Some(1_000),
@@ -286,6 +489,7 @@ INSERT INTO performance_samples VALUES
 
         let mut inconsistent = record;
         inconsistent.timing = Some(event::CallTimingRecord {
+            first_output_source: pl_protocol::FirstOutputSource::Incremental,
             ttft_millis: Some(900),
             decode_millis: Some(5),
             response_millis: Some(1_000),
@@ -298,6 +502,83 @@ INSERT INTO performance_samples VALUES
             sample_from_record(&inconsistent).is_some(),
             "raw timing stays visible in history even when it is not a speed sample"
         );
+    }
+
+    #[test]
+    fn invalid_cache_report_is_visible_but_not_a_throughput_pair() {
+        let record = CallLogRecord {
+            version: event::CALL_LOG_RECORD_VERSION,
+            status: "committed".into(),
+            throughput_epoch: event::THROUGHPUT_EPOCH,
+            usage_status: Some(pl_core::usage::UsageStatus::Invalid),
+            usage: Some(event::CallUsageRecord {
+                input_tokens: Some(10),
+                output_tokens: Some(20),
+                cache_read_tokens: Some(11),
+                ..Default::default()
+            }),
+            timing: Some(event::CallTimingRecord {
+                first_output_source: pl_protocol::FirstOutputSource::CompletedToolInput,
+                response_millis: Some(100),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let sample = sample_from_record(&record).unwrap();
+        assert_eq!(sample.output_tokens, Some(20));
+        assert_eq!(
+            sample.first_output_source,
+            pl_protocol::FirstOutputSource::CompletedToolInput
+        );
+        assert!(!sample.throughput_valid);
+        let mut unknown = record;
+        unknown.usage.as_mut().unwrap().output_tokens = None;
+        let sample = sample_from_record(&unknown).unwrap();
+        assert_eq!(
+            sample.output_tokens, None,
+            "an unknown numerator is not an explicit zero"
+        );
+        assert!(!sample.throughput_valid);
+    }
+
+    #[test]
+    fn restored_samples_validate_raw_status_pairs_and_version_boundaries() {
+        use pl_core::usage::UsageStatus;
+
+        let mut record = CallLogRecord {
+            version: event::CALL_LOG_RECORD_VERSION,
+            status: "committed".into(),
+            throughput_epoch: event::THROUGHPUT_EPOCH,
+            usage_status: Some(UsageStatus::Reported),
+            usage: Some(event::CallUsageRecord {
+                input_tokens: Some(10),
+                output_tokens: Some(20),
+                cache_read_tokens: Some(0),
+                ..Default::default()
+            }),
+            timing: Some(event::CallTimingRecord {
+                response_millis: Some(100),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert!(sample_from_record(&record).unwrap().throughput_valid);
+        for status in [
+            UsageStatus::Invalid,
+            UsageStatus::LegacyUnknown,
+            UsageStatus::Partial,
+        ] {
+            record.usage_status = Some(status);
+            assert!(!sample_from_record(&record).unwrap().throughput_valid);
+        }
+        record.usage_status = Some(UsageStatus::Reported);
+        record.usage.as_mut().unwrap().cache_read_tokens = Some(11);
+        assert!(!sample_from_record(&record).unwrap().throughput_valid);
+        record.usage.as_mut().unwrap().cache_read_tokens = Some(0);
+        record.version += 1;
+        assert!(!sample_from_record(&record).unwrap().throughput_valid);
+        record.version = event::CALL_LOG_RECORD_VERSION - 1;
+        assert!(!sample_from_record(&record).unwrap().throughput_valid);
     }
 
     #[tokio::test]
@@ -332,7 +613,15 @@ INSERT INTO performance_samples VALUES
             "previous-epoch log records never return as performance history"
         );
         assert!(
-            upgraded.performance_summary_rows().await?.is_empty(),
+            upgraded
+                .read_statistics(StatisticsReadRequest {
+                    costs: false,
+                    performance: true,
+                })
+                .await?
+                .summary
+                .expect("performance summary requested")
+                .is_empty(),
             "previous-epoch log records never refill the bounded performance projection"
         );
         let kept = upgraded
@@ -375,6 +664,10 @@ INSERT INTO performance_samples VALUES
             &PerformanceSample {
                 thread_id: "thread".to_owned(),
                 call_id: "call-new".to_owned(),
+                purpose: None,
+                usage_status: pl_core::usage::UsageStatus::Partial,
+                first_output_source: pl_protocol::FirstOutputSource::Unobserved,
+                throughput_valid: true,
                 completed_at: now,
                 account_id: Some("account".to_owned()),
                 account_display_name: Some("Account".to_owned()),
@@ -391,7 +684,14 @@ INSERT INTO performance_samples VALUES
         .await?;
         trim(&tx).await?;
         tx.commit().await?;
-        let summary = upgraded.performance_summary_rows().await?;
+        let summary = upgraded
+            .read_statistics(StatisticsReadRequest {
+                costs: false,
+                performance: true,
+            })
+            .await?
+            .summary
+            .expect("performance summary requested");
         assert_eq!(summary.len(), 1, "new epoch samples are usable");
         assert_eq!(summary[0].completion_tokens, 200);
         assert_eq!(summary[0].total_response_millis, 1_000);
@@ -399,9 +699,10 @@ INSERT INTO performance_samples VALUES
             summary[0].ttft_sample_count, 0,
             "an unknown first token stays outside the first-token average"
         );
-        assert!(
-            upgraded.recent_performance_samples(5000).await?.is_empty(),
-            "history reads the raw log projection, so it still excludes the previous epoch"
+        assert_eq!(
+            upgraded.recent_performance_samples(5000).await?.len(),
+            1,
+            "history consumes the same SQL material as summary"
         );
         upgraded.stop_best_effort();
         Ok(())

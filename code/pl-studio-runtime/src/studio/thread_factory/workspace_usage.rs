@@ -11,6 +11,32 @@ use anyhow::Result;
 use std::path::Path;
 
 impl StudioThreadFactory {
+    pub(super) async fn confirm_worktree_binding(
+        &self,
+        verified: &WorktreeLease,
+        usage: &WorkspaceUsageLease,
+    ) -> Result<()> {
+        let confirmed = self
+            .services
+            .worktrees
+            .confirm_verified_binding(verified, usage)
+            .await?;
+        self.services.recovery.confirm_worktree(
+            verified,
+            &confirmed,
+            || {
+                self.services
+                    .worktrees
+                    .get(&confirmed.owner_thread_id)
+                    .as_ref()
+                    == Some(&confirmed)
+            },
+            |state| {
+                self.services.product_events.emit_recovery_state(state);
+            },
+        );
+        Ok(())
+    }
     /// Restore execution seals and only unfinished physical delete seals before preparation opens.
     pub(in crate::studio) async fn restore_workspace_admission(
         &self,
