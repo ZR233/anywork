@@ -352,18 +352,18 @@ Studio 产品投影在每次状态副作用提交时生成权威的轮次、时�
 
 现役 TOML 文件使用 `version-migrate = "=0.21.0"` 的核心类型迁移链。每种文档格式在其现有 owner 附近声明独立、连续的 `Versioned` / `MigratesTo` 路径；历史 DTO 及其嵌套 wire 结构固定在迁移边界，正常运行只消费当前结构。不使用数组实体存储、自动标记、宽松 fallback、forward loader 或项目自建迁移调度器。
 
-| 文档族 | 支持的根版本 | 版本键 |
+| 文档族 | 独立迁移边界 | 版本键 |
 | --- | --- | --- |
-| 主配置 | 18→…→27 | `schema_version` |
-| Catalog | 1→2→3→4 | `schemaVersion` |
-| Settings | 1→2 | `schemaVersion` |
-| Workspaces | 1→2 | `schemaVersion` |
-| 用户 Profile | 无版本历史导入→1 | `schema_version` |
-| Bot 配置 | 1→2→3 | `schema_version` |
-| Project、Session manifest | 各自为 1 | `schemaVersion` |
-| Attachments | 1 | `schemaVersion` |
+| 主配置 | 配置领域的完整受支持链，独立保护凭据关联 | `schema_version` |
+| Catalog | v2 目录与当前 Workspace 归属表示 | `schemaVersion` |
+| Settings | 已发布设置表示与当前格式 | `schemaVersion` |
+| Workspaces | 已发布归属种类与当前格式 | `schemaVersion` |
+| 用户 Profile | 专属无版本历史导入及当前格式 | `schema_version` |
+| Bot 配置 | 已发布平台/凭据表示及 Workspace 归属转换 | `schema_version` |
+| Workspace、Session manifest | v2 身份清单到当前统一清单 | `schemaVersion` |
+| Attachments | 附件元数据到统一可靠资源引用 | `schemaVersion` |
 
-每份文件实例独立携带正整数根版本；该版本与应用 release、业务 `revision`、`configRevision` 和查询 revision 无关。边界只在内存中将整数 `n` 映射为库要求的 `n.0.0`，路径使用同一个版本键常量。准入下界来自首个正式 DTO 的版本，上界来自库路径 latest；每个支持整数都有明确节点。缺失、错误类型、非正数、超界及未来版本在调用库前拒绝；只有 Profile 允许专属无版本历史导入，磁盘显式 0 仍非法。
+每份文件实例独立携带正整数根版本；具体支持版本与连续节点由对应代码链唯一维护，不在文档复制版本快照。该版本与应用 release、业务 `revision`、`configRevision` 和查询 revision 无关。边界只在内存中将整数 `n` 映射为库要求的 `n.0.0`，路径使用同一个版本键常量。准入下界来自首个正式 DTO，上界来自库路径 latest；每个支持整数都有明确节点。缺失、错误类型、非正数、超界及未来版本在调用库前拒绝；只有 Profile 允许专属无版本历史导入，磁盘显式 0 仍非法。
 
 转换只处理 schema：格式升级保留业务 revision，当前版本读取保留原字节且不写盘，旧版成功升级后再次打开不重复提交。保存从当前 DTO 直接序列化为 TOML 并插入整数版本，不经过库的 JSON 保存接口；历史输入仍经库内部 JSON 中转，须验证真实 Serde 往返。旧新字段同值可规范化，异值必须失败；可失败输入验证放在冻结 DTO 的 Serde / `TryFrom`，纯迁移步骤不得吞错或伪造默认值。
 

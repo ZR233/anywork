@@ -62,9 +62,9 @@
 
 ### 文件格式迁移与凭据恢复顺序
 
-Bot 配置采用独立的 V1→V2→V3 类型迁移链，文件整数版本与 `configRevision` 分开，通用准入/序列化规则见 [17.11](./17-studio-storage.md#现役-toml-文档的独立格式迁移)。正常运行只消费当前配置；旧配置和 journal 内嵌 previous/target 的历史形状只在迁移或恢复边界解码。
+Bot 配置采用独立、连续的类型迁移链，文件整数版本与 `configRevision` 分开，通用规则见 [17.11](./17-studio-storage.md#现役-toml-文档的独立格式迁移)。v2 中已发布的配置与收发账本归属字段在各自具名迁移中转换为 Workspace 语义，原 ID、凭据引用、业务 revision、输入和发送事实不变；SQL 列转换与官方迁移完成记录同事务提交。正常运行只消费当前字段；旧配置和 journal 内嵌 previous/target 的历史形状只在迁移或恢复边界解码。
 
-打开 Bot 目录时先恢复 `credential-journal.json`，保留配置的真实源版本及旧凭据导入意图；原 V1 配置须完成 `credential-migration.json` 对应的旧凭据导入后，才能提交库产生的当前配置。不得先变成 V3 再用当前版本判断是否导入。恢复沿用原 operation、候选材料、凭据引用、`selected_ref`、可发布性判断和 `CommitUncertain` 语义；schema 适配不能自动写回覆盖未决提交。格式迁移不递增业务配置 revision，当前版读取不重写文件；坏 Bot 继续局部隔离，不触发其他 Bot 或应用数据的重置。
+打开 Bot 目录时先恢复 `credential-journal.json`，保留配置的真实源版本及旧凭据导入意图；原 V1 配置须完成 `credential-migration.json` 对应的旧凭据导入后，才能提交当前配置。不得先改写为当前版本再判断是否导入。恢复沿用原 operation、候选材料、凭据引用、`selected_ref`、可发布性判断和 `CommitUncertain` 语义；schema 适配不能自动写回覆盖未决提交。格式迁移不递增业务配置 revision，当前版读取不重写文件；坏 Bot 继续局部隔离，不触发其他 Bot 或应用数据的重置。
 
 ## 27.3 首次配置与扫码注册
 

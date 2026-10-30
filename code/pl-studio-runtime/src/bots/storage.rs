@@ -13,7 +13,7 @@ use std::time::Duration;
 pub(super) mod card;
 mod schema;
 
-const BOT_STATE_SCHEMA_VERSION: i64 = 6;
+const BOT_STATE_SCHEMA_VERSION: i64 = 7;
 const PAIRING_LIMIT: i64 = 32;
 const PAIRING_TTL_SECONDS: i64 = 7 * 24 * 60 * 60;
 const INBOUND_CLAIM_TTL_SECONDS: i64 = 60;
@@ -1914,14 +1914,14 @@ mod tests {
                 content_hash TEXT NOT NULL DEFAULT '', text TEXT NOT NULL DEFAULT '',
                 open_id TEXT NOT NULL DEFAULT '', chat_kind TEXT NOT NULL DEFAULT '',
                 generation INTEGER NOT NULL DEFAULT 0, app_id TEXT NOT NULL DEFAULT '',
-                workspace_id TEXT NOT NULL DEFAULT '', creation_id TEXT NOT NULL DEFAULT '',
+                project_id TEXT NOT NULL DEFAULT '', creation_id TEXT NOT NULL DEFAULT '',
                 binding_revision INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL,
                 diagnostic TEXT NOT NULL, claimed_by TEXT NOT NULL DEFAULT '',
                 claimed_at INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL);
              CREATE TABLE thread_bindings (
                 chat_id TEXT PRIMARY KEY, thread_id TEXT NOT NULL,
                 status TEXT NOT NULL DEFAULT 'bound', creation_id TEXT NOT NULL DEFAULT '',
-                workspace_id TEXT NOT NULL DEFAULT '', revision INTEGER NOT NULL DEFAULT 0,
+                project_id TEXT NOT NULL DEFAULT '', revision INTEGER NOT NULL DEFAULT 0,
                 generation INTEGER NOT NULL DEFAULT 0, diagnostic TEXT NOT NULL DEFAULT '',
                 created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL DEFAULT 0);
              CREATE TABLE observed_directs (
@@ -1940,12 +1940,12 @@ mod tests {
                 creation_id TEXT NOT NULL, thread_id TEXT NOT NULL DEFAULT '',
                 updated_at INTEGER NOT NULL);
              INSERT INTO inbound_work(identity, bot_id, chat_id, message_id, content_hash, text,
-               open_id, chat_kind, app_id, workspace_id, creation_id, binding_revision, status,
+               open_id, chat_kind, app_id, project_id, creation_id, binding_revision, status,
                diagnostic, claimed_by, claimed_at, updated_at)
              VALUES('legacy:chat:m1', 'legacy', 'chat', 'm1', 'hash', 'question',
                'open', 'direct', 'app', 'project', 'botthread:legacy:chat', 1, 'claimed',
                '', 'crashed-worker', 1, 1);
-             INSERT INTO thread_bindings(chat_id, thread_id, status, creation_id, workspace_id,
+             INSERT INTO thread_bindings(chat_id, thread_id, status, creation_id, project_id,
                revision, generation, diagnostic, created_at, updated_at)
              VALUES('chat', 'thread-1', 'bound', 'botthread:legacy:chat', 'project', 1, 1, '', 1, 1);
              INSERT INTO send_operations(operation_id, bot_id, chat_id, content_hash, status,
@@ -2035,6 +2035,45 @@ mod tests {
         probe
             .execute_unprepared("DROP TRIGGER reject_ledger_migration")
             .await?;
+        probe
+            .execute_unprepared(
+                "CREATE TRIGGER reject_workspace_migration BEFORE UPDATE ON bot_meta
+             WHEN NEW.schema_version=7
+             BEGIN SELECT RAISE(ABORT,'injected ownership migration failure'); END",
+            )
+            .await?;
+        probe.close().await?;
+
+        let failed_ownership = BotStateStore::new(path.clone());
+        assert!(
+            failed_ownership
+                .list_due_inbound("legacy")
+                .await
+                .expect_err("ownership migration must roll back")
+                .to_string()
+                .contains("injected ownership migration failure")
+        );
+        let probe = Database::connect(
+            sqlite_file_options(&path, SqliteFileMode::ReadWrite, |options| options).await?,
+        )
+        .await?;
+        let manager = sea_orm_migration::SchemaManager::new(&probe);
+        for table in ["inbound_work", "thread_bindings"] {
+            assert!(manager.has_column(table, "project_id").await?);
+            assert!(!manager.has_column(table, "workspace_id").await?);
+        }
+        let version: i64 = probe
+            .query_one_raw(statement(
+                "SELECT schema_version FROM bot_meta WHERE id=1",
+                vec![],
+            ))
+            .await?
+            .unwrap()
+            .try_get("", "schema_version")?;
+        assert_eq!(version, 6, "only the prior official migration committed");
+        probe
+            .execute_unprepared("DROP TRIGGER reject_workspace_migration")
+            .await?;
         probe.close().await?;
 
         let store = BotStateStore::new(path.clone());
@@ -2073,6 +2112,16 @@ mod tests {
             .unwrap()
             .try_get("", "schema_version")?;
         assert_eq!(version, BOT_STATE_SCHEMA_VERSION);
+        for table in ["inbound_work", "thread_bindings"] {
+            let row = db
+                .query_one_raw(statement(
+                    &format!("SELECT workspace_id FROM {table} LIMIT 1"),
+                    vec![],
+                ))
+                .await?
+                .unwrap();
+            assert_eq!(row.try_get::<String>("", "workspace_id")?, "project");
+        }
 
         // 过期旧身份不得自认续权：迁移前 crash 的 worker 的租约已过期，
         // renew/finish 都被有效 lease 条件拒绝，行不被旧持有者改写。
