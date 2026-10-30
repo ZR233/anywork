@@ -32,7 +32,7 @@ use sea_orm::sqlx::{
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
 use std::fs::{self, File};
-use std::io::{self, IsTerminal, Write};
+use std::io::{self, BufRead, BufReader, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
@@ -4588,6 +4588,367 @@ fn statistics_db_counts(home: &Path) -> Result<StatisticsDbCounts> {
 /// still-running task). The host-cwd command uses the product's fixed full-access policy.
 const REALTIME_REQUIRED_STEPS: usize = 15;
 
+/// Fixed plain-fmt fragment of the §24.3 producer credit-wait diagnostic line.
+///
+/// The GUI's tracing subscriber prints with `with_target(true)`, so every real
+/// `producer_credit_wait_pending` event carries this exact target/message/field
+/// prefix and the compact `credit_wait` JSON runs to the end of the line; no
+/// other part of the line (timestamp, thread id) is relied upon.
+const REALTIME_CREDIT_WAIT_MARKER: &str =
+    "anywork::conversation_credit: producer_credit_wait_pending credit_wait=";
+/// Upper bound for one archived `credit_wait` JSON payload.
+const REALTIME_CREDIT_WAIT_MAX_LINE_BYTES: usize = 4096;
+/// Whole-record budget — fmt prefix and terminating newline included — for one
+/// studio log line read.
+const REALTIME_CREDIT_WAIT_MAX_RECORD_BYTES: usize = 8 * 1024;
+/// Upper bound for credit-wait observations archived from one run.
+const REALTIME_CREDIT_WAIT_MAX_OBSERVATIONS: usize = 2048;
+/// Numbered studio log rotations production retains (`writer.rs`
+/// `ARCHIVED_LOG_FILES`); the ring shifts by one on every rollover and drops
+/// the oldest slot, so a full ring can never prove older files survived.
+const REALTIME_CREDIT_WAIT_MAX_ROTATIONS: usize = 7;
+
+/// One §24.3 credit-wait observation: the bounded producer metadata.
+///
+/// The same private shape decodes and archives the producer metadata without
+/// reconstructing its subscription identity or counters.
+/// `deny_unknown_fields` keeps the contract at these three fields:
+/// missing or unexpected fields are capture errors, never silently reshaped or
+/// defaulted into fabricated counters.
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CreditWaitObservation {
+    subscription_id: String,
+    sent: u64,
+    acknowledged: u64,
+}
+
+/// Bounded §24.3 evidence archived as `output/frb-credit-wait.json`.
+///
+/// Capture problems never abort the harness early: they stay in this record so
+/// the realtime cleanup always runs and the strict judgment rejects a recorded,
+/// reviewable fact instead of accepting a fabricated empty pass.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CreditWaitEvidence {
+    schema: &'static str,
+    source: &'static str,
+    observations: Vec<CreditWaitObservation>,
+    truncated: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    capture_error: Option<String>,
+}
+
+/// Scans the isolated home's studio log ring (the live `studio.log` plus its
+/// numbered rotations, read live-first then by ascending rotation number for
+/// stable evidence) for the fixed §24.3 producer credit-wait lines.
+///
+/// Only the bounded `credit_wait` metadata is archived; production log lines
+/// are never copied out. Missing logs, malformed JSON, impossible counters
+/// (sent < acknowledged, difference other than two, empty subscription), an
+/// oversized payload or record, a rotation gap, a retention-boundary ring, or
+/// more than [`REALTIME_CREDIT_WAIT_MAX_OBSERVATIONS`] observations are
+/// preserved as `captureError`/`truncated` for the strict judgment to reject —
+/// never silently dropped to look complete.
+fn capture_realtime_credit_wait(home: &Path) -> CreditWaitEvidence {
+    let mut evidence = CreditWaitEvidence {
+        schema: "anywork-frb-credit-wait/1",
+        source: "real-frb-producer-poll",
+        observations: Vec::new(),
+        truncated: false,
+        capture_error: None,
+    };
+    let logs_root = home.join("studio").join("logs");
+    let mut live_log: Option<PathBuf> = None;
+    let mut rotations: Vec<(u32, PathBuf)> = Vec::new();
+    match fs::read_dir(&logs_root) {
+        Ok(entries) => {
+            for entry in entries {
+                let path = match entry {
+                    Ok(entry) => entry.path(),
+                    Err(error) => {
+                        record_credit_wait_error(
+                            &mut evidence.capture_error,
+                            format!(
+                                "cannot read a studio log directory entry in {}: {error}",
+                                logs_root.display()
+                            ),
+                        );
+                        continue;
+                    }
+                };
+                // The name check is pure path work; only the current
+                // production ring enters the scan, so a metadata problem below
+                // is always about a log this capture intended to read.
+                let Some(position) = path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .and_then(credit_wait_log_position)
+                else {
+                    continue;
+                };
+                match fs::metadata(&path) {
+                    Ok(metadata) if metadata.is_file() => {
+                        if position == 0 {
+                            live_log.get_or_insert(path);
+                        } else {
+                            rotations.push((position, path));
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(error) => {
+                        record_credit_wait_error(
+                            &mut evidence.capture_error,
+                            format!("cannot stat studio log {}: {error}", path.display()),
+                        );
+                    }
+                }
+            }
+        }
+        Err(error) => {
+            record_credit_wait_error(
+                &mut evidence.capture_error,
+                format!(
+                    "cannot read studio log directory {}: {error}",
+                    logs_root.display()
+                ),
+            );
+            return evidence;
+        }
+    };
+    if live_log.is_none() && rotations.is_empty() {
+        record_credit_wait_error(
+            &mut evidence.capture_error,
+            format!("no studio log files under {}", logs_root.display()),
+        );
+        return evidence;
+    }
+    if live_log.is_none() {
+        // The live log exists before any §24.3 line can be written, so a ring
+        // without it is an unexplained gap, never a clean history.
+        record_credit_wait_error(
+            &mut evidence.capture_error,
+            format!("current studio log missing under {}", logs_root.display()),
+        );
+    }
+    // The appender shifts every rotation up by one and deletes the oldest
+    // slot, so a healthy ring is always numbered 1..=K: a hole is a known
+    // loss, and a full ring means older generations may already have been
+    // evicted — the directory alone can never disprove either.
+    rotations.sort_by_key(|(position, _)| *position);
+    for (expected, (position, _)) in (1_u32..).zip(rotations.iter()) {
+        if *position != expected {
+            evidence.truncated = true;
+            record_credit_wait_error(
+                &mut evidence.capture_error,
+                format!(
+                    "studio log rotation gap: studio.log.{expected} missing before \
+                     studio.log.{position}"
+                ),
+            );
+            break;
+        }
+    }
+    if rotations.len() >= REALTIME_CREDIT_WAIT_MAX_ROTATIONS {
+        evidence.truncated = true;
+        record_credit_wait_error(
+            &mut evidence.capture_error,
+            format!(
+                "cannot prove older studio log rotations survived (production keeps {})",
+                REALTIME_CREDIT_WAIT_MAX_ROTATIONS
+            ),
+        );
+    }
+    // Read the live log first (the freshest credit-wait evidence), then the
+    // rotations by ascending number (`.1` is the newest); the order is
+    // independent of read_dir and stays stable across runs.
+    let mut sources: Vec<(u32, PathBuf)> = Vec::new();
+    if let Some(live_log) = live_log {
+        sources.push((0, live_log));
+    }
+    sources.extend(rotations);
+    for (_, log) in sources {
+        let file = match File::open(&log) {
+            Ok(file) => file,
+            Err(error) => {
+                record_credit_wait_error(
+                    &mut evidence.capture_error,
+                    format!("cannot open {}: {error}", log.display()),
+                );
+                continue;
+            }
+        };
+        let source = log.display().to_string();
+        if !scan_credit_wait_log(&source, &mut BufReader::new(file), &mut evidence) {
+            break;
+        }
+    }
+    evidence
+}
+
+/// Classifies a current studio log file name into its ring position.
+///
+/// Production writes the live log as `studio.log` (position 0) and rotates it
+/// as `studio.log.N` with N ≥ 1, where `.1` is the newest rotation; the error
+/// stream's `error.log.*` and legacy `studio.<date>.log` names belong to other
+/// sources and stay out of this capture.
+fn credit_wait_log_position(file_name: &str) -> Option<u32> {
+    if file_name == "studio.log" {
+        return Some(0);
+    }
+    file_name
+        .strip_prefix("studio.log.")
+        .and_then(|suffix| suffix.parse::<u32>().ok())
+        .filter(|position| *position >= 1)
+}
+
+/// Scans one studio log source for the fixed §24.3 credit-wait lines.
+///
+/// Every record is bounded before allocation: `Read::take` caps how many bytes
+/// `BufRead::read_until` can pull from `reader` (once the budget is spent the
+/// wrapper reports end of input), so a run without newlines stops at the
+/// record budget instead of buffering the whole file. An over-budget record
+/// (the budget counts the terminating newline, and a run may reach it before
+/// any newline) is marked truncated and ends this source's scan:
+/// resynchronizing to the next line boundary would need unbounded reading. A
+/// non-empty record without its trailing newline is likewise a
+/// truncated write: it is never processed into an observation, not even one
+/// whose payload parses. Returns whether further studio log sources may still
+/// be scanned.
+fn scan_credit_wait_log(
+    source: &str,
+    reader: &mut impl BufRead,
+    evidence: &mut CreditWaitEvidence,
+) -> bool {
+    let mut number = 0usize;
+    loop {
+        let mut record = Vec::new();
+        let read = reader
+            .take(REALTIME_CREDIT_WAIT_MAX_RECORD_BYTES as u64 + 1)
+            .read_until(b'\n', &mut record);
+        let read = match read {
+            Ok(read) => read,
+            Err(error) => {
+                record_credit_wait_error(
+                    &mut evidence.capture_error,
+                    format!("cannot read {source} line {}: {error}", number + 1),
+                );
+                return true;
+            }
+        };
+        if read == 0 {
+            return true;
+        }
+        number += 1;
+        let has_newline = record.last() == Some(&b'\n');
+        if has_newline {
+            record.pop();
+        }
+        // The budget covers the whole record including its terminating
+        // newline, so the raw read length is judged before the pop.
+        if read > REALTIME_CREDIT_WAIT_MAX_RECORD_BYTES {
+            evidence.truncated = true;
+            record_credit_wait_error(
+                &mut evidence.capture_error,
+                format!(
+                    "studio log record at {source} line {number} exceeds {} bytes",
+                    REALTIME_CREDIT_WAIT_MAX_RECORD_BYTES
+                ),
+            );
+            return true;
+        }
+        if !has_newline {
+            // The producer flushes whole lines, so a final record without its
+            // newline is a truncated write. It never enters UTF-8/marker
+            // processing; this source ends here while the collected
+            // observations stay for the strict judgment to fail on it.
+            evidence.truncated = true;
+            record_credit_wait_error(
+                &mut evidence.capture_error,
+                format!("studio log record at {source} line {number} is not newline-terminated"),
+            );
+            return true;
+        }
+        let line = match String::from_utf8(record) {
+            Ok(line) => line,
+            Err(error) => {
+                // The record boundary is still known, so the scan keeps
+                // collecting the rest of the file instead of losing it.
+                record_credit_wait_error(
+                    &mut evidence.capture_error,
+                    format!("{source} line {number} is not valid UTF-8: {error}"),
+                );
+                continue;
+            }
+        };
+        let Some((_, payload)) = line.split_once(REALTIME_CREDIT_WAIT_MARKER) else {
+            continue;
+        };
+        let payload = payload.trim();
+        let location = format!("{source} line {number}");
+        if payload.len() > REALTIME_CREDIT_WAIT_MAX_LINE_BYTES {
+            evidence.truncated = true;
+            record_credit_wait_error(
+                &mut evidence.capture_error,
+                format!(
+                    "credit_wait payload at {location} exceeds {} bytes",
+                    REALTIME_CREDIT_WAIT_MAX_LINE_BYTES
+                ),
+            );
+            continue;
+        }
+        let observation = match serde_json::from_str::<CreditWaitObservation>(payload) {
+            Ok(observation) => observation,
+            Err(error) => {
+                record_credit_wait_error(
+                    &mut evidence.capture_error,
+                    format!(
+                        "credit_wait payload at {location} does not match the \
+                         credit_wait contract: {error}"
+                    ),
+                );
+                continue;
+            }
+        };
+        if observation.subscription_id.is_empty() {
+            record_credit_wait_error(
+                &mut evidence.capture_error,
+                format!("credit_wait payload at {location} has an empty subscriptionId"),
+            );
+        } else if observation.sent < observation.acknowledged
+            || observation.sent - observation.acknowledged != 2
+        {
+            record_credit_wait_error(
+                &mut evidence.capture_error,
+                format!(
+                    "credit_wait payload at {location} has impossible counters \
+                     (sent={}, acknowledged={})",
+                    observation.sent, observation.acknowledged
+                ),
+            );
+        } else if evidence.observations.len() == REALTIME_CREDIT_WAIT_MAX_OBSERVATIONS {
+            evidence.truncated = true;
+            record_credit_wait_error(
+                &mut evidence.capture_error,
+                format!(
+                    "more than {} credit_wait observations",
+                    REALTIME_CREDIT_WAIT_MAX_OBSERVATIONS
+                ),
+            );
+            return false;
+        } else {
+            evidence.observations.push(observation);
+        }
+    }
+}
+
+/// Keeps the first capture error; later ones never mask the original cause.
+fn record_credit_wait_error(slot: &mut Option<String>, message: String) {
+    if slot.is_none() {
+        *slot = Some(message);
+    }
+}
+
 fn run_realtime_scenario(context: &RealtimeScenario<'_>, mut fixture: OwnedProcess) -> Result<()> {
     let RealtimeScenario {
         workspace,
@@ -4616,7 +4977,7 @@ fn run_realtime_scenario(context: &RealtimeScenario<'_>, mut fixture: OwnedProce
             "failed to initialize isolated realtime project"
         );
         {
-            let mut gui = start_realtime_gui(workspace, home, &gui_log_path)?;
+            let mut gui = start_realtime_gui(workspace, home, &gui_log_path, true)?;
             let vm_url = wait_for_vm(&gui_log_path, &mut gui, &mut fixture, interrupt)?;
             let mut driver =
                 start_realtime_driver(app_dir, home, &vm_url, &project, output, working, &stage)?;
@@ -4666,6 +5027,23 @@ fn run_realtime_scenario(context: &RealtimeScenario<'_>, mut fixture: OwnedProce
         }
     }
 
+    // The GUI is gone, but the isolated home still exists: pull the bounded
+    // §24.3 producer credit-wait metadata out of its rolling studio logs
+    // before the home is deleted with the run. Capture problems stay in the
+    // evidence and the write result only propagates after the cleanup below,
+    // so stop/join/fixture/archiving are never skipped by this probe.
+    let credit_wait_evidence = (|| -> Result<CreditWaitEvidence> {
+        let evidence = capture_realtime_credit_wait(home);
+        let evidence_path = output.join("frb-credit-wait.json");
+        fs::write(
+            &evidence_path,
+            serde_json::to_vec_pretty(&evidence)
+                .with_context(|| format!("failed to serialize {}", evidence_path.display()))?,
+        )
+        .with_context(|| format!("failed to write {}", evidence_path.display()))?;
+        Ok(evidence)
+    })();
+
     let fixture_result = fixture.stop(requests_file);
     drop(fixture);
     write_fixture_log(fixture_log, &output.join("fixture.log"))?;
@@ -4703,6 +5081,7 @@ fn run_realtime_scenario(context: &RealtimeScenario<'_>, mut fixture: OwnedProce
     )?;
     println!("Evidence: {} (human verdict pending)", output.display());
     journey?;
+    let credit_wait = credit_wait_evidence?;
     let summary: serde_json::Value = serde_json::from_slice(
         &fs::read(output.join("realtime-summary.json"))
             .context("Flutter Driver did not write the realtime journey summary")?,
@@ -4728,6 +5107,38 @@ fn run_realtime_scenario(context: &RealtimeScenario<'_>, mut fixture: OwnedProce
         checks.get("longCommandInFlightOutputGrows") == Some(&serde_json::Value::Bool(true)),
         "realtime journey did not prove the long-command in-flight output growth \
          (longCommandInFlightOutputGrows missing; see pendingEvidence)"
+    );
+    // §24.3 strict proof: the held FRB feed snapshot must be a real open
+    // subscription (real source, non-empty id, zero acknowledgements, both
+    // initial frames), and the GUI's own log must show the producer of that
+    // exact subscription polled Pending at sent=2/acknowledged=0. Older feed
+    // evidence or other normal UI subscriptions never satisfy this.
+    let held = &summary["counts"]["frbCreditHeld"];
+    let held_subscription = held["subscriptionId"].as_str().unwrap_or_default();
+    ensure!(
+        held["source"] == "real-frb-conversation-feed"
+            && !held_subscription.is_empty()
+            && held["acknowledged"] == 0
+            && held["frames"]
+                .as_array()
+                .is_some_and(|frames| frames.len() == 2),
+        "realtime journey frbCreditHeld is not a real open subscription with two \
+         unacknowledged frames"
+    );
+    ensure!(
+        credit_wait.capture_error.is_none() && !credit_wait.truncated,
+        "realtime producer credit_wait capture is incomplete (truncated: {}, error: {:?})",
+        credit_wait.truncated,
+        credit_wait.capture_error
+    );
+    ensure!(
+        credit_wait.observations.iter().any(|observation| {
+            observation.subscription_id == held_subscription
+                && observation.sent == 2
+                && observation.acknowledged == 0
+        }),
+        "no producer_credit_wait_pending observation matches the held subscription \
+         {held_subscription} at sent=2/acknowledged=0"
     );
     ensure!(
         fixture_result.is_ok_and(|status| status.success())
@@ -6441,14 +6852,28 @@ fn start_stress_body_driver(
     OwnedProcess::start(&mut command, false)
 }
 
-fn start_realtime_gui(workspace: &Path, home: &Path, log_path: &Path) -> Result<OwnedProcess> {
+fn start_realtime_gui(
+    workspace: &Path,
+    home: &Path,
+    log_path: &Path,
+    credit_wait_diagnostics: bool,
+) -> Result<OwnedProcess> {
     let log = File::create(log_path)?;
     let mut command = Command::new("cargo");
     command
         .current_dir(workspace)
         // Profile/AOT keeps the recorded frame timings representative, matching stress.
         .args(["xtask", "run-gui", "--driver", "--profile"])
-        .env("ANYWORK_HOME", home)
+        .env("ANYWORK_HOME", home);
+    // §24.3: only the realtime journey raises the real conversation-credit
+    // producer to debug for the Pending diagnostic; the warn floor for
+    // everything else keeps that run's production logs small. Other callers
+    // keep the inherited RUST_LOG (xtask clears ANYWORK_LOG_LEVEL without an
+    // explicit --log-level, so RUST_LOG is the filter the GUI consumes).
+    if credit_wait_diagnostics {
+        command.env("RUST_LOG", "warn,anywork::conversation_credit=debug");
+    }
+    command
         .stdout(Stdio::from(log.try_clone()?))
         .stderr(Stdio::from(log));
     OwnedProcess::start(&mut command, false)
@@ -7022,5 +7447,232 @@ mod vm_service_url_tests {
             .as_deref(),
             Some("http://127.0.0.1:12346/auth-token=/")
         );
+    }
+}
+
+#[cfg(test)]
+mod credit_wait_capture_tests {
+    use super::{
+        CreditWaitEvidence, REALTIME_CREDIT_WAIT_MARKER, REALTIME_CREDIT_WAIT_MAX_RECORD_BYTES,
+        capture_realtime_credit_wait, scan_credit_wait_log,
+    };
+    use std::fs;
+    use std::io::Cursor;
+
+    /// A real plain-fmt §24.3 line for [subscription]: the fixed target/message
+    /// fragment the plain tracing fmt prints, then the compact JSON payload.
+    fn credit_line(subscription: &str) -> String {
+        format!(
+            "2026-02-10T01:02:03.004005Z DEBUG ThreadId(04) {REALTIME_CREDIT_WAIT_MARKER}\
+             {{\"subscriptionId\":\"{subscription}\",\"sent\":2,\"acknowledged\":0}}\n"
+        )
+    }
+
+    /// Creates an isolated `home/studio/logs` ring holding [files].
+    fn logs_home(files: &[(String, String)]) -> tempfile::TempDir {
+        let home = tempfile::tempdir().expect("temporary studio home");
+        let logs = home.path().join("studio").join("logs");
+        fs::create_dir_all(&logs).expect("studio log directory");
+        for (name, contents) in files {
+            fs::write(logs.join(name), contents).expect("studio log file");
+        }
+        home
+    }
+
+    #[test]
+    fn reads_live_and_numbered_rotations_and_keeps_rotation_errors() {
+        // The live log and the newest rotation each carry a real-format record:
+        // both are captured, and the small healthy ring stays complete.
+        let home = logs_home(&[
+            ("studio.log".to_owned(), credit_line("live")),
+            ("studio.log.1".to_owned(), credit_line("rotated")),
+        ]);
+        let evidence = capture_realtime_credit_wait(home.path());
+        assert!(!evidence.truncated);
+        assert_eq!(evidence.capture_error, None);
+        let subscriptions: Vec<&str> = evidence
+            .observations
+            .iter()
+            .map(|observation| observation.subscription_id.as_str())
+            .collect();
+        assert_eq!(subscriptions, ["live", "rotated"]);
+        drop(home);
+
+        // Bad JSON inside the rotation is a capture error even though the live
+        // record is good: the current healthy file never masks the broken one.
+        let home = logs_home(&[
+            ("studio.log".to_owned(), credit_line("live")),
+            (
+                "studio.log.1".to_owned(),
+                format!("{REALTIME_CREDIT_WAIT_MARKER}{{\"subscriptionId\":\n"),
+            ),
+        ]);
+        let evidence = capture_realtime_credit_wait(home.path());
+        assert!(evidence.capture_error.is_some());
+        assert_eq!(evidence.observations.len(), 1);
+        assert_eq!(evidence.observations[0].subscription_id, "live");
+        drop(home);
+
+        // A numbering hole is a known loss, still collecting every readable
+        // record while the strict judgment fails on the recorded gap.
+        let home = logs_home(&[
+            ("studio.log".to_owned(), credit_line("live")),
+            ("studio.log.1".to_owned(), credit_line("rotated")),
+            ("studio.log.3".to_owned(), credit_line("older")),
+        ]);
+        let evidence = capture_realtime_credit_wait(home.path());
+        assert!(evidence.truncated);
+        assert!(evidence.capture_error.is_some());
+        assert_eq!(evidence.observations.len(), 3);
+        drop(home);
+
+        // A full retention ring cannot prove older generations survived: the
+        // failure stays recorded while all eight readable records are kept.
+        let home = tempfile::tempdir().expect("temporary studio home");
+        let logs = home.path().join("studio").join("logs");
+        fs::create_dir_all(&logs).expect("studio log directory");
+        fs::write(logs.join("studio.log"), credit_line("live")).expect("studio log file");
+        for position in 1..=7 {
+            fs::write(
+                logs.join(format!("studio.log.{position}")),
+                credit_line(&format!("rotation-{position}")),
+            )
+            .expect("studio log file");
+        }
+        let evidence = capture_realtime_credit_wait(home.path());
+        assert!(evidence.truncated);
+        assert!(evidence.capture_error.is_some());
+        assert_eq!(evidence.observations.len(), 8);
+        drop(home);
+
+        // The live log exists before any §24.3 line can be written, so a ring
+        // without it is an unexplained gap, never a clean history.
+        let home = logs_home(&[("studio.log.1".to_owned(), credit_line("rotated"))]);
+        let evidence = capture_realtime_credit_wait(home.path());
+        assert!(evidence.capture_error.is_some());
+        assert_eq!(evidence.observations.len(), 1);
+    }
+
+    #[test]
+    fn log_scan_stops_reading_within_the_record_budget() {
+        // One valid record, then a run of input without any newline far beyond
+        // the record budget, then a trailing record that must never be read.
+        // The scan has to stop consuming at the budget, keep the earlier
+        // observation, and record the truncation — draining the whole stream
+        // is exactly what the old `BufRead::lines()` scan did.
+        let first = credit_line("before-budget");
+        let first_len = first.len();
+        let mut input = first.into_bytes();
+        input.extend(std::iter::repeat_n(
+            b'x',
+            REALTIME_CREDIT_WAIT_MAX_RECORD_BYTES * 4,
+        ));
+        input.extend_from_slice(credit_line("after-budget").as_bytes());
+        let mut cursor = Cursor::new(input);
+        let mut evidence = CreditWaitEvidence {
+            schema: "anywork-frb-credit-wait/1",
+            source: "real-frb-producer-poll",
+            observations: Vec::new(),
+            truncated: false,
+            capture_error: None,
+        };
+        assert!(scan_credit_wait_log(
+            "budget-test",
+            &mut cursor,
+            &mut evidence
+        ));
+        assert!(evidence.truncated);
+        assert!(evidence.capture_error.is_some());
+        assert_eq!(evidence.observations.len(), 1);
+        assert_eq!(evidence.observations[0].subscription_id, "before-budget");
+        assert!(
+            cursor.position() <= (first_len + REALTIME_CREDIT_WAIT_MAX_RECORD_BYTES + 1) as u64
+        );
+    }
+
+    #[test]
+    fn unterminated_final_record_never_becomes_an_observation() {
+        // (a) A complete payload that lost its trailing newline is a truncated
+        // write: it must not become an observation, and the strict gate that
+        // requires capture_error.is_none() && !truncated cannot pass.
+        let mut payload_only = credit_line("unterminated").into_bytes();
+        assert_eq!(payload_only.pop(), Some(b'\n'));
+        let mut cursor = Cursor::new(payload_only);
+        let mut evidence = scan_evidence();
+        assert!(scan_credit_wait_log(
+            "unterminated-test",
+            &mut cursor,
+            &mut evidence
+        ));
+        assert!(evidence.truncated);
+        assert!(evidence.capture_error.is_some());
+        assert!(evidence.observations.is_empty());
+
+        // (b) A healthy observation followed by a plain tail line without its
+        // newline keeps the observation but still fails the strict gate.
+        let mut input = credit_line("kept-observation").into_bytes();
+        input.extend_from_slice(b"plain tail without newline");
+        let mut cursor = Cursor::new(input);
+        let mut evidence = scan_evidence();
+        assert!(scan_credit_wait_log(
+            "tail-test",
+            &mut cursor,
+            &mut evidence
+        ));
+        assert!(evidence.truncated);
+        assert!(evidence.capture_error.is_some());
+        assert_eq!(evidence.observations.len(), 1);
+        assert_eq!(evidence.observations[0].subscription_id, "kept-observation");
+    }
+
+    #[test]
+    fn record_budget_counts_the_terminating_newline() {
+        // The whole-record budget includes the fmt prefix and the terminating
+        // newline: a filler line of 8191 bytes plus '\n' totals exactly the
+        // budget, stays readable, and the later observation is captured.
+        let mut input = vec![b'x'; REALTIME_CREDIT_WAIT_MAX_RECORD_BYTES - 1];
+        input.push(b'\n');
+        input.extend_from_slice(credit_line("after-exact-budget").as_bytes());
+        let mut cursor = Cursor::new(input);
+        let mut evidence = scan_evidence();
+        assert!(scan_credit_wait_log(
+            "exact-budget",
+            &mut cursor,
+            &mut evidence
+        ));
+        assert!(!evidence.truncated);
+        assert_eq!(evidence.capture_error, None);
+        assert_eq!(evidence.observations.len(), 1);
+        assert_eq!(
+            evidence.observations[0].subscription_id,
+            "after-exact-budget"
+        );
+
+        // One byte over the same total budget is an over-budget record: this
+        // source stops there and the trailing observation is never read.
+        let mut input = vec![b'x'; REALTIME_CREDIT_WAIT_MAX_RECORD_BYTES];
+        input.push(b'\n');
+        input.extend_from_slice(credit_line("never-reached").as_bytes());
+        let mut cursor = Cursor::new(input);
+        let mut evidence = scan_evidence();
+        assert!(scan_credit_wait_log(
+            "over-budget",
+            &mut cursor,
+            &mut evidence
+        ));
+        assert!(evidence.truncated);
+        assert!(evidence.capture_error.is_some());
+        assert!(evidence.observations.is_empty());
+    }
+
+    /// A fresh capture record for driving the single-source scan directly.
+    fn scan_evidence() -> CreditWaitEvidence {
+        CreditWaitEvidence {
+            schema: "anywork-frb-credit-wait/1",
+            source: "real-frb-producer-poll",
+            observations: Vec::new(),
+            truncated: false,
+            capture_error: None,
+        }
     }
 }

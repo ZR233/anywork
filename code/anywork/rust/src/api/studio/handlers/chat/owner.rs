@@ -1,5 +1,8 @@
 //! Feed admission, credit and cancellation-safe task/native joins. Historical queries are independent.
-use std::sync::{Arc, Mutex as SyncMutex};
+use std::{
+    future::{Future, poll_fn},
+    sync::{Arc, Mutex as SyncMutex},
+};
 
 use pl_protocol::studio::{StudioError, StudioErrorCode};
 use pl_studio_runtime::ConversationFeed;
@@ -175,6 +178,7 @@ impl ConversationOwner {
     /// Reserve capacity before native receive and conversion. Only the single producer sends, while
     /// ACK can only increase credit, so capacity cannot be stolen between this check and publication.
     pub(super) async fn wait_credit(&self) -> bool {
+        let mut recorded_wait = false;
         loop {
             let notified = self.credit.notified();
             tokio::pin!(notified);
@@ -191,10 +195,37 @@ impl ConversationOwner {
                     return true;
                 }
             }
+            let waiting = poll_fn(|cx| {
+                let polled = notified.as_mut().poll(cx);
+                if polled.is_pending() && !recorded_wait {
+                    let counters = {
+                        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+                        (!state.closing
+                            && !self.cancel.is_cancelled()
+                            && state.sent - state.acknowledged == 2)
+                            .then_some((state.sent, state.acknowledged))
+                    };
+                    if let Some((sent, acknowledged)) = counters {
+                        // Observe the original registered wait after an actual Pending poll.
+                        // Logging never takes credit, consumes another notification or holds state.
+                        tracing::debug!(
+                            target: "anywork::conversation_credit",
+                            credit_wait = %serde_json::json!({
+                                "subscriptionId": self.subscription_id.as_str(),
+                                "sent": sent,
+                                "acknowledged": acknowledged,
+                            }),
+                            "producer_credit_wait_pending"
+                        );
+                        recorded_wait = true;
+                    }
+                }
+                polled
+            });
             tokio::select! {
                 biased;
                 () = self.cancel.cancelled() => return false,
-                () = notified => {},
+                () = waiting => {},
             }
         }
     }
