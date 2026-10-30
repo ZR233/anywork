@@ -67,7 +67,7 @@ pub(super) struct PendingReplyFinish {
     outcome: InboundWorkOutcome,
 }
 
-pub(super) type ReplyResult = Result<InboundWorkOutcome, PendingReplyFinish>;
+pub(super) type ReplyResult = Result<InboundWorkOutcome, Box<PendingReplyFinish>>;
 
 struct ReplyOwner {
     thread_id: String,
@@ -144,7 +144,7 @@ impl BotReplyTasks {
             .expect("reply registration and join share one owner");
         match joined {
             Ok((_, Ok(_))) => {}
-            Ok((_, Err(pending))) => self.pending.push((owner, pending)),
+            Ok((_, Err(pending))) => self.pending.push((owner, *pending)),
             Err(_) => {
                 self.faults.insert(owner.thread_id.clone());
                 let pending = PendingReplyFinish {
@@ -305,7 +305,7 @@ impl BotRuntime {
             Ok(()) => Ok(outcome),
             Err(error) => {
                 tracing::warn!(%error, "bot reply ledger finish remains owned for retry");
-                Err(PendingReplyFinish { identity, outcome })
+                Err(Box::new(PendingReplyFinish { identity, outcome }))
             }
         }
     }

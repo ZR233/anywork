@@ -1648,7 +1648,7 @@ mod tests {
             "schema_version": source,
             "id": config.id,
             "name": config.name,
-            "workspace_id": config.workspace_id,
+            "project_id": config.workspace_id,
             "platform": "feishuChina",
             "platform_config": {
                 "app_id": config.feishu().app_id,

@@ -405,6 +405,41 @@ fn sort_desc(entries: &mut [CatalogEntry]) {
     });
 }
 
+pub(in crate::studio) fn migrate_v2_content(
+    path: &std::path::Path,
+    content: &str,
+) -> Result<String> {
+    schema::migrate_v2_content(path, content)
+}
+
+pub(in crate::studio) async fn relocate_managed_v2_paths(
+    path: &std::path::Path,
+    mappings: &[crate::studio::startup::storage_layout::bot_roots::BotRootMove],
+) -> Result<()> {
+    let content = tokio::fs::read_to_string(path).await?;
+    let mut document = schema::load_document(path, &content)?.document;
+    for entry in &mut document.entries {
+        if let Some(mapping) = mappings.iter().find(|mapping| {
+            mapping
+                .threads
+                .get(&entry.id)
+                .is_some_and(|proof| proof.proven_local_root)
+        }) {
+            ensure!(
+                entry.workspace_id == mapping.workspace_id
+                    && entry.workspace_mode == ThreadWorkspaceMode::Local,
+                "bot catalog binding changed"
+            );
+            mapping.exact_path(&mut entry.workspace_path)?;
+        }
+    }
+    crate::studio::store::session_layout::write_manifest(
+        path,
+        &toml_schema::encode(&document, schema::SCHEMA_KEY)?,
+    )
+    .await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -529,39 +564,4 @@ mod tests {
             raw
         );
     }
-}
-
-pub(in crate::studio) fn migrate_v2_content(
-    path: &std::path::Path,
-    content: &str,
-) -> Result<String> {
-    schema::migrate_v2_content(path, content)
-}
-
-pub(in crate::studio) async fn relocate_managed_v2_paths(
-    path: &std::path::Path,
-    mappings: &[crate::studio::startup::storage_layout::bot_roots::BotRootMove],
-) -> Result<()> {
-    let content = tokio::fs::read_to_string(path).await?;
-    let mut document = schema::load_document(path, &content)?.document;
-    for entry in &mut document.entries {
-        if let Some(mapping) = mappings.iter().find(|mapping| {
-            mapping
-                .threads
-                .get(&entry.id)
-                .is_some_and(|proof| proof.proven_local_root)
-        }) {
-            ensure!(
-                entry.workspace_id == mapping.workspace_id
-                    && entry.workspace_mode == ThreadWorkspaceMode::Local,
-                "bot catalog binding changed"
-            );
-            mapping.exact_path(&mut entry.workspace_path)?;
-        }
-    }
-    crate::studio::store::session_layout::write_manifest(
-        path,
-        &toml_schema::encode(&document, schema::SCHEMA_KEY)?,
-    )
-    .await
 }

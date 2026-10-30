@@ -574,6 +574,11 @@ impl TryFrom<CatalogEntryV5> for CatalogEntry {
     }
 }
 
+pub(super) fn migrate_v2_content(path: &Path, content: &str) -> Result<String> {
+    let loaded = load_document(path, content)?;
+    toml_schema::encode(&loaded.document, SCHEMA_KEY)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -743,9 +748,4 @@ mod tests {
         assert_eq!(loaded.document.entries[0].last_user_message_at, None);
         assert_eq!(loaded.document.entries[0].frozen_model, None);
     }
-}
-
-pub(super) fn migrate_v2_content(path: &Path, content: &str) -> Result<String> {
-    let loaded = load_document(path, content)?;
-    toml_schema::encode(&loaded.document, SCHEMA_KEY)
 }
