@@ -1,6 +1,8 @@
 //! Persistent resource bytes, independent of tool payload formats and session SQL schemas.
 
 mod remote;
+#[cfg(test)]
+pub(crate) mod retention_test;
 pub use remote::RemoteCommandOutputArchive;
 use std::{
     fs::File,
@@ -307,6 +309,8 @@ fn retain_input(
     ensure_no_links(root)?;
     std::fs::create_dir_all(root).map_err(store_error)?;
     let mut temporary = tempfile::NamedTempFile::new_in(root).map_err(store_error)?;
+    #[cfg(test)]
+    retention_test::wait_if_registered(root);
     let mut digest = Sha256::new();
     let mut length = 0_u64;
     let mut buffer = [0_u8; 64 * 1024];
