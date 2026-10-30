@@ -538,12 +538,10 @@ impl BotRuntime {
             },
             options: crate::studio::StudioSubmitPromptOptions::default(),
         };
-        // Keep the stable input identity if admission was interrupted; a later
-        // recovery reads canonical acceptance rather than assuming no effect.
-        let result = tokio::select! {
-            _ = cancel.cancelled() => None,
-            result = runtime.submit_queued_prompt(request) => Some(result),
-        };
+        // Only the runtime's admission wait may be cancelled. Once it starts
+        // retaining resources or submitting the stable input, keep this future
+        // and its drafts alive until their real result has been acknowledged.
+        let result = runtime.submit_queued_prompt(request, cancel).await;
         for draft in drafts {
             if let Err(error) = runtime.remove_attachment_draft(draft).await {
                 tracing::warn!(%error, "failed to release bot attachment draft");
@@ -551,11 +549,9 @@ impl BotRuntime {
         }
         match result {
             // 受理后首个 effect 落库前身份仍可能 Absent；等待唤醒后重建，不连续重提。
-            Some(Ok(_)) => Step::Wait,
-            Some(Err(error)) => {
-                Step::Done(recoverable(format!("bot prompt submit failed: {error:#}")))
-            }
-            None => Step::Done(InboundWorkOutcome::Interrupted),
+            Ok(_) => Step::Wait,
+            Err(_) if cancel.is_cancelled() => Step::Done(InboundWorkOutcome::Interrupted),
+            Err(error) => Step::Done(recoverable(format!("bot prompt submit failed: {error:#}"))),
         }
     }
 

@@ -16,6 +16,8 @@ use crate::bots::commands::archive_tests::Fixture;
 use crate::bots::inbound::InboundAttachment;
 use pl_tool::workspace::{SessionFiles, SessionTempBackend};
 
+const RESOURCE_BODY: &str = "local image bytes from the real resource response";
+
 #[derive(Clone)]
 pub(super) struct ResourceControl {
     pub(super) base_url: Url,
@@ -141,7 +143,7 @@ impl LocalMediaServer {
                 let body = if token_request {
                     r#"{"code":0,"access_token":"local-fixture-token","expires_in":3600,"token_type":"Bearer"}"#
                 } else {
-                    "local image bytes from the real resource response"
+                    RESOURCE_BODY
                 };
                 stream.write_all(format!(
                     "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
@@ -295,4 +297,168 @@ async fn archive_media_cancel_drains_started_persist_before_temp_cleanup() -> Re
 async fn archive_media_lost_claim_drains_started_persist_without_finishing_successor() -> Result<()>
 {
     registered_media_window(FileStage::Persist, true).await
+}
+
+#[tokio::test]
+async fn archive_queued_submit_lost_claim_drains_retention_before_releasing_draft() -> Result<()> {
+    use crate::bots::BotInputRead;
+    use crate::resource_store::{FileResourceStore, RESOURCE_ID_PREFIX, retention_test};
+    use pl_core::context::{ResourceReader, ResourceReference};
+
+    let fixture = Fixture::new_with_file_input().await?;
+    let server = LocalMediaServer::start().await?;
+    let inbound = fixture
+        .inbound_with_attachments(
+            "retain-window",
+            true,
+            vec![InboundAttachment::File {
+                key: "local-resource-key".into(),
+                filename: "resource.txt".into(),
+            }],
+        )
+        .await?;
+    let files = SessionFiles::new(&inbound.creation_id);
+    let workspace = fixture
+        .bots
+        .inner
+        .paths
+        .bot_dir(&inbound.bot_id)
+        .join("workspace");
+    let destination = workspace
+        .join(files.uploads())
+        .join(hex::encode(Sha256::digest(inbound.message_id.as_bytes())))
+        .join(hex::encode(Sha256::digest(b"local-resource-key")))
+        .join("file-resource.txt");
+    // Keep download unblocked; the separate root-keyed gate below is inside the
+    // real queued-submit retention worker, after resource temp creation.
+    let download = FileGate::new(destination.clone(), FileStage::Persist);
+    download.open();
+    *fixture.bots.inner.http.resource_control.lock().unwrap() = Some(ResourceControl {
+        base_url: server.base_url.clone(),
+        gate: download.clone(),
+    });
+    let managed = fixture.bots.managed(&inbound.bot_id).await?;
+    managed
+        .token
+        .replace(inbound.app_id.clone(), "local-fixture-marker".into())
+        .await;
+    let root = fixture
+        .host
+        .resources_dir(&inbound.workspace_id, &inbound.creation_id)?;
+    let retention = retention_test::pause(root.clone());
+    fixture.enqueue(inbound.clone()).await?;
+    tokio::time::timeout(Duration::from_secs(10), retention.wait_started())
+        .await
+        .context("queued submit did not start real resource retention")?;
+    assert!(download.completed.load(Ordering::SeqCst));
+    assert_eq!(
+        tokio::fs::read(&destination).await?,
+        RESOURCE_BODY.as_bytes()
+    );
+    assert!(
+        root.read_dir()?.next().is_some(),
+        "retention created its real temp file"
+    );
+
+    let drafts = std::fs::read_dir(fixture.host.drafts_dir())?
+        .map(|entry| entry.map(|entry| entry.path()))
+        .collect::<std::io::Result<Vec<_>>>()?;
+    assert_eq!(drafts.len(), 1);
+    let draft = &drafts[0];
+    assert_eq!(tokio::fs::read(draft).await?, RESOURCE_BODY.as_bytes());
+    assert_eq!(fixture.bots.inner.reply_slots.available_permits(), 31);
+    let probe = fixture.ledger_probe().await?;
+    assert_eq!(
+        probe
+            .execute_raw(Statement::from_string(
+                DatabaseBackend::Sqlite,
+                "UPDATE inbound_work SET claimed_by='successor' WHERE status='claimed'",
+            ))
+            .await?
+            .rows_affected(),
+        1
+    );
+    tokio::time::timeout(
+        Duration::from_secs(20),
+        download.cancellation.get().unwrap().cancelled(),
+    )
+    .await
+    .context("real heartbeat did not observe successor ownership")?;
+
+    let targets = [inbound.creation_id.clone()];
+    let quiesce = fixture.bots.quiesce_archive_threads(&targets);
+    tokio::pin!(quiesce);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), &mut quiesce)
+            .await
+            .is_err(),
+        "queued submit must drain its already-started resource copy"
+    );
+    assert_eq!(fixture.bots.inner.reply_slots.available_permits(), 31);
+    assert_eq!(
+        tokio::fs::read(draft).await?,
+        RESOURCE_BODY.as_bytes(),
+        "cancellation must not release the source draft before retention ACK"
+    );
+    retention.release();
+    let guard = tokio::time::timeout(Duration::from_secs(5), quiesce).await??;
+    assert_eq!(fixture.bots.inner.reply_slots.available_permits(), 32);
+    assert!(
+        !draft.exists(),
+        "draft release follows actual queued-submit completion"
+    );
+    let row = probe
+        .query_one_raw(Statement::from_string(
+            DatabaseBackend::Sqlite,
+            "SELECT claimed_by, status FROM inbound_work",
+        ))
+        .await?
+        .context("original frozen inbound ledger row")?;
+    assert_eq!(row.try_get::<String>("", "claimed_by")?, "successor");
+    assert_eq!(row.try_get::<String>("", "status")?, "claimed");
+    let input_id = format!(
+        "bot:{}:{}:{}",
+        inbound.bot_id, inbound.chat_id, inbound.message_id
+    );
+    assert_eq!(
+        fixture
+            .host
+            .runtime
+            .bot_input_fact(&inbound.creation_id, &input_id)
+            .await?,
+        BotInputRead::Absent,
+        "the safe pre-core cancellation boundary did not submit a new input",
+    );
+    let hash = hex::encode(Sha256::digest(RESOURCE_BODY.as_bytes()));
+    let reference = ResourceReference::new(
+        format!("{RESOURCE_ID_PREFIX}{hash}"),
+        format!("sha256:{hash}"),
+        RESOURCE_BODY.len() as u64,
+        "text/plain".into(),
+    )?;
+    let resources = FileResourceStore::new(root);
+    assert_eq!(
+        resources
+            .read(reference.clone(), CancellationToken::new())
+            .await?
+            .as_ref(),
+        RESOURCE_BODY.as_bytes(),
+        "an actual retained resource is not rolled back as if copying never happened",
+    );
+    SessionTempBackend::Local(&workspace).remove(&files).await?;
+    assert!(!workspace.join(files.temp()).exists());
+    assert!(!destination.exists());
+    assert!(!draft.exists());
+    assert_eq!(
+        resources
+            .read(reference, CancellationToken::new())
+            .await?
+            .as_ref(),
+        RESOURCE_BODY.as_bytes(),
+        "reliable resource and finished draft cleanup survive temp removal",
+    );
+    drop(guard);
+    drop(retention);
+    fixture.shutdown().await?;
+    server.close().await
 }

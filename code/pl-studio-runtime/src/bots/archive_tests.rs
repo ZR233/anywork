@@ -20,8 +20,21 @@ pub(in crate::bots) struct Fixture {
 
 impl Fixture {
     pub(in crate::bots) async fn new() -> Result<Self> {
+        Self::new_with_optional_file_input(false).await
+    }
+
+    pub(in crate::bots) async fn new_with_file_input() -> Result<Self> {
+        Self::new_with_optional_file_input(true).await
+    }
+
+    async fn new_with_optional_file_input(file_input: bool) -> Result<Self> {
         let temp = tempfile::tempdir()?;
-        let host = BotArchiveTestHost::new(&temp.path().join("home")).await?;
+        let home = temp.path().join("home");
+        let host = if file_input {
+            BotArchiveTestHost::new_with_file_input(&home).await?
+        } else {
+            BotArchiveTestHost::new(&home).await?
+        };
         let workspace = temp.path().join("workspace");
         tokio::fs::create_dir_all(&workspace).await?;
         let project = host.runtime.open_project(&workspace).await?;

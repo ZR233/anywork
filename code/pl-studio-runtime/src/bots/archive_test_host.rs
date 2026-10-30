@@ -20,6 +20,14 @@ pub(crate) struct BotArchiveTestHost {
 
 impl BotArchiveTestHost {
     pub(crate) async fn new(home: &Path) -> Result<Self> {
+        Self::new_with_optional_file_input(home, false).await
+    }
+
+    pub(crate) async fn new_with_file_input(home: &Path) -> Result<Self> {
+        Self::new_with_optional_file_input(home, true).await
+    }
+
+    async fn new_with_optional_file_input(home: &Path, file_input: bool) -> Result<Self> {
         let endpoint = std::net::TcpListener::bind("127.0.0.1:0")?;
         let account_id = AccountId::new("bot-archive-fixture")?;
         let route = ModelRouteConfig {
@@ -29,6 +37,23 @@ impl BotArchiveTestHost {
         };
         let mut config = StudioConfig::default_config()?;
         config.models.accounts.clear();
+        let mut model = ModelInfo::compatible(&route.model_id);
+        if file_input {
+            use pl_model::model::{
+                MediaRepresentation, MediaWireFormat, ModelInputCapability, ModelInputSource,
+                ModelMediaInputProfile, ModelModality,
+            };
+            model.capabilities.input.push(ModelInputCapability::media(
+                ModelModality::File,
+                vec![ModelInputSource::Local],
+            ));
+            model.binding.request.media.push(ModelMediaInputProfile {
+                modality: ModelModality::File,
+                wire: MediaWireFormat::ChatFileUrl,
+                first_send: vec![MediaRepresentation::DataUrl],
+                replay: vec![MediaRepresentation::DataUrl],
+            });
+        }
         config.models.accounts.insert(
             account_id,
             AccountConfig::from_explicit_models(
@@ -36,7 +61,7 @@ impl BotArchiveTestHost {
                     "Bot archive fixture",
                     format!("http://{}", endpoint.local_addr()?),
                 ),
-                vec![ModelInfo::compatible(&route.model_id)],
+                vec![model],
             ),
         );
         for selected in config
@@ -66,6 +91,22 @@ impl BotArchiveTestHost {
 
     pub(crate) fn lifecycle_lock(&self) -> &tokio::sync::Mutex<()> {
         &self.runtime.lifecycle_lock
+    }
+
+    pub(crate) fn resources_dir(
+        &self,
+        workspace_id: &str,
+        thread_id: &str,
+    ) -> Result<std::path::PathBuf> {
+        Ok(self
+            .runtime
+            .store
+            .session_paths(workspace_id, thread_id)?
+            .resources_dir())
+    }
+
+    pub(crate) fn drafts_dir(&self) -> std::path::PathBuf {
+        self.runtime.store.attachment_drafts_dir()
     }
 
     pub(crate) async fn seal_thread(&self, thread_id: &str) -> Result<()> {
