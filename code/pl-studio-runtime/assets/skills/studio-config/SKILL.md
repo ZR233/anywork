@@ -39,11 +39,12 @@ Feishu bots live in `<home>/v2/bots/<bot-id>/` with versioned `config.toml` and 
 
 ## Format Rules
 
-- TOML with snake_case keys; the current runtime accepts `schema_version = 27`. Changing the version number alone does not migrate a configuration.
+- TOML with snake_case keys; the current runtime accepts `schema_version = 28`. Changing the version number alone does not migrate a configuration.
 - A missing file means in-memory defaults shown in Settings; nothing is written until you save.
 - Known version upgrades preserve user settings and credential associations through migration. Startup migrates schema 18 to 19 by removing only `planner` from `disabled_system_agents`, then migrates 19 to 20 by copying the old `planner` route to `mode.simple` and `mode.task` before deleting it from child routes. Migration runs before recovery; a reset is never a substitute for a supported migration.
 - Schema 21 to 22 migrates model declarations from `slug` to `model_id`. Schema 22 to 23 migrates `models.providers` to `models.accounts`, `preset`/`adapter` to `template`/`protocol`, and route/Profile `provider`/`model` to `account_id`/`model_id`. Account and template ID values, endpoint, headers, model overrides and user choices are preserved. Older supported versions continue through these steps; changing only the version number is invalid.
 - Schema 26 to 27 converts each account's `disabled_models` into `model_enabled_overrides` entries with value `false`, removes the old field, and leaves other models automatic. It uses the normal protected backup and recoverable migration, preserving identity, credentials, routes and other overrides. Normal configuration only uses the new map.
+- Schema 27 to 28 gives existing accounts the explicit `apiKey` authentication method, preserving their endpoints, credential associations, routes and model overrides. A subscription billing label never converts an API account into an OAuth account.
 - Main configuration, user Profiles and credential associations use a recoverable migration operation. Protected original bytes are backed up before replacement; interrupted commits finish their recorded operation, candidate bytes and target version before preparing a later upgrade. Profiles have their own `schema_version = 1`: an unversioned historical Profile is imported independently even when the main configuration is already current. Old/current identity keys with equal values can be normalized; conflicts or incomplete identities are rejected. No unchanged main configuration is rewritten just because a Profile needs upgrading. Existing v2 model-route/Profile extensions, typed bills and call records migrate at their versioned storage boundary without activating all sessions or rewriting opaque vendor payloads.
 - Each active TOML document has an independent positive-integer root schema, separate from content revisions. Typed migration paths use `version-migrate`; its semantic versions are an in-memory boundary detail, never a new disk format. A current file is not rewritten on read. Missing/invalid headers (except the explicit unversioned Profile import), unsupported/future versions, malformed files and migration validation failures stop the affected load as `Migration`, preserve the file and operation, and never trigger backup-and-defaults recovery. Do not change a version number by hand or delete a migration journal to bypass a failure.
 - Unrelated unrecoverable global database corruption retains its existing one-time startup backup and recovery policy: `config.toml`, `agents/`, `v2/` and `studio/v2/` are preserved under `<home>/startup-backups/<unique-id>/original/` before initializing defaults. The durable `startup-recovery.toml` journal resumes an interrupted recovery and the UI reports its location. Permission, capacity, file-lock, credential-service and internal failures stop initialization without resetting. System credentials, old-version directories, remote connection configuration and physical project/worktree directories are preserved. Individual session read failures and isolated invalid Bots do not reset global data.
@@ -162,6 +163,34 @@ Edit a threshold in the account's model list or model information page: typing a
 
 ## Credentials
 
+Native OpenAI accounts offer API and ChatGPT subscription authentication in the same
+create/edit form. Subscription sign-in uses OpenAI's public Sign in with ChatGPT flow,
+not the operator's Codex credentials. Complete browser authorization and verify the
+granted plan-use permission before saving; a successful sign-in is still an unsaved
+editor result until the account transaction is confirmed. Cancelling, discarding or
+switching authentication invalidates that editor's pending result.
+
+ChatGPT access, refresh and ID tokens remain in the protected Rust credential store,
+never TOML, Dart, logs or screenshots. The stable installation host ID lives in
+`<home>/v2/chatgpt-host.toml`; account registrations remain separate even when emails
+match. Refresh rotation requires strict persistence and shared locking, not a
+process-only credential lease. Use Settings to reconnect the selected registration;
+do not copy tokens or alter a refresh-in-flight marker to repair an uncertain result.
+Subscription authentication only sends credentials to the official OpenAI resource;
+switching back to API requires an API credential, not preservation of OAuth material.
+Authentication and billing intent are independent, and neither login nor the model
+catalog proves remaining quota. Users manage plan access in ChatGPT usage settings.
+
+Authentication changes coordinate configuration and credential generations. Pending
+recovery keeps a non-secret, independently versioned journal under
+`<home>/v2/credential-transactions/`; secret snapshots remain in the system credential
+store. Startup and explicit reload recover only that home's transactions. Shared
+pending markers also block another home's writes and old sessions, so changing
+`ANYWORK_HOME` does not bypass recovery. If recovery is required, preserve the journal,
+credential entries and markers; restore the affected storage or credential service
+and let the owning runtime recover. Never delete these materials or replay a token
+exchange to force a save to appear successful.
+
 Tokens never live in `config.toml`. Saving from Settings clears any inline token and stores it in the system credential store (service `anywork`, account `account:<id>`). Bot App Secrets use the same service with account `bot:<bot-id>` and the Preserve/Replace/Clear transaction; a missing system keyring keeps a process-only lease marked `sessionOnly`. To use an environment variable instead, set `bearer_token_env`; when both exist, the stored credential takes precedence.
 
 During the versioned account migration only, an old `provider:<id>` credential is copied to `account:<id>` and read back before committing configuration. A different existing target credential is a conflict, not permission to overwrite it. Original credential entries are retained, but normal execution never falls back to them. Environment-only references remain environment-only; no blank key is manufactured. Do not delete old credentials or edit migration records as a repair.
@@ -201,7 +230,7 @@ a system child route is optional and, when present, is an explicit override. `ef
 must match the model's supported effort candidates.
 
 ```toml
-schema_version = 27
+schema_version = 28
 
 [deepseek_web_search]
 enabled = true

@@ -99,6 +99,7 @@ final class AccountObservations {
       AccountUsageTarget() => 'account-usage',
       AcpAuthTarget() => 'acp-auth',
       AcpInstallTarget() => 'acp-install',
+      ChatGptLoginTarget(:final key) => key,
     };
     if (frame.stamp.resourceKey != resource)
       throw StateError('Account frame source mismatch');

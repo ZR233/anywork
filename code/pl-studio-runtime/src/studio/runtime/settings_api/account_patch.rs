@@ -11,7 +11,7 @@ use pl_protocol::studio::{
 };
 
 use super::super::StudioRuntime;
-use super::account_edit::{account_edit, invalid_settings_argument};
+use super::account_edit::{account_configuration, invalid_settings_argument};
 
 impl StudioRuntime {
     /// Resolves only changed fields inside the settings command lock; no stale whole-card retry.
@@ -21,130 +21,153 @@ impl StudioRuntime {
     ) -> Result<SettingsCommandReply> {
         Self::validate_operation_id(&request.operation_id)?;
         let mut changed = false;
-        let state = self.config_runtime.update_with_effective(
-            request.expected_revision,
-            |desired, effective| {
-                let id = AccountId::new(request.account_id.trim())?;
-                let account = effective
-                    .models
-                    .accounts
-                    .get(&id)
-                    .ok_or_else(|| PureError::ConfigError("account does not exist".into()))?;
-                let template_id = match request.template_id {
-                    AccountTextPatch::Keep => account.template_id().map(ToString::to_string),
-                    AccountTextPatch::Set { value } => Some(value),
-                    AccountTextPatch::Restore => None,
-                };
-                let template = template_id
-                    .as_deref()
-                    .map(|id| {
-                        builtin_account_catalog()?
-                            .templates
-                            .into_iter()
-                            .find(|template| template.id.as_str() == id)
-                            .ok_or_else(|| {
-                                PureError::ConfigError("unknown account template".into())
-                            })
-                    })
-                    .transpose()?;
-                let default = template.as_ref().map(|template| &template.account);
-                let name = text(
-                    request.name,
-                    &account.name,
-                    default.map(|value| value.name.as_str()),
-                )?;
-                let base_url = text(
-                    request.base_url,
-                    &account.base_url,
-                    default.map(|value| value.base_url.as_str()),
-                )?;
-                let protocol = text(
-                    request.protocol,
-                    account.protocol.as_str(),
-                    default.map(|value| value.protocol.as_str()),
-                )?;
-                let custom_models = match request.custom_models {
-                    AccountModelsPatch::Keep => account
-                        .editable_models()
-                        .iter()
-                        .map(|model| pl_protocol::studio::AccountModelUpdate {
-                            model_id: model.model_id.clone(),
-                            display_name: model.display_name.clone(),
-                            wire_api: match model.binding.transport.protocol {
-                                pl_model::protocol::WireApi::Responses => "responses",
-                                pl_model::protocol::WireApi::ChatCompletions => "chat_completions",
+        let authentication = request.authentication.clone();
+        let account_id = request.account_id.clone();
+        let state = self
+            .chatgpt_auth
+            .with_claim(&authentication, &account_id, |credential| {
+                Ok(self.config_runtime.update_with_credential_intents(
+                    request.expected_revision,
+                    crate::config::credential_commit::CredentialIntents::for_account(
+                        &account_id,
+                        &authentication,
+                    ),
+                    |desired, effective| {
+                        let id = AccountId::new(request.account_id.trim())?;
+                        let account = effective.models.accounts.get(&id).ok_or_else(|| {
+                            PureError::ConfigError("account does not exist".into())
+                        })?;
+                        let template_id = match request.template_id {
+                            AccountTextPatch::Keep => {
+                                account.template_id().map(ToString::to_string)
                             }
-                            .to_owned(),
-                            context_window: model.context_window,
-                            max_output_tokens: model.max_output_tokens,
-                        })
-                        .collect(),
-                    AccountModelsPatch::Set { models } => models,
-                    AccountModelsPatch::Restore => Vec::new(),
-                };
-                let removed_manual = account
-                    .editable_models()
-                    .iter()
-                    .filter(|model| {
-                        !custom_models
+                            AccountTextPatch::Set { value } => Some(value),
+                            AccountTextPatch::Restore => None,
+                        };
+                        let template = template_id
+                            .as_deref()
+                            .map(|id| {
+                                builtin_account_catalog()?
+                                    .templates
+                                    .into_iter()
+                                    .find(|template| template.id.as_str() == id)
+                                    .ok_or_else(|| {
+                                        PureError::ConfigError("unknown account template".into())
+                                    })
+                            })
+                            .transpose()?;
+                        let default = template.as_ref().map(|template| &template.account);
+                        let name = text(
+                            request.name,
+                            &account.name,
+                            default.map(|value| value.name.as_str()),
+                        )?;
+                        let base_url = text(
+                            request.base_url,
+                            &account.base_url,
+                            default.map(|value| value.base_url.as_str()),
+                        )?;
+                        let protocol = text(
+                            request.protocol,
+                            account.protocol.as_str(),
+                            default.map(|value| value.protocol.as_str()),
+                        )?;
+                        let custom_models = match request.custom_models {
+                            AccountModelsPatch::Keep => account
+                                .editable_models()
+                                .iter()
+                                .map(|model| pl_protocol::studio::AccountModelUpdate {
+                                    model_id: model.model_id.clone(),
+                                    display_name: model.display_name.clone(),
+                                    wire_api: match model.binding.transport.protocol {
+                                        pl_model::protocol::WireApi::Responses => "responses",
+                                        pl_model::protocol::WireApi::ChatCompletions => {
+                                            "chat_completions"
+                                        }
+                                    }
+                                    .to_owned(),
+                                    context_window: model.context_window,
+                                    max_output_tokens: model.max_output_tokens,
+                                })
+                                .collect(),
+                            AccountModelsPatch::Set { models } => models,
+                            AccountModelsPatch::Restore => Vec::new(),
+                        };
+                        let removed_manual = account
+                            .editable_models()
                             .iter()
-                            .any(|candidate| candidate.model_id.trim() == model.model_id)
-                    })
-                    .map(|model| model.model_id.clone())
-                    .collect::<std::collections::BTreeSet<_>>();
-                let input = pl_protocol::studio::AccountSettingsUpdate {
-                    account_id: id.to_string(),
-                    template_id,
-                    protocol,
-                    name,
-                    base_url,
-                    secret: request.secret,
-                    initial_billing_kind: None,
-                    custom_models,
-                    model_connection_modes: account
-                        .connection_overrides()
-                        .iter()
-                        .filter(|(model_id, _)| !removed_manual.contains(*model_id))
-                        .map(
-                            |(id, mode)| pl_protocol::studio::AccountModelConnectionUpdate {
-                                model_id: id.clone(),
-                                connection_mode: match mode {
-                                    ConnectionMode::Http => "http",
-                                    ConnectionMode::WebSocket => "web_socket",
-                                }
-                                .to_owned(),
-                            },
+                            .filter(|model| {
+                                !custom_models
+                                    .iter()
+                                    .any(|candidate| candidate.model_id.trim() == model.model_id)
+                            })
+                            .map(|model| model.model_id.clone())
+                            .collect::<std::collections::BTreeSet<_>>();
+                        let input = pl_protocol::studio::AccountSettingsUpdate {
+                            authentication: request.authentication,
+                            account_id: id.to_string(),
+                            template_id,
+                            protocol,
+                            name,
+                            base_url,
+                            secret: request.secret,
+                            initial_billing_kind: None,
+                            custom_models,
+                            model_connection_modes: account
+                                .connection_overrides()
+                                .iter()
+                                .filter(|(model_id, _)| !removed_manual.contains(*model_id))
+                                .map(|(id, mode)| {
+                                    pl_protocol::studio::AccountModelConnectionUpdate {
+                                        model_id: id.clone(),
+                                        connection_mode: match mode {
+                                            ConnectionMode::Http => "http",
+                                            ConnectionMode::WebSocket => "web_socket",
+                                        }
+                                        .to_owned(),
+                                    }
+                                })
+                                .collect(),
+                            model_auto_compact_limits: account
+                                .auto_compact_overrides()
+                                .iter()
+                                .filter(|(model_id, _)| !removed_manual.contains(*model_id))
+                                .map(|(id, limit)| {
+                                    pl_protocol::studio::AccountModelAutoCompactUpdate {
+                                        model_id: id.clone(),
+                                        limit: *limit,
+                                    }
+                                })
+                                .collect(),
+                        };
+                        let mut baseline = effective.clone();
+                        if let Some(account) = baseline.models.accounts.get_mut(&id) {
+                            for model in &removed_manual {
+                                account.remove_manual_model(model)?;
+                            }
+                        }
+                        let next = account_configuration(
+                            input,
+                            &baseline,
+                            credential,
+                            &self.config_runtime,
                         )
-                        .collect(),
-                    model_auto_compact_limits: account
-                        .auto_compact_overrides()
-                        .iter()
-                        .filter(|(model_id, _)| !removed_manual.contains(*model_id))
-                        .map(
-                            |(id, limit)| pl_protocol::studio::AccountModelAutoCompactUpdate {
-                                model_id: id.clone(),
-                                limit: *limit,
-                            },
-                        )
-                        .collect(),
-                };
-                let mut baseline = effective.clone();
-                if let Some(account) = baseline.models.accounts.get_mut(&id) {
-                    for model in &removed_manual {
-                        account.remove_manual_model(model)?;
-                    }
-                }
-                let edit = account_edit(input, &baseline)
-                    .map_err(|error| PureError::ConfigError(error.to_string()))?;
-                let next = edit.to_single_config(&baseline)?;
-                let mut canonical_account = next.models.accounts.get(&id).cloned();
-                if let Some(account) = canonical_account.as_mut() {
-                    account.clear_model_catalog_overlay();
-                }
-                changed = canonical_account.as_ref() != desired.models.accounts.get(&id);
-                Ok(next)
-            },
-        )?;
+                        .map_err(|error| PureError::ConfigError(error.to_string()))?;
+                        let mut canonical_account = next.models.accounts.get(&id).cloned();
+                        if let Some(account) = canonical_account.as_mut() {
+                            account.clear_model_catalog_overlay();
+                        }
+                        changed = canonical_account.as_ref() != desired.models.accounts.get(&id);
+                        Ok(next)
+                    },
+                )?)
+            })?;
+        if matches!(
+            authentication,
+            pl_protocol::studio::AccountAuthenticationIntent::ApiKey
+        ) {
+            self.chatgpt_auth.discard_account(&account_id).await?;
+        }
         self.publish_settings_state()?;
         self.settings_command_reply(
             request.operation_id,

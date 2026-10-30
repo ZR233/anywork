@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../../platform/external_url_launcher.dart';
 import '../../../../l10n/app_localizations.dart';
 import '../../../../app/routing/app_route.dart';
 import '../state/account_presentations.dart';
@@ -381,6 +382,39 @@ class _AccountEditorConnectorState
           // latest typed props, never a frozen query from an earlier build.
           final sourceRoute = ModalRoute.of(context);
           final session = widget.session;
+          bool isCurrentEditor() =>
+              sourceRoute != null &&
+              _isCurrent(session, source, owner, sourceRoute);
+          void openAuthorizationUrl(String authorizationUrl) {
+            final safeUrl = safeExternalWebUrl(authorizationUrl);
+            final uri = safeUrl == null ? null : Uri.tryParse(safeUrl);
+            if (safeUrl == null ||
+                uri == null ||
+                uri.scheme != 'https' ||
+                uri.host != 'auth.openai.com') {
+              owner.authorizationOpenFailed();
+              return;
+            }
+            unawaited(
+              ref.read(externalUrlLauncherProvider)(safeUrl).catchError((
+                Object _,
+              ) {
+                if (mounted && isCurrentEditor()) {
+                  owner.authorizationOpenFailed();
+                }
+              }),
+            );
+          }
+          if (isCurrentEditor()) {
+            final autoOpenUrl = owner.claimAuthorizationUrlForAutomaticOpen();
+            if (autoOpenUrl != null) {
+              WidgetsBinding.instance.addPostFrameCallback((_) {
+                if (mounted && isCurrentEditor()) {
+                  openAuthorizationUrl(autoOpenUrl);
+                }
+              });
+            }
+          }
           if (widget.addModel &&
               owner.addModelEntryEditorKey() == null &&
               sourceRoute != null &&
@@ -412,6 +446,38 @@ class _AccountEditorConnectorState
                 : null,
             focusManualModelId: widget.addModel,
             onFieldChanged: owner.changeField,
+            onAuthenticationChanged: (method) {
+              if (isCurrentEditor()) owner.changeAuthentication(method);
+            },
+            onStartChatGptLogin: () {
+              if (isCurrentEditor()) unawaited(owner.startChatGptLogin());
+            },
+            onCancelChatGptLogin: () {
+              if (isCurrentEditor()) unawaited(owner.cancelChatGptLogin());
+            },
+            onOpenChatGptAuthorization: () {
+              if (!isCurrentEditor()) return;
+              final authorizationUrl = owner.chatGptAuthorizationUrl;
+              if (authorizationUrl == null) {
+                owner.authorizationOpenFailed();
+              } else {
+                openAuthorizationUrl(authorizationUrl);
+              }
+            },
+            onOpenChatGptUsage: () {
+              if (!isCurrentEditor()) return;
+              unawaited(
+                ref
+                    .read(externalUrlLauncherProvider)(
+                      'https://chatgpt.com/settings/usage',
+                    )
+                    .catchError((Object _) {
+                      if (mounted && isCurrentEditor()) {
+                        owner.usageOpenFailed();
+                      }
+                    }),
+              );
+            },
             onTemplateChanged: _switchTemplate,
             onBillingChanged: owner.changeBilling,
             onResetBilling: () => owner.changeBilling(null),

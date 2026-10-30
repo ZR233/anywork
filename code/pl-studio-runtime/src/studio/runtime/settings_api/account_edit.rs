@@ -3,13 +3,91 @@
 use anyhow::Result;
 use pl_model::protocol::{ConnectionMode, WireApi};
 use pl_protocol::studio::{
-    AccountModelAutoCompactUpdate, AccountModelConnectionUpdate, AccountModelUpdate,
-    AccountSecretUpdate, AccountSettingsUpdate, StudioError,
+    AccountAuthenticationIntent, AccountAuthenticationMethod, AccountModelAutoCompactUpdate,
+    AccountModelConnectionUpdate, AccountModelUpdate, AccountSecretUpdate, AccountSettingsUpdate,
+    StudioError,
 };
 
 use crate::{AccountEdit, AccountModelEdit};
 use pl_model::config::AccountTemplateId;
 use pl_model::protocol::ProtocolKind;
+
+pub(super) fn account_configuration(
+    input: AccountSettingsUpdate,
+    current: &crate::StudioConfig,
+    credential: Option<super::super::chatgpt_auth::LoginClaim>,
+    runtime: &crate::config::ConfigRuntime,
+) -> Result<crate::StudioConfig> {
+    let id = pl_model::config::AccountId::new(&input.account_id)?;
+    let mut baseline = current.clone();
+    let old = current.models.accounts.get(&id);
+    let intent = input.authentication.clone();
+    if matches!(intent, AccountAuthenticationIntent::Keep)
+        && old.is_some_and(|account| account.authentication == AccountAuthenticationMethod::ChatGpt)
+        && !matches!(input.secret, AccountSecretUpdate::Preserve)
+    {
+        return Err(invalid_settings_argument(
+            "Select API authentication before changing an API key",
+        ));
+    }
+    if !matches!(intent, AccountAuthenticationIntent::Keep)
+        && let Some(account) = baseline.models.accounts.get_mut(&id)
+    {
+        if account.authentication == AccountAuthenticationMethod::ChatGpt
+            || matches!(intent, AccountAuthenticationIntent::ChatGpt { .. })
+        {
+            account.bearer_token = None;
+            account.bearer_token_env = None;
+        }
+        account.authentication = AccountAuthenticationMethod::ApiKey;
+        account.chatgpt_account = None;
+        account.chatgpt_credentials = None;
+        account.chatgpt_session = None;
+    }
+    let edit = account_edit(input, &baseline)?;
+    let mut next = edit.to_single_config(&baseline)?;
+    if matches!(intent, AccountAuthenticationIntent::ChatGpt { .. }) {
+        let claim =
+            credential.ok_or_else(|| invalid_settings_argument("ChatGPT login is not eligible"))?;
+        let current_revision = runtime.account_configuration_revision(
+            &pl_protocol::studio::AccountIdentity::Native {
+                account_id: id.to_string(),
+            },
+        )?;
+        if claim.account_revision != current_revision {
+            return Err(invalid_settings_argument(
+                "Account changed since ChatGPT login started",
+            ));
+        }
+        let record = claim.record;
+        record.validate()?;
+        if old
+            .and_then(|account| account.chatgpt_account.as_ref())
+            .is_some_and(|previous| {
+                previous.issuer != record.account.issuer
+                    || previous.subject != record.account.subject
+                    || previous.client_id != record.account.client_id
+            })
+        {
+            return Err(invalid_settings_argument(
+                "ChatGPT reauthorization identity changed",
+            ));
+        }
+        let account = next
+            .models
+            .accounts
+            .get_mut(&id)
+            .expect("account edit inserted target");
+        account.authentication = AccountAuthenticationMethod::ChatGpt;
+        account.chatgpt_account = Some(record.account.clone());
+        account.chatgpt_session = Some(runtime.chatgpt_session(id.as_str(), &record)?);
+        account.chatgpt_credentials = Some(record);
+        account.bearer_token = None;
+        account.bearer_token_env = None;
+    }
+    next.validate_declarations()?;
+    Ok(next)
+}
 
 pub(super) fn account_edit(
     input: AccountSettingsUpdate,

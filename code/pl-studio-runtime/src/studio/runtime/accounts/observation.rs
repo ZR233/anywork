@@ -33,6 +33,7 @@ pub(super) fn open(
     target: AccountObservationTarget,
 ) -> Result<AccountObservation> {
     let topic = match &target {
+        AccountObservationTarget::ChatGptLogin { .. } => StudioProductTopic::SettingsConfig,
         AccountObservationTarget::Summaries => StudioProductTopic::SettingsConfig,
         AccountObservationTarget::Detail { identity } => {
             let id = match identity {
@@ -52,10 +53,14 @@ pub(super) fn open(
         AccountObservationTarget::AcpAuth => StudioProductTopic::AcpAuth,
         AccountObservationTarget::AcpInstall => StudioProductTopic::AcpInstall,
     };
-    let signal = runtime
-        .agent_facility
-        .product_events
-        .subscribe_topic_signal(&topic);
+    let signal = if matches!(&target, AccountObservationTarget::ChatGptLogin { .. }) {
+        runtime.chatgpt_auth.subscribe()
+    } else {
+        runtime
+            .agent_facility
+            .product_events
+            .subscribe_topic_signal(&topic)
+    };
     Ok(AccountObservation {
         inner: Arc::new(ObservationInner {
             runtime,
@@ -146,6 +151,7 @@ impl AccountObservation {
 fn stamp(frame: &AccountDomainFrame) -> &ResourceStamp {
     match frame {
         AccountDomainFrame::Summaries { stamp, .. }
+        | AccountDomainFrame::ChatGptLogin { stamp, .. }
         | AccountDomainFrame::Detail { stamp, .. }
         | AccountDomainFrame::Models { stamp, .. }
         | AccountDomainFrame::Usage { stamp, .. }

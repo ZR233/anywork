@@ -9,6 +9,7 @@ use crate::protocol::InstructionWireRole;
 
 mod body;
 mod chat;
+pub(crate) mod chatgpt;
 mod content;
 mod responses;
 mod tool_history;
@@ -26,6 +27,16 @@ pub(crate) enum OpenAiRequestBody {
 }
 
 impl OpenAiRequestBody {
+    pub(crate) fn validate_chatgpt(&self, original: &Self) -> Result<()> {
+        match (self, original) {
+            (Self::Responses(body), Self::Responses(original)) => {
+                chatgpt::validate_body(body, original)
+            }
+            _ => Err(PureError::ConfigError(
+                "ChatGPT requires Responses HTTP".into(),
+            )),
+        }
+    }
     pub(crate) fn sent_model(&self) -> Result<String> {
         let body = match self {
             Self::Responses(body) | Self::Chat(body) => body,
@@ -82,6 +93,7 @@ pub(crate) fn build_openai_request_body(
     request: &CompletionRequest,
     model: &ModelInfo,
     prompt_cache_key: Option<&str>,
+    chatgpt: bool,
 ) -> Result<OpenAiRequestBody> {
     request.validate_replay_spans()?;
     let messages = messages_after_last_compaction(&request.input);
@@ -100,13 +112,21 @@ pub(crate) fn build_openai_request_body(
                 model,
                 prompt_cache_key,
                 instruction_role,
+                chatgpt,
             )?)?;
+            let original = body.clone();
+            if chatgpt {
+                chatgpt::validate_model_overrides(model, request, &original)?;
+            }
             apply_responses_max_tokens_field(
                 &mut body,
                 request.max_tokens,
                 options.max_tokens_field,
             );
             finalize_body(&mut body, model, &request.reasoning);
+            if chatgpt {
+                chatgpt::validate_body(&body, &original)?;
+            }
             Ok(OpenAiRequestBody::Responses(body))
         }
         OpenAiEndpoint::ChatCompletions => {

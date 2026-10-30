@@ -27,6 +27,24 @@ abstract class AccountsTestTransport
   Future<AccountDomainFrame> Function(AccountObservationTarget)? accountRead;
 
   @override
+  Future<ChatGptLoginCommandReply> startChatGptLogin({
+    required String loginId,
+    required String editorId,
+    required String accountId,
+  }) => Future.error(
+    UnsupportedError('ChatGPT login was not scripted for this test'),
+  );
+
+  @override
+  Future<ChatGptLoginCommandReply> cancelChatGptLogin({
+    required String loginId,
+    required String editorId,
+    required String accountId,
+  }) => Future.error(
+    UnsupportedError('ChatGPT login was not scripted for this test'),
+  );
+
+  @override
   Future<AccountDomainObservation> openAccountObservation(
     AccountObservationTarget target,
   ) async {

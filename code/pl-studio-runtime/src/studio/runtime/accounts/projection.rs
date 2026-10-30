@@ -11,6 +11,14 @@ pub(super) fn read(
     target: &AccountObservationTarget,
 ) -> Result<AccountDomainFrame> {
     match target {
+        AccountObservationTarget::ChatGptLogin { login_id } => {
+            let snapshot = runtime.chatgpt_auth.read(login_id)?;
+            Ok(AccountDomainFrame::ChatGptLogin {
+                stamp: runtime
+                    .resource_stamp(format!("chatgpt-login:{login_id}"), snapshot.revision),
+                snapshot,
+            })
+        }
         AccountObservationTarget::Summaries => {
             runtime
                 .config_runtime
@@ -54,7 +62,8 @@ pub(super) fn read(
                             credential_ready: Some(
                                 account.protocol
                                     == pl_model::protocol::ProtocolKind::OpenAiCompatible
-                                    || account.resolved_bearer_token().is_some(),
+                                    || account.resolved_bearer_token().is_some()
+                                    || account.chatgpt_session.is_some(),
                             ),
                             usage_query_revision: config.usage_query_revision(id),
                             acp_connection_revision: None,

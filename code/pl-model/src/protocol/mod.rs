@@ -1,5 +1,6 @@
 //! Endpoint configuration, concrete native clients and independently supported services.
 mod adapters;
+pub mod chatgpt;
 mod clients;
 pub mod compatible;
 pub mod deepseek;
@@ -361,6 +362,8 @@ impl std::str::FromStr for ProtocolKind {
 
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProtocolEndpoint {
+    #[serde(skip)]
+    pub chatgpt_session: Option<chatgpt::ChatGptSession>,
     #[serde(default)]
     pub protocol: ProtocolKind,
     pub name: String,
@@ -431,11 +434,45 @@ impl std::fmt::Debug for ProtocolEndpoint {
             .field("name", &self.name)
             .field("protocol", &self.protocol)
             .field("has_credential", &self.bearer_token.is_some())
+            .field("has_chatgpt_session", &self.chatgpt_session.is_some())
             .finish_non_exhaustive()
     }
 }
 
 impl ProtocolEndpoint {
+    pub(crate) fn request_headers(
+        &self,
+        token: Option<&str>,
+        model_headers: &HashMap<String, String>,
+    ) -> crate::Result<reqwest::header::HeaderMap> {
+        let mut headers =
+            crate::runtime::transport::headers(token, self.http_headers.as_ref(), model_headers)?;
+        if self.chatgpt_session.is_some() {
+            // Legacy/custom header layers must not replace the selected OAuth owner's token.
+            let canonical = crate::runtime::transport::headers(
+                Some(token.ok_or_else(|| {
+                    crate::PureError::ConfigError("ChatGPT access token is missing".into())
+                })?),
+                None,
+                &HashMap::new(),
+            )?;
+            headers.extend(canonical);
+        }
+        Ok(headers)
+    }
+    /// Resolve a live token immediately before a supported request, not at route freeze time.
+    pub async fn resolve_bearer_token(&self) -> crate::Result<Option<String>> {
+        if let Some(session) = &self.chatgpt_session {
+            chatgpt::ChatGptSession::validate_resource(&self.base_url)
+                .map_err(|error| crate::PureError::ConfigError(error.to_string()))?;
+            return session
+                .access_token()
+                .await
+                .map(Some)
+                .map_err(|error| crate::PureError::ConfigError(error.to_string()));
+        }
+        Ok(self.bearer_token.clone())
+    }
     /// Selects a concrete protocol explicitly, without changing endpoint credentials.
     pub fn with_protocol(mut self, protocol: ProtocolKind) -> Self {
         self.protocol = protocol;
@@ -488,6 +525,7 @@ impl ProtocolEndpoint {
         }
         Self {
             protocol: ProtocolKind::OpenAi,
+            chatgpt_session: None,
             name: "OpenAI".into(),
             base_url: base_url.unwrap_or_else(|| "https://api.openai.com/v1".into()),
             bearer_token: None,
@@ -505,6 +543,7 @@ impl ProtocolEndpoint {
             .is_none_or(|url| url.trim_end_matches('/') == "https://api.x.ai/v1");
         Self {
             protocol: ProtocolKind::Xai,
+            chatgpt_session: None,
             name: "xAI".into(),
             base_url: base_url.unwrap_or_else(|| "https://api.x.ai/v1".into()),
             bearer_token: None,
@@ -530,6 +569,7 @@ impl ProtocolEndpoint {
             .is_none_or(|url| url.trim_end_matches('/') == "https://api.deepseek.com");
         Self {
             protocol: ProtocolKind::DeepSeek,
+            chatgpt_session: None,
             name: "DeepSeek".into(),
             base_url: base_url.unwrap_or_else(|| "https://api.deepseek.com".into()),
             bearer_token: None,
@@ -580,6 +620,7 @@ impl ProtocolEndpoint {
     pub fn compatible(name: impl Into<String>, base_url: impl Into<String>) -> Self {
         Self {
             protocol: ProtocolKind::OpenAiCompatible,
+            chatgpt_session: None,
             name: name.into(),
             base_url: base_url.into(),
             bearer_token: None,
@@ -602,6 +643,10 @@ impl ProtocolEndpoint {
         let mut hasher = DefaultHasher::new();
         self.base_url.trim_end_matches('/').hash(&mut hasher);
         self.bearer_token.hash(&mut hasher);
+        self.chatgpt_session
+            .as_ref()
+            .map(|session| session.registration_id())
+            .hash(&mut hasher);
         if let Some(headers) = &self.http_headers {
             let mut headers = headers.iter().collect::<Vec<_>>();
             headers.sort_by(|left, right| left.0.cmp(right.0));

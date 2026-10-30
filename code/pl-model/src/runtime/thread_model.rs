@@ -77,7 +77,9 @@ impl ThreadModel {
         self.validate_context_origin(&request.context)?;
         let mut encoded = codec::request(request, &self.runtime)?;
         encoded.reasoning = self.reasoning.clone();
-        encoded.max_tokens = self.runtime.model().max_output_tokens;
+        if self.runtime.endpoint().chatgpt_session.is_none() {
+            encoded.max_tokens = self.runtime.model().max_output_tokens;
+        }
         encoded.parallel_tool_calls = request.tool_call_mode
             == pl_core::model::ToolCallMode::Parallel
             && self.runtime.model().capabilities.tools.parallel_tool_calls;

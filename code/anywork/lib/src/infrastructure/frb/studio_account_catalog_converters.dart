@@ -42,6 +42,8 @@ frb_accounts.BridgeAccountObservationTarget _accountTargetToFrb(
     const frb_accounts.BridgeAccountObservationTarget.acpAuth(),
   AcpInstallTarget() =>
     const frb_accounts.BridgeAccountObservationTarget.acpInstall(),
+  ChatGptLoginTarget(:final loginId) =>
+    frb_accounts.BridgeAccountObservationTarget.chatGptLogin(loginId: loginId),
 };
 
 NativeAccountDetails _nativeAccountDetailsFromFrb(
@@ -49,6 +51,10 @@ NativeAccountDetails _nativeAccountDetailsFromFrb(
 ) => NativeAccountDetails(
   identity: NativeAccountIdentity(value.accountId),
   name: value.name,
+  authentication: _accountAuthenticationMethodFromFrb(value.authentication),
+  chatgptAccount: value.chatgptAccount == null
+      ? null
+      : _chatGptAccountInfoFromFrb(value.chatgptAccount!),
   protocol: value.protocol,
   templateId: value.templateId,
   baseUrl: value.baseUrl,
@@ -179,7 +185,104 @@ AccountDomainFrame _accountFrameFromFrb(
       _accountStampFromFrb(stamp),
       _acpInstallSnapshotFromFrb(snapshot),
     ),
+  frb_accounts.BridgeAccountDomainFrame_ChatGptLogin(
+    :final stamp,
+    :final snapshot,
+  ) => ChatGptLoginFrame(
+    _accountStampFromFrb(stamp),
+    _chatGptLoginSnapshotFromFrb(snapshot),
+  ),
 };
+
+AccountAuthenticationMethod _accountAuthenticationMethodFromFrb(
+  frb_chatgpt.BridgeAccountAuthenticationMethod value,
+) => switch (value) {
+  frb_chatgpt.BridgeAccountAuthenticationMethod.apiKey =>
+    AccountAuthenticationMethod.apiKey,
+  frb_chatgpt.BridgeAccountAuthenticationMethod.chatGpt =>
+    AccountAuthenticationMethod.chatGpt,
+};
+
+frb_chatgpt.BridgeAccountAuthenticationIntent _accountAuthenticationIntentToFrb(
+  AccountAuthenticationIntent value,
+) => switch (value) {
+  KeepAccountAuthentication() =>
+    const frb_chatgpt.BridgeAccountAuthenticationIntent.keep(),
+  SelectApiKeyAuthentication() =>
+    const frb_chatgpt.BridgeAccountAuthenticationIntent.apiKey(),
+  SelectChatGptAuthentication(:final loginId, :final editorId) =>
+    frb_chatgpt.BridgeAccountAuthenticationIntent.chatGpt(
+      loginId: loginId,
+      editorId: editorId,
+    ),
+};
+
+ChatGptAccountInfo _chatGptAccountInfoFromFrb(
+  frb_chatgpt.BridgeChatGptAccountInfo value,
+) => ChatGptAccountInfo(
+  issuer: value.issuer,
+  subject: value.subject,
+  clientId: value.clientId,
+  email: value.email,
+  planUsageEnabled: value.planUsageEnabled,
+);
+
+ChatGptLoginSnapshot _chatGptLoginSnapshotFromFrb(
+  frb_chatgpt.BridgeChatGptLoginSnapshot value,
+) => ChatGptLoginSnapshot(
+  loginId: value.loginId,
+  editorId: value.editorId,
+  accountId: value.accountId,
+  revision: value.revision.toInt(),
+  phase: switch (value.phase) {
+    frb_chatgpt.BridgeChatGptLoginPhase.preparing =>
+      ChatGptLoginPhase.preparing,
+    frb_chatgpt.BridgeChatGptLoginPhase.awaitingBrowser =>
+      ChatGptLoginPhase.awaitingBrowser,
+    frb_chatgpt.BridgeChatGptLoginPhase.exchangingCode =>
+      ChatGptLoginPhase.exchangingCode,
+    frb_chatgpt.BridgeChatGptLoginPhase.succeeded =>
+      ChatGptLoginPhase.succeeded,
+    frb_chatgpt.BridgeChatGptLoginPhase.cancelled =>
+      ChatGptLoginPhase.cancelled,
+    frb_chatgpt.BridgeChatGptLoginPhase.failed => ChatGptLoginPhase.failed,
+  },
+  authorizationUrl: value.authorizationUrl,
+  expiresAt: _frbNullableInt(value.expiresAt),
+  account: value.account == null
+      ? null
+      : _chatGptAccountInfoFromFrb(value.account!),
+  failure: value.failure == null
+      ? null
+      : ChatGptLoginFailure(
+          code: switch (value.failure!.code) {
+            frb_chatgpt.BridgeChatGptLoginFailureCode.network =>
+              ChatGptLoginFailureCode.network,
+            frb_chatgpt.BridgeChatGptLoginFailureCode.authorizationDenied =>
+              ChatGptLoginFailureCode.authorizationDenied,
+            frb_chatgpt.BridgeChatGptLoginFailureCode.invalidCallback =>
+              ChatGptLoginFailureCode.invalidCallback,
+            frb_chatgpt.BridgeChatGptLoginFailureCode.invalidIdentity =>
+              ChatGptLoginFailureCode.invalidIdentity,
+            frb_chatgpt.BridgeChatGptLoginFailureCode.missingPlanPermission =>
+              ChatGptLoginFailureCode.missingPlanPermission,
+            frb_chatgpt.BridgeChatGptLoginFailureCode.expired =>
+              ChatGptLoginFailureCode.expired,
+            frb_chatgpt.BridgeChatGptLoginFailureCode.storage =>
+              ChatGptLoginFailureCode.storage,
+            frb_chatgpt.BridgeChatGptLoginFailureCode.taskFailed =>
+              ChatGptLoginFailureCode.taskFailed,
+          },
+          retryable: value.failure!.retryable,
+        ),
+);
+
+ChatGptLoginCommandReply _chatGptLoginCommandReplyFromFrb(
+  frb_chatgpt.BridgeChatGptLoginCommandReply value,
+) => ChatGptLoginCommandReply(
+  stamp: _accountStampFromFrb(value.stamp),
+  snapshot: _chatGptLoginSnapshotFromFrb(value.snapshot),
+);
 
 AccountUsageObservation _usageObservationFromFrb(
   frb_accounts.BridgeAccountUsageObservation value,

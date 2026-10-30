@@ -117,6 +117,7 @@ fn build_compaction_body(
         &completion,
         &model_info,
         request.prompt_cache_key.as_deref(),
+        false,
     )?
     else {
         return Err(PureError::ConfigError(

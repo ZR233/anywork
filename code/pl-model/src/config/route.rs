@@ -159,7 +159,9 @@ impl AgentModelConfig {
                 continue;
             };
             any_declared = true;
-            if service.models.is_empty() || account.resolved_bearer_token().is_none() {
+            if service.models.is_empty()
+                || (account.resolved_bearer_token().is_none() && account.chatgpt_session.is_none())
+            {
                 continue;
             }
             let model = image_generation_model(&service);

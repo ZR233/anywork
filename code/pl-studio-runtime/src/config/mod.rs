@@ -9,7 +9,9 @@ mod instruction;
 mod profiles_resource;
 pub use instruction::{DEFAULT_PROJECT_DOC_MAX_BYTES, InstructionsConfig};
 mod bot_credentials;
+mod chatgpt;
 mod credential;
+pub(crate) mod credential_commit;
 mod document_migration;
 mod execution;
 pub mod mcp;
@@ -72,7 +74,7 @@ pub use runtime::{
 };
 pub use store::{ConfigPaths, ConfigStore};
 
-pub const STUDIO_CONFIG_SCHEMA_VERSION: u32 = 27;
+pub const STUDIO_CONFIG_SCHEMA_VERSION: u32 = 28;
 pub const STUDIO_CONFIG_DIR_NAME: &str = ".anywork";
 pub const STUDIO_CONFIG_FILE_NAME: &str = "config.toml";
 

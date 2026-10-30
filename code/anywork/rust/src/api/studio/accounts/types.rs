@@ -1,6 +1,7 @@
 use crate::api::studio::types::{
-    AccountModelInput, AccountSecretInput, BridgeAccountSettingsDto, BridgeAcpAccountSettings,
-    BridgeAcpAuthSnapshot, BridgeAcpInstallSnapshot, BridgeBillingKind,
+    AccountModelInput, AccountSecretInput, BridgeAccountAuthenticationIntent,
+    BridgeAccountSettingsDto, BridgeAcpAccountSettings, BridgeAcpAuthSnapshot,
+    BridgeAcpInstallSnapshot, BridgeBillingKind, BridgeChatGptLoginSnapshot,
     BridgeModelCatalogAccountDto, BridgeResourceStamp,
 };
 
@@ -18,6 +19,7 @@ pub enum BridgeAccountObservationTarget {
     Usage,
     AcpAuth,
     AcpInstall,
+    ChatGptLogin { login_id: String },
 }
 
 #[derive(Debug, Clone)]
@@ -80,6 +82,10 @@ pub enum BridgeAccountDomainFrame {
     AcpInstall {
         stamp: BridgeResourceStamp,
         snapshot: BridgeAcpInstallSnapshot,
+    },
+    ChatGptLogin {
+        stamp: BridgeResourceStamp,
+        snapshot: BridgeChatGptLoginSnapshot,
     },
 }
 
@@ -188,6 +194,7 @@ pub enum BridgeAccountModelsPatch {
 
 #[derive(Debug, Clone)]
 pub struct BridgePatchAccountInput {
+    pub authentication: BridgeAccountAuthenticationIntent,
     pub name: BridgeAccountTextPatch,
     pub base_url: BridgeAccountTextPatch,
     pub template_id: BridgeAccountTextPatch,

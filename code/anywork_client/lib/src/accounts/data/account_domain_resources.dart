@@ -265,6 +265,8 @@ final class AccountDomainResources {
         }
         if (!isCurrent()) return;
         coordinator.observe(frame.stamp);
+      case ChatGptLoginFrame():
+        _accounts.apply(frame);
       case AccountModelsFrame():
         _models.apply(frame);
       case AccountUsageFrame():
@@ -283,7 +285,12 @@ final class AccountDomainResources {
       case AccountUsageTarget():
         _usage.fail(failure);
       case AcpAuthTarget() || AcpInstallTarget():
-        _acp.fail(target, failure);
+      case ChatGptLoginTarget():
+        if (target is ChatGptLoginTarget) {
+          _accounts.fail(target, failure);
+        } else {
+          _acp.fail(target, failure);
+        }
     }
   }
 

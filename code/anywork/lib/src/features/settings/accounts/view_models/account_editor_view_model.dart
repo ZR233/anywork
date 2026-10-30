@@ -1,6 +1,21 @@
 import 'dart:async';
+import 'dart:math';
 
-import 'package:anywork_client/accounts.dart';
+import 'package:anywork_client/accounts.dart'
+    hide
+        AccountAuthenticationMethod,
+        ChatGptAccountInfo,
+        ChatGptLoginFailureCode,
+        ChatGptLoginPhase,
+        ChatGptLoginSnapshot;
+import 'package:anywork_client/accounts.dart'
+    as account_domain
+    show
+        AccountAuthenticationMethod,
+        ChatGptAccountInfo,
+        ChatGptLoginFailureCode,
+        ChatGptLoginPhase,
+        ChatGptLoginSnapshot;
 import 'package:anywork_client/acp.dart';
 import 'package:anywork_client/model_directory.dart';
 import 'package:anywork_client/studio_client.dart'
@@ -54,6 +69,15 @@ class AccountEditorViewModel extends _$AccountEditorViewModel {
   void Function()? _closeAcpListener;
   AccountDemand? _detailDemand;
   AccountDemand? _modelDemand;
+  AccountDemand? _chatGptLoginDemand;
+  AccountDemand? _chatGptIntentDemand;
+  ValueObservation<AccountResource<account_domain.ChatGptLoginSnapshot>>?
+  _chatGptLoginValue;
+  Observation? _chatGptLoginWatch;
+  account_domain.ChatGptLoginSnapshot? _chatGptLoginSnapshot;
+  Future<void>? _chatGptLoginStart;
+  String? _authenticationError;
+  String? _autoOpenedChatGptLoginId;
 
   @override
   FutureOr<AccountEditorViewState> build(AccountEditorKey key) {
@@ -80,6 +104,13 @@ class AccountEditorViewModel extends _$AccountEditorViewModel {
       }
     }
     ref.onDispose(() {
+      final login = _raw?.loginId;
+      final cancelLogin = login != null;
+      _chatGptLoginWatch?.cancel();
+      _releaseChatGptLogin();
+      if (cancelLogin) {
+        unawaited(_cancelChatGptLogin(login));
+      }
       _closeAcpListener?.call();
       releaseAccountDemand(_detailDemand);
       releaseAccountDemand(_modelDemand);
@@ -257,6 +288,213 @@ class AccountEditorViewModel extends _$AccountEditorViewModel {
     _raw = draft.field(field, raw);
     _revision++;
     _publish();
+  }
+
+  void changeAuthentication(AccountAuthenticationMethod method) {
+    final authentication = switch (method) {
+      AccountAuthenticationMethod.apiKey =>
+        account_domain.AccountAuthenticationMethod.apiKey,
+      AccountAuthenticationMethod.chatGpt =>
+        account_domain.AccountAuthenticationMethod.chatGpt,
+    };
+    final draft = _raw;
+    if (draft == null ||
+        _finished ||
+        draft.authentication == authentication ||
+        draft.templateId != 'openai') {
+      return;
+    }
+    final loginId = draft.loginId;
+    if (loginId != null) {
+      unawaited(_cancelChatGptLogin(loginId));
+    }
+    _releaseChatGptLogin();
+    _authenticationError = null;
+    _raw = draft.withAuthentication(authentication);
+    _revision++;
+    _publish();
+  }
+
+  String? get chatGptAuthorizationUrl => _currentChatGptLogin?.authorizationUrl;
+
+  String? claimAuthorizationUrlForAutomaticOpen() {
+    final login = _currentChatGptLogin;
+    if (login == null ||
+        login.phase != account_domain.ChatGptLoginPhase.awaitingBrowser) {
+      return null;
+    }
+    final url = login.authorizationUrl;
+    if (url == null || _autoOpenedChatGptLoginId == login.loginId) return null;
+    _autoOpenedChatGptLoginId = login.loginId;
+    return url;
+  }
+
+  bool get _isChatGptLoginActive {
+    final phase = _currentChatGptLogin?.phase;
+    return phase != null &&
+        phase != account_domain.ChatGptLoginPhase.succeeded &&
+        phase != account_domain.ChatGptLoginPhase.cancelled &&
+        phase != account_domain.ChatGptLoginPhase.failed;
+  }
+
+  account_domain.ChatGptLoginSnapshot? get _currentChatGptLogin {
+    final draft = _raw;
+    final snapshot = _chatGptLoginSnapshot;
+    if (draft?.loginId == null ||
+        snapshot == null ||
+        snapshot.loginId != draft!.loginId ||
+        snapshot.editorId != _key.editorId ||
+        snapshot.accountId != _key.target.id) {
+      return null;
+    }
+    return snapshot;
+  }
+
+  Future<void> startChatGptLogin() async {
+    final draft = _raw;
+    if (draft == null ||
+        _finished ||
+        _saving ||
+        draft.templateId != 'openai' ||
+        draft.authentication !=
+            account_domain.AccountAuthenticationMethod.chatGpt) {
+      return;
+    }
+    final current = _currentChatGptLogin;
+    if (_chatGptLoginStart != null ||
+        (current != null && !current.isTerminal)) {
+      return;
+    }
+    final retryIdempotentStart =
+        draft.loginId != null &&
+        current == null &&
+        _authenticationError != null;
+    _releaseChatGptLogin(releaseIntent: !retryIdempotentStart);
+    final loginId = retryIdempotentStart ? draft.loginId! : _newLoginId();
+    _raw = draft.withAuthentication(
+      account_domain.AccountAuthenticationMethod.chatGpt,
+      loginId: loginId,
+    );
+    _authenticationError = null;
+    try {
+      // Register a local typed read model before dispatch. The Rust pull demand
+      // is admitted only after start returns a canonical stamped reply.
+      _chatGptIntentDemand ??= _accounts.registerChatGptLogin(
+        loginId: loginId,
+        editorId: _key.editorId,
+        accountId: _key.target.id,
+      );
+      _chatGptLoginValue = _accounts.chatGptLogin(loginId);
+      _chatGptLoginWatch = _chatGptLoginValue!.watch((_) {
+        _acceptChatGptLoginObservation(loginId);
+      });
+      _acceptChatGptLoginObservation(loginId);
+      _revision++;
+      _publish();
+      final pending = _accounts.startChatGptLogin(
+        loginId: loginId,
+        editorId: _key.editorId,
+        accountId: _key.target.id,
+      );
+      _chatGptLoginStart = pending.then<void>(
+        (_) {},
+        onError: (Object _, StackTrace _) {},
+      );
+      await pending;
+      _acceptChatGptLoginObservation(loginId);
+      _chatGptLoginDemand ??= _accounts.observeChatGptLogin(loginId);
+    } catch (error) {
+      if (ref.mounted && !_finished && _raw?.loginId == loginId) {
+        _authenticationError = safeAccountError(error, _strings);
+        _publish();
+      }
+    } finally {
+      _chatGptLoginStart = null;
+    }
+  }
+
+  Future<void> cancelChatGptLogin() async {
+    final loginId = _raw?.loginId;
+    if (loginId == null || !_isChatGptLoginActive) return;
+    await _cancelChatGptLogin(loginId);
+  }
+
+  Future<void> _cancelChatGptLogin(String loginId) async {
+    final starting = _chatGptLoginStart;
+    if (starting != null) {
+      await starting.catchError((Object _) {});
+    }
+    try {
+      await _accounts.cancelChatGptLogin(
+        loginId: loginId,
+        editorId: _key.editorId,
+        accountId: _key.target.id,
+      );
+      _acceptChatGptLoginObservation(loginId);
+    } catch (error) {
+      if (ref.mounted && !_finished && _raw?.loginId == loginId) {
+        _authenticationError = safeAccountError(error, _strings);
+        _publish();
+      }
+    }
+  }
+
+  void authorizationOpenFailed() {
+    if (_finished) return;
+    _authenticationError = _strings['chatGptOpenLinkFailed'];
+    _publish();
+  }
+
+  void usageOpenFailed() {
+    if (_finished) return;
+    _authenticationError = _strings['chatGptOpenUsageFailed'];
+    _publish();
+  }
+
+  void _releaseChatGptLogin({bool releaseIntent = true}) {
+    _chatGptLoginWatch?.cancel();
+    _chatGptLoginWatch = null;
+    releaseAccountDemand(_chatGptLoginDemand);
+    _chatGptLoginDemand = null;
+    if (releaseIntent) {
+      releaseAccountDemand(_chatGptIntentDemand);
+      _chatGptIntentDemand = null;
+    }
+    _chatGptLoginValue = null;
+    _chatGptLoginSnapshot = null;
+  }
+
+  void _acceptChatGptLoginObservation(String loginId) {
+    final resource = _chatGptLoginValue?.value;
+    final snapshot = resource?.value;
+    final failure = resource?.failure;
+    if (_raw?.loginId == loginId && failure != null) {
+      _authenticationError = safeAccountError(failure, _strings);
+      if (ref.mounted && !_finished) _publish();
+      return;
+    }
+    if (_raw?.loginId != loginId ||
+        snapshot == null ||
+        snapshot.loginId != loginId ||
+        snapshot.editorId != _key.editorId ||
+        snapshot.accountId != _key.target.id) {
+      return;
+    }
+    _chatGptLoginSnapshot = snapshot;
+    _authenticationError = null;
+    if (ref.mounted && !_finished) _publish();
+  }
+
+  static String _newLoginId() {
+    final random = Random.secure();
+    final bytes = List<int>.generate(16, (_) => random.nextInt(256));
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    final hex = bytes.map((value) => value.toRadixString(16).padLeft(2, '0'));
+    final value = hex.join();
+    return '${value.substring(0, 8)}-${value.substring(8, 12)}-'
+        '${value.substring(12, 16)}-${value.substring(16, 20)}-'
+        '${value.substring(20)}';
   }
 
   void changeName(String raw) {
@@ -443,9 +681,12 @@ class AccountEditorViewModel extends _$AccountEditorViewModel {
         // A retry of only the follow-up intent must not patch or create again.
         if (wasCreating || !raw.sameFields(baseline)) {
           final result = wasCreating
-              ? await _accounts.create(raw.create(identity), draft: stamp)
+              ? await _accounts.create(
+                  raw.create(identity, editorId: _key.editorId),
+                  draft: stamp,
+                )
               : await _accounts.patch(
-                  raw.patch(identity, baseline),
+                  raw.patch(identity, baseline, editorId: _key.editorId),
                   draft: stamp,
                 );
           if (!await _accept(result)) return false;
@@ -488,7 +729,15 @@ class AccountEditorViewModel extends _$AccountEditorViewModel {
                 ),
             ],
             billing: wasCreating ? raw.billing : baseline.billing,
+            authentication: raw.authentication,
+            loginId: null,
+            apiEndpoint: raw.apiEndpoint,
+            mustEnterApiKey: raw.mustEnterApiKey,
           );
+          if (_raw?.loginId == raw.loginId) {
+            _raw = _raw?.withAuthentication(raw.authentication);
+          }
+          if (raw.loginId != null) _releaseChatGptLogin();
           // Opening a display subscription may fail independently. Record the
           // already-durable configuration first, including saved model identity.
           _observeCreatedDetails();
@@ -531,7 +780,9 @@ class AccountEditorViewModel extends _$AccountEditorViewModel {
               }
             }
           }
-          _baseline = raw.withRows(savedRows);
+          _baseline = raw
+              .withRows(savedRows)
+              .withAuthentication(raw.authentication);
         }
         if (creating) {
           if (defaultIntent && !defaultBaseline) {
@@ -643,6 +894,18 @@ class AccountEditorViewModel extends _$AccountEditorViewModel {
     }
     if (choice == AccountLeaveChoice.save) {
       if (_unknownResult || (_dirty && !await save())) return false;
+    } else if (choice == AccountLeaveChoice.discard) {
+      final loginId = _raw?.loginId;
+      if (loginId != null) {
+        await _cancelChatGptLogin(loginId);
+      }
+      final draft = _raw;
+      if (draft?.loginId != null) {
+        _raw = draft!.withAuthentication(draft.authentication);
+        _releaseChatGptLogin();
+        _revision++;
+        _publish();
+      }
     }
     return true;
   }
@@ -651,6 +914,11 @@ class AccountEditorViewModel extends _$AccountEditorViewModel {
   /// releases local retention, never domain preparation/authentication/writes.
   void finish() {
     if (_finished) return;
+    final login = _raw?.loginId;
+    if (login != null) {
+      unawaited(_cancelChatGptLogin(login));
+    }
+    _releaseChatGptLogin();
     _finished = true;
     final key = _acpKey;
     if (key != null && ref.exists(acpAccountViewModelProvider(key))) {
@@ -696,6 +964,29 @@ class AccountEditorViewModel extends _$AccountEditorViewModel {
     final validation =
         draft?.validate(_strings) ??
         (_acpName?.trim().isEmpty == true ? _strings['required'] : null);
+    final login = _currentChatGptLogin;
+    final keepsSavedChatGpt =
+        (!_key.creating || _created) &&
+        _baseline?.authentication ==
+            account_domain.AccountAuthenticationMethod.chatGpt &&
+        draft?.authentication ==
+            account_domain.AccountAuthenticationMethod.chatGpt &&
+        draft?.loginId == null;
+    final chatGptLoginReady =
+        login?.phase == account_domain.ChatGptLoginPhase.succeeded &&
+        login?.account?.planUsageEnabled == true;
+    final authenticationReady = draft == null
+        ? true
+        : draft.authentication ==
+              account_domain.AccountAuthenticationMethod.apiKey
+        ? !(draft.mustEnterApiKey && draft.credential.trim().isEmpty)
+        : keepsSavedChatGpt || chatGptLoginReady;
+    final authenticationValidation =
+        !authenticationReady &&
+            draft.authentication ==
+                account_domain.AccountAuthenticationMethod.apiKey
+        ? _strings['chatGptApiKeyRequired']
+        : null;
     final isReady = draft != null || _acpName != null;
     final acpKey = _acpKey;
     final prepared =
@@ -717,6 +1008,7 @@ class AccountEditorViewModel extends _$AccountEditorViewModel {
         !_stale &&
         !unknownTemplate &&
         validation == null &&
+        authenticationReady &&
         (acpKey == null || !_key.creating || _created || prepared);
     final current = _details?.value.value;
     final currentNative = current is NativeAccountDetails ? current : null;
@@ -730,6 +1022,7 @@ class AccountEditorViewModel extends _$AccountEditorViewModel {
     final error = _stale
         ? _strings['stale']
         : _error ??
+              _authenticationError ??
               configurationError ??
               (unknownTemplate ? _strings['unknownTemplate'] : null) ??
               (_key.target.kind == AccountKind.native
@@ -805,6 +1098,20 @@ class AccountEditorViewModel extends _$AccountEditorViewModel {
                     template!.credentialEnv,
                 ].join(' · '),
               ),
+              authentication:
+                  draft.authentication ==
+                      account_domain.AccountAuthenticationMethod.chatGpt
+                  ? AccountAuthenticationMethod.chatGpt
+                  : AccountAuthenticationMethod.apiKey,
+              isOpenAiTemplate: draft.templateId == 'openai',
+              chatGptLogin: _chatGptLoginPresentation(login),
+              savedChatGptAccount: _chatGptAccountPresentation(
+                _initialNative?.chatgptAccount ??
+                    (_details?.value.value is NativeAccountDetails
+                        ? (_details!.value.value as NativeAccountDetails)
+                              .chatgptAccount
+                        : null),
+              ),
               protocolLabel: draft.protocol,
               setDefaultOnCreate: _setDefaultOnCreate,
               showSetDefaultOnCreate: _key.creating,
@@ -867,7 +1174,7 @@ class AccountEditorViewModel extends _$AccountEditorViewModel {
                     : displayBilling(draft.billing),
                 allowedOverrides: AccountBilling.values,
               ),
-              error: error ?? validation,
+              error: error ?? validation ?? authenticationValidation,
             ),
       acp: _acpName == null
           ? null
@@ -920,3 +1227,43 @@ class AccountEditorViewModel extends _$AccountEditorViewModel {
     if (ref.mounted && !_finished) state = AsyncData(_derive());
   }
 }
+
+ChatGptAccountInfo? _chatGptAccountPresentation(
+  account_domain.ChatGptAccountInfo? account,
+) => account == null
+    ? null
+    : ChatGptAccountInfo(
+        email: account.email,
+        planUsageEnabled: account.planUsageEnabled,
+      );
+
+ChatGptLoginSnapshot? _chatGptLoginPresentation(
+  account_domain.ChatGptLoginSnapshot? snapshot,
+) => snapshot == null
+    ? null
+    : ChatGptLoginSnapshot(
+        phase: switch (snapshot.phase) {
+          account_domain.ChatGptLoginPhase.preparing =>
+            ChatGptLoginPhase.preparing,
+          account_domain.ChatGptLoginPhase.awaitingBrowser =>
+            ChatGptLoginPhase.awaitingBrowser,
+          account_domain.ChatGptLoginPhase.exchangingCode =>
+            ChatGptLoginPhase.exchangingCode,
+          account_domain.ChatGptLoginPhase.succeeded =>
+            ChatGptLoginPhase.succeeded,
+          account_domain.ChatGptLoginPhase.cancelled =>
+            ChatGptLoginPhase.cancelled,
+          account_domain.ChatGptLoginPhase.failed => ChatGptLoginPhase.failed,
+        },
+        account: _chatGptAccountPresentation(snapshot.account),
+        failure: switch (snapshot.failure?.code) {
+          account_domain.ChatGptLoginFailureCode.authorizationDenied =>
+            ChatGptLoginFailureCode.authorizationDenied,
+          account_domain.ChatGptLoginFailureCode.missingPlanPermission =>
+            ChatGptLoginFailureCode.missingPlanPermission,
+          account_domain.ChatGptLoginFailureCode.expired =>
+            ChatGptLoginFailureCode.expired,
+          null => null,
+          _ => ChatGptLoginFailureCode.other,
+        },
+      );

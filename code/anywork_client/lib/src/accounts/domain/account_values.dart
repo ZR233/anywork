@@ -5,6 +5,7 @@ import '../../models/delegation_models.dart';
 import '../../models/failure_models.dart';
 import '../../models/studio_commands.dart';
 import 'account_identity.dart';
+import 'account_authentication.dart';
 
 final class AccountCapabilities {
   const AccountCapabilities({
@@ -83,6 +84,8 @@ final class NativeAccountDetails extends AccountDetails {
   NativeAccountDetails({
     required this.identity,
     required this.name,
+    this.authentication = AccountAuthenticationMethod.apiKey,
+    this.chatgptAccount,
     required this.protocol,
     this.templateId,
     required this.baseUrl,
@@ -95,6 +98,8 @@ final class NativeAccountDetails extends AccountDetails {
   @override
   final NativeAccountIdentity identity;
   final String name;
+  final AccountAuthenticationMethod authentication;
+  final ChatGptAccountInfo? chatgptAccount;
   final String protocol;
   final String? templateId;
   final String baseUrl;

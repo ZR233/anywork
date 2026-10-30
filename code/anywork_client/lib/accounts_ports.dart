@@ -52,6 +52,16 @@ abstract interface class AccountConfigurationPort {
     BillingKind? billingKind, {
     required OperationId operationId,
   });
+  Future<ChatGptLoginCommandReply> startChatGptLogin({
+    required String loginId,
+    required String editorId,
+    required String accountId,
+  });
+  Future<ChatGptLoginCommandReply> cancelChatGptLogin({
+    required String loginId,
+    required String editorId,
+    required String accountId,
+  });
 }
 
 abstract interface class AccountModelsPort {

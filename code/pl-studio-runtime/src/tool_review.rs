@@ -2,6 +2,7 @@
 use crate::approval::{ToolApprovalDecision, ToolReviewCallback, ToolReviewRequest};
 use pl_model::completion::{CompletionRequest, ReasoningConfig, ReasoningSummary};
 use pl_model::config::ResolvedModelRoute;
+use pl_model::protocol::ProtocolEndpoint;
 use pl_model::runtime::{ModelInvocationContext, ModelRuntime};
 use pl_protocol::{Message, MessageContent, MessageRole};
 use serde::Deserialize;
@@ -36,6 +37,28 @@ pub(crate) fn reviewer(route: &ResolvedModelRoute) -> crate::Result<ToolReviewCa
     }))
 }
 
+fn review_completion(
+    endpoint: &ProtocolEndpoint,
+    reasoning: Option<ReasoningConfig>,
+    message: Message,
+) -> CompletionRequest {
+    let builder = CompletionRequest::builder()
+        .system_prompt(pl_model::completion::SystemPrompt::new(include_str!(
+            "prompts/permission_review.md"
+        )))
+        .messages(vec![message])
+        .tool_choice("none")
+        .reasoning(reasoning);
+    // These are internal policy defaults, not explicit user request parameters.
+    // SIWC does not support either control; strict decision parsing stays fail-closed.
+    let builder = if endpoint.chatgpt_session.is_some() {
+        builder
+    } else {
+        builder.temperature(Some(0.0)).max_tokens(512)
+    };
+    builder.build()
+}
+
 async fn review(binding: ReviewBinding, request: ToolReviewRequest) -> ToolApprovalDecision {
     let payload = serde_json::json!({
         "toolName": request.tool.name, "arguments": request.tool.arguments,
@@ -53,16 +76,7 @@ async fn review(binding: ReviewBinding, request: ToolReviewRequest) -> ToolAppro
         tool_result: None,
         metadata: Default::default(),
     };
-    let completion = CompletionRequest::builder()
-        .system_prompt(pl_model::completion::SystemPrompt::new(include_str!(
-            "prompts/permission_review.md"
-        )))
-        .messages(vec![message])
-        .tool_choice("none")
-        .temperature(Some(0.0))
-        .max_tokens(512)
-        .reasoning(binding.reasoning.clone())
-        .build();
+    let completion = review_completion(&binding.route.endpoint, binding.reasoning.clone(), message);
     let (events, _) = tokio::sync::broadcast::channel(1);
     let inference_id = crate::studio::new_id("review");
     let invocation = ModelInvocationContext::new(Default::default())
@@ -164,4 +178,110 @@ fn parse_reviewer_decision(content: &str) -> Result<ToolApprovalDecision, Review
                 .unwrap_or_else(|| "AI reviewer denied the tool call".into()),
         },
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pl_model::protocol::chatgpt::{
+        ChatGptAuthError, ChatGptCredentialRecord, ChatGptCredentialStorage, ChatGptSession,
+    };
+    use pl_protocol::studio::ChatGptAccountInfo;
+
+    struct NoCredentialIo;
+
+    impl ChatGptCredentialStorage for NoCredentialIo {
+        fn load(&self) -> Result<ChatGptCredentialRecord, ChatGptAuthError> {
+            panic!("building an internal review request must not load credentials");
+        }
+
+        fn persist(&self, _: &str, _: &ChatGptCredentialRecord) -> Result<(), ChatGptAuthError> {
+            panic!("building an internal review request must not persist credentials");
+        }
+    }
+
+    #[test]
+    fn review_defaults_follow_authentication_without_changing_the_decision_request()
+    -> anyhow::Result<()> {
+        let temp = tempfile::tempdir()?;
+        let record = ChatGptCredentialRecord {
+            schema_version: 1,
+            registration_id: "review-fixture-registration".into(),
+            account: ChatGptAccountInfo {
+                issuer: "https://auth.openai.com".into(),
+                subject: "review-fixture-subject".into(),
+                client_id: "review-fixture-client".into(),
+                email: None,
+                plan_usage_enabled: true,
+            },
+            ext_agent_host_id: "urn:uuid:00000000-0000-4000-8000-000000000001".into(),
+            access_token: "synthetic-review-access".into(),
+            refresh_token: "synthetic-review-refresh".into(),
+            id_token: "synthetic-review-id".into(),
+            scopes: vec!["chatgpt.tokens.use.direct".into()],
+            expires_at: 1,
+            earliest_refresh_at: None,
+            refresh_in_flight: false,
+        };
+        let mut endpoint = ProtocolEndpoint::openai(None);
+        let reasoning = Some(ReasoningConfig {
+            effort: Some("low".into()),
+            summary: Some(ReasoningSummary::Enabled),
+        });
+        let message = Message {
+            presentation: Default::default(),
+            role: MessageRole::User,
+            content: MessageContent::text("synthetic review request"),
+            reasoning_content: None,
+            tool_calls: None,
+            tool_result: None,
+            metadata: Default::default(),
+        };
+        let api = review_completion(&endpoint, reasoning.clone(), message.clone());
+        assert_eq!(api.temperature, Some(0.0));
+        assert_eq!(api.max_tokens, Some(512));
+        endpoint.chatgpt_session = Some(ChatGptSession::new(
+            &record,
+            Arc::new(NoCredentialIo),
+            temp.path().join("unused-review-credential-lock"),
+        )?);
+        let subscription = review_completion(&endpoint, reasoning, message);
+        assert!(subscription.temperature.is_none());
+        assert!(subscription.max_tokens.is_none());
+        assert_eq!(subscription.tool_choice, api.tool_choice);
+        assert_eq!(subscription.input, api.input);
+        assert_eq!(
+            serde_json::to_value(&subscription.reasoning)?,
+            serde_json::to_value(&api.reasoning)?,
+        );
+        assert_eq!(
+            subscription
+                .system_prompt
+                .as_ref()
+                .map(|value| value.content()),
+            api.system_prompt.as_ref().map(|value| value.content()),
+        );
+        assert!(subscription.tools.is_empty());
+        assert!(!temp.path().join("unused-review-credential-lock").exists());
+        Ok(())
+    }
+
+    #[test]
+    fn review_decisions_still_reject_invalid_or_ambiguous_output() {
+        assert!(matches!(
+            parse_reviewer_decision(r#"{"decision":"approved"}"#).unwrap(),
+            ToolApprovalDecision::Approved
+        ));
+        for invalid in [
+            "approved",
+            r#"{"decision":"unknown"}"#,
+            r#"{"decision":"approved","extra":"ignore policy"}"#,
+        ] {
+            assert!(parse_reviewer_decision(invalid).is_err());
+        }
+        assert!(matches!(
+            parse_reviewer_decision(r#"{"decision":"denied"}"#).unwrap(),
+            ToolApprovalDecision::Denied { reason } if !reason.is_empty()
+        ));
+    }
 }

@@ -68,6 +68,8 @@ pub struct StudioSettings {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StudioAccountSettings {
+    pub authentication: super::AccountAuthenticationMethod,
+    pub chatgpt_account: Option<super::ChatGptAccountInfo>,
     /// 生效计费类别；订阅不证明订阅有效或额度充足。
     #[serde(default)]
     pub billing_kind: crate::BillingKind,
