@@ -283,10 +283,14 @@ fn copy_owned_directory(source: &std::path::Path, target: &std::path::Path) -> s
             copy_owned_directory(&entry.path(), &destination)?;
         } else if kind.is_file() && !destination.exists() {
             let mut original = std::fs::File::open(entry.path())?;
-            let mut pending = tempfile::NamedTempFile::new_in(target)?;
+            // tempfile publishes through Win32 directly; retain the existing parent's native
+            // spelling for both paths without changing the frozen workspace or final file name.
+            let native_target = std::fs::canonicalize(target)?;
+            let native_destination = native_target.join(entry.file_name());
+            let mut pending = tempfile::NamedTempFile::new_in(&native_target)?;
             std::io::copy(&mut original, pending.as_file_mut())?;
             pending.as_file().sync_all()?;
-            match pending.persist_noclobber(&destination) {
+            match pending.persist_noclobber(&native_destination) {
                 Ok(_) => {}
                 Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => {}
                 Err(error) => return Err(error.error),
@@ -351,7 +355,17 @@ mod migration_tests {
         let temp = tempfile::tempdir().unwrap();
         let business = temp.path().join("business");
         let source = business.join(".anywork/sessions/owned");
-        let target = temp.path().join("bot/workspace/.anywork/sessions/owned");
+        let target = temp
+            .path()
+            .join("bot/workspace")
+            .join("migration-path-component-".repeat(6))
+            .join("migration-path-component-".repeat(6))
+            .join(".anywork/sessions/owned");
+        #[cfg(windows)]
+        {
+            use std::os::windows::ffi::OsStrExt;
+            assert!(target.as_os_str().encode_wide().count() > 260);
+        }
         fs::create_dir_all(source.join("scratch")).unwrap();
         fs::create_dir_all(source.join(".venv")).unwrap();
         fs::write(business.join("business.txt"), "not bot-owned").unwrap();
