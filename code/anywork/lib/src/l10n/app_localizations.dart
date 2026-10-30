@@ -5196,6 +5196,24 @@ abstract class AppLocalizations {
   /// **'Keep new timeline output pinned to the latest turn.'**
   String get settingsFollowActiveTurnSubtitle;
 
+  /// No description provided for @settingsInterfaceLanguage.
+  ///
+  /// In en, this message translates to:
+  /// **'Interface language'**
+  String get settingsInterfaceLanguage;
+
+  /// No description provided for @settingsInterfaceLanguageSubtitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Change the interface language without changing conversation content.'**
+  String get settingsInterfaceLanguageSubtitle;
+
+  /// No description provided for @settingsLanguageSystem.
+  ///
+  /// In en, this message translates to:
+  /// **'Follow system'**
+  String get settingsLanguageSystem;
+
   /// No description provided for @settingsCompactTimeline.
   ///
   /// In en, this message translates to:

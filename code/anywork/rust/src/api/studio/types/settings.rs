@@ -155,6 +155,9 @@ pub enum SettingsFieldInput {
     GeneralCompactTimeline {
         value: bool,
     },
+    GeneralLanguage {
+        value: BridgeUiLanguage,
+    },
     GeneralSidebarWidth {
         value: Option<u16>,
     },
@@ -263,6 +266,9 @@ impl From<SettingsFieldInput> for pl_protocol::studio::SettingsFieldUpdate {
             SettingsFieldInput::GeneralCompactTimeline { value } => {
                 Update::GeneralCompactTimeline { value }
             }
+            SettingsFieldInput::GeneralLanguage { value } => Update::GeneralLanguage {
+                value: value.into(),
+            },
             SettingsFieldInput::GeneralSidebarWidth { value } => {
                 Update::GeneralSidebarWidth { value }
             }
@@ -626,10 +632,41 @@ pub enum BridgeMcpServerConfiguration {
     MissingCredential,
 }
 
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum BridgeUiLanguage {
+    #[default]
+    System,
+    Zh,
+    En,
+}
+
+impl From<BridgeUiLanguage> for pl_protocol::studio::StudioUiLanguage {
+    fn from(value: BridgeUiLanguage) -> Self {
+        match value {
+            BridgeUiLanguage::System => Self::System,
+            BridgeUiLanguage::Zh => Self::Zh,
+            BridgeUiLanguage::En => Self::En,
+        }
+    }
+}
+
+impl From<pl_protocol::studio::StudioUiLanguage> for BridgeUiLanguage {
+    fn from(value: pl_protocol::studio::StudioUiLanguage) -> Self {
+        match value {
+            pl_protocol::studio::StudioUiLanguage::System => Self::System,
+            pl_protocol::studio::StudioUiLanguage::Zh => Self::Zh,
+            pl_protocol::studio::StudioUiLanguage::En => Self::En,
+        }
+    }
+}
+
 /// Flutter 本地通用设置的 typed 快照。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct BridgeGeneralSettingsDto {
+    #[serde(default)]
+    pub language: BridgeUiLanguage,
     pub follow_active_turn: bool,
     pub compact_timeline: bool,
     #[serde(default)]
@@ -643,6 +680,7 @@ pub struct BridgeGeneralSettingsDto {
 impl Default for BridgeGeneralSettingsDto {
     fn default() -> Self {
         Self {
+            language: BridgeUiLanguage::System,
             follow_active_turn: true,
             compact_timeline: false,
             sidebar_width: None,

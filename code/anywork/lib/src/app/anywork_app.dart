@@ -9,6 +9,7 @@ import 'package:anywork_client/studio_client.dart';
 
 import '../platform/desktop_tray_host.dart';
 import '../presentation/providers/studio_update_controller.dart';
+import '../presentation/providers/settings_store.dart';
 import '../l10n/app_localizations.dart';
 import '../l10n/studio_l10n.dart';
 import '../platform/error_log.dart';
@@ -65,6 +66,11 @@ class _AnyworkAppState extends ConsumerState<AnyworkApp> {
 
   @override
   Widget build(BuildContext context) {
+    final language = ref.watch(
+      settingsStoreProvider.select(
+        (state) => state.canonical?.general.language ?? UiLanguage.system,
+      ),
+    );
     return StudioLifecycleCoordinator(
       child: _EagerInitialization(
         child: MaterialApp.router(
@@ -74,6 +80,11 @@ class _AnyworkAppState extends ConsumerState<AnyworkApp> {
           themeMode: ThemeMode.light,
           localizationsDelegates: AppLocalizations.localizationsDelegates,
           supportedLocales: AppLocalizations.supportedLocales,
+          locale: switch (language) {
+            UiLanguage.system => null,
+            UiLanguage.zh => const Locale('zh'),
+            UiLanguage.en => const Locale('en'),
+          },
           routerConfig: _router,
           restorationScopeId: 'anywork-app',
           // The builder observes Flutter's resolved locale, including system
