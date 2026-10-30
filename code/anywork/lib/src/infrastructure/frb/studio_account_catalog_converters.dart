@@ -188,10 +188,11 @@ AccountDomainFrame _accountFrameFromFrb(
   frb_accounts.BridgeAccountDomainFrame_ChatGptLogin(
     :final stamp,
     :final snapshot,
-  ) => ChatGptLoginFrame(
-    _accountStampFromFrb(stamp),
-    _chatGptLoginSnapshotFromFrb(snapshot),
-  ),
+  ) =>
+    ChatGptLoginFrame(
+      _accountStampFromFrb(stamp),
+      _chatGptLoginSnapshotFromFrb(snapshot),
+    ),
 };
 
 AccountAuthenticationMethod _accountAuthenticationMethodFromFrb(

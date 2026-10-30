@@ -405,6 +405,7 @@ class _AccountEditorConnectorState
               }),
             );
           }
+
           if (isCurrentEditor()) {
             final autoOpenUrl = owner.claimAuthorizationUrlForAutomaticOpen();
             if (autoOpenUrl != null) {
