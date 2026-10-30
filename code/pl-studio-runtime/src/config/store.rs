@@ -61,6 +61,10 @@ impl ConfigPaths {
         &self.config_file
     }
 
+    pub(crate) fn model_catalogs_dir(&self) -> PathBuf {
+        crate::studio::paths::StudioPaths::from_home(self.config_dir.clone()).model_catalogs_dir()
+    }
+
     /// 用户 Agent Profile 的独立 TOML 目录。
     pub fn agents_dir(&self) -> PathBuf {
         self.config_dir.join("agents")

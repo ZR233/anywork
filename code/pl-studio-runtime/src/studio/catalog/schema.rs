@@ -19,7 +19,7 @@ pub(super) const ENTITY: &str = "catalog";
 pub(super) const SCHEMA_KEY: &str = "schemaVersion";
 
 pub(super) fn current_version() -> Result<u32> {
-    toml_schema::integer_version(CatalogV4::VERSION)
+    toml_schema::integer_version(CatalogV5::VERSION)
         .map_err(|error| toml_schema::chain_error(ENTITY, error))
 }
 
@@ -37,14 +37,15 @@ fn migrator() -> Result<&'static Migrator> {
                 .step::<CatalogDocumentV2>()
                 .step::<CatalogDocumentV3>()
                 .step::<CatalogV4>()
-                .into::<CatalogV4>(),
+                .step::<CatalogV5>()
+                .into::<CatalogV5>(),
         )
         .map_err(|error| toml_schema::chain_error(ENTITY, error))?;
     Ok(MIGRATOR.get_or_init(|| migrator))
 }
 
 pub(super) fn load_document(path: &Path, content: &str) -> Result<LoadedDocument<CatalogDocument>> {
-    let loaded = toml_schema::load::<CatalogDocumentV1, CatalogV4>(
+    let loaded = toml_schema::load::<CatalogDocumentV1, CatalogV5>(
         path,
         content,
         migrator()?,
@@ -215,6 +216,40 @@ pub(super) struct CatalogEntryV4 {
     explicitly_closed: bool,
     id: String,
     project_id: String,
+    title: String,
+    mode: FrozenModeId,
+    workspace_mode: FrozenWorkspaceMode,
+    delegation_mode: FrozenDelegationMode,
+    delegation_preference: FrozenDelegationPreference,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    frozen_model: Option<FrozenModelRoute>,
+    workspace_path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    parent_thread_id: Option<String>,
+    root_thread_id: String,
+    role: String,
+    agent_path: String,
+    status: FrozenThreadStatus,
+    created_at: i64,
+    updated_at: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    last_user_message_at: Option<i64>,
+    archived: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize, Versioned)]
+#[versioned(version = "5.0.0")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct CatalogV5 {
+    revision: u64,
+    entries: Vec<CatalogEntryV5>,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct CatalogEntryV5 {
+    explicitly_closed: bool,
+    id: String,
+    workspace_id: String,
     title: String,
     mode: FrozenModeId,
     workspace_mode: FrozenWorkspaceMode,
@@ -458,16 +493,48 @@ impl MigratesTo<CatalogV4> for CatalogDocumentV3 {
     }
 }
 
-impl IntoDomain<CatalogV4> for CatalogV4 {
-    fn into_domain(self) -> CatalogV4 {
+impl MigratesTo<CatalogV5> for CatalogV4 {
+    fn migrate(self) -> CatalogV5 {
+        CatalogV5 {
+            revision: self.revision,
+            entries: self
+                .entries
+                .into_iter()
+                .map(|entry| CatalogEntryV5 {
+                    workspace_id: entry.project_id,
+                    explicitly_closed: entry.explicitly_closed,
+                    id: entry.id,
+                    title: entry.title,
+                    mode: entry.mode,
+                    workspace_mode: entry.workspace_mode,
+                    delegation_mode: entry.delegation_mode,
+                    delegation_preference: entry.delegation_preference,
+                    frozen_model: entry.frozen_model,
+                    workspace_path: entry.workspace_path,
+                    parent_thread_id: entry.parent_thread_id,
+                    root_thread_id: entry.root_thread_id,
+                    role: entry.role,
+                    agent_path: entry.agent_path,
+                    status: entry.status,
+                    created_at: entry.created_at,
+                    updated_at: entry.updated_at,
+                    last_user_message_at: entry.last_user_message_at,
+                    archived: entry.archived,
+                })
+                .collect(),
+        }
+    }
+}
+impl IntoDomain<CatalogV5> for CatalogV5 {
+    fn into_domain(self) -> CatalogV5 {
         self
     }
 }
 
-impl TryFrom<CatalogV4> for CatalogDocument {
+impl TryFrom<CatalogV5> for CatalogDocument {
     type Error = anyhow::Error;
 
-    fn try_from(document: CatalogV4) -> Result<Self> {
+    fn try_from(document: CatalogV5) -> Result<Self> {
         Ok(Self {
             revision: document.revision,
             entries: document
@@ -479,14 +546,14 @@ impl TryFrom<CatalogV4> for CatalogDocument {
     }
 }
 
-impl TryFrom<CatalogEntryV4> for CatalogEntry {
+impl TryFrom<CatalogEntryV5> for CatalogEntry {
     type Error = anyhow::Error;
 
-    fn try_from(entry: CatalogEntryV4) -> Result<Self> {
+    fn try_from(entry: CatalogEntryV5) -> Result<Self> {
         Ok(Self {
             explicitly_closed: entry.explicitly_closed,
             id: entry.id,
-            project_id: entry.project_id,
+            workspace_id: entry.workspace_id,
             title: entry.title,
             mode: ThreadModeId::new(entry.mode.0)?,
             workspace_mode: entry.workspace_mode.current(),
@@ -586,7 +653,7 @@ mod tests {
         );
         assert_eq!(roundtrip_toml(&v4), v4);
 
-        let current = CatalogDocument::try_from(v4).expect("construct current");
+        let current = CatalogDocument::try_from(v4.migrate()).expect("construct current");
         assert!(!current.entries[0].explicitly_closed);
         assert_eq!(current.entries[0].status, ThreadStatus::Closed);
         assert_eq!(
@@ -638,13 +705,17 @@ mod tests {
                 archived: false,
             }],
         };
+        let current: CatalogV5 = current.migrate();
         let encoded = toml_schema::encode(&current, SCHEMA_KEY).expect("current bytes");
         let future = encoded.replacen(
             &format!(
                 "schemaVersion = {}",
                 current_version().expect("catalog integer version")
             ),
-            "schemaVersion = 5",
+            &format!(
+                "schemaVersion = {}",
+                current_version().expect("version") + 1
+            ),
             1,
         );
         let error = load_document(Path::new("catalog.toml"), &future)
@@ -672,4 +743,9 @@ mod tests {
         assert_eq!(loaded.document.entries[0].last_user_message_at, None);
         assert_eq!(loaded.document.entries[0].frozen_model, None);
     }
+}
+
+pub(super) fn migrate_v2_content(path: &Path, content: &str) -> Result<String> {
+    let loaded = load_document(path, content)?;
+    toml_schema::encode(&loaded.document, SCHEMA_KEY)
 }

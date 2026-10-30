@@ -5,6 +5,42 @@
 
 mod schema;
 
+pub(in crate::studio) fn migrate_v2_content(
+    path: &std::path::Path,
+    content: &str,
+) -> Result<String> {
+    let loaded = schema::load_document(path, content)?;
+    crate::toml_schema::encode(&loaded.document, schema::SCHEMA_KEY)
+}
+
+pub(in crate::studio) async fn relocate_managed_v2_paths(
+    path: &std::path::Path,
+    mappings: &[crate::studio::startup::storage_layout::bot_roots::BotRootMove],
+) -> Result<()> {
+    let content = tokio::fs::read_to_string(path).await?;
+    let mut document = schema::load_document(path, &content)?.document;
+    for entry in &mut document.workspaces {
+        for mapping in mappings {
+            if entry.id == mapping.workspace_id
+                && entry.ssh_alias.is_none()
+                && entry.path == mapping.old_root
+                && mapping
+                    .threads
+                    .values()
+                    .any(|proof| proof.proven_local_root)
+            {
+                entry.path = mapping.new_root.clone();
+            }
+        }
+    }
+    // Physical representation maintenance does not advance the product revision.
+    crate::studio::store::session_layout::write_manifest(
+        path,
+        &crate::toml_schema::encode(&document, schema::SCHEMA_KEY)?,
+    )
+    .await
+}
+
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
 

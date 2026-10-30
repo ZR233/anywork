@@ -177,26 +177,3 @@ pub(in crate::studio) struct DirectoryState {
     pub kind: pl_protocol::ThreadStatus,
     pub error: Option<String>,
 }
-impl DirectoryState {
-    pub(in crate::studio) fn kind_label(&self) -> &'static str {
-        use pl_protocol::ThreadStatus;
-        match self.kind {
-            ThreadStatus::Idle => "idle",
-            ThreadStatus::Queued => "queued",
-            ThreadStatus::Running => "running",
-            ThreadStatus::WaitingTool => "waitingTool",
-            ThreadStatus::WaitingInteraction => "waitingInteraction",
-            ThreadStatus::Cancelling => "cancelling",
-            ThreadStatus::Closing => "closing",
-            ThreadStatus::Closed => "closed",
-            ThreadStatus::Faulted => "faulted",
-        }
-    }
-
-    pub(in crate::studio) fn idle() -> Self {
-        Self {
-            kind: pl_protocol::ThreadStatus::Idle,
-            error: None,
-        }
-    }
-}

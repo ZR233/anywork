@@ -110,6 +110,16 @@ impl StudioRuntime {
         }
         loop {
             check_cancelled(&cancellation)?;
+            crate::studio::startup::storage_layout::prepare(&resolved.paths)
+                .await
+                .map_err(|error| {
+                    StudioStartupError::new(
+                        "prepare_layout",
+                        StudioStartupErrorKind::Migration,
+                        error,
+                    )
+                })?;
+
             match Self::prepare_attempt(&resolved, &observer, &cancellation).await {
                 Ok(mut runtime) => {
                     if let Err(error) = check_cancelled(&cancellation) {
@@ -183,7 +193,14 @@ impl StudioRuntime {
                 let _timing = crate::startup_timing::Stage::new("prepare_storage");
                 StudioStore::prepare_database(&resolved.paths.database())
                     .await
-                    .map_err(|error| StudioStartupError::input("prepare_storage", error))
+                    .map_err(|error| {
+                        let mut error = StudioStartupError::input("prepare_storage", error);
+                        if error.kind == StudioStartupErrorKind::PersistentData {
+                            // Storage facts are never reset as a new installation.
+                            error.kind = StudioStartupErrorKind::Migration;
+                        }
+                        error
+                    })
             },
             async {
                 let _timing = crate::startup_timing::Stage::new("prepare_configuration");

@@ -11,7 +11,7 @@ use crate::studio::store::StudioStore;
 
 mod catalog_schema;
 
-pub(in crate::studio) const ATTACHMENT_CATALOG_SCHEMA_VERSION: u32 = 1;
+pub(in crate::studio) const ATTACHMENT_CATALOG_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -86,6 +86,7 @@ impl StudioStore {
     ) -> Result<pl_core::context::ResourceReference> {
         let session = self.registered_session_paths(&record.thread_id)?;
         let source = resolve_attachment_host_path(&session, &record.blob_relative_path)?;
+        super::session_layout::safe_path(&self.paths, &source).await?;
         let resources = crate::resource_store::FileResourceStore::new(session.resources_dir());
         let reference = resources.retain_file(&source, &record.media_type).await?;
         anyhow::ensure!(
@@ -211,68 +212,36 @@ impl StudioStore {
         thread_id: &str,
         drafts: &[AttachmentDraftObject],
     ) -> Result<Vec<AttachmentRecord>> {
-        let mut created_paths = Vec::new();
-        let mut prepared = Vec::with_capacity(drafts.len());
-        for draft in drafts {
-            let result = async {
-                // Current attachments share the per-session content-addressed blob root
-                // (`sessions/<storage-key>/blobs`) with their catalog.
-                let dir = self
-                    .thread_blobs_dir(thread_id)?
-                    .join(&draft.content_sha256[..2]);
-                tokio::fs::create_dir_all(&dir).await?;
-                let storage_path = dir.join(&draft.content_sha256);
-                let created = if tokio::fs::try_exists(&storage_path).await? {
-                    false
-                } else {
-                    tokio::fs::copy(&draft.storage_path, &storage_path).await?;
-                    // 引用 blob 的 catalog/checkpoint 只会在本调用返回之后发布，所以 blob 的字节
-                    // 和它的目录项必须先落盘，否则崩溃后 TOML 会指向一个不存在的附件。
-                    if let Err(error) = sync_blob(&storage_path).await {
-                        let _ = tokio::fs::remove_file(&storage_path).await;
-                        return Err(error);
-                    }
-                    true
-                };
-                Ok::<_, anyhow::Error>((storage_path, created))
-            }
-            .await;
-            match result {
-                Ok((storage_path, created)) => {
-                    if created {
-                        created_paths.push(storage_path.clone());
-                    }
-                    prepared.push((draft, storage_path));
-                }
-                Err(error) => {
-                    cleanup_created_blobs(created_paths).await;
-                    return Err(error);
-                }
-            }
-        }
-
         let session = self.registered_session_paths(thread_id)?;
-        prepared
-            .into_iter()
-            .map(|(draft, storage_path)| {
-                Ok(AttachmentRecord {
-                    id: new_id("attachment"),
-                    thread_id: thread_id.to_string(),
-                    modality: draft.modality,
-                    media_type: draft.media_type.clone(),
-                    filename: Some(draft.filename.clone()),
-                    blob_relative_path: crate::studio::store::session_layout::relative_blob_path(
-                        &session,
-                        &storage_path,
-                    )?,
-                    byte_size: draft.byte_size,
-                    content_sha256: draft.content_sha256.clone(),
-                    width: draft.width,
-                    height: draft.height,
-                    created_at: unix_seconds(),
-                })
-            })
-            .collect()
+        super::session_layout::safe_path(&self.paths, &session.resources_dir()).await?;
+        let resources = crate::resource_store::FileResourceStore::new(session.resources_dir());
+        let mut records = Vec::with_capacity(drafts.len());
+        for draft in drafts {
+            let reference = resources
+                .retain_file(&draft.storage_path, &draft.media_type)
+                .await?;
+            anyhow::ensure!(
+                reference.byte_len() == draft.byte_size
+                    && reference.content_digest() == format!("sha256:{}", draft.content_sha256),
+                "attachment draft integrity mismatch"
+            );
+            // Retained resources are shared with tools and other attachments. A failed batch may
+            // leave unreferenced reliable bytes, but must never remove another owner's resource.
+            records.push(AttachmentRecord {
+                id: new_id("attachment"),
+                thread_id: thread_id.to_owned(),
+                modality: draft.modality,
+                media_type: draft.media_type.clone(),
+                filename: Some(draft.filename.clone()),
+                blob_relative_path: format!("resources/{}", draft.content_sha256),
+                byte_size: draft.byte_size,
+                content_sha256: draft.content_sha256.clone(),
+                width: draft.width,
+                height: draft.height,
+                created_at: unix_seconds(),
+            });
+        }
+        Ok(records)
     }
 
     async fn load_attachment_catalog(&self, thread_id: &str) -> Result<Vec<AttachmentRecord>> {
@@ -281,7 +250,7 @@ impl StudioStore {
         match tokio::fs::read_to_string(&path).await {
             Ok(content) => {
                 let catalog = catalog_schema::decode(&path, &content)?;
-                (|| {
+                (async {
                     anyhow::ensure!(
                         catalog.schema_version == ATTACHMENT_CATALOG_SCHEMA_VERSION
                             && catalog.thread_id == thread_id
@@ -292,10 +261,18 @@ impl StudioStore {
                         "attachment catalog identity or schema mismatch"
                     );
                     for record in &catalog.records {
-                        resolve_attachment_host_path(&session, &record.blob_relative_path)?;
+                        let resource =
+                            resolve_attachment_host_path(&session, &record.blob_relative_path)?;
+                        anyhow::ensure!(
+                            record.blob_relative_path
+                                == format!("resources/{}", record.content_sha256),
+                            "attachment resource/digest mismatch"
+                        );
+                        super::session_layout::safe_path(&self.paths, &resource).await?;
                     }
                     Ok(catalog.records)
-                })()
+                })
+                .await
                 .map_err(|error: anyhow::Error| {
                     crate::toml_schema::migration_error(
                         &path,
@@ -345,8 +322,19 @@ fn resolve_attachment_host_path(
     );
     let resolved = session.root().join(Path::new(&relative));
     anyhow::ensure!(
-        resolved.starts_with(session.blobs_dir()),
+        resolved.parent() == Some(session.resources_dir().as_path()),
         "attachment is outside its Thread blob root"
+    );
+    let hash = resolved
+        .file_name()
+        .and_then(|name| name.to_str())
+        .context("missing resource digest")?;
+    anyhow::ensure!(
+        hash.len() == 64
+            && hash
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)),
+        "invalid resource digest"
     );
     Ok(resolved)
 }
@@ -375,7 +363,7 @@ pub(in crate::studio) fn decode_attachment_catalog(
     path: &Path,
     content: &str,
 ) -> Result<AttachmentCatalog> {
-    catalog_schema::decode(path, content)
+    catalog_schema::decode_v2(path, content)
 }
 
 pub(in crate::studio) async fn write_migrated_attachment_catalog(
@@ -389,12 +377,6 @@ pub(in crate::studio) async fn write_migrated_attachment_catalog(
     })
     .await??;
     Ok(())
-}
-
-async fn cleanup_created_blobs(paths: Vec<PathBuf>) {
-    for path in paths {
-        let _ = tokio::fs::remove_file(path).await;
-    }
 }
 
 /// Makes one newly written attachment blob and its directory entry durable.

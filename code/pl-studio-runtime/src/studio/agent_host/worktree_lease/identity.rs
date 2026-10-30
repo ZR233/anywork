@@ -95,6 +95,53 @@ pub(in crate::studio) struct SavedWorkspaceIdentity {
     owner: String,
     pub identity: WorkspaceIdentity,
 }
+
+/// The layout operation owns this physical representation move, not a new workspace admission.
+pub(in crate::studio) async fn migrate_bot_identities(
+    db: &sea_orm::DatabaseConnection,
+    mappings: &mut [crate::studio::startup::storage_layout::bot_roots::BotRootMove],
+) -> Result<()> {
+    use crate::studio::{
+        entity::studio_object,
+        store::object::{PersistedStudioObject, decode_object},
+    };
+    use sea_orm::{
+        ActiveModelTrait, ActiveValue::Set, EntityTrait, IntoActiveModel, TransactionTrait,
+    };
+    let tx = db.begin().await?;
+    for mapping in mappings {
+        let evidence = mapping.clone();
+        for (thread, proof) in &mapping.threads {
+            if !proof.proven_local_root {
+                continue;
+            }
+            let key = (
+                SavedWorkspaceIdentity::OWNER_KIND.to_owned(),
+                thread.clone(),
+                SavedWorkspaceIdentity::OBJECT_KIND.to_owned(),
+            );
+            let Some(row) = studio_object::Entity::find_by_id(key).one(&tx).await? else {
+                continue;
+            };
+            let mut saved = decode_object::<SavedWorkspaceIdentity>(row.clone())?;
+            if saved.identity.endpoint != WorkspaceEndpoint::Local
+                || (saved.identity.root != evidence.old_root
+                    && saved.identity.root != evidence.new_root)
+            {
+                mapping.blocked.insert(thread.clone(), "frozen WorkspaceIdentity is not the exact local bot managed root; original binding was preserved".into());
+                continue;
+            }
+            evidence.exact_path(&mut saved.identity.root)?;
+            let payload = serde_json::to_string(&saved)?;
+            let mut active = row.into_active_model();
+            active.payload_hash = Set(pl_core::context::content_hash(payload.as_bytes()));
+            active.payload_json = Set(payload);
+            active.update(&tx).await?;
+        }
+    }
+    tx.commit().await?;
+    Ok(())
+}
 impl crate::studio::store::object::PersistedStudioObject for SavedWorkspaceIdentity {
     type PersistenceDto = Self;
     const OWNER_KIND: &'static str = "thread";

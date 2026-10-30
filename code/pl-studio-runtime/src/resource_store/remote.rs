@@ -19,7 +19,7 @@ impl FileResourceStore {
     /// Binds the remote workspace lease and this Thread's host transfer scratch.
     ///
     /// Staging lives in the host-owned Thread scratch directory supplied by the factory, never
-    /// under `thread-resources` and never guessed from a parent directory. That scratch is
+    /// under `resources` and never guessed from a parent directory. That scratch is
     /// transfer space, not a model-writable workspace path.
     pub fn remote_command_archive(
         &self,

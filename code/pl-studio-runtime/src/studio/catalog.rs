@@ -11,6 +11,19 @@
 
 mod schema;
 
+pub(in crate::studio) fn validate_current_content(
+    path: &std::path::Path,
+    content: &str,
+) -> Result<()> {
+    let table: toml::Table = toml::from_str(content)?;
+    anyhow::ensure!(
+        table.get("schemaVersion").and_then(toml::Value::as_integer) == Some(5),
+        "current catalog requires schema 5: {}",
+        path.display()
+    );
+    Ok(())
+}
+
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -124,7 +137,7 @@ struct CatalogDocument {
 }
 
 impl Versioned for CatalogDocument {
-    const VERSION: &'static str = schema::CatalogV4::VERSION;
+    const VERSION: &'static str = schema::CatalogV5::VERSION;
 }
 
 impl RevisionedDocument for CatalogDocument {
@@ -152,6 +165,7 @@ impl CatalogStore {
         let document = match tokio::fs::read_to_string(&path).await {
             Ok(content) => {
                 let loaded = schema::load_document(&path, &content)?;
+                validate_current_content(&path, &content)?;
                 if loaded.migrated {
                     let bytes = toml_schema::encode(&loaded.document, schema::SCHEMA_KEY)?;
                     let path = path.clone();
@@ -448,12 +462,31 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn old_catalog_upgrades_once_and_keeps_revision() {
+    async fn v2_catalog_explicit_migration_keeps_revision_and_preserves_source() {
         let dir = tempfile::tempdir().expect("temp");
         let path = dir.path().join("catalog.toml");
-        let raw = "schemaVersion = 2\nrevision = 4\n\n[[entries]]\nid = \"thread-a\"\nworkspaceId = \"project-a\"\ntitle = \"Root\"\nmode = \"mode.simple\"\nworkspaceMode = \"local\"\nworkspacePath = \"/tmp/a\"\nrootThreadId = \"thread-a\"\nrole = \"root\"\nagentPath = \"thread-a\"\nstatus = \"idle\"\ncreatedAt = 10\nupdatedAt = 20\narchived = false\n";
-        tokio::fs::write(&path, raw).await.expect("write v2");
-        let store = CatalogStore::load(path.clone()).await.expect("upgrade");
+        let raw = "schemaVersion = 2\nrevision = 4\n\n[[entries]]\nid = \"thread-a\"\nprojectId = \"project-a\"\ntitle = \"Root\"\nmode = \"mode.simple\"\nworkspaceMode = \"local\"\nworkspacePath = \"/tmp/a\"\nrootThreadId = \"thread-a\"\nrole = \"root\"\nagentPath = \"thread-a\"\nstatus = \"idle\"\ncreatedAt = 10\nupdatedAt = 20\narchived = false\n";
+        let source = dir.path().join("v2-catalog.toml");
+        tokio::fs::write(&source, raw)
+            .await
+            .expect("write frozen v2");
+        assert!(
+            CatalogStore::load(source.clone()).await.is_err(),
+            "ordinary reads do not accept a retired owner vocabulary"
+        );
+        let encoded = migrate_v2_content(&source, raw).expect("explicit ownership migration");
+        assert_eq!(
+            tokio::fs::read_to_string(&source)
+                .await
+                .expect("source bytes"),
+            raw
+        );
+        tokio::fs::write(&path, encoded)
+            .await
+            .expect("publish current");
+        let store = CatalogStore::load(path.clone())
+            .await
+            .expect("load current");
         let first = tokio::fs::read_to_string(&path).await.expect("upgraded");
         let table: toml::Table = toml::from_str(&first).expect("toml");
         assert_eq!(
@@ -496,4 +529,39 @@ mod tests {
             raw
         );
     }
+}
+
+pub(in crate::studio) fn migrate_v2_content(
+    path: &std::path::Path,
+    content: &str,
+) -> Result<String> {
+    schema::migrate_v2_content(path, content)
+}
+
+pub(in crate::studio) async fn relocate_managed_v2_paths(
+    path: &std::path::Path,
+    mappings: &[crate::studio::startup::storage_layout::bot_roots::BotRootMove],
+) -> Result<()> {
+    let content = tokio::fs::read_to_string(path).await?;
+    let mut document = schema::load_document(path, &content)?.document;
+    for entry in &mut document.entries {
+        if let Some(mapping) = mappings.iter().find(|mapping| {
+            mapping
+                .threads
+                .get(&entry.id)
+                .is_some_and(|proof| proof.proven_local_root)
+        }) {
+            ensure!(
+                entry.workspace_id == mapping.workspace_id
+                    && entry.workspace_mode == ThreadWorkspaceMode::Local,
+                "bot catalog binding changed"
+            );
+            mapping.exact_path(&mut entry.workspace_path)?;
+        }
+    }
+    crate::studio::store::session_layout::write_manifest(
+        path,
+        &toml_schema::encode(&document, schema::SCHEMA_KEY)?,
+    )
+    .await
 }

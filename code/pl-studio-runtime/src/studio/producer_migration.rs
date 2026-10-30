@@ -111,6 +111,38 @@ pub(crate) fn project_kind(checkpoint: &mut ThreadCheckpoint) -> Result<()> {
     Ok(())
 }
 
+/// Exact physical relocation after stable bot ownership has been proved by the layout operation.
+pub(crate) fn relocate_bot_checkpoint(
+    checkpoint: &mut ThreadCheckpoint,
+    mapping: &crate::studio::startup::storage_layout::bot_roots::BotRootMove,
+) -> Result<()> {
+    mapping.require_convertible(&checkpoint.thread_id)?;
+    ensure!(
+        crate::studio::model_route::bot_owner(&checkpoint.state)?.as_deref()
+            == Some(mapping.bot_id.as_str()),
+        "saved bot owner conflicts with the layout operation"
+    );
+    project_kind(checkpoint)?;
+    if let Some(record) = checkpoint.state.extensions.get_mut("studio.project") {
+        let project: crate::studio::WorkspaceRecord =
+            serde_json::from_str(record.payload.content())?;
+        ensure!(
+            project.id == mapping.workspace_id && project.ssh_alias.is_none(),
+            "bot effective Workspace identity conflicts with the layout operation"
+        );
+        let mut path = project.path;
+        mapping.exact_path(&mut path)?;
+        let mut object: RawObject = serde_json::from_str(record.payload.content())?;
+        object.insert("path".into(), to_raw_value(&path)?);
+        record.payload = OpaquePayload::new(
+            record.payload.format(),
+            record.payload.version(),
+            serde_json::to_string(&object)?,
+        )?;
+    }
+    crate::studio::workspace_receipt::migration::relocate_bot_root(&mut checkpoint.state, mapping)
+}
+
 fn migrate_auxiliary(version: u32, content: &str) -> Result<String> {
     ensure!(
         (1..=AuxiliaryBillingReceipt::VERSION).contains(&version),
