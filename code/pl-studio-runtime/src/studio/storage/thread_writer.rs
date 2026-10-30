@@ -5593,15 +5593,30 @@ pub(crate) mod storage_fault_tests {
             .context("promoted attachment is missing")?;
         let reference = store.retain_attachment_resource(&attachment).await?;
         let blob = session.root().join(&attachment.blob_relative_path);
+        assert_eq!(
+            blob,
+            session.resources_dir().join(&attachment.content_sha256),
+            "attachment and tool references share the same retained object"
+        );
         tokio::fs::remove_file(&blob).await?;
         let resources = crate::resource_store::FileResourceStore::new(session.resources_dir());
-        assert_eq!(
-            resources
-                .read(reference, tokio_util::sync::CancellationToken::new())
-                .await?
-                .as_ref(),
-            bytes
-        );
+        match resources
+            .read(
+                reference.clone(),
+                tokio_util::sync::CancellationToken::new(),
+            )
+            .await
+            .expect_err("removing the shared CAS object makes both references unavailable")
+        {
+            pl_core::context::ResourceReadError::Unavailable { source } => assert!(matches!(
+                source.downcast_ref::<crate::resource_store::ResourceStoreError>(),
+                Some(crate::resource_store::ResourceStoreError::Io { source, .. })
+                    if source.kind() == std::io::ErrorKind::NotFound
+            )),
+            other => {
+                anyhow::bail!("missing shared bytes produced the wrong resource failure: {other}")
+            }
+        }
         store.record_attachments(vec![attachment.clone()]).await?;
         let mut status = sink.0.channel.subscribe();
         sink.admit(
@@ -5636,6 +5651,14 @@ pub(crate) mod storage_fault_tests {
         .await??;
         assert_eq!(store.history("blob-fence").await?.watermark().await?, 1);
         assert_eq!(sink.0.channel.subscribe().borrow().fault, None);
+        assert_eq!(
+            resources
+                .read(reference, tokio_util::sync::CancellationToken::new())
+                .await?
+                .as_ref(),
+            bytes,
+            "restoring the same CAS object repairs tool reads as well as the attachment fence"
+        );
         Ok(())
     }
 
