@@ -926,9 +926,12 @@ async fn prepared_history_family(target: &Path, thread: &str, fence: u64) -> Res
 }
 
 async fn bot_binding_fixture(home: &Path, frozen_bot: &str) -> Result<(StudioPaths, String)> {
+    // Keep the migration home and frozen workspace on the same native spelling too.
+    let home = dunce::canonicalize(home)?;
+    let home = home.as_path();
     let (paths, session) = fixture(home, true, false).await?;
-    let old_root = home
-        .join("v2/bots/bot-test-one/workspace")
+    // Freeze the same host-native path representation as BotRuntime's workspace preparation.
+    let old_root = dunce::canonicalize(home.join("v2/bots/bot-test-one/workspace"))?
         .to_str()
         .context("old root")?
         .to_owned();
@@ -1349,7 +1352,13 @@ async fn nonmanaged_identity_is_preserved_with_execution_diagnostic_and_readable
 -> Result<()> {
     let temp = tempfile::tempdir()?;
     let (paths, _) = bot_binding_fixture(temp.path(), "bot-test-one").await?;
-    frozen_workspace_identity(temp.path(), "/business-project-not-owned-by-bot").await?;
+    let business_root = temp.path().join("business-project-not-owned-by-bot");
+    tokio::fs::create_dir_all(&business_root).await?;
+    let business_root = dunce::canonicalize(&business_root)?
+        .to_str()
+        .context("business root")?
+        .to_owned();
+    frozen_workspace_identity(temp.path(), &business_root).await?;
     prepare(&paths).await?;
     let store = StudioStore::prepare_database(&paths.database()).await?;
     assert_eq!(
@@ -1358,7 +1367,7 @@ async fn nonmanaged_identity_is_preserved_with_execution_diagnostic_and_readable
             .await?
             .context("preserved identity")?
             .root,
-        "/business-project-not-owned-by-bot"
+        business_root
     );
     let history = store.history_for(OWNER, THREAD).await?;
     assert!(
