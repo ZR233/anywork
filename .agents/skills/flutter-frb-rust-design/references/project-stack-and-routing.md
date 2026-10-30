@@ -1,10 +1,12 @@
 # 基础栈与统一路由
 
+文中 `{workspace}` 指当前仓库根，与技能安装位置无关。
+
 ## 采用现有基础栈
 
-先查 [Flutter 清单](../../../../code/anywork/pubspec.yaml) 与
-[锁文件](../../../../code/anywork/pubspec.lock)、[Rust 清单](../../../../Cargo.toml)
-与 [锁文件](../../../../Cargo.lock)，再查对应版本的官方契约。以下只规定基础能力的分工，
+先查 `{workspace}/code/anywork/pubspec.yaml` 与
+`{workspace}/code/anywork/pubspec.lock`、`{workspace}/Cargo.toml`
+与 `{workspace}/Cargo.lock`，再查对应版本的官方契约。以下只规定基础能力的分工，
 不锁定具体页面组件库，不引入替代框架。
 
 | 能力 | 项目基础栈 | 使用边界 |
@@ -22,8 +24,8 @@
 
 ## 沿调用链确定写入责任
 
-具体依赖方向见 [Crate 边界](../../../../design/02-crates.md)，客户端所有权见
-[前端状态](../../../../design/25-frontend-state.md)。按功能组织模块，新增字段或动作前依次确认：
+具体依赖方向见 `{workspace}/design/02-crates.md`，客户端所有权见
+`{workspace}/design/25-frontend-state.md`。按功能组织模块，新增字段或动作前依次确认：
 
 | 层 | 应承担的工作 | 应避免的工作 |
 | --- | --- | --- |
@@ -38,7 +40,7 @@
 草稿允许本地编辑，但保存结果由权威快照／事件确认，不能把本地 draft 当已保存值。
 跨语言边界消费 typed DTO／union，不新增运行期 raw JSON 兼容入口。
 结构化接口调整同步迁移 Rust protocol、FRB DTO、SDK model、归约／投影、生成物和权威设计；
-线协议命名与基础类型直接遵循 [通用约定](../../../../design/05-conventions.md#51-参数与类型设计)。
+线协议命名与基础类型直接遵循 `{workspace}/design/05-conventions.md` §5.1。
 
 ViewState 使用可显示文本、按钮状态、加载或失败等 UI 词汇。Session、feed、Future、permit、
 附件句柄和 Controller 是资源，不因加上 Freezed 就变成状态值。UI Controller 可以由呈现
@@ -47,7 +49,7 @@ owner 持有并借给 View；焦点、展开、动画等局部状态无需搬入
 
 ## 导航检查
 
-权威规则及具体目的地见 [§25.4](../../../../design/25-frontend-state.md#254-观察注册与页面导航)。
+权威规则及具体目的地见 `{workspace}/design/25-frontend-state.md` §25.4。
 开发时检查以下接缝，不复制一份 URI、枚举映射或页面注册表：
 
 - **声明与调用同源**：使用 `GoRouteData`／`TypedGoRoute` 和生成式目的地；

@@ -1,8 +1,10 @@
 # 演进与验证
 
+文中 `{workspace}` 指当前仓库根，与技能安装位置无关。
+
 ## 统一读取，不建立第二保存链路
 
-存储保证见 [Studio 存储](../../../../design/17-studio-storage.md)；
+存储保证见 `{workspace}/design/17-studio-storage.md`；
 先理解现有 Session、HistoryStore 与 writer 的职责，前端不自行协调 RAM 与 SQLite。
 不要为界面增加第二保存队列、定时器或历史数据库。
 
@@ -80,6 +82,6 @@ widget 不证明 native 句柄和持久化，单平台／模拟对端不证明�
 
 ## 来源与职责
 
-- [设计索引](../../../../design/README.md)：产品契约唯一归属，具体协议变化在所属文档维护。
+- `{workspace}/design/README.md` 设计索引：产品契约唯一归属，具体协议变化在所属文档维护。
 - [SQLite 隔离](https://sqlite.org/isolation.html) 与 [WAL](https://sqlite.org/wal.html)：读快照和提交边界。
 - [SeaORM migration](https://www.sea-ql.org/SeaORM/docs/migration/writing-migration/)：按实际版本和后端核对事务能力。

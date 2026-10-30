@@ -1,8 +1,8 @@
 # 数据交付与生命周期
 
-现役产品协议以 [流](../../../../design/07-streaming.md)、
-[客户端状态](../../../../design/25-frontend-state.md) 和
-[时间线内容](../../../../design/26-timeline-content.md) 为准。下面的不可变完成集合、
+文中 `{workspace}` 指当前仓库根，与技能安装位置无关；现役产品协议以
+`{workspace}/design/07-streaming.md`、`{workspace}/design/25-frontend-state.md` 和
+`{workspace}/design/26-timeline-content.md` 为准。下面的不可变完成集合、
 独立历史读取和完成消费者接纳模式是有前提的设计方法；只有相应领域已经确定并迁移到该契约，
 才能删除其旧修订、缓存或查询机制，不能仅在 UI 过滤终态就宣称完成改造。
 
