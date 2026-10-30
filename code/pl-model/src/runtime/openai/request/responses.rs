@@ -65,6 +65,7 @@ impl ResponsesRequestBody {
         model: &crate::model::ModelInfo,
         prompt_cache_key: Option<&str>,
         instruction_role: InstructionWireRole,
+        chatgpt: bool,
     ) -> Result<Self> {
         let mut input = Vec::new();
         if let Some(system_prompt) = &request.system_prompt
@@ -75,6 +76,26 @@ impl ResponsesRequestBody {
                 vec![ResponsesContent::InputText {
                     text: system_prompt.content().to_owned(),
                 }],
+            ));
+        }
+        if chatgpt
+            && request
+                .tools
+                .iter()
+                .any(|tool| matches!(tool, ToolSpec::Function { .. } | ToolSpec::Custom { .. }))
+        {
+            input.push(ResponsesInputItem::typed(
+                ResponsesTypedInputItem::AdditionalTools {
+                    role: ResponsesRole::Developer,
+                    tools: request
+                        .tools
+                        .iter()
+                        .filter(|tool| {
+                            matches!(tool, ToolSpec::Function { .. } | ToolSpec::Custom { .. })
+                        })
+                        .map(ResponsesTool::from)
+                        .collect(),
+                },
             ));
         }
         let media_plan = MediaRepresentationPlan::for_request(request, model)?;
@@ -99,7 +120,9 @@ impl ResponsesRequestBody {
                 let span = replay_spans
                     .next()
                     .ok_or_else(|| protocol_error("replay span disappeared"))?;
-                input.extend(span.output.iter().cloned().map(ResponsesInputItem::native));
+                for value in span.output.iter().cloned() {
+                    input.push(ResponsesInputItem::replay(value, chatgpt)?);
+                }
                 replay_end = span.start + span.semantic.len();
                 continue;
             }
@@ -128,7 +151,7 @@ impl ResponsesRequestBody {
                     continue;
                 }
                 pl_protocol::ModelContextItem::Responses { item } => {
-                    input.push(ResponsesInputItem::native(item.value.clone()));
+                    input.push(ResponsesInputItem::replay(item.value.clone(), chatgpt)?);
                     continue;
                 }
                 pl_protocol::ModelContextItem::ToolMedia { .. } => unreachable!(),
@@ -192,8 +215,13 @@ impl ResponsesRequestBody {
             }
         }
 
-        let tools = (!request.tools.is_empty())
-            .then(|| request.tools.iter().map(ResponsesTool::from).collect());
+        let tools: Vec<_> = request
+            .tools
+            .iter()
+            .filter(|tool| !chatgpt || matches!(tool, ToolSpec::WebSearch { .. }))
+            .map(ResponsesTool::from)
+            .collect();
+        let tools = (!tools.is_empty()).then_some(tools);
 
         Ok(Self {
             model: model
@@ -225,6 +253,10 @@ enum ResponsesInputItem {
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ResponsesTypedInputItem {
+    AdditionalTools {
+        role: ResponsesRole,
+        tools: Vec<ResponsesTool>,
+    },
     Message {
         role: ResponsesRole,
         content: Vec<ResponsesContent>,
@@ -269,8 +301,13 @@ impl ResponsesInputItem {
         Self::Typed(item)
     }
 
-    fn native(value: serde_json::Value) -> Self {
-        Self::Native(replay_native_item(value))
+    fn replay(value: serde_json::Value, chatgpt: bool) -> Result<Self> {
+        if chatgpt {
+            super::chatgpt::validate_history_item(&value)?;
+            Ok(Self::Native(value))
+        } else {
+            Ok(Self::Native(replay_native_item(value)))
+        }
     }
 
     fn message(role: ResponsesRole, content: Vec<ResponsesContent>) -> Self {

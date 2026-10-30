@@ -27,6 +27,8 @@ pub struct RemoveAccountInput {
 pub struct AccountInput {
     pub account_id: String,
     #[serde(default)]
+    pub authentication: super::BridgeAccountAuthenticationIntent,
+    #[serde(default)]
     pub template_id: Option<String>,
     pub protocol: String,
     pub name: String,
@@ -388,6 +390,8 @@ pub struct BridgeModeModelSettingsDto {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct BridgeAccountSettingsDto {
+    pub authentication: super::BridgeAccountAuthenticationMethod,
+    pub chatgpt_account: Option<super::BridgeChatGptAccountInfo>,
     pub billing_kind: BridgeBillingKind,
     pub billing_kind_override: Option<BridgeBillingKind>,
     pub model_enabled_overrides: HashMap<String, bool>,

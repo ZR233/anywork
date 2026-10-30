@@ -966,7 +966,9 @@ effort = "high"
         Schema24Bases {
             _legacy: legacy,
             baseline,
-            document: persisted.replace(&current, "schema_version = 24"),
+            document: persisted
+                .replace(&current, "schema_version = 24")
+                .replace("authentication = \"apiKey\"\n", ""),
             profile: String::from_utf8(profile).expect("profile stays UTF-8"),
         }
     }
@@ -1120,10 +1122,7 @@ effort = "high"
         let bases = schema_24_bases();
         let document = format!(
             "{}{LEGACY_ACP_BLOCK}",
-            bases.document.replace(
-                "schema_version = 24",
-                &format!("schema_version = {STUDIO_CONFIG_SCHEMA_VERSION}")
-            )
+            crate::config::store::serialize_persisted_config(&bases.baseline).unwrap()
         );
         assert!(
             crate::config::store::parse_migrated_config(document.as_bytes()).is_err(),
@@ -1233,6 +1232,30 @@ effort = "high"
     }
 
     impl CredentialStore for FaultyStore {
+        fn read_transaction(&self, alias: &str) -> Result<Option<String>> {
+            self.inner.read_transaction(alias)
+        }
+        fn write_transaction(&self, alias: &str, payload: &str) -> Result<()> {
+            self.inner.write_transaction(alias, payload)
+        }
+        fn delete_transaction(&self, alias: &str) -> Result<()> {
+            self.inner.delete_transaction(alias)
+        }
+        fn account_lock_directory(
+            &self,
+            isolated_root: &std::path::Path,
+        ) -> Result<std::path::PathBuf> {
+            self.inner.account_lock_directory(isolated_root)
+        }
+        fn load_strict(&self, account_id: &str) -> Result<Option<String>> {
+            self.inner.load_strict(account_id)
+        }
+        fn save_strict(&self, account_id: &str, secret: &str) -> Result<()> {
+            self.inner.save_strict(account_id, secret)
+        }
+        fn delete_strict(&self, account_id: &str) -> Result<()> {
+            self.inner.delete_strict(account_id)
+        }
         fn load(&self, account_id: &str) -> Result<Option<String>> {
             self.inner.load(account_id)
         }
@@ -1515,6 +1538,36 @@ catalog = "deepseek"
 
         struct Unavailable(MemoryCredentialStore);
         impl CredentialStore for Unavailable {
+            fn read_transaction(&self, alias: &str) -> Result<Option<String>> {
+                self.0.read_transaction(alias)
+            }
+            fn write_transaction(&self, alias: &str, payload: &str) -> Result<()> {
+                self.0.write_transaction(alias, payload)
+            }
+            fn delete_transaction(&self, alias: &str) -> Result<()> {
+                self.0.delete_transaction(alias)
+            }
+            fn account_lock_directory(
+                &self,
+                isolated_root: &std::path::Path,
+            ) -> Result<std::path::PathBuf> {
+                self.0.account_lock_directory(isolated_root)
+            }
+            fn load_strict(&self, _account_id: &str) -> Result<Option<String>> {
+                Err(PureError::ConfigError(
+                    "credential service unavailable".into(),
+                ))
+            }
+            fn save_strict(&self, _account_id: &str, _secret: &str) -> Result<()> {
+                Err(PureError::ConfigError(
+                    "credential service unavailable".into(),
+                ))
+            }
+            fn delete_strict(&self, _account_id: &str) -> Result<()> {
+                Err(PureError::ConfigError(
+                    "credential service unavailable".into(),
+                ))
+            }
             fn load(&self, account_id: &str) -> Result<Option<String>> {
                 self.0.load(account_id)
             }
@@ -1668,6 +1721,7 @@ catalog = "deepseek"
         let account = table["models"]["accounts"]["deepseek"]
             .as_table_mut()
             .expect("deepseek account table");
+        account.remove("authentication");
         account.insert(
             "disabled_models".into(),
             toml::Value::Array(vec![toml::Value::String("deepseek-flash".into())]),
@@ -1780,6 +1834,10 @@ catalog = "deepseek"
             .iter_mut()
         {
             account.as_table_mut().unwrap().remove("pricing_mode");
+            account
+                .as_table_mut()
+                .unwrap()
+                .insert("authentication".into(), "apiKey".into());
             account.as_table_mut().unwrap().remove("disabled_models");
             account.as_table_mut().unwrap().insert(
                 "model_enabled_overrides".into(),
@@ -1854,16 +1912,14 @@ catalog = "deepseek"
             .load_for_startup()
             .expect("schema 26 startup migration");
         assert_main_fields_preserved(&loaded);
-        assert_eq!(
-            loaded.schema_version,
-            crate::config::STUDIO_CONFIG_SCHEMA_VERSION
-        );
+        assert_eq!(loaded.schema_version, STUDIO_CONFIG_SCHEMA_VERSION);
         let mut expected: toml::Value = toml::from_str(&original).unwrap();
-        expected["schema_version"] = i64::from(crate::config::STUDIO_CONFIG_SCHEMA_VERSION).into();
+        expected["schema_version"] = STUDIO_CONFIG_SCHEMA_VERSION.into();
         let account = expected["models"]["accounts"]["deepseek"]
             .as_table_mut()
             .unwrap();
         account.remove("disabled_models");
+        account.insert("authentication".into(), "apiKey".into());
         account.insert(
             "model_enabled_overrides".into(),
             toml::Value::Table(
@@ -2100,6 +2156,15 @@ catalog = "deepseek"
         );
         table.remove("delegation");
         table.remove("acp");
+        if version < 28 {
+            for (_, account) in table["models"]["accounts"]
+                .as_table_mut()
+                .unwrap()
+                .iter_mut()
+            {
+                account.as_table_mut().unwrap().remove("authentication");
+            }
+        }
         toml::to_string(&value)
             .expect("encode document")
             .into_bytes()

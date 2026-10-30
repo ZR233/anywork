@@ -1235,6 +1235,7 @@ impl StudioRuntime {
         // ACP 认证操作只接收取消信号：真正的 protocol/进程收束与终态由该 owner 自己的
         // supervisor 完成，随后在独立阶段有界 join，避免提前释放仍存活的进程。
         self.acp_auth.signal_cancel();
+        self.chatgpt_auth.signal_cancel();
         // 官方 server 准备同样只接收取消信号：下载库、校验/解压阻塞任务与发布提交的收束与终态
         // 由该 owner 自己的 supervisor 完成，随后在独立阶段有界 join。
         self.acp_install.signal_cancel();
@@ -1390,7 +1391,10 @@ impl StudioRuntime {
             stage_order::ACP_AUTH,
             "acpAuth",
             Some(SERVICE_STAGE_LIMIT),
-            |runtime| async move { runtime.acp_auth.cancel_and_join().await },
+            |runtime| async move {
+                runtime.chatgpt_auth.close().await?;
+                runtime.acp_auth.cancel_and_join().await
+            },
         ));
         // ACP server 准备持有下载、校验/解压阻塞任务、文件锁与发布提交；取消已广播，这里是有界
         // join。超时保留 owner 与 join 句柄，令 `Clean` 不可达并可重试。

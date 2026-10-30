@@ -44,7 +44,7 @@ flutter_rust_bridge::frb_generated_boilerplate!(
     default_rust_auto_opaque = RustAutoOpaqueMoi,
 );
 pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_VERSION: &str = "2.13.0";
-pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = -1693326984;
+pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = 2125702852;
 
 // Section: executor
 
@@ -1527,6 +1527,36 @@ fn wire__crate__api__studio__handlers__lifecycle__begin_runtime_exit_impl(
         },
     )
 }
+fn wire__crate__api__studio__types__chatgpt_auth__bridge_account_authentication_intent_default_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec,_,_>(flutter_rust_bridge::for_generated::TaskInfo{ debug_name: "bridge_account_authentication_intent_default", port: Some(port_), mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal }, move || {
+            let message = unsafe { flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(ptr_, rust_vec_len_, data_len_) };
+            let mut deserializer = flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            deserializer.end(); move |context|  {
+                    transform_result_sse::<_, ()>((move ||  {
+                         let output_ok = Ok::<_, ()>(crate::api::studio::types::chatgpt_auth::BridgeAccountAuthenticationIntent::default())?;   std::result::Result::Ok(output_ok)
+                    })())
+                } })
+}
+fn wire__crate__api__studio__types__chatgpt_auth__bridge_account_authentication_method_default_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec,_,_>(flutter_rust_bridge::for_generated::TaskInfo{ debug_name: "bridge_account_authentication_method_default", port: Some(port_), mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal }, move || {
+            let message = unsafe { flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(ptr_, rust_vec_len_, data_len_) };
+            let mut deserializer = flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            deserializer.end(); move |context|  {
+                    transform_result_sse::<_, ()>((move ||  {
+                         let output_ok = Ok::<_, ()>(crate::api::studio::types::chatgpt_auth::BridgeAccountAuthenticationMethod::default())?;   std::result::Result::Ok(output_ok)
+                    })())
+                } })
+}
 fn wire__crate__api__studio__types__thread_stream__bridge_cache_usage_summary_default_impl(
     port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
@@ -1940,6 +1970,50 @@ fn wire__crate__api__studio__handlers__bots__cancel_bot_registration_impl(
                         let output_ok =
                             crate::api::studio::handlers::bots::cancel_bot_registration(
                                 api_request,
+                            )
+                            .await?;
+                        std::result::Result::Ok(output_ok)
+                    })()
+                    .await,
+                )
+            }
+        },
+    )
+}
+fn wire__crate__api__studio__accounts__chatgpt__cancel_chatgpt_login_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_async::<flutter_rust_bridge::for_generated::SseCodec, _, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "cancel_chatgpt_login",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_login_id = <String>::sse_decode(&mut deserializer);
+            let api_editor_id = <String>::sse_decode(&mut deserializer);
+            let api_account_id = <String>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| async move {
+                transform_result_sse::<_, crate::api::studio::types::error::BridgeError>(
+                    (move || async move {
+                        let output_ok =
+                            crate::api::studio::accounts::chatgpt::cancel_chatgpt_login(
+                                api_login_id,
+                                api_editor_id,
+                                api_account_id,
                             )
                             .await?;
                         std::result::Result::Ok(output_ok)
@@ -5756,6 +5830,49 @@ fn wire__crate__api__studio__handlers__bots__start_bot_registration_impl(
         },
     )
 }
+fn wire__crate__api__studio__accounts__chatgpt__start_chatgpt_login_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_async::<flutter_rust_bridge::for_generated::SseCodec, _, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "start_chatgpt_login",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_login_id = <String>::sse_decode(&mut deserializer);
+            let api_editor_id = <String>::sse_decode(&mut deserializer);
+            let api_account_id = <String>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| async move {
+                transform_result_sse::<_, crate::api::studio::types::error::BridgeError>(
+                    (move || async move {
+                        let output_ok = crate::api::studio::accounts::chatgpt::start_chatgpt_login(
+                            api_login_id,
+                            api_editor_id,
+                            api_account_id,
+                        )
+                        .await?;
+                        std::result::Result::Ok(output_ok)
+                    })()
+                    .await,
+                )
+            }
+        },
+    )
+}
 fn wire__crate__api__studio__handlers__thread__start_new_thread_impl(
     port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
@@ -6376,6 +6493,7 @@ impl SseDecode for crate::api::studio::types::settings::AccountInput {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
         let mut var_accountId = <String>::sse_decode(deserializer);
+        let mut var_authentication = <crate::api::studio::types::chatgpt_auth::BridgeAccountAuthenticationIntent>::sse_decode(deserializer);
         let mut var_templateId = <Option<String>>::sse_decode(deserializer);
         let mut var_protocol = <String>::sse_decode(deserializer);
         let mut var_name = <String>::sse_decode(deserializer);
@@ -6395,6 +6513,7 @@ impl SseDecode for crate::api::studio::types::settings::AccountInput {
         >>::sse_decode(deserializer);
         return crate::api::studio::types::settings::AccountInput {
             account_id: var_accountId,
+            authentication: var_authentication,
             template_id: var_templateId,
             protocol: var_protocol,
             name: var_name,
@@ -6790,6 +6909,46 @@ impl SseDecode for Box<crate::api::studio::types::response::StartNewThreadRespon
     }
 }
 
+impl SseDecode for crate::api::studio::types::chatgpt_auth::BridgeAccountAuthenticationIntent {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut tag_ = <i32>::sse_decode(deserializer);
+        match tag_ {
+            0 => {
+                return crate::api::studio::types::chatgpt_auth::BridgeAccountAuthenticationIntent::Keep;
+            }
+            1 => {
+                return crate::api::studio::types::chatgpt_auth::BridgeAccountAuthenticationIntent::ApiKey;
+            }
+            2 => {
+                let mut var_loginId = <String>::sse_decode(deserializer);
+                let mut var_editorId = <String>::sse_decode(deserializer);
+                return crate::api::studio::types::chatgpt_auth::BridgeAccountAuthenticationIntent::ChatGpt{login_id: var_loginId, editor_id: var_editorId};
+            }
+            _ => {
+                unimplemented!("");
+            }
+        }
+    }
+}
+
+impl SseDecode for crate::api::studio::types::chatgpt_auth::BridgeAccountAuthenticationMethod {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut inner = <i32>::sse_decode(deserializer);
+        return match inner {
+            0 => crate::api::studio::types::chatgpt_auth::BridgeAccountAuthenticationMethod::ApiKey,
+            1 => {
+                crate::api::studio::types::chatgpt_auth::BridgeAccountAuthenticationMethod::ChatGpt
+            }
+            _ => unreachable!(
+                "Invalid variant for BridgeAccountAuthenticationMethod: {}",
+                inner
+            ),
+        };
+    }
+}
+
 impl SseDecode for crate::api::studio::accounts::types::BridgeAccountCapabilities {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -6963,6 +7122,14 @@ impl SseDecode for crate::api::studio::accounts::types::BridgeAccountDomainFrame
                     snapshot: var_snapshot,
                 };
             }
+            6 => {
+                let mut var_stamp =
+                    <crate::api::studio::types::command::BridgeResourceStamp>::sse_decode(
+                        deserializer,
+                    );
+                let mut var_snapshot = <crate::api::studio::types::chatgpt_auth::BridgeChatGptLoginSnapshot>::sse_decode(deserializer);
+                return crate::api::studio::accounts::types::BridgeAccountDomainFrame::ChatGptLogin{stamp: var_stamp, snapshot: var_snapshot};
+            }
             _ => {
                 unimplemented!("");
             }
@@ -7065,6 +7232,10 @@ impl SseDecode for crate::api::studio::accounts::types::BridgeAccountObservation
             5 => {
                 return crate::api::studio::accounts::types::BridgeAccountObservationTarget::AcpInstall;
             }
+            6 => {
+                let mut var_loginId = <String>::sse_decode(deserializer);
+                return crate::api::studio::accounts::types::BridgeAccountObservationTarget::ChatGptLogin{login_id: var_loginId};
+            }
             _ => {
                 unimplemented!("");
             }
@@ -7146,6 +7317,10 @@ impl SseDecode for crate::api::studio::accounts::types::BridgeAccountQuotaWindow
 impl SseDecode for crate::api::studio::types::settings::BridgeAccountSettingsDto {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_authentication = <crate::api::studio::types::chatgpt_auth::BridgeAccountAuthenticationMethod>::sse_decode(deserializer);
+        let mut var_chatgptAccount = <Option<
+            crate::api::studio::types::chatgpt_auth::BridgeChatGptAccountInfo,
+        >>::sse_decode(deserializer);
         let mut var_billingKind =
             <crate::api::studio::types::delegation::BridgeBillingKind>::sse_decode(deserializer);
         let mut var_billingKindOverride = <Option<
@@ -7179,6 +7354,8 @@ impl SseDecode for crate::api::studio::types::settings::BridgeAccountSettingsDto
         >>::sse_decode(deserializer);
         let mut var_catalogId = <Option<String>>::sse_decode(deserializer);
         return crate::api::studio::types::settings::BridgeAccountSettingsDto {
+            authentication: var_authentication,
+            chatgpt_account: var_chatgptAccount,
             billing_kind: var_billingKind,
             billing_kind_override: var_billingKindOverride,
             model_enabled_overrides: var_modelEnabledOverrides,
@@ -9710,6 +9887,122 @@ impl SseDecode for crate::api::studio::types::runtime::BridgeCancellingAgent {
     }
 }
 
+impl SseDecode for crate::api::studio::types::chatgpt_auth::BridgeChatGptAccountInfo {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_issuer = <String>::sse_decode(deserializer);
+        let mut var_subject = <String>::sse_decode(deserializer);
+        let mut var_clientId = <String>::sse_decode(deserializer);
+        let mut var_email = <Option<String>>::sse_decode(deserializer);
+        let mut var_planUsageEnabled = <bool>::sse_decode(deserializer);
+        return crate::api::studio::types::chatgpt_auth::BridgeChatGptAccountInfo {
+            issuer: var_issuer,
+            subject: var_subject,
+            client_id: var_clientId,
+            email: var_email,
+            plan_usage_enabled: var_planUsageEnabled,
+        };
+    }
+}
+
+impl SseDecode for crate::api::studio::types::chatgpt_auth::BridgeChatGptLoginCommandReply {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_stamp =
+            <crate::api::studio::types::command::BridgeResourceStamp>::sse_decode(deserializer);
+        let mut var_snapshot =
+            <crate::api::studio::types::chatgpt_auth::BridgeChatGptLoginSnapshot>::sse_decode(
+                deserializer,
+            );
+        return crate::api::studio::types::chatgpt_auth::BridgeChatGptLoginCommandReply {
+            stamp: var_stamp,
+            snapshot: var_snapshot,
+        };
+    }
+}
+
+impl SseDecode for crate::api::studio::types::chatgpt_auth::BridgeChatGptLoginFailure {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_code =
+            <crate::api::studio::types::chatgpt_auth::BridgeChatGptLoginFailureCode>::sse_decode(
+                deserializer,
+            );
+        let mut var_retryable = <bool>::sse_decode(deserializer);
+        return crate::api::studio::types::chatgpt_auth::BridgeChatGptLoginFailure {
+            code: var_code,
+            retryable: var_retryable,
+        };
+    }
+}
+
+impl SseDecode for crate::api::studio::types::chatgpt_auth::BridgeChatGptLoginFailureCode {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut inner = <i32>::sse_decode(deserializer);
+        return match inner {
+            0 => crate::api::studio::types::chatgpt_auth::BridgeChatGptLoginFailureCode::Network,
+1 => crate::api::studio::types::chatgpt_auth::BridgeChatGptLoginFailureCode::AuthorizationDenied,
+2 => crate::api::studio::types::chatgpt_auth::BridgeChatGptLoginFailureCode::InvalidCallback,
+3 => crate::api::studio::types::chatgpt_auth::BridgeChatGptLoginFailureCode::InvalidIdentity,
+4 => crate::api::studio::types::chatgpt_auth::BridgeChatGptLoginFailureCode::MissingPlanPermission,
+5 => crate::api::studio::types::chatgpt_auth::BridgeChatGptLoginFailureCode::Expired,
+6 => crate::api::studio::types::chatgpt_auth::BridgeChatGptLoginFailureCode::Storage,
+7 => crate::api::studio::types::chatgpt_auth::BridgeChatGptLoginFailureCode::TaskFailed,
+            _ => unreachable!("Invalid variant for BridgeChatGptLoginFailureCode: {}", inner),
+        };
+    }
+}
+
+impl SseDecode for crate::api::studio::types::chatgpt_auth::BridgeChatGptLoginPhase {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut inner = <i32>::sse_decode(deserializer);
+        return match inner {
+            0 => crate::api::studio::types::chatgpt_auth::BridgeChatGptLoginPhase::Preparing,
+            1 => crate::api::studio::types::chatgpt_auth::BridgeChatGptLoginPhase::AwaitingBrowser,
+            2 => crate::api::studio::types::chatgpt_auth::BridgeChatGptLoginPhase::ExchangingCode,
+            3 => crate::api::studio::types::chatgpt_auth::BridgeChatGptLoginPhase::Succeeded,
+            4 => crate::api::studio::types::chatgpt_auth::BridgeChatGptLoginPhase::Cancelled,
+            5 => crate::api::studio::types::chatgpt_auth::BridgeChatGptLoginPhase::Failed,
+            _ => unreachable!("Invalid variant for BridgeChatGptLoginPhase: {}", inner),
+        };
+    }
+}
+
+impl SseDecode for crate::api::studio::types::chatgpt_auth::BridgeChatGptLoginSnapshot {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_loginId = <String>::sse_decode(deserializer);
+        let mut var_editorId = <String>::sse_decode(deserializer);
+        let mut var_accountId = <String>::sse_decode(deserializer);
+        let mut var_revision = <u64>::sse_decode(deserializer);
+        let mut var_phase =
+            <crate::api::studio::types::chatgpt_auth::BridgeChatGptLoginPhase>::sse_decode(
+                deserializer,
+            );
+        let mut var_authorizationUrl = <Option<String>>::sse_decode(deserializer);
+        let mut var_expiresAt = <Option<i64>>::sse_decode(deserializer);
+        let mut var_account = <Option<
+            crate::api::studio::types::chatgpt_auth::BridgeChatGptAccountInfo,
+        >>::sse_decode(deserializer);
+        let mut var_failure = <Option<
+            crate::api::studio::types::chatgpt_auth::BridgeChatGptLoginFailure,
+        >>::sse_decode(deserializer);
+        return crate::api::studio::types::chatgpt_auth::BridgeChatGptLoginSnapshot {
+            login_id: var_loginId,
+            editor_id: var_editorId,
+            account_id: var_accountId,
+            revision: var_revision,
+            phase: var_phase,
+            authorization_url: var_authorizationUrl,
+            expires_at: var_expiresAt,
+            account: var_account,
+            failure: var_failure,
+        };
+    }
+}
+
 impl SseDecode for crate::api::studio::types::updater::BridgeCheckFailedUpdaterState {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -12078,6 +12371,7 @@ impl SseDecode for crate::api::studio::types::thread_preparation::BridgeNewThrea
 impl SseDecode for crate::api::studio::accounts::types::BridgePatchAccountInput {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_authentication = <crate::api::studio::types::chatgpt_auth::BridgeAccountAuthenticationIntent>::sse_decode(deserializer);
         let mut var_name =
             <crate::api::studio::accounts::types::BridgeAccountTextPatch>::sse_decode(deserializer);
         let mut var_baseUrl =
@@ -12093,6 +12387,7 @@ impl SseDecode for crate::api::studio::accounts::types::BridgePatchAccountInput 
                 deserializer,
             );
         return crate::api::studio::accounts::types::BridgePatchAccountInput {
+            authentication: var_authentication,
             name: var_name,
             base_url: var_baseUrl,
             template_id: var_templateId,
@@ -19820,6 +20115,36 @@ impl SseDecode for Option<crate::api::studio::types::bots::BridgeBotRegistration
     }
 }
 
+impl SseDecode for Option<crate::api::studio::types::chatgpt_auth::BridgeChatGptAccountInfo> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        if (<bool>::sse_decode(deserializer)) {
+            return Some(
+                <crate::api::studio::types::chatgpt_auth::BridgeChatGptAccountInfo>::sse_decode(
+                    deserializer,
+                ),
+            );
+        } else {
+            return None;
+        }
+    }
+}
+
+impl SseDecode for Option<crate::api::studio::types::chatgpt_auth::BridgeChatGptLoginFailure> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        if (<bool>::sse_decode(deserializer)) {
+            return Some(
+                <crate::api::studio::types::chatgpt_auth::BridgeChatGptLoginFailure>::sse_decode(
+                    deserializer,
+                ),
+            );
+        } else {
+            return None;
+        }
+    }
+}
+
 impl SseDecode for Option<crate::api::studio::types::thread_stream::BridgeContinuationReason> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -21231,129 +21556,133 @@ fn pde_ffi_dispatcher_primary_impl(
 33 => wire__crate__api__studio__handlers__thread__archive_thread_impl(port, ptr, rust_vec_len, data_len),
 34 => wire__crate__api__studio__handlers__ssh__authenticate_ssh_server_impl(port, ptr, rust_vec_len, data_len),
 35 => wire__crate__api__studio__handlers__lifecycle__begin_runtime_exit_impl(port, ptr, rust_vec_len, data_len),
-36 => wire__crate__api__studio__types__thread_stream__bridge_cache_usage_summary_default_impl(port, ptr, rust_vec_len, data_len),
-37 => wire__crate__api__studio__types__runtime__bridge_closed_agent_default_impl(port, ptr, rust_vec_len, data_len),
-38 => wire__crate__api__studio__types__runtime__bridge_closing_agent_default_impl(port, ptr, rust_vec_len, data_len),
-39 => wire__crate__api__studio__types__settings__bridge_general_settings_dto_default_impl(port, ptr, rust_vec_len, data_len),
-40 => wire__crate__api__studio__types__runtime__bridge_idle_agent_default_impl(port, ptr, rust_vec_len, data_len),
-41 => wire__crate__api__studio__types__product_topic__bridge_product_topic_validate_scope_impl(port, ptr, rust_vec_len, data_len),
-42 => wire__crate__api__studio__types__thread_activity__bridge_thread_activity_tools_default_impl(port, ptr, rust_vec_len, data_len),
-43 => wire__crate__api__studio__types__mode_editor__bridge_thread_mode_editor_layout_default_impl(port, ptr, rust_vec_len, data_len),
-44 => wire__crate__api__studio__types__settings__bridge_ui_language_default_impl(port, ptr, rust_vec_len, data_len),
-45 => wire__crate__api__studio__handlers__ssh__browse_remote_directories_impl(port, ptr, rust_vec_len, data_len),
-46 => wire__crate__api__studio__handlers__acp__cancel_acp_auth_impl(port, ptr, rust_vec_len, data_len),
-47 => wire__crate__api__studio__handlers__acp_install__cancel_acp_install_impl(port, ptr, rust_vec_len, data_len),
-48 => wire__crate__api__studio__handlers__bots__cancel_bot_registration_impl(port, ptr, rust_vec_len, data_len),
-49 => wire__crate__api__studio__handlers__updater__cancel_studio_background_update_impl(port, ptr, rust_vec_len, data_len),
-50 => wire__crate__api__studio__accounts__commands__check_account_usage_impl(port, ptr, rust_vec_len, data_len),
-51 => wire__crate__api__studio__handlers__updater__check_studio_update_impl(port, ptr, rust_vec_len, data_len),
-52 => wire__crate__api__studio__handlers__agent_profiles__cleanup_preserved_worktree_impl(port, ptr, rust_vec_len, data_len),
-53 => wire__crate__api__studio__handlers__ssh__close_remote_directory_impl(port, ptr, rust_vec_len, data_len),
-54 => wire__crate__api__studio__handlers__thread__compact_thread_impl(port, ptr, rust_vec_len, data_len),
-55 => wire__crate__api__studio__handlers__prompt__continue_thread_impl(port, ptr, rust_vec_len, data_len),
-56 => wire__crate__api__studio__handlers__settings__create_account_impl(port, ptr, rust_vec_len, data_len),
-57 => wire__crate__api__studio__handlers__bots__create_bot_conversation_thread_impl(port, ptr, rust_vec_len, data_len),
-58 => wire__crate__api__studio__subscription__product_topic__create_product_topic_subscription_impl(port, ptr, rust_vec_len, data_len),
-59 => wire__crate__api__studio__handlers__ssh__delete_ssh_server_impl(port, ptr, rust_vec_len, data_len),
-60 => wire__crate__api__studio__handlers__mode_editor__delete_thread_mode_definition_impl(port, ptr, rust_vec_len, data_len),
-61 => wire__crate__api__studio__handlers__accounts__discover_skills_impl(port, ptr, rust_vec_len, data_len),
-62 => wire__crate__api__studio__handlers__lifecycle__finish_shutdown_diagnostics_impl(port, ptr, rust_vec_len, data_len),
-63 => wire__crate__api__studio__handlers__delegation__get_delegation_model_impl(port, ptr, rust_vec_len, data_len),
-64 => wire__crate__api__studio__handlers__lifecycle__init_app_impl(port, ptr, rust_vec_len, data_len),
-65 => wire__crate__api__studio__handlers__bots__list_bot_conversations_impl(port, ptr, rust_vec_len, data_len),
-66 => wire__crate__api__studio__handlers__delegation__list_delegation_models_impl(port, ptr, rust_vec_len, data_len),
-67 => wire__crate__api__studio__handlers__ssh__list_ssh_servers_impl(port, ptr, rust_vec_len, data_len),
-68 => wire__crate__api__studio__handlers__history__list_threads_page_impl(port, ptr, rust_vec_len, data_len),
-69 => wire__crate__api__studio__handlers__settings__load_account_catalog_impl(port, ptr, rust_vec_len, data_len),
-70 => wire__crate__api__studio__handlers__acp__load_acp_account_catalog_impl(port, ptr, rust_vec_len, data_len),
-71 => wire__crate__api__studio__accounts__feed__open_account_observation_impl(port, ptr, rust_vec_len, data_len),
-72 => wire__crate__api__studio__handlers__chat__open_conversation_feed_impl(port, ptr, rust_vec_len, data_len),
-73 => wire__crate__api__studio__handlers__lifecycle__open_project_impl(port, ptr, rust_vec_len, data_len),
-74 => wire__crate__api__studio__handlers__ssh__open_remote_project_impl(port, ptr, rust_vec_len, data_len),
-75 => wire__crate__api__studio__statistics__feed__open_statistics_feed_impl(port, ptr, rust_vec_len, data_len),
-76 => wire__crate__api__studio__accounts__commands__patch_account_impl(port, ptr, rust_vec_len, data_len),
-77 => wire__crate__api__studio__handlers__lifecycle__prepare_standalone_workspace_impl(port, ptr, rust_vec_len, data_len),
-78 => wire__crate__api__studio__handlers__lifecycle__prepare_startup_attempt_impl(port, ptr, rust_vec_len, data_len),
-79 => wire__crate__api__studio__handlers__updater__prepare_studio_update_impl(port, ptr, rust_vec_len, data_len),
-80 => wire__crate__api__studio__handlers__mode_editor__preview_thread_mode_workflow_impl(port, ptr, rust_vec_len, data_len),
-81 => wire__crate__api__studio__handlers__external_state__probe_lsp_server_impl(port, ptr, rust_vec_len, data_len),
-82 => wire__crate__api__studio__handlers__history__query_threads_impl(port, ptr, rust_vec_len, data_len),
-83 => wire__crate__api__studio__accounts__feed__read_account_domain_impl(port, ptr, rust_vec_len, data_len),
-84 => wire__crate__api__studio__handlers__acp__read_acp_auth_state_impl(port, ptr, rust_vec_len, data_len),
-85 => wire__crate__api__studio__handlers__acp_install__read_acp_install_state_impl(port, ptr, rust_vec_len, data_len),
-86 => wire__crate__api__studio__handlers__agent_profiles__read_agent_profiles_state_impl(port, ptr, rust_vec_len, data_len),
-87 => wire__crate__api__studio__handlers__attachment__read_attachment_draft_impl(port, ptr, rust_vec_len, data_len),
-88 => wire__crate__api__studio__handlers__bots__read_bot_messages_impl(port, ptr, rust_vec_len, data_len),
-89 => wire__crate__api__studio__handlers__bots__read_bots_impl(port, ptr, rust_vec_len, data_len),
-90 => wire__crate__api__studio__handlers__prompt__read_child_interactions_impl(port, ptr, rust_vec_len, data_len),
-91 => wire__crate__api__studio__handlers__prompt__read_continuation_operation_impl(port, ptr, rust_vec_len, data_len),
-92 => wire__crate__api__studio__handlers__settings__read_deepseek_web_search_settings_impl(port, ptr, rust_vec_len, data_len),
-93 => wire__crate__api__studio__handlers__external_state__read_lsp_state_impl(port, ptr, rust_vec_len, data_len),
-94 => wire__crate__api__studio__handlers__external_state__read_mcp_state_impl(port, ptr, rust_vec_len, data_len),
-95 => wire__crate__api__studio__handlers__persistence__read_persistence_queue_impl(port, ptr, rust_vec_len, data_len),
-96 => wire__crate__api__studio__handlers__lifecycle__read_recovery_state_impl(port, ptr, rust_vec_len, data_len),
-97 => wire__crate__api__studio__handlers__settings__read_settings_state_impl(port, ptr, rust_vec_len, data_len),
-98 => wire__crate__api__studio__handlers__accounts__read_skills_state_impl(port, ptr, rust_vec_len, data_len),
-99 => wire__crate__api__studio__handlers__snapshot__read_studio_state_impl(port, ptr, rust_vec_len, data_len),
-100 => wire__crate__api__studio__handlers__updater__read_studio_update_state_impl(port, ptr, rust_vec_len, data_len),
-101 => wire__crate__api__studio__handlers__history__read_thread_impl(port, ptr, rust_vec_len, data_len),
-102 => wire__crate__api__studio__handlers__history__read_thread_activity_detail_impl(port, ptr, rust_vec_len, data_len),
-103 => wire__crate__api__studio__handlers__attachment__read_thread_attachment_impl(port, ptr, rust_vec_len, data_len),
-104 => wire__crate__api__studio__handlers__mode_editor__read_thread_mode_definition_impl(port, ptr, rust_vec_len, data_len),
-105 => wire__crate__api__studio__handlers__settings__read_web_search_settings_impl(port, ptr, rust_vec_len, data_len),
-106 => wire__crate__api__studio__handlers__ssh__reconnect_ssh_server_impl(port, ptr, rust_vec_len, data_len),
-107 => wire__crate__api__studio__handlers__settings__reload_settings_from_disk_impl(port, ptr, rust_vec_len, data_len),
-108 => wire__crate__api__studio__handlers__mode_editor__reload_thread_mode_definitions_impl(port, ptr, rust_vec_len, data_len),
-109 => wire__crate__api__studio__handlers__settings__remove_account_impl(port, ptr, rust_vec_len, data_len),
-110 => wire__crate__api__studio__handlers__settings__remove_account_model_impl(port, ptr, rust_vec_len, data_len),
-111 => wire__crate__api__studio__handlers__acp__remove_acp_account_impl(port, ptr, rust_vec_len, data_len),
-112 => wire__crate__api__studio__handlers__attachment__remove_attachment_draft_impl(port, ptr, rust_vec_len, data_len),
-113 => wire__crate__api__studio__handlers__lifecycle__rename_project_impl(port, ptr, rust_vec_len, data_len),
-114 => wire__crate__api__studio__handlers__thread__rename_thread_impl(port, ptr, rust_vec_len, data_len),
-115 => wire__crate__api__studio__handlers__external_state__repair_lsp_server_impl(port, ptr, rust_vec_len, data_len),
-116 => wire__crate__api__studio__handlers__external_state__reset_lsp_impl(port, ptr, rust_vec_len, data_len),
-117 => wire__crate__api__studio__handlers__external_state__reset_mcp_impl(port, ptr, rust_vec_len, data_len),
-118 => wire__crate__api__studio__handlers__prompt__respond_interaction_impl(port, ptr, rust_vec_len, data_len),
-119 => wire__crate__api__studio__handlers__thread__restore_thread_impl(port, ptr, rust_vec_len, data_len),
-120 => wire__crate__api__studio__handlers__persistence__resume_thread_history_impl(port, ptr, rust_vec_len, data_len),
-121 => wire__crate__api__studio__handlers__bots__retry_bot_connection_impl(port, ptr, rust_vec_len, data_len),
-122 => wire__crate__api__studio__handlers__persistence__retry_persistence_impl(port, ptr, rust_vec_len, data_len),
-123 => wire__crate__api__studio__handlers__lifecycle__retry_recovery_impl(port, ptr, rust_vec_len, data_len),
-124 => wire__crate__api__studio__handlers__persistence__retry_thread_history_impl(port, ptr, rust_vec_len, data_len),
-125 => wire__crate__api__studio__handlers__acp__save_acp_account_impl(port, ptr, rust_vec_len, data_len),
-126 => wire__crate__api__studio__handlers__bots__save_bot_impl(port, ptr, rust_vec_len, data_len),
-127 => wire__crate__api__studio__handlers__settings__save_runtime_permission_mode_impl(port, ptr, rust_vec_len, data_len),
-128 => wire__crate__api__studio__handlers__ssh__save_ssh_server_impl(port, ptr, rust_vec_len, data_len),
-129 => wire__crate__api__studio__handlers__mode_editor__save_thread_mode_definition_impl(port, ptr, rust_vec_len, data_len),
-130 => wire__crate__api__studio__handlers__agent_profiles__save_user_agent_profile_impl(port, ptr, rust_vec_len, data_len),
-131 => wire__crate__api__studio__handlers__accounts__search_skills_impl(port, ptr, rust_vec_len, data_len),
-132 => wire__crate__api__studio__handlers__bots__send_bot_message_impl(port, ptr, rust_vec_len, data_len),
-133 => wire__crate__api__studio__handlers__settings__set_account_billing_kind_impl(port, ptr, rust_vec_len, data_len),
-134 => wire__crate__api__studio__accounts__commands__set_account_model_auto_compact_impl(port, ptr, rust_vec_len, data_len),
-135 => wire__crate__api__studio__accounts__commands__set_account_model_connection_impl(port, ptr, rust_vec_len, data_len),
-136 => wire__crate__api__studio__handlers__settings__set_account_model_enabled_impl(port, ptr, rust_vec_len, data_len),
-137 => wire__crate__api__studio__handlers__bots__set_bot_enabled_impl(port, ptr, rust_vec_len, data_len),
-138 => wire__crate__api__studio__handlers__bots__set_bot_trusted_chat_impl(port, ptr, rust_vec_len, data_len),
-139 => wire__crate__api__studio__handlers__bots__set_bot_trusted_user_impl(port, ptr, rust_vec_len, data_len),
-140 => wire__crate__api__studio__handlers__settings__set_default_account_impl(port, ptr, rust_vec_len, data_len),
-141 => wire__crate__api__studio__handlers__agent_profiles__set_system_agent_enabled_impl(port, ptr, rust_vec_len, data_len),
-142 => wire__crate__api__studio__handlers__thread__set_thread_mode_impl(port, ptr, rust_vec_len, data_len),
-143 => wire__crate__api__studio__handlers__thread__set_thread_model_route_impl(port, ptr, rust_vec_len, data_len),
-144 => wire__crate__api__studio__handlers__lifecycle__shutdown_runtime_impl(port, ptr, rust_vec_len, data_len),
-145 => wire__crate__api__studio__handlers__acp__start_acp_auth_impl(port, ptr, rust_vec_len, data_len),
-146 => wire__crate__api__studio__handlers__acp_install__start_acp_install_impl(port, ptr, rust_vec_len, data_len),
-147 => wire__crate__api__studio__handlers__bots__start_bot_registration_impl(port, ptr, rust_vec_len, data_len),
-148 => wire__crate__api__studio__handlers__thread__start_new_thread_impl(port, ptr, rust_vec_len, data_len),
-149 => wire__crate__api__studio__handlers__updater__start_studio_background_update_impl(port, ptr, rust_vec_len, data_len),
-150 => wire__crate__api__studio__handlers__lifecycle__start_studio_runtime_impl(port, ptr, rust_vec_len, data_len),
-151 => wire__crate__api__studio__handlers__prompt__stop_thread_impl(port, ptr, rust_vec_len, data_len),
-152 => wire__crate__api__studio__handlers__prompt__submit_prompt_impl(port, ptr, rust_vec_len, data_len),
-153 => wire__crate__api__studio__subscription__shutdown__subscribe_shutdown_progress_impl(port, ptr, rust_vec_len, data_len),
-154 => wire__crate__api__studio__subscription__startup__subscribe_startup_progress_impl(port, ptr, rust_vec_len, data_len),
-155 => wire__crate__api__studio__accounts__commands__sync_account_models_impl(port, ptr, rust_vec_len, data_len),
-156 => wire__crate__api__studio__handlers__ssh__test_ssh_connection_impl(port, ptr, rust_vec_len, data_len),
-157 => wire__crate__api__studio__handlers__mode_editor__thread_mode_definition_schema_impl(port, ptr, rust_vec_len, data_len),
-158 => wire__crate__api__studio__handlers__mode_editor__validate_thread_mode_definition_impl(port, ptr, rust_vec_len, data_len),
+36 => wire__crate__api__studio__types__chatgpt_auth__bridge_account_authentication_intent_default_impl(port, ptr, rust_vec_len, data_len),
+37 => wire__crate__api__studio__types__chatgpt_auth__bridge_account_authentication_method_default_impl(port, ptr, rust_vec_len, data_len),
+38 => wire__crate__api__studio__types__thread_stream__bridge_cache_usage_summary_default_impl(port, ptr, rust_vec_len, data_len),
+39 => wire__crate__api__studio__types__runtime__bridge_closed_agent_default_impl(port, ptr, rust_vec_len, data_len),
+40 => wire__crate__api__studio__types__runtime__bridge_closing_agent_default_impl(port, ptr, rust_vec_len, data_len),
+41 => wire__crate__api__studio__types__settings__bridge_general_settings_dto_default_impl(port, ptr, rust_vec_len, data_len),
+42 => wire__crate__api__studio__types__runtime__bridge_idle_agent_default_impl(port, ptr, rust_vec_len, data_len),
+43 => wire__crate__api__studio__types__product_topic__bridge_product_topic_validate_scope_impl(port, ptr, rust_vec_len, data_len),
+44 => wire__crate__api__studio__types__thread_activity__bridge_thread_activity_tools_default_impl(port, ptr, rust_vec_len, data_len),
+45 => wire__crate__api__studio__types__mode_editor__bridge_thread_mode_editor_layout_default_impl(port, ptr, rust_vec_len, data_len),
+46 => wire__crate__api__studio__types__settings__bridge_ui_language_default_impl(port, ptr, rust_vec_len, data_len),
+47 => wire__crate__api__studio__handlers__ssh__browse_remote_directories_impl(port, ptr, rust_vec_len, data_len),
+48 => wire__crate__api__studio__handlers__acp__cancel_acp_auth_impl(port, ptr, rust_vec_len, data_len),
+49 => wire__crate__api__studio__handlers__acp_install__cancel_acp_install_impl(port, ptr, rust_vec_len, data_len),
+50 => wire__crate__api__studio__handlers__bots__cancel_bot_registration_impl(port, ptr, rust_vec_len, data_len),
+51 => wire__crate__api__studio__accounts__chatgpt__cancel_chatgpt_login_impl(port, ptr, rust_vec_len, data_len),
+52 => wire__crate__api__studio__handlers__updater__cancel_studio_background_update_impl(port, ptr, rust_vec_len, data_len),
+53 => wire__crate__api__studio__accounts__commands__check_account_usage_impl(port, ptr, rust_vec_len, data_len),
+54 => wire__crate__api__studio__handlers__updater__check_studio_update_impl(port, ptr, rust_vec_len, data_len),
+55 => wire__crate__api__studio__handlers__agent_profiles__cleanup_preserved_worktree_impl(port, ptr, rust_vec_len, data_len),
+56 => wire__crate__api__studio__handlers__ssh__close_remote_directory_impl(port, ptr, rust_vec_len, data_len),
+57 => wire__crate__api__studio__handlers__thread__compact_thread_impl(port, ptr, rust_vec_len, data_len),
+58 => wire__crate__api__studio__handlers__prompt__continue_thread_impl(port, ptr, rust_vec_len, data_len),
+59 => wire__crate__api__studio__handlers__settings__create_account_impl(port, ptr, rust_vec_len, data_len),
+60 => wire__crate__api__studio__handlers__bots__create_bot_conversation_thread_impl(port, ptr, rust_vec_len, data_len),
+61 => wire__crate__api__studio__subscription__product_topic__create_product_topic_subscription_impl(port, ptr, rust_vec_len, data_len),
+62 => wire__crate__api__studio__handlers__ssh__delete_ssh_server_impl(port, ptr, rust_vec_len, data_len),
+63 => wire__crate__api__studio__handlers__mode_editor__delete_thread_mode_definition_impl(port, ptr, rust_vec_len, data_len),
+64 => wire__crate__api__studio__handlers__accounts__discover_skills_impl(port, ptr, rust_vec_len, data_len),
+65 => wire__crate__api__studio__handlers__lifecycle__finish_shutdown_diagnostics_impl(port, ptr, rust_vec_len, data_len),
+66 => wire__crate__api__studio__handlers__delegation__get_delegation_model_impl(port, ptr, rust_vec_len, data_len),
+67 => wire__crate__api__studio__handlers__lifecycle__init_app_impl(port, ptr, rust_vec_len, data_len),
+68 => wire__crate__api__studio__handlers__bots__list_bot_conversations_impl(port, ptr, rust_vec_len, data_len),
+69 => wire__crate__api__studio__handlers__delegation__list_delegation_models_impl(port, ptr, rust_vec_len, data_len),
+70 => wire__crate__api__studio__handlers__ssh__list_ssh_servers_impl(port, ptr, rust_vec_len, data_len),
+71 => wire__crate__api__studio__handlers__history__list_threads_page_impl(port, ptr, rust_vec_len, data_len),
+72 => wire__crate__api__studio__handlers__settings__load_account_catalog_impl(port, ptr, rust_vec_len, data_len),
+73 => wire__crate__api__studio__handlers__acp__load_acp_account_catalog_impl(port, ptr, rust_vec_len, data_len),
+74 => wire__crate__api__studio__accounts__feed__open_account_observation_impl(port, ptr, rust_vec_len, data_len),
+75 => wire__crate__api__studio__handlers__chat__open_conversation_feed_impl(port, ptr, rust_vec_len, data_len),
+76 => wire__crate__api__studio__handlers__lifecycle__open_project_impl(port, ptr, rust_vec_len, data_len),
+77 => wire__crate__api__studio__handlers__ssh__open_remote_project_impl(port, ptr, rust_vec_len, data_len),
+78 => wire__crate__api__studio__statistics__feed__open_statistics_feed_impl(port, ptr, rust_vec_len, data_len),
+79 => wire__crate__api__studio__accounts__commands__patch_account_impl(port, ptr, rust_vec_len, data_len),
+80 => wire__crate__api__studio__handlers__lifecycle__prepare_standalone_workspace_impl(port, ptr, rust_vec_len, data_len),
+81 => wire__crate__api__studio__handlers__lifecycle__prepare_startup_attempt_impl(port, ptr, rust_vec_len, data_len),
+82 => wire__crate__api__studio__handlers__updater__prepare_studio_update_impl(port, ptr, rust_vec_len, data_len),
+83 => wire__crate__api__studio__handlers__mode_editor__preview_thread_mode_workflow_impl(port, ptr, rust_vec_len, data_len),
+84 => wire__crate__api__studio__handlers__external_state__probe_lsp_server_impl(port, ptr, rust_vec_len, data_len),
+85 => wire__crate__api__studio__handlers__history__query_threads_impl(port, ptr, rust_vec_len, data_len),
+86 => wire__crate__api__studio__accounts__feed__read_account_domain_impl(port, ptr, rust_vec_len, data_len),
+87 => wire__crate__api__studio__handlers__acp__read_acp_auth_state_impl(port, ptr, rust_vec_len, data_len),
+88 => wire__crate__api__studio__handlers__acp_install__read_acp_install_state_impl(port, ptr, rust_vec_len, data_len),
+89 => wire__crate__api__studio__handlers__agent_profiles__read_agent_profiles_state_impl(port, ptr, rust_vec_len, data_len),
+90 => wire__crate__api__studio__handlers__attachment__read_attachment_draft_impl(port, ptr, rust_vec_len, data_len),
+91 => wire__crate__api__studio__handlers__bots__read_bot_messages_impl(port, ptr, rust_vec_len, data_len),
+92 => wire__crate__api__studio__handlers__bots__read_bots_impl(port, ptr, rust_vec_len, data_len),
+93 => wire__crate__api__studio__handlers__prompt__read_child_interactions_impl(port, ptr, rust_vec_len, data_len),
+94 => wire__crate__api__studio__handlers__prompt__read_continuation_operation_impl(port, ptr, rust_vec_len, data_len),
+95 => wire__crate__api__studio__handlers__settings__read_deepseek_web_search_settings_impl(port, ptr, rust_vec_len, data_len),
+96 => wire__crate__api__studio__handlers__external_state__read_lsp_state_impl(port, ptr, rust_vec_len, data_len),
+97 => wire__crate__api__studio__handlers__external_state__read_mcp_state_impl(port, ptr, rust_vec_len, data_len),
+98 => wire__crate__api__studio__handlers__persistence__read_persistence_queue_impl(port, ptr, rust_vec_len, data_len),
+99 => wire__crate__api__studio__handlers__lifecycle__read_recovery_state_impl(port, ptr, rust_vec_len, data_len),
+100 => wire__crate__api__studio__handlers__settings__read_settings_state_impl(port, ptr, rust_vec_len, data_len),
+101 => wire__crate__api__studio__handlers__accounts__read_skills_state_impl(port, ptr, rust_vec_len, data_len),
+102 => wire__crate__api__studio__handlers__snapshot__read_studio_state_impl(port, ptr, rust_vec_len, data_len),
+103 => wire__crate__api__studio__handlers__updater__read_studio_update_state_impl(port, ptr, rust_vec_len, data_len),
+104 => wire__crate__api__studio__handlers__history__read_thread_impl(port, ptr, rust_vec_len, data_len),
+105 => wire__crate__api__studio__handlers__history__read_thread_activity_detail_impl(port, ptr, rust_vec_len, data_len),
+106 => wire__crate__api__studio__handlers__attachment__read_thread_attachment_impl(port, ptr, rust_vec_len, data_len),
+107 => wire__crate__api__studio__handlers__mode_editor__read_thread_mode_definition_impl(port, ptr, rust_vec_len, data_len),
+108 => wire__crate__api__studio__handlers__settings__read_web_search_settings_impl(port, ptr, rust_vec_len, data_len),
+109 => wire__crate__api__studio__handlers__ssh__reconnect_ssh_server_impl(port, ptr, rust_vec_len, data_len),
+110 => wire__crate__api__studio__handlers__settings__reload_settings_from_disk_impl(port, ptr, rust_vec_len, data_len),
+111 => wire__crate__api__studio__handlers__mode_editor__reload_thread_mode_definitions_impl(port, ptr, rust_vec_len, data_len),
+112 => wire__crate__api__studio__handlers__settings__remove_account_impl(port, ptr, rust_vec_len, data_len),
+113 => wire__crate__api__studio__handlers__settings__remove_account_model_impl(port, ptr, rust_vec_len, data_len),
+114 => wire__crate__api__studio__handlers__acp__remove_acp_account_impl(port, ptr, rust_vec_len, data_len),
+115 => wire__crate__api__studio__handlers__attachment__remove_attachment_draft_impl(port, ptr, rust_vec_len, data_len),
+116 => wire__crate__api__studio__handlers__lifecycle__rename_project_impl(port, ptr, rust_vec_len, data_len),
+117 => wire__crate__api__studio__handlers__thread__rename_thread_impl(port, ptr, rust_vec_len, data_len),
+118 => wire__crate__api__studio__handlers__external_state__repair_lsp_server_impl(port, ptr, rust_vec_len, data_len),
+119 => wire__crate__api__studio__handlers__external_state__reset_lsp_impl(port, ptr, rust_vec_len, data_len),
+120 => wire__crate__api__studio__handlers__external_state__reset_mcp_impl(port, ptr, rust_vec_len, data_len),
+121 => wire__crate__api__studio__handlers__prompt__respond_interaction_impl(port, ptr, rust_vec_len, data_len),
+122 => wire__crate__api__studio__handlers__thread__restore_thread_impl(port, ptr, rust_vec_len, data_len),
+123 => wire__crate__api__studio__handlers__persistence__resume_thread_history_impl(port, ptr, rust_vec_len, data_len),
+124 => wire__crate__api__studio__handlers__bots__retry_bot_connection_impl(port, ptr, rust_vec_len, data_len),
+125 => wire__crate__api__studio__handlers__persistence__retry_persistence_impl(port, ptr, rust_vec_len, data_len),
+126 => wire__crate__api__studio__handlers__lifecycle__retry_recovery_impl(port, ptr, rust_vec_len, data_len),
+127 => wire__crate__api__studio__handlers__persistence__retry_thread_history_impl(port, ptr, rust_vec_len, data_len),
+128 => wire__crate__api__studio__handlers__acp__save_acp_account_impl(port, ptr, rust_vec_len, data_len),
+129 => wire__crate__api__studio__handlers__bots__save_bot_impl(port, ptr, rust_vec_len, data_len),
+130 => wire__crate__api__studio__handlers__settings__save_runtime_permission_mode_impl(port, ptr, rust_vec_len, data_len),
+131 => wire__crate__api__studio__handlers__ssh__save_ssh_server_impl(port, ptr, rust_vec_len, data_len),
+132 => wire__crate__api__studio__handlers__mode_editor__save_thread_mode_definition_impl(port, ptr, rust_vec_len, data_len),
+133 => wire__crate__api__studio__handlers__agent_profiles__save_user_agent_profile_impl(port, ptr, rust_vec_len, data_len),
+134 => wire__crate__api__studio__handlers__accounts__search_skills_impl(port, ptr, rust_vec_len, data_len),
+135 => wire__crate__api__studio__handlers__bots__send_bot_message_impl(port, ptr, rust_vec_len, data_len),
+136 => wire__crate__api__studio__handlers__settings__set_account_billing_kind_impl(port, ptr, rust_vec_len, data_len),
+137 => wire__crate__api__studio__accounts__commands__set_account_model_auto_compact_impl(port, ptr, rust_vec_len, data_len),
+138 => wire__crate__api__studio__accounts__commands__set_account_model_connection_impl(port, ptr, rust_vec_len, data_len),
+139 => wire__crate__api__studio__handlers__settings__set_account_model_enabled_impl(port, ptr, rust_vec_len, data_len),
+140 => wire__crate__api__studio__handlers__bots__set_bot_enabled_impl(port, ptr, rust_vec_len, data_len),
+141 => wire__crate__api__studio__handlers__bots__set_bot_trusted_chat_impl(port, ptr, rust_vec_len, data_len),
+142 => wire__crate__api__studio__handlers__bots__set_bot_trusted_user_impl(port, ptr, rust_vec_len, data_len),
+143 => wire__crate__api__studio__handlers__settings__set_default_account_impl(port, ptr, rust_vec_len, data_len),
+144 => wire__crate__api__studio__handlers__agent_profiles__set_system_agent_enabled_impl(port, ptr, rust_vec_len, data_len),
+145 => wire__crate__api__studio__handlers__thread__set_thread_mode_impl(port, ptr, rust_vec_len, data_len),
+146 => wire__crate__api__studio__handlers__thread__set_thread_model_route_impl(port, ptr, rust_vec_len, data_len),
+147 => wire__crate__api__studio__handlers__lifecycle__shutdown_runtime_impl(port, ptr, rust_vec_len, data_len),
+148 => wire__crate__api__studio__handlers__acp__start_acp_auth_impl(port, ptr, rust_vec_len, data_len),
+149 => wire__crate__api__studio__handlers__acp_install__start_acp_install_impl(port, ptr, rust_vec_len, data_len),
+150 => wire__crate__api__studio__handlers__bots__start_bot_registration_impl(port, ptr, rust_vec_len, data_len),
+151 => wire__crate__api__studio__accounts__chatgpt__start_chatgpt_login_impl(port, ptr, rust_vec_len, data_len),
+152 => wire__crate__api__studio__handlers__thread__start_new_thread_impl(port, ptr, rust_vec_len, data_len),
+153 => wire__crate__api__studio__handlers__updater__start_studio_background_update_impl(port, ptr, rust_vec_len, data_len),
+154 => wire__crate__api__studio__handlers__lifecycle__start_studio_runtime_impl(port, ptr, rust_vec_len, data_len),
+155 => wire__crate__api__studio__handlers__prompt__stop_thread_impl(port, ptr, rust_vec_len, data_len),
+156 => wire__crate__api__studio__handlers__prompt__submit_prompt_impl(port, ptr, rust_vec_len, data_len),
+157 => wire__crate__api__studio__subscription__shutdown__subscribe_shutdown_progress_impl(port, ptr, rust_vec_len, data_len),
+158 => wire__crate__api__studio__subscription__startup__subscribe_startup_progress_impl(port, ptr, rust_vec_len, data_len),
+159 => wire__crate__api__studio__accounts__commands__sync_account_models_impl(port, ptr, rust_vec_len, data_len),
+160 => wire__crate__api__studio__handlers__ssh__test_ssh_connection_impl(port, ptr, rust_vec_len, data_len),
+161 => wire__crate__api__studio__handlers__mode_editor__thread_mode_definition_schema_impl(port, ptr, rust_vec_len, data_len),
+162 => wire__crate__api__studio__handlers__mode_editor__validate_thread_mode_definition_impl(port, ptr, rust_vec_len, data_len),
                         _ => unreachable!(),
                     }
 }
@@ -21522,6 +21851,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::studio::types::settings::Acco
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
             self.account_id.into_into_dart().into_dart(),
+            self.authentication.into_into_dart().into_dart(),
             self.template_id.into_into_dart().into_dart(),
             self.protocol.into_into_dart().into_dart(),
             self.name.into_into_dart().into_dart(),
@@ -21738,6 +22068,61 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::studio::types::ssh::Authentic
 }
 // Codec=Dco (DartCObject based), see doc to use other codecs
 impl flutter_rust_bridge::IntoDart
+    for crate::api::studio::types::chatgpt_auth::BridgeAccountAuthenticationIntent
+{
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        match self {crate::api::studio::types::chatgpt_auth::BridgeAccountAuthenticationIntent::Keep => { [0.into_dart()].into_dart() }
+crate::api::studio::types::chatgpt_auth::BridgeAccountAuthenticationIntent::ApiKey => { [1.into_dart()].into_dart() }
+crate::api::studio::types::chatgpt_auth::BridgeAccountAuthenticationIntent::ChatGpt{login_id,editor_id} => { [2.into_dart(),
+login_id.into_into_dart().into_dart(),
+editor_id.into_into_dart().into_dart()].into_dart() }
+ _ => { unimplemented!(""); }}
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::studio::types::chatgpt_auth::BridgeAccountAuthenticationIntent
+{
+}
+impl
+    flutter_rust_bridge::IntoIntoDart<
+        crate::api::studio::types::chatgpt_auth::BridgeAccountAuthenticationIntent,
+    > for crate::api::studio::types::chatgpt_auth::BridgeAccountAuthenticationIntent
+{
+    fn into_into_dart(
+        self,
+    ) -> crate::api::studio::types::chatgpt_auth::BridgeAccountAuthenticationIntent {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart
+    for crate::api::studio::types::chatgpt_auth::BridgeAccountAuthenticationMethod
+{
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        match self {
+            Self::ApiKey => 0.into_dart(),
+            Self::ChatGpt => 1.into_dart(),
+            _ => unreachable!(),
+        }
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::studio::types::chatgpt_auth::BridgeAccountAuthenticationMethod
+{
+}
+impl
+    flutter_rust_bridge::IntoIntoDart<
+        crate::api::studio::types::chatgpt_auth::BridgeAccountAuthenticationMethod,
+    > for crate::api::studio::types::chatgpt_auth::BridgeAccountAuthenticationMethod
+{
+    fn into_into_dart(
+        self,
+    ) -> crate::api::studio::types::chatgpt_auth::BridgeAccountAuthenticationMethod {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart
     for crate::api::studio::accounts::types::BridgeAccountCapabilities
 {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
@@ -21909,6 +22294,15 @@ impl flutter_rust_bridge::IntoDart
                 snapshot.into_into_dart().into_dart(),
             ]
             .into_dart(),
+            crate::api::studio::accounts::types::BridgeAccountDomainFrame::ChatGptLogin {
+                stamp,
+                snapshot,
+            } => [
+                6.into_dart(),
+                stamp.into_into_dart().into_dart(),
+                snapshot.into_into_dart().into_dart(),
+            ]
+            .into_dart(),
             _ => {
                 unimplemented!("");
             }
@@ -22038,6 +22432,9 @@ impl flutter_rust_bridge::IntoDart
             crate::api::studio::accounts::types::BridgeAccountObservationTarget::AcpInstall => {
                 [5.into_dart()].into_dart()
             }
+            crate::api::studio::accounts::types::BridgeAccountObservationTarget::ChatGptLogin {
+                login_id,
+            } => [6.into_dart(), login_id.into_into_dart().into_dart()].into_dart(),
             _ => {
                 unimplemented!("");
             }
@@ -22151,6 +22548,8 @@ impl flutter_rust_bridge::IntoDart
 {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
+            self.authentication.into_into_dart().into_dart(),
+            self.chatgpt_account.into_into_dart().into_dart(),
             self.billing_kind.into_into_dart().into_dart(),
             self.billing_kind_override.into_into_dart().into_dart(),
             self.model_enabled_overrides.into_into_dart().into_dart(),
@@ -25127,6 +25526,180 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::studio::types::runtime::Bridg
     for crate::api::studio::types::runtime::BridgeCancellingAgent
 {
     fn into_into_dart(self) -> crate::api::studio::types::runtime::BridgeCancellingAgent {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart
+    for crate::api::studio::types::chatgpt_auth::BridgeChatGptAccountInfo
+{
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.issuer.into_into_dart().into_dart(),
+            self.subject.into_into_dart().into_dart(),
+            self.client_id.into_into_dart().into_dart(),
+            self.email.into_into_dart().into_dart(),
+            self.plan_usage_enabled.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::studio::types::chatgpt_auth::BridgeChatGptAccountInfo
+{
+}
+impl
+    flutter_rust_bridge::IntoIntoDart<
+        crate::api::studio::types::chatgpt_auth::BridgeChatGptAccountInfo,
+    > for crate::api::studio::types::chatgpt_auth::BridgeChatGptAccountInfo
+{
+    fn into_into_dart(self) -> crate::api::studio::types::chatgpt_auth::BridgeChatGptAccountInfo {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart
+    for crate::api::studio::types::chatgpt_auth::BridgeChatGptLoginCommandReply
+{
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.stamp.into_into_dart().into_dart(),
+            self.snapshot.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::studio::types::chatgpt_auth::BridgeChatGptLoginCommandReply
+{
+}
+impl
+    flutter_rust_bridge::IntoIntoDart<
+        crate::api::studio::types::chatgpt_auth::BridgeChatGptLoginCommandReply,
+    > for crate::api::studio::types::chatgpt_auth::BridgeChatGptLoginCommandReply
+{
+    fn into_into_dart(
+        self,
+    ) -> crate::api::studio::types::chatgpt_auth::BridgeChatGptLoginCommandReply {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart
+    for crate::api::studio::types::chatgpt_auth::BridgeChatGptLoginFailure
+{
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.code.into_into_dart().into_dart(),
+            self.retryable.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::studio::types::chatgpt_auth::BridgeChatGptLoginFailure
+{
+}
+impl
+    flutter_rust_bridge::IntoIntoDart<
+        crate::api::studio::types::chatgpt_auth::BridgeChatGptLoginFailure,
+    > for crate::api::studio::types::chatgpt_auth::BridgeChatGptLoginFailure
+{
+    fn into_into_dart(self) -> crate::api::studio::types::chatgpt_auth::BridgeChatGptLoginFailure {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart
+    for crate::api::studio::types::chatgpt_auth::BridgeChatGptLoginFailureCode
+{
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        match self {
+            Self::Network => 0.into_dart(),
+            Self::AuthorizationDenied => 1.into_dart(),
+            Self::InvalidCallback => 2.into_dart(),
+            Self::InvalidIdentity => 3.into_dart(),
+            Self::MissingPlanPermission => 4.into_dart(),
+            Self::Expired => 5.into_dart(),
+            Self::Storage => 6.into_dart(),
+            Self::TaskFailed => 7.into_dart(),
+            _ => unreachable!(),
+        }
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::studio::types::chatgpt_auth::BridgeChatGptLoginFailureCode
+{
+}
+impl
+    flutter_rust_bridge::IntoIntoDart<
+        crate::api::studio::types::chatgpt_auth::BridgeChatGptLoginFailureCode,
+    > for crate::api::studio::types::chatgpt_auth::BridgeChatGptLoginFailureCode
+{
+    fn into_into_dart(
+        self,
+    ) -> crate::api::studio::types::chatgpt_auth::BridgeChatGptLoginFailureCode {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart
+    for crate::api::studio::types::chatgpt_auth::BridgeChatGptLoginPhase
+{
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        match self {
+            Self::Preparing => 0.into_dart(),
+            Self::AwaitingBrowser => 1.into_dart(),
+            Self::ExchangingCode => 2.into_dart(),
+            Self::Succeeded => 3.into_dart(),
+            Self::Cancelled => 4.into_dart(),
+            Self::Failed => 5.into_dart(),
+            _ => unreachable!(),
+        }
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::studio::types::chatgpt_auth::BridgeChatGptLoginPhase
+{
+}
+impl
+    flutter_rust_bridge::IntoIntoDart<
+        crate::api::studio::types::chatgpt_auth::BridgeChatGptLoginPhase,
+    > for crate::api::studio::types::chatgpt_auth::BridgeChatGptLoginPhase
+{
+    fn into_into_dart(self) -> crate::api::studio::types::chatgpt_auth::BridgeChatGptLoginPhase {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart
+    for crate::api::studio::types::chatgpt_auth::BridgeChatGptLoginSnapshot
+{
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.login_id.into_into_dart().into_dart(),
+            self.editor_id.into_into_dart().into_dart(),
+            self.account_id.into_into_dart().into_dart(),
+            self.revision.into_into_dart().into_dart(),
+            self.phase.into_into_dart().into_dart(),
+            self.authorization_url.into_into_dart().into_dart(),
+            self.expires_at.into_into_dart().into_dart(),
+            self.account.into_into_dart().into_dart(),
+            self.failure.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::studio::types::chatgpt_auth::BridgeChatGptLoginSnapshot
+{
+}
+impl
+    flutter_rust_bridge::IntoIntoDart<
+        crate::api::studio::types::chatgpt_auth::BridgeChatGptLoginSnapshot,
+    > for crate::api::studio::types::chatgpt_auth::BridgeChatGptLoginSnapshot
+{
+    fn into_into_dart(self) -> crate::api::studio::types::chatgpt_auth::BridgeChatGptLoginSnapshot {
         self
     }
 }
@@ -28218,6 +28791,7 @@ impl flutter_rust_bridge::IntoDart
 {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
+            self.authentication.into_into_dart().into_dart(),
             self.name.into_into_dart().into_dart(),
             self.base_url.into_into_dart().into_dart(),
             self.template_id.into_into_dart().into_dart(),
@@ -36093,6 +36667,10 @@ impl SseEncode for crate::api::studio::types::settings::AccountInput {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         <String>::sse_encode(self.account_id, serializer);
+        <crate::api::studio::types::chatgpt_auth::BridgeAccountAuthenticationIntent>::sse_encode(
+            self.authentication,
+            serializer,
+        );
         <Option<String>>::sse_encode(self.template_id, serializer);
         <String>::sse_encode(self.protocol, serializer);
         <String>::sse_encode(self.name, serializer);
@@ -36425,6 +37003,27 @@ impl SseEncode for Box<crate::api::studio::types::response::StartNewThreadRespon
     }
 }
 
+impl SseEncode for crate::api::studio::types::chatgpt_auth::BridgeAccountAuthenticationIntent {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        match self {crate::api::studio::types::chatgpt_auth::BridgeAccountAuthenticationIntent::Keep => { <i32>::sse_encode(0, serializer);  }
+crate::api::studio::types::chatgpt_auth::BridgeAccountAuthenticationIntent::ApiKey => { <i32>::sse_encode(1, serializer);  }
+crate::api::studio::types::chatgpt_auth::BridgeAccountAuthenticationIntent::ChatGpt{login_id,editor_id} => { <i32>::sse_encode(2, serializer); <String>::sse_encode(login_id, serializer);
+<String>::sse_encode(editor_id, serializer);
+ }
+ _ => { unimplemented!(""); }}
+    }
+}
+
+impl SseEncode for crate::api::studio::types::chatgpt_auth::BridgeAccountAuthenticationMethod {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(match self {crate::api::studio::types::chatgpt_auth::BridgeAccountAuthenticationMethod::ApiKey => { 0 }
+crate::api::studio::types::chatgpt_auth::BridgeAccountAuthenticationMethod::ChatGpt => { 1 }
+ _ => { unimplemented!(""); }}, serializer);
+    }
+}
+
 impl SseEncode for crate::api::studio::accounts::types::BridgeAccountCapabilities {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -36571,6 +37170,18 @@ impl SseEncode for crate::api::studio::accounts::types::BridgeAccountDomainFrame
                     snapshot, serializer,
                 );
             }
+            crate::api::studio::accounts::types::BridgeAccountDomainFrame::ChatGptLogin {
+                stamp,
+                snapshot,
+            } => {
+                <i32>::sse_encode(6, serializer);
+                <crate::api::studio::types::command::BridgeResourceStamp>::sse_encode(
+                    stamp, serializer,
+                );
+                <crate::api::studio::types::chatgpt_auth::BridgeChatGptLoginSnapshot>::sse_encode(
+                    snapshot, serializer,
+                );
+            }
             _ => {
                 unimplemented!("");
             }
@@ -36660,6 +37271,12 @@ impl SseEncode for crate::api::studio::accounts::types::BridgeAccountObservation
             crate::api::studio::accounts::types::BridgeAccountObservationTarget::AcpInstall => {
                 <i32>::sse_encode(5, serializer);
             }
+            crate::api::studio::accounts::types::BridgeAccountObservationTarget::ChatGptLogin {
+                login_id,
+            } => {
+                <i32>::sse_encode(6, serializer);
+                <String>::sse_encode(login_id, serializer);
+            }
             _ => {
                 unimplemented!("");
             }
@@ -36723,6 +37340,14 @@ impl SseEncode for crate::api::studio::accounts::types::BridgeAccountQuotaWindow
 impl SseEncode for crate::api::studio::types::settings::BridgeAccountSettingsDto {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <crate::api::studio::types::chatgpt_auth::BridgeAccountAuthenticationMethod>::sse_encode(
+            self.authentication,
+            serializer,
+        );
+        <Option<crate::api::studio::types::chatgpt_auth::BridgeChatGptAccountInfo>>::sse_encode(
+            self.chatgpt_account,
+            serializer,
+        );
         <crate::api::studio::types::delegation::BridgeBillingKind>::sse_encode(
             self.billing_kind,
             serializer,
@@ -38843,6 +39468,91 @@ impl SseEncode for crate::api::studio::types::runtime::BridgeCancellingAgent {
     }
 }
 
+impl SseEncode for crate::api::studio::types::chatgpt_auth::BridgeChatGptAccountInfo {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <String>::sse_encode(self.issuer, serializer);
+        <String>::sse_encode(self.subject, serializer);
+        <String>::sse_encode(self.client_id, serializer);
+        <Option<String>>::sse_encode(self.email, serializer);
+        <bool>::sse_encode(self.plan_usage_enabled, serializer);
+    }
+}
+
+impl SseEncode for crate::api::studio::types::chatgpt_auth::BridgeChatGptLoginCommandReply {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <crate::api::studio::types::command::BridgeResourceStamp>::sse_encode(
+            self.stamp, serializer,
+        );
+        <crate::api::studio::types::chatgpt_auth::BridgeChatGptLoginSnapshot>::sse_encode(
+            self.snapshot,
+            serializer,
+        );
+    }
+}
+
+impl SseEncode for crate::api::studio::types::chatgpt_auth::BridgeChatGptLoginFailure {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <crate::api::studio::types::chatgpt_auth::BridgeChatGptLoginFailureCode>::sse_encode(
+            self.code, serializer,
+        );
+        <bool>::sse_encode(self.retryable, serializer);
+    }
+}
+
+impl SseEncode for crate::api::studio::types::chatgpt_auth::BridgeChatGptLoginFailureCode {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(match self {crate::api::studio::types::chatgpt_auth::BridgeChatGptLoginFailureCode::Network => { 0 }
+crate::api::studio::types::chatgpt_auth::BridgeChatGptLoginFailureCode::AuthorizationDenied => { 1 }
+crate::api::studio::types::chatgpt_auth::BridgeChatGptLoginFailureCode::InvalidCallback => { 2 }
+crate::api::studio::types::chatgpt_auth::BridgeChatGptLoginFailureCode::InvalidIdentity => { 3 }
+crate::api::studio::types::chatgpt_auth::BridgeChatGptLoginFailureCode::MissingPlanPermission => { 4 }
+crate::api::studio::types::chatgpt_auth::BridgeChatGptLoginFailureCode::Expired => { 5 }
+crate::api::studio::types::chatgpt_auth::BridgeChatGptLoginFailureCode::Storage => { 6 }
+crate::api::studio::types::chatgpt_auth::BridgeChatGptLoginFailureCode::TaskFailed => { 7 }
+ _ => { unimplemented!(""); }}, serializer);
+    }
+}
+
+impl SseEncode for crate::api::studio::types::chatgpt_auth::BridgeChatGptLoginPhase {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(match self {crate::api::studio::types::chatgpt_auth::BridgeChatGptLoginPhase::Preparing => { 0 }
+crate::api::studio::types::chatgpt_auth::BridgeChatGptLoginPhase::AwaitingBrowser => { 1 }
+crate::api::studio::types::chatgpt_auth::BridgeChatGptLoginPhase::ExchangingCode => { 2 }
+crate::api::studio::types::chatgpt_auth::BridgeChatGptLoginPhase::Succeeded => { 3 }
+crate::api::studio::types::chatgpt_auth::BridgeChatGptLoginPhase::Cancelled => { 4 }
+crate::api::studio::types::chatgpt_auth::BridgeChatGptLoginPhase::Failed => { 5 }
+ _ => { unimplemented!(""); }}, serializer);
+    }
+}
+
+impl SseEncode for crate::api::studio::types::chatgpt_auth::BridgeChatGptLoginSnapshot {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <String>::sse_encode(self.login_id, serializer);
+        <String>::sse_encode(self.editor_id, serializer);
+        <String>::sse_encode(self.account_id, serializer);
+        <u64>::sse_encode(self.revision, serializer);
+        <crate::api::studio::types::chatgpt_auth::BridgeChatGptLoginPhase>::sse_encode(
+            self.phase, serializer,
+        );
+        <Option<String>>::sse_encode(self.authorization_url, serializer);
+        <Option<i64>>::sse_encode(self.expires_at, serializer);
+        <Option<crate::api::studio::types::chatgpt_auth::BridgeChatGptAccountInfo>>::sse_encode(
+            self.account,
+            serializer,
+        );
+        <Option<crate::api::studio::types::chatgpt_auth::BridgeChatGptLoginFailure>>::sse_encode(
+            self.failure,
+            serializer,
+        );
+    }
+}
+
 impl SseEncode for crate::api::studio::types::updater::BridgeCheckFailedUpdaterState {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -40753,6 +41463,10 @@ impl SseEncode for crate::api::studio::types::thread_preparation::BridgeNewThrea
 impl SseEncode for crate::api::studio::accounts::types::BridgePatchAccountInput {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <crate::api::studio::types::chatgpt_auth::BridgeAccountAuthenticationIntent>::sse_encode(
+            self.authentication,
+            serializer,
+        );
         <crate::api::studio::accounts::types::BridgeAccountTextPatch>::sse_encode(
             self.name, serializer,
         );
@@ -46515,6 +47229,30 @@ impl SseEncode for Option<crate::api::studio::types::bots::BridgeBotRegistration
         <bool>::sse_encode(self.is_some(), serializer);
         if let Some(value) = self {
             <crate::api::studio::types::bots::BridgeBotRegistrationAttempt>::sse_encode(
+                value, serializer,
+            );
+        }
+    }
+}
+
+impl SseEncode for Option<crate::api::studio::types::chatgpt_auth::BridgeChatGptAccountInfo> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <bool>::sse_encode(self.is_some(), serializer);
+        if let Some(value) = self {
+            <crate::api::studio::types::chatgpt_auth::BridgeChatGptAccountInfo>::sse_encode(
+                value, serializer,
+            );
+        }
+    }
+}
+
+impl SseEncode for Option<crate::api::studio::types::chatgpt_auth::BridgeChatGptLoginFailure> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <bool>::sse_encode(self.is_some(), serializer);
+        if let Some(value) = self {
+            <crate::api::studio::types::chatgpt_auth::BridgeChatGptLoginFailure>::sse_encode(
                 value, serializer,
             );
         }

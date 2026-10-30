@@ -501,6 +501,7 @@ pub(crate) fn query_error(error: ModelCatalogQueryError) -> Result<CatalogError>
         ModelCatalogQueryError::Definition(error) => return Err(error.into()),
         ModelCatalogQueryError::Unsupported => CatalogError::Unsupported,
         ModelCatalogQueryError::Configuration => CatalogError::Configuration,
+        ModelCatalogQueryError::Authentication(_) => CatalogError::Configuration,
         ModelCatalogQueryError::Timeout => CatalogError::Timeout,
         ModelCatalogQueryError::Transport { http_status, .. } => {
             CatalogError::Transport { http_status }

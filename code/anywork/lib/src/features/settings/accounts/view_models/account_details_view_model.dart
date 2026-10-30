@@ -1,6 +1,9 @@
 import 'dart:async';
 
-import 'package:anywork_client/accounts.dart';
+import 'package:anywork_client/accounts.dart' hide AccountAuthenticationMethod;
+import 'package:anywork_client/accounts.dart'
+    as account_domain
+    show AccountAuthenticationMethod;
 import 'package:anywork_client/account_usage.dart';
 import 'package:anywork_client/studio_client.dart' show OperationPhase;
 import 'package:riverpod_annotation/riverpod_annotation.dart';
@@ -216,7 +219,16 @@ class AccountDetailsViewModel extends _$AccountDetailsViewModel {
         content: _key.kind == AccountKind.native
             ? AccountDetailsContent.native(
                 NativeAccountDetailsPresentation(
-                  credentialReady: native?.hasBearerToken == true,
+                  authentication:
+                      native?.authentication ==
+                          account_domain.AccountAuthenticationMethod.chatGpt
+                      ? AccountAuthenticationMethod.chatGpt
+                      : AccountAuthenticationMethod.apiKey,
+                  credentialReady:
+                      native?.authentication ==
+                          account_domain.AccountAuthenticationMethod.chatGpt
+                      ? summary?.credentialReady == true
+                      : native?.hasBearerToken == true,
                   billing: AccountBillingPresentation(
                     effective: displayBilling(summary?.billingKind),
                     billingKindOverride: summary?.billingKindOverride == null

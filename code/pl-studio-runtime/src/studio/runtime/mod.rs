@@ -26,6 +26,7 @@ pub(crate) mod bot_archive_test_host;
 mod bots_api;
 mod bots_recovery;
 pub(crate) mod chat_item;
+mod chatgpt_auth;
 mod command_receipts;
 mod conversation_feed;
 mod delegation_models;
@@ -194,6 +195,7 @@ pub struct StudioRuntime {
     account_usage: AccountUsageRuntime,
     /// ACP 接入与认证 owner：连接身份、操作代次、探测资源与独立 `acpAuth` topic。
     acp_auth: acp_auth::AcpAuthRuntime,
+    chatgpt_auth: chatgpt_auth::ChatGptAuthRuntime,
     /// 官方 server 准备 owner：与认证、Settings 相互独立的共享资产 owner。
     acp_install: acp_install::AcpInstallRuntime,
     model_performance: ModelPerformanceOwner,

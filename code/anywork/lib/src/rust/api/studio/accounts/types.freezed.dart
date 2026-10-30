@@ -393,7 +393,7 @@ extension BridgeAccountDomainFramePatterns on BridgeAccountDomainFrame {
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( BridgeAccountDomainFrame_Summaries value)?  summaries,TResult Function( BridgeAccountDomainFrame_Detail value)?  detail,TResult Function( BridgeAccountDomainFrame_Models value)?  models,TResult Function( BridgeAccountDomainFrame_Usage value)?  usage,TResult Function( BridgeAccountDomainFrame_AcpAuth value)?  acpAuth,TResult Function( BridgeAccountDomainFrame_AcpInstall value)?  acpInstall,required TResult orElse(),}){
+@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( BridgeAccountDomainFrame_Summaries value)?  summaries,TResult Function( BridgeAccountDomainFrame_Detail value)?  detail,TResult Function( BridgeAccountDomainFrame_Models value)?  models,TResult Function( BridgeAccountDomainFrame_Usage value)?  usage,TResult Function( BridgeAccountDomainFrame_AcpAuth value)?  acpAuth,TResult Function( BridgeAccountDomainFrame_AcpInstall value)?  acpInstall,TResult Function( BridgeAccountDomainFrame_ChatGptLogin value)?  chatGptLogin,required TResult orElse(),}){
 final _that = this;
 switch (_that) {
 case BridgeAccountDomainFrame_Summaries() when summaries != null:
@@ -402,7 +402,8 @@ return detail(_that);case BridgeAccountDomainFrame_Models() when models != null:
 return models(_that);case BridgeAccountDomainFrame_Usage() when usage != null:
 return usage(_that);case BridgeAccountDomainFrame_AcpAuth() when acpAuth != null:
 return acpAuth(_that);case BridgeAccountDomainFrame_AcpInstall() when acpInstall != null:
-return acpInstall(_that);case _:
+return acpInstall(_that);case BridgeAccountDomainFrame_ChatGptLogin() when chatGptLogin != null:
+return chatGptLogin(_that);case _:
   return orElse();
 
 }
@@ -420,7 +421,7 @@ return acpInstall(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( BridgeAccountDomainFrame_Summaries value)  summaries,required TResult Function( BridgeAccountDomainFrame_Detail value)  detail,required TResult Function( BridgeAccountDomainFrame_Models value)  models,required TResult Function( BridgeAccountDomainFrame_Usage value)  usage,required TResult Function( BridgeAccountDomainFrame_AcpAuth value)  acpAuth,required TResult Function( BridgeAccountDomainFrame_AcpInstall value)  acpInstall,}){
+@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( BridgeAccountDomainFrame_Summaries value)  summaries,required TResult Function( BridgeAccountDomainFrame_Detail value)  detail,required TResult Function( BridgeAccountDomainFrame_Models value)  models,required TResult Function( BridgeAccountDomainFrame_Usage value)  usage,required TResult Function( BridgeAccountDomainFrame_AcpAuth value)  acpAuth,required TResult Function( BridgeAccountDomainFrame_AcpInstall value)  acpInstall,required TResult Function( BridgeAccountDomainFrame_ChatGptLogin value)  chatGptLogin,}){
 final _that = this;
 switch (_that) {
 case BridgeAccountDomainFrame_Summaries():
@@ -429,7 +430,8 @@ return detail(_that);case BridgeAccountDomainFrame_Models():
 return models(_that);case BridgeAccountDomainFrame_Usage():
 return usage(_that);case BridgeAccountDomainFrame_AcpAuth():
 return acpAuth(_that);case BridgeAccountDomainFrame_AcpInstall():
-return acpInstall(_that);}
+return acpInstall(_that);case BridgeAccountDomainFrame_ChatGptLogin():
+return chatGptLogin(_that);}
 }
 /// A variant of `map` that fallback to returning `null`.
 ///
@@ -443,7 +445,7 @@ return acpInstall(_that);}
 /// }
 /// ```
 
-@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( BridgeAccountDomainFrame_Summaries value)?  summaries,TResult? Function( BridgeAccountDomainFrame_Detail value)?  detail,TResult? Function( BridgeAccountDomainFrame_Models value)?  models,TResult? Function( BridgeAccountDomainFrame_Usage value)?  usage,TResult? Function( BridgeAccountDomainFrame_AcpAuth value)?  acpAuth,TResult? Function( BridgeAccountDomainFrame_AcpInstall value)?  acpInstall,}){
+@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( BridgeAccountDomainFrame_Summaries value)?  summaries,TResult? Function( BridgeAccountDomainFrame_Detail value)?  detail,TResult? Function( BridgeAccountDomainFrame_Models value)?  models,TResult? Function( BridgeAccountDomainFrame_Usage value)?  usage,TResult? Function( BridgeAccountDomainFrame_AcpAuth value)?  acpAuth,TResult? Function( BridgeAccountDomainFrame_AcpInstall value)?  acpInstall,TResult? Function( BridgeAccountDomainFrame_ChatGptLogin value)?  chatGptLogin,}){
 final _that = this;
 switch (_that) {
 case BridgeAccountDomainFrame_Summaries() when summaries != null:
@@ -452,7 +454,8 @@ return detail(_that);case BridgeAccountDomainFrame_Models() when models != null:
 return models(_that);case BridgeAccountDomainFrame_Usage() when usage != null:
 return usage(_that);case BridgeAccountDomainFrame_AcpAuth() when acpAuth != null:
 return acpAuth(_that);case BridgeAccountDomainFrame_AcpInstall() when acpInstall != null:
-return acpInstall(_that);case _:
+return acpInstall(_that);case BridgeAccountDomainFrame_ChatGptLogin() when chatGptLogin != null:
+return chatGptLogin(_that);case _:
   return null;
 
 }
@@ -469,7 +472,7 @@ return acpInstall(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( BridgeResourceStamp stamp,  List<BridgeAccountSummary> accounts)?  summaries,TResult Function( BridgeResourceStamp stamp,  BridgeAccountIdentity identity,  BridgeAccountDetail? account)?  detail,TResult Function( BridgeResourceStamp stamp,  String accountId,  BridgeModelCatalogAccountDto? catalog)?  models,TResult Function( BridgeResourceStamp stamp,  List<BridgeAccountUsageObservation> accounts)?  usage,TResult Function( BridgeResourceStamp stamp,  BridgeAcpAuthSnapshot snapshot)?  acpAuth,TResult Function( BridgeResourceStamp stamp,  BridgeAcpInstallSnapshot snapshot)?  acpInstall,required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( BridgeResourceStamp stamp,  List<BridgeAccountSummary> accounts)?  summaries,TResult Function( BridgeResourceStamp stamp,  BridgeAccountIdentity identity,  BridgeAccountDetail? account)?  detail,TResult Function( BridgeResourceStamp stamp,  String accountId,  BridgeModelCatalogAccountDto? catalog)?  models,TResult Function( BridgeResourceStamp stamp,  List<BridgeAccountUsageObservation> accounts)?  usage,TResult Function( BridgeResourceStamp stamp,  BridgeAcpAuthSnapshot snapshot)?  acpAuth,TResult Function( BridgeResourceStamp stamp,  BridgeAcpInstallSnapshot snapshot)?  acpInstall,TResult Function( BridgeResourceStamp stamp,  BridgeChatGptLoginSnapshot snapshot)?  chatGptLogin,required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case BridgeAccountDomainFrame_Summaries() when summaries != null:
 return summaries(_that.stamp,_that.accounts);case BridgeAccountDomainFrame_Detail() when detail != null:
@@ -477,7 +480,8 @@ return detail(_that.stamp,_that.identity,_that.account);case BridgeAccountDomain
 return models(_that.stamp,_that.accountId,_that.catalog);case BridgeAccountDomainFrame_Usage() when usage != null:
 return usage(_that.stamp,_that.accounts);case BridgeAccountDomainFrame_AcpAuth() when acpAuth != null:
 return acpAuth(_that.stamp,_that.snapshot);case BridgeAccountDomainFrame_AcpInstall() when acpInstall != null:
-return acpInstall(_that.stamp,_that.snapshot);case _:
+return acpInstall(_that.stamp,_that.snapshot);case BridgeAccountDomainFrame_ChatGptLogin() when chatGptLogin != null:
+return chatGptLogin(_that.stamp,_that.snapshot);case _:
   return orElse();
 
 }
@@ -495,7 +499,7 @@ return acpInstall(_that.stamp,_that.snapshot);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( BridgeResourceStamp stamp,  List<BridgeAccountSummary> accounts)  summaries,required TResult Function( BridgeResourceStamp stamp,  BridgeAccountIdentity identity,  BridgeAccountDetail? account)  detail,required TResult Function( BridgeResourceStamp stamp,  String accountId,  BridgeModelCatalogAccountDto? catalog)  models,required TResult Function( BridgeResourceStamp stamp,  List<BridgeAccountUsageObservation> accounts)  usage,required TResult Function( BridgeResourceStamp stamp,  BridgeAcpAuthSnapshot snapshot)  acpAuth,required TResult Function( BridgeResourceStamp stamp,  BridgeAcpInstallSnapshot snapshot)  acpInstall,}) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( BridgeResourceStamp stamp,  List<BridgeAccountSummary> accounts)  summaries,required TResult Function( BridgeResourceStamp stamp,  BridgeAccountIdentity identity,  BridgeAccountDetail? account)  detail,required TResult Function( BridgeResourceStamp stamp,  String accountId,  BridgeModelCatalogAccountDto? catalog)  models,required TResult Function( BridgeResourceStamp stamp,  List<BridgeAccountUsageObservation> accounts)  usage,required TResult Function( BridgeResourceStamp stamp,  BridgeAcpAuthSnapshot snapshot)  acpAuth,required TResult Function( BridgeResourceStamp stamp,  BridgeAcpInstallSnapshot snapshot)  acpInstall,required TResult Function( BridgeResourceStamp stamp,  BridgeChatGptLoginSnapshot snapshot)  chatGptLogin,}) {final _that = this;
 switch (_that) {
 case BridgeAccountDomainFrame_Summaries():
 return summaries(_that.stamp,_that.accounts);case BridgeAccountDomainFrame_Detail():
@@ -503,7 +507,8 @@ return detail(_that.stamp,_that.identity,_that.account);case BridgeAccountDomain
 return models(_that.stamp,_that.accountId,_that.catalog);case BridgeAccountDomainFrame_Usage():
 return usage(_that.stamp,_that.accounts);case BridgeAccountDomainFrame_AcpAuth():
 return acpAuth(_that.stamp,_that.snapshot);case BridgeAccountDomainFrame_AcpInstall():
-return acpInstall(_that.stamp,_that.snapshot);}
+return acpInstall(_that.stamp,_that.snapshot);case BridgeAccountDomainFrame_ChatGptLogin():
+return chatGptLogin(_that.stamp,_that.snapshot);}
 }
 /// A variant of `when` that fallback to returning `null`
 ///
@@ -517,7 +522,7 @@ return acpInstall(_that.stamp,_that.snapshot);}
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( BridgeResourceStamp stamp,  List<BridgeAccountSummary> accounts)?  summaries,TResult? Function( BridgeResourceStamp stamp,  BridgeAccountIdentity identity,  BridgeAccountDetail? account)?  detail,TResult? Function( BridgeResourceStamp stamp,  String accountId,  BridgeModelCatalogAccountDto? catalog)?  models,TResult? Function( BridgeResourceStamp stamp,  List<BridgeAccountUsageObservation> accounts)?  usage,TResult? Function( BridgeResourceStamp stamp,  BridgeAcpAuthSnapshot snapshot)?  acpAuth,TResult? Function( BridgeResourceStamp stamp,  BridgeAcpInstallSnapshot snapshot)?  acpInstall,}) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( BridgeResourceStamp stamp,  List<BridgeAccountSummary> accounts)?  summaries,TResult? Function( BridgeResourceStamp stamp,  BridgeAccountIdentity identity,  BridgeAccountDetail? account)?  detail,TResult? Function( BridgeResourceStamp stamp,  String accountId,  BridgeModelCatalogAccountDto? catalog)?  models,TResult? Function( BridgeResourceStamp stamp,  List<BridgeAccountUsageObservation> accounts)?  usage,TResult? Function( BridgeResourceStamp stamp,  BridgeAcpAuthSnapshot snapshot)?  acpAuth,TResult? Function( BridgeResourceStamp stamp,  BridgeAcpInstallSnapshot snapshot)?  acpInstall,TResult? Function( BridgeResourceStamp stamp,  BridgeChatGptLoginSnapshot snapshot)?  chatGptLogin,}) {final _that = this;
 switch (_that) {
 case BridgeAccountDomainFrame_Summaries() when summaries != null:
 return summaries(_that.stamp,_that.accounts);case BridgeAccountDomainFrame_Detail() when detail != null:
@@ -525,7 +530,8 @@ return detail(_that.stamp,_that.identity,_that.account);case BridgeAccountDomain
 return models(_that.stamp,_that.accountId,_that.catalog);case BridgeAccountDomainFrame_Usage() when usage != null:
 return usage(_that.stamp,_that.accounts);case BridgeAccountDomainFrame_AcpAuth() when acpAuth != null:
 return acpAuth(_that.stamp,_that.snapshot);case BridgeAccountDomainFrame_AcpInstall() when acpInstall != null:
-return acpInstall(_that.stamp,_that.snapshot);case _:
+return acpInstall(_that.stamp,_that.snapshot);case BridgeAccountDomainFrame_ChatGptLogin() when chatGptLogin != null:
+return chatGptLogin(_that.stamp,_that.snapshot);case _:
   return null;
 
 }
@@ -984,6 +990,76 @@ class _$BridgeAccountDomainFrame_AcpInstallCopyWithImpl<$Res>
 stamp: null == stamp ? _self.stamp : stamp // ignore: cast_nullable_to_non_nullable
 as BridgeResourceStamp,snapshot: null == snapshot ? _self.snapshot : snapshot // ignore: cast_nullable_to_non_nullable
 as BridgeAcpInstallSnapshot,
+  ));
+}
+
+
+}
+
+/// @nodoc
+
+
+class BridgeAccountDomainFrame_ChatGptLogin extends BridgeAccountDomainFrame {
+  const BridgeAccountDomainFrame_ChatGptLogin({required this.stamp, required this.snapshot}): super._();
+
+
+@override final  BridgeResourceStamp stamp;
+ final  BridgeChatGptLoginSnapshot snapshot;
+
+/// Create a copy of BridgeAccountDomainFrame
+/// with the given fields replaced by the non-null parameter values.
+@override @JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$BridgeAccountDomainFrame_ChatGptLoginCopyWith<BridgeAccountDomainFrame_ChatGptLogin> get copyWith => _$BridgeAccountDomainFrame_ChatGptLoginCopyWithImpl<BridgeAccountDomainFrame_ChatGptLogin>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeAccountDomainFrame_ChatGptLogin&&(identical(other.stamp, stamp) || other.stamp == stamp)&&(identical(other.snapshot, snapshot) || other.snapshot == snapshot));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,stamp,snapshot);
+}
+
+@override
+String toString() {
+    return 'BridgeAccountDomainFrame.chatGptLogin(stamp: $stamp, snapshot: $snapshot)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $BridgeAccountDomainFrame_ChatGptLoginCopyWith<$Res> implements $BridgeAccountDomainFrameCopyWith<$Res> {
+  factory $BridgeAccountDomainFrame_ChatGptLoginCopyWith(BridgeAccountDomainFrame_ChatGptLogin value, $Res Function(BridgeAccountDomainFrame_ChatGptLogin) _then) = _$BridgeAccountDomainFrame_ChatGptLoginCopyWithImpl;
+@override @useResult
+$Res call({
+ BridgeResourceStamp stamp, BridgeChatGptLoginSnapshot snapshot
+});
+
+
+
+
+}
+/// @nodoc
+class _$BridgeAccountDomainFrame_ChatGptLoginCopyWithImpl<$Res>
+    implements $BridgeAccountDomainFrame_ChatGptLoginCopyWith<$Res> {
+  _$BridgeAccountDomainFrame_ChatGptLoginCopyWithImpl(this._self, this._then);
+
+  final BridgeAccountDomainFrame_ChatGptLogin _self;
+  final $Res Function(BridgeAccountDomainFrame_ChatGptLogin) _then;
+
+/// Create a copy of BridgeAccountDomainFrame
+/// with the given fields replaced by the non-null parameter values.
+@override @pragma('vm:prefer-inline') $Res call({Object? stamp = null,Object? snapshot = null,}) {
+  return _then(BridgeAccountDomainFrame_ChatGptLogin(
+stamp: null == stamp ? _self.stamp : stamp // ignore: cast_nullable_to_non_nullable
+as BridgeResourceStamp,snapshot: null == snapshot ? _self.snapshot : snapshot // ignore: cast_nullable_to_non_nullable
+as BridgeChatGptLoginSnapshot,
   ));
 }
 
@@ -1670,7 +1746,7 @@ extension BridgeAccountObservationTargetPatterns on BridgeAccountObservationTarg
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( BridgeAccountObservationTarget_Summaries value)?  summaries,TResult Function( BridgeAccountObservationTarget_Detail value)?  detail,TResult Function( BridgeAccountObservationTarget_Models value)?  models,TResult Function( BridgeAccountObservationTarget_Usage value)?  usage,TResult Function( BridgeAccountObservationTarget_AcpAuth value)?  acpAuth,TResult Function( BridgeAccountObservationTarget_AcpInstall value)?  acpInstall,required TResult orElse(),}){
+@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( BridgeAccountObservationTarget_Summaries value)?  summaries,TResult Function( BridgeAccountObservationTarget_Detail value)?  detail,TResult Function( BridgeAccountObservationTarget_Models value)?  models,TResult Function( BridgeAccountObservationTarget_Usage value)?  usage,TResult Function( BridgeAccountObservationTarget_AcpAuth value)?  acpAuth,TResult Function( BridgeAccountObservationTarget_AcpInstall value)?  acpInstall,TResult Function( BridgeAccountObservationTarget_ChatGptLogin value)?  chatGptLogin,required TResult orElse(),}){
 final _that = this;
 switch (_that) {
 case BridgeAccountObservationTarget_Summaries() when summaries != null:
@@ -1679,7 +1755,8 @@ return detail(_that);case BridgeAccountObservationTarget_Models() when models !=
 return models(_that);case BridgeAccountObservationTarget_Usage() when usage != null:
 return usage(_that);case BridgeAccountObservationTarget_AcpAuth() when acpAuth != null:
 return acpAuth(_that);case BridgeAccountObservationTarget_AcpInstall() when acpInstall != null:
-return acpInstall(_that);case _:
+return acpInstall(_that);case BridgeAccountObservationTarget_ChatGptLogin() when chatGptLogin != null:
+return chatGptLogin(_that);case _:
   return orElse();
 
 }
@@ -1697,7 +1774,7 @@ return acpInstall(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( BridgeAccountObservationTarget_Summaries value)  summaries,required TResult Function( BridgeAccountObservationTarget_Detail value)  detail,required TResult Function( BridgeAccountObservationTarget_Models value)  models,required TResult Function( BridgeAccountObservationTarget_Usage value)  usage,required TResult Function( BridgeAccountObservationTarget_AcpAuth value)  acpAuth,required TResult Function( BridgeAccountObservationTarget_AcpInstall value)  acpInstall,}){
+@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( BridgeAccountObservationTarget_Summaries value)  summaries,required TResult Function( BridgeAccountObservationTarget_Detail value)  detail,required TResult Function( BridgeAccountObservationTarget_Models value)  models,required TResult Function( BridgeAccountObservationTarget_Usage value)  usage,required TResult Function( BridgeAccountObservationTarget_AcpAuth value)  acpAuth,required TResult Function( BridgeAccountObservationTarget_AcpInstall value)  acpInstall,required TResult Function( BridgeAccountObservationTarget_ChatGptLogin value)  chatGptLogin,}){
 final _that = this;
 switch (_that) {
 case BridgeAccountObservationTarget_Summaries():
@@ -1706,7 +1783,8 @@ return detail(_that);case BridgeAccountObservationTarget_Models():
 return models(_that);case BridgeAccountObservationTarget_Usage():
 return usage(_that);case BridgeAccountObservationTarget_AcpAuth():
 return acpAuth(_that);case BridgeAccountObservationTarget_AcpInstall():
-return acpInstall(_that);}
+return acpInstall(_that);case BridgeAccountObservationTarget_ChatGptLogin():
+return chatGptLogin(_that);}
 }
 /// A variant of `map` that fallback to returning `null`.
 ///
@@ -1720,7 +1798,7 @@ return acpInstall(_that);}
 /// }
 /// ```
 
-@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( BridgeAccountObservationTarget_Summaries value)?  summaries,TResult? Function( BridgeAccountObservationTarget_Detail value)?  detail,TResult? Function( BridgeAccountObservationTarget_Models value)?  models,TResult? Function( BridgeAccountObservationTarget_Usage value)?  usage,TResult? Function( BridgeAccountObservationTarget_AcpAuth value)?  acpAuth,TResult? Function( BridgeAccountObservationTarget_AcpInstall value)?  acpInstall,}){
+@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( BridgeAccountObservationTarget_Summaries value)?  summaries,TResult? Function( BridgeAccountObservationTarget_Detail value)?  detail,TResult? Function( BridgeAccountObservationTarget_Models value)?  models,TResult? Function( BridgeAccountObservationTarget_Usage value)?  usage,TResult? Function( BridgeAccountObservationTarget_AcpAuth value)?  acpAuth,TResult? Function( BridgeAccountObservationTarget_AcpInstall value)?  acpInstall,TResult? Function( BridgeAccountObservationTarget_ChatGptLogin value)?  chatGptLogin,}){
 final _that = this;
 switch (_that) {
 case BridgeAccountObservationTarget_Summaries() when summaries != null:
@@ -1729,7 +1807,8 @@ return detail(_that);case BridgeAccountObservationTarget_Models() when models !=
 return models(_that);case BridgeAccountObservationTarget_Usage() when usage != null:
 return usage(_that);case BridgeAccountObservationTarget_AcpAuth() when acpAuth != null:
 return acpAuth(_that);case BridgeAccountObservationTarget_AcpInstall() when acpInstall != null:
-return acpInstall(_that);case _:
+return acpInstall(_that);case BridgeAccountObservationTarget_ChatGptLogin() when chatGptLogin != null:
+return chatGptLogin(_that);case _:
   return null;
 
 }
@@ -1746,7 +1825,7 @@ return acpInstall(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function()?  summaries,TResult Function( BridgeAccountIdentity identity)?  detail,TResult Function( String accountId)?  models,TResult Function()?  usage,TResult Function()?  acpAuth,TResult Function()?  acpInstall,required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function()?  summaries,TResult Function( BridgeAccountIdentity identity)?  detail,TResult Function( String accountId)?  models,TResult Function()?  usage,TResult Function()?  acpAuth,TResult Function()?  acpInstall,TResult Function( String loginId)?  chatGptLogin,required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case BridgeAccountObservationTarget_Summaries() when summaries != null:
 return summaries();case BridgeAccountObservationTarget_Detail() when detail != null:
@@ -1754,7 +1833,8 @@ return detail(_that.identity);case BridgeAccountObservationTarget_Models() when 
 return models(_that.accountId);case BridgeAccountObservationTarget_Usage() when usage != null:
 return usage();case BridgeAccountObservationTarget_AcpAuth() when acpAuth != null:
 return acpAuth();case BridgeAccountObservationTarget_AcpInstall() when acpInstall != null:
-return acpInstall();case _:
+return acpInstall();case BridgeAccountObservationTarget_ChatGptLogin() when chatGptLogin != null:
+return chatGptLogin(_that.loginId);case _:
   return orElse();
 
 }
@@ -1772,7 +1852,7 @@ return acpInstall();case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function()  summaries,required TResult Function( BridgeAccountIdentity identity)  detail,required TResult Function( String accountId)  models,required TResult Function()  usage,required TResult Function()  acpAuth,required TResult Function()  acpInstall,}) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function()  summaries,required TResult Function( BridgeAccountIdentity identity)  detail,required TResult Function( String accountId)  models,required TResult Function()  usage,required TResult Function()  acpAuth,required TResult Function()  acpInstall,required TResult Function( String loginId)  chatGptLogin,}) {final _that = this;
 switch (_that) {
 case BridgeAccountObservationTarget_Summaries():
 return summaries();case BridgeAccountObservationTarget_Detail():
@@ -1780,7 +1860,8 @@ return detail(_that.identity);case BridgeAccountObservationTarget_Models():
 return models(_that.accountId);case BridgeAccountObservationTarget_Usage():
 return usage();case BridgeAccountObservationTarget_AcpAuth():
 return acpAuth();case BridgeAccountObservationTarget_AcpInstall():
-return acpInstall();}
+return acpInstall();case BridgeAccountObservationTarget_ChatGptLogin():
+return chatGptLogin(_that.loginId);}
 }
 /// A variant of `when` that fallback to returning `null`
 ///
@@ -1794,7 +1875,7 @@ return acpInstall();}
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function()?  summaries,TResult? Function( BridgeAccountIdentity identity)?  detail,TResult? Function( String accountId)?  models,TResult? Function()?  usage,TResult? Function()?  acpAuth,TResult? Function()?  acpInstall,}) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function()?  summaries,TResult? Function( BridgeAccountIdentity identity)?  detail,TResult? Function( String accountId)?  models,TResult? Function()?  usage,TResult? Function()?  acpAuth,TResult? Function()?  acpInstall,TResult? Function( String loginId)?  chatGptLogin,}) {final _that = this;
 switch (_that) {
 case BridgeAccountObservationTarget_Summaries() when summaries != null:
 return summaries();case BridgeAccountObservationTarget_Detail() when detail != null:
@@ -1802,7 +1883,8 @@ return detail(_that.identity);case BridgeAccountObservationTarget_Models() when 
 return models(_that.accountId);case BridgeAccountObservationTarget_Usage() when usage != null:
 return usage();case BridgeAccountObservationTarget_AcpAuth() when acpAuth != null:
 return acpAuth();case BridgeAccountObservationTarget_AcpInstall() when acpInstall != null:
-return acpInstall();case _:
+return acpInstall();case BridgeAccountObservationTarget_ChatGptLogin() when chatGptLogin != null:
+return chatGptLogin(_that.loginId);case _:
   return null;
 
 }
@@ -2082,6 +2164,74 @@ String toString() {
 
 
 
+
+/// @nodoc
+
+
+class BridgeAccountObservationTarget_ChatGptLogin extends BridgeAccountObservationTarget {
+  const BridgeAccountObservationTarget_ChatGptLogin({required this.loginId}): super._();
+
+
+ final  String loginId;
+
+/// Create a copy of BridgeAccountObservationTarget
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$BridgeAccountObservationTarget_ChatGptLoginCopyWith<BridgeAccountObservationTarget_ChatGptLogin> get copyWith => _$BridgeAccountObservationTarget_ChatGptLoginCopyWithImpl<BridgeAccountObservationTarget_ChatGptLogin>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeAccountObservationTarget_ChatGptLogin&&(identical(other.loginId, loginId) || other.loginId == loginId));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,loginId);
+}
+
+@override
+String toString() {
+    return 'BridgeAccountObservationTarget.chatGptLogin(loginId: $loginId)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $BridgeAccountObservationTarget_ChatGptLoginCopyWith<$Res> implements $BridgeAccountObservationTargetCopyWith<$Res> {
+  factory $BridgeAccountObservationTarget_ChatGptLoginCopyWith(BridgeAccountObservationTarget_ChatGptLogin value, $Res Function(BridgeAccountObservationTarget_ChatGptLogin) _then) = _$BridgeAccountObservationTarget_ChatGptLoginCopyWithImpl;
+@useResult
+$Res call({
+ String loginId
+});
+
+
+
+
+}
+/// @nodoc
+class _$BridgeAccountObservationTarget_ChatGptLoginCopyWithImpl<$Res>
+    implements $BridgeAccountObservationTarget_ChatGptLoginCopyWith<$Res> {
+  _$BridgeAccountObservationTarget_ChatGptLoginCopyWithImpl(this._self, this._then);
+
+  final BridgeAccountObservationTarget_ChatGptLogin _self;
+  final $Res Function(BridgeAccountObservationTarget_ChatGptLogin) _then;
+
+/// Create a copy of BridgeAccountObservationTarget
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? loginId = null,}) {
+  return _then(BridgeAccountObservationTarget_ChatGptLogin(
+loginId: null == loginId ? _self.loginId : loginId // ignore: cast_nullable_to_non_nullable
+as String,
+  ));
+}
+
+
+}
 
 /// @nodoc
 mixin _$BridgeAccountQuotaWindow {

@@ -6,6 +6,7 @@
 import '../../../frb_generated.dart';
 import '../types/acp.dart';
 import '../types/attachment.dart';
+import '../types/chatgpt_auth.dart';
 import '../types/command.dart';
 import '../types/delegation.dart';
 import '../types/error.dart';

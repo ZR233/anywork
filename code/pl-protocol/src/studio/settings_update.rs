@@ -217,6 +217,8 @@ pub struct SetDefaultAccountRequest {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AccountSettingsUpdate {
     pub account_id: String,
+    #[serde(default)]
+    pub authentication: super::AccountAuthenticationIntent,
     /// 可选的内置账号模板引用；完全自定义账号为 `None`。
     pub template_id: Option<String>,
     /// 明确的厂商协议适配选择；不从地址或名称推断。

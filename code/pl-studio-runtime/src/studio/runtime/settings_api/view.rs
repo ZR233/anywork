@@ -336,6 +336,8 @@ pub(crate) fn account_settings(
         AccountModelCatalogConfig::Explicit { .. } => None,
     };
     Ok(StudioAccountSettings {
+        authentication: account.authentication,
+        chatgpt_account: account.chatgpt_account.clone(),
         billing_kind: account.billing_kind()?,
         billing_kind_override: account.billing_kind,
         model_enabled_overrides: account.model_enabled_overrides().clone(),

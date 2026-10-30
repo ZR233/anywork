@@ -496,9 +496,19 @@ type BeforeAccounts = Document<
 type BeforeAcp = Document<Models<Account23<wire::ModelInfo>>, Route, LegacyAcp>;
 type BeforePricing = Document<Models<Account23<wire::ModelInfo>>, Route, wire::AcpConfig>;
 type BeforeEnablement = Document<Models<Account26<wire::ModelInfo>>, Route, wire::AcpConfig>;
-type Current = Document<Models<Account27<wire::ModelInfo>>, Route, wire::AcpConfig>;
-type CurrentWithoutUserSkillDirectory =
-    Document<Models<Account27<wire::ModelInfo>>, Route, wire::AcpConfig, wire::SkillsConfigCurrent>;
+type BeforeAuthentication = Document<Models<Account27<wire::ModelInfo>>, Route, wire::AcpConfig>;
+type BeforeSkillDirectoryRemoval =
+    Document<Models<Account28<wire::ModelInfo>>, Route, wire::AcpConfig>;
+type Current =
+    Document<Models<Account28<wire::ModelInfo>>, Route, wire::AcpConfig, wire::SkillsConfigCurrent>;
+
+account!(Account28,
+    authentication: wire::AuthenticationMethod,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    chatgpt_account: Option<wire::ChatGptAccountInfo>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    model_enabled_overrides: BTreeMap<String, bool>,
+);
 
 macro_rules! version {
     ($name:ident, $version:literal, $body:ty, $input:literal) => {
@@ -524,8 +534,9 @@ version!(MainV23, "23.0.0", BeforeAcp);
 version!(MainV24, "24.0.0", BeforeAcp);
 version!(MainV25, "25.0.0", BeforePricing);
 version!(MainV26, "26.0.0", BeforeEnablement);
-version!(MainV27, "27.0.0", Current);
-version!(MainV28, "28.0.0", CurrentWithoutUserSkillDirectory);
+version!(MainV27, "27.0.0", BeforeAuthentication);
+version!(MainV28, "28.0.0", BeforeSkillDirectoryRemoval);
+version!(MainV29, "29.0.0", Current);
 
 fn validate_pre_mode_routes(document: &PreModes) -> Result<()> {
     for (mode, route) in &document.mode_model_routes {
@@ -779,7 +790,47 @@ impl MigratesTo<MainV27> for MainV26 {
 
 impl MigratesTo<MainV28> for MainV27 {
     fn migrate(self) -> MainV28 {
-        MainV28(self.0.map_skills(wire::SkillsConfigCurrent::from))
+        MainV28(self.0.map(
+            |models| {
+                Models {
+                    accounts: models
+                        .accounts
+                        .into_iter()
+                        .map(|(id, account)| {
+                            (
+                                id,
+                                Account28 {
+                                    protocol: account.protocol,
+                                    template: account.template,
+                                    name: account.name,
+                                    base_url: account.base_url,
+                                    bearer_token: account.bearer_token,
+                                    bearer_token_env: account.bearer_token_env,
+                                    http_headers: account.http_headers,
+                                    tool_wire_policy: account.tool_wire_policy,
+                                    apply_patch_tool_type: account.apply_patch_tool_type,
+                                    capabilities: account.capabilities,
+                                    catalog: account.catalog,
+                                    billing_kind: account.billing_kind,
+                                    model_enabled_overrides: account.model_enabled_overrides,
+                                    authentication: wire::AuthenticationMethod::ApiKey,
+                                    chatgpt_account: None,
+                                },
+                            )
+                        })
+                        .collect(),
+                    routes: models.routes,
+                }
+            },
+            std::convert::identity,
+            std::convert::identity,
+        ))
+    }
+}
+
+impl MigratesTo<MainV29> for MainV28 {
+    fn migrate(self) -> MainV29 {
+        MainV29(self.0.map_skills(wire::SkillsConfigCurrent::from))
     }
 }
 
@@ -803,6 +854,19 @@ impl MainV27 {
             .as_table_mut()
             .ok_or_else(|| anyhow::anyhow!("config is not a table"))?
             .remove(VERSION_KEY);
+        if let Some(accounts) = value
+            .get_mut("models")
+            .and_then(|models| models.get_mut("accounts"))
+            .and_then(toml::Value::as_table_mut)
+        {
+            for (_, account) in accounts.iter_mut() {
+                let account = account
+                    .as_table_mut()
+                    .ok_or_else(|| anyhow::anyhow!("account is not a table"))?;
+                account.remove("authentication");
+                account.remove("chatgpt_account");
+            }
+        }
         value.try_into().map_err(Into::into)
     }
 
@@ -811,13 +875,19 @@ impl MainV27 {
     }
 }
 
-impl MainV28 {
+impl IntoDomain<MainV29> for MainV29 {
+    fn into_domain(self) -> Self {
+        self
+    }
+}
+
+impl MainV29 {
     pub(crate) fn into_config(self) -> Result<super::super::StudioConfig> {
         let mut value = toml::Value::try_from(self)?;
         value
             .as_table_mut()
             .ok_or_else(|| anyhow::anyhow!("config DTO is not a table"))?
-            .insert(VERSION_KEY.into(), 28.into());
+            .insert(VERSION_KEY.into(), 29.into());
         let config: super::super::StudioConfig = value.try_into()?;
         ensure!(
             config
@@ -862,18 +932,19 @@ fn migrator() -> Result<Migrator> {
                 .step::<MainV26>()
                 .step::<MainV27>()
                 .step::<MainV28>()
-                .into::<MainV28>(),
+                .step::<MainV29>()
+                .into::<MainV29>(),
         )
         .map_err(|error| toml_schema::chain_error(ENTITY, error))?;
     Ok(migrator)
 }
 
-pub(crate) fn load_main(path: &Path, content: &str) -> Result<LoadedDocument<MainV28>> {
-    toml_schema::load::<MainV18, MainV28>(path, content, &migrator()?, ENTITY, VERSION_KEY)
+pub(crate) fn load_main(path: &Path, content: &str) -> Result<LoadedDocument<MainV29>> {
+    toml_schema::load::<MainV18, MainV29>(path, content, &migrator()?, ENTITY, VERSION_KEY)
 }
 
-pub(crate) fn load_current_main(path: &Path, content: &str) -> Result<MainV28> {
-    toml_schema::load::<MainV28, MainV28>(path, content, &migrator()?, ENTITY, VERSION_KEY)
+pub(crate) fn load_current_main(path: &Path, content: &str) -> Result<MainV29> {
+    toml_schema::load::<MainV29, MainV29>(path, content, &migrator()?, ENTITY, VERSION_KEY)
         .map(|loaded| loaded.document)
 }
 
@@ -943,8 +1014,8 @@ enabled = false
         let integer = toml_schema::encode(document, VERSION_KEY).unwrap();
         let loaded = load_main(Path::new("historical.toml"), &integer).expect("official path");
         assert_eq!(loaded.source_version, version);
-        assert_eq!(loaded.migrated, version != 28);
-        assert_eq!(loaded.document.into_config().unwrap().schema_version, 28);
+        assert_eq!(loaded.migrated, version != 29);
+        assert_eq!(loaded.document.into_config().unwrap().schema_version, 29);
     }
 
     #[test]
@@ -969,6 +1040,10 @@ enabled = false
         round_trip(&v26);
         let v27: MainV27 = v26.migrate();
         round_trip(&v27);
+        let v28: MainV28 = v27.migrate();
+        round_trip(&v28);
+        let v29: MainV29 = v28.migrate();
+        round_trip(&v29);
     }
 
     #[test]
@@ -992,7 +1067,7 @@ enabled = false
                 config.instructions.user,
                 "Keep deep_seek_anthropic_messages in user text"
             );
-            let encoded = MainV27::from_config(&config).unwrap().encode().unwrap();
+            let encoded = MainV29::from_config(&config).unwrap().encode().unwrap();
             let table: toml::Table = toml::from_str(&encoded).unwrap();
             assert_eq!(
                 table["models"]["accounts"]["saved"]["capabilities"]["web_search"]["standalone"]
@@ -1009,7 +1084,7 @@ enabled = false
             "",
             "schema_version=0\n",
             "schema_version=17\n",
-            "schema_version=28\n",
+            "schema_version=30\n",
             "schema_version=-1\n",
             "schema_version=4294967296\n",
             "schema_version='27'\n",
@@ -1162,13 +1237,13 @@ enabled = false
             .insert("user_dir".into(), "/custom/skills".into());
         assert!(
             load_current_main(
-                Path::new("v28.toml"),
+                Path::new("v29.toml"),
                 &toml::to_string(&invalid_current).unwrap()
             )
             .is_err()
         );
         let migrated = loaded.document.into_config().unwrap();
-        assert_eq!(migrated.schema_version, 28);
+        assert_eq!(migrated.schema_version, 29);
         assert_eq!(migrated.models, old_models);
         assert_eq!(migrated.mode_model_routes, old_routes);
         assert_eq!(migrated.ui, old_ui);

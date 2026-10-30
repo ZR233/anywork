@@ -6,6 +6,7 @@
 import '../../../frb_generated.dart';
 import '../types/acp.dart';
 import '../types/acp_install.dart';
+import '../types/chatgpt_auth.dart';
 import '../types/command.dart';
 import '../types/delegation.dart';
 import '../types/settings.dart';
@@ -101,6 +102,10 @@ sealed class BridgeAccountDomainFrame with _$BridgeAccountDomainFrame {
     required BridgeResourceStamp stamp,
     required BridgeAcpInstallSnapshot snapshot,
   }) = BridgeAccountDomainFrame_AcpInstall;
+  const factory BridgeAccountDomainFrame.chatGptLogin({
+    required BridgeResourceStamp stamp,
+    required BridgeChatGptLoginSnapshot snapshot,
+  }) = BridgeAccountDomainFrame_ChatGptLogin;
 }
 
 @freezed
@@ -172,6 +177,9 @@ sealed class BridgeAccountObservationTarget
       BridgeAccountObservationTarget_AcpAuth;
   const factory BridgeAccountObservationTarget.acpInstall() =
       BridgeAccountObservationTarget_AcpInstall;
+  const factory BridgeAccountObservationTarget.chatGptLogin({
+    required String loginId,
+  }) = BridgeAccountObservationTarget_ChatGptLogin;
 }
 
 class BridgeAccountQuota {
@@ -471,6 +479,7 @@ sealed class BridgeModelConnectionIntent with _$BridgeModelConnectionIntent {
 }
 
 class BridgePatchAccountInput {
+  final BridgeAccountAuthenticationIntent authentication;
   final BridgeAccountTextPatch name;
   final BridgeAccountTextPatch baseUrl;
   final BridgeAccountTextPatch templateId;
@@ -479,6 +488,7 @@ class BridgePatchAccountInput {
   final BridgeAccountModelsPatch customModels;
 
   const BridgePatchAccountInput({
+    required this.authentication,
     required this.name,
     required this.baseUrl,
     required this.templateId,
@@ -489,6 +499,7 @@ class BridgePatchAccountInput {
 
   @override
   int get hashCode =>
+      authentication.hashCode ^
       name.hashCode ^
       baseUrl.hashCode ^
       templateId.hashCode ^
@@ -501,6 +512,7 @@ class BridgePatchAccountInput {
       identical(this, other) ||
       other is BridgePatchAccountInput &&
           runtimeType == other.runtimeType &&
+          authentication == other.authentication &&
           name == other.name &&
           baseUrl == other.baseUrl &&
           templateId == other.templateId &&

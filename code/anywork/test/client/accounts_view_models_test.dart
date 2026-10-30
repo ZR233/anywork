@@ -14,7 +14,19 @@ import 'package:anywork/src/presentation/providers/account_domains.dart';
 import 'package:anywork/src/presentation/providers/account_operation_observation.dart';
 import 'package:anywork/src/l10n/app_localizations_en.dart';
 import 'package:anywork/src/l10n/app_localizations_zh.dart';
-import 'package:anywork_client/accounts.dart';
+import 'package:anywork_client/accounts.dart'
+    hide
+        AccountAuthenticationMethod,
+        ChatGptAccountInfo,
+        ChatGptLoginPhase,
+        ChatGptLoginSnapshot;
+import 'package:anywork_client/accounts.dart'
+    as account_domain
+    show
+        AccountAuthenticationMethod,
+        ChatGptAccountInfo,
+        ChatGptLoginPhase,
+        ChatGptLoginSnapshot;
 import 'package:anywork_client/account_usage.dart';
 import 'package:anywork_client/acp.dart';
 import 'package:anywork_client/model_directory.dart';
@@ -53,6 +65,20 @@ const customTemplate = AccountTemplateView(
   protocol: 'open_ai',
   suggestedModelId: '',
   defaultBillingKind: BillingKind.noCharge,
+  supportsModelDiscovery: true,
+  supportsUsageQuery: false,
+);
+const openaiTemplate = AccountTemplateView(
+  id: 'openai',
+  displayName: 'OpenAI',
+  description: 'Official OpenAI API',
+  baseUrl: 'https://api.openai.com/v1',
+  credentialLabel: 'API key',
+  credentialEnv: 'OPENAI_API_KEY',
+  modelCatalogId: 'openai',
+  protocol: 'open_ai',
+  suggestedModelId: 'gpt-4o',
+  defaultBillingKind: BillingKind.subscription,
   supportsModelDiscovery: true,
   supportsUsageQuery: false,
 );
@@ -118,6 +144,7 @@ AccountSummary vmSummary(
   String? name,
   String? displayEndpoint,
   int? acpRevision = 1,
+  bool? credentialReady,
 }) => AccountSummary(
   identity: identity,
   name: name ?? identity.accountId,
@@ -126,6 +153,7 @@ AccountSummary vmSummary(
   billingKind: identity is NativeAccountIdentity ? BillingKind.metered : null,
   usageQueryRevision: 1,
   acpConnectionRevision: identity is AcpAccountIdentity ? acpRevision : null,
+  credentialReady: credentialReady,
   capabilities: identity is NativeAccountIdentity
       ? vmCapabilities
       : const AccountCapabilities(
@@ -143,9 +171,12 @@ NativeAccountDetails vmNative({
   String name = 'Saved name',
   List<AccountModelCommand> manual = const [],
   bool hasBearerToken = true,
+  account_domain.AccountAuthenticationMethod authentication =
+      account_domain.AccountAuthenticationMethod.apiKey,
 }) => NativeAccountDetails(
   identity: NativeAccountIdentity(id),
   name: name,
+  authentication: authentication,
   protocol: 'open_ai',
   templateId: 'native',
   baseUrl: 'https://native.example/v1',
@@ -198,12 +229,27 @@ class VmAccounts implements AccountsRepository {
   final creates = <CreateAccountCommand>[];
   final billing = <BillingKind?>[];
   final defaultCalls = <NativeAccountIdentity>[];
+  final chatGptLoginDemands = <VmDemand>[];
+  final chatGptLoginIntentDemands = <VmDemand>[];
+  final chatGptLoginTargets = <(String, String, String)>[];
+  final chatGptLoginRegistrations = <(String, String, String)>[];
+  final chatGptLoginCallOrder = <String>[];
+  final chatGptLoginIdentities = <String, (String, String)>{};
+  final chatGptLoginValues =
+      <
+        String,
+        LatestValue<AccountResource<account_domain.ChatGptLoginSnapshot>>
+      >{};
   final removals = <NativeAccountIdentity>[];
   final mutationCalls = <String>[];
   Future<OperationState> Function()? write;
   Future<OperationState> Function()? createWrite;
   Future<OperationState> Function()? patchWrite;
   Future<OperationState> Function()? defaultWrite;
+  Future<account_domain.ChatGptLoginSnapshot> Function(String, String, String)?
+  loginStart;
+  Future<account_domain.ChatGptLoginSnapshot> Function(String, String, String)?
+  loginCancel;
   int detailReads = 0;
   Object? detailFailure;
   void put(AccountDetails details, {bool stale = false}) =>
@@ -216,6 +262,79 @@ class VmAccounts implements AccountsRepository {
   ) {
     detailReads++;
     return slots.putIfAbsent(id, () => LatestValue(const AccountResource()));
+  }
+
+  @override
+  ValueObservation<AccountResource<account_domain.ChatGptLoginSnapshot>>
+  chatGptLogin(String loginId) => chatGptLoginValues.putIfAbsent(
+    loginId,
+    () => LatestValue(const AccountResource()),
+  );
+
+  @override
+  AccountDemand registerChatGptLogin({
+    required String loginId,
+    required String editorId,
+    required String accountId,
+  }) {
+    chatGptLoginCallOrder.add('register');
+    chatGptLoginRegistrations.add((loginId, editorId, accountId));
+    chatGptLoginIdentities[loginId] = (editorId, accountId);
+    final demand = VmDemand();
+    chatGptLoginIntentDemands.add(demand);
+    return demand;
+  }
+
+  @override
+  AccountDemand observeChatGptLogin(String loginId) {
+    chatGptLoginCallOrder.add('observe');
+    final identity = chatGptLoginIdentities[loginId];
+    if (identity == null) throw StateError('Login intent is not registered');
+    chatGptLoginTargets.add((loginId, identity.$1, identity.$2));
+    final demand = VmDemand();
+    chatGptLoginDemands.add(demand);
+    return demand;
+  }
+
+  void publishChatGptLogin(account_domain.ChatGptLoginSnapshot snapshot) {
+    chatGptLoginValues
+        .putIfAbsent(
+          snapshot.loginId,
+          () => LatestValue(const AccountResource()),
+        )
+        .publish(
+          AccountResource(
+            stamp: ResourceStamp(
+              resourceKey: 'settings',
+              ownerEpoch: 'owner',
+              revision: snapshot.revision,
+            ),
+            value: snapshot,
+          ),
+        );
+  }
+
+  @override
+  Future<account_domain.ChatGptLoginSnapshot> startChatGptLogin({
+    required String loginId,
+    required String editorId,
+    required String accountId,
+  }) async {
+    chatGptLoginCallOrder.add('start');
+    final snapshot = await loginStart!(loginId, editorId, accountId);
+    publishChatGptLogin(snapshot);
+    return snapshot;
+  }
+
+  @override
+  Future<account_domain.ChatGptLoginSnapshot> cancelChatGptLogin({
+    required String loginId,
+    required String editorId,
+    required String accountId,
+  }) async {
+    final snapshot = await loginCancel!(loginId, editorId, accountId);
+    publishChatGptLogin(snapshot);
+    return snapshot;
   }
 
   @override
@@ -797,6 +916,177 @@ DelegationModelDetail vmPerformance() => DelegationModelDetail(
 );
 
 void main() {
+  test('OpenAI subscription save requires the current editor login with direct permission', () async {
+    final h = AccountsVmHarness();
+    addTearDown(h.dispose);
+    final current = h.accounts.state.value;
+    h.accounts.state.publish(
+      AccountsState(
+        stamp: current.stamp,
+        accounts: current.accounts,
+        templates: const AccountCatalogView(
+          schemaVersion: 1,
+          revision: 'openai-catalog',
+          templates: [openaiTemplate],
+          modelCatalogs: {},
+        ),
+      ),
+    );
+    const editorId = 'openai-editor';
+    const key = AccountEditorKey(
+      editorId: editorId,
+      target: nativeKey,
+      creating: true,
+      template: AccountTemplateKey(kind: AccountKind.native, id: 'openai'),
+    );
+    final owner = await h.editor(key);
+    owner.setStrings(
+      const AccountStrings({
+        'required': 'Required',
+        'chatGptApiKeyRequired': 'A new API key is required',
+      }),
+    );
+    owner.changeAuthentication(AccountAuthenticationMethod.chatGpt);
+    expect(h.editorState(key).native!.canSave, isFalse);
+    expect(h.editorState(key).native!.error, isNull);
+
+    account_domain.ChatGptLoginSnapshot snapshot(
+      String loginId,
+      String editor,
+      int revision,
+      account_domain.ChatGptLoginPhase phase, {
+      account_domain.ChatGptAccountInfo? account,
+      String? authorizationUrl,
+    }) => account_domain.ChatGptLoginSnapshot(
+      loginId: loginId,
+      editorId: editor,
+      accountId: key.target.id,
+      revision: revision,
+      phase: phase,
+      account: account,
+      authorizationUrl: authorizationUrl,
+    );
+    h.accounts.loginStart = (loginId, receivedEditor, accountId) async {
+      expect(accountId, key.target.id);
+      expect(receivedEditor, editorId);
+      expect(loginId, matches(RegExp(r'^[0-9a-f-]{36}$')));
+      // A same-login frame from an obsolete editor may not grant save rights.
+      h.accounts.publishChatGptLogin(
+        snapshot(
+          loginId,
+          'obsolete-editor',
+          2,
+          account_domain.ChatGptLoginPhase.succeeded,
+          account: const account_domain.ChatGptAccountInfo(
+            issuer: 'https://auth.openai.com',
+            subject: 'obsolete',
+            clientId: 'issued-client',
+            planUsageEnabled: true,
+          ),
+        ),
+      );
+      expect(h.editorState(key).native!.canSave, isFalse);
+      return snapshot(
+        loginId,
+        editorId,
+        3,
+        account_domain.ChatGptLoginPhase.awaitingBrowser,
+        authorizationUrl: 'https://auth.openai.com/oauth/authorize?state=x',
+      );
+    };
+    await owner.startChatGptLogin();
+    expect(h.accounts.chatGptLoginTargets, hasLength(1));
+    expect(h.accounts.chatGptLoginTargets.single.$2, editorId);
+    expect(h.accounts.chatGptLoginCallOrder, ['register', 'start', 'observe']);
+    expect(h.editorState(key).native!.canSave, isFalse);
+    // Re-selecting the active method must preserve the in-flight login.
+    owner.changeAuthentication(AccountAuthenticationMethod.chatGpt);
+    expect(
+      owner.claimAuthorizationUrlForAutomaticOpen(),
+      'https://auth.openai.com/oauth/authorize?state=x',
+    );
+    expect(owner.claimAuthorizationUrlForAutomaticOpen(), isNull);
+
+    final loginId = h.accounts.chatGptLoginTargets.single.$1;
+    h.accounts.publishChatGptLogin(
+      snapshot(
+        loginId,
+        editorId,
+        4,
+        account_domain.ChatGptLoginPhase.succeeded,
+        account: const account_domain.ChatGptAccountInfo(
+          issuer: 'https://auth.openai.com',
+          subject: 'account-subject',
+          clientId: 'issued-client',
+          email: 'person@example.test',
+          planUsageEnabled: true,
+        ),
+      ),
+    );
+    expect(h.editorState(key).native!.canSave, isTrue);
+    expect(await owner.save(), isTrue);
+    expect(h.accounts.creates, hasLength(1));
+    final intent = h.accounts.creates.single.authentication;
+    expect(intent, isA<SelectChatGptAuthentication>());
+    expect((intent as SelectChatGptAuthentication).loginId, loginId);
+    expect(intent.editorId, editorId);
+    expect(
+      h.accounts.creates.single.secret.action,
+      AccountSecretAction.preserve,
+    );
+  });
+
+  test(
+    'discarding a pending ChatGPT login cancels and clears save intent',
+    () async {
+      final h = AccountsVmHarness();
+      addTearDown(h.dispose);
+      final current = h.accounts.state.value;
+      h.accounts.state.publish(
+        AccountsState(
+          stamp: current.stamp,
+          accounts: current.accounts,
+          templates: const AccountCatalogView(
+            schemaVersion: 1,
+            revision: 'openai-catalog',
+            templates: [openaiTemplate],
+            modelCatalogs: {},
+          ),
+        ),
+      );
+      const editorId = 'discard-editor';
+      const key = AccountEditorKey(
+        editorId: editorId,
+        target: nativeKey,
+        creating: true,
+        template: AccountTemplateKey(kind: AccountKind.native, id: 'openai'),
+      );
+      final owner = await h.editor(key);
+      owner.changeAuthentication(AccountAuthenticationMethod.chatGpt);
+      h.accounts.loginStart = (loginId, editor, accountId) async =>
+          account_domain.ChatGptLoginSnapshot(
+            loginId: loginId,
+            editorId: editor,
+            accountId: accountId,
+            revision: 2,
+            phase: account_domain.ChatGptLoginPhase.awaitingBrowser,
+          );
+      h.accounts.loginCancel = (loginId, editor, accountId) async =>
+          account_domain.ChatGptLoginSnapshot(
+            loginId: loginId,
+            editorId: editor,
+            accountId: accountId,
+            revision: 3,
+            phase: account_domain.ChatGptLoginPhase.cancelled,
+          );
+      await owner.startChatGptLogin();
+      expect(h.editorState(key).native!.canSave, isFalse);
+      expect(await owner.requestLeave(AccountLeaveChoice.discard), isTrue);
+      expect(h.editorState(key).native!.chatGptLogin, isNull);
+      expect(h.accounts.chatGptLoginDemands.single.releases, 1);
+    },
+  );
+
   test('compact typing and presets stay drafts until explicit Save, preserving exact positive intent', () async {
     final h = AccountsVmHarness();
     addTearDown(h.dispose);
@@ -1315,6 +1605,52 @@ void main() {
     }
   });
 
+  test(
+    'Native details distinguish ChatGPT readiness from API key presence',
+    () async {
+      final h = AccountsVmHarness();
+      addTearDown(h.dispose);
+      void publishReadiness(bool ready) => h.accounts.state.publish(
+        AccountsState(
+          stamp: vmStamp,
+          accounts: [
+            vmSummary(
+              const NativeAccountIdentity('native'),
+              credentialReady: ready,
+            ),
+          ],
+        ),
+      );
+      publishReadiness(true);
+      h.accounts.put(
+        vmNative(
+          hasBearerToken: false,
+          authentication: account_domain.AccountAuthenticationMethod.chatGpt,
+        ),
+      );
+      await h.details(nativeKey);
+      NativeAccountDetailsPresentation current() =>
+          (h.container
+                      .read(accountDetailsViewModelProvider(nativeKey))
+                      .requireValue
+                      .details
+                      .content
+                  as NativeAccountDetailsContent)
+              .value;
+      expect(current().authentication, AccountAuthenticationMethod.chatGpt);
+      expect(current().credentialReady, isTrue);
+
+      publishReadiness(false);
+      await h.container.pump();
+      expect(current().authentication, AccountAuthenticationMethod.chatGpt);
+      expect(current().credentialReady, isFalse);
+
+      h.accounts.put(vmNative());
+      await h.container.pump();
+      expect(current().authentication, AccountAuthenticationMethod.apiKey);
+      expect(current().credentialReady, isTrue);
+    },
+  );
   test('current Native detail observes default and delete failures outside the filtered list', () async {
     final h = AccountsVmHarness();
     addTearDown(h.dispose);

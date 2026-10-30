@@ -55,6 +55,24 @@ enum AccountEvaluationCategory {
 
 enum AccountConnection { automatic, http, webSocket }
 
+enum AccountAuthenticationMethod { apiKey, chatGpt }
+
+enum ChatGptLoginPhase {
+  preparing,
+  awaitingBrowser,
+  exchangingCode,
+  succeeded,
+  cancelled,
+  failed,
+}
+
+enum ChatGptLoginFailureCode {
+  authorizationDenied,
+  missingPlanPermission,
+  expired,
+  other,
+}
+
 enum NativeAccountField { name, endpoint, credential }
 
 enum ManualModelField { id, name, contextWindow, maxOutputTokens }
@@ -89,6 +107,38 @@ enum AcpPresentationPhase {
 }
 
 enum AccountLeaveChoice { save, discard, cancel }
+
+final class ChatGptAccountInfo {
+  const ChatGptAccountInfo({this.email, required this.planUsageEnabled});
+  final String? email;
+  final bool planUsageEnabled;
+
+  @override
+  bool operator ==(Object other) =>
+      other is ChatGptAccountInfo &&
+      email == other.email &&
+      planUsageEnabled == other.planUsageEnabled;
+
+  @override
+  int get hashCode => Object.hash(email, planUsageEnabled);
+}
+
+final class ChatGptLoginSnapshot {
+  const ChatGptLoginSnapshot({required this.phase, this.account, this.failure});
+  final ChatGptLoginPhase phase;
+  final ChatGptAccountInfo? account;
+  final ChatGptLoginFailureCode? failure;
+
+  @override
+  bool operator ==(Object other) =>
+      other is ChatGptLoginSnapshot &&
+      phase == other.phase &&
+      account == other.account &&
+      failure == other.failure;
+
+  @override
+  int get hashCode => Object.hash(phase, account, failure);
+}
 
 @freezed
 abstract class AccountDisplayKey with _$AccountDisplayKey {
@@ -377,6 +427,7 @@ abstract class AccountCatalogPresentation with _$AccountCatalogPresentation {
 abstract class NativeAccountDetailsPresentation
     with _$NativeAccountDetailsPresentation {
   const factory NativeAccountDetailsPresentation({
+    required AccountAuthenticationMethod authentication,
     required bool credentialReady,
     required AccountBillingPresentation billing,
     required AccountCatalogPresentation catalog,
@@ -497,6 +548,11 @@ abstract class NativeAccountEditorPresentation
     required AccountTextPresentation name,
     required AccountTextPresentation endpoint,
     required AccountTextPresentation credential,
+    @Default(AccountAuthenticationMethod.apiKey)
+    AccountAuthenticationMethod authentication,
+    @Default(false) bool isOpenAiTemplate,
+    ChatGptLoginSnapshot? chatGptLogin,
+    ChatGptAccountInfo? savedChatGptAccount,
     required String protocolLabel,
     @Default(false) bool canChangeTemplate,
     @Default(false) bool hasStoredCredential,

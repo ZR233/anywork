@@ -4,6 +4,7 @@ import 'package:flutter/widget_previews.dart';
 import 'account_preview_fixtures.dart';
 import 'account_preview_host.dart';
 import 'account_template_preview_fixtures.dart';
+import '../state/account_presentations.dart';
 
 // All interactions use the shared production-View host and local recording.
 // Names intentionally include the exact template ID for Previewer filtering.
@@ -35,6 +36,89 @@ Widget accountTemplateOpenaiDetailsPreview() =>
 Widget accountTemplateOpenaiEditorPreview() => accountNativeEditorPreviewHost(
   AccountTemplatePreviewFixtures.editor('openai'),
 );
+
+@Preview(
+  name: 'Template / openai / ChatGPT subscription editor',
+  group: 'Accounts · Templates',
+  size: Size(900, 900),
+)
+Widget accountTemplateOpenaiChatGptEditorPreview() =>
+    accountNativeEditorPreviewHost(
+      AccountTemplatePreviewFixtures.editor('openai').copyWith(
+        authentication: AccountAuthenticationMethod.chatGpt,
+        canSave: false,
+      ),
+    );
+
+@Preview(
+  name: 'Template / openai / ChatGPT waiting for browser',
+  group: 'Accounts · Templates',
+  size: Size(900, 900),
+)
+Widget accountTemplateOpenaiChatGptWaitingPreview() =>
+    accountNativeEditorPreviewHost(
+      AccountTemplatePreviewFixtures.editor('openai').copyWith(
+        authentication: AccountAuthenticationMethod.chatGpt,
+        chatGptLogin: const ChatGptLoginSnapshot(
+          phase: ChatGptLoginPhase.awaitingBrowser,
+        ),
+        canSave: false,
+      ),
+    );
+
+@Preview(
+  name: 'Template / openai / ChatGPT connected',
+  group: 'Accounts · Templates',
+  size: Size(900, 900),
+)
+Widget accountTemplateOpenaiChatGptConnectedPreview() =>
+    accountNativeEditorPreviewHost(
+      AccountTemplatePreviewFixtures.editor('openai').copyWith(
+        authentication: AccountAuthenticationMethod.chatGpt,
+        chatGptLogin: const ChatGptLoginSnapshot(
+          phase: ChatGptLoginPhase.succeeded,
+          account: ChatGptAccountInfo(
+            email: 'member@example.invalid',
+            planUsageEnabled: true,
+          ),
+        ),
+      ),
+    );
+
+@Preview(
+  name: 'Template / openai / ChatGPT permission missing',
+  group: 'Accounts · Templates',
+  size: Size(900, 900),
+)
+Widget accountTemplateOpenaiChatGptPermissionPreview() =>
+    accountNativeEditorPreviewHost(
+      AccountTemplatePreviewFixtures.editor('openai').copyWith(
+        authentication: AccountAuthenticationMethod.chatGpt,
+        chatGptLogin: const ChatGptLoginSnapshot(
+          phase: ChatGptLoginPhase.failed,
+          failure: ChatGptLoginFailureCode.missingPlanPermission,
+        ),
+        canSave: false,
+      ),
+    );
+
+@Preview(
+  name: 'Template / openai / ChatGPT expired narrow',
+  group: 'Accounts · Templates',
+  size: Size(420, 1000),
+)
+Widget accountTemplateOpenaiChatGptNarrowPreview() =>
+    accountNativeEditorPreviewHost(
+      AccountTemplatePreviewFixtures.editor('openai').copyWith(
+        authentication: AccountAuthenticationMethod.chatGpt,
+        chatGptLogin: const ChatGptLoginSnapshot(
+          phase: ChatGptLoginPhase.failed,
+          failure: ChatGptLoginFailureCode.expired,
+        ),
+        canSave: false,
+      ),
+      textScale: 1.2,
+    );
 
 @Preview(
   name: 'Template / deepseek / List',

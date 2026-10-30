@@ -223,6 +223,15 @@ class _NativeEditorScenarioState extends State<_NativeEditorScenario> {
   @override
   Widget build(BuildContext context) => NativeAccountEditorView(
     value: _value,
+    onAuthenticationChanged: (method) => setState(() {
+      _value = _value.copyWith(authentication: method);
+      widget.record('authentication: ${method.name}');
+    }),
+    onStartChatGptLogin: () => widget.record('start ChatGPT login'),
+    onCancelChatGptLogin: () => widget.record('cancel ChatGPT login'),
+    onOpenChatGptAuthorization: () =>
+        widget.record('open official authorization link'),
+    onOpenChatGptUsage: () => widget.record('open ChatGPT usage settings'),
     onFieldChanged: (field, raw) => setState(() {
       _value = switch (field) {
         NativeAccountField.name => _value.copyWith(

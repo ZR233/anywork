@@ -5,6 +5,7 @@ import '../../observation/latest_value.dart';
 import 'account_identity.dart';
 import 'account_intents.dart';
 import 'account_values.dart';
+import 'account_authentication.dart';
 
 /// Releasing display demand never cancels a previously admitted mutation.
 abstract interface class AccountDemand {
@@ -18,6 +19,25 @@ abstract interface class AccountsRepository {
   ValueObservation<AccountResource<AccountDetails>> details(
     AccountIdentity identity,
   );
+  ValueObservation<AccountResource<ChatGptLoginSnapshot>> chatGptLogin(
+    String loginId,
+  );
+  AccountDemand registerChatGptLogin({
+    required String loginId,
+    required String editorId,
+    required String accountId,
+  });
+  AccountDemand observeChatGptLogin(String loginId);
+  Future<ChatGptLoginSnapshot> startChatGptLogin({
+    required String loginId,
+    required String editorId,
+    required String accountId,
+  });
+  Future<ChatGptLoginSnapshot> cancelChatGptLogin({
+    required String loginId,
+    required String editorId,
+    required String accountId,
+  });
   AccountDemand observeSummaries();
   AccountDemand observeDetails(AccountIdentity identity);
   Future<void> loadTemplates();

@@ -41,6 +41,7 @@ pub(crate) trait ProtocolAdaptation {
         request: &CompletionRequest,
         model: &ModelInfo,
         prompt_cache_key: Option<&str>,
+        chatgpt: bool,
     ) -> Result<OpenAiRequestBody> {
         self.base().build_request(
             api,
@@ -48,6 +49,7 @@ pub(crate) trait ProtocolAdaptation {
             request,
             model,
             prompt_cache_key,
+            chatgpt,
         )
     }
 

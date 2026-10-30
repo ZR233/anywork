@@ -5,6 +5,7 @@
 
 import '../../../frb_generated.dart';
 import 'acp.dart';
+import 'chatgpt_auth.dart';
 import 'delegation.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';

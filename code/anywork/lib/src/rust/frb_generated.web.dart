@@ -6,6 +6,7 @@
 // Static analysis wrongly picks the IO variant, thus ignore this
 // ignore_for_file: argument_type_not_assignable
 
+import 'api/studio/accounts/chatgpt.dart';
 import 'api/studio/accounts/commands.dart';
 import 'api/studio/accounts/feed.dart';
 import 'api/studio/accounts/types.dart';
@@ -41,6 +42,7 @@ import 'api/studio/types/attachment.dart';
 import 'api/studio/types/bots.dart';
 import 'api/studio/types/chat.dart';
 import 'api/studio/types/chat/descriptor.dart';
+import 'api/studio/types/chatgpt_auth.dart';
 import 'api/studio/types/command.dart';
 import 'api/studio/types/delegation.dart';
 import 'api/studio/types/error.dart';
@@ -450,6 +452,19 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   BridgeCancellingAgent dco_decode_box_autoadd_bridge_cancelling_agent(
     dynamic raw,
   );
+
+  @protected
+  BridgeChatGptAccountInfo dco_decode_box_autoadd_bridge_chat_gpt_account_info(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeChatGptLoginFailure
+  dco_decode_box_autoadd_bridge_chat_gpt_login_failure(dynamic raw);
+
+  @protected
+  BridgeChatGptLoginSnapshot
+  dco_decode_box_autoadd_bridge_chat_gpt_login_snapshot(dynamic raw);
 
   @protected
   BridgeCheckFailedUpdaterState
@@ -1168,6 +1183,14 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   StartNewThreadResponse dco_decode_box_start_new_thread_response(dynamic raw);
 
   @protected
+  BridgeAccountAuthenticationIntent
+  dco_decode_bridge_account_authentication_intent(dynamic raw);
+
+  @protected
+  BridgeAccountAuthenticationMethod
+  dco_decode_bridge_account_authentication_method(dynamic raw);
+
+  @protected
   BridgeAccountCapabilities dco_decode_bridge_account_capabilities(dynamic raw);
 
   @protected
@@ -1557,6 +1580,32 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeCancellingAgent dco_decode_bridge_cancelling_agent(dynamic raw);
+
+  @protected
+  BridgeChatGptAccountInfo dco_decode_bridge_chat_gpt_account_info(dynamic raw);
+
+  @protected
+  BridgeChatGptLoginCommandReply dco_decode_bridge_chat_gpt_login_command_reply(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeChatGptLoginFailure dco_decode_bridge_chat_gpt_login_failure(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeChatGptLoginFailureCode dco_decode_bridge_chat_gpt_login_failure_code(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeChatGptLoginPhase dco_decode_bridge_chat_gpt_login_phase(dynamic raw);
+
+  @protected
+  BridgeChatGptLoginSnapshot dco_decode_bridge_chat_gpt_login_snapshot(
+    dynamic raw,
+  );
 
   @protected
   BridgeCheckFailedUpdaterState dco_decode_bridge_check_failed_updater_state(
@@ -3406,6 +3455,14 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   dco_decode_opt_box_autoadd_bridge_bot_registration_attempt(dynamic raw);
 
   @protected
+  BridgeChatGptAccountInfo?
+  dco_decode_opt_box_autoadd_bridge_chat_gpt_account_info(dynamic raw);
+
+  @protected
+  BridgeChatGptLoginFailure?
+  dco_decode_opt_box_autoadd_bridge_chat_gpt_login_failure(dynamic raw);
+
+  @protected
   BridgeContinuationReason?
   dco_decode_opt_box_autoadd_bridge_continuation_reason(dynamic raw);
 
@@ -4113,6 +4170,23 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeCancellingAgent sse_decode_box_autoadd_bridge_cancelling_agent(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeChatGptAccountInfo sse_decode_box_autoadd_bridge_chat_gpt_account_info(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeChatGptLoginFailure
+  sse_decode_box_autoadd_bridge_chat_gpt_login_failure(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeChatGptLoginSnapshot
+  sse_decode_box_autoadd_bridge_chat_gpt_login_snapshot(
     SseDeserializer deserializer,
   );
 
@@ -5041,6 +5115,14 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeAccountAuthenticationIntent
+  sse_decode_bridge_account_authentication_intent(SseDeserializer deserializer);
+
+  @protected
+  BridgeAccountAuthenticationMethod
+  sse_decode_bridge_account_authentication_method(SseDeserializer deserializer);
+
+  @protected
   BridgeAccountCapabilities sse_decode_bridge_account_capabilities(
     SseDeserializer deserializer,
   );
@@ -5568,6 +5650,36 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeCancellingAgent sse_decode_bridge_cancelling_agent(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeChatGptAccountInfo sse_decode_bridge_chat_gpt_account_info(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeChatGptLoginCommandReply sse_decode_bridge_chat_gpt_login_command_reply(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeChatGptLoginFailure sse_decode_bridge_chat_gpt_login_failure(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeChatGptLoginFailureCode sse_decode_bridge_chat_gpt_login_failure_code(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeChatGptLoginPhase sse_decode_bridge_chat_gpt_login_phase(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeChatGptLoginSnapshot sse_decode_bridge_chat_gpt_login_snapshot(
     SseDeserializer deserializer,
   );
 
@@ -7851,6 +7963,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeChatGptAccountInfo?
+  sse_decode_opt_box_autoadd_bridge_chat_gpt_account_info(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeChatGptLoginFailure?
+  sse_decode_opt_box_autoadd_bridge_chat_gpt_login_failure(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   BridgeContinuationReason?
   sse_decode_opt_box_autoadd_bridge_continuation_reason(
     SseDeserializer deserializer,
@@ -8712,6 +8836,24 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_autoadd_bridge_cancelling_agent(
     BridgeCancellingAgent self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_bridge_chat_gpt_account_info(
+    BridgeChatGptAccountInfo self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_bridge_chat_gpt_login_failure(
+    BridgeChatGptLoginFailure self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_bridge_chat_gpt_login_snapshot(
+    BridgeChatGptLoginSnapshot self,
     SseSerializer serializer,
   );
 
@@ -9742,6 +9884,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_bridge_account_authentication_intent(
+    BridgeAccountAuthenticationIntent self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_account_authentication_method(
+    BridgeAccountAuthenticationMethod self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_bridge_account_capabilities(
     BridgeAccountCapabilities self,
     SseSerializer serializer,
@@ -10386,6 +10540,42 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_bridge_cancelling_agent(
     BridgeCancellingAgent self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_chat_gpt_account_info(
+    BridgeChatGptAccountInfo self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_chat_gpt_login_command_reply(
+    BridgeChatGptLoginCommandReply self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_chat_gpt_login_failure(
+    BridgeChatGptLoginFailure self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_chat_gpt_login_failure_code(
+    BridgeChatGptLoginFailureCode self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_chat_gpt_login_phase(
+    BridgeChatGptLoginPhase self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_chat_gpt_login_snapshot(
+    BridgeChatGptLoginSnapshot self,
     SseSerializer serializer,
   );
 
@@ -13122,6 +13312,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_opt_box_autoadd_bridge_bot_registration_attempt(
     BridgeBotRegistrationAttempt? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_bridge_chat_gpt_account_info(
+    BridgeChatGptAccountInfo? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_bridge_chat_gpt_login_failure(
+    BridgeChatGptLoginFailure? self,
     SseSerializer serializer,
   );
 

@@ -418,20 +418,40 @@ impl StudioRuntime {
         request: CreateAccountRequest,
     ) -> Result<SettingsCommandReply> {
         Self::validate_operation_id(&request.operation_id)?;
-        let state = self.config_runtime.update_with_effective(
-            request.expected_revision,
-            |desired, effective| {
-                let id = AccountId::new(request.account.account_id.trim())?;
-                if desired.models.accounts.contains_key(&id) {
-                    return Err(pl_protocol::PureError::ConfigError(
-                        "account already exists; use a field patch".into(),
-                    ));
-                }
-                let account = account_edit::account_edit(request.account, effective)
-                    .map_err(|error| pl_protocol::PureError::ConfigError(error.to_string()))?;
-                account.to_single_config(effective)
-            },
-        )?;
+        let authentication = request.account.authentication.clone();
+        let account_id = request.account.account_id.clone();
+        let state = self
+            .chatgpt_auth
+            .with_claim(&authentication, &account_id, |credential| {
+                Ok(self.config_runtime.update_with_credential_intents(
+                    request.expected_revision,
+                    crate::config::credential_commit::CredentialIntents::for_account(
+                        &account_id,
+                        &authentication,
+                    ),
+                    |desired, effective| {
+                        let id = AccountId::new(request.account.account_id.trim())?;
+                        if desired.models.accounts.contains_key(&id) {
+                            return Err(pl_protocol::PureError::ConfigError(
+                                "account already exists; use a field patch".into(),
+                            ));
+                        }
+                        account_edit::account_configuration(
+                            request.account,
+                            effective,
+                            credential,
+                            &self.config_runtime,
+                        )
+                        .map_err(|error| pl_protocol::PureError::ConfigError(error.to_string()))
+                    },
+                )?)
+            })?;
+        if matches!(
+            authentication,
+            pl_protocol::studio::AccountAuthenticationIntent::ApiKey
+        ) {
+            self.chatgpt_auth.discard_account(&account_id).await?;
+        }
         self.publish_settings_state()?;
         self.settings_command_reply(
             request.operation_id,
@@ -624,6 +644,9 @@ impl StudioRuntime {
         let state = self
             .config_runtime
             .replace(request.expected_revision, next)?;
+        self.chatgpt_auth
+            .discard_account(&request.account_id)
+            .await?;
         self.publish_settings_state()?;
         self.settings_command_reply(
             request.operation_id,

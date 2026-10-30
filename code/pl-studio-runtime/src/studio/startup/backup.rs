@@ -76,31 +76,14 @@ pub(in crate::studio) struct StartupBackup {
 impl StartupBackup {
     pub(in crate::studio) fn resume(home: &Path) -> Result<Option<Self>> {
         let path = home.join(JOURNAL);
-        check_ancestors(home, &path)?;
-        metadata(&path)?;
-        let content = match std::fs::read_to_string(&path) {
-            Ok(content) => content,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => return Err(error.into()),
+        let Some(mut record) = read_record(home)? else {
+            return Ok(None);
         };
-        let mut record: Record = toml::from_str(&content)
-            .context("invalid startup recovery journal; preserving recovery state")?;
-        ensure!(
-            matches!(record.version, 1 | 2) && valid_id(&record.id),
-            "unsupported startup recovery journal"
-        );
-        validate_pass(&record.original)?;
-        ensure!(
-            record.original.directory == "original",
-            "invalid original backup directory"
-        );
-        if let Some(pass) = &record.interrupted {
-            validate_pass(pass)?;
-        }
         if record.phase == Phase::Completed {
             std::fs::remove_file(path)?;
             return Ok(None);
         }
+        ensure_no_credential_transactions(home, &record)?;
         record.version = 2;
         let mut backup = Self {
             home: home.to_owned(),
@@ -142,6 +125,7 @@ impl StartupBackup {
             original: inventory(home, "original".into(), 2)?,
             interrupted: None,
         };
+        ensure_no_credential_transactions(home, &record)?;
         let mut backup = Self {
             home: home.to_owned(),
             record,
@@ -246,6 +230,77 @@ impl StartupBackup {
         }
         Ok(())
     }
+}
+
+fn read_record(home: &Path) -> Result<Option<Record>> {
+    let path = home.join(JOURNAL);
+    check_ancestors(home, &path)?;
+    metadata(&path)?;
+    let content = match std::fs::read_to_string(&path) {
+        Ok(content) => content,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    let record: Record = toml::from_str(&content)
+        .context("invalid startup recovery journal; preserving recovery state")?;
+    ensure!(
+        matches!(record.version, 1 | 2) && valid_id(&record.id),
+        "unsupported startup recovery journal"
+    );
+    validate_pass(&record.original)?;
+    ensure!(
+        record.original.directory == "original",
+        "invalid original backup directory"
+    );
+    if let Some(pass) = &record.interrupted {
+        validate_pass(pass)?;
+    }
+    Ok(Some(record))
+}
+
+pub(crate) fn validate_credential_recovery(home: &Path) -> Result<()> {
+    if let Some(record) = read_record(home)?
+        && record.phase != Phase::Completed
+    {
+        ensure_no_credential_transactions(home, &record)?;
+    }
+    Ok(())
+}
+
+fn ensure_no_credential_transactions(home: &Path, record: &Record) -> Result<()> {
+    let root = home.join("startup-backups").join(&record.id);
+    let mut bases = vec![home.to_owned(), root.join(&record.original.directory)];
+    if let Some(pass) = &record.interrupted {
+        bases.push(root.join(&pass.directory));
+    }
+    for base in bases {
+        let layout_journal = base.join("storage-migration.toml");
+        check_ancestors(home, &layout_journal)?;
+        metadata(&layout_journal)?;
+        ensure!(
+            !super::storage_layout::incomplete_operation(&layout_journal)?,
+            "unfinished layout migration intersects startup recovery; materials preserved"
+        );
+        for relative in [
+            "v2/credential-transactions",
+            "studio/v2/credential-transactions",
+            "data/credential-transactions",
+        ] {
+            let path = base.join(relative);
+            check_ancestors(home, &path)?;
+            if let Some(meta) = metadata(&path)? {
+                ensure!(
+                    meta.is_dir(),
+                    "invalid credential transaction root during startup recovery"
+                );
+                ensure!(
+                    std::fs::read_dir(&path)?.next().transpose()?.is_none(),
+                    "credential transaction intersects startup recovery; materials preserved"
+                );
+            }
+        }
+    }
+    Ok(())
 }
 
 fn inventory(home: &Path, directory: String, member_version: u32) -> Result<ArchivePass> {
@@ -502,6 +557,94 @@ mod migration_fault_tests {
         assert_eq!(
             std::fs::read(temp.path().join("config.toml"))?,
             b"new attempt"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn interrupted_backup_with_credential_material_stops_before_changes() -> Result<()> {
+        for (relative, index) in [("v2", 2), ("studio/v2", 3)] {
+            for already_moved in [false, true] {
+                let temp = tempfile::tempdir()?;
+                let mut backup = pending(temp.path())?;
+                let transaction = temp
+                    .path()
+                    .join(relative)
+                    .join("credential-transactions/pending");
+                std::fs::create_dir_all(&transaction)?;
+                std::fs::write(transaction.join("journal.json"), b"preserve")?;
+                if already_moved {
+                    let root = backup.root();
+                    move_member(temp.path(), &root, &mut backup.record.original, index)?;
+                }
+                let journal = std::fs::read(temp.path().join(JOURNAL))?;
+                let store = crate::config::ConfigStore::new(
+                    crate::config::ConfigPaths::from_config_dir(temp.path()),
+                );
+                assert!(matches!(
+                    store.load_for_startup(),
+                    Err(crate::config::ConfigRuntimeError::Migration(_))
+                ));
+                assert!(StartupBackup::resume(temp.path()).is_err());
+                assert_eq!(std::fs::read(temp.path().join(JOURNAL))?, journal);
+                let base = if already_moved {
+                    backup.root().join("original")
+                } else {
+                    temp.path().to_owned()
+                };
+                assert_eq!(
+                    std::fs::read(
+                        base.join(relative)
+                            .join("credential-transactions/pending/journal.json")
+                    )?,
+                    b"preserve"
+                );
+                assert_eq!(
+                    std::fs::read(temp.path().join("config.toml"))?,
+                    b"original config"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn unfinished_layout_stops_backup_before_moving_its_journal() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let backup = pending(temp.path())?;
+        let layout = b"schemaVersion = 1\noperationId = 'layout-interrupted'\nphase = 'building'\ncopied = []\nbotRoots = []\n[[roots]]\nsource = 'v2'\npresent = false\nmoved = false\n[[roots]]\nsource = 'studio/v2'\npresent = false\nmoved = false\n[[roots]]\nsource = 'skills'\npresent = false\nmoved = false\n";
+        std::fs::write(temp.path().join("storage-migration.toml"), layout)?;
+        assert!(super::super::storage_layout::incomplete_operation(
+            &temp.path().join("storage-migration.toml")
+        )?);
+        let journal = std::fs::read(temp.path().join(JOURNAL))?;
+        assert!(StartupBackup::resume(temp.path()).is_err());
+        assert_eq!(std::fs::read(temp.path().join(JOURNAL))?, journal);
+        assert_eq!(
+            std::fs::read(temp.path().join("storage-migration.toml"))?,
+            layout
+        );
+        assert_eq!(
+            std::fs::read(temp.path().join("config.toml"))?,
+            b"original config"
+        );
+        assert!(!backup.root().join("original/config.toml").exists());
+        Ok(())
+    }
+
+    #[test]
+    fn completed_backup_record_does_not_block_current_credential_recovery() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let mut backup = pending(temp.path())?;
+        backup.record.phase = Phase::Completed;
+        backup.persist()?;
+        let transaction = temp.path().join("data/credential-transactions/pending");
+        std::fs::create_dir_all(&transaction)?;
+        std::fs::write(transaction.join("journal.json"), b"preserve")?;
+        assert!(StartupBackup::resume(temp.path())?.is_none());
+        assert_eq!(
+            std::fs::read(transaction.join("journal.json"))?,
+            b"preserve"
         );
         Ok(())
     }

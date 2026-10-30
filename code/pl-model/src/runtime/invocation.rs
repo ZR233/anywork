@@ -863,9 +863,14 @@ impl InvocationRunner {
             &request,
             &self.model,
             prompt_cache_key,
+            self.endpoint.chatgpt_session.is_some(),
         )?;
+        let original = self.endpoint.chatgpt_session.as_ref().map(|_| body.clone());
         body.apply_native_options(&self.native_body);
         body.reject_reserved_instruction_channel()?;
+        if let Some(original) = &original {
+            body.validate_chatgpt(original)?;
+        }
         if self.purpose == InvocationPurpose::RemoteCompaction {
             body.prepare_compaction();
         }
@@ -921,7 +926,14 @@ impl InvocationRunner {
         let transport = self.active_transport(&session);
         async move {
             let expected_sent_model = body.sent_model()?;
-            let token = endpoint.bearer_token.clone();
+            if endpoint.chatgpt_session.is_some()
+                && (transport != OpenAiTransport::Http || wire_api != WireApi::Responses)
+            {
+                return Err(PureError::ConfigError(
+                    crate::protocol::chatgpt::ChatGptAuthError::UnsupportedResource.to_string(),
+                ));
+            }
+            let token = endpoint.resolve_bearer_token().await?;
             if transport == OpenAiTransport::ResponsesWebSocket {
                 let OpenAiRequestBody::Responses(body) = body else {
                     return Err(PureError::ConfigError(
@@ -949,11 +961,8 @@ impl InvocationRunner {
                 });
             }
             let capture = wire_capture::capture_http(&body, trace.as_ref()).await?;
-            let headers = super::transport::headers(
-                token.as_deref(),
-                endpoint.http_headers.as_ref(),
-                &model_info.binding.request.headers,
-            )?;
+            let headers =
+                endpoint.request_headers(token.as_deref(), &model_info.binding.request.headers)?;
             let request = match body {
                 OpenAiRequestBody::Responses(body) => http_client
                     .post(format!("{api_base}/responses"))
@@ -962,10 +971,18 @@ impl InvocationRunner {
                     .post(format!("{api_base}/chat/completions"))
                     .json(&body),
             };
+            // Resource and credential validation above must complete before granting this
+            // narrow official-session exception. Other routes keep strict media validation.
+            let content_type_policy = if endpoint.chatgpt_session.is_some() {
+                super::transport::SseContentTypePolicy::AllowMissingForChatGpt
+            } else {
+                super::transport::SseContentTypePolicy::Required
+            };
             let stream = match super::transport::sse(
                 request
                     .headers(headers)
                     .header("accept", "text/event-stream"),
+                content_type_policy,
             )
             .await
             {
@@ -1061,6 +1078,10 @@ impl InvocationRunner {
 fn duration_millis(duration: Duration) -> u64 {
     u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
+
+#[cfg(test)]
+#[path = "invocation_chatgpt_tests.rs"]
+mod chatgpt_tests;
 
 #[cfg(test)]
 mod timing_tests {

@@ -5,6 +5,24 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, HashMap};
 
+/// Frozen authentication wire introduced by main schema 28.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AuthenticationMethod {
+    ApiKey,
+    ChatGpt,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ChatGptAccountInfo {
+    pub issuer: String,
+    pub subject: String,
+    pub client_id: String,
+    pub email: Option<String>,
+    pub plan_usage_enabled: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ModelInfo {

@@ -10,6 +10,7 @@ pub(crate) mod sse;
 pub(crate) mod usage;
 
 use request::build_openai_request_body;
+pub(crate) use request::chatgpt::validate_request as validate_chatgpt_request;
 pub(crate) use request::{OpenAiRequestBody, sent_model_from_wire_body};
 
 /// OpenAI 协议族的两种 wire API。
@@ -58,6 +59,7 @@ impl OpenAiBase {
         request: &CompletionRequest,
         model: &ModelInfo,
         prompt_cache_key: Option<&str>,
+        chatgpt: bool,
     ) -> Result<OpenAiRequestBody> {
         build_openai_request_body(
             OpenAiEndpoint::of(api),
@@ -65,6 +67,7 @@ impl OpenAiBase {
             request,
             model,
             prompt_cache_key,
+            chatgpt,
         )
     }
 

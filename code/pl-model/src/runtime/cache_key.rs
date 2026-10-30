@@ -44,6 +44,9 @@ pub fn binding_cache_namespace(
     field(b"pl-model/cache-isolation/v1");
     field(account_id.as_bytes());
     field(endpoint.base_url.as_bytes());
+    if let Some(session) = &endpoint.chatgpt_session {
+        field(session.registration_id().as_bytes());
+    }
     field(
         endpoint
             .bearer_token

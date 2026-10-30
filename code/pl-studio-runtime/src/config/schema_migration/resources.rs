@@ -14,7 +14,9 @@ use super::{
 };
 use crate::config::credential::CredentialStore;
 use crate::config::document_migration::{load_main, load_profile};
-use crate::config::{ConfigPaths, STUDIO_CONFIG_FILE_NAME, StudioConfig};
+use crate::config::{
+    ConfigPaths, STUDIO_CONFIG_FILE_NAME, STUDIO_CONFIG_SCHEMA_VERSION, StudioConfig,
+};
 use crate::toml_schema::migration_error;
 
 pub(super) const VERSION: u32 = 2;
@@ -57,12 +59,7 @@ fn text<'a>(path: &Path, bytes: &'a [u8], entity: &'static str, target: u32) -> 
 pub(super) fn main_document(path: &Path, bytes: &[u8]) -> Result<(StudioConfig, u32, bool)> {
     let loaded = load_main(
         path,
-        text(
-            path,
-            bytes,
-            "studio-config",
-            crate::config::STUDIO_CONFIG_SCHEMA_VERSION,
-        )?,
+        text(path, bytes, "studio-config", STUDIO_CONFIG_SCHEMA_VERSION)?,
     )?;
     let source = loaded.source_version;
     let config = loaded.document.into_config().map_err(|error| {
@@ -70,7 +67,7 @@ pub(super) fn main_document(path: &Path, bytes: &[u8]) -> Result<(StudioConfig, 
             path,
             "studio-config",
             Some(source),
-            crate::config::STUDIO_CONFIG_SCHEMA_VERSION,
+            STUDIO_CONFIG_SCHEMA_VERSION,
             "validate",
             error,
         )
@@ -94,7 +91,7 @@ fn current_main(paths: &ConfigPaths) -> Result<(StudioConfig, Option<String>)> {
     };
     let (config, source, migrated) = main_document(paths.config_file(), &bytes)?;
     ensure!(
-        !migrated && source == crate::config::STUDIO_CONFIG_SCHEMA_VERSION,
+        !migrated && source == STUDIO_CONFIG_SCHEMA_VERSION,
         "pending Profile operation requires its current main snapshot"
     );
     Ok((config, Some(digest(&bytes))))
@@ -130,9 +127,9 @@ fn verify_profile_main_guard(paths: &ConfigPaths, expected_hash: Option<&str>) -
 
 /// Decodes a main snapshot guarded by a Profile-only resource journal.
 ///
-/// This continuation boundary may admit schema 27 only after the journal's
+/// This continuation boundary may admit historical schemas only after the journal's
 /// unchanged-main hash has been checked against the exact on-disk bytes.
-/// Ordinary current-main reads continue to require schema 28.
+/// Ordinary current-main reads continue to require the current schema.
 fn unchanged_profile_main(
     paths: &ConfigPaths,
     expected_hash: Option<&str>,
@@ -156,7 +153,7 @@ fn unchanged_profile_main(
         return Ok(current);
     }
     ensure!(
-        source == 27 && migrated,
+        (27..STUDIO_CONFIG_SCHEMA_VERSION).contains(&source) && migrated,
         "unchanged main snapshot is not an admitted Profile-journal version"
     );
     Ok(config)
@@ -235,7 +232,7 @@ pub(super) fn prepare(
         let (config, source, migrated) = main_document(paths.config_file(), original)?;
         if migrated {
             let candidate =
-                crate::config::document_migration::MainV28::from_config(&config)?.encode()?;
+                crate::config::document_migration::MainV29::from_config(&config)?.encode()?;
             let plan = ResourcePlan {
                 relative_path: STUDIO_CONFIG_FILE_NAME.into(),
                 original: original.to_vec(),
@@ -245,7 +242,7 @@ pub(super) fn prepare(
                 &plan,
                 DocumentFamily::Main,
                 Some(source),
-                crate::config::STUDIO_CONFIG_SCHEMA_VERSION,
+                STUDIO_CONFIG_SCHEMA_VERSION,
             ));
             plans.push(plan);
             (config, None)
@@ -300,7 +297,7 @@ pub(super) fn prepare(
         if plan.relative_path == STUDIO_CONFIG_FILE_NAME {
             let (_, version, migrated) = main_document(&path, &plan.candidate)?;
             ensure!(
-                version == crate::config::STUDIO_CONFIG_SCHEMA_VERSION && !migrated,
+                version == STUDIO_CONFIG_SCHEMA_VERSION && !migrated,
                 "invalid main candidate"
             );
         } else {
@@ -363,10 +360,10 @@ fn validate_resources(journal: &Journal) -> Result<()> {
                     "invalid main resource path"
                 );
                 ensure!(
-                    matches!(
-                        (resource.source_version, resource.target_version),
-                        (Some(18..=26), 27) | (Some(18..=27), 28)
-                    ),
+                    resource
+                        .source_version
+                        .is_some_and(|source| (18..resource.target_version).contains(&source))
+                        && (27..=STUDIO_CONFIG_SCHEMA_VERSION).contains(&resource.target_version),
                     "invalid main resource versions"
                 );
             }
@@ -447,7 +444,7 @@ fn commit(
         let (config, target, migrated) = main_document(path, &plan.candidate)?;
         ensure!(
             target == journal.resources[index].target_version
-                && migrated == (target != crate::config::STUDIO_CONFIG_SCHEMA_VERSION),
+                && migrated == (target != STUDIO_CONFIG_SCHEMA_VERSION),
             "invalid main candidate version"
         );
         (config, None)
@@ -560,6 +557,20 @@ workspace_mode = "directory"
         (directory, store)
     }
 
+    fn remove_post_27_authentication(main: &mut toml::Value) {
+        if let Some(accounts) = main
+            .get_mut("models")
+            .and_then(|models| models.get_mut("accounts"))
+            .and_then(toml::Value::as_table_mut)
+        {
+            for (_, account) in accounts.iter_mut() {
+                let account = account.as_table_mut().unwrap();
+                account.remove("authentication");
+                account.remove("chatgpt_account");
+            }
+        }
+    }
+
     fn write_profile_only_journal(
         store: &ConfigStore,
         main_schema: Option<u32>,
@@ -569,6 +580,9 @@ workspace_mode = "directory"
             let mut main: toml::Value =
                 toml::from_str(&fs::read_to_string(paths.config_file()).unwrap()).unwrap();
             main["schema_version"] = schema.into();
+            if schema < 28 {
+                remove_post_27_authentication(&mut main);
+            }
             let bytes = toml::to_string(&main).unwrap().into_bytes();
             fs::write(paths.config_file(), &bytes).unwrap();
             Some(bytes)
@@ -613,34 +627,36 @@ workspace_mode = "directory"
     }
 
     #[test]
-    fn schema27_profile_only_journal_resumes_then_upgrades_main_to_current() {
-        let (_directory, store) = fixture();
-        let paths = store.paths();
-        let (Some(main_before), _profile_original, profile_candidate, _journal_bytes) =
-            write_profile_only_journal(&store, Some(27))
-        else {
-            unreachable!("schema-27 fixture must include a main document");
-        };
+    fn historical_profile_only_journal_resumes_then_upgrades_main_to_current() {
+        for schema in [27, 28] {
+            let (_directory, store) = fixture();
+            let paths = store.paths();
+            let (Some(main_before), _profile_original, profile_candidate, _journal_bytes) =
+                write_profile_only_journal(&store, Some(schema))
+            else {
+                unreachable!("schema-27 fixture must include a main document");
+            };
 
-        let loaded = store.load_for_startup().unwrap();
+            let loaded = store.load_for_startup().unwrap();
 
-        assert_eq!(
-            loaded.schema_version,
-            crate::config::STUDIO_CONFIG_SCHEMA_VERSION
-        );
-        assert_eq!(
-            toml::from_str::<toml::Value>(&fs::read_to_string(paths.config_file()).unwrap())
-                .unwrap()["schema_version"],
-            crate::config::STUDIO_CONFIG_SCHEMA_VERSION.into()
-        );
-        assert_ne!(fs::read(paths.config_file()).unwrap(), main_before);
-        assert_eq!(
-            fs::read(paths.agents_dir().join("saved.toml")).unwrap(),
-            profile_candidate
-        );
-        assert!(!operation_dir(paths).exists());
-        assert_eq!(store.load_for_startup().unwrap(), loaded);
-        assert!(!operation_dir(paths).exists());
+            assert_eq!(
+                loaded.schema_version,
+                crate::config::STUDIO_CONFIG_SCHEMA_VERSION
+            );
+            assert_eq!(
+                toml::from_str::<toml::Value>(&fs::read_to_string(paths.config_file()).unwrap())
+                    .unwrap()["schema_version"],
+                crate::config::STUDIO_CONFIG_SCHEMA_VERSION.into()
+            );
+            assert_ne!(fs::read(paths.config_file()).unwrap(), main_before);
+            assert_eq!(
+                fs::read(paths.agents_dir().join("saved.toml")).unwrap(),
+                profile_candidate
+            );
+            assert!(!operation_dir(paths).exists());
+            assert_eq!(store.load_for_startup().unwrap(), loaded);
+            assert!(!operation_dir(paths).exists());
+        }
     }
 
     #[test]
@@ -784,6 +800,7 @@ workspace_mode = "directory"
         let (_directory, store) = fixture();
         let paths = store.paths();
         let mut current = toml::Value::try_from(StudioConfig::default_config().unwrap()).unwrap();
+        remove_post_27_authentication(&mut current);
         let mut original = current.clone();
         original["schema_version"] = 26.into();
         let original = toml::to_string(&original).unwrap().into_bytes();
@@ -831,6 +848,50 @@ workspace_mode = "directory"
     }
 
     #[test]
+    fn recorded_schema_28_candidate_is_committed_before_next_migration() {
+        let (_directory, store) = fixture();
+        let paths = store.paths();
+        let mut candidate = toml::Value::try_from(StudioConfig::default_config().unwrap()).unwrap();
+        candidate["schema_version"] = 28.into();
+        candidate
+            .as_table_mut()
+            .unwrap()
+            .entry("skills")
+            .or_insert_with(|| toml::Value::Table(toml::Table::new()));
+        candidate["skills"]
+            .as_table_mut()
+            .unwrap()
+            .insert("user_dir".into(), "~/.anywork/skills".into());
+        let mut original = candidate.clone();
+        original["schema_version"] = 27.into();
+        remove_post_27_authentication(&mut original);
+        let plan = ResourcePlan {
+            relative_path: STUDIO_CONFIG_FILE_NAME.into(),
+            original: toml::to_string(&original).unwrap().into_bytes(),
+            candidate: toml::to_string(&candidate).unwrap().into_bytes(),
+        };
+        fs::write(paths.config_file(), &plan.original).unwrap();
+        let directory = operation_dir(paths);
+        write_protected(&directory, ORIGINAL_DIR_NAME, &plan, &plan.original).unwrap();
+        write_protected(&directory, CANDIDATE_DIR_NAME, &plan, &plan.candidate).unwrap();
+        let journal = Journal {
+            version: VERSION,
+            operation_id: "historical-27-to-28".into(),
+            phase: MigrationPhase::Prepared,
+            unchanged_main_hash: None,
+            resources: vec![resource(&plan, DocumentFamily::Main, Some(27), 28)],
+        };
+        write_journal(&directory, &journal).unwrap();
+        let journal_bytes = fs::read(directory.join(JOURNAL_FILE_NAME)).unwrap();
+        resume(paths, &MemoryCredentialStore::default(), &journal_bytes).unwrap();
+        assert_eq!(fs::read(paths.config_file()).unwrap(), plan.candidate);
+        let loaded = store.load_for_startup().unwrap();
+        assert_eq!(loaded.schema_version, STUDIO_CONFIG_SCHEMA_VERSION);
+        assert_eq!(store.load_for_startup().unwrap(), loaded);
+        assert!(!directory.exists());
+    }
+
+    #[test]
     fn current_main_imports_later_profile_without_replacing_main_and_resumes_after_lost_ack() {
         let (_directory, store) = fixture();
         let paths = store.paths();
@@ -858,10 +919,7 @@ workspace_mode = "directory"
         assert_eq!(journal.unchanged_main_hash, Some(digest(&main_before)));
         assert_eq!(fs::read(paths.config_file()).unwrap(), main_before);
         let recovered = resume(paths, &credentials, &journal_bytes).unwrap();
-        assert_eq!(
-            recovered.schema_version,
-            crate::config::STUDIO_CONFIG_SCHEMA_VERSION
-        );
+        assert_eq!(recovered.schema_version, STUDIO_CONFIG_SCHEMA_VERSION);
         assert_eq!(fs::read(&profile_path).unwrap(), candidate);
         assert_eq!(fs::read(paths.config_file()).unwrap(), main_before);
         assert!(!operation_dir(paths).exists());
@@ -870,10 +928,7 @@ workspace_mode = "directory"
         assert!(!profile.migrated);
         assert!(!profile.document.into_profile().unwrap().enabled);
         let loaded = store.load_for_startup().unwrap();
-        assert_eq!(
-            loaded.schema_version,
-            crate::config::STUDIO_CONFIG_SCHEMA_VERSION
-        );
+        assert_eq!(loaded.schema_version, STUDIO_CONFIG_SCHEMA_VERSION);
         assert_eq!(fs::read(&profile_path).unwrap(), candidate);
         assert_eq!(fs::read(paths.config_file()).unwrap(), main_before);
     }
@@ -1053,10 +1108,7 @@ workspace_mode = "directory"
                 .unwrap()
                 .is_empty()
         );
-        assert_eq!(
-            loaded.schema_version,
-            crate::config::STUDIO_CONFIG_SCHEMA_VERSION
-        );
+        assert_eq!(loaded.schema_version, STUDIO_CONFIG_SCHEMA_VERSION);
         assert_eq!(fs::read_to_string(path).unwrap(), original);
         assert!(
             store

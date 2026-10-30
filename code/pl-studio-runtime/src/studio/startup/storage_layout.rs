@@ -79,7 +79,7 @@ impl PreparedLayoutDatabase {
 }
 
 /// Must run while the runtime lock is held, after startup recovery and before config/cache opening.
-pub(in crate::studio) async fn prepare(paths: &StudioPaths) -> Result<()> {
+pub(crate) async fn prepare(paths: &StudioPaths) -> Result<()> {
     prepare_inner(paths)
         .await
         .map_err(|source| anyhow::Error::new(SessionLayoutMigrationFailed { source }))
@@ -300,6 +300,14 @@ fn decode_journal(content: &str) -> Result<Journal> {
     );
     Ok(record)
 }
+
+pub(crate) fn incomplete_operation(path: &Path) -> Result<bool> {
+    match std::fs::read_to_string(path) {
+        Ok(content) => Ok(decode_journal(&content)?.phase != Phase::Completed),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error.into()),
+    }
+}
 fn valid_id(id: &str) -> bool {
     id.starts_with("layout-")
         && id.len() > 7
@@ -356,12 +364,24 @@ async fn build(
         validate_family(&root.join("calls/calls.sqlite"))?;
         for entry in std::fs::read_dir(root)? {
             let entry = entry?;
-            if !entry.file_type()?.is_dir()
-                || !matches!(
-                    entry.file_name().to_str(),
-                    Some("model-catalogs" | "acp-probe" | "attachment-drafts")
-                )
-            {
+            let name = entry.file_name();
+            let kind = entry.file_type()?;
+            let independent = (kind.is_dir()
+                && matches!(
+                    name.to_str(),
+                    Some(
+                        "model-catalogs"
+                            | "acp-probe"
+                            | "attachment-drafts"
+                            | "credential-transactions"
+                    )
+                ))
+                || (kind.is_file()
+                    && matches!(
+                        name.to_str(),
+                        Some("chatgpt-host.toml" | "chatgpt-host.lock")
+                    ));
+            if !independent {
                 has_v2 = true;
             }
         }
@@ -400,10 +420,20 @@ async fn build(
         "migrations",
         "attachment-drafts",
         "acp-probe",
+        "chatgpt-host.toml",
+        "credential-transactions",
     ] {
         let candidates = existing_candidates(&roots, name)?;
         ensure!(candidates.len() <= 1, "conflicting v2 domain: {name}");
         if let Some(source) = candidates.first() {
+            #[cfg(unix)]
+            if name == "chatgpt-host.toml" {
+                use std::os::unix::fs::PermissionsExt;
+                ensure!(
+                    std::fs::metadata(source)?.permissions().mode() & 0o077 == 0,
+                    "ChatGPT host identity must be owner-only"
+                );
+            }
             if name == "calls" {
                 validate_family(&source.join("calls.sqlite"))?;
             }

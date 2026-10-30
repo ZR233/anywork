@@ -5,6 +5,7 @@
 
 import '../../../frb_generated.dart';
 import 'acp.dart';
+import 'chatgpt_auth.dart';
 import 'delegation.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
@@ -16,6 +17,7 @@ part 'settings.freezed.dart';
 
 class AccountInput {
   final String accountId;
+  final BridgeAccountAuthenticationIntent authentication;
   final String? templateId;
   final String protocol;
   final String name;
@@ -30,6 +32,7 @@ class AccountInput {
 
   const AccountInput({
     required this.accountId,
+    required this.authentication,
     this.templateId,
     required this.protocol,
     required this.name,
@@ -44,6 +47,7 @@ class AccountInput {
   @override
   int get hashCode =>
       accountId.hashCode ^
+      authentication.hashCode ^
       templateId.hashCode ^
       protocol.hashCode ^
       name.hashCode ^
@@ -60,6 +64,7 @@ class AccountInput {
       other is AccountInput &&
           runtimeType == other.runtimeType &&
           accountId == other.accountId &&
+          authentication == other.authentication &&
           templateId == other.templateId &&
           protocol == other.protocol &&
           name == other.name &&
@@ -210,6 +215,8 @@ class BridgeAccountCatalogSnapshot {
 
 /// 不含 secret 的 Account canonical 设置视图。
 class BridgeAccountSettingsDto {
+  final BridgeAccountAuthenticationMethod authentication;
+  final BridgeChatGptAccountInfo? chatgptAccount;
   final BridgeBillingKind billingKind;
   final BridgeBillingKind? billingKindOverride;
   final Map<String, bool> modelEnabledOverrides;
@@ -240,6 +247,8 @@ class BridgeAccountSettingsDto {
   final String? catalogId;
 
   const BridgeAccountSettingsDto({
+    required this.authentication,
+    this.chatgptAccount,
     required this.billingKind,
     this.billingKindOverride,
     required this.modelEnabledOverrides,
@@ -266,6 +275,8 @@ class BridgeAccountSettingsDto {
 
   @override
   int get hashCode =>
+      authentication.hashCode ^
+      chatgptAccount.hashCode ^
       billingKind.hashCode ^
       billingKindOverride.hashCode ^
       modelEnabledOverrides.hashCode ^
@@ -294,6 +305,8 @@ class BridgeAccountSettingsDto {
       identical(this, other) ||
       other is BridgeAccountSettingsDto &&
           runtimeType == other.runtimeType &&
+          authentication == other.authentication &&
+          chatgptAccount == other.chatgptAccount &&
           billingKind == other.billingKind &&
           billingKindOverride == other.billingKindOverride &&
           modelEnabledOverrides == other.modelEnabledOverrides &&

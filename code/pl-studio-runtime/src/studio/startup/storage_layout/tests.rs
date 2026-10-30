@@ -6,6 +6,56 @@ const OWNER: &str = "original-workspace";
 const THREAD: &str = "original-thread";
 const BODY: &[u8] = b"attachment and tool share exact bytes";
 
+#[tokio::test]
+async fn authentication_material_is_preserved_and_published_without_product_state() -> Result<()> {
+    let home = tempfile::tempdir()?;
+    let paths = StudioPaths::from_home(home.path().to_owned());
+    let old = home.path().join("v2");
+    tokio::fs::create_dir_all(old.join("credential-transactions/transaction")).await?;
+    let identity = b"schema_version = 1\next_agent_host_id = 'urn:uuid:00000000-0000-4000-8000-000000000001'\n";
+    tokio::fs::write(old.join("chatgpt-host.toml"), identity).await?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(
+            old.join("chatgpt-host.toml"),
+            std::fs::Permissions::from_mode(0o600),
+        )?;
+    }
+    tokio::fs::write(
+        old.join("credential-transactions/transaction/journal.json"),
+        b"journal bytes",
+    )
+    .await?;
+    prepare(&paths).await?;
+    prepare(&paths).await?;
+    assert_eq!(
+        tokio::fs::read(paths.data_dir().join("chatgpt-host.toml")).await?,
+        identity
+    );
+    assert_eq!(
+        tokio::fs::read(
+            paths
+                .data_dir()
+                .join("credential-transactions/transaction/journal.json")
+        )
+        .await?,
+        b"journal bytes"
+    );
+    let record: Journal =
+        toml::from_str(&tokio::fs::read_to_string(home.path().join(JOURNAL)).await?)?;
+    let preserved = backup_root(&paths, &record).join("v2");
+    assert_eq!(
+        tokio::fs::read(preserved.join("chatgpt-host.toml")).await?,
+        identity
+    );
+    assert_eq!(
+        tokio::fs::read(preserved.join("credential-transactions/transaction/journal.json")).await?,
+        b"journal bytes"
+    );
+    Ok(())
+}
+
 async fn fixture(home: &Path, grouped: bool, standalone: bool) -> Result<(StudioPaths, PathBuf)> {
     let paths = StudioPaths::from_home(home.to_owned());
     let legacy = home.join("v2");

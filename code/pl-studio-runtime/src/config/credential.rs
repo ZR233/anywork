@@ -1,5 +1,6 @@
 use keyring::{Entry, Error as KeyringError};
 use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use crate::{PureError, Result};
@@ -26,6 +27,16 @@ pub(super) enum LegacyCredentialCopy {
 }
 
 pub(super) trait CredentialStore: Send + Sync {
+    /// Dedicated durable transaction aliases; payloads never enter filesystem journals.
+    fn read_transaction(&self, alias: &str) -> Result<Option<String>>;
+    fn write_transaction(&self, alias: &str, payload: &str) -> Result<()>;
+    fn delete_transaction(&self, alias: &str) -> Result<()>;
+    /// Lock scope follows the protected-store owner, not an ANYWORK_HOME overlay.
+    fn account_lock_directory(&self, isolated_root: &Path) -> Result<PathBuf>;
+    /// Durable-only account IO. Never consult or populate a process fallback lease.
+    fn load_strict(&self, account_id: &str) -> Result<Option<String>>;
+    fn save_strict(&self, account_id: &str, secret: &str) -> Result<()>;
+    fn delete_strict(&self, account_id: &str) -> Result<()>;
     fn load(&self, account_id: &str) -> Result<Option<String>>;
     fn save(&self, account_id: &str, secret: &str) -> Result<()>;
     fn delete(&self, account_id: &str) -> Result<()>;
@@ -295,6 +306,97 @@ impl SystemCredentialStore {
 }
 
 impl CredentialStore for SystemCredentialStore {
+    fn read_transaction(&self, alias: &str) -> Result<Option<String>> {
+        match entry_for_account("credential transaction", alias, alias)?.get_password() {
+            Ok(value) => Ok(Some(value)),
+            Err(KeyringError::NoEntry) => Ok(None),
+            Err(_) => Err(PureError::ConfigError(
+                "credential transaction storage read failed".into(),
+            )),
+        }
+    }
+    fn write_transaction(&self, alias: &str, payload: &str) -> Result<()> {
+        entry_for_account("credential transaction", alias, alias)?
+            .set_password(payload)
+            .map_err(|_| {
+                PureError::ConfigError("credential transaction storage write failed".into())
+            })?;
+        if self.read_transaction(alias)?.as_deref() != Some(payload) {
+            return Err(PureError::ConfigError(
+                "credential transaction storage verification failed".into(),
+            ));
+        }
+        Ok(())
+    }
+    fn delete_transaction(&self, alias: &str) -> Result<()> {
+        match entry_for_account("credential transaction", alias, alias)?.delete_credential() {
+            Ok(()) | Err(KeyringError::NoEntry) => {}
+            Err(_) => {
+                return Err(PureError::ConfigError(
+                    "credential transaction storage delete failed".into(),
+                ));
+            }
+        }
+        if self.read_transaction(alias)?.is_some() {
+            return Err(PureError::ConfigError(
+                "credential transaction deletion verification failed".into(),
+            ));
+        }
+        Ok(())
+    }
+    fn account_lock_directory(&self, _isolated_root: &Path) -> Result<PathBuf> {
+        // dirs uses XDG_DATA_HOME on Linux and LocalAppData on Windows.
+        let root = dirs::data_local_dir().ok_or_else(|| {
+            PureError::ConfigError(
+                "the OS user local data directory is unavailable for credential locking".into(),
+            )
+        })?;
+        Ok(root.join(CREDENTIAL_SERVICE).join("credential-locks"))
+    }
+    fn delete_strict(&self, account_id: &str) -> Result<()> {
+        let entry = entry_for_account("account", account_id, &account_key(account_id))?;
+        match entry.delete_credential() {
+            Ok(()) | Err(KeyringError::NoEntry) => {}
+            Err(error) => return Err(credential_error("delete", "account", account_id, error)),
+        }
+        if self.load_strict(account_id)?.is_some() {
+            return Err(PureError::ConfigError(
+                "protected account deletion verification failed".into(),
+            ));
+        }
+        self.fallback_lease
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .remove(&account_key(account_id));
+        Ok(())
+    }
+    fn load_strict(&self, account_id: &str) -> Result<Option<String>> {
+        match entry_for_account("account", account_id, &account_key(account_id))?.get_password() {
+            Ok(secret) => Ok(Some(secret)),
+            Err(KeyringError::NoEntry) => Ok(None),
+            Err(error) => Err(credential_error("read", "account", account_id, error)),
+        }
+    }
+
+    fn save_strict(&self, account_id: &str, secret: &str) -> Result<()> {
+        let entry = entry_for_account("account", account_id, &account_key(account_id))?;
+        entry
+            .set_password(secret)
+            .map_err(|error| credential_error("write", "account", account_id, error))?;
+        let actual = entry
+            .get_password()
+            .map_err(|error| credential_error("verify", "account", account_id, error))?;
+        if actual != secret {
+            return Err(PureError::ConfigError(
+                "protected account credential verification failed".into(),
+            ));
+        }
+        self.fallback_lease
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .remove(&account_key(account_id));
+        Ok(())
+    }
     fn load(&self, account_id: &str) -> Result<Option<String>> {
         self.load_account("account", account_id, &account_key(account_id))
     }
@@ -437,6 +539,7 @@ impl CredentialStore for SystemCredentialStore {
 
 #[derive(Default)]
 pub(super) struct MemoryCredentialStore {
+    lock_directory: std::sync::OnceLock<PathBuf>,
     values: Mutex<BTreeMap<String, String>>,
     leases: Mutex<BTreeMap<String, String>>,
 }
@@ -474,6 +577,41 @@ impl MemoryCredentialStore {
 }
 
 impl CredentialStore for MemoryCredentialStore {
+    fn read_transaction(&self, alias: &str) -> Result<Option<String>> {
+        Ok(self.values.lock().unwrap().get(alias).cloned())
+    }
+    fn write_transaction(&self, alias: &str, payload: &str) -> Result<()> {
+        self.values
+            .lock()
+            .unwrap()
+            .insert(alias.into(), payload.into());
+        Ok(())
+    }
+    fn delete_transaction(&self, alias: &str) -> Result<()> {
+        self.values.lock().unwrap().remove(alias);
+        Ok(())
+    }
+    fn account_lock_directory(&self, isolated_root: &Path) -> Result<PathBuf> {
+        Ok(self
+            .lock_directory
+            .get_or_init(|| isolated_root.join("credential-locks"))
+            .clone())
+    }
+    fn delete_strict(&self, account_id: &str) -> Result<()> {
+        self.delete(account_id)
+    }
+    fn load_strict(&self, account_id: &str) -> Result<Option<String>> {
+        self.load(account_id)
+    }
+    fn save_strict(&self, account_id: &str, secret: &str) -> Result<()> {
+        self.save(account_id, secret)?;
+        if self.load(account_id)?.as_deref() != Some(secret) {
+            return Err(PureError::ConfigError(
+                "protected account credential verification failed".into(),
+            ));
+        }
+        Ok(())
+    }
     fn load(&self, account_id: &str) -> Result<Option<String>> {
         Ok(self
             .values

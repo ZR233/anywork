@@ -1,5 +1,7 @@
 //! Network execution only. The invocation owner decides whether an operation can be retried.
+mod diagnostics;
 mod sse_lines;
+use diagnostics::RequestDiagnostics;
 
 use eventsource_stream::Eventsource;
 use futures::{StreamExt, stream::BoxStream};
@@ -54,6 +56,9 @@ enum ErrorEnvelope {
         msg: String,
         success: bool,
     },
+    Detail {
+        detail: String,
+    },
 }
 
 #[derive(Deserialize)]
@@ -66,10 +71,13 @@ pub(crate) async fn checked(response: reqwest::Response) -> Result<reqwest::Resp
     if response.status().is_success() {
         return Ok(response);
     }
-    Err(read_response_error(response).await)
+    Err(read_response_error(response, None).await)
 }
 
-async fn read_response_error(response: reqwest::Response) -> PureError {
+async fn read_response_error(
+    response: reqwest::Response,
+    diagnostics: Option<&RequestDiagnostics>,
+) -> PureError {
     let status = response.status().as_u16();
     let headers = response.headers().clone();
     let mut body = Vec::new();
@@ -100,11 +108,12 @@ async fn read_response_error(response: reqwest::Response) -> PureError {
             break;
         }
     }
-    let mut error = response_error(
+    let mut error = response_error_with_diagnostics(
         status,
         &headers,
         &body,
         pl_protocol::ProviderFailureStage::Request,
+        diagnostics,
     );
     // The status and retry headers already describe the failed request. A
     // damaged error body must not turn authentication failures into retries.
@@ -119,6 +128,16 @@ pub(crate) fn response_error(
     headers: &HeaderMap,
     body: &[u8],
     stage: pl_protocol::ProviderFailureStage,
+) -> PureError {
+    response_error_with_diagnostics(status, headers, body, stage, None)
+}
+
+fn response_error_with_diagnostics(
+    status: u16,
+    headers: &HeaderMap,
+    body: &[u8],
+    stage: pl_protocol::ProviderFailureStage,
+    diagnostics: Option<&RequestDiagnostics>,
 ) -> PureError {
     let request_id = response_request_id(headers);
     let retry_after = headers
@@ -152,6 +171,14 @@ pub(crate) fn response_error(
             message: Some(msg),
         }),
         Some(ErrorEnvelope::Business { success: true, .. }) | None => None,
+        Some(ErrorEnvelope::Detail { detail }) => Some(ErrorDetail {
+            code: None,
+            message: Some(if diagnostics.is_some() {
+                detail
+            } else {
+                "provider returned a detail error response".into()
+            }),
+        }),
     };
     if (200..300).contains(&status) && detail.is_none() {
         return PureError::Protocol(format!(
@@ -163,6 +190,11 @@ pub(crate) fn response_error(
         .as_ref()
         .and_then(|detail| detail.message.as_deref())
         .unwrap_or("provider returned an unstructured error response");
+    let message = if diagnostics.is_none() && detail.is_some() {
+        "provider returned an error response"
+    } else {
+        message
+    };
     let mut error = provider_stream_failure(
         code,
         Some(status),
@@ -187,6 +219,9 @@ pub(crate) fn response_error(
     if let PureError::Provider(failure) = &mut error {
         failure.context.stage = stage;
     }
+    if let Some(diagnostics) = diagnostics {
+        diagnostics.redact_error(&mut error);
+    }
     error
 }
 
@@ -203,31 +238,48 @@ fn response_request_id(headers: &HeaderMap) -> Option<String> {
     Some(super::provider_error::redact_secret_like_values(value))
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SseContentTypePolicy {
+    Required,
+    AllowMissingForChatGpt,
+}
+
 pub(crate) async fn sse(
     request: reqwest::RequestBuilder,
+    content_type_policy: SseContentTypePolicy,
 ) -> Result<BoxStream<'static, Result<SseStreamEvent>>> {
+    // Inspect the built request once using reqwest's sensitive-header flags. This context
+    // belongs only to this send/stream and is never logged, cached globally or Debug-derived.
+    let (client, request) = request.build_split();
+    let request = request.map_err(reqwest_error_to_pure)?;
+    let diagnostics = std::sync::Arc::new(RequestDiagnostics::from_headers(request.headers()));
     let response = tokio::time::timeout(
         super::transport_policy::HTTP_REQUEST_TIMEOUT,
-        request.send(),
+        client.execute(request),
     )
     .await
     .map_err(|_| PureError::transient_model_transport("HTTP request header deadline exceeded"))?
     .map_err(reqwest_error_to_pure)?;
-    let response = checked(response).await?;
-    let is_sse = response
-        .headers()
-        .get(CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.split(';').next())
-        .is_some_and(|value| value.trim().eq_ignore_ascii_case("text/event-stream"));
+    if !response.status().is_success() {
+        return Err(read_response_error(response, Some(&diagnostics)).await);
+    }
+    let is_sse = match response.headers().get(CONTENT_TYPE) {
+        Some(value) => value
+            .to_str()
+            .ok()
+            .and_then(|value| value.split(';').next())
+            .is_some_and(|value| value.trim().eq_ignore_ascii_case("text/event-stream")),
+        None => content_type_policy == SseContentTypePolicy::AllowMissingForChatGpt,
+    };
     if !is_sse {
-        return Err(read_response_error(response).await);
+        return Err(read_response_error(response, Some(&diagnostics)).await);
     }
     let version = response.version();
     let status = response.status().as_u16();
     let request_id = response_request_id(response.headers());
     let started = std::time::Instant::now();
     let mut received_bytes = 0_u64;
+    let transport_diagnostics = diagnostics.clone();
     let body = response.bytes_stream().map(move |chunk| match chunk {
         Ok(chunk) => {
             received_bytes = received_bytes.saturating_add(chunk.len() as u64);
@@ -245,6 +297,7 @@ pub(crate) async fn sse(
                     request_id.as_deref().unwrap_or("unknown"),
                 ));
             }
+            transport_diagnostics.redact_error(&mut error);
             Err(error)
         }
     });
@@ -257,18 +310,27 @@ pub(crate) async fn sse(
                     .is_ok_and(|event| event.data.trim() == "[DONE]"),
             )
         })
-        .filter_map(|event| async move {
-            match event {
-                Ok(event) if event.data.trim().is_empty() => None,
-                Ok(event) => Some(
-                    serde_json::from_str(&event.data)
-                        .map_err(|error| PureError::Protocol(format!("invalid SSE JSON: {error}"))),
-                ),
-                Err(eventsource_stream::EventStreamError::Transport(error)) => Some(Err(error)),
-                Err(error) => Some(Err(PureError::Protocol(format!(
-                    "invalid SSE framing: {error}"
-                )))),
+        .filter_map(move |event| {
+            let diagnostics = diagnostics.clone();
+            async move {
+                match event {
+                    Ok(event) if event.data.trim().is_empty() => None,
+                    Ok(event) => Some(
+                        serde_json::from_str::<SseStreamEvent>(&event.data)
+                            .map(|mut event| {
+                                diagnostics.redact_event(&mut event);
+                                event
+                            })
+                            .map_err(|_| PureError::Protocol("invalid SSE JSON".into())),
+                    ),
+                    Err(eventsource_stream::EventStreamError::Transport(error)) => Some(Err(error)),
+                    Err(_) => Some(Err(PureError::Protocol("invalid SSE framing".into()))),
+                }
             }
         })
         .boxed())
 }
+
+#[cfg(test)]
+#[path = "transport/chatgpt_tests.rs"]
+mod chatgpt_tests;
