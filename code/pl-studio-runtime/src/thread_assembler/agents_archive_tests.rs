@@ -306,9 +306,16 @@ async fn archive_setup_failure_before_observer_retains_original_storage_until_re
         },
         store::thread_preparation::{PreparationIdentity, PreparationSave},
     };
+    use anyhow::Context;
     use pl_core::thread::cold::ColdStoreHandle;
     let temp = tempfile::tempdir()?;
-    let store = StudioStore::open(temp.path().join("home/studio.sqlite")).await?;
+    let database = temp.path().join("home/data/studio.sqlite");
+    let store = StudioStore::open(&database).await.with_context(|| {
+        format!(
+            "open current storage-ACK fixture product database {}",
+            database.display()
+        )
+    })?;
     let factory = close_factory(&store)?;
     let owner = StudioThreadAssembler::default();
     factory.install(&owner)?;

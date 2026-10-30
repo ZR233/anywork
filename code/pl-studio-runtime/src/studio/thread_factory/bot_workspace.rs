@@ -591,7 +591,11 @@ mod migration_tests {
         );
         assert!(!tokio::fs::try_exists(&business).await?);
         assert_eq!(
-            tokio::fs::read(managed.join(files.root()).join("scratch/original")).await?,
+            tokio::fs::read(managed.join(files.scratch()).join("original"))
+                .await
+                .context(
+                    "read migrated temp after the original bot workspace source is unmounted"
+                )?,
             b"retained original"
         );
         drop(execution);
