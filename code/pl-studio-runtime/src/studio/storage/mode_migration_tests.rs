@@ -2906,7 +2906,7 @@ async fn cold_child_open_and_parent_recovery_prepare_checkpoint_envelopes() -> R
     let project = runtime.open_project(&workspace).await?;
     let root = runtime.create_thread(&project.id, "Legacy root").await?;
     runtime.shutdown_runtime().await?;
-    let store = crate::studio::StudioStore::open(&home.join("studio/v2/studio.sqlite")).await?;
+    let store = crate::studio::StudioStore::open(&home.join("data/studio.sqlite")).await?;
     let mut children = Vec::new();
     for (id, role) in [
         ("retired-child", crate::config::ROOT_AGENT_ROUTE_KEY),
@@ -3106,7 +3106,7 @@ async fn legacy_root_route_representation_is_committed_once_before_recovery() ->
 #[tokio::test]
 async fn shared_recovery_entry_commits_saved_representations_before_publishing() -> Result<()> {
     let directory = tempfile::tempdir()?;
-    let database_path = directory.path().join("studio/v2/studio.sqlite");
+    let database_path = directory.path().join("data/studio.sqlite");
     let store = crate::studio::StudioStore::open(&database_path).await?;
     let thread = bound_thread("migration");
     let history = registered_history(&store, &thread).await?;
@@ -3245,7 +3245,7 @@ async fn unknown_close_intent_encoding_preserves_checkpoint_and_history() -> Res
     ] {
         let directory = tempfile::tempdir()?;
         let store =
-            crate::studio::StudioStore::open(directory.path().join("studio/v2/studio.sqlite"))
+            crate::studio::StudioStore::open(directory.path().join("data/studio.sqlite"))
                 .await?;
         let thread = bound_thread("migration");
         let history = registered_history(&store, &thread).await?;
@@ -3508,7 +3508,7 @@ fn opaque_record(id: &str, content: &str) -> Result<ContextRecord> {
 async fn legacy_native_compaction_receipt_upgrades_sources_through_the_history_upgrade()
 -> Result<()> {
     let directory = tempfile::tempdir()?;
-    let database_path = directory.path().join("studio/v2/studio.sqlite");
+    let database_path = directory.path().join("data/studio.sqlite");
     let store = crate::studio::StudioStore::open(&database_path).await?;
     let thread = bound_thread("migration");
     let history = registered_history(&store, &thread).await?;
@@ -3689,7 +3689,7 @@ async fn unusable_legacy_compaction_source_fails_closed_without_rewriting() -> R
 #[tokio::test]
 async fn shared_history_checkpoint_waits_for_identity_and_keeps_cold_reads_empty() -> Result<()> {
     let directory = tempfile::tempdir()?;
-    let database_path = directory.path().join("studio/v2/studio.sqlite");
+    let database_path = directory.path().join("data/studio.sqlite");
     let store = crate::studio::StudioStore::open(&database_path).await?;
     let thread_id = "migration";
     let thread = bound_thread(thread_id);

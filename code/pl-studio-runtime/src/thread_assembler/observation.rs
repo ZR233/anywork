@@ -802,7 +802,7 @@ mod storage_fault_tests {
             }
         }
         let temp = tempfile::tempdir()?;
-        let store = StudioStore::open(temp.path().join("studio/v2/studio.sqlite")).await?;
+        let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
         let resources = crate::studio::storage_fault_test_support::close_factory(&store)?;
         let root = temp.path().join("shared-root");
         tokio::fs::create_dir_all(&root).await?;
@@ -874,7 +874,7 @@ mod storage_fault_tests {
     async fn rejected_close_checkpoint_keeps_cleanup_request_retryable_without_early_cleanup()
     -> Result<()> {
         let temp = tempfile::tempdir()?;
-        let store = StudioStore::open(temp.path().join("studio/v2/studio.sqlite")).await?;
+        let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
         let fixture = Fixture::new(store.clone())?;
         fixture.add("parent", None).await?;
         let child = fixture.add("child", Some("parent")).await?;
@@ -952,7 +952,7 @@ mod storage_fault_tests {
     async fn global_seal_skips_report_without_ack_and_retry_proves_the_original_terminal_id()
     -> Result<()> {
         let temp = tempfile::tempdir()?;
-        let store = StudioStore::open(temp.path().join("studio/v2/studio.sqlite")).await?;
+        let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
         let resources = crate::studio::storage_fault_test_support::close_factory(&store)?;
         let fixture = Fixture::new(store.clone())?;
         resources.install(&fixture.owner)?;

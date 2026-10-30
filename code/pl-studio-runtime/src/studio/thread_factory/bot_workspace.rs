@@ -258,7 +258,7 @@ mod migration_tests {
         tokio::fs::create_dir_all(&business).await?;
         tokio::fs::write(business.join("business.txt"), b"not migration-owned").await?;
         let store =
-            crate::studio::StudioStore::open(temp.path().join("studio/v2/studio.sqlite")).await?;
+            crate::studio::StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
         let mut root = pl_protocol::Thread::placeholder("bot-root");
         root.workspace_id = "bot-project".into();
         root.root_thread_id = root.id.clone();

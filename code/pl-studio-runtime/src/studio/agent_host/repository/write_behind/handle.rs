@@ -405,7 +405,7 @@ mod storage_fault_tests {
     #[tokio::test]
     async fn lease_ticket_admission_is_fifo_across_the_batch_boundary() -> Result<()> {
         let temp = tempfile::tempdir()?;
-        let store = StudioStore::open(temp.path().join("studio/v2/studio.sqlite")).await?;
+        let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
         store.database().execute_unprepared("CREATE TRIGGER reject_boundary_lease BEFORE INSERT ON studio_objects WHEN NEW.owner_id='boundary' BEGIN SELECT RAISE(ABORT,'controlled lease admission rejection'); END").await?;
         let writer = ThreadWriteBehindWriter::new(store.clone());
         for index in 0..super::super::queue::MAX_BATCH_COMMITS - 1 {
@@ -609,7 +609,7 @@ mod storage_fault_tests {
         use crate::agent::worktree::WorktreeCleanupPolicy;
         use crate::studio::agent_host::workspace_preparation::cleanup_workspace;
         let temp = tempfile::tempdir()?;
-        let store = StudioStore::open(temp.path().join("studio/v2/studio.sqlite")).await?;
+        let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
         let writer = ThreadWriteBehindWriter::new(store.clone());
         let leases = WorktreeLeaseOwner::new(writer.clone());
         let unchanged = lease(temp.path(), "already-durable");
