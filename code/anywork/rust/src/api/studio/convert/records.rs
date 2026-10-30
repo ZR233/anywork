@@ -1,7 +1,7 @@
 use crate::api::studio::types::ProjectDto;
 
-impl From<pl_studio_runtime::ProjectRecord> for ProjectDto {
-    fn from(project: pl_studio_runtime::ProjectRecord) -> Self {
+impl From<pl_studio_runtime::WorkspaceRecord> for ProjectDto {
+    fn from(project: pl_studio_runtime::WorkspaceRecord) -> Self {
         Self {
             id: project.id,
             kind: match project.kind {

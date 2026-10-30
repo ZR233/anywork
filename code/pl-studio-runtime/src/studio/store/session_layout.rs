@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::studio::catalog::CatalogStore;
 use crate::studio::paths::{SessionPaths, StudioPaths, posix_relative, storage_key};
-use crate::studio::records::ProjectRecord;
+use crate::studio::records::WorkspaceRecord;
 use crate::studio::store::workspaces::WorkspaceStore;
 use crate::studio::store::{SessionLayoutMigrationFailed, StudioStore};
 
@@ -29,7 +29,7 @@ const LAYOUT_MARKER_FILE_NAME: &str = "session-project-layout.complete";
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct ProjectManifest {
     pub(crate) schema_version: u32,
-    pub(crate) project_id: String,
+    pub(crate) workspace_id: String,
     pub(crate) path: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) ssh_alias: Option<String>,
@@ -40,7 +40,7 @@ pub(crate) struct ProjectManifest {
 pub(crate) struct SessionManifest {
     pub(crate) schema_version: u32,
     pub(crate) thread_id: String,
-    pub(crate) project_id: String,
+    pub(crate) workspace_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) parent_thread_id: Option<String>,
     pub(crate) root_thread_id: String,
@@ -61,7 +61,7 @@ pub(crate) enum LayoutMovePhase {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct LayoutMove {
     thread_id: String,
-    project_id: String,
+    workspace_id: String,
     source_key: String,
     target_project_key: String,
     target_thread_key: String,
@@ -82,28 +82,28 @@ impl StudioStore {
     ///
     /// Unknown Threads fail instead of guessing a default Project.
     pub(crate) fn registered_session_paths(&self, thread_id: &str) -> Result<SessionPaths> {
-        let project_id = self
+        let workspace_id = self
             .catalog()
             .get(thread_id)
-            .map(|entry| entry.project_id)
+            .map(|entry| entry.workspace_id)
             .context("Thread is not registered in the Studio catalog")?;
-        self.paths.session_paths(&project_id, thread_id)
+        self.paths.session_paths(&workspace_id, thread_id)
     }
 
     /// Typed session paths from an explicit Project + Thread identity.
     ///
     /// Child prepare must use this before catalog publication.
-    pub(crate) fn session_paths(&self, project_id: &str, thread_id: &str) -> Result<SessionPaths> {
-        self.paths.session_paths(project_id, thread_id)
+    pub(crate) fn session_paths(&self, workspace_id: &str, thread_id: &str) -> Result<SessionPaths> {
+        self.paths.session_paths(workspace_id, thread_id)
     }
 
     /// Materialize a project identity manifest before publishing catalog facts.
     ///
     /// An existing matching manifest is left in place. A conflicting manifest fails closed.
-    pub(crate) async fn prepare_project_manifest(&self, project: &ProjectRecord) -> Result<()> {
+    pub(crate) async fn prepare_project_manifest(&self, project: &WorkspaceRecord) -> Result<()> {
         let expected = ProjectManifest {
             schema_version: PROJECT_MANIFEST_SCHEMA_VERSION,
-            project_id: project.id.clone(),
+            workspace_id: project.id.clone(),
             path: project.path.clone(),
             ssh_alias: project.ssh_alias.clone(),
         };
@@ -118,7 +118,7 @@ impl StudioStore {
         let expected = SessionManifest {
             schema_version: SESSION_MANIFEST_SCHEMA_VERSION,
             thread_id: thread.id.clone(),
-            project_id: thread.project_id.clone(),
+            workspace_id: thread.workspace_id.clone(),
             parent_thread_id: thread.parent_thread_id.clone(),
             root_thread_id: thread.root_thread_id.clone(),
             workspace_mode: thread.workspace_mode,
@@ -126,7 +126,7 @@ impl StudioStore {
             created_at: thread.created_at,
         };
         let session = persist_session_manifest(&self.paths, &expected).await?;
-        let scratch = self.session_scratch_dir_for(&expected.project_id, &expected.thread_id)?;
+        let scratch = self.session_scratch_dir_for(&expected.workspace_id, &expected.thread_id)?;
         if !tokio::fs::try_exists(&scratch).await? {
             tokio::fs::create_dir_all(&scratch).await?;
         }
@@ -143,11 +143,11 @@ pub(crate) async fn persist_project_manifest(
         "unsupported project manifest schema"
     );
     ensure!(
-        !expected.project_id.is_empty() && !expected.path.is_empty(),
+        !expected.workspace_id.is_empty() && !expected.path.is_empty(),
         "project manifest identity is incomplete"
     );
-    let directory = paths.project_dir(&expected.project_id)?;
-    let path = paths.project_manifest(&expected.project_id)?;
+    let directory = paths.project_dir(&expected.workspace_id)?;
+    let path = paths.project_manifest(&expected.workspace_id)?;
     ensure_layout_write_path(paths, &directory).await?;
     ensure_layout_write_path(paths, &path).await?;
     tokio::fs::create_dir_all(&directory).await?;
@@ -190,7 +190,7 @@ pub(crate) async fn persist_session_manifest(
     );
     ensure!(
         !expected.thread_id.is_empty()
-            && !expected.project_id.is_empty()
+            && !expected.workspace_id.is_empty()
             && !expected.root_thread_id.is_empty(),
         "session manifest identity is incomplete"
     );
@@ -200,9 +200,9 @@ pub(crate) async fn persist_session_manifest(
             "root session manifest is not its own root"
         );
     }
-    let session = paths.session_paths(&expected.project_id, &expected.thread_id)?;
+    let session = paths.session_paths(&expected.workspace_id, &expected.thread_id)?;
     ensure!(
-        session.project_id() == expected.project_id && session.thread_id() == expected.thread_id,
+        session.workspace_id() == expected.workspace_id && session.thread_id() == expected.thread_id,
         "session path identity drifted from the manifest"
     );
     persist_session_manifest_in(paths, session.root(), expected).await?;
@@ -218,7 +218,7 @@ fn ensure_session_manifest_compatible(
     (|| {
         ensure!(
             existing.thread_id == expected.thread_id
-                && existing.project_id == expected.project_id
+                && existing.workspace_id == expected.workspace_id
                 && existing.parent_thread_id == expected.parent_thread_id
                 && existing.root_thread_id == expected.root_thread_id
                 && existing.workspace_mode == expected.workspace_mode
@@ -365,15 +365,15 @@ async fn plan_journal(
         match catalog_by_key.iter().find(|(key, _)| key == name) {
             Some((_, entry)) => {
                 ensure!(
-                    workspaces.get(&entry.project_id).is_some(),
+                    workspaces.get(&entry.workspace_id).is_some(),
                     "catalog references a missing project during layout migration"
                 );
                 let thread_key = storage_key(&entry.id, "Thread")?;
                 moves.push(LayoutMove {
                     thread_id: entry.id.clone(),
-                    project_id: entry.project_id.clone(),
+                    workspace_id: entry.workspace_id.clone(),
                     source_key: thread_key.clone(),
-                    target_project_key: storage_key(&entry.project_id, "Project")?,
+                    target_project_key: storage_key(&entry.workspace_id, "Project")?,
                     target_thread_key: thread_key,
                     phase: LayoutMovePhase::Planned,
                 });
@@ -403,7 +403,7 @@ async fn apply_move(
         .legacy_sessions_dir()
         .join(&journal.moves[index].source_key);
     let session = paths.session_paths(
-        &journal.moves[index].project_id,
+        &journal.moves[index].workspace_id,
         &journal.moves[index].thread_id,
     )?;
     let target = session.root().to_path_buf();
@@ -516,13 +516,13 @@ async fn verify_move(
     ensure_safe_session_directory(paths, session.root()).await?;
     let catalog_entry = catalog_binding(catalog, workspaces, item)?;
     let workspace = workspaces
-        .get(&item.project_id)
+        .get(&item.workspace_id)
         .context("layout move references a missing project")?;
     persist_project_manifest(
         paths,
         &ProjectManifest {
             schema_version: PROJECT_MANIFEST_SCHEMA_VERSION,
-            project_id: catalog_entry.project_id.clone(),
+            workspace_id: catalog_entry.workspace_id.clone(),
             path: workspace.path.clone(),
             ssh_alias: workspace.ssh_alias.clone(),
         },
@@ -753,7 +753,7 @@ fn validate_move_item(
     item: &LayoutMove,
 ) -> Result<()> {
     let thread_key = storage_key(&item.thread_id, "Thread")?;
-    let project_key = storage_key(&item.project_id, "Project")?;
+    let project_key = storage_key(&item.workspace_id, "Project")?;
     ensure!(
         is_storage_key(&item.source_key)
             && item.source_key == thread_key
@@ -774,9 +774,9 @@ fn catalog_binding(
         .get(&item.thread_id)
         .context("layout move references a missing catalog Thread")?;
     ensure!(
-        entry.project_id == item.project_id
+        entry.workspace_id == item.workspace_id
             && entry.id == item.thread_id
-            && workspaces.get(&item.project_id).is_some(),
+            && workspaces.get(&item.workspace_id).is_some(),
         "layout move project identity drifted from catalog"
     );
     Ok(entry)
@@ -838,7 +838,7 @@ fn expected_session_manifest(
     Ok(SessionManifest {
         schema_version: SESSION_MANIFEST_SCHEMA_VERSION,
         thread_id: entry.id.clone(),
-        project_id: entry.project_id.clone(),
+        workspace_id: entry.workspace_id.clone(),
         parent_thread_id: entry.parent_thread_id.clone(),
         root_thread_id: entry.root_thread_id.clone(),
         workspace_mode: entry.workspace_mode,
@@ -932,7 +932,7 @@ async fn ensure_verified_directories(
     item: &LayoutMove,
 ) -> Result<()> {
     let source = paths.legacy_sessions_dir().join(&item.source_key);
-    let target = paths.session_paths(&item.project_id, &item.thread_id)?;
+    let target = paths.session_paths(&item.workspace_id, &item.thread_id)?;
     ensure_absent_source(&source).await?;
     ensure_safe_session_directory(paths, target.root()).await?;
     load_matching_session_manifest(
@@ -989,12 +989,12 @@ mod layout_migration_tests {
 
     async fn seed_catalog(
         store: &StudioStore,
-        project_id: &str,
+        workspace_id: &str,
         thread_id: &str,
         ssh_alias: Option<&str>,
     ) -> Result<()> {
         let mut delta = DirectoryDelta::upsert_project(ProjectDirectoryRecord {
-            id: project_id.into(),
+            id: workspace_id.into(),
             kind: pl_protocol::studio::WorkspaceKind::Project,
             name: "Layout".into(),
             path: "/tmp/layout".into(),
@@ -1006,7 +1006,7 @@ mod layout_migration_tests {
         });
         let (thread_delta, _) = DirectoryDelta::register_root_thread(
             thread_id.into(),
-            project_id,
+            workspace_id,
             "layout",
             pl_protocol::ThreadModeId::simple(),
             pl_protocol::ThreadWorkspaceMode::Local,
@@ -1018,10 +1018,10 @@ mod layout_migration_tests {
 
     async fn reset_layout_for_legacy(
         paths: &StudioPaths,
-        project_id: &str,
+        workspace_id: &str,
         thread_id: &str,
     ) -> Result<()> {
-        let session = paths.session_paths(project_id, thread_id)?;
+        let session = paths.session_paths(workspace_id, thread_id)?;
         if tokio::fs::try_exists(session.root()).await? {
             tokio::fs::remove_dir_all(session.root()).await?;
         }
@@ -1130,7 +1130,7 @@ mod layout_migration_tests {
         let local = store.session_paths("local-project", "thread-local")?;
         let ssh = store.session_paths("ssh-project", "thread-ssh")?;
         assert_ne!(local.root(), ssh.root());
-        assert_eq!(local.project_id(), "local-project");
+        assert_eq!(local.workspace_id(), "local-project");
         assert_eq!(ssh.scratch_dir(), ssh.root().join("scratch"));
         let _ = store.session_scratch_dir_for("local-project", "thread-local")?;
         assert_ne!(
@@ -1178,7 +1178,7 @@ mod layout_migration_tests {
         Ok(SessionManifest {
             schema_version: SESSION_MANIFEST_SCHEMA_VERSION,
             thread_id: entry.id,
-            project_id: entry.project_id,
+            workspace_id: entry.workspace_id,
             parent_thread_id: entry.parent_thread_id,
             root_thread_id: entry.root_thread_id,
             workspace_mode: entry.workspace_mode,
@@ -1207,7 +1207,7 @@ mod layout_migration_tests {
             orphans: Vec::new(),
             moves: vec![LayoutMove {
                 thread_id: "thread-a".into(),
-                project_id: "project-a".into(),
+                workspace_id: "project-a".into(),
                 source_key: crate::studio::paths::thread_storage_key("thread-a")?,
                 target_project_key: crate::studio::paths::storage_key("project-a", "Project")?,
                 target_thread_key: crate::studio::paths::thread_storage_key("thread-a")?,
@@ -1239,7 +1239,7 @@ mod layout_migration_tests {
         let session = store.session_paths("project-a", "thread-a")?;
         tokio::fs::write(
             session.session_manifest(),
-            "schemaVersion = 99\nthreadId = \"thread-a\"\nprojectId = \"other\"\nrootThreadId = \"thread-a\"\nworkspaceMode = \"local\"\nworkspacePath = \"/tmp/layout\"\ncreatedAt = 1\n",
+            "schemaVersion = 99\nthreadId = \"thread-a\"\nworkspaceId = \"other\"\nrootThreadId = \"thread-a\"\nworkspaceMode = \"local\"\nworkspacePath = \"/tmp/layout\"\ncreatedAt = 1\n",
         )
         .await?;
         let error = store
@@ -1396,7 +1396,7 @@ mod layout_migration_tests {
             orphans: Vec::new(),
             moves: vec![LayoutMove {
                 thread_id: "thread-a".into(),
-                project_id: "project-a".into(),
+                workspace_id: "project-a".into(),
                 source_key: "../escape".into(),
                 target_project_key: crate::studio::paths::storage_key("project-a", "Project")?,
                 target_thread_key: crate::studio::paths::thread_storage_key("thread-a")?,
@@ -1510,7 +1510,7 @@ mod layout_migration_tests {
             orphans: Vec::new(),
             moves: vec![LayoutMove {
                 thread_id: "thread-a".into(),
-                project_id: "project-a".into(),
+                workspace_id: "project-a".into(),
                 source_key: crate::studio::paths::thread_storage_key("thread-a")?,
                 target_project_key: crate::studio::paths::storage_key("project-a", "Project")?,
                 target_thread_key: crate::studio::paths::thread_storage_key("thread-a")?,
@@ -1560,7 +1560,7 @@ mod layout_migration_tests {
             orphans: Vec::new(),
             moves: vec![LayoutMove {
                 thread_id: "thread-a".into(),
-                project_id: "project-a".into(),
+                workspace_id: "project-a".into(),
                 source_key: crate::studio::paths::thread_storage_key("thread-a")?,
                 target_project_key: crate::studio::paths::storage_key("project-a", "Project")?,
                 target_thread_key: crate::studio::paths::thread_storage_key("thread-a")?,
@@ -1609,7 +1609,7 @@ mod layout_migration_tests {
             orphans: Vec::new(),
             moves: vec![LayoutMove {
                 thread_id: "thread-a".into(),
-                project_id: "project-a".into(),
+                workspace_id: "project-a".into(),
                 source_key: crate::studio::paths::thread_storage_key("thread-a")?,
                 target_project_key: crate::studio::paths::storage_key("project-a", "Project")?,
                 target_thread_key: crate::studio::paths::thread_storage_key("thread-a")?,
@@ -1707,7 +1707,7 @@ mod layout_migration_tests {
             orphans: Vec::new(),
             moves: vec![LayoutMove {
                 thread_id: "thread-a".into(),
-                project_id: "project-a".into(),
+                workspace_id: "project-a".into(),
                 source_key: crate::studio::paths::thread_storage_key("thread-a")?,
                 target_project_key: crate::studio::paths::storage_key("project-a", "Project")?,
                 target_thread_key: crate::studio::paths::thread_storage_key("thread-a")?,

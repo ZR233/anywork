@@ -42,7 +42,7 @@ pub use instance::{StudioInstance, StudioInstanceLease};
 pub(crate) use paths::StudioPaths;
 pub use persistence::*;
 pub use product_event_bus::ProductEventBus;
-pub use records::{AttachmentRecord, ProjectRecord, ThreadKind, ThreadRecord, ThreadVisibility};
+pub use records::{AttachmentRecord, WorkspaceRecord, ThreadKind, ThreadRecord, ThreadVisibility};
 pub use recovery_registry::StudioRecoveryRegistry;
 pub use runtime::StudioProductTopicSubscription;
 pub use runtime::*;

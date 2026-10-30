@@ -1480,10 +1480,10 @@ sealed class LspScopeInput with _$LspScopeInput {
   const LspScopeInput._();
 
   const factory LspScopeInput.server({
-    required String projectId,
+    required String workspaceId,
     required String serverId,
   }) = LspScopeInput_Server;
-  const factory LspScopeInput.workspace({required String projectId}) =
+  const factory LspScopeInput.workspace({required String workspaceId}) =
       LspScopeInput_Workspace;
   const factory LspScopeInput.all() = LspScopeInput_All;
 }

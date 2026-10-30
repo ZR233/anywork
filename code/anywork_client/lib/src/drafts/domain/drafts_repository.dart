@@ -5,9 +5,9 @@ abstract interface class DraftsRepository {
   ComposerDraftOwner? existingComposer(String threadId);
   StartSessionDraftOwner get startDraft;
   AttachmentDraftsOwner get attachments;
-  List<ComposerDraftOwner> projectComposers(String projectId);
+  List<ComposerDraftOwner> projectComposers(String workspaceId);
   Future<void> discardProjectDrafts(
-    String projectId,
+    String workspaceId,
     List<ComposerDraftOwner> owners,
   );
   Future<void> close();

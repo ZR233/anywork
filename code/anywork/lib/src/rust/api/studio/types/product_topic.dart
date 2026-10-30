@@ -100,7 +100,7 @@ sealed class BridgeProductTopic with _$BridgeProductTopic {
   const factory BridgeProductTopic.recovery() = BridgeProductTopic_Recovery;
   const factory BridgeProductTopic.mcp() = BridgeProductTopic_Mcp;
   const factory BridgeProductTopic.lsp() = BridgeProductTopic_Lsp;
-  const factory BridgeProductTopic.skills({required String projectId}) =
+  const factory BridgeProductTopic.skills({required String workspaceId}) =
       BridgeProductTopic_Skills;
   const factory BridgeProductTopic.threadModeCatalog() =
       BridgeProductTopic_ThreadModeCatalog;

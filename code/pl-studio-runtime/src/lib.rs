@@ -80,7 +80,7 @@ pub use protocol::{
 };
 pub use studio::{
     AccountUsageStateData, AccountUsageStateSnapshot, AttachmentRecord, ConversationEvent,
-    ConversationFeed, PersistenceState, PersistenceStateSnapshot, ProductEventBus, ProjectRecord,
+    ConversationFeed, PersistenceState, PersistenceStateSnapshot, ProductEventBus, WorkspaceRecord,
     SkillSearchResult, SkillsStateSnapshot, SshPasswordUpdate, SshServerRuntimeEntry,
     StudioDatabaseError, StudioHostKind, StudioInstance, StudioInstanceLease,
     StudioProductTopicSubscription, StudioRecoveryImpact, StudioRecoveryIssue,

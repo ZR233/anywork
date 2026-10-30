@@ -470,7 +470,7 @@ impl BotRuntime {
             model_route: config.model_route.clone(),
             id: config.id.clone(),
             name: config.name.clone(),
-            project_id: config.project_id.clone(),
+            workspace_id: config.workspace_id.clone(),
             app_id: config.feishu().app_id.clone(),
             platform: BotPlatform::FeishuChina,
             enabled: config.enabled,

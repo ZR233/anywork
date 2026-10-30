@@ -477,7 +477,7 @@ struct TimelineHistoryScenario<'a> {
 /// 项目 id 与会话 id 是 canonical 身份，项目路径是同一数据根上的真实目录；三者
 /// 一起排除“同名不同库”或“选到第一个项目/会话”的误通过。
 struct PersistedTargetIdentity {
-    project_id: String,
+    workspace_id: String,
     project_path: String,
     thread_id: String,
 }
@@ -2637,11 +2637,11 @@ fn run_timeline_history_scenario(
                     "timeline-history live identity is not consistent across \
                      selection/workspace/project/timeline: {identity:?}"
                 );
-                let project_id = identity
-                    .get("projectId")
+                let workspace_id = identity
+                    .get("workspaceId")
                     .and_then(serde_json::Value::as_str)
                     .filter(|id| !id.is_empty())
-                    .context("timeline-history live identity has no projectId")?
+                    .context("timeline-history live identity has no workspaceId")?
                     .to_owned();
                 let thread_id = identity
                     .get("threadId")
@@ -2661,9 +2661,9 @@ fn run_timeline_history_scenario(
                 )?;
                 ensure!(
                     baseline
-                        .get("projectId")
+                        .get("workspaceId")
                         .and_then(serde_json::Value::as_str)
-                        == Some(project_id.as_str())
+                        == Some(workspace_id.as_str())
                         && baseline
                             .get("projectPath")
                             .and_then(serde_json::Value::as_str)
@@ -2674,7 +2674,7 @@ fn run_timeline_history_scenario(
                      {baseline:?}"
                 );
                 persisted_identity = Some(PersistedTargetIdentity {
-                    project_id,
+                    workspace_id,
                     project_path,
                     thread_id,
                 });
@@ -2710,10 +2710,10 @@ fn run_timeline_history_scenario(
                     .context("timeline-history restart ran without the live identity")?;
                 ensure!(
                     restore.get("evidenceConsistent") == Some(&serde_json::Value::Bool(true))
-                        && restore.get("projectIdMatches") == Some(&serde_json::Value::Bool(true))
+                        && restore.get("workspaceIdMatches") == Some(&serde_json::Value::Bool(true))
                         && restore.get("threadIdMatches") == Some(&serde_json::Value::Bool(true))
-                        && restore.get("projectId").and_then(serde_json::Value::as_str)
-                            == Some(target.project_id.as_str())
+                        && restore.get("workspaceId").and_then(serde_json::Value::as_str)
+                            == Some(target.workspace_id.as_str())
                         && restore
                             .get("projectPath")
                             .and_then(serde_json::Value::as_str)
@@ -2759,7 +2759,7 @@ fn run_timeline_history_scenario(
                 .arg(&vm_url)
                 .arg(output)
                 .arg("--project-id")
-                .arg(&target.project_id)
+                .arg(&target.workspace_id)
                 .arg("--thread-id")
                 .arg(&target.thread_id)
                 .env("ANYWORK_HOME", home)
@@ -2899,10 +2899,10 @@ fn run_timeline_history_scenario(
                 .context("displacement collector recorded no cold-start restoration evidence")?;
             ensure!(
                 restore.get("evidenceConsistent") == Some(&serde_json::Value::Bool(true))
-                    && restore.get("projectIdMatches") == Some(&serde_json::Value::Bool(true))
+                    && restore.get("workspaceIdMatches") == Some(&serde_json::Value::Bool(true))
                     && restore.get("threadIdMatches") == Some(&serde_json::Value::Bool(true))
-                    && restore.get("projectId").and_then(serde_json::Value::as_str)
-                        == Some(target.project_id.as_str())
+                    && restore.get("workspaceId").and_then(serde_json::Value::as_str)
+                        == Some(target.workspace_id.as_str())
                     && restore
                         .get("projectPath")
                         .and_then(serde_json::Value::as_str)

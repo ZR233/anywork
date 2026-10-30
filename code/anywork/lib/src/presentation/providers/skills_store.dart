@@ -17,17 +17,17 @@ part 'skills_store.g.dart';
 @riverpod
 CanonicalClockState<SkillsStateSnapshot> skillsStore(
   Ref ref,
-  String projectId,
+  String workspaceId,
 ) {
-  final owner = ref.read(anyworkClientProvider).existingSkills(projectId);
+  final owner = ref.read(anyworkClientProvider).existingSkills(workspaceId);
   if (owner != null) {
     return observeClient(ref, owner.source, (_) => ref.invalidateSelf());
   }
   final failure = observeClientDemand(
     ref,
     ownsFailure: (owner) =>
-        owner == 'skills:$projectId' ||
-        owner.startsWith('selection-topics:$projectId/'),
+        owner == 'skills:$workspaceId' ||
+        owner.startsWith('selection-topics:$workspaceId/'),
   );
   return CanonicalClockState<SkillsStateSnapshot>(
     sync: DomainSyncStatus(

@@ -38,7 +38,7 @@ pub(crate) struct AgentCloseRecord {
     pub agent_id: String,
     pub parent_id: String,
     pub root_id: String,
-    pub project_id: String,
+    pub workspace_id: String,
     pub revision: u64,
     pub force: bool,
     pub worktree: Option<OwnedWorktreeBinding>,
@@ -93,7 +93,7 @@ impl PersistedStudioObject for AgentCloseRecord {
                 lease.owner_kind == WorktreeLeaseOwnerKind::Child
                     && lease.owner_thread_id == owner
                     && lease.root_thread_id == self.root_id
-                    && lease.project_id == self.project_id
+                    && lease.workspace_id == self.workspace_id
                     && binding.identity.matches_root(&lease.path),
                 "agent close worktree ownership mismatch"
             );

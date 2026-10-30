@@ -2401,7 +2401,7 @@ async fn standalone_project_kind_migration_preserves_legacy_checkpoint_and_reope
     drop(history);
     let reopened = HistoryStore::open(&path, "migration").await?;
     let migrated = migrate_model_access(&reopened).await?;
-    let project: crate::studio::ProjectRecord = serde_json::from_str(
+    let project: crate::studio::WorkspaceRecord = serde_json::from_str(
         migrated.state.extensions["studio.project"]
             .payload
             .content(),
@@ -2686,7 +2686,7 @@ async fn raw_database(path: &std::path::Path) -> Result<sea_orm::DatabaseConnect
 
 fn bound_thread(thread_id: &str) -> pl_protocol::Thread {
     let mut thread = pl_protocol::Thread::placeholder(thread_id);
-    thread.project_id = "project-test".into();
+    thread.workspace_id = "project-test".into();
     thread.agent_path = thread_id.to_owned();
     thread.root_thread_id = thread_id.to_owned();
     thread
@@ -2698,7 +2698,7 @@ async fn register_test_thread(
 ) -> Result<()> {
     let mut delta = crate::studio::store::directory::DirectoryDelta::upsert_project(
         crate::studio::store::directory::ProjectDirectoryRecord {
-            id: thread.project_id.clone(),
+            id: thread.workspace_id.clone(),
             kind: pl_protocol::studio::WorkspaceKind::Project,
             name: "Test".into(),
             path: "/tmp/project-test".into(),
@@ -2718,7 +2718,7 @@ async fn registered_history(
     thread: &pl_protocol::Thread,
 ) -> Result<HistoryStore> {
     register_test_thread(store, thread).await?;
-    store.history_for(&thread.project_id, &thread.id).await
+    store.history_for(&thread.workspace_id, &thread.id).await
 }
 
 async fn downgrade_checkpoint_to_schema_four(path: &std::path::Path) -> Result<String> {
@@ -2915,7 +2915,7 @@ async fn cold_child_open_and_parent_recovery_prepare_checkpoint_envelopes() -> R
         ("turn-page-child", "executor"),
     ] {
         let mut child = bound_thread(id);
-        child.project_id = project.id.clone();
+        child.workspace_id = project.id.clone();
         child.parent_thread_id = Some(root.id.clone());
         child.root_thread_id = root.id.clone();
         child.role = role.into();
@@ -3129,7 +3129,7 @@ async fn shared_recovery_entry_commits_saved_representations_before_publishing()
         .context("pre-migration checkpoint")?;
     let faults = raw_database(
         &store
-            .session_paths(&thread.project_id, &thread.id)?
+            .session_paths(&thread.workspace_id, &thread.id)?
             .history_database(),
     )
     .await?;
@@ -3214,7 +3214,7 @@ async fn shared_recovery_entry_commits_saved_representations_before_publishing()
     drop(store);
 
     let reopened = crate::studio::StudioStore::open(&database_path).await?;
-    let history = reopened.history_for(&thread.project_id, &thread.id).await?;
+    let history = reopened.history_for(&thread.workspace_id, &thread.id).await?;
     let saved = history.checkpoint().await?.context("reopened checkpoint")?;
     assert_eq!(
         crate::studio::delegation::saved(&saved.state)?,
@@ -3511,7 +3511,7 @@ async fn legacy_native_compaction_receipt_upgrades_sources_through_the_history_u
     let thread = bound_thread("migration");
     let history = registered_history(&store, &thread).await?;
     let history_path = store
-        .session_paths(&thread.project_id, &thread.id)?
+        .session_paths(&thread.workspace_id, &thread.id)?
         .history_database();
     let mut state = saved_state(BTreeMap::from([(
         crate::compaction::LATEST_RECEIPT.into(),
@@ -3540,7 +3540,7 @@ async fn legacy_native_compaction_receipt_upgrades_sources_through_the_history_u
 
     // 真实共同恢复入口：旧库结构升级必须能从 v1 原生回执恢复来源而不是先硬失败。
     let reopened = crate::studio::StudioStore::open(&database_path).await?;
-    let upgraded = reopened.history_for(&thread.project_id, &thread.id).await?;
+    let upgraded = reopened.history_for(&thread.workspace_id, &thread.id).await?;
     let checkpoint =
         crate::studio::thread_factory::recovery::load_checkpoint_for_recovery(&reopened, &thread)
             .await?
@@ -3691,7 +3691,7 @@ async fn shared_history_checkpoint_waits_for_identity_and_keeps_cold_reads_empty
     let thread = bound_thread(thread_id);
     let history = registered_history(&store, &thread).await?;
     let history_path = store
-        .session_paths(&thread.project_id, thread_id)?
+        .session_paths(&thread.workspace_id, thread_id)?
         .history_database();
 
     let missing =
@@ -3716,7 +3716,7 @@ async fn shared_history_checkpoint_waits_for_identity_and_keeps_cold_reads_empty
     assert_eq!(recovered.thread_id, thread_id);
     assert_eq!(recovered.state_revision, 1);
     let foreign = store
-        .state_for(&thread.project_id, "other-thread")?
+        .state_for(&thread.workspace_id, "other-thread")?
         .prepare_recovery(&history)
         .await
         .expect_err("错 Thread 的 history 句柄必须失败闭锁");

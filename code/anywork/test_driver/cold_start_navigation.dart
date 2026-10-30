@@ -17,26 +17,26 @@ import 'timeline_observation.dart';
 
 /// 冷启动必须复现的持久化身份：来自 live 阶段真实 snapshot，不是固定值。
 final class ColdStartIdentity {
-  const ColdStartIdentity({required this.projectId, required this.threadId});
+  const ColdStartIdentity({required this.workspaceId, required this.threadId});
 
   /// 从协调 baseline 读取 live 阶段记录的身份；缺失即验收失败，不回退猜测。
   factory ColdStartIdentity.fromBaseline(Map<String, Object?> baseline) {
-    final projectId = baseline['projectId'];
+    final workspaceId = baseline['workspaceId'];
     final threadId = baseline['threadId'];
-    if (projectId is! String || projectId.isEmpty) {
-      throw StateError('baseline has no persisted projectId: $baseline');
+    if (workspaceId is! String || workspaceId.isEmpty) {
+      throw StateError('baseline has no persisted workspaceId: $baseline');
     }
     if (threadId is! String || threadId.isEmpty) {
       throw StateError('baseline has no persisted threadId: $baseline');
     }
-    return ColdStartIdentity(projectId: projectId, threadId: threadId);
+    return ColdStartIdentity(workspaceId: workspaceId, threadId: threadId);
   }
 
-  final String projectId;
+  final String workspaceId;
   final String threadId;
 
   Map<String, Object?> toJson() => <String, Object?>{
-    'projectId': projectId,
+    'workspaceId': workspaceId,
     'threadId': threadId,
   };
 }
@@ -44,19 +44,19 @@ final class ColdStartIdentity {
 /// 打开后的实际身份事实：选择、展示、项目与 timeline 四个来源必须同一身份。
 final class OpenedTimelineIdentity {
   const OpenedTimelineIdentity._({
-    required this.projectId,
+    required this.workspaceId,
     required this.threadId,
     required this.consistent,
     required this.facts,
   });
 
-  final String? projectId;
+  final String? workspaceId;
   final String? threadId;
   final bool consistent;
   final Map<String, Object?> facts;
 
   Map<String, Object?> toJson() => <String, Object?>{
-    'projectId': projectId,
+    'workspaceId': workspaceId,
     'threadId': threadId,
     'evidenceConsistent': consistent,
     ...facts,
@@ -76,7 +76,7 @@ OpenedTimelineIdentity readOpenedTimelineIdentity(
   final timeline = TimelineObservation.parse(snapshot);
   final navigationProject = _stringOf(navigation['selectedProjectId']);
   final navigationThread = _stringOf(navigation['selectedThreadId']);
-  final workspaceProject = _stringOf(workspaceMap?['projectId']);
+  final workspaceProject = _stringOf(workspaceMap?['workspaceId']);
   final workspaceThread = _stringOf(workspaceMap?['threadId']);
   final projectFactId = _stringOf(projectMap?['id']);
   final timelineThread = timeline.threadId;
@@ -89,7 +89,7 @@ OpenedTimelineIdentity readOpenedTimelineIdentity(
       projectFactId == navigationProject &&
       timelineThread == navigationThread;
   return OpenedTimelineIdentity._(
-    projectId: navigationProject,
+    workspaceId: navigationProject,
     threadId: timelineThread,
     consistent: consistent,
     facts: <String, Object?>{
@@ -99,7 +99,7 @@ OpenedTimelineIdentity readOpenedTimelineIdentity(
         'isStartPage': navigation['isStartPage'],
       },
       'workspace': <String, Object?>{
-        'projectId': workspaceProject,
+        'workspaceId': workspaceProject,
         'threadId': workspaceThread,
       },
       'projectFactId': projectFactId,
@@ -190,7 +190,7 @@ Future<Map<String, Object?>> restoreColdStartTarget(
         elapsed: DateTime.now().difference(started),
       );
       if (evidence['evidenceConsistent'] != true ||
-          evidence['projectIdMatches'] != true ||
+          evidence['workspaceIdMatches'] != true ||
           evidence['threadIdMatches'] != true) {
         throw ColdStartNavigationFailure(
           'opened timeline identity does not match the persisted target',
@@ -211,7 +211,7 @@ Future<Map<String, Object?>> restoreColdStartTarget(
       'preparingLive': timeline?.preparingLive,
       'scrollLaidOut': scroll?.laidOut,
     };
-    if (selectedProject == identity.projectId &&
+    if (selectedProject == identity.workspaceId &&
         selectedThread == identity.threadId) {
       // 恢复出的“已选中但未打开”会话：走产品自己的显式打开入口。
       if (await log.attempt(
@@ -221,12 +221,12 @@ Future<Map<String, Object?>> restoreColdStartTarget(
       )) {
         await onStage('requested_open');
       }
-    } else if (selectedProject != identity.projectId) {
+    } else if (selectedProject != identity.workspaceId) {
       // 项目选择：已选中的项目重复点击是 no-op，不翻转任何状态。
       if (await log.attempt(
         driver,
         action: 'selectProject',
-        key: 'project-row-${identity.projectId}',
+        key: 'project-row-${identity.workspaceId}',
       )) {
         await onStage('selected_project');
       }
@@ -249,7 +249,7 @@ Future<Map<String, Object?>> restoreColdStartTarget(
     'clickable)',
     <String, Object?>{
       'phase': phase,
-      'expectedProjectId': identity.projectId,
+      'expectedProjectId': identity.workspaceId,
       'expectedThreadId': identity.threadId,
       'initial': initial,
       'lastObserved': lastFacts,
@@ -260,7 +260,7 @@ Future<Map<String, Object?>> restoreColdStartTarget(
       'tapMisses': log.misses,
       'elapsedMs': DateTime.now().difference(started).inMilliseconds,
       'evidenceConsistent': false,
-      'projectIdMatches': false,
+      'workspaceIdMatches': false,
       'threadIdMatches': false,
     },
   );
@@ -285,9 +285,9 @@ Map<String, Object?> _openedEvidence({
     'tapCounts': log.counts,
     'tapMisses': log.misses,
     'initial': initial,
-    'expectedProjectId': identity.projectId,
+    'expectedProjectId': identity.workspaceId,
     'expectedThreadId': identity.threadId,
-    'projectIdMatches': opened.projectId == identity.projectId,
+    'workspaceIdMatches': opened.workspaceId == identity.workspaceId,
     'threadIdMatches': opened.threadId == identity.threadId,
     'elapsedMs': elapsed.inMilliseconds,
   };

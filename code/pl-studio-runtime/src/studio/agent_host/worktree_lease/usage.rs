@@ -207,7 +207,7 @@ impl WorktreeLeaseOwner {
         &self,
         owner: &str,
         ssh: &pl_tool::remote::SshManager,
-        project: &crate::studio::ProjectRecord,
+        project: &crate::studio::WorkspaceRecord,
     ) -> Result<WorkspaceUsageLease> {
         let profile = match project.ssh_alias.as_deref() {
             Some(alias) => Some(

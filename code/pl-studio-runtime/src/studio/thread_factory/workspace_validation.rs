@@ -6,7 +6,7 @@ use crate::{
         WorktreeHandle, WorktreeManager,
     },
     studio::{
-        ProjectRecord, ThreadRecord,
+        WorkspaceRecord, ThreadRecord,
         agent_host::worktree_lease::{
             WorkspaceEndpoint, WorkspaceIdentity, WorkspaceUsageLease, WorktreeLease,
             WorktreeLeaseState,
@@ -89,7 +89,7 @@ pub(crate) struct ReviewWorkspaceCheck {
     root_binding: Option<(String, ToolBinding)>,
     lease: Option<WorktreeLease>,
     root: String,
-    project: Option<ProjectRecord>,
+    project: Option<WorkspaceRecord>,
     _usage: Option<WorkspaceUsageLease>,
     _permit: Option<tokio::sync::OwnedMutexGuard<()>>,
 }
@@ -98,7 +98,7 @@ pub(crate) struct ReviewWorkspaceCheck {
 /// that proved the original binding; it cannot manufacture an SSH execution capability.
 pub(crate) struct VerifiedLocalResume {
     check: ReviewWorkspaceCheck,
-    pub(super) project: ProjectRecord,
+    pub(super) project: WorkspaceRecord,
     pub(super) assignment: AgentWorkspaceAssignmentSnapshot,
     identity: WorkspaceIdentity,
 }
@@ -127,7 +127,7 @@ impl VerifiedLocalResume {
     }
     pub(super) fn check_inputs(
         &self,
-        project: &ProjectRecord,
+        project: &WorkspaceRecord,
         assignment: &AgentWorkspaceAssignmentSnapshot,
     ) -> Result<(), ReviewWorkspaceError> {
         if project.id != self.project.id
@@ -372,7 +372,7 @@ impl StudioThreadFactory {
         let project = match &check.binding {
             Some(binding) => {
                 let remote = binding.project.ssh_alias.is_some();
-                if binding.project.id != target.project_id
+                if binding.project.id != target.workspace_id
                     || !same_workspace_path(
                         &assignment.root,
                         &binding.workspace.root().to_string_lossy(),
@@ -407,7 +407,7 @@ impl StudioThreadFactory {
                 binding.project.clone()
             }
             None => {
-                let mut project = self.project_record(&target.project_id).await?;
+                let mut project = self.project_record(&target.workspace_id).await?;
                 if let Some(bot) = self
                     .services
                     .bots
@@ -513,7 +513,7 @@ impl StudioThreadFactory {
                     let next_owner = self.thread_record(&next.agent_id).await?;
                     if next_owner.parent_thread_id != owner.parent_thread_id
                         || next_owner.root_thread_id != target.root_thread_id
-                        || next_owner.project_id != project.id
+                        || next_owner.workspace_id != project.id
                     {
                         return Err(ReviewWorkspaceError::Invalid(
                             "review target ownership chain leaves its parent/root/project",
@@ -713,7 +713,7 @@ impl StudioThreadFactory {
     /// from the same frozen logical connection, never from a lease's claimed repository.
     async fn review_repository_manager(
         &self,
-        project: &ProjectRecord,
+        project: &WorkspaceRecord,
         project_root: &Path,
         binding: Option<&ToolBinding>,
     ) -> Result<(PathBuf, WorktreeManager), ReviewWorkspaceError> {
@@ -755,7 +755,7 @@ pub(super) fn verify_worktree_declarations(
     lease: &WorktreeLease,
     receipt: &pl_protocol::AgentWorktreeSnapshot,
     owner: &ThreadRecord,
-    project: &ProjectRecord,
+    project: &WorkspaceRecord,
     repository_root: &Path,
 ) -> Result<(), WorktreeError> {
     use crate::studio::agent_host::worktree_lease::WorktreeLeaseOwnerKind;
@@ -771,7 +771,7 @@ pub(super) fn verify_worktree_declarations(
             "the saved worktree lease belongs to a different root session",
         ));
     }
-    if lease.project_id != project.id {
+    if lease.workspace_id != project.id {
         return Err(mismatch(
             "the saved worktree lease belongs to a different project",
         ));

@@ -103,10 +103,10 @@ pub(crate) fn project_kind(checkpoint: &mut ThreadCheckpoint) -> Result<()> {
     if !project.contains_key("kind") {
         project.insert("kind".into(), to_raw_value("project")?);
         let content = serde_json::to_string(&project)?;
-        let _: crate::studio::ProjectRecord = serde_json::from_str(&content)?;
+        let _: crate::studio::WorkspaceRecord = serde_json::from_str(&content)?;
         record.payload = OpaquePayload::new("pl.studio.project", 1, content)?;
     } else {
-        let _: crate::studio::ProjectRecord = serde_json::from_str(record.payload.content())?;
+        let _: crate::studio::WorkspaceRecord = serde_json::from_str(record.payload.content())?;
     }
     Ok(())
 }

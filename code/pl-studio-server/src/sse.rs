@@ -49,7 +49,7 @@ enum Delivery {
     operation_id = "studio.subscribeProduct",
     params(
         ("topic" = String, Query, description = "typed 产品 topic（camelCase 标签）"),
-        ("projectId" = Option<String>, Query, description = "Skills topic 的项目作用域"),
+        ("workspaceId" = Option<String>, Query, description = "Skills topic 的项目作用域"),
         ("rootThreadId" = Option<String>, Query, description = "SessionCosts topic 的根会话作用域")
     ),
     responses(StudioApiErrors, (status = 200, description = "Product topic event stream", body = String, content_type = "text/event-stream"))
@@ -157,9 +157,9 @@ fn topic_resync_path(topic: &pl_studio_runtime::StudioProductTopic) -> String {
     use pl_studio_runtime::StudioProductTopic;
     let mut query = url::form_urlencoded::Serializer::new(String::from("/api/v1/state/product"));
     match topic {
-        StudioProductTopic::Skills { project_id } => {
+        StudioProductTopic::Skills { workspace_id } => {
             query.append_pair("topic", "skills");
-            query.append_pair("projectId", project_id);
+            query.append_pair("workspaceId", workspace_id);
         }
         StudioProductTopic::SessionCosts { root_thread_id } => {
             query.append_pair("topic", "sessionCosts");

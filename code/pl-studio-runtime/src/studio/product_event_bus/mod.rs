@@ -47,7 +47,7 @@ pub struct ProductEventBus {
     topics: Arc<std::sync::Mutex<TopicChannels>>,
     sequence: Arc<AtomicU64>,
     revisions: Arc<ProductStateRevisions>,
-    project_snapshot: Arc<Mutex<Vec<crate::ProjectRecord>>>,
+    project_snapshot: Arc<Mutex<Vec<crate::WorkspaceRecord>>>,
     persistence_snapshot: Arc<std::sync::Mutex<PersistenceStateSnapshot>>,
     persistence_queue: Arc<std::sync::Mutex<PersistenceQueuePublication>>,
     agents: Arc<Mutex<BTreeMap<String, StudioAgentDirectoryEntry>>>,

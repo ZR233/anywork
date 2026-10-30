@@ -3470,7 +3470,7 @@ _openDetailSession(
       ThreadDirectoryPage(threads: [_thread()], revision: 1),
       revision: 1,
     );
-    client.selection.selectThread(threadId: 'thread', projectId: 'project');
+    client.selection.selectThread(threadId: 'thread', workspaceId: 'project');
     client.conversations.setVisibleThread('thread');
     owner.select('thread');
     await client.conversations.session('thread').content.ready;
@@ -3486,7 +3486,7 @@ _openDetailSession(
 
 StudioThread _thread() => StudioThread(
   id: 'thread',
-  projectId: 'project',
+  workspaceId: 'project',
   title: 'Thread',
   mode: ThreadModeId.simple,
   delegationMode: DelegationMode.profile,

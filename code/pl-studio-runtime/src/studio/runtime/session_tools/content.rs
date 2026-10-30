@@ -55,7 +55,7 @@ pub(super) async fn read(
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct SearchInput {
     query: String,
-    project_id: Option<String>,
+    workspace_id: Option<String>,
     session_id: Option<String>,
     #[serde(default)]
     archived: bool,
@@ -112,7 +112,7 @@ pub(super) async fn search(
     );
     let fingerprint = crate::canonical_content_hash(&serde_json::to_vec(&(
         &args.query,
-        &args.project_id,
+        &args.workspace_id,
         &args.session_id,
         args.archived,
     ))?);
@@ -150,7 +150,7 @@ pub(super) async fn search(
                 .product_events
                 .query_threads(
                     &pl_protocol::studio::ThreadDirectoryQuery {
-                        project_id: args.project_id.clone(),
+                        workspace_id: args.workspace_id.clone(),
                         archived: args.archived,
                         ..Default::default()
                     },

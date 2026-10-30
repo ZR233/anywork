@@ -31,7 +31,7 @@ pub struct HealthResponse {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ThreadDirectoryQuery {
-    pub project_id: Option<String>,
+    pub workspace_id: Option<String>,
     pub search: Option<String>,
     #[serde(default)]
     pub archived: bool,
@@ -53,7 +53,7 @@ pub enum ThreadDirectoryFilter {
 pub struct ThreadDirectoryMatchFields<'a> {
     pub parent_thread_id: Option<&'a str>,
     pub archived: bool,
-    pub project_id: &'a str,
+    pub workspace_id: &'a str,
     pub title: &'a str,
     pub status: crate::ThreadStatus,
 }
@@ -63,7 +63,7 @@ impl<'a> From<&'a crate::Thread> for ThreadDirectoryMatchFields<'a> {
         Self {
             parent_thread_id: thread.parent_thread_id.as_deref(),
             archived: thread.archived,
-            project_id: &thread.project_id,
+            workspace_id: &thread.workspace_id,
             title: &thread.title,
             status: thread.status,
         }
@@ -84,9 +84,9 @@ impl ThreadDirectoryQuery {
         thread.parent_thread_id.is_none()
             && thread.archived == self.archived
             && self
-                .project_id
+                .workspace_id
                 .as_ref()
-                .is_none_or(|id| id.as_str() == thread.project_id)
+                .is_none_or(|id| id.as_str() == thread.workspace_id)
             && (project_matches
                 || self.search.as_ref().is_none_or(|text| {
                     thread

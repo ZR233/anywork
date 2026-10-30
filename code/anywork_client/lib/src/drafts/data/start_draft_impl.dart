@@ -24,52 +24,52 @@ final class StartSessionDraftImpl extends ReadModel<StartSessionDraft>
   Future<void>? _closing;
   bool _closed = false;
 
-  void updateDraft(String projectId, String text) {
-    final project = state.forProject(projectId);
-    if (project.text == text && state.projects.containsKey(projectId)) return;
-    _editProject(projectId, project.copyWith(text: text));
+  void updateDraft(String workspaceId, String text) {
+    final project = state.forProject(workspaceId);
+    if (project.text == text && state.projects.containsKey(workspaceId)) return;
+    _editProject(workspaceId, project.copyWith(text: text));
   }
 
-  void setMode(String projectId, ThreadModeId mode) {
-    final project = state.forProject(projectId);
-    if (project.mode == mode && state.projects.containsKey(projectId)) return;
-    _editProject(projectId, project.copyWith(mode: mode));
+  void setMode(String workspaceId, ThreadModeId mode) {
+    final project = state.forProject(workspaceId);
+    if (project.mode == mode && state.projects.containsKey(workspaceId)) return;
+    _editProject(workspaceId, project.copyWith(mode: mode));
   }
 
-  void setWorkspaceMode(String projectId, ThreadWorkspaceMode mode) {
+  void setWorkspaceMode(String workspaceId, ThreadWorkspaceMode mode) {
     final workspace = _dependencies.project.value.projects?.values
-        .where((project) => project.id == projectId)
+        .where((project) => project.id == workspaceId)
         .firstOrNull;
     if (workspace?.isStandalone == true && mode.isWorktree) return;
-    final project = state.forProject(projectId);
-    if (project.workspaceMode == mode && state.projects.containsKey(projectId))
+    final project = state.forProject(workspaceId);
+    if (project.workspaceMode == mode && state.projects.containsKey(workspaceId))
       return;
-    _editProject(projectId, project.copyWith(workspaceMode: mode));
+    _editProject(workspaceId, project.copyWith(workspaceMode: mode));
   }
 
-  void setDelegationModeOverride(String projectId, DelegationMode? mode) {
-    final project = state.forProject(projectId);
+  void setDelegationModeOverride(String workspaceId, DelegationMode? mode) {
+    final project = state.forProject(workspaceId);
     if (project.delegationModeOverride == mode) return;
-    _editProject(projectId, project.copyWith(delegationModeOverride: mode));
+    _editProject(workspaceId, project.copyWith(delegationModeOverride: mode));
   }
 
   void setDelegationPreferenceOverride(
-    String projectId,
+    String workspaceId,
     DelegationPreference? preference,
   ) {
-    final project = state.forProject(projectId);
+    final project = state.forProject(workspaceId);
     if (project.delegationPreferenceOverride == preference) return;
     _editProject(
-      projectId,
+      workspaceId,
       project.copyWith(delegationPreferenceOverride: preference),
     );
   }
 
-  void _editProject(String projectId, StartSessionProjectDraft project) {
+  void _editProject(String workspaceId, StartSessionProjectDraft project) {
     if (_closed) return;
-    _reserve(projectId);
+    _reserve(workspaceId);
     state = state.copyWith(
-      projects: {...state.projects, projectId: project},
+      projects: {...state.projects, workspaceId: project},
       revision: state.revision + 1,
     );
   }
@@ -124,49 +124,49 @@ final class StartSessionDraftImpl extends ReadModel<StartSessionDraft>
 
   /// Synchronous freeze: no queued settings write or later cache read may
   /// change the project, mode, route, text or attachment IDs sent by this call.
-  FrozenStartSessionSubmission _freezeForSubmit(String projectId) {
+  FrozenStartSessionSubmission _freezeForSubmit(String workspaceId) {
     if (_closed || _dependencies.isClosed)
       throw StateError('The start draft is closed');
     final selection = _dependencies.selection.value;
-    if (selection.selectedProjectId != projectId ||
+    if (selection.selectedProjectId != workspaceId ||
         selection.selectedThreadId != null) {
       throw StateError('New Thread submission target is no longer available');
     }
     final projects =
         _dependencies.project.value.projects?.values ?? const <StudioProject>[];
     final workspace = projects
-        .where((project) => project.id == projectId)
+        .where((project) => project.id == workspaceId)
         .firstOrNull;
     if (workspace == null) {
       throw StateError('Project is no longer available');
     }
     final recoveryIssue = recoveryIssueBlockingExecution(
       _dependencies.recovery.value.value?.values ?? const [],
-      projectId: projectId,
+      workspaceId: workspaceId,
     );
     if (recoveryIssue != null) throw recoveryIssue.blockedFailure();
-    final project = state.forProject(projectId);
+    final project = state.forProject(workspaceId);
     if (workspace.isStandalone && project.workspaceMode.isWorktree) {
       throw StateError('Standalone workspaces only support local mode');
     }
-    final composer = _dependencies.attachments.state.newThread(projectId);
+    final composer = _dependencies.attachments.state.newThread(workspaceId);
     if (project.text.trim().isEmpty && composer.attachments.isEmpty) {
       throw StateError('Cannot submit an empty draft');
     }
-    _reserve(projectId);
+    _reserve(workspaceId);
     final stamp = DraftStamp(
-      draftId: 'start:$projectId',
+      draftId: 'start:$workspaceId',
       revision: state.revision,
     );
-    final attachmentStamp = _dependencies.attachments.newThreadStamp(projectId);
-    if (_unknown[projectId] == (stamp, attachmentStamp)) {
+    final attachmentStamp = _dependencies.attachments.newThreadStamp(workspaceId);
+    if (_unknown[workspaceId] == (stamp, attachmentStamp)) {
       throw StateError('The previous submission outcome is unknown');
     }
     final route = resolveRoute(project.mode);
     final defaults = _dependencies.settings.value.canonical!.delegation;
     final delegation = project.resolveDelegation(defaults);
     final operation = _dependencies.mutations.begin(
-      target: 'start:$projectId',
+      target: 'start:$workspaceId',
       draft: stamp,
     );
     final input = StudioPromptInput(
@@ -179,7 +179,7 @@ final class StartSessionDraftImpl extends ReadModel<StartSessionDraft>
     try {
       _dependencies.attachments.retainFrozen(
         operationId: operation.id,
-        binding: _dependencies.attachments.newThreadBinding(projectId),
+        binding: _dependencies.attachments.newThreadBinding(workspaceId),
         attachmentIds: input.attachmentDraftIds,
       );
     } catch (error) {
@@ -190,7 +190,7 @@ final class StartSessionDraftImpl extends ReadModel<StartSessionDraft>
       stamp: stamp,
       attachmentStamp: attachmentStamp,
       operation: operation,
-      projectId: projectId,
+      workspaceId: workspaceId,
       project: project,
       route: route,
       delegation: delegation,
@@ -198,7 +198,7 @@ final class StartSessionDraftImpl extends ReadModel<StartSessionDraft>
     );
   }
 
-  Future<bool> submit(String projectId) {
+  Future<bool> submit(String workspaceId) {
     if (_pending != null) return Future<bool>.value(false);
     final completion = Completer<bool>();
     late final Future<bool> pending;
@@ -211,17 +211,17 @@ final class StartSessionDraftImpl extends ReadModel<StartSessionDraft>
     // Publish ownership before notifying synchronous observers or starting transport work.
     _pending = pending;
     unawaited(
-      _prepareAndSubmit(projectId)
+      _prepareAndSubmit(workspaceId)
           .then(completion.complete, onError: completion.completeError),
     );
     return pending;
   }
 
-  Future<bool> _prepareAndSubmit(String projectId) async {
+  Future<bool> _prepareAndSubmit(String workspaceId) async {
     FrozenStartSessionSubmission? frozen;
     InputSubmissionObservation? evidence;
     try {
-      frozen = _freezeForSubmit(projectId);
+      frozen = _freezeForSubmit(workspaceId);
       evidence = registerSubmittedInput(
         dependencies: _dependencies,
         operation: frozen.operation,
@@ -237,12 +237,12 @@ final class StartSessionDraftImpl extends ReadModel<StartSessionDraft>
           operationId: frozen.operation.id,
           accepted: false,
           clearCurrent: false,
-          projectId: projectId,
+          workspaceId: workspaceId,
           threadId: null,
         );
       }
       if (!_closed)
-        _dependencies.attachments.reportNewThreadFailure(projectId, error);
+        _dependencies.attachments.reportNewThreadFailure(workspaceId, error);
       return false;
     }
     if (_closed || _dependencies.isClosed) {
@@ -254,7 +254,7 @@ final class StartSessionDraftImpl extends ReadModel<StartSessionDraft>
         operationId: frozen.operation.id,
         accepted: false,
         clearCurrent: false,
-        projectId: projectId,
+        workspaceId: workspaceId,
         threadId: null,
       );
       return false;
@@ -263,14 +263,14 @@ final class StartSessionDraftImpl extends ReadModel<StartSessionDraft>
       submitting: true,
       preparations: {
         ...state.preparations,
-        projectId: NewThreadPreparation(
-          projectId: projectId,
+        workspaceId: NewThreadPreparation(
+          workspaceId: workspaceId,
           inputId: frozen.input.inputId,
           workspaceMode: frozen.project.workspaceMode,
         ),
       },
     );
-    final binding = _dependencies.attachments.newThreadBinding(projectId);
+    final binding = _dependencies.attachments.newThreadBinding(workspaceId);
     final composer = binding.read();
     binding.write(
       SubmittingComposerThreadState(
@@ -298,18 +298,18 @@ final class StartSessionDraftImpl extends ReadModel<StartSessionDraft>
         operationId: frozen.operation.id,
         accepted: false,
         clearCurrent: false,
-        projectId: frozen.projectId,
+        workspaceId: frozen.workspaceId,
         threadId: null,
       );
       return false;
     }
     final binding = _dependencies.attachments.newThreadBinding(
-      frozen.projectId,
+      frozen.workspaceId,
     );
     StartNewThreadResult? acceptedResult;
     try {
       final result = await _dependencies.threadCommands.submitNewThread(
-        projectId: frozen.projectId,
+        workspaceId: frozen.workspaceId,
         input: frozen.input,
         mode: frozen.project.mode,
         workspaceMode: frozen.project.workspaceMode.id,
@@ -326,7 +326,7 @@ final class StartSessionDraftImpl extends ReadModel<StartSessionDraft>
           operationId: frozen.operation.id,
           accepted: false,
           clearCurrent: false,
-          projectId: frozen.projectId,
+          workspaceId: frozen.workspaceId,
           threadId: null,
         );
         _failure(binding.read(), frozen, failure);
@@ -341,7 +341,7 @@ final class StartSessionDraftImpl extends ReadModel<StartSessionDraft>
       final clear =
           !_closed &&
           state.revision == frozen.stamp.revision &&
-          _dependencies.attachments.newThreadStamp(frozen.projectId) ==
+          _dependencies.attachments.newThreadStamp(frozen.workspaceId) ==
               frozen.attachmentStamp;
       if (!_closed) {
         final composer = binding.read();
@@ -356,17 +356,17 @@ final class StartSessionDraftImpl extends ReadModel<StartSessionDraft>
         );
         if (clear) {
           state = state.copyWith(
-            projects: {...state.projects}..remove(frozen.projectId),
+            projects: {...state.projects}..remove(frozen.workspaceId),
             revision: state.revision + 1,
           );
-          _permits.remove(frozen.projectId)?.release();
+          _permits.remove(frozen.workspaceId)?.release();
         }
       }
       await _dependencies.attachments.completeFrozen(
         operationId: frozen.operation.id,
         accepted: true,
         clearCurrent: clear,
-        projectId: frozen.projectId,
+        workspaceId: frozen.workspaceId,
         threadId: result.thread.id,
       );
       return true;
@@ -389,7 +389,7 @@ final class StartSessionDraftImpl extends ReadModel<StartSessionDraft>
           operationId: frozen.operation.id,
           accepted: true,
           clearCurrent: false,
-          projectId: frozen.projectId,
+          workspaceId: frozen.workspaceId,
           threadId: acceptedResult.thread.id,
         );
       } else if (rejected) {
@@ -399,11 +399,11 @@ final class StartSessionDraftImpl extends ReadModel<StartSessionDraft>
           operationId: frozen.operation.id,
           accepted: false,
           clearCurrent: false,
-          projectId: frozen.projectId,
+          workspaceId: frozen.workspaceId,
           threadId: null,
         );
       } else {
-        _unknown[frozen.projectId] = (frozen.stamp, frozen.attachmentStamp);
+        _unknown[frozen.workspaceId] = (frozen.stamp, frozen.attachmentStamp);
         frozen.operation.unknownOutcome(error);
       }
       _failure(binding.read(), frozen, error);
@@ -418,7 +418,7 @@ final class StartSessionDraftImpl extends ReadModel<StartSessionDraft>
     ThreadPreparationProgress progress,
   ) {
     if (_closed) return;
-    final current = state.preparations[frozen.projectId];
+    final current = state.preparations[frozen.workspaceId];
     if (current == null ||
         current.inputId != frozen.input.inputId ||
         current.phase != NewThreadPreparationPhase.preparing)
@@ -429,7 +429,7 @@ final class StartSessionDraftImpl extends ReadModel<StartSessionDraft>
     state = state.copyWith(
       preparations: {
         ...state.preparations,
-        frozen.projectId: current.withProgress(progress),
+        frozen.workspaceId: current.withProgress(progress),
       },
     );
   }
@@ -440,22 +440,22 @@ final class StartSessionDraftImpl extends ReadModel<StartSessionDraft>
     required bool known,
   }) {
     if (_closed) return;
-    final current = state.preparations[frozen.projectId];
+    final current = state.preparations[frozen.workspaceId];
     if (current == null || current.inputId != frozen.input.inputId) return;
     state = state.copyWith(
       preparations: {
         ...state.preparations,
-        frozen.projectId: current.withFailure(error, known: known),
+        frozen.workspaceId: current.withFailure(error, known: known),
       },
     );
   }
 
   void _clearPreparation(FrozenStartSessionSubmission frozen) {
     if (_closed ||
-        state.preparations[frozen.projectId]?.inputId != frozen.input.inputId)
+        state.preparations[frozen.workspaceId]?.inputId != frozen.input.inputId)
       return;
     state = state.copyWith(
-      preparations: {...state.preparations}..remove(frozen.projectId),
+      preparations: {...state.preparations}..remove(frozen.workspaceId),
     );
   }
 
@@ -466,10 +466,10 @@ final class StartSessionDraftImpl extends ReadModel<StartSessionDraft>
   ) {
     if (_closed) return;
     if (state.revision != frozen.stamp.revision ||
-        _dependencies.attachments.newThreadStamp(frozen.projectId) !=
+        _dependencies.attachments.newThreadStamp(frozen.workspaceId) !=
             frozen.attachmentStamp) {
       _dependencies.attachments
-          .newThreadBinding(frozen.projectId)
+          .newThreadBinding(frozen.workspaceId)
           .write(
             ComposerThreadState.idle(
               draft: composer.draft,
@@ -482,7 +482,7 @@ final class StartSessionDraftImpl extends ReadModel<StartSessionDraft>
       return;
     }
     _dependencies.attachments
-        .newThreadBinding(frozen.projectId)
+        .newThreadBinding(frozen.workspaceId)
         .write(
           ComposerThreadState.failure(
             error: error,
@@ -536,23 +536,23 @@ final class StartSessionDraftImpl extends ReadModel<StartSessionDraft>
     );
   }
 
-  void _reserve(String projectId) => _permits.putIfAbsent(
-    projectId,
+  void _reserve(String workspaceId) => _permits.putIfAbsent(
+    workspaceId,
     () => _dependencies.budget.acquire(
       ResourceKind.draft,
-      owner: 'start:$projectId',
+      owner: 'start:$workspaceId',
     ),
   );
 
-  Future<void> discardProject(String projectId) async {
+  Future<void> discardProject(String workspaceId) async {
     if (_closed) return;
     state = state.copyWith(
-      projects: {...state.projects}..remove(projectId),
-      preparations: {...state.preparations}..remove(projectId),
+      projects: {...state.projects}..remove(workspaceId),
+      preparations: {...state.preparations}..remove(workspaceId),
       revision: state.revision + 1,
     );
-    _permits.remove(projectId)?.release();
-    await _dependencies.attachments.discardProject(projectId);
+    _permits.remove(workspaceId)?.release();
+    await _dependencies.attachments.discardProject(workspaceId);
   }
 
   Future<void> close() => _closing ??= _close();
@@ -576,7 +576,7 @@ final class FrozenStartSessionSubmission {
     required this.stamp,
     required this.attachmentStamp,
     required this.operation,
-    required this.projectId,
+    required this.workspaceId,
     required this.project,
     required this.route,
     required this.delegation,
@@ -585,7 +585,7 @@ final class FrozenStartSessionSubmission {
   final DraftStamp stamp;
   final DraftStamp attachmentStamp;
   final OperationHandle operation;
-  final String projectId;
+  final String workspaceId;
   final StartSessionProjectDraft project;
   final ModeModelRouteView route;
   final DelegationSettingsView delegation;

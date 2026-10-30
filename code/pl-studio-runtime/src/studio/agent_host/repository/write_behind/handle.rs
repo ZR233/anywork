@@ -379,7 +379,7 @@ mod storage_fault_tests {
             owner_kind: WorktreeLeaseOwnerKind::Child,
             owner_thread_id: id.into(),
             root_thread_id: "root".into(),
-            project_id: "project".into(),
+            workspace_id: "project".into(),
             ssh_alias: None,
             repository_root: repo.to_string_lossy().into_owned(),
             path: WorktreeManager::allocate_path(repo, "root", &ownership)
@@ -424,7 +424,7 @@ mod storage_fault_tests {
         waiting.recv_timeout(std::time::Duration::from_secs(5))?;
         let directory = DirectoryDelta {
             project_removals: vec![crate::studio::store::directory::ProjectRemoval {
-                project_id: "unused-project".into(),
+                workspace_id: "unused-project".into(),
                 thread_ids: vec![],
                 closed_at: 1,
             }],

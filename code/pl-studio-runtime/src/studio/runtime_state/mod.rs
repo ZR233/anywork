@@ -129,7 +129,7 @@ pub struct StudioRecoveryIssue {
     pub category: StudioRecoveryIssueCategory,
     pub impact: StudioRecoveryImpact,
     pub action: StudioRecoveryIssueAction,
-    pub project_id: Option<String>,
+    pub workspace_id: Option<String>,
     pub thread_id: Option<String>,
     pub message: String,
     pub worktree: Option<StudioWorktreeRecoveryPreview>,

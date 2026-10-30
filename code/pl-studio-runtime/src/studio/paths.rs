@@ -171,16 +171,16 @@ impl StudioPaths {
     }
 
     /// Stable on-disk directory for one Project.
-    pub fn project_dir(&self, project_id: &str) -> Result<PathBuf> {
+    pub fn project_dir(&self, workspace_id: &str) -> Result<PathBuf> {
         Ok(self
             .projects_dir()
-            .join(storage_key(project_id, "Project")?))
+            .join(storage_key(workspace_id, "Project")?))
     }
 
     /// Versioned project identity manifest.
-    pub fn project_manifest(&self, project_id: &str) -> Result<PathBuf> {
+    pub fn project_manifest(&self, workspace_id: &str) -> Result<PathBuf> {
         Ok(self
-            .project_dir(project_id)?
+            .project_dir(workspace_id)?
             .join(PROJECT_MANIFEST_FILE_NAME))
     }
 
@@ -189,8 +189,8 @@ impl StudioPaths {
     /// Unknown Threads must not be resolved by guessing a default Project. Callers that already
     /// hold both identities (child prepare, writer, tests) use this entry; registered Threads go
     /// through [`StudioStore::registered_session_paths`](crate::studio::store::StudioStore::registered_session_paths).
-    pub fn session_paths(&self, project_id: &str, thread_id: &str) -> Result<SessionPaths> {
-        SessionPaths::bind(self, project_id, thread_id)
+    pub fn session_paths(&self, workspace_id: &str, thread_id: &str) -> Result<SessionPaths> {
+        SessionPaths::bind(self, workspace_id, thread_id)
     }
 
     /// Legacy flat session directory for one Thread key. Used by layout migration tests.
@@ -209,21 +209,21 @@ impl StudioPaths {
 /// Bound host paths for one Project + Thread pair.
 ///
 /// The layout is
-/// `v2/projects/<sha256(project_id)>/sessions/<sha256(thread_id)>/`.
+/// `v2/projects/<sha256(workspace_id)>/sessions/<sha256(thread_id)>/`.
 /// Keys are stable identity digests, never path, alias, or display name.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionPaths {
-    project_id: String,
+    workspace_id: String,
     thread_id: String,
     root: PathBuf,
 }
 
 impl SessionPaths {
-    fn bind(paths: &StudioPaths, project_id: &str, thread_id: &str) -> Result<Self> {
-        let project_key = storage_key(project_id, "Project")?;
+    fn bind(paths: &StudioPaths, workspace_id: &str, thread_id: &str) -> Result<Self> {
+        let project_key = storage_key(workspace_id, "Project")?;
         let thread_key = storage_key(thread_id, "Thread")?;
         Ok(Self {
-            project_id: project_id.to_owned(),
+            workspace_id: workspace_id.to_owned(),
             thread_id: thread_id.to_owned(),
             root: paths
                 .projects_dir()
@@ -233,8 +233,8 @@ impl SessionPaths {
         })
     }
 
-    pub fn project_id(&self) -> &str {
-        &self.project_id
+    pub fn workspace_id(&self) -> &str {
+        &self.workspace_id
     }
 
     pub fn thread_id(&self) -> &str {

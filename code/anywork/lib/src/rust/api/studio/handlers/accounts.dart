@@ -13,22 +13,22 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 // These functions are ignored because they are not marked as `pub`: `owned_skills_state`, `skills_state`
 
 Future<BridgeSkillsStateSnapshot> readSkillsState({
-  required String projectId,
+  required String workspaceId,
 }) => RustLib.instance.api.crateApiStudioHandlersAccountsReadSkillsState(
-  projectId: projectId,
+  workspaceId: workspaceId,
 );
 
-Future<BridgeSkillsStateSnapshot> discoverSkills({required String projectId}) =>
+Future<BridgeSkillsStateSnapshot> discoverSkills({required String workspaceId}) =>
     RustLib.instance.api.crateApiStudioHandlersAccountsDiscoverSkills(
-      projectId: projectId,
+      workspaceId: workspaceId,
     );
 
 Future<BridgeSkillSearchResult> searchSkills({
-  required String projectId,
+  required String workspaceId,
   required String query,
   required int limit,
 }) => RustLib.instance.api.crateApiStudioHandlersAccountsSearchSkills(
-  projectId: projectId,
+  workspaceId: workspaceId,
   query: query,
   limit: limit,
 );

@@ -25,24 +25,24 @@ class SubmitPromptReceipt {
 /// composer or workspace has been removed from canonical state.
 class ComposerTargetDiagnostic {
   ComposerTargetDiagnostic({
-    required this.projectId,
+    required this.workspaceId,
     required this.threadId,
     required this.message,
     List<String> cleanupFailureDraftIds = const [],
   }) : cleanupFailureDraftIds = List.unmodifiable(cleanupFailureDraftIds);
 
-  final String projectId;
+  final String workspaceId;
   final String? threadId;
   final String message;
   final List<String> cleanupFailureDraftIds;
 
-  String get targetKey => attachmentTargetKey(projectId, threadId);
+  String get targetKey => attachmentTargetKey(workspaceId, threadId);
 
   @override
   bool operator ==(Object other) {
     return identical(this, other) ||
         other is ComposerTargetDiagnostic &&
-            projectId == other.projectId &&
+            workspaceId == other.workspaceId &&
             threadId == other.threadId &&
             message == other.message &&
             listEquals(cleanupFailureDraftIds, other.cleanupFailureDraftIds);
@@ -50,15 +50,15 @@ class ComposerTargetDiagnostic {
 
   @override
   int get hashCode => Object.hash(
-    projectId,
+    workspaceId,
     threadId,
     message,
     Object.hashAll(cleanupFailureDraftIds),
   );
 }
 
-String attachmentTargetKey(String projectId, String? threadId) =>
-    '$projectId\u0000${threadId ?? '<new>'}';
+String attachmentTargetKey(String workspaceId, String? threadId) =>
+    '$workspaceId\u0000${threadId ?? '<new>'}';
 
 class StartNewThreadResult {
   const StartNewThreadResult({required this.thread, required this.receipt});
@@ -486,9 +486,9 @@ class StartSessionDraft {
   final bool submitting;
   final int revision;
 
-  StartSessionProjectDraft forProject(String? projectId) {
-    if (projectId == null) return const StartSessionProjectDraft();
-    return projects[projectId] ?? const StartSessionProjectDraft();
+  StartSessionProjectDraft forProject(String? workspaceId) {
+    if (workspaceId == null) return const StartSessionProjectDraft();
+    return projects[workspaceId] ?? const StartSessionProjectDraft();
   }
 
   StartSessionModelIntent? modelIntentFor(ThreadModeId mode) =>
@@ -683,14 +683,14 @@ class AttachmentDraftBoard {
   final Map<String, ComposerTargetDiagnostic> diagnostics;
   final Map<String, ComposerThreadState> newThreadDrafts;
 
-  ComposerThreadState newThread(String projectId) =>
-      newThreadDrafts[projectId] ?? const ComposerThreadState.idle();
+  ComposerThreadState newThread(String workspaceId) =>
+      newThreadDrafts[workspaceId] ?? const ComposerThreadState.idle();
 
-  List<ComposerTargetDiagnostic> forProject(String? projectId) {
-    if (projectId == null) return const [];
+  List<ComposerTargetDiagnostic> forProject(String? workspaceId) {
+    if (workspaceId == null) return const [];
     return [
       for (final diagnostic in diagnostics.values)
-        if (diagnostic.projectId == projectId) diagnostic,
+        if (diagnostic.workspaceId == workspaceId) diagnostic,
     ];
   }
 

@@ -18,22 +18,22 @@ use super::super::{
 const ARCHIVE_TREE_SETTLE_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(25);
 
 impl StudioRuntime {
-    pub async fn create_thread(&self, project_id: &str, title: &str) -> Result<ThreadRecord> {
-        self.create_thread_with_id(crate::studio::ids::new_id("thread"), project_id, title)
+    pub async fn create_thread(&self, workspace_id: &str, title: &str) -> Result<ThreadRecord> {
+        self.create_thread_with_id(crate::studio::ids::new_id("thread"), workspace_id, title)
             .await
     }
 
     pub(crate) async fn create_thread_with_id(
         &self,
         thread_id: impl Into<String>,
-        project_id: &str,
+        workspace_id: &str,
         title: &str,
     ) -> Result<ThreadRecord> {
         let _lifecycle_guard = self.thread_lifecycle_admission().await?;
         let thread_id = thread_id.into();
         if let Some(existing) = self.find_owned_thread(&thread_id).await? {
             anyhow::ensure!(
-                existing.project_id == project_id,
+                existing.workspace_id == workspace_id,
                 "bot Thread identity is bound to another project"
             );
             anyhow::ensure!(
@@ -47,14 +47,14 @@ impl StudioRuntime {
             self.check_thread_execution_access(&protocol)?;
             return Ok(existing);
         }
-        self.ensure_project_thread_admission_open(project_id)?;
+        self.ensure_project_thread_admission_open(workspace_id)?;
         let project = self
             .agent_facility
             .product_events
             .project_snapshot()
             .await
             .into_iter()
-            .find(|project| project.id == project_id)
+            .find(|project| project.id == workspace_id)
             .context("selected Project not found")?;
         self.thread_factory
             .verify_project_workspace(&project)
@@ -62,7 +62,7 @@ impl StudioRuntime {
         let workspace_path = local_thread_workspace(&project, &thread_id).await?;
         let (mut delta, mut thread) = DirectoryDelta::register_root_thread(
             thread_id,
-            project_id,
+            workspace_id,
             title,
             pl_protocol::ThreadModeId::simple(),
             pl_protocol::ThreadWorkspaceMode::Local,
@@ -85,12 +85,12 @@ impl StudioRuntime {
         &self,
         request: StudioStartNewThreadRequest,
     ) -> Result<StudioStartNewThreadResponse> {
-        let project_id = request.project_id.clone();
+        let workspace_id = request.workspace_id.clone();
         let input_id = request.input.input_id.clone();
         let report = |stage, workspace_path: Option<&str>, branch: Option<&str>| {
             if let Some(observer) = &request.preparation_observer {
                 observer(super::super::ThreadPreparationProgress {
-                    project_id: project_id.clone(),
+                    workspace_id: workspace_id.clone(),
                     input_id: input_id.clone(),
                     stage,
                     workspace_path: workspace_path.map(str::to_owned),
@@ -137,7 +137,7 @@ impl StudioRuntime {
         let projects = self.agent_facility.product_events.project_snapshot().await;
         let project = projects
             .iter()
-            .find(|project| project.id == request.project_id)
+            .find(|project| project.id == request.workspace_id)
             .cloned()
             .context("selected Project not found")?;
         anyhow::ensure!(
@@ -145,7 +145,7 @@ impl StudioRuntime {
                 || request.workspace_mode == pl_protocol::ThreadWorkspaceMode::Local,
             "standalone sessions only support local workspaces"
         );
-        self.ensure_project_thread_admission_open(&request.project_id)?;
+        self.ensure_project_thread_admission_open(&request.workspace_id)?;
         self.thread_factory
             .verify_project_workspace(&project)
             .await?;
@@ -211,7 +211,7 @@ impl StudioRuntime {
         );
         let (mut delta, mut thread) = DirectoryDelta::register_root_thread(
             thread_id,
-            &request.project_id,
+            &request.workspace_id,
             &provisional,
             request.mode,
             request.workspace_mode,
@@ -491,7 +491,7 @@ impl StudioRuntime {
         );
         let projects = self.agent_facility.product_events.project_snapshot().await;
         anyhow::ensure!(
-            projects.iter().any(|project| project.id == root.project_id),
+            projects.iter().any(|project| project.id == root.workspace_id),
             "open the original Project before restoring its Threads"
         );
         if !root.archived {
@@ -651,7 +651,7 @@ impl StudioRuntime {
             .await?;
         if let Some(directory) = hot.state.value() {
             for thread in &directory.threads {
-                if thread.project_id == root.project_id
+                if thread.workspace_id == root.workspace_id
                     && thread.parent_thread_id.is_none()
                     && !thread.archived
                 {
@@ -788,7 +788,7 @@ impl StudioRuntime {
 }
 
 async fn local_thread_workspace(
-    project: &crate::studio::ProjectRecord,
+    project: &crate::studio::WorkspaceRecord,
     thread_id: &str,
 ) -> Result<String> {
     if project.kind == pl_protocol::studio::WorkspaceKind::Project {

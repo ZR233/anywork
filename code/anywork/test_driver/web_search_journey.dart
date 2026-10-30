@@ -474,11 +474,11 @@ class _Probe {
     final state = await snapshot();
     final threadId = workspaceOf(state)?['threadId'];
     final project = state['project'];
-    final projectId = project is Map ? project['id'] : null;
+    final workspaceId = project is Map ? project['id'] : null;
     if (threadId is! String || threadId.isEmpty) {
       throw StateError('canonical Thread id missing before saving observed');
     }
-    if (projectId is! String || projectId.isEmpty) {
+    if (workspaceId is! String || workspaceId.isEmpty) {
       throw StateError('canonical project id missing before saving observed');
     }
     final settings = await searchSettings();
@@ -487,7 +487,7 @@ class _Probe {
     await _observed.writeAsString(
       jsonEncode({
         'threadId': threadId,
-        'projectId': projectId,
+        'workspaceId': workspaceId,
         'settings': settings,
         'settingsFingerprint': _settingsFingerprint(settings),
       }),
@@ -498,13 +498,13 @@ class _Probe {
     final observed =
         jsonDecode(await _observed.readAsString()) as Map<String, dynamic>;
     final threadId = observed['threadId'] as String;
-    final projectId = observed['projectId'] as String;
+    final workspaceId = observed['workspaceId'] as String;
     // A fresh shell intentionally starts without an opened project. Selecting
     // its real row expands the directory before any Thread row can be found.
-    await _tap('project-row-$projectId');
+    await _tap('project-row-$workspaceId');
     await _waitUntil(
       (state) =>
-          (state['navigation'] as Map?)?['selectedProjectId'] == projectId,
+          (state['navigation'] as Map?)?['selectedProjectId'] == workspaceId,
       'restored-project-selection',
       timeout: const Duration(seconds: 30),
     );

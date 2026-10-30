@@ -48,7 +48,7 @@ impl DirectoryDelta {
 
     pub(in crate::studio) fn register_root_thread(
         id: String,
-        project_id: &str,
+        workspace_id: &str,
         title: &str,
         mode: ThreadModeId,
         workspace_mode: ThreadWorkspaceMode,
@@ -59,7 +59,7 @@ impl DirectoryDelta {
             root_thread_id: id.clone(),
             agent_path: id.clone(),
             id,
-            project_id: project_id.to_string(),
+            workspace_id: workspace_id.to_string(),
             title: non_empty_title(title),
             mode: mode.clone(),
             workspace_mode,
@@ -91,7 +91,7 @@ impl DirectoryDelta {
             thread_upserts: vec![Thread {
                 agent_path: spec.agent_path,
                 id: spec.id,
-                project_id: spec.project_id,
+                workspace_id: spec.workspace_id,
                 title: non_empty_title(&spec.title),
                 mode: spec.mode,
                 workspace_mode: spec.workspace_mode,
@@ -139,7 +139,7 @@ pub(in crate::studio) struct RegisteredChildThread {
     pub(in crate::studio) id: String,
     pub(in crate::studio) parent_thread_id: String,
     pub(in crate::studio) agent_path: String,
-    pub(in crate::studio) project_id: String,
+    pub(in crate::studio) workspace_id: String,
     pub(in crate::studio) root_thread_id: String,
     pub(in crate::studio) mode: ThreadModeId,
     pub(in crate::studio) workspace_mode: ThreadWorkspaceMode,
@@ -156,7 +156,7 @@ pub(in crate::studio) struct ThreadRemoval {
 
 #[derive(Debug, Clone)]
 pub(in crate::studio) struct ProjectRemoval {
-    pub(in crate::studio) project_id: String,
+    pub(in crate::studio) workspace_id: String,
     pub(in crate::studio) thread_ids: Vec<String>,
     pub(in crate::studio) closed_at: i64,
 }
@@ -186,7 +186,7 @@ pub(in crate::studio) async fn apply_directory_delta(
     tx: &sea_orm::DatabaseTransaction,
     delta: &DirectoryDelta,
 ) -> Result<()> {
-    // Parent rows first: `threads.project_id` is a real foreign key to `projects(id)` (ON DELETE
+    // Parent rows first: `threads.workspace_id` is a real foreign key to `projects(id)` (ON DELETE
     // CASCADE), and a coalesced write-behind batch can carry a brand-new Project together with a
     // Thread (or child Thread) that references it in the same transaction. Upserting the Project rows
     // before any Thread row keeps the association atomic instead of failing with SQLite extended code
@@ -222,7 +222,7 @@ pub(in crate::studio) async fn apply_directory_delta(
     }
     for removal in &delta.project_removals {
         archive_thread_rows(tx, &removal.thread_ids, removal.closed_at).await?;
-        close_project_row(tx, &removal.project_id, removal.closed_at).await?;
+        close_project_row(tx, &removal.workspace_id, removal.closed_at).await?;
     }
     store.persist_directory_summaries(delta).await
 }
@@ -250,16 +250,16 @@ async fn upsert_thread_directory_row(
         // Thread immediately after restart, without opening the Project in the GUI first. Restore
         // only a missing parent from the canonical directory, inside the same mirror transaction;
         // never overwrite an existing parent with a potentially later canonical snapshot.
-        if entities::project::Entity::find_by_id(&thread.project_id)
+        if entities::project::Entity::find_by_id(&thread.workspace_id)
             .one(tx)
             .await?
             .is_none()
         {
-            let project = store.workspaces().get(&thread.project_id).ok_or_else(|| {
+            let project = store.workspaces().get(&thread.workspace_id).ok_or_else(|| {
                 anyhow::anyhow!(
                     "Thread {} has no canonical Project {}",
                     thread.id,
-                    thread.project_id
+                    thread.workspace_id
                 )
             })?;
             upsert_project_directory_row(
@@ -280,7 +280,7 @@ async fn upsert_thread_directory_row(
         }
         let model = thread::ActiveModel {
             id: Set(thread.id.clone()),
-            project_id: Set(thread.project_id.clone()),
+            workspace_id: Set(thread.workspace_id.clone()),
             title: Set(thread.title.clone()),
             mode: Set(thread.mode.label().to_string()),
             workspace_mode: Set(thread.workspace_mode.label().to_string()),
@@ -320,7 +320,7 @@ async fn upsert_thread_directory_row(
     };
     // 身份列不可变；目录更新只触碰标题/模式/角色/归档与时间戳，
     // runtime 列由 state commit 拥有。
-    if existing.project_id != thread.project_id
+    if existing.workspace_id != thread.workspace_id
         || existing.root_thread_id != thread.root_thread_id
         || existing.parent_thread_id != thread.parent_thread_id
         || existing.workspace_mode != thread.workspace_mode.label()
@@ -330,14 +330,14 @@ async fn upsert_thread_directory_row(
             "Thread {} directory identity changed: persisted {:?} vs delta {:?}",
             thread.id,
             (
-                existing.project_id.as_str(),
+                existing.workspace_id.as_str(),
                 existing.root_thread_id.as_str(),
                 existing.parent_thread_id.as_deref(),
                 existing.workspace_mode.as_str(),
                 existing.workspace_path.as_str(),
             ),
             (
-                thread.project_id.as_str(),
+                thread.workspace_id.as_str(),
                 thread.root_thread_id.as_str(),
                 thread.parent_thread_id.as_deref(),
                 thread.workspace_mode.label(),
@@ -431,11 +431,11 @@ async fn upsert_project_directory_row(
 
 async fn close_project_row(
     tx: &sea_orm::DatabaseTransaction,
-    project_id: &str,
+    workspace_id: &str,
     closed_at: i64,
 ) -> Result<()> {
     use entities::project;
-    if let Some(existing) = project::Entity::find_by_id(project_id.to_string())
+    if let Some(existing) = project::Entity::find_by_id(workspace_id.to_string())
         .one(tx)
         .await?
     {

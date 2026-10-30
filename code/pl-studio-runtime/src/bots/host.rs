@@ -19,10 +19,10 @@ impl std::fmt::Debug for StudioBotSessionHost {
 }
 
 impl BotSessionHost for StudioBotSessionHost {
-    async fn list_bots(&self, project_id: &str) -> Result<ToolOutput, ToolError> {
+    async fn list_bots(&self, workspace_id: &str) -> Result<ToolOutput, ToolError> {
         let bots = self
             .runtime
-            .authorized_bots(project_id)
+            .authorized_bots(workspace_id)
             .await
             .into_iter()
             .map(|bot| {
@@ -39,12 +39,12 @@ impl BotSessionHost for StudioBotSessionHost {
 
     async fn list_conversations(
         &self,
-        project_id: &str,
+        workspace_id: &str,
         bot_id: String,
         cursor: Option<String>,
         limit: Option<u32>,
     ) -> Result<ToolOutput, ToolError> {
-        self.ensure_tools_enabled(project_id, &bot_id).await?;
+        self.ensure_tools_enabled(workspace_id, &bot_id).await?;
         let page = self
             .runtime
             .list_conversations(&bot_id, cursor.as_deref(), limit)
@@ -55,10 +55,10 @@ impl BotSessionHost for StudioBotSessionHost {
 
     async fn read_messages(
         &self,
-        project_id: &str,
+        workspace_id: &str,
         request: pl_tool::bots::ReadMessagesInput,
     ) -> Result<ToolOutput, ToolError> {
-        self.ensure_tools_enabled(project_id, &request.bot_id)
+        self.ensure_tools_enabled(workspace_id, &request.bot_id)
             .await?;
         let page = self
             .runtime
@@ -77,13 +77,13 @@ impl BotSessionHost for StudioBotSessionHost {
 
     async fn send_message(
         &self,
-        project_id: &str,
+        workspace_id: &str,
         operation_id: String,
         bot_id: String,
         chat_id: String,
         text: String,
     ) -> Result<ToolOutput, ToolError> {
-        self.ensure_tools_enabled(project_id, &bot_id).await?;
+        self.ensure_tools_enabled(workspace_id, &bot_id).await?;
         let result = self
             .runtime
             .send_message_as(
@@ -93,7 +93,7 @@ impl BotSessionHost for StudioBotSessionHost {
                 text,
                 "tool",
                 SendAuthority::Tool {
-                    project_id: project_id.to_string(),
+                    workspace_id: workspace_id.to_string(),
                 },
             )
             .await
@@ -103,10 +103,10 @@ impl BotSessionHost for StudioBotSessionHost {
 }
 
 impl StudioBotSessionHost {
-    async fn ensure_tools_enabled(&self, project_id: &str, bot_id: &str) -> Result<(), ToolError> {
+    async fn ensure_tools_enabled(&self, workspace_id: &str, bot_id: &str) -> Result<(), ToolError> {
         let allowed = self
             .runtime
-            .authorized_bots(project_id)
+            .authorized_bots(workspace_id)
             .await
             .into_iter()
             .any(|bot| bot.id == bot_id);

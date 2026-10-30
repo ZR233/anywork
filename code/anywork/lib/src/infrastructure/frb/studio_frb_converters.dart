@@ -112,8 +112,8 @@ ProductTopic _productTopicFromBridge(frb_topic_types.BridgeProductTopic topic) {
     frb_topic_types.BridgeProductTopic_Recovery() => const RecoveryTopic(),
     frb_topic_types.BridgeProductTopic_Mcp() => const McpTopic(),
     frb_topic_types.BridgeProductTopic_Lsp() => const LspTopic(),
-    frb_topic_types.BridgeProductTopic_Skills(:final projectId) => SkillsTopic(
-      projectId: projectId,
+    frb_topic_types.BridgeProductTopic_Skills(:final workspaceId) => SkillsTopic(
+      workspaceId: workspaceId,
     ),
     frb_topic_types.BridgeProductTopic_ThreadModeCatalog() =>
       const ThreadModeCatalogTopic(),
@@ -153,7 +153,7 @@ ProductTopic _productPayloadTopicFromBridge(
     frb.BridgeProductEventPayload_McpStateChanged() => const McpTopic(),
     frb.BridgeProductEventPayload_LspStateChanged() => const LspTopic(),
     frb.BridgeProductEventPayload_SkillsStateChanged(:final field0) =>
-      SkillsTopic(projectId: field0.projectId),
+      SkillsTopic(workspaceId: field0.workspaceId),
     frb.BridgeProductEventPayload_ThreadModeCatalogChanged() =>
       const ThreadModeCatalogTopic(),
     frb.BridgeProductEventPayload_AccountUsageStateChanged() =>
@@ -189,8 +189,8 @@ frb_topic_types.BridgeProductTopic bridgeProductTopic(ProductTopic topic) {
     RecoveryTopic() => const frb_topic_types.BridgeProductTopic.recovery(),
     McpTopic() => const frb_topic_types.BridgeProductTopic.mcp(),
     LspTopic() => const frb_topic_types.BridgeProductTopic.lsp(),
-    SkillsTopic(:final projectId) => frb_topic_types.BridgeProductTopic.skills(
-      projectId: projectId,
+    SkillsTopic(:final workspaceId) => frb_topic_types.BridgeProductTopic.skills(
+      workspaceId: workspaceId,
     ),
     ThreadModeCatalogTopic() =>
       const frb_topic_types.BridgeProductTopic.threadModeCatalog(),
@@ -440,7 +440,7 @@ StudioBootstrap studioBootstrapFromFrbSnapshot(
     lspState: _lspStateFromFrb(value.lsp),
     skillsByProject: {
       for (final snapshot in value.skillsByProject)
-        snapshot.projectId: _skillsStateFromFrb(snapshot),
+        snapshot.workspaceId: _skillsStateFromFrb(snapshot),
     },
     threadModeCatalog: _threadModeCatalogFromFrb(value.threadModeCatalog),
     updaterState: updaterStateFromFrb(value.updater),
@@ -916,7 +916,7 @@ SkillsStateSnapshot _skillsStateFromFrb(
     summaries: data.skills.map(_skillSummaryFromFrb).toList(),
   );
   return SkillsStateSnapshot.fromState(
-    projectId: snapshot.projectId,
+    workspaceId: snapshot.workspaceId,
     state: switch (snapshot.state) {
       frb.BridgeSkillsResourceState_Uninitialized(:final field0) =>
         _uninitializedResource(field0),
@@ -1135,7 +1135,7 @@ SkillSearchResultView _skillSearchResultFromFrb(
   frb.BridgeSkillSearchResult result,
 ) {
   return SkillSearchResultView(
-    projectId: result.projectId,
+    workspaceId: result.workspaceId,
     catalogRevision: result.catalogRevision.toInt(),
     matches: result.matches.map(_skillSummaryFromFrb).toList(),
     truncated: result.truncated,
@@ -1327,7 +1327,7 @@ StudioRecoveryIssue _recoveryIssueFromFrb(
             RecoveryIssueAction.cleanupWorktree,
         },
     ],
-    projectId: issue.projectId,
+    workspaceId: issue.workspaceId,
     threadId: issue.threadId,
     detail: issue.detail,
     worktree: issue.worktree == null

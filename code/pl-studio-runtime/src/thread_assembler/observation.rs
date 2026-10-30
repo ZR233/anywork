@@ -663,7 +663,7 @@ mod storage_fault_tests {
 
         fn protocol(id: &str, parent: Option<&str>) -> pl_protocol::Thread {
             let mut thread = pl_protocol::Thread::placeholder(id);
-            thread.project_id = "project-test".into();
+            thread.workspace_id = "project-test".into();
             thread.agent_path = id.into();
             thread.parent_thread_id = parent.map(str::to_owned);
             thread.root_thread_id = parent.unwrap_or(id).into();

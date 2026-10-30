@@ -51,7 +51,7 @@ impl StudioRuntime {
     /// Creates a root Thread and accepts its first Turn from the shared API request.
     pub async fn create_thread_command(
         &self,
-        project_id: String,
+        workspace_id: String,
         request: pl_protocol::studio::CreateThreadRequest,
         preparation_observer: Option<super::ThreadPreparationObserver>,
     ) -> Result<StudioStartNewThreadResponse> {
@@ -61,7 +61,7 @@ impl StudioRuntime {
             ))
         })?;
         self.start_new_thread(StudioStartNewThreadRequest {
-            project_id,
+            workspace_id,
             title: request.title,
             input: request.input,
             mode,

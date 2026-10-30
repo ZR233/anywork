@@ -337,7 +337,7 @@ async fn factory_missing_error_stays_typed_and_recovery_never_calls_missing_deta
             snapshot.schema_version == pl_protocol::THREAD_SCHEMA_VERSION
                 && snapshot.revision == history.checkpoint.state.commit_sequence
                 && snapshot.thread.id == root.thread.id
-                && snapshot.thread.project_id == env.project.id
+                && snapshot.thread.workspace_id == env.project.id
                 && snapshot.thread.root_thread_id == root.thread.root_thread_id
                 && snapshot.thread.workspace_mode == ThreadWorkspaceMode::Worktree
                 && snapshot.thread.workspace_path == root.thread.workspace_path,
@@ -409,7 +409,7 @@ async fn factory_missing_error_stays_typed_and_recovery_never_calls_missing_deta
                 && execution_issue.impact == StudioRecoveryImpact::ExecutionBlocked
                 && execution_issue.action == StudioRecoveryIssueAction::Retry
                 && execution_issue.thread_id.as_deref() == Some(root.thread.id.as_str())
-                && execution_issue.project_id.as_deref() == Some(env.project.id.as_str())
+                && execution_issue.workspace_id.as_deref() == Some(env.project.id.as_str())
                 && execution_issue.message.contains(&source.to_string()),
             "execution rejection has the wrong Recovery owner, impact or cause: {execution_issue:?}"
         );
@@ -448,7 +448,7 @@ async fn factory_missing_error_stays_typed_and_recovery_never_calls_missing_deta
                 && missing_issue.impact == StudioRecoveryImpact::ExecutionBlocked
                 && missing_issue.action == StudioRecoveryIssueAction::Retry
                 && missing_issue.thread_id.as_deref() == Some(root.thread.id.as_str())
-                && missing_issue.project_id.as_deref() == Some(env.project.id.as_str())
+                && missing_issue.workspace_id.as_deref() == Some(env.project.id.as_str())
                 && missing_issue.message.contains("stat")
                 && missing_issue.message.contains("not found"),
             "Recovery lost the original typed Missing owner or safe cause: {missing_issue:?}"

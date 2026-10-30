@@ -115,7 +115,7 @@ impl StudioRuntime {
             .start_registration(
                 request.operation_id,
                 request.name,
-                request.project_id,
+                request.workspace_id,
                 &self.owner_epoch,
             )
             .await

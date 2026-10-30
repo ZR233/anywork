@@ -124,7 +124,7 @@ pub struct StudioUiConfig {
     #[serde(default)]
     pub pinned_thread_ids: Vec<String>,
     #[serde(default)]
-    pub pinned_project_ids: Vec<String>,
+    pub pinned_workspace_ids: Vec<String>,
 }
 
 impl Default for StudioUiConfig {
@@ -134,7 +134,7 @@ impl Default for StudioUiConfig {
             compact_timeline: false,
             sidebar_width: None,
             pinned_thread_ids: Vec::new(),
-            pinned_project_ids: Vec::new(),
+            pinned_workspace_ids: Vec::new(),
         }
     }
 }

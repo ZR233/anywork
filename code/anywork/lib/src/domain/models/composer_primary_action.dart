@@ -111,7 +111,7 @@ final class ComposerFailureBlocker extends ComposerBlocker {
       recoveryIssue?.scope == other.recoveryIssue?.scope &&
       recoveryIssue?.category == other.recoveryIssue?.category &&
       recoveryIssue?.impact == other.recoveryIssue?.impact &&
-      recoveryIssue?.projectId == other.recoveryIssue?.projectId &&
+      recoveryIssue?.workspaceId == other.recoveryIssue?.workspaceId &&
       recoveryIssue?.threadId == other.recoveryIssue?.threadId &&
       recoveryIssue?.detail == other.recoveryIssue?.detail &&
       _sameRecoveryActions(
@@ -126,7 +126,7 @@ final class ComposerFailureBlocker extends ComposerBlocker {
     recoveryIssue?.scope,
     recoveryIssue?.category,
     recoveryIssue?.impact,
-    recoveryIssue?.projectId,
+    recoveryIssue?.workspaceId,
     recoveryIssue?.threadId,
     recoveryIssue?.detail,
     Object.hashAll(recoveryIssue?.availableActions ?? const []),

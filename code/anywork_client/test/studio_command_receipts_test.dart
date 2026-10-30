@@ -425,7 +425,7 @@ const _project = StudioProject(
 
 StudioThread _thread({ThreadModeId mode = ThreadModeId.simple}) => StudioThread(
   id: 'thread',
-  projectId: 'project',
+  workspaceId: 'project',
   title: 'Thread',
   mode: mode,
   delegationMode: DelegationMode.profile,
@@ -438,7 +438,7 @@ StudioThread _thread({ThreadModeId mode = ThreadModeId.simple}) => StudioThread(
 /// list publishes, with no separate page or content view.
 StudioThread _childThread() => StudioThread(
   id: 'child',
-  projectId: 'project',
+  workspaceId: 'project',
   title: 'Child',
   mode: ThreadModeId.simple,
   delegationMode: DelegationMode.profile,
@@ -706,7 +706,7 @@ Future<AnyworkClient> _client(
   // The command has a stable selected identity; this test does not open a native
   // ChatView. State frames enter through the production read-model reducers.
   client.selection.restoreStartup(
-    projectId: 'project',
+    workspaceId: 'project',
     threadId: 'thread',
     needsOpen: true,
   );
@@ -1678,7 +1678,7 @@ void main() {
             category: RecoveryIssueCategory.repository,
             impact: RecoveryIssueImpact.accessBlocked,
             availableActions: [],
-            projectId: 'project',
+            workspaceId: 'project',
             detail: 'Only Project operations are blocked',
           ),
           StudioRecoveryIssue(
@@ -1914,7 +1914,7 @@ void main() {
       ),
     );
     client.selection.restoreStartup(
-      projectId: 'project',
+      workspaceId: 'project',
       threadId: 'thread',
       needsOpen: true,
     );
@@ -2219,7 +2219,7 @@ void main() {
             category: RecoveryIssueCategory.storage,
             impact: RecoveryIssueImpact.executionBlocked,
             availableActions: [],
-            projectId: 'project',
+            workspaceId: 'project',
             threadId: 'thread',
             detail: 'New work is paused while storage is repaired',
           ),
@@ -2282,7 +2282,7 @@ void main() {
           );
           expect(commandObservers(), 1);
           client.selection.restoreStartup(
-            projectId: 'project',
+            workspaceId: 'project',
             threadId: 'another-thread',
             needsOpen: true,
           );
@@ -2470,7 +2470,7 @@ void main() {
         category: RecoveryIssueCategory.repository,
         impact: RecoveryIssueImpact.executionBlocked,
         availableActions: [],
-        projectId: 'project',
+        workspaceId: 'project',
         detail:
             'Only Project preparation is blocked until a Thread issue arrives',
       );
@@ -2798,7 +2798,7 @@ void main() {
         ThreadModeId.task,
         threadId: 'thread',
       );
-      client.selection.selectThread(projectId: 'project', threadId: 'other');
+      client.selection.selectThread(workspaceId: 'project', threadId: 'other');
       final entered = transport.modes.stream.first;
       final changing = oldAction();
       final call = await entered;
@@ -3344,7 +3344,7 @@ void main() {
       ProjectDirectoryState(values: [_project], revision: 1),
     );
     client.selection.restoreStartup(
-      projectId: 'project',
+      workspaceId: 'project',
       threadId: 'thread',
       needsOpen: true,
     );
@@ -3829,7 +3829,7 @@ void main() {
             category: RecoveryIssueCategory.storage,
             impact: RecoveryIssueImpact.executionBlocked,
             availableActions: [],
-            projectId: 'project',
+            workspaceId: 'project',
             threadId: 'thread',
             detail: 'New execution is paused',
           ),
@@ -4052,7 +4052,7 @@ void main() {
                   category: RecoveryIssueCategory.storage,
                   impact: RecoveryIssueImpact.executionBlocked,
                   availableActions: [],
-                  projectId: 'project',
+                  workspaceId: 'project',
                   threadId: 'thread',
                   detail: 'Execution is paused before the resend',
                 ),
@@ -4247,7 +4247,7 @@ void main() {
               category: RecoveryIssueCategory.storage,
               impact: RecoveryIssueImpact.accessBlocked,
               availableActions: [RecoveryIssueAction.retry],
-              projectId: 'project',
+              workspaceId: 'project',
               threadId: 'thread',
               detail: 'Thread history cannot be read safely',
             ),
@@ -4448,7 +4448,7 @@ void main() {
             category: RecoveryIssueCategory.storage,
             impact: RecoveryIssueImpact.executionBlocked,
             availableActions: [],
-            projectId: 'project',
+            workspaceId: 'project',
             threadId: 'thread',
             detail: 'New execution is paused',
           ),
@@ -4689,7 +4689,7 @@ void main() {
       await client.threadCommands.readChildInteractions('thread');
       expect(client.childInteractions.state.visibleItems, [refreshed]);
       final generation = client.childInteractions.state.displayGeneration;
-      client.selection.selectThread(projectId: 'project', threadId: 'other');
+      client.selection.selectThread(workspaceId: 'project', threadId: 'other');
       expect(client.childInteractions.state.displayGeneration, generation);
       expect(client.childInteractions.state.visibleItems, [refreshed]);
       client.conversations.setVisibleThread(null);

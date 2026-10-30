@@ -32,8 +32,8 @@ impl StudioChildResources for StudioThreadFactory {
             .project_snapshot()
             .await
             .into_iter()
-            .find(|project| project.id == parent.project_id)
-            .ok_or_else(|| ThreadAssemblyError::Identity(parent.project_id.clone()))?;
+            .find(|project| project.id == parent.workspace_id)
+            .ok_or_else(|| ThreadAssemblyError::Identity(parent.workspace_id.clone()))?;
         let root_thread = self.thread_record(&parent.root_thread_id).await?;
         let reviewed =
             if profile.profile.workspace_mode == pl_protocol::AgentWorkspaceMode::Review {
@@ -136,7 +136,7 @@ impl StudioChildResources for StudioThreadFactory {
                 .get(&request.caller)
                 .filter(|lease| {
                     identity.matches_root(&lease.path)
-                        && lease.project_id == project.id
+                        && lease.workspace_id == project.id
                         && lease.root_thread_id == parent.root_thread_id
                 })
                 .map(|lease| PathBuf::from(lease.repository_root))
@@ -176,7 +176,7 @@ impl StudioChildResources for StudioThreadFactory {
         let store = FileResourceStore::new(
             self.services
                 .store
-                .session_resources_dir_for(&parent.project_id, &request.id)
+                .session_resources_dir_for(&parent.workspace_id, &request.id)
                 .map_err(|error| resource_error("resolve child session resources", error))?,
         );
         let mut prepared_tools = self
@@ -277,7 +277,7 @@ impl StudioChildResources for StudioThreadFactory {
                 parent_thread_id: request.caller.clone(),
                 root_thread_id: parent.root_thread_id,
                 agent_path: request.id.clone(),
-                project_id: parent.project_id,
+                workspace_id: parent.workspace_id,
                 mode: parent.mode,
                 workspace_mode: parent.workspace_mode,
                 workspace_path: parent.workspace_path,

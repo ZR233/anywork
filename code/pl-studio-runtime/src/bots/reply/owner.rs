@@ -213,7 +213,7 @@ impl BotRuntime {
             Err(error) => return attention(format!("bot runtime lost before reply: {error}")),
         };
         let config = managed.config.lock().await.clone();
-        if config.project_id != inbound.project_id || config.feishu().app_id != inbound.app_id {
+        if config.workspace_id != inbound.workspace_id || config.feishu().app_id != inbound.app_id {
             return attention("frozen inbound app or project no longer matches bot config");
         }
         // 冻结路由：入站受理时的 App/project/creation/binding 归属不因新配置改派。
@@ -725,14 +725,14 @@ impl BotRuntime {
         let FrozenInbound {
             bot_id,
             chat_id,
-            project_id,
+            workspace_id,
             creation_id,
             ..
         } = inbound;
         let config = managed.config.lock().await.clone();
         let claim = managed
             .store
-            .claim_thread_binding(chat_id, creation_id, project_id)
+            .claim_thread_binding(chat_id, creation_id, workspace_id)
             .await
             .map_err(|error| binding_failure("thread binding claim failed", error))?;
         let thread_id = match claim {
@@ -741,7 +741,7 @@ impl BotRuntime {
                 let created = runtime
                     .create_thread_with_id(
                         creation_id.clone(),
-                        project_id,
+                        workspace_id,
                         &format!("{} / {chat_id}", config.name),
                     )
                     .await
@@ -750,7 +750,7 @@ impl BotRuntime {
                     })?;
                 managed
                     .store
-                    .bind_thread(chat_id, &created.id, &creation_id, project_id)
+                    .bind_thread(chat_id, &created.id, &creation_id, workspace_id)
                     .await
                     .map_err(|error| binding_failure("thread binding persist failed", error))?
             }
@@ -760,7 +760,7 @@ impl BotRuntime {
         };
         let projection = managed
             .store
-            .binding_for_chat(chat_id, bot_id, project_id)
+            .binding_for_chat(chat_id, bot_id, workspace_id)
             .await
             .map_err(|error| binding_failure("thread binding read failed", error))?;
         if binding_revision != 0
@@ -773,7 +773,7 @@ impl BotRuntime {
             });
         }
         match runtime.find_owned_thread(&thread_id).await {
-            Ok(Some(existing)) if existing.project_id != config.project_id => {
+            Ok(Some(existing)) if existing.workspace_id != config.workspace_id => {
                 managed
                     .store
                     .mark_binding_attention(chat_id, "bound Thread belongs to another project")

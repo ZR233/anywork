@@ -54,7 +54,7 @@ impl StudioStore {
         // Workspace/Project TOML is the canonical directory fact; the product SQLite tables remain
         // write-behind mirrors for migration and diagnostics only.
         for project in &delta.project_upserts {
-            self.prepare_project_manifest(&crate::studio::records::ProjectRecord {
+            self.prepare_project_manifest(&crate::studio::records::WorkspaceRecord {
                 id: project.id.clone(),
                 kind: project.kind,
                 name: project.name.clone(),

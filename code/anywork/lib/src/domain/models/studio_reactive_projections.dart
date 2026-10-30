@@ -341,7 +341,7 @@ class StudioComposerProjection {
       turn: state.turn,
       modelRoute: runtime.modelRoute,
       workflow: runtime.workflow,
-      targetDiagnostic: state.composerDiagnostic(thread.projectId, thread.id),
+      targetDiagnostic: state.composerDiagnostic(thread.workspaceId, thread.id),
     );
   }
 
@@ -497,7 +497,7 @@ bool _threadEquals(StudioThread? left, StudioThread? right) {
   if (identical(left, right)) return true;
   if (left == null || right == null) return false;
   return left.id == right.id &&
-      left.projectId == right.projectId &&
+      left.workspaceId == right.workspaceId &&
       left.title == right.title &&
       left.mode == right.mode &&
       left.createdAt == right.createdAt &&
@@ -517,7 +517,7 @@ int? _threadHash(StudioThread? thread) {
   if (thread == null) return null;
   return Object.hash(
     thread.id,
-    thread.projectId,
+    thread.workspaceId,
     thread.title,
     thread.mode,
     thread.createdAt,

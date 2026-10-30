@@ -215,13 +215,13 @@ final class _Journey {
           project?['id'] == navigation['selectedProjectId'] &&
           project?['path'] == projectPath;
     }, 'canonical project selection');
-    final projectId = _requiredString(
+    final workspaceId = _requiredString(
       _map(latest!['project'])?['id'],
       'project.id',
     );
 
     setStage('configure-local-root');
-    await _configureRoot(projectId, worktree: false);
+    await _configureRoot(workspaceId, worktree: false);
     await _capture('workspace-settings');
 
     final directoryReceipt = await _submitAndWait(
@@ -262,12 +262,12 @@ final class _Journey {
     await _capture('directory-guards');
 
     setStage('new-worktree-root');
-    await _tap('project-new-session-$projectId');
+    await _tap('project-new-session-$workspaceId');
     await _waitFor(
       (state) => _map(state['navigation'])?['selectedThreadId'] == null,
       'new session start page',
     );
-    await _configureRoot(projectId, worktree: true);
+    await _configureRoot(workspaceId, worktree: true);
     _expect(
       _map(latest!['navigation'])?['newThreadWorkspaceMode'] == 'worktree',
       'new thread workspace mode is not worktree',
@@ -307,7 +307,7 @@ final class _Journey {
       'schemaVersion': 1,
       'phase': 'first',
       'humanVerdict': 'pending',
-      'projectId': projectId,
+      'workspaceId': workspaceId,
       'projectPath': projectPath,
       'directoryRootId': directoryRoot,
       'nestedRootId': nestedRoot,
@@ -352,8 +352,8 @@ final class _Journey {
     );
     final nestedRoot = _requiredString(decoded['nestedRootId'], 'nestedRootId');
     final expectedProjectId = _requiredString(
-      decoded['projectId'],
-      'projectId',
+      decoded['workspaceId'],
+      'workspaceId',
     );
     final savedStageRows =
         _map(decoded['stageRows']) ??
@@ -555,7 +555,7 @@ final class _Journey {
   }
 
   Future<void> _configureRoot(
-    String projectId, {
+    String workspaceId, {
     required bool worktree,
   }) async {
     await _tap('delegation-session-settings');
@@ -580,7 +580,7 @@ final class _Journey {
     final drafts = _map(snapshot['delegation'])?['drafts'];
     final draft = drafts is List
         ? drafts.whereType<Map>().cast<Map>().firstWhere(
-            (item) => item['projectId'] == projectId,
+            (item) => item['workspaceId'] == workspaceId,
             orElse: () => <String, Object?>{},
           )
         : <String, Object?>{};

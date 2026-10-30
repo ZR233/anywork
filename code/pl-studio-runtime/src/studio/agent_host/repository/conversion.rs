@@ -25,7 +25,7 @@ impl TryFrom<thread::Model> for ThreadRecord {
         };
         Ok(Self {
             id: model.id,
-            project_id: model.project_id,
+            workspace_id: model.workspace_id,
             title: model.title,
             mode: thread_mode_from_label(&model.mode)?,
             workspace_mode: pl_protocol::ThreadWorkspaceMode::from_label(&model.workspace_mode)

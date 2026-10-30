@@ -363,10 +363,10 @@ class _AgentSwitcherMenuState extends ConsumerState<AgentSwitcherMenu> {
     final rootProjectId = widget.workspaceThreads
         .where((candidate) => candidate.isRoot)
         .firstOrNull
-        ?.projectId;
+        ?.workspaceId;
     final recoveryIssue = recoveryIssuesForTarget(
       widget.recoveryIssues,
-      projectId: thread?.projectId ?? rootProjectId,
+      workspaceId: thread?.workspaceId ?? rootProjectId,
       threadId: agent.threadId,
     ).firstOrNull;
     final error = agent.error;

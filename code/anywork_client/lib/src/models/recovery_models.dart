@@ -62,7 +62,7 @@ class StudioRecoveryIssue {
     required this.impact,
     required this.availableActions,
     required this.detail,
-    this.projectId,
+    this.workspaceId,
     this.threadId,
     this.worktree,
   });
@@ -72,7 +72,7 @@ class StudioRecoveryIssue {
   final RecoveryIssueCategory category;
   final RecoveryIssueImpact impact;
   final List<RecoveryIssueAction> availableActions;
-  final String? projectId;
+  final String? workspaceId;
   final String? threadId;
   final String detail;
   final WorktreeRecoveryPreview? worktree;
@@ -91,26 +91,26 @@ class StudioRecoveryIssue {
   /// existing Threads consume Application and their own Thread issues only.
   /// A Thread issue's project identity remains optional metadata, and when
   /// both project IDs are present they must agree.
-  bool matchesTarget({required String? projectId, String? threadId}) =>
+  bool matchesTarget({required String? workspaceId, String? threadId}) =>
       switch (scope) {
         RecoveryIssueScope.application => true,
         RecoveryIssueScope.project =>
-          threadId == null && projectId != null && this.projectId == projectId,
+          threadId == null && workspaceId != null && this.workspaceId == workspaceId,
         RecoveryIssueScope.thread =>
           threadId != null &&
               this.threadId == threadId &&
-              (projectId == null ||
-                  this.projectId == null ||
-                  this.projectId == projectId),
+              (workspaceId == null ||
+                  this.workspaceId == null ||
+                  this.workspaceId == workspaceId),
       };
 
   /// Actionable diagnostic text shared by UI entry points and rejected calls.
   String get diagnosticSummary {
     final owner = switch (scope) {
       RecoveryIssueScope.application => 'application',
-      RecoveryIssueScope.project => 'project ${projectId ?? '(unknown)'}',
+      RecoveryIssueScope.project => 'project ${workspaceId ?? '(unknown)'}',
       RecoveryIssueScope.thread =>
-        'project ${projectId ?? '(unknown)'}, thread ${threadId ?? '(unknown)'}',
+        'project ${workspaceId ?? '(unknown)'}, thread ${threadId ?? '(unknown)'}',
     };
     final actions = availableActions.isEmpty
         ? 'none currently available'
@@ -133,13 +133,13 @@ class StudioRecoveryIssue {
         'scope': scope.name,
         'id': switch (scope) {
           RecoveryIssueScope.application => null,
-          RecoveryIssueScope.project => projectId,
+          RecoveryIssueScope.project => workspaceId,
           RecoveryIssueScope.thread => threadId,
         },
       },
       'category': category.name,
       'impact': impact.name,
-      'projectId': projectId,
+      'workspaceId': workspaceId,
       'threadId': threadId,
       'detail': detail,
       'availableActions': availableActions
@@ -167,7 +167,7 @@ StudioRecoveryIssue? recoveryIssueFromFailure(StudioFailure? failure) {
     final impactName = decoded['impact'];
     final detail = decoded['detail'];
     final actionNames = decoded['availableActions'];
-    final projectIdValue = decoded['projectId'];
+    final workspaceIdValue = decoded['workspaceId'];
     final threadIdValue = decoded['threadId'];
     final owner = decoded['owner'];
     if (id is! String ||
@@ -178,7 +178,7 @@ StudioRecoveryIssue? recoveryIssueFromFailure(StudioFailure? failure) {
         detail is! String ||
         detail.trim().isEmpty ||
         actionNames is! List<dynamic> ||
-        (projectIdValue != null && projectIdValue is! String) ||
+        (workspaceIdValue != null && workspaceIdValue is! String) ||
         (threadIdValue != null && threadIdValue is! String) ||
         owner is! Map<String, dynamic>) {
       return null;
@@ -186,18 +186,18 @@ StudioRecoveryIssue? recoveryIssueFromFailure(StudioFailure? failure) {
     final scope = RecoveryIssueScope.values.byName(scopeName);
     final category = RecoveryIssueCategory.values.byName(categoryName);
     final impact = RecoveryIssueImpact.values.byName(impactName);
-    final projectId = projectIdValue as String?;
+    final workspaceId = workspaceIdValue as String?;
     final threadId = threadIdValue as String?;
-    if ((projectId != null && projectId.trim().isEmpty) ||
+    if ((workspaceId != null && workspaceId.trim().isEmpty) ||
         (threadId != null && threadId.trim().isEmpty)) {
       return null;
     }
     switch (scope) {
       case RecoveryIssueScope.application:
-        if (projectId != null || threadId != null) return null;
+        if (workspaceId != null || threadId != null) return null;
         break;
       case RecoveryIssueScope.project:
-        if (projectId == null || threadId != null) return null;
+        if (workspaceId == null || threadId != null) return null;
         break;
       case RecoveryIssueScope.thread:
         if (threadId == null) return null;
@@ -205,7 +205,7 @@ StudioRecoveryIssue? recoveryIssueFromFailure(StudioFailure? failure) {
     }
     final ownerId = switch (scope) {
       RecoveryIssueScope.application => null,
-      RecoveryIssueScope.project => projectId,
+      RecoveryIssueScope.project => workspaceId,
       RecoveryIssueScope.thread => threadId,
     };
     if (owner['scope'] != scopeName || owner['id'] != ownerId) return null;
@@ -221,7 +221,7 @@ StudioRecoveryIssue? recoveryIssueFromFailure(StudioFailure? failure) {
       category: category,
       impact: impact,
       availableActions: actions,
-      projectId: projectId,
+      workspaceId: workspaceId,
       threadId: threadId,
       detail: detail,
     );
@@ -232,13 +232,13 @@ StudioRecoveryIssue? recoveryIssueFromFailure(StudioFailure? failure) {
 
 List<StudioRecoveryIssue> recoveryIssuesForTarget(
   Iterable<StudioRecoveryIssue> issues, {
-  required String? projectId,
+  required String? workspaceId,
   String? threadId,
 }) {
   final matching = issues
       .where(
         (issue) =>
-            issue.matchesTarget(projectId: projectId, threadId: threadId),
+            issue.matchesTarget(workspaceId: workspaceId, threadId: threadId),
       )
       .toList();
   matching.sort((left, right) {
@@ -253,20 +253,20 @@ List<StudioRecoveryIssue> recoveryIssuesForTarget(
 
 StudioRecoveryIssue? recoveryIssueBlockingAccess(
   Iterable<StudioRecoveryIssue> issues, {
-  required String? projectId,
+  required String? workspaceId,
   String? threadId,
 }) => recoveryIssuesForTarget(
   issues,
-  projectId: projectId,
+  workspaceId: workspaceId,
   threadId: threadId,
 ).where((issue) => issue.blocksAccess).firstOrNull;
 
 StudioRecoveryIssue? recoveryIssueBlockingExecution(
   Iterable<StudioRecoveryIssue> issues, {
-  required String? projectId,
+  required String? workspaceId,
   String? threadId,
 }) => recoveryIssuesForTarget(
   issues,
-  projectId: projectId,
+  workspaceId: workspaceId,
   threadId: threadId,
 ).where((issue) => issue.blocksExecution).firstOrNull;

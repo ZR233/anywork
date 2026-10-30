@@ -11,22 +11,22 @@ import '../views/session_settings_view.dart';
 class SessionSettingsConnector extends ConsumerWidget {
   const SessionSettingsConnector({
     super.key,
-    required this.projectId,
+    required this.workspaceId,
     required this.enabled,
   });
 
-  final String projectId;
+  final String workspaceId;
   final bool enabled;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final draft = ref.watch(startSessionControllerProvider);
-    final project = draft.forProject(projectId);
+    final project = draft.forProject(workspaceId);
     final workspace = ref
         .watch(projectStoreProvider)
         .projects
         ?.values
-        .where((candidate) => candidate.id == projectId)
+        .where((candidate) => candidate.id == workspaceId)
         .firstOrNull;
     final defaults = ref.watch(settingsStoreProvider).canonical?.delegation;
     if (defaults == null) return const SizedBox.shrink();
@@ -41,10 +41,10 @@ class SessionSettingsConnector extends ConsumerWidget {
       workspaceMode: project.workspaceMode,
       isStandalone: workspace?.isStandalone ?? false,
       enabled: enabled && !draft.submitting,
-      onModeChanged: (mode) => owner.setDelegationModeOverride(projectId, mode),
+      onModeChanged: (mode) => owner.setDelegationModeOverride(workspaceId, mode),
       onPreferenceChanged: (preference) =>
-          owner.setDelegationPreferenceOverride(projectId, preference),
-      onWorkspaceModeChanged: (mode) => owner.setWorkspaceMode(projectId, mode),
+          owner.setDelegationPreferenceOverride(workspaceId, preference),
+      onWorkspaceModeChanged: (mode) => owner.setWorkspaceMode(workspaceId, mode),
     );
   }
 }

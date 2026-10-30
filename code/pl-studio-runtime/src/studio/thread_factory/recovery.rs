@@ -26,9 +26,9 @@ pub(crate) async fn load_checkpoint_read_only(
     store: &StudioStore,
     thread: &pl_protocol::Thread,
 ) -> Result<Option<ThreadCheckpoint>> {
-    let history = store.history_for(&thread.project_id, &thread.id).await?;
+    let history = store.history_for(&thread.workspace_id, &thread.id).await?;
     store
-        .state_for(&thread.project_id, &thread.id)?
+        .state_for(&thread.workspace_id, &thread.id)?
         .load_read_only(&history)
         .await
 }
@@ -44,9 +44,9 @@ pub(crate) async fn load_checkpoint_for_recovery(
     store: &StudioStore,
     thread: &pl_protocol::Thread,
 ) -> Result<Option<ThreadCheckpoint>> {
-    let history = store.history_for(&thread.project_id, &thread.id).await?;
+    let history = store.history_for(&thread.workspace_id, &thread.id).await?;
     let Some(_) = store
-        .state_for(&thread.project_id, &thread.id)?
+        .state_for(&thread.workspace_id, &thread.id)?
         .prepare_recovery(&history)
         .await?
     else {

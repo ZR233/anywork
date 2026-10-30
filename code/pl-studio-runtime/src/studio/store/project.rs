@@ -10,7 +10,7 @@ use sea_orm::{
 use super::schema::{STUDIO_DATABASE_SCHEMA_VERSION, migrate};
 use crate::studio::catalog::CatalogStore;
 use crate::studio::paths::{SqliteFileMode, StudioPaths, default_db_path, sqlite_file_options};
-use crate::studio::records::ProjectRecord;
+use crate::studio::records::WorkspaceRecord;
 use crate::studio::store::settings::SettingsStore;
 use crate::studio::store::workspaces::WorkspaceStore;
 use crate::studio::store::{StudioDatabaseError, StudioStore};
@@ -180,7 +180,7 @@ impl StudioStore {
         Ok(())
     }
 
-    pub async fn list_projects(&self) -> Result<Vec<ProjectRecord>> {
+    pub async fn list_projects(&self) -> Result<Vec<WorkspaceRecord>> {
         let mut entries = self
             .workspaces()
             .entries()
@@ -214,10 +214,10 @@ impl StudioStore {
             }))
     }
 
-    pub async fn read_project(&self, project_id: &str) -> Result<Option<ProjectRecord>> {
+    pub async fn read_project(&self, workspace_id: &str) -> Result<Option<WorkspaceRecord>> {
         Ok(self
             .workspaces()
-            .get(project_id)
+            .get(workspace_id)
             .map(|entry| entry.project()))
     }
 }
@@ -329,7 +329,7 @@ fn validate_directory_references(
         .collect::<BTreeSet<_>>();
     for entry in &entries {
         ensure!(
-            projects.contains(&entry.project_id),
+            projects.contains(&entry.workspace_id),
             "catalog references a missing project"
         );
         if let Some(parent_id) = &entry.parent_thread_id {
@@ -340,8 +340,8 @@ fn validate_directory_references(
                 .get(entry.root_thread_id.as_str())
                 .context("catalog references a missing root")?;
             ensure!(
-                parent.project_id == entry.project_id
-                    && root.project_id == entry.project_id
+                parent.workspace_id == entry.workspace_id
+                    && root.workspace_id == entry.workspace_id
                     && root.parent_thread_id.is_none()
                     && parent.root_thread_id == entry.root_thread_id,
                 "catalog parent/root references are inconsistent"

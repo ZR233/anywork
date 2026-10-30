@@ -364,7 +364,7 @@ pub struct StudioGeneralSettings {
     #[serde(default)]
     pub pinned_thread_ids: Vec<String>,
     #[serde(default)]
-    pub pinned_project_ids: Vec<String>,
+    pub pinned_workspace_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]

@@ -23,23 +23,23 @@ pub enum BotToolKind {
 pub trait BotSessionHost: Send + Sync + std::fmt::Debug + 'static {
     fn list_bots(
         &self,
-        project_id: &str,
+        workspace_id: &str,
     ) -> impl std::future::Future<Output = Result<ToolOutput, ToolError>> + Send;
     fn list_conversations(
         &self,
-        project_id: &str,
+        workspace_id: &str,
         bot_id: String,
         cursor: Option<String>,
         limit: Option<u32>,
     ) -> impl std::future::Future<Output = Result<ToolOutput, ToolError>> + Send;
     fn read_messages(
         &self,
-        project_id: &str,
+        workspace_id: &str,
         request: ReadMessagesInput,
     ) -> impl std::future::Future<Output = Result<ToolOutput, ToolError>> + Send;
     fn send_message(
         &self,
-        project_id: &str,
+        workspace_id: &str,
         operation_id: String,
         bot_id: String,
         chat_id: String,
@@ -88,15 +88,15 @@ struct SendMessageInput {
 pub struct ThreadBotTool<H> {
     host: Arc<H>,
     kind: BotToolKind,
-    project_id: String,
+    workspace_id: String,
 }
 
 impl<H: BotSessionHost> ThreadBotTool<H> {
-    pub fn new(host: Arc<H>, kind: BotToolKind, project_id: String) -> Self {
+    pub fn new(host: Arc<H>, kind: BotToolKind, workspace_id: String) -> Self {
         Self {
             host,
             kind,
-            project_id,
+            workspace_id,
         }
     }
 
@@ -168,27 +168,27 @@ impl<H: BotSessionHost> Tool for ThreadBotTool<H> {
         match self.kind {
             BotToolKind::ListBots => {
                 deserialize_tool_input::<Empty>(self.kind.name(), value).map_err(ToolError::new)?;
-                self.host.list_bots(&self.project_id).await
+                self.host.list_bots(&self.workspace_id).await
             }
             BotToolKind::ListConversations => {
                 let input =
                     deserialize_tool_input::<ListConversationsInput>(self.kind.name(), value)
                         .map_err(ToolError::new)?;
                 self.host
-                    .list_conversations(&self.project_id, input.bot_id, input.cursor, input.limit)
+                    .list_conversations(&self.workspace_id, input.bot_id, input.cursor, input.limit)
                     .await
             }
             BotToolKind::ReadMessages => {
                 let input = deserialize_tool_input::<ReadMessagesInput>(self.kind.name(), value)
                     .map_err(ToolError::new)?;
-                self.host.read_messages(&self.project_id, input).await
+                self.host.read_messages(&self.workspace_id, input).await
             }
             BotToolKind::SendMessage => {
                 let input = deserialize_tool_input::<SendMessageInput>(self.kind.name(), value)
                     .map_err(ToolError::new)?;
                 self.host
                     .send_message(
-                        &self.project_id,
+                        &self.workspace_id,
                         context.call_id.clone(),
                         input.bot_id,
                         input.chat_id,

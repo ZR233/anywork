@@ -20,14 +20,14 @@ enum ThreadPreparationStage {
 
 final class ThreadPreparationProgress {
   const ThreadPreparationProgress({
-    required this.projectId,
+    required this.workspaceId,
     required this.inputId,
     required this.stage,
     this.workspacePath,
     this.branch,
   });
 
-  final String projectId;
+  final String workspaceId;
   final String inputId;
   final ThreadPreparationStage stage;
   final String? workspacePath;
@@ -36,7 +36,7 @@ final class ThreadPreparationProgress {
   @override
   bool operator ==(Object other) =>
       other is ThreadPreparationProgress &&
-      projectId == other.projectId &&
+      workspaceId == other.workspaceId &&
       inputId == other.inputId &&
       stage == other.stage &&
       workspacePath == other.workspacePath &&
@@ -44,7 +44,7 @@ final class ThreadPreparationProgress {
 
   @override
   int get hashCode =>
-      Object.hash(projectId, inputId, stage, workspacePath, branch);
+      Object.hash(workspaceId, inputId, stage, workspacePath, branch);
 }
 
 sealed class NewThreadStartEvent {
@@ -77,7 +77,7 @@ enum NewThreadPreparationPhase { preparing, failed, unknownOutcome }
 /// One frozen submission's display mirror, independent of later draft edits.
 final class NewThreadPreparation {
   const NewThreadPreparation({
-    required this.projectId,
+    required this.workspaceId,
     required this.inputId,
     required this.workspaceMode,
     this.progress,
@@ -85,7 +85,7 @@ final class NewThreadPreparation {
     this.failure,
   });
 
-  final String projectId;
+  final String workspaceId;
   final String inputId;
   final ThreadWorkspaceMode workspaceMode;
   final ThreadPreparationProgress? progress;
@@ -94,7 +94,7 @@ final class NewThreadPreparation {
 
   NewThreadPreparation withProgress(ThreadPreparationProgress value) =>
       NewThreadPreparation(
-        projectId: projectId,
+        workspaceId: workspaceId,
         inputId: inputId,
         workspaceMode: workspaceMode,
         progress: value,
@@ -102,7 +102,7 @@ final class NewThreadPreparation {
 
   NewThreadPreparation withFailure(Object error, {required bool known}) =>
       NewThreadPreparation(
-        projectId: projectId,
+        workspaceId: workspaceId,
         inputId: inputId,
         workspaceMode: workspaceMode,
         progress: progress,
@@ -115,7 +115,7 @@ final class NewThreadPreparation {
   @override
   bool operator ==(Object other) =>
       other is NewThreadPreparation &&
-      projectId == other.projectId &&
+      workspaceId == other.workspaceId &&
       inputId == other.inputId &&
       workspaceMode == other.workspaceMode &&
       progress == other.progress &&
@@ -124,5 +124,5 @@ final class NewThreadPreparation {
 
   @override
   int get hashCode =>
-      Object.hash(projectId, inputId, workspaceMode, progress, phase, failure);
+      Object.hash(workspaceId, inputId, workspaceMode, progress, phase, failure);
 }

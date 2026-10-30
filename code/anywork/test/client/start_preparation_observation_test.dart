@@ -25,7 +25,7 @@ final class _PreparingTransport extends DemoStudioTransport {
 
   @override
   Stream<NewThreadStartEvent> startNewThread(
-    String projectId,
+    String workspaceId,
     StudioPromptInput input,
     ThreadModeId mode, {
     required ModeModelRouteView route,
@@ -37,7 +37,7 @@ final class _PreparingTransport extends DemoStudioTransport {
     if (_events != null) {
       throw StateError('Only one creation is scripted by this fixture');
     }
-    receivedProjectId = projectId;
+    receivedProjectId = workspaceId;
     receivedWorkspaceMode = workspaceMode;
     _events = StreamController<NewThreadStartEvent>(
       onListen: () => _listened = true,
@@ -118,22 +118,22 @@ void main() {
       });
       await graph.client.bootstrap();
       await graph.client.directoryCommands.beginNewThread();
-      final projectId = graph.client.selection.state.selectedProjectId!;
+      final workspaceId = graph.client.selection.state.selectedProjectId!;
       final owner = graph.client.drafts.startDraft;
-      owner.updateDraft(projectId, 'prepare a workspace');
-      owner.setWorkspaceMode(projectId, ThreadWorkspaceMode.worktree);
+      owner.updateDraft(workspaceId, 'prepare a workspace');
+      owner.setWorkspaceMode(workspaceId, ThreadWorkspaceMode.worktree);
 
       // Bootstrap no longer materializes the model directory. An unavailable
       // route must reject without starting creation or losing the raw intent.
       expect(graph.models.state.value.accounts, isEmpty);
-      submission = owner.submit(projectId);
+      submission = owner.submit(workspaceId);
       expect(await submission.timeout(_waitLimit), isFalse);
       expect(transport.entered.isCompleted, isFalse);
       expect(transport.starts, 0);
-      expect(owner.state.preparations[projectId], isNull);
-      expect(owner.state.forProject(projectId).text, 'prepare a workspace');
+      expect(owner.state.preparations[workspaceId], isNull);
+      expect(owner.state.forProject(workspaceId).text, 'prepare a workspace');
       expect(
-        owner.state.forProject(projectId).workspaceMode,
+        owner.state.forProject(workspaceId).workspaceMode,
         ThreadWorkspaceMode.worktree,
       );
 
@@ -156,7 +156,7 @@ void main() {
           .read(startPageComposerViewModelProvider)
           .requireValue
           .project!;
-      expect(project.id, projectId);
+      expect(project.id, workspaceId);
       final submitted = submission = owner.submit(project.id);
       final input = await Future.any<StudioPromptInput>([
         transport.entered.future,
@@ -185,7 +185,7 @@ void main() {
       transport.events.add(
         NewThreadStartProgress(
           ThreadPreparationProgress(
-            projectId: project.id,
+            workspaceId: project.id,
             inputId: input.inputId,
             stage: ThreadPreparationStage.creatingWorktree,
             workspacePath: '/isolated/session-worktree',
@@ -203,7 +203,7 @@ void main() {
           .read(startPageComposerViewModelProvider)
           .requireValue;
       expect(projection.preparation?.inputId, input.inputId);
-      expect(projection.preparation?.projectId, project.id);
+      expect(projection.preparation?.workspaceId, project.id);
       expect(
         projection.preparation?.progress?.workspacePath,
         '/isolated/session-worktree',

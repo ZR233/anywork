@@ -165,7 +165,7 @@ impl crate::studio::StudioStore {
 
 pub(in crate::studio) async fn resolve_physical_workspace(
     ssh: &pl_tool::remote::SshManager,
-    project: &crate::studio::ProjectRecord,
+    project: &crate::studio::WorkspaceRecord,
     root: &Path,
 ) -> Result<WorkspaceIdentity> {
     match project.ssh_alias.as_deref() {

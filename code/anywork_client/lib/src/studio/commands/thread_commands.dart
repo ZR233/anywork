@@ -352,7 +352,7 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard>
   /// original definite terminal event; stream errors or EOF after invocation
   /// remain unwrapped and do not prove rejection.
   Future<StartNewThreadResult?> submitNewThread({
-    required String projectId,
+    required String workspaceId,
     required StudioPromptInput input,
     required ThreadModeId mode,
     required ModeModelRouteView route,
@@ -371,20 +371,20 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard>
           return null;
         }
         final project = (_client.project.state.projects?.values ?? const [])
-            .where((candidate) => candidate.id == projectId)
+            .where((candidate) => candidate.id == workspaceId)
             .firstOrNull;
         if (project?.isStandalone == true &&
             ThreadWorkspaceMode.fromId(workspaceMode ?? 'local').isWorktree) {
           throw StateError('Standalone workspaces only support local mode');
         }
-        final key = 'new-thread:$projectId';
-        _begin(key, label: projectId);
+        final key = 'new-thread:$workspaceId';
+        _begin(key, label: workspaceId);
         try {
-          final issue = _executionBlockerForProject(projectId);
+          final issue = _executionBlockerForProject(workspaceId);
           if (issue != null) throw issue.blockedFailure();
           transportInvoked = true;
           await for (final event in _api.startNewThread(
-            projectId,
+            workspaceId,
             input,
             mode,
             route: route,
@@ -394,7 +394,7 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard>
           )) {
             switch (event) {
               case NewThreadStartProgress(:final progress):
-                if (progress.projectId != projectId ||
+                if (progress.workspaceId != workspaceId ||
                     progress.inputId != input.inputId) {
                   throw StateError(
                     'New Thread preparation identity did not match',
@@ -404,7 +404,7 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard>
               case NewThreadStartFailed():
                 throw event;
               case NewThreadStartSucceeded(:final result):
-                if (result.thread.projectId != projectId ||
+                if (result.thread.workspaceId != workspaceId ||
                     result.receipt.threadId != result.thread.id ||
                     result.receipt.inputId != input.inputId) {
                   throw StateError(
@@ -417,7 +417,7 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard>
                   // 目录条目由 owner 的目录增量交付（commit_directory 已在命令内发布）；
                   // 命令成功后不重读聚合状态（design/25 §25.5）。
                   _client.selection.selectThread(
-                    projectId: projectId,
+                    workspaceId: workspaceId,
                     threadId: result.thread.id,
                   );
                 }
@@ -429,7 +429,7 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard>
             'New Thread creation ended without a terminal outcome',
           );
         } catch (error) {
-          _fail(key, projectId, error);
+          _fail(key, workspaceId, error);
           rethrow;
         }
       });
@@ -1469,15 +1469,15 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard>
     );
   }
 
-  String? _projectIdForThread(String threadId) {
-    final directoryProjectId = _directoryThread(threadId)?.projectId;
+  String? _workspaceIdForThread(String threadId) {
+    final directoryProjectId = _directoryThread(threadId)?.workspaceId;
     if (directoryProjectId != null) return directoryProjectId;
     final workspaceProjectId = _client.conversations
         .existingSession(threadId)
         ?.state
         .workspace
         ?.thread
-        .projectId;
+        .workspaceId;
     if (workspaceProjectId != null) return workspaceProjectId;
     final selection = _client.selection.state;
     return selection.selectedThreadId == threadId
@@ -1488,21 +1488,21 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard>
   StudioRecoveryIssue? _accessBlockerForThread(String threadId) =>
       recoveryIssueBlockingAccess(
         _client.recovery.state.value?.values ?? const [],
-        projectId: _projectIdForThread(threadId),
+        workspaceId: _workspaceIdForThread(threadId),
         threadId: threadId,
       );
 
   StudioRecoveryIssue? _executionBlockerForThread(String threadId) =>
       recoveryIssueBlockingExecution(
         _client.recovery.state.value?.values ?? const [],
-        projectId: _projectIdForThread(threadId),
+        workspaceId: _workspaceIdForThread(threadId),
         threadId: threadId,
       );
 
-  StudioRecoveryIssue? _executionBlockerForProject(String projectId) =>
+  StudioRecoveryIssue? _executionBlockerForProject(String workspaceId) =>
       recoveryIssueBlockingExecution(
         _client.recovery.state.value?.values ?? const [],
-        projectId: projectId,
+        workspaceId: workspaceId,
       );
 
   void _throwIfAccessBlockedForThread(String threadId) {

@@ -142,7 +142,7 @@ impl ProductEventBus {
             .values()
             .filter(|thread| {
                 key.as_ref().is_none_or(|key| thread.page_key() < *key)
-                    && query.matches(thread, matching_projects.contains(&thread.project_id))
+                    && query.matches(thread, matching_projects.contains(&thread.workspace_id))
             })
             .cloned()
             .collect::<Vec<_>>();
@@ -163,7 +163,7 @@ impl ProductEventBus {
             let exhausted = cold.len() < 100;
             for thread in cold {
                 if !hot.contains_key(&thread.id)
-                    && query.matches(&thread, matching_projects.contains(&thread.project_id))
+                    && query.matches(&thread, matching_projects.contains(&thread.workspace_id))
                 {
                     matches.push(thread);
                 }
@@ -483,7 +483,7 @@ impl ProductEventBus {
         let project_upserts = delta
             .project_upserts
             .iter()
-            .map(|project| crate::ProjectRecord {
+            .map(|project| crate::WorkspaceRecord {
                 id: project.id.clone(),
                 kind: project.kind,
                 name: project.name.clone(),

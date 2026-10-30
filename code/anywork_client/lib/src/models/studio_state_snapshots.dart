@@ -482,13 +482,13 @@ class SkillSummaryView {
 
 class SkillSearchResultView {
   const SkillSearchResultView({
-    required this.projectId,
+    required this.workspaceId,
     required this.catalogRevision,
     required this.matches,
     required this.truncated,
   });
 
-  final String projectId;
+  final String workspaceId;
   final int catalogRevision;
   final List<SkillSummaryView> matches;
   final bool truncated;
@@ -496,7 +496,7 @@ class SkillSearchResultView {
 
 class SkillsStateSnapshot extends ObservedStateSnapshot<SkillsStateData> {
   SkillsStateSnapshot({
-    required this.projectId,
+    required this.workspaceId,
     required String configFingerprint,
     required int catalogRevision,
     required List<String> skills,
@@ -515,13 +515,13 @@ class SkillsStateSnapshot extends ObservedStateSnapshot<SkillsStateData> {
        );
 
   const SkillsStateSnapshot.fromState({
-    required this.projectId,
+    required this.workspaceId,
     required this.state,
   });
 
   @override
   final ObservedResource<SkillsStateData> state;
-  final String projectId;
+  final String workspaceId;
   SkillsStateData get _data =>
       state.value ??
       const SkillsStateData(

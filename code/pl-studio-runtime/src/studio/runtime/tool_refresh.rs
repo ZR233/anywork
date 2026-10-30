@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 #[derive(Clone, Default)]
 struct CatalogSources(BTreeMap<String, String>);
 impl CatalogSources {
-    fn for_project(&self, project: Option<&crate::studio::ProjectRecord>) -> Self {
+    fn for_project(&self, project: Option<&crate::studio::WorkspaceRecord>) -> Self {
         let key = project
             .and_then(|project| project.ssh_alias.as_ref())
             .map(|server| format!("ssh-ready:{server}"));
@@ -54,7 +54,7 @@ impl CatalogSources {
                 None
             }
             StudioProductEventKind::SkillsStateChanged(value) => Some((
-                format!("skills:{}", value.project_id),
+                format!("skills:{}", value.workspace_id),
                 serde_json::json!(
                     (value
                         .state
@@ -403,7 +403,7 @@ impl StudioRuntime {
             category: crate::studio::StudioRecoveryIssueCategory::ToolCatalog,
             impact: crate::studio::StudioRecoveryImpact::Advisory,
             action: crate::studio::StudioRecoveryIssueAction::Retry,
-            project_id: None,
+            workspace_id: None,
             thread_id: Some(id.to_string()),
             worktree: None,
             message: format!("Tool catalog refresh failed: {error:#}"),

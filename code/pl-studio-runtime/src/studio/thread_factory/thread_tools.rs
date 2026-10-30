@@ -2,7 +2,7 @@
 use super::StudioThreadFactory;
 use super::errors::resource_error;
 use crate::resource_store::FileResourceStore;
-use crate::studio::ProjectRecord;
+use crate::studio::WorkspaceRecord;
 use crate::thread_assembler::{
     StudioCommandBinding, StudioGitBinding, StudioThreadTools, StudioWorkspaceTools,
     ThreadAssemblyError,
@@ -18,7 +18,7 @@ pub(super) struct ThreadToolAssembly<'a> {
     pub cancellation: &'a tokio_util::sync::CancellationToken,
     pub config: &'a crate::config::StudioConfig,
     pub route: &'a pl_model::config::ResolvedModelRoute,
-    pub project: &'a ProjectRecord,
+    pub project: &'a WorkspaceRecord,
     pub root_thread_id: &'a str,
     pub workspace: ToolWorkspace,
     pub store: FileResourceStore,

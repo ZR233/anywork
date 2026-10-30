@@ -46,7 +46,7 @@ bool _sameRecoveryDiagnostic(
       left.scope != right.scope ||
       left.category != right.category ||
       left.impact != right.impact ||
-      left.projectId != right.projectId ||
+      left.workspaceId != right.workspaceId ||
       left.threadId != right.threadId ||
       left.detail != right.detail ||
       left.availableActions.length != right.availableActions.length) {

@@ -60,7 +60,7 @@ final class ComposerDraftImpl extends ReadModel<ComposerThreadState>
       _dependencies.attachments.admitThread(
         threadId: threadId,
         binding: binding,
-        projectId: _projectId,
+        workspaceId: _workspaceId,
         sources: [
           for (final path in paths) AttachmentDraftSource.localFile(path),
         ],
@@ -70,7 +70,7 @@ final class ComposerDraftImpl extends ReadModel<ComposerThreadState>
       _dependencies.attachments.admitThread(
         threadId: threadId,
         binding: binding,
-        projectId: _projectId,
+        workspaceId: _workspaceId,
         sources: [AttachmentDraftSource.remoteUrl(url.trim())],
       );
 
@@ -78,7 +78,7 @@ final class ComposerDraftImpl extends ReadModel<ComposerThreadState>
       _dependencies.attachments.addThreadClipboard(
         threadId: threadId,
         binding: binding,
-        projectId: _projectId,
+        workspaceId: _workspaceId,
         pngBytes: pngBytes,
       );
 
@@ -86,7 +86,7 @@ final class ComposerDraftImpl extends ReadModel<ComposerThreadState>
       _dependencies.attachments.removeThreadDraft(
         threadId: threadId,
         binding: binding,
-        projectId: _projectId,
+        workspaceId: _workspaceId,
         draftId: draftId,
       );
 
@@ -115,7 +115,7 @@ final class ComposerDraftImpl extends ReadModel<ComposerThreadState>
     }
     final recoveryIssue = recoveryIssueBlockingExecution(
       _dependencies.recovery.value.value?.values ?? const [],
-      projectId: session.workspace!.thread.projectId,
+      workspaceId: session.workspace!.thread.workspaceId,
       threadId: threadId,
     );
     if (recoveryIssue != null) throw recoveryIssue.blockedFailure();
@@ -154,7 +154,7 @@ final class ComposerDraftImpl extends ReadModel<ComposerThreadState>
       stamp: frozenStamp,
       operation: operation,
       input: input,
-      projectId: session.workspace!.thread.projectId,
+      workspaceId: session.workspace!.thread.workspaceId,
       mode: session.workspace!.thread.mode,
       route: route,
     );
@@ -207,7 +207,7 @@ final class ComposerDraftImpl extends ReadModel<ComposerThreadState>
           operationId: frozen.operation.id,
           accepted: false,
           clearCurrent: false,
-          projectId: frozen.projectId,
+          workspaceId: frozen.workspaceId,
           threadId: threadId,
         );
       }
@@ -244,7 +244,7 @@ final class ComposerDraftImpl extends ReadModel<ComposerThreadState>
           operationId: frozen.operation.id,
           accepted: false,
           clearCurrent: false,
-          projectId: frozen.projectId,
+          workspaceId: frozen.workspaceId,
           threadId: threadId,
         );
         if (!_closed && stamp == frozen.stamp) {
@@ -271,7 +271,7 @@ final class ComposerDraftImpl extends ReadModel<ComposerThreadState>
         operationId: frozen.operation.id,
         accepted: false,
         clearCurrent: false,
-        projectId: frozen.projectId,
+        workspaceId: frozen.workspaceId,
         threadId: threadId,
       );
       return;
@@ -301,7 +301,7 @@ final class ComposerDraftImpl extends ReadModel<ComposerThreadState>
         operationId: frozen.operation.id,
         accepted: true,
         clearCurrent: clear,
-        projectId: frozen.projectId,
+        workspaceId: frozen.workspaceId,
         threadId: threadId,
       );
     } catch (error) {
@@ -313,7 +313,7 @@ final class ComposerDraftImpl extends ReadModel<ComposerThreadState>
           operationId: frozen.operation.id,
           accepted: true,
           clearCurrent: false,
-          projectId: frozen.projectId,
+          workspaceId: frozen.workspaceId,
           threadId: threadId,
         );
       } else if (error is SubmissionNotSent ||
@@ -324,7 +324,7 @@ final class ComposerDraftImpl extends ReadModel<ComposerThreadState>
           operationId: frozen.operation.id,
           accepted: false,
           clearCurrent: false,
-          projectId: frozen.projectId,
+          workspaceId: frozen.workspaceId,
           threadId: threadId,
         );
       } else {
@@ -363,7 +363,7 @@ final class ComposerDraftImpl extends ReadModel<ComposerThreadState>
     _revision += 1;
     await _dependencies.attachments.discard(
       binding: binding,
-      projectId: _projectId,
+      workspaceId: _workspaceId,
       threadId: threadId,
     );
   }
@@ -380,14 +380,14 @@ final class ComposerDraftImpl extends ReadModel<ComposerThreadState>
     _permit.release();
   }
 
-  String? get _projectId =>
+  String? get _workspaceId =>
       _dependencies.conversations
           .session(threadId)
           .state
           .workspace
           ?.thread
-          .projectId ??
-      _dependencies.findThread(threadId)?.projectId;
+          .workspaceId ??
+      _dependencies.findThread(threadId)?.workspaceId;
 }
 
 final class FrozenComposerSubmission {
@@ -395,14 +395,14 @@ final class FrozenComposerSubmission {
     required this.stamp,
     required this.operation,
     required this.input,
-    required this.projectId,
+    required this.workspaceId,
     required this.mode,
     required this.route,
   });
   final DraftStamp stamp;
   final OperationHandle operation;
   final StudioPromptInput input;
-  final String projectId;
+  final String workspaceId;
   final ThreadModeId mode;
   final ThreadModelRouteView route;
 }

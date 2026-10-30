@@ -1035,8 +1035,8 @@ impl ThreadStorageSink {
             .get(&thread.id)
             .context("Thread is not registered in the Studio catalog")?;
         anyhow::ensure!(
-            registered.project_id == thread.project_id
-                && store.workspaces().get(&thread.project_id).is_some(),
+            registered.workspace_id == thread.workspace_id
+                && store.workspaces().get(&thread.workspace_id).is_some(),
             "Thread {} Project identity is not registered in workspaces",
             thread.id
         );
@@ -2101,7 +2101,7 @@ pub(crate) mod storage_fault_tests {
 
     fn test_thread(thread_id: &str) -> pl_protocol::Thread {
         let mut thread = pl_protocol::Thread::placeholder(thread_id);
-        thread.project_id = "project-test".into();
+        thread.workspace_id = "project-test".into();
         thread.agent_path = thread_id.to_owned();
         thread.root_thread_id = thread_id.to_owned();
         thread
@@ -2113,7 +2113,7 @@ pub(crate) mod storage_fault_tests {
     ) -> Result<()> {
         let mut delta = crate::studio::store::directory::DirectoryDelta::upsert_project(
             crate::studio::store::directory::ProjectDirectoryRecord {
-                id: thread.project_id.clone(),
+                id: thread.workspace_id.clone(),
                 kind: pl_protocol::studio::WorkspaceKind::Project,
                 name: "Test".into(),
                 path: "/tmp/project-test".into(),
@@ -2257,7 +2257,7 @@ pub(crate) mod storage_fault_tests {
         ) -> Result<()> {
             let mut delta = crate::studio::store::directory::DirectoryDelta::upsert_project(
                 crate::studio::store::directory::ProjectDirectoryRecord {
-                    id: thread.project_id.clone(),
+                    id: thread.workspace_id.clone(),
                     kind: pl_protocol::studio::WorkspaceKind::Project,
                     name: "Subdirectory Project".into(),
                     path: project_root.to_string_lossy().into_owned(),
@@ -2397,7 +2397,7 @@ pub(crate) mod storage_fault_tests {
                 owner_kind: kind,
                 owner_thread_id: owner.into(),
                 root_thread_id: root_id.into(),
-                project_id: "project-test".into(),
+                workspace_id: "project-test".into(),
                 ssh_alias: None,
                 repository_root: repository.to_string_lossy().into_owned(),
                 path: path.to_string_lossy().into_owned(),
@@ -2591,7 +2591,7 @@ pub(crate) mod storage_fault_tests {
             owner_kind: WorktreeLeaseOwnerKind::Child,
             owner_thread_id: child.id.clone(),
             root_thread_id: parent.id.clone(),
-            project_id: child.project_id.clone(),
+            workspace_id: child.workspace_id.clone(),
             ssh_alias: None,
             repository_root: parent.workspace_path.clone(),
             path: WorktreeManager::allocate_path(&repository, &parent.id, &ownership)

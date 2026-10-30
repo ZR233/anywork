@@ -68,7 +68,7 @@ Future<void> main(List<String> args) async {
   }
   final output = Directory(args[1])..createSync(recursive: true);
   var functionalOnly = false;
-  String? projectId;
+  String? workspaceId;
   String? threadId;
   for (var index = 2; index < args.length; index++) {
     switch (args[index]) {
@@ -79,7 +79,7 @@ Future<void> main(List<String> args) async {
           _usage();
           return;
         }
-        projectId = args[++index];
+        workspaceId = args[++index];
       case '--thread-id':
         if (index + 1 >= args.length) {
           _usage();
@@ -94,14 +94,14 @@ Future<void> main(List<String> args) async {
   }
   // 冷启动目标身份必须来自首轮真实 snapshot（协调器经 baseline 传入）；
   // 缺失即失败，不猜值、不选择“第一个”项目或会话。
-  if (projectId == null ||
-      projectId.isEmpty ||
+  if (workspaceId == null ||
+      workspaceId.isEmpty ||
       threadId == null ||
       threadId.isEmpty) {
     _usage();
     return;
   }
-  final target = ColdStartIdentity(projectId: projectId, threadId: threadId);
+  final target = ColdStartIdentity(workspaceId: workspaceId, threadId: threadId);
   final driver = await FlutterDriver.connect(dartVmServiceUrl: args[0]);
   final probe = TimelineRowsProbe(driver.requestData);
   final report = <String, Object?>{
@@ -450,9 +450,9 @@ Future<void> main(List<String> args) async {
     final restore = (report['restore']! as Map).cast<String, Object?>();
     check(
       'restoredPersistedTarget',
-      restore['projectId'] == target.projectId &&
+      restore['workspaceId'] == target.workspaceId &&
           restore['threadId'] == target.threadId &&
-          restore['projectIdMatches'] == true &&
+          restore['workspaceIdMatches'] == true &&
           restore['threadIdMatches'] == true &&
           restore['evidenceConsistent'] == true,
     );

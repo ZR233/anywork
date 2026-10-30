@@ -37,15 +37,15 @@ class StartPageComposerViewModel extends _$StartPageComposerViewModel {
         .where((candidate) => candidate.id == selection.selectedProjectId)
         .firstOrNull;
     final recovery = ref.watch(recoveryStoreProvider).value?.values ?? const [];
-    final projectId = project?.id;
+    final workspaceId = project?.id;
     // 新建目标没有 thread 身份：只按 Application 与目标 project 的 issue 判定。
     // 访问受阻连编辑入口都撤掉；执行阻塞保留编辑、只禁提交。
-    final recoveryIssue = projectId == null
+    final recoveryIssue = workspaceId == null
         ? null
-        : recoveryIssueBlockingExecution(recovery, projectId: projectId);
-    final accessIssue = projectId == null
+        : recoveryIssueBlockingExecution(recovery, workspaceId: workspaceId);
+    final accessIssue = workspaceId == null
         ? null
-        : recoveryIssueBlockingAccess(recovery, projectId: projectId);
+        : recoveryIssueBlockingAccess(recovery, workspaceId: workspaceId);
     final canEdit =
         project != null &&
         selection.selectedThreadId == null &&
@@ -62,50 +62,50 @@ class StartPageComposerViewModel extends _$StartPageComposerViewModel {
       canSubmit: canEdit && recoveryIssue == null,
       recoveryIssue: recoveryIssue,
       commands: settings.commands,
-      diagnostics: attachments.forProject(projectId),
+      diagnostics: attachments.forProject(workspaceId),
       modeCatalog: catalog,
       sessionDraft: sessionDraft,
-      composer: projectId == null
+      composer: workspaceId == null
           ? const ComposerThreadState.idle()
-          : attachments.newThread(projectId),
-      targetDiagnostic: projectId == null
+          : attachments.newThread(workspaceId),
+      targetDiagnostic: workspaceId == null
           ? null
-          : attachments.diagnostics[attachmentTargetKey(projectId, null)],
+          : attachments.diagnostics[attachmentTargetKey(workspaceId, null)],
     );
   }
 
-  void updateDraft(String projectId, String text) => ref
+  void updateDraft(String workspaceId, String text) => ref
       .read(anyworkClientProvider)
       .drafts
       .startDraft
-      .updateDraft(projectId, text);
+      .updateDraft(workspaceId, text);
 
-  void setMode(String projectId, ThreadModeId mode) => ref
+  void setMode(String workspaceId, ThreadModeId mode) => ref
       .read(anyworkClientProvider)
       .drafts
       .startDraft
-      .setMode(projectId, mode);
+      .setMode(workspaceId, mode);
 
-  void setWorkspaceMode(String projectId, ThreadWorkspaceMode mode) => ref
+  void setWorkspaceMode(String workspaceId, ThreadWorkspaceMode mode) => ref
       .read(anyworkClientProvider)
       .drafts
       .startDraft
-      .setWorkspaceMode(projectId, mode);
+      .setWorkspaceMode(workspaceId, mode);
 
-  void setDelegationMode(String projectId, DelegationMode? mode) => ref
+  void setDelegationMode(String workspaceId, DelegationMode? mode) => ref
       .read(anyworkClientProvider)
       .drafts
       .startDraft
-      .setDelegationModeOverride(projectId, mode);
+      .setDelegationModeOverride(workspaceId, mode);
 
   void setDelegationPreference(
-    String projectId,
+    String workspaceId,
     DelegationPreference? preference,
   ) => ref
       .read(anyworkClientProvider)
       .drafts
       .startDraft
-      .setDelegationPreferenceOverride(projectId, preference);
+      .setDelegationPreferenceOverride(workspaceId, preference);
 
   void setModelIntent(ThreadModeId mode, String accountId, String modelId) =>
       ref
@@ -120,50 +120,50 @@ class StartPageComposerViewModel extends _$StartPageComposerViewModel {
       .startDraft
       .setEffortIntent(mode, effort);
 
-  Future<bool> submitStart(String projectId) =>
-      ref.read(anyworkClientProvider).drafts.startDraft.submit(projectId);
+  Future<bool> submitStart(String workspaceId) =>
+      ref.read(anyworkClientProvider).drafts.startDraft.submit(workspaceId);
 
   Future<void> admitAttachments({
-    required String projectId,
+    required String workspaceId,
     required ThreadModeId mode,
     required List<AttachmentDraftSource> sources,
   }) => ref
       .read(anyworkClientProvider)
       .drafts
       .attachments
-      .admitNewThread(projectId: projectId, mode: mode, sources: sources);
+      .admitNewThread(workspaceId: workspaceId, mode: mode, sources: sources);
 
   Future<void> pasteImage(
-    String projectId,
+    String workspaceId,
     ThreadModeId mode,
     Uint8List bytes,
   ) => ref
       .read(anyworkClientProvider)
       .drafts
       .attachments
-      .addNewThreadClipboard(projectId: projectId, mode: mode, pngBytes: bytes);
+      .addNewThreadClipboard(workspaceId: workspaceId, mode: mode, pngBytes: bytes);
 
   Future<void> addRemoteAttachment(
-    String projectId,
+    String workspaceId,
     ThreadModeId mode,
     String url,
   ) => ref
       .read(anyworkClientProvider)
       .drafts
       .attachments
-      .addNewThreadRemote(projectId: projectId, mode: mode, url: url);
+      .addNewThreadRemote(workspaceId: workspaceId, mode: mode, url: url);
 
-  Future<void> removeAttachment(String projectId, String draftId) => ref
+  Future<void> removeAttachment(String workspaceId, String draftId) => ref
       .read(anyworkClientProvider)
       .drafts
       .attachments
-      .removeNewThreadDraft(projectId, draftId);
+      .removeNewThreadDraft(workspaceId, draftId);
 
-  void reportAttachmentFailure(String projectId, Object error) => ref
+  void reportAttachmentFailure(String workspaceId, Object error) => ref
       .read(anyworkClientProvider)
       .drafts
       .attachments
-      .reportNewThreadFailure(projectId, error);
+      .reportNewThreadFailure(workspaceId, error);
 }
 
 @riverpod
@@ -189,11 +189,11 @@ class ComposerDockViewModel extends _$ComposerDockViewModel {
           directory: threads,
         ) ??
         session.workspace?.thread;
-    final projectId = thread?.projectId;
+    final workspaceId = thread?.workspaceId;
     // 已有线程只使用自己的项目身份，不借用主工作区选择。
     final recoveryBlocker = recoveryIssueBlockingExecution(
       recovery,
-      projectId: projectId,
+      workspaceId: workspaceId,
       threadId: threadId,
     );
     final routeCommand = settings.commands['thread-route:$threadId'];
@@ -275,10 +275,10 @@ class ComposerDockViewModel extends _$ComposerDockViewModel {
       workflow: session.workflow,
       accounts: accounts,
       settingsLoaded: settings.configLoaded,
-      targetDiagnostic: projectId == null
+      targetDiagnostic: workspaceId == null
           ? null
-          : attachments.diagnostics[attachmentTargetKey(projectId, threadId)],
-      additionalDiagnostics: attachments.forProject(projectId),
+          : attachments.diagnostics[attachmentTargetKey(workspaceId, threadId)],
+      additionalDiagnostics: attachments.forProject(workspaceId),
     );
   }
 

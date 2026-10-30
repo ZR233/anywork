@@ -31,7 +31,7 @@ pub struct SkillCatalogRuntime {
 /// 某 Project 已发布且可被未来 Turn 冻结的 catalog。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SkillsStateSnapshot {
-    pub project_id: String,
+    pub workspace_id: String,
     pub state: ObservedResource<SkillsStateData>,
 }
 
@@ -46,7 +46,7 @@ pub struct SkillsStateData {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SkillSearchResult {
-    pub project_id: String,
+    pub workspace_id: String,
     pub catalog_revision: u64,
     pub matches: Vec<SkillSummary>,
     pub truncated: bool,
@@ -105,9 +105,9 @@ impl Default for SkillCatalogRuntime {
     }
 }
 
-pub(super) fn empty_snapshot(project_id: &str) -> SkillsStateSnapshot {
+pub(super) fn empty_snapshot(workspace_id: &str) -> SkillsStateSnapshot {
     SkillsStateSnapshot {
-        project_id: project_id.to_string(),
+        workspace_id: workspace_id.to_string(),
         state: ObservedResource::uninitialized(unix_seconds()),
     }
 }

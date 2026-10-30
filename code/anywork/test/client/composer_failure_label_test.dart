@@ -11,7 +11,7 @@ const _workspaceRecoveryIssue = StudioRecoveryIssue(
   category: RecoveryIssueCategory.repository,
   impact: RecoveryIssueImpact.executionBlocked,
   availableActions: [RecoveryIssueAction.retry],
-  projectId: 'project',
+  workspaceId: 'project',
   threadId: 'thread',
   detail: 'Workspace root is unavailable',
 );

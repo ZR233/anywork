@@ -12,7 +12,7 @@ use anyhow::{Result, bail, ensure};
 use pl_protocol::studio::WorkspaceKind;
 use version_migrate::Versioned;
 
-use crate::studio::records::ProjectRecord;
+use crate::studio::records::WorkspaceRecord;
 use crate::studio::store::StudioStore;
 use crate::studio::store::directory::DirectoryDelta;
 use crate::studio::toml_store::{self, RevisionedDocument};
@@ -35,8 +35,8 @@ pub(in crate::studio) struct WorkspaceEntry {
 }
 
 impl WorkspaceEntry {
-    pub(in crate::studio) fn project(&self) -> ProjectRecord {
-        ProjectRecord {
+    pub(in crate::studio) fn project(&self) -> WorkspaceRecord {
+        WorkspaceRecord {
             id: self.id.clone(),
             kind: self.kind,
             name: self.name.clone(),
@@ -147,7 +147,7 @@ impl WorkspaceStore {
         let removals = delta
             .project_removals
             .iter()
-            .map(|removal| (removal.project_id.clone(), removal.closed_at))
+            .map(|removal| (removal.workspace_id.clone(), removal.closed_at))
             .collect::<Vec<_>>();
         self.mutate(move |document| {
             let mut changed = false;
@@ -404,7 +404,7 @@ closed = true
                     WorkspaceKind::Standalone,
                 )],
                 project_removals: vec![ProjectRemoval {
-                    project_id: "created-standalone".into(),
+                    workspace_id: "created-standalone".into(),
                     thread_ids: Vec::new(),
                     closed_at: 3,
                 }],

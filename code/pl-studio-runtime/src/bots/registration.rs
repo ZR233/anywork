@@ -70,7 +70,7 @@ pub(crate) struct ActiveRegistration {
     pub(crate) attempt_id: String,
     pub(crate) operation_id: String,
     pub(crate) name: String,
-    pub(crate) project_id: String,
+    pub(crate) workspace_id: String,
     pub(crate) device_code: String,
     pub(crate) verification_url: String,
     pub(crate) expires_at: i64,
@@ -88,7 +88,7 @@ impl ActiveRegistration {
         BotRegistrationAttempt {
             attempt_id: self.attempt_id.clone(),
             name: self.name.clone(),
-            project_id: self.project_id.clone(),
+            workspace_id: self.workspace_id.clone(),
             status: self.status.clone(),
             completed_bot_id: self.completed_bot_id.clone(),
         }
@@ -108,8 +108,8 @@ impl ActiveRegistration {
         }
     }
 
-    fn matches_request(&self, operation_id: &str, name: &str, project_id: &str) -> bool {
-        self.operation_id == operation_id && self.name == name && self.project_id == project_id
+    fn matches_request(&self, operation_id: &str, name: &str, workspace_id: &str) -> bool {
+        self.operation_id == operation_id && self.name == name && self.workspace_id == workspace_id
     }
 
     fn is_terminal(&self) -> bool {
@@ -147,7 +147,7 @@ enum CompleteClaim {
     Stale,
     Claimed {
         name: String,
-        project_id: String,
+        workspace_id: String,
         bot_id: String,
     },
 }
@@ -178,15 +178,15 @@ impl BotRuntime {
         &self,
         operation_id: String,
         name: String,
-        project_id: String,
+        workspace_id: String,
         owner_epoch: &str,
     ) -> Result<BotsCommandReply, FeishuError> {
         let name = name.trim().to_string();
-        let project_id = project_id.trim().to_string();
+        let workspace_id = workspace_id.trim().to_string();
         if name.is_empty() {
             return Err(FeishuError::new(
                 FeishuErrorKind::Rejected,
-                "bot name and projectId are required",
+                "bot name and workspaceId are required",
                 false,
                 None,
             ));
@@ -200,7 +200,7 @@ impl BotRuntime {
                     return Err(sealed_registration_error());
                 }
                 match slot.as_mut() {
-                    Some(active) if active.matches_request(&operation_id, &name, &project_id) => {
+                    Some(active) if active.matches_request(&operation_id, &name, &workspace_id) => {
                         StartAdmission::Reuse { changed: false }
                     }
                     Some(active) if active.operation_id == operation_id => {
@@ -240,7 +240,7 @@ impl BotRuntime {
                         .install_registration(
                             operation_id.clone(),
                             name.clone(),
-                            project_id.clone(),
+                            workspace_id.clone(),
                         )
                         .await?
                     {
@@ -258,14 +258,14 @@ impl BotRuntime {
         &self,
         operation_id: String,
         name: String,
-        project_id: String,
+        workspace_id: String,
     ) -> Result<bool, FeishuError> {
         let mut slot = self.inner.registration.lock().await;
         if self.management_sealed() {
             return Err(sealed_registration_error());
         }
         match slot.as_ref() {
-            Some(active) if active.matches_request(&operation_id, &name, &project_id) => {
+            Some(active) if active.matches_request(&operation_id, &name, &workspace_id) => {
                 return Ok(false);
             }
             Some(active) if active.operation_id == operation_id => {
@@ -295,7 +295,7 @@ impl BotRuntime {
             attempt_id: attempt_id.clone(),
             operation_id,
             name,
-            project_id,
+            workspace_id,
             device_code: String::new(),
             verification_url: String::new(),
             expires_at: 0,
@@ -663,7 +663,7 @@ impl BotRuntime {
                     self.request_publish();
                     CompleteClaim::Claimed {
                         name: active.name.clone(),
-                        project_id: active.project_id.clone(),
+                        workspace_id: active.workspace_id.clone(),
                         bot_id,
                     }
                 }
@@ -691,7 +691,7 @@ impl BotRuntime {
             }
             CompleteClaim::Claimed {
                 name,
-                project_id,
+                workspace_id,
                 bot_id,
             } => {
                 self.publish().await;
@@ -700,7 +700,7 @@ impl BotRuntime {
                     .save_registration_bot(RegistrationSave {
                         bot_id: bot_id.clone(),
                         name,
-                        project_id,
+                        workspace_id,
                         app_id: result.client_id,
                         secret: result.client_secret,
                         trusted_open_id,

@@ -249,7 +249,7 @@ impl StudioThreadAssembler {
                 !target.archived
                     && target.parent_thread_id.as_deref() == Some(parent.as_str())
                     && target.root_thread_id == reviewer.root_thread_id
-                    && target.project_id == reviewer.project_id,
+                    && target.workspace_id == reviewer.workspace_id,
                 "review relationship is no longer valid"
             );
             self.ensure_agent_admission_open(&parent)?;
@@ -462,7 +462,7 @@ impl StudioThreadAssembler {
         ensure!(
             record.parent_thread_id.as_deref() == Some(parent)
                 && record.root_thread_id == root.root_thread_id
-                && record.project_id == root.project_id
+                && record.workspace_id == root.workspace_id
                 && !record.archived,
             "review target must be an available direct child in the same root and project"
         );
@@ -590,7 +590,7 @@ impl StudioThreadAssembler {
         if record.archived
             || record.parent_thread_id.as_deref() != Some(parent)
             || record.root_thread_id != root.root_thread_id
-            || record.project_id != root.project_id
+            || record.workspace_id != root.workspace_id
         {
             return Ok(false);
         }

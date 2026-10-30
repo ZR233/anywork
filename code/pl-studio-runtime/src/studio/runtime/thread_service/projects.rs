@@ -5,7 +5,7 @@ use std::path::Path;
 use anyhow::{Context, Result, bail, ensure};
 use pl_protocol::studio::WorkspaceKind;
 
-use crate::studio::records::{ProjectRecord, ThreadRecord, ThreadVisibility};
+use crate::studio::records::{WorkspaceRecord, ThreadRecord, ThreadVisibility};
 use crate::studio::store::directory::{DirectoryDelta, ProjectDirectoryRecord, ProjectRemoval};
 
 use super::super::StudioRuntime;
@@ -16,7 +16,7 @@ use super::super::thread_title::ThreadTitleCancellationCause;
 mod standalone_tests;
 
 impl StudioRuntime {
-    pub async fn open_project(&self, path: impl AsRef<Path>) -> Result<ProjectRecord> {
+    pub async fn open_project(&self, path: impl AsRef<Path>) -> Result<WorkspaceRecord> {
         let canonical = dunce::canonicalize(path.as_ref())?;
         anyhow::ensure!(canonical.is_dir(), "workspace path is not a directory");
         let path = canonical.as_path();
@@ -58,7 +58,7 @@ impl StudioRuntime {
                     last_opened_at: Some(now),
                     closed: false,
                 };
-                let public = ProjectRecord {
+                let public = WorkspaceRecord {
                     id: existing.id.clone(),
                     kind: existing.kind,
                     name,
@@ -81,7 +81,7 @@ impl StudioRuntime {
                     last_opened_at: Some(now),
                     closed: false,
                 };
-                let public = ProjectRecord {
+                let public = WorkspaceRecord {
                     id,
                     kind: WorkspaceKind::Project,
                     name,
@@ -113,7 +113,7 @@ impl StudioRuntime {
     async fn prepare_standalone_workspace_at(
         &self,
         root: Option<std::path::PathBuf>,
-    ) -> Result<ProjectRecord> {
+    ) -> Result<WorkspaceRecord> {
         let runtime = self.clone();
         self.run_thread_lifecycle_operation(async move {
             runtime.prepare_standalone_workspace_owned(root).await
@@ -126,7 +126,7 @@ impl StudioRuntime {
     async fn prepare_standalone_workspace_owned(
         &self,
         root: Option<std::path::PathBuf>,
-    ) -> Result<ProjectRecord> {
+    ) -> Result<WorkspaceRecord> {
         let published = self
             .agent_facility
             .product_events
@@ -212,7 +212,7 @@ impl StudioRuntime {
             "the standalone directory already belongs to a user project"
         );
         let now = crate::studio::unix_seconds();
-        let project = ProjectRecord {
+        let project = WorkspaceRecord {
             id: crate::studio::ids::new_id("project"),
             kind: WorkspaceKind::Standalone,
             name: "anywork".into(),
@@ -238,7 +238,7 @@ impl StudioRuntime {
     }
 
     /// Renames the project label without changing its filesystem identity.
-    pub async fn rename_project(&self, id: &str, name: &str) -> Result<ProjectRecord> {
+    pub async fn rename_project(&self, id: &str, name: &str) -> Result<WorkspaceRecord> {
         let _guard = self.lifecycle_lock.lock().await;
         let name = name.trim();
         anyhow::ensure!(
@@ -277,21 +277,21 @@ impl StudioRuntime {
         Ok(project)
     }
 
-    pub async fn list_projects(&self) -> Result<Vec<ProjectRecord>> {
+    pub async fn list_projects(&self) -> Result<Vec<WorkspaceRecord>> {
         Ok(self.agent_facility.product_events.project_snapshot().await)
     }
 
-    pub async fn archive_project(&self, project_id: &str) -> Result<Option<ProjectRecord>> {
+    pub async fn archive_project(&self, workspace_id: &str) -> Result<Option<WorkspaceRecord>> {
         let runtime = self.clone();
-        let project_id = project_id.to_owned();
+        let workspace_id = workspace_id.to_owned();
         self.run_thread_lifecycle_operation(async move {
-            runtime.archive_project_owned(&project_id).await
+            runtime.archive_project_owned(&workspace_id).await
         })
         .await
     }
 
     /// The retained archive worker owns lifecycle admission throughout this operation.
-    async fn archive_project_owned(&self, project_id: &str) -> Result<Option<ProjectRecord>> {
+    async fn archive_project_owned(&self, workspace_id: &str) -> Result<Option<WorkspaceRecord>> {
         ensure!(
             !self
                 .agent_facility
@@ -300,18 +300,18 @@ impl StudioRuntime {
                 .await
                 .iter()
                 .any(
-                    |project| project.id == project_id && project.kind == WorkspaceKind::Standalone
+                    |project| project.id == workspace_id && project.kind == WorkspaceKind::Standalone
                 ),
             "the standalone workspace cannot be archived"
         );
-        let threads = self.load_project_archive_scope(project_id).await?;
+        let threads = self.load_project_archive_scope(workspace_id).await?;
         let Some(project) = self
             .agent_facility
             .product_events
             .project_snapshot()
             .await
             .into_iter()
-            .find(|project| project.id == project_id)
+            .find(|project| project.id == workspace_id)
             .or_else(|| {
                 // workspaces.toml is written before catalog.toml. If the latter failed (including
                 // across restart), the canonical closed Project must still allow finishing its
@@ -322,7 +322,7 @@ impl StudioRuntime {
                     .then(|| {
                         self.store
                             .workspaces()
-                            .get(project_id)
+                            .get(workspace_id)
                             .map(|entry| entry.project())
                     })
                     .flatten()
@@ -342,7 +342,7 @@ impl StudioRuntime {
         }
         // A spawn admitted before these permits may just have published another child. Re-read
         // the directory only after root preparation is ordered, then seal children in stable order.
-        let threads = self.load_project_archive_scope(project_id).await?;
+        let threads = self.load_project_archive_scope(workspace_id).await?;
         let thread_ids = threads
             .iter()
             .map(|thread| thread.id.clone())
@@ -379,7 +379,7 @@ impl StudioRuntime {
             .product_events
             .commit_directory(DirectoryDelta {
                 project_removals: vec![ProjectRemoval {
-                    project_id: project.id.clone(),
+                    workspace_id: project.id.clone(),
                     thread_ids: thread_ids.clone(),
                     closed_at: crate::studio::unix_seconds(),
                 }],
@@ -395,20 +395,20 @@ impl StudioRuntime {
         Ok(Some(project))
     }
 
-    pub(super) fn ensure_project_thread_admission_open(&self, project_id: &str) -> Result<()> {
-        self.recovery.ensure_project_execution_access(project_id)?;
+    pub(super) fn ensure_project_thread_admission_open(&self, workspace_id: &str) -> Result<()> {
+        self.recovery.ensure_project_execution_access(workspace_id)?;
         anyhow::ensure!(
             self.store
                 .workspaces()
-                .get(project_id)
+                .get(workspace_id)
                 .is_some_and(|entry| !entry.closed),
             "selected Project is closed or its archive needs to be retried"
         );
         Ok(())
     }
 
-    async fn load_project_archive_scope(&self, project_id: &str) -> Result<Vec<ThreadRecord>> {
-        let threads = self.store.list_threads_for_project(project_id).await?;
+    async fn load_project_archive_scope(&self, workspace_id: &str) -> Result<Vec<ThreadRecord>> {
+        let threads = self.store.list_threads_for_project(workspace_id).await?;
         let entries = threads
             .iter()
             .filter(|thread| thread.visibility == ThreadVisibility::Active)

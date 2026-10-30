@@ -1752,7 +1752,7 @@ async fn run(
                 category: crate::studio::StudioRecoveryIssueCategory::ToolCatalog,
                 impact: crate::studio::StudioRecoveryImpact::Advisory,
                 action: crate::studio::StudioRecoveryIssueAction::Retry,
-                project_id: None,
+                workspace_id: None,
                 thread_id: Some(worker.id.clone()),
                 worktree: None,
                 message: current
@@ -2335,7 +2335,7 @@ mod storage_fault_tests {
     async fn register_test_thread(store: &StudioStore, thread: &pl_protocol::Thread) -> Result<()> {
         let mut delta = crate::studio::store::directory::DirectoryDelta::upsert_project(
             crate::studio::store::directory::ProjectDirectoryRecord {
-                id: thread.project_id.clone(),
+                id: thread.workspace_id.clone(),
                 kind: pl_protocol::studio::WorkspaceKind::Project,
                 name: "Test".into(),
                 path: "/tmp/project-test".into(),
@@ -2352,7 +2352,7 @@ mod storage_fault_tests {
 
     fn bound_thread(thread_id: &str) -> pl_protocol::Thread {
         let mut thread = pl_protocol::Thread::placeholder(thread_id);
-        thread.project_id = "project-test".into();
+        thread.workspace_id = "project-test".into();
         thread.agent_path = thread_id.to_owned();
         thread.root_thread_id = thread_id.to_owned();
         thread
@@ -3311,7 +3311,7 @@ mod storage_fault_tests {
     /// A registered child of a real parent thread, as the directory and the report path require.
     fn child_thread(child_id: &str, parent_id: &str) -> pl_protocol::Thread {
         let mut thread = pl_protocol::Thread::placeholder(child_id);
-        thread.project_id = "project-test".into();
+        thread.workspace_id = "project-test".into();
         thread.agent_path = child_id.to_owned();
         thread.root_thread_id = parent_id.to_owned();
         thread.parent_thread_id = Some(parent_id.to_owned());

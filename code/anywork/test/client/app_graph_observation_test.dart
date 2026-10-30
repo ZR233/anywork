@@ -99,12 +99,12 @@ void main() {
       final connection = transport.feeds.single;
       await connection.nextEntered.future;
       final attemptId = session.content.currentAttemptId?.value;
-      final projectId = graph.client.selection.state.selectedProjectId!;
+      final workspaceId = graph.client.selection.state.selectedProjectId!;
       final startOwner = graph.client.drafts.startDraft;
       final composerOwner = graph.client.drafts.existingComposer(
         'thread-main',
       )!;
-      expect(graph.client.existingSkills(projectId), isNotNull);
+      expect(graph.client.existingSkills(workspaceId), isNotNull);
       expect(graph.client.existingSessionCosts('thread-main'), isNotNull);
       final observerBudgetBefore = graph.client.budget.used(
         ResourceKind.observer,
@@ -125,7 +125,7 @@ void main() {
       );
       final timelineObserver = graph.timeline.source.watch((_) {});
       graph.client.drafts.startDraft.updateDraft(
-        projectId,
+        workspaceId,
         'new session survives Settings',
       );
       graph.client.drafts
@@ -152,7 +152,7 @@ void main() {
       expect(graph.client.drafts.startDraft, same(startOwner));
       expect(graph.client.drafts.composer('thread-main'), same(composerOwner));
       expect(
-        startOwner.state.forProject(projectId).text,
+        startOwner.state.forProject(workspaceId).text,
         'new session survives Settings',
       );
       expect(
@@ -187,7 +187,7 @@ void main() {
         attemptId,
       );
       expect(
-        rebuilt.read(startSessionControllerProvider).forProject(projectId).text,
+        rebuilt.read(startSessionControllerProvider).forProject(workspaceId).text,
         'new session survives Settings',
       );
       expect(
@@ -255,8 +255,8 @@ void main() {
     addTearDown(secondObserver.close);
     first.client.drafts.composer('thread-main').updateDraft('first app');
     second.client.drafts.composer('thread-main').updateDraft('second app');
-    final projectId = first.client.selection.state.selectedProjectId!;
-    first.client.drafts.startDraft.updateDraft(projectId, 'first start draft');
+    final workspaceId = first.client.selection.state.selectedProjectId!;
+    first.client.drafts.startDraft.updateDraft(workspaceId, 'first start draft');
 
     expect(
       first.client.conversations.session('thread-main'),
@@ -268,7 +268,7 @@ void main() {
     );
     expect(first.timeline, isNot(same(second.timeline)));
     expect(
-      second.client.drafts.startDraft.state.forProject(projectId).text,
+      second.client.drafts.startDraft.state.forProject(workspaceId).text,
       isEmpty,
     );
     expect(

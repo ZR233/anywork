@@ -1600,7 +1600,7 @@ Map<String, Object?> _delegationSnapshot(StudioDriverFacts facts) {
         if (facts.selectedProjectId != null) facts.selectedProjectId!,
       })
         {
-          'projectId': id,
+          'workspaceId': id,
           'modeOverride': drafts.forProject(id).delegationModeOverride?.name,
           'preferenceOverride': drafts
               .forProject(id)
@@ -1827,13 +1827,13 @@ Map<String, Object?> _driverDiagnostics({StudioDriverFacts? observed}) {
 /// directories the runtime was configured with; nothing here reads a file or a
 /// Skill body, and no second Driver-side fact source is introduced.
 Map<String, Object?> _driverSkillsDiagnostics() {
-  final projectId = _client.selection.state.selectedProjectId;
-  final snapshot = projectId == null
+  final workspaceId = _client.selection.state.selectedProjectId;
+  final snapshot = workspaceId == null
       ? null
-      : _client.existingSkills(projectId)?.state.value;
-  if (projectId == null || snapshot == null) {
+      : _client.existingSkills(workspaceId)?.state.value;
+  if (workspaceId == null || snapshot == null) {
     return <String, Object?>{
-      'projectId': projectId,
+      'workspaceId': workspaceId,
       'status': null,
       'catalogRevision': null,
       'skills': null,
@@ -1843,7 +1843,7 @@ Map<String, Object?> _driverSkillsDiagnostics() {
   }
   final resource = snapshot.state;
   return <String, Object?>{
-    'projectId': projectId,
+    'workspaceId': workspaceId,
     'status': switch (resource) {
       UninitializedObservedResource() => 'uninitialized',
       LoadingObservedResource() => 'loading',
@@ -1999,9 +1999,9 @@ Future<String> _startDriverFixtureClipboardImage() async {
   }
 
   final selection = _client.selection.state;
-  final projectId = selection.selectedProjectId;
+  final workspaceId = selection.selectedProjectId;
   final threadId = selection.selectedThreadId;
-  if (projectId == null) {
+  if (workspaceId == null) {
     return jsonEncode(<String, Object?>{
       'ok': false,
       'hook': 'driver-fixture-clipboard-image',
@@ -2025,9 +2025,9 @@ Future<String> _startDriverFixtureClipboardImage() async {
     }
     task = composer.addClipboardImage(bytes);
   } else {
-    final mode = _client.drafts.startDraft.state.forProject(projectId).mode;
+    final mode = _client.drafts.startDraft.state.forProject(workspaceId).mode;
     task = _client.drafts.attachments.addNewThreadClipboard(
-      projectId: projectId,
+      workspaceId: workspaceId,
       mode: mode,
       pngBytes: bytes,
     );

@@ -8,7 +8,7 @@ use crate::agent::worktree::{
     WorktreeCreateFailureDisposition, WorktreeCreateSpec, WorktreeError, WorktreeHandle,
     WorktreeManager, WorktreeOwnership,
 };
-use crate::studio::records::ProjectRecord;
+use crate::studio::records::WorkspaceRecord;
 use anyhow::{Context, Result};
 use pl_protocol::{AgentWorkspaceAssignmentSnapshot, AgentWorkspaceMode, AgentWorktreeSnapshot};
 use std::{
@@ -19,7 +19,7 @@ use std::{
 pub(in crate::studio) struct WorkspacePreparation<'a> {
     pub store: &'a crate::studio::StudioStore,
     pub usage: &'a WorkspaceUsageLease,
-    pub project: &'a ProjectRecord,
+    pub project: &'a WorkspaceRecord,
     /// Already resolved by the owner; bot roots must not expand to an enclosing repository.
     pub project_root: PathBuf,
     pub root_thread_id: &'a str,
@@ -182,7 +182,7 @@ pub(in crate::studio) async fn prepare_workspace(
                 owner_kind: WorktreeLeaseOwnerKind::Child,
                 owner_thread_id: child_id.clone(),
                 root_thread_id: request.root_thread_id.to_owned(),
-                project_id: request.project.id.clone(),
+                workspace_id: request.project.id.clone(),
                 ssh_alias: request.project.ssh_alias.clone(),
                 repository_root: repository_root_text.clone(),
                 path: workspace_path_text(&path, remote)?,
@@ -386,7 +386,7 @@ pub(in crate::studio) async fn create_root_session_worktree<F>(
     store: &crate::studio::StudioStore,
     worktrees: &WorktreeLeaseOwner,
     ssh_manager: &Arc<pl_tool::remote::SshManager>,
-    project: &ProjectRecord,
+    project: &WorkspaceRecord,
     thread_id: &str,
     progress: &F,
 ) -> Result<WorktreeLease>
@@ -437,7 +437,7 @@ where
         owner_kind: WorktreeLeaseOwnerKind::Session,
         owner_thread_id: thread_id.to_owned(),
         root_thread_id: thread_id.to_owned(),
-        project_id: project.id.clone(),
+        workspace_id: project.id.clone(),
         ssh_alias: project.ssh_alias.clone(),
         repository_root: workspace_path_text(&repository_root, remote)?,
         path: workspace_path_text(&path, remote)?,
@@ -570,13 +570,13 @@ pub(in crate::studio) async fn root_session_workspace_root(
     worktrees: &WorktreeLeaseOwner,
     ssh_manager: &Arc<pl_tool::remote::SshManager>,
     root: &crate::studio::ThreadRecord,
-    project: &ProjectRecord,
+    project: &WorkspaceRecord,
     local_root: PathBuf,
 ) -> Result<PathBuf> {
     anyhow::ensure!(
         root.parent_thread_id.is_none()
             && root.id == root.root_thread_id
-            && root.project_id == project.id,
+            && root.workspace_id == project.id,
         WorktreeError::IdentityMismatch("root/project: session association changed".into())
     );
     let frozen = store.workspace_identity(&root.id).await?;
@@ -604,7 +604,7 @@ pub(in crate::studio) async fn root_session_workspace_root(
         lease.owner_kind == WorktreeLeaseOwnerKind::Session
             && lease.owner_thread_id == root.id
             && lease.root_thread_id == root.id
-            && lease.project_id == project.id
+            && lease.workspace_id == project.id
             && lease.ssh_alias == project.ssh_alias
             && workspace_paths_equal(
                 Path::new(&root.workspace_path),
@@ -668,13 +668,13 @@ pub(in crate::studio) async fn root_session_workspace_root(
 
 pub(in crate::studio) fn validate_root_session_lease(
     lease: &WorktreeLease,
-    project: &ProjectRecord,
+    project: &WorkspaceRecord,
     root_thread_id: &str,
 ) -> std::result::Result<(), WorktreeError> {
     lease.validate_identity()?;
     if lease.owner_kind != WorktreeLeaseOwnerKind::Session
         || lease.owner_thread_id != root_thread_id
-        || lease.project_id != project.id
+        || lease.workspace_id != project.id
         || lease.ssh_alias != project.ssh_alias
         || matches!(
             lease.state,
@@ -728,7 +728,7 @@ async fn prepare_repository_worktree_pool(
     }
 }
 
-pub(in crate::studio) fn resolved_project_root(project: &ProjectRecord) -> Result<PathBuf> {
+pub(in crate::studio) fn resolved_project_root(project: &WorkspaceRecord) -> Result<PathBuf> {
     if project.ssh_alias.is_some() {
         let value = pl_tool::remote::normalize_remote_absolute_path(project.path.trim())?;
         if value == "/" {

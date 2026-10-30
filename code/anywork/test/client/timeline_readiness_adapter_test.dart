@@ -36,7 +36,7 @@ void main() {
         .singleWhere((thread) => thread.id == 'thread-main');
     graph.client.selection.selectThread(
       threadId: thread.id,
-      projectId: thread.projectId,
+      workspaceId: thread.workspaceId,
     );
     repository.setVisibleThread('thread-main');
     final held = await opened.future;

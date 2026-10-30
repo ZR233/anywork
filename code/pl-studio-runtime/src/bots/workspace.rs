@@ -30,12 +30,12 @@ impl BotRuntime {
         &self,
         bot_id: &str,
         root_id: &str,
-        project_id: &str,
+        workspace_id: &str,
     ) -> Result<(), FeishuError> {
         let mut config = BotConfigFile::new(
             bot_id.into(),
             "Workspace migration".into(),
-            project_id.into(),
+            workspace_id.into(),
             "cli_workspace_fixture".into(),
         )?;
         config.enabled = false;
@@ -44,10 +44,10 @@ impl BotRuntime {
         super::config::save_config(&dir.join("config.toml"), &config)?;
         let store = super::storage::BotStateStore::new(dir.join("state.sqlite"));
         store
-            .claim_thread_binding("workspace-chat", "workspace-creation", project_id)
+            .claim_thread_binding("workspace-chat", "workspace-creation", workspace_id)
             .await?;
         store
-            .bind_thread("workspace-chat", root_id, "workspace-creation", project_id)
+            .bind_thread("workspace-chat", root_id, "workspace-creation", workspace_id)
             .await?;
         self.load().await
     }

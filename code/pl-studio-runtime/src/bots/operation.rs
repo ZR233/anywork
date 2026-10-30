@@ -234,7 +234,7 @@ enum CommandFingerprint {
         operation_id: String,
         bot_id: String,
         name: String,
-        project_id: String,
+        workspace_id: String,
         app_id: String,
         secret: SecretFingerprint,
         trusted_open_id: Option<String>,
@@ -247,7 +247,7 @@ struct SaveFingerprint {
     bot_id: String,
     expected_config_revision: u64,
     name: String,
-    project_id: String,
+    workspace_id: String,
     app_id: String,
     secret: SecretFingerprint,
     enabled: bool,
@@ -275,7 +275,7 @@ impl std::fmt::Debug for SecretFingerprint {
 pub(crate) struct RegistrationSave {
     pub bot_id: String,
     pub name: String,
-    pub project_id: String,
+    pub workspace_id: String,
     pub app_id: String,
     pub secret: String,
     pub trusted_open_id: Option<String>,
@@ -438,7 +438,7 @@ impl BotRuntime {
         if request.name.trim().is_empty() {
             return Err(FeishuError::new(
                 FeishuErrorKind::Rejected,
-                "bot name and projectId are required",
+                "bot name and workspaceId are required",
                 false,
                 None,
             ));
@@ -451,15 +451,15 @@ impl BotRuntime {
             None => new_id("bot"),
         };
         let mut request = request;
-        if request.project_id.is_empty() {
-            request.project_id = match &request.bot_id {
+        if request.workspace_id.is_empty() {
+            request.workspace_id = match &request.bot_id {
                 Some(id) => self
                     .managed(id)
                     .await?
                     .config
                     .lock()
                     .await
-                    .project_id
+                    .workspace_id
                     .clone(),
                 None => {
                     self.ensure_workspace_project(&bot_id, &request.name)
@@ -557,8 +557,8 @@ impl BotRuntime {
         self.reject_if_sealed()?;
         validate_bot_id(&request.bot_id)?;
         validate_app_id(&request.app_id)?;
-        if request.project_id.is_empty() {
-            request.project_id = self
+        if request.workspace_id.is_empty() {
+            request.workspace_id = self
                 .ensure_workspace_project(&request.bot_id, &request.name)
                 .await?;
         }
@@ -1026,7 +1026,7 @@ impl BotOperationOwner {
             bot_id,
             expected_config_revision,
             name,
-            project_id,
+            workspace_id,
             app_id,
             secret,
             enabled,
@@ -1053,10 +1053,10 @@ impl BotOperationOwner {
             && let Some(managed) = &published
         {
             let occupancy = managed.store.identity_occupancy().await?;
-            if previous.project_id != project_id && occupancy.has_thread_or_inbound {
+            if previous.workspace_id != workspace_id && occupancy.has_thread_or_inbound {
                 return Err(FeishuError::new(
                     FeishuErrorKind::Rejected,
-                    "projectId cannot change after Thread mapping or admitted input exists",
+                    "workspaceId cannot change after Thread mapping or admitted input exists",
                     false,
                     None,
                 ));
@@ -1079,7 +1079,7 @@ impl BotOperationOwner {
             None => BotConfigFile::new(
                 bot_id.clone(),
                 name.clone(),
-                project_id.clone(),
+                workspace_id.clone(),
                 app_id.clone(),
             )?,
         };
@@ -1087,7 +1087,7 @@ impl BotOperationOwner {
             .claim_app_target_or_error(&bot_id, &app_id)
             .await?;
         candidate.name = name;
-        candidate.project_id = project_id;
+        candidate.workspace_id = workspace_id;
         candidate.feishu_mut().app_id = app_id;
         candidate.enabled = enabled;
         candidate.tools_enabled = tools_enabled;
@@ -1335,7 +1335,7 @@ impl BotOperationOwner {
             operation_id: request.operation_id.clone(),
             bot_id: request.bot_id.clone(),
             name: request.name.clone(),
-            project_id: request.project_id.clone(),
+            workspace_id: request.workspace_id.clone(),
             app_id: request.app_id.clone(),
             secret: SecretFingerprint::Replace(request.secret.clone()),
             trusted_open_id: request.trusted_open_id.clone(),
@@ -1409,14 +1409,14 @@ impl BotOperationOwner {
             .await?;
         let RegistrationSave {
             name,
-            project_id,
+            workspace_id,
             app_id,
             secret,
             trusted_open_id,
             operation_id,
             ..
         } = request;
-        let mut config = BotConfigFile::new(self.bot_id.clone(), name, project_id, app_id.clone())?;
+        let mut config = BotConfigFile::new(self.bot_id.clone(), name, workspace_id, app_id.clone())?;
         config.model_route = Some(self.runtime.default_model_route()?);
         if let Some(open_id) = trusted_open_id {
             config.feishu_mut().trusted_open_ids.insert(open_id);
@@ -1645,10 +1645,10 @@ impl BotOperationOwner {
                 return Err(stale_revision_error());
             }
             let occupancy = managed.store.identity_occupancy().await?;
-            if current.project_id != target.project_id && occupancy.has_thread_or_inbound {
+            if current.workspace_id != target.workspace_id && occupancy.has_thread_or_inbound {
                 return Err(FeishuError::new(
                     FeishuErrorKind::Rejected,
-                    "projectId cannot change after Thread mapping or admitted input exists",
+                    "workspaceId cannot change after Thread mapping or admitted input exists",
                     false,
                     None,
                 ));
@@ -2584,7 +2584,7 @@ fn fingerprint_of(mutation: &BotMutation, fallback_bot_id: &str) -> CommandFinge
                 .unwrap_or_else(|| fallback_bot_id.to_string()),
             expected_config_revision: request.expected_config_revision,
             name: request.name.clone(),
-            project_id: request.project_id.clone(),
+            workspace_id: request.workspace_id.clone(),
             app_id: request.app_id.clone(),
             secret: match &request.secret {
                 BotSecretUpdate::Preserve => SecretFingerprint::Preserve,

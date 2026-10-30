@@ -499,7 +499,7 @@ pub struct BridgeLspStateData {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct BridgeSkillsStateSnapshot {
-    pub project_id: String,
+    pub workspace_id: String,
     pub state: BridgeSkillsResourceState,
 }
 
@@ -720,7 +720,7 @@ pub struct SkillsResponse {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct BridgeSkillSearchResult {
-    pub project_id: String,
+    pub workspace_id: String,
     pub catalog_revision: u64,
     pub matches: Vec<SkillSummaryDto>,
     pub truncated: bool,
@@ -757,7 +757,7 @@ pub enum SkillResourceBaseDto {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct BridgeDirectoryQuery {
-    pub project_id: Option<String>,
+    pub workspace_id: Option<String>,
     pub search: Option<String>,
     pub archived: bool,
     pub filter: BridgeDirectoryFilter,

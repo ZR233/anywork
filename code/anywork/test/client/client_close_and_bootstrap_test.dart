@@ -38,13 +38,13 @@ void main() {
       clientId: 'project-close',
     );
     await client.bootstrap();
-    final projectId = client.selection.state.selectedProjectId!;
-    client.drafts.startDraft.updateDraft(projectId, 'closed project draft');
+    final workspaceId = client.selection.state.selectedProjectId!;
+    client.drafts.startDraft.updateDraft(workspaceId, 'closed project draft');
     final composer = client.drafts.composer('thread-main')
       ..updateDraft('closed Thread draft');
-    await client.directoryCommands.archiveProject(projectId);
+    await client.directoryCommands.archiveProject(workspaceId);
     expect(
-      client.drafts.startDraft.state.projects.containsKey(projectId),
+      client.drafts.startDraft.state.projects.containsKey(workspaceId),
       isFalse,
     );
     expect(client.drafts.existingComposer('thread-main')?.state, isNull);

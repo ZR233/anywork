@@ -269,7 +269,7 @@ class _BotsTabState extends ConsumerState<BotsTab> {
                 botId: selected.id,
                 expectedConfigRevision: selected.configRevision,
                 name: selected.name,
-                projectId: selected.projectId,
+                workspaceId: selected.workspaceId,
                 appId: selected.appId,
                 secret: const BotSecretPreserve(),
                 enabled: selected.enabled,
@@ -498,7 +498,7 @@ class _BotsTabState extends ConsumerState<BotsTab> {
     _client.botsCommands.updateSetupDraft(
       _client.botsCommands.setupDraft.copyWith(
         name: _name.text,
-        projectId: '',
+        workspaceId: '',
         appId: _appId.text,
       ),
     );
@@ -510,7 +510,7 @@ class _BotsTabState extends ConsumerState<BotsTab> {
     return _run(() async {
       await _client.botsCommands.startRegistration(
         name: draft.name,
-        projectId: draft.projectId,
+        workspaceId: draft.workspaceId,
       );
       if (!mounted) return;
       setState(() {
@@ -528,7 +528,7 @@ class _BotsTabState extends ConsumerState<BotsTab> {
       final saved = await _client.botsCommands.saveBot(
         expectedConfigRevision: 0,
         name: draft.name,
-        projectId: draft.projectId,
+        workspaceId: draft.workspaceId,
         appId: draft.appId,
         secret: secret,
       );
@@ -621,7 +621,7 @@ class _BotsTabState extends ConsumerState<BotsTab> {
         botId: bot.id,
         expectedConfigRevision: bot.configRevision,
         name: bot.name,
-        projectId: bot.projectId,
+        workspaceId: bot.workspaceId,
         appId: bot.appId,
         secret: const BotSecretPreserve(),
         enabled: bot.enabled,
@@ -705,7 +705,7 @@ class _BotsTabState extends ConsumerState<BotsTab> {
           botId: bot.id,
           expectedConfigRevision: bot.configRevision,
           name: edits.name,
-          projectId: edits.projectId,
+          workspaceId: edits.workspaceId,
           appId: edits.appId,
           secret: edits.secret,
           enabled: bot.enabled,

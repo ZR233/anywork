@@ -103,7 +103,7 @@ class _SidebarState extends ConsumerState<_Sidebar> {
       // 的成员资格必须来自查询结果，不能本地追加行而污染结果集。
       if (!_filtered) {
         for (final thread in live.values) {
-          if (thread.projectId == entry.key && !thread.archived) {
+          if (thread.workspaceId == entry.key && !thread.archived) {
             rows[thread.id] = thread;
           }
         }
@@ -132,24 +132,24 @@ class _SidebarState extends ConsumerState<_Sidebar> {
     final affected = <String>{};
     // 会话被移除（归档/关闭）影响其所属项目页的成员资格。
     for (final thread in previous.rootThreads) {
-      if (!liveById.containsKey(thread.id)) affected.add(thread.projectId);
+      if (!liveById.containsKey(thread.id)) affected.add(thread.workspaceId);
     }
     for (final thread in widget.state.rootThreads) {
       final before = previousById[thread.id];
       if (before == null) {
         // 新增会话只影响过滤/归档视图；普通视图由 live 覆盖即时呈现。
-        if (_filtered) affected.add(thread.projectId);
+        if (_filtered) affected.add(thread.workspaceId);
         continue;
       }
       final membershipChanged =
           before.archived != thread.archived ||
-          before.projectId != thread.projectId ||
+          before.workspaceId != thread.workspaceId ||
           (_filter != DirectoryFilter.all && before.status != thread.status) ||
           (_search.text.trim().isNotEmpty && before.title != thread.title);
       if (membershipChanged) {
         affected
-          ..add(thread.projectId)
-          ..add(before.projectId);
+          ..add(thread.workspaceId)
+          ..add(before.workspaceId);
       }
     }
     if (previous.selectedProjectId != widget.state.selectedProjectId) {
@@ -224,13 +224,13 @@ class _SidebarState extends ConsumerState<_Sidebar> {
     }
   }
 
-  Future<void> _load(String projectId, {bool more = false}) async {
-    if (_loading.contains(projectId)) return;
+  Future<void> _load(String workspaceId, {bool more = false}) async {
+    if (_loading.contains(workspaceId)) return;
     final generation = _queryGeneration;
-    final previous = _pages[projectId];
+    final previous = _pages[workspaceId];
     setState(() {
-      _loading.add(projectId);
-      _errors.remove(projectId);
+      _loading.add(workspaceId);
+      _errors.remove(workspaceId);
     });
     try {
       final page = await ref
@@ -238,7 +238,7 @@ class _SidebarState extends ConsumerState<_Sidebar> {
           .directoryCommands
           .queryThreads(
             DirectoryQuery(
-              projectId: projectId,
+              workspaceId: workspaceId,
               search: _search.text,
               filter: _filter,
               archived: _archived,
@@ -258,18 +258,18 @@ class _SidebarState extends ConsumerState<_Sidebar> {
         for (final thread in page.threads) thread.id: live[thread.id] ?? thread,
       };
       setState(
-        () => _pages[projectId] = ThreadDirectoryPage(
+        () => _pages[workspaceId] = ThreadDirectoryPage(
           threads: rows.values.toList(),
           nextCursor: page.nextCursor,
         ),
       );
     } catch (error) {
       if (mounted && generation == _queryGeneration) {
-        setState(() => _errors[projectId] = error.toString());
+        setState(() => _errors[workspaceId] = error.toString());
       }
     } finally {
       if (mounted && generation == _queryGeneration) {
-        setState(() => _loading.remove(projectId));
+        setState(() => _loading.remove(workspaceId));
       }
     }
   }
@@ -566,7 +566,7 @@ class _SidebarState extends ConsumerState<_Sidebar> {
               (_filtered
                   ? <StudioThread>[]
                   : widget.state.rootThreads.where(
-                      (t) => t.projectId == project.id && !t.archived,
+                      (t) => t.workspaceId == project.id && !t.archived,
                     ))),
         ]..sort((a, b) {
           final pin =
@@ -683,12 +683,12 @@ Future<void> _saveSidebarPreferences(
   required GeneralSettingsView general,
   int? width,
   String? threadId,
-  String? projectId,
+  String? workspaceId,
 }) async {
   final threads = [...general.pinnedThreadIds];
   final projects = [...general.pinnedProjectIds];
   if (threadId != null && !threads.remove(threadId)) threads.add(threadId);
-  if (projectId != null && !projects.remove(projectId)) projects.add(projectId);
+  if (workspaceId != null && !projects.remove(workspaceId)) projects.add(workspaceId);
   final commands = ref.read(anyworkClientProvider).settingsCommands;
   // A previous width can still be in flight even when this intent equals the
   // observed snapshot. Let the Client's canonical command lane order both.
@@ -698,7 +698,7 @@ Future<void> _saveSidebarPreferences(
   if (threadId != null) {
     await commands.applySettingsField(GeneralPinnedThreadIdsCommand(threads));
   }
-  if (projectId != null) {
+  if (workspaceId != null) {
     await commands.applySettingsField(GeneralPinnedProjectIdsCommand(projects));
   }
 }

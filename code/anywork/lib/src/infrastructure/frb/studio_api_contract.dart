@@ -1476,7 +1476,7 @@ class FrbStudioTransport
     final page = await _bridgeCall(
       () => frb.queryThreads(
         request: frb.BridgeDirectoryQuery(
-          projectId: query.projectId,
+          workspaceId: query.workspaceId,
           search: query.search,
           archived: query.archived,
           filter: switch (query.filter) {
@@ -1510,11 +1510,11 @@ class FrbStudioTransport
   }
 
   @override
-  Future<StudioProject> renameProject(String projectId, String name) async {
+  Future<StudioProject> renameProject(String workspaceId, String name) async {
     await _ensureReady();
     return _projectFromFrb(
       await _bridgeCall(
-        () => frb.renameProject(projectId: projectId, name: name),
+        () => frb.renameProject(workspaceId: workspaceId, name: name),
       ),
     );
   }
@@ -1681,14 +1681,14 @@ class FrbStudioTransport
   }
 
   @override
-  Future<void> activateProject(String projectId) async {
+  Future<void> activateProject(String workspaceId) async {
     await _ensureReady();
-    await _bridgeCall(() => frb.activateProject(projectId: projectId));
+    await _bridgeCall(() => frb.activateProject(workspaceId: workspaceId));
   }
 
   @override
   Stream<NewThreadStartEvent> startNewThread(
-    String projectId,
+    String workspaceId,
     StudioPromptInput input,
     ThreadModeId mode, {
     required ModeModelRouteView route,
@@ -1700,7 +1700,7 @@ class FrbStudioTransport
     try {
       await for (final event in frb.startNewThread(
         request: frb.BridgeStartNewThreadRequest(
-          projectId: projectId,
+          workspaceId: workspaceId,
           input: _bridgePromptInput(input),
           mode: mode.id,
           accountId: route.accountId,
@@ -1763,9 +1763,9 @@ class FrbStudioTransport
   }
 
   @override
-  Future<void> archiveProject(String projectId) async {
+  Future<void> archiveProject(String workspaceId) async {
     await _ensureReady();
-    await _bridgeCall(() => frb.archiveProject(projectId: projectId));
+    await _bridgeCall(() => frb.archiveProject(workspaceId: workspaceId));
   }
 
   @override
@@ -2751,24 +2751,24 @@ class FrbStudioTransport
   }
 
   @override
-  Future<SkillsStateSnapshot> readSkillsState(String projectId) async {
+  Future<SkillsStateSnapshot> readSkillsState(String workspaceId) async {
     await _ensureReady();
     return _skillsStateFromFrb(
-      await _bridgeCall(() => frb.readSkillsState(projectId: projectId)),
+      await _bridgeCall(() => frb.readSkillsState(workspaceId: workspaceId)),
     );
   }
 
   @override
-  Future<SkillsStateSnapshot> discoverSkills(String projectId) async {
+  Future<SkillsStateSnapshot> discoverSkills(String workspaceId) async {
     await _ensureReady();
     return _skillsStateFromFrb(
-      await _bridgeCall(() => frb.discoverSkills(projectId: projectId)),
+      await _bridgeCall(() => frb.discoverSkills(workspaceId: workspaceId)),
     );
   }
 
   @override
   Future<SkillSearchResultView> searchSkills(
-    String projectId,
+    String workspaceId,
     String query, {
     int limit = 50,
   }) async {
@@ -2776,7 +2776,7 @@ class FrbStudioTransport
     return _skillSearchResultFromFrb(
       await _bridgeCall(
         () =>
-            frb.searchSkills(projectId: projectId, query: query, limit: limit),
+            frb.searchSkills(workspaceId: workspaceId, query: query, limit: limit),
       ),
     );
   }
@@ -2814,29 +2814,29 @@ class FrbStudioTransport
   }
 
   @override
-  Future<LspStateSnapshot> probeLspServer(String projectId) async {
+  Future<LspStateSnapshot> probeLspServer(String workspaceId) async {
     await _ensureReady();
     return _lspStateFromFrb(
-      await _bridgeCall(() => frb.probeLspServer(projectId: projectId)),
+      await _bridgeCall(() => frb.probeLspServer(workspaceId: workspaceId)),
     );
   }
 
   @override
   Future<LspStateSnapshot> repairLspServer(
-    String projectId,
+    String workspaceId,
     String serverId,
   ) async {
     await _ensureReady();
     return _lspStateFromFrb(
       await _bridgeCall(
-        () => frb.repairLspServer(projectId: projectId, serverId: serverId),
+        () => frb.repairLspServer(workspaceId: workspaceId, serverId: serverId),
       ),
     );
   }
 
   @override
   Future<LspStateSnapshot> resetLspServer(
-    String projectId,
+    String workspaceId,
     String serverId,
   ) async {
     await _ensureReady();
@@ -2844,7 +2844,7 @@ class FrbStudioTransport
       await _bridgeCall(
         () => frb.resetLsp(
           input: frb.LspScopeInput.server(
-            projectId: projectId,
+            workspaceId: workspaceId,
             serverId: serverId,
           ),
         ),
@@ -2853,12 +2853,12 @@ class FrbStudioTransport
   }
 
   @override
-  Future<LspStateSnapshot> resetLspWorkspace(String projectId) async {
+  Future<LspStateSnapshot> resetLspWorkspace(String workspaceId) async {
     await _ensureReady();
     return _lspStateFromFrb(
       await _bridgeCall(
         () => frb.resetLsp(
-          input: frb.LspScopeInput.workspace(projectId: projectId),
+          input: frb.LspScopeInput.workspace(workspaceId: workspaceId),
         ),
       ),
     );
@@ -2891,7 +2891,7 @@ class FrbStudioTransport
           request: frb_bots_types.BridgeStartBotRegistrationRequest(
             operationId: request.operationId,
             name: request.name,
-            projectId: request.projectId,
+            workspaceId: request.workspaceId,
           ),
         ),
       ),

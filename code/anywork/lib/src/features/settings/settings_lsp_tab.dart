@@ -35,7 +35,7 @@ class _LspTabState extends ConsumerState<LspTab> {
       kind: BridgeSettingsScopeKind.lsp,
     );
     final lsp = ref.watch(settingsLspViewProvider);
-    final projectId = lsp.projectId;
+    final workspaceId = lsp.workspaceId;
     final servers = lsp.servers;
     return SettingsPane(
       header: Column(
@@ -56,7 +56,7 @@ class _LspTabState extends ConsumerState<LspTab> {
                 ),
                 TextButton.icon(
                   key: StudioDriverKeys.lspProbe,
-                  onPressed: projectId == null
+                  onPressed: workspaceId == null
                       ? null
                       : () => unawaited(_run(_probe)),
                   icon: const Icon(Icons.monitor_heart_outlined),
@@ -64,7 +64,7 @@ class _LspTabState extends ConsumerState<LspTab> {
                 ),
                 TextButton.icon(
                   key: StudioDriverKeys.lspResetWorkspace,
-                  onPressed: projectId == null || servers.isEmpty
+                  onPressed: workspaceId == null || servers.isEmpty
                       ? null
                       : () => unawaited(_run(_resetWorkspace)),
                   icon: const Icon(Icons.restart_alt),
@@ -92,7 +92,7 @@ class _LspTabState extends ConsumerState<LspTab> {
                     LspUnavailableState() ||
                     LspDisabledState() => null,
                   },
-                  onReset: projectId == null
+                  onReset: workspaceId == null
                       ? null
                       : () => unawaited(_run(() => _resetServer(server.id))),
                 ),

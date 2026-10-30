@@ -19,7 +19,7 @@ pub struct BotConfigFile {
     pub schema_version: u32,
     pub id: String,
     pub name: String,
-    pub project_id: String,
+    pub workspace_id: String,
     pub platform: BotPlatformConfig,
     pub enabled: bool,
     pub tools_enabled: bool,
@@ -185,15 +185,15 @@ impl BotConfigFile {
     pub fn new(
         id: String,
         name: String,
-        project_id: String,
+        workspace_id: String,
         app_id: String,
     ) -> Result<Self, FeishuError> {
         validate_bot_id(&id)?;
         validate_app_id(&app_id)?;
-        if name.trim().is_empty() || project_id.trim().is_empty() {
+        if name.trim().is_empty() || workspace_id.trim().is_empty() {
             return Err(FeishuError::new(
                 FeishuErrorKind::Rejected,
-                "bot name and projectId are required",
+                "bot name and workspaceId are required",
                 false,
                 None,
             ));
@@ -203,7 +203,7 @@ impl BotConfigFile {
             schema_version: BOT_CONFIG_SCHEMA_VERSION,
             id,
             name,
-            project_id,
+            workspace_id,
             platform: BotPlatformConfig::FeishuChina(FeishuBotConfig {
                 app_id,
                 trusted_open_ids: BTreeSet::new(),
@@ -383,7 +383,7 @@ mod migration_tests {
 schema_version = 1
 id = "bot-migrate-1"
 name = "原机器人"
-project_id = "business-project"
+workspace_id = "business-project"
 app_id = "cli_original"
 platform = "feishuChina"
 enabled = true
@@ -399,7 +399,7 @@ updated_at = 200
 schema_version = 2
 id = "bot-migrate-1"
 name = "原机器人"
-project_id = "business-project"
+workspace_id = "business-project"
 app_id = "cli_original"
 platform = "feishuChina"
 enabled = true
@@ -495,7 +495,7 @@ updated_at = 200
         assert!(config.feishu().trusted_open_ids.contains("ou_original"));
         assert!(config.feishu().trusted_chat_ids.contains("oc_original"));
         assert_eq!(config.id, "bot-migrate-1");
-        assert_eq!(config.project_id, "business-project");
+        assert_eq!(config.workspace_id, "business-project");
         assert_eq!(config.config_revision, 9);
         assert!(config.selected_ref.is_none());
     }
@@ -538,7 +538,7 @@ updated_at = 200
     const V1_DTO: &str = r#"
 id = "bot-migrate-1"
 name = "原机器人"
-project_id = "business-project"
+workspace_id = "business-project"
 app_id = "cli_original"
 platform = "feishuChina"
 enabled = true
@@ -627,7 +627,7 @@ updated_at = 200
             "schema_version": 2,
             "id": "bot-migrate-1",
             "name": "原机器人",
-            "project_id": "business-project",
+            "workspace_id": "business-project",
             "platform": "feishuChina",
             "platform_config": {
                 "app_id": "cli_original",
@@ -667,7 +667,7 @@ updated_at = 200
         assert_eq!(reloaded.source_version, 3);
         assert_eq!(load_config(&path).unwrap(), current);
         assert_eq!(current.id, "bot-migrate-1");
-        assert_eq!(current.project_id, "business-project");
+        assert_eq!(current.workspace_id, "business-project");
         assert_eq!(current.config_revision, 9);
     }
 
@@ -714,7 +714,7 @@ updated_at = 200
             "schema_version = \"3\"\n",
             "schema_version = 3.0\n",
         ] {
-            let raw = format!("{header}id='bot-migrate-1'\nname='n'\nproject_id='p'\n");
+            let raw = format!("{header}id='bot-migrate-1'\nname='n'\nworkspace_id='p'\n");
             assert!(parse_config(&raw).is_err(), "{header:?}");
         }
     }
@@ -725,7 +725,7 @@ updated_at = 200
 schema_version = 2
 id = "bot-migrate-1"
 name = "原机器人"
-project_id = "business-project"
+workspace_id = "business-project"
 app_id = "cli_flat"
 platform = "feishuChina"
 platform_config = { app_id = "cli_nested", trusted_open_ids = [], trusted_chat_ids = [] }
@@ -742,7 +742,7 @@ updated_at = 200
             "schema_version": 3,
             "id": "bot-migrate-1",
             "name": "原机器人",
-            "project_id": "business-project",
+            "workspace_id": "business-project",
             "platform": "feishuChina",
             "platform_config": {
                 "app_id": "cli_nested",

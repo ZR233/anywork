@@ -13,33 +13,33 @@ class SelectionStore extends ReadModel<SelectionStoreState> {
       generation == _navigationGeneration;
 
   void restoreStartup({
-    required String? projectId,
+    required String? workspaceId,
     required String? threadId,
     required bool needsOpen,
   }) {
     _assign(
       SelectionStoreState(
-        selectedProjectId: projectId,
+        selectedProjectId: workspaceId,
         selectedThreadId: threadId,
         needsOpen: threadId != null && needsOpen,
       ),
     );
   }
 
-  void selectProject(String projectId) {
+  void selectProject(String workspaceId) {
     _assign(
-      SelectionStoreState(selectedProjectId: projectId, needsOpen: false),
+      SelectionStoreState(selectedProjectId: workspaceId, needsOpen: false),
     );
   }
 
   void selectThread({
-    required String projectId,
+    required String workspaceId,
     required String threadId,
     bool needsOpen = false,
   }) {
     _assign(
       SelectionStoreState(
-        selectedProjectId: projectId,
+        selectedProjectId: workspaceId,
         selectedThreadId: threadId,
         needsOpen: needsOpen,
       ),
@@ -60,9 +60,9 @@ class SelectionStore extends ReadModel<SelectionStoreState> {
   }
 
   /// 项目目录前进后，选中项目已不在目录中时回退到稳定 id 序的第一个项目。
-  void retainProjects(Set<String> projectIds, {String? fallbackProjectId}) {
+  void retainProjects(Set<String> workspaceIds, {String? fallbackProjectId}) {
     final selected = state.selectedProjectId;
-    if (selected == null || projectIds.contains(selected)) return;
+    if (selected == null || workspaceIds.contains(selected)) return;
     _assign(
       SelectionStoreState(
         selectedProjectId: fallbackProjectId,

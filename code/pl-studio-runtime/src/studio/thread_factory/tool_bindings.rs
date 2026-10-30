@@ -5,7 +5,7 @@ use super::{
     thread_tools::{CatalogPreparation, ThreadToolAssembly},
 };
 use crate::{
-    studio::ProjectRecord,
+    studio::WorkspaceRecord,
     thread_assembler::{StudioThreadTools, ThreadAssemblyError, WeakCommandProcesses},
 };
 use pl_core::thread::ThreadSnapshot;
@@ -24,7 +24,7 @@ pub(super) struct ToolBinding {
     pub permission_mode: crate::approval::PermissionMode,
     pub policies:
         std::collections::BTreeMap<String, pl_core::tool::execution_policy::ExecutionPolicyHandle>,
-    pub project: ProjectRecord,
+    pub project: WorkspaceRecord,
     pub workspace: ToolWorkspace,
     pub commands: Option<WeakCommandProcesses>,
     pub remote: Option<pl_tool::remote::RemoteWorkspaceHost>,
@@ -48,7 +48,7 @@ impl StudioThreadFactory {
     pub(super) fn actual_tool_workspace(
         &self,
         id: &str,
-    ) -> Result<(ToolWorkspace, ProjectRecord), ThreadAssemblyError> {
+    ) -> Result<(ToolWorkspace, WorkspaceRecord), ThreadAssemblyError> {
         let bindings = self
             .bindings
             .lock()
@@ -85,7 +85,7 @@ impl StudioThreadFactory {
         ))
     }
 
-    pub(in crate::studio) fn tool_project(&self, id: &str) -> Option<ProjectRecord> {
+    pub(in crate::studio) fn tool_project(&self, id: &str) -> Option<WorkspaceRecord> {
         self.bindings
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -307,7 +307,7 @@ impl StudioThreadFactory {
             .project_snapshot()
             .await
             .into_iter()
-            .find(|project| project.id == thread.project_id)
+            .find(|project| project.id == thread.workspace_id)
             .ok_or_else(|| {
                 ThreadAssemblyError::InvalidatedBinding(
                     "project target disappeared; reactivate this Thread".into(),
@@ -369,7 +369,7 @@ impl StudioThreadFactory {
         let resources = crate::resource_store::FileResourceStore::new(
             self.services
                 .store
-                .session_resources_dir_for(&thread.project_id, &thread.id)
+                .session_resources_dir_for(&thread.workspace_id, &thread.id)
                 .map_err(|error| resource_error("resolve refreshed session resources", error))?,
         );
         let remote = match &project.ssh_alias {
@@ -538,8 +538,8 @@ pub(super) async fn ensure_frozen_ssh_profile(
 }
 
 fn ensure_same_target(
-    previous: &ProjectRecord,
-    current: &ProjectRecord,
+    previous: &WorkspaceRecord,
+    current: &WorkspaceRecord,
 ) -> Result<(), ThreadAssemblyError> {
     if previous.id != current.id
         || previous.path != current.path

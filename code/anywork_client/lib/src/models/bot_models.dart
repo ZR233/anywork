@@ -493,7 +493,7 @@ class BotSnapshot {
     this.lastActivityAt,
     required this.id,
     required this.name,
-    required this.projectId,
+    required this.workspaceId,
     required this.appId,
     required this.platform,
     required this.enabled,
@@ -516,7 +516,7 @@ class BotSnapshot {
 
   final String id;
   final String name;
-  final String projectId;
+  final String workspaceId;
   final String appId;
   final BotPlatform platform;
   final bool enabled;
@@ -544,7 +544,7 @@ class BotSnapshot {
           lastActivityAt == other.lastActivityAt &&
           id == other.id &&
           name == other.name &&
-          projectId == other.projectId &&
+          workspaceId == other.workspaceId &&
           appId == other.appId &&
           platform == other.platform &&
           enabled == other.enabled &&
@@ -568,7 +568,7 @@ class BotSnapshot {
   int get hashCode => Object.hash(
     id,
     name,
-    projectId,
+    workspaceId,
     appId,
     platform,
     enabled,
@@ -615,14 +615,14 @@ class BotRegistrationAttempt {
   const BotRegistrationAttempt({
     required this.attemptId,
     required this.name,
-    required this.projectId,
+    required this.workspaceId,
     required this.status,
     this.completedBotId,
   });
 
   final String attemptId;
   final String name;
-  final String projectId;
+  final String workspaceId;
   final BotRegistrationStatus status;
   final String? completedBotId;
 
@@ -632,17 +632,17 @@ class BotRegistrationAttempt {
       other is BotRegistrationAttempt &&
           attemptId == other.attemptId &&
           name == other.name &&
-          projectId == other.projectId &&
+          workspaceId == other.workspaceId &&
           status == other.status &&
           completedBotId == other.completedBotId;
 
   @override
   int get hashCode =>
-      Object.hash(attemptId, name, projectId, status, completedBotId);
+      Object.hash(attemptId, name, workspaceId, status, completedBotId);
 
   @override
   String toString() =>
-      'BotRegistrationAttempt(attemptId: $attemptId, name: $name, projectId: $projectId, status: $status, completedBotId: $completedBotId)';
+      'BotRegistrationAttempt(attemptId: $attemptId, name: $name, workspaceId: $workspaceId, status: $status, completedBotId: $completedBotId)';
 }
 
 class BotsStateSnapshot {
@@ -752,7 +752,7 @@ class SaveBotRequest {
     this.botId,
     required this.expectedConfigRevision,
     required this.name,
-    required this.projectId,
+    required this.workspaceId,
     required this.appId,
     required this.secret,
     this.enabled = false,
@@ -764,7 +764,7 @@ class SaveBotRequest {
   final String? botId;
   final int expectedConfigRevision;
   final String name;
-  final String projectId;
+  final String workspaceId;
   final String appId;
   final BotSecretUpdate secret;
   final bool enabled;
@@ -773,19 +773,19 @@ class SaveBotRequest {
 
   @override
   String toString() =>
-      'SaveBotRequest(operationId: $operationId, botId: $botId, expectedConfigRevision: $expectedConfigRevision, name: $name, projectId: $projectId, appId: $appId, secret: $secret, enabled: $enabled, toolsEnabled: $toolsEnabled)';
+      'SaveBotRequest(operationId: $operationId, botId: $botId, expectedConfigRevision: $expectedConfigRevision, name: $name, workspaceId: $workspaceId, appId: $appId, secret: $secret, enabled: $enabled, toolsEnabled: $toolsEnabled)';
 }
 
 class StartBotRegistrationRequest {
   const StartBotRegistrationRequest({
     required this.operationId,
     required this.name,
-    required this.projectId,
+    required this.workspaceId,
   });
 
   final String operationId;
   final String name;
-  final String projectId;
+  final String workspaceId;
 }
 
 class CancelBotRegistrationRequest {
@@ -876,7 +876,7 @@ class BotConversationThreadBinding {
   const BotConversationThreadBinding({
     required this.botId,
     required this.chatId,
-    required this.projectId,
+    required this.workspaceId,
     this.threadId,
     required this.revision,
     required this.state,
@@ -885,7 +885,7 @@ class BotConversationThreadBinding {
 
   final String botId;
   final String chatId;
-  final String projectId;
+  final String workspaceId;
   final String? threadId;
   final int revision;
   final BotConversationThreadState state;
@@ -897,7 +897,7 @@ class BotConversationThreadBinding {
       other is BotConversationThreadBinding &&
           botId == other.botId &&
           chatId == other.chatId &&
-          projectId == other.projectId &&
+          workspaceId == other.workspaceId &&
           threadId == other.threadId &&
           revision == other.revision &&
           state == other.state &&
@@ -907,7 +907,7 @@ class BotConversationThreadBinding {
   int get hashCode => Object.hash(
     botId,
     chatId,
-    projectId,
+    workspaceId,
     threadId,
     revision,
     state,
@@ -1173,7 +1173,7 @@ class BotSendResult {
 class BotSetupDraft {
   const BotSetupDraft({
     this.name = '',
-    this.projectId = '',
+    this.workspaceId = '',
     this.appId = '',
     this.enabled = false,
     this.toolsEnabled = false,
@@ -1181,7 +1181,7 @@ class BotSetupDraft {
   });
 
   final String name;
-  final String projectId;
+  final String workspaceId;
   final String appId;
   final bool enabled;
   final bool toolsEnabled;
@@ -1189,7 +1189,7 @@ class BotSetupDraft {
 
   BotSetupDraft copyWith({
     String? name,
-    String? projectId,
+    String? workspaceId,
     String? appId,
     bool? enabled,
     bool? toolsEnabled,
@@ -1197,7 +1197,7 @@ class BotSetupDraft {
   }) {
     return BotSetupDraft(
       name: name ?? this.name,
-      projectId: projectId ?? this.projectId,
+      workspaceId: workspaceId ?? this.workspaceId,
       appId: appId ?? this.appId,
       enabled: enabled ?? this.enabled,
       toolsEnabled: toolsEnabled ?? this.toolsEnabled,
@@ -1210,7 +1210,7 @@ class BotSetupDraft {
       identical(this, other) ||
       other is BotSetupDraft &&
           name == other.name &&
-          projectId == other.projectId &&
+          workspaceId == other.workspaceId &&
           appId == other.appId &&
           enabled == other.enabled &&
           toolsEnabled == other.toolsEnabled &&
@@ -1219,7 +1219,7 @@ class BotSetupDraft {
   @override
   int get hashCode => Object.hash(
     name,
-    projectId,
+    workspaceId,
     appId,
     enabled,
     toolsEnabled,

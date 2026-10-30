@@ -44,25 +44,25 @@ final class DraftsRepositoryImpl implements DraftsRepository {
   @override
   ComposerDraftOwner? existingComposer(String threadId) => _composers[threadId];
   @override
-  List<ComposerDraftOwner> projectComposers(String projectId) =>
+  List<ComposerDraftOwner> projectComposers(String workspaceId) =>
       List.unmodifiable([
         for (final owner in _composers.values)
           if ((dependencies.conversations
                       .sessionState(owner.threadId)
                       ?.workspace
                       ?.thread
-                      .projectId ??
-                  dependencies.findThread(owner.threadId)?.projectId) ==
-              projectId)
+                      .workspaceId ??
+                  dependencies.findThread(owner.threadId)?.workspaceId) ==
+              workspaceId)
             owner,
       ]);
   @override
   Future<void> discardProjectDrafts(
-    String projectId,
+    String workspaceId,
     List<ComposerDraftOwner> owners,
   ) async {
     await Future.wait<void>([
-      startDraft.discardProject(projectId),
+      startDraft.discardProject(workspaceId),
       for (final owner in owners)
         () async {
           await owner.discard();

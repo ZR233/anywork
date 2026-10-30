@@ -149,7 +149,7 @@ async fn canonical_project_without_sqlite_mirror_accepts_and_restores_new_thread
         .one(runtime.store.database())
         .await?
         .expect("Thread mirror survived restart");
-    assert_eq!(mirrored.project_id, "project-published");
+    assert_eq!(mirrored.workspace_id, "project-published");
     assert!(
         runtime
             .store
@@ -270,7 +270,7 @@ async fn recovery_scope_and_execution_dependencies_survive_bot_materialization_a
         .map_err(anyhow::Error::new)?;
     let issues = runtime.recovery_issues();
     assert!(issues.iter().any(|issue| issue.scope == Scope::Project
-        && issue.project_id.as_deref() == Some(&project.id)
+        && issue.workspace_id.as_deref() == Some(&project.id)
         && issue.impact == Impact::ExecutionBlocked));
     assert!(issues.iter().any(|issue| issue.scope == Scope::Thread
         && issue.thread_id.as_deref() == Some(&ordinary.id)
@@ -996,9 +996,9 @@ async fn layout_target_manifest_fault_does_not_reset_home() -> Result<()> {
     let session = paths.session_paths("project-a", "thread-a")?;
     tokio::fs::create_dir_all(session.root().parent().expect("parent")).await?;
     pl_tool::workspace::move_owned_path(&source, session.root())?;
-    tokio::fs::write(session.session_manifest(), "schemaVersion = 99\nthreadId = \"thread-a\"\nprojectId = \"project-a\"\nrootThreadId = \"thread-a\"\nworkspaceMode = \"local\"\nworkspacePath = \"/tmp/layout\"\ncreatedAt = 1\n").await?;
+    tokio::fs::write(session.session_manifest(), "schemaVersion = 99\nthreadId = \"thread-a\"\nworkspaceId = \"project-a\"\nrootThreadId = \"thread-a\"\nworkspaceMode = \"local\"\nworkspacePath = \"/tmp/layout\"\ncreatedAt = 1\n").await?;
     let journal = format!(
-        "schemaVersion = 1\ncompleted = false\norphans = []\n\n[[moves]]\nthreadId = \"thread-a\"\nprojectId = \"project-a\"\nsourceKey = \"{source}\"\ntargetProjectKey = \"{project}\"\ntargetThreadKey = \"{source}\"\nphase = \"moved\"\n",
+        "schemaVersion = 1\ncompleted = false\norphans = []\n\n[[moves]]\nthreadId = \"thread-a\"\nworkspaceId = \"project-a\"\nsourceKey = \"{source}\"\ntargetProjectKey = \"{project}\"\ntargetThreadKey = \"{source}\"\nphase = \"moved\"\n",
         source = crate::studio::paths::thread_storage_key("thread-a")?,
         project = crate::studio::paths::storage_key("project-a", "Project")?,
     );

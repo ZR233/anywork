@@ -135,11 +135,11 @@ pub enum McpResetRequest {
 #[serde(rename_all = "camelCase", tag = "scope", deny_unknown_fields)]
 pub enum LspResetRequest {
     Server {
-        project_id: String,
+        workspace_id: String,
         server_id: String,
     },
     Workspace {
-        project_id: String,
+        workspace_id: String,
     },
     All,
 }

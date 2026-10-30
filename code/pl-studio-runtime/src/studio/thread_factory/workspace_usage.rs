@@ -1,7 +1,7 @@
 //! Resolve outside the canonical admission mutex; no business workspace preparation precedes it.
 use super::{StudioThreadFactory, errors::resource_error};
 use crate::studio::{
-    ProjectRecord,
+    WorkspaceRecord,
     agent_host::worktree_lease::{
         WorkspaceEndpoint, WorkspaceIdentity, WorkspaceUsageLease, WorktreeLease,
     },
@@ -55,7 +55,7 @@ impl StudioThreadFactory {
     pub(in crate::studio) async fn reserve_workspace_use(
         &self,
         id: &str,
-        project: &ProjectRecord,
+        project: &WorkspaceRecord,
     ) -> Result<WorkspaceUsageLease> {
         self.services
             .worktrees
@@ -66,7 +66,7 @@ impl StudioThreadFactory {
         &self,
         id: &str,
         root_id: &str,
-        project: &ProjectRecord,
+        project: &WorkspaceRecord,
     ) -> Result<WorkspaceUsageLease> {
         if self
             .services
@@ -85,7 +85,7 @@ impl StudioThreadFactory {
 
     pub(in crate::studio) async fn resolve_workspace_identity(
         &self,
-        project: &ProjectRecord,
+        project: &WorkspaceRecord,
         root: &Path,
     ) -> Result<WorkspaceIdentity> {
         crate::studio::agent_host::worktree_lease::resolve_physical_workspace(
@@ -99,7 +99,7 @@ impl StudioThreadFactory {
     pub(in crate::studio) async fn assign_workspace_use(
         &self,
         usage: &WorkspaceUsageLease,
-        project: &ProjectRecord,
+        project: &WorkspaceRecord,
         root: &Path,
     ) -> Result<WorkspaceIdentity> {
         let identity = self.resolve_workspace_identity(project, root).await?;

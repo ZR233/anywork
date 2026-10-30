@@ -59,7 +59,7 @@ pub(in crate::studio) struct WorktreeLease {
     /// 归属 Thread id：`session` 为根会话自身，`child` 为子智能体 Thread。
     pub owner_thread_id: String,
     pub root_thread_id: String,
-    pub project_id: String,
+    pub workspace_id: String,
     pub ssh_alias: Option<String>,
     pub repository_root: String,
     pub path: String,

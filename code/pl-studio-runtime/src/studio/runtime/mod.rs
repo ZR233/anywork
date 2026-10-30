@@ -82,7 +82,7 @@ pub struct StudioSubmitPromptRequest {
 
 /// Creates a root Thread with the requested mode and submits its first prompt as one product command.
 pub struct StudioStartNewThreadRequest {
-    pub project_id: String,
+    pub workspace_id: String,
     pub title: Option<String>,
     pub input: StudioPromptInput,
     pub mode: pl_protocol::ThreadModeId,
@@ -254,7 +254,7 @@ struct ProjectActivationRuntime {
 
 #[derive(Clone, PartialEq, Eq)]
 struct ProjectActivation {
-    project_id: String,
+    workspace_id: String,
     fingerprint: String,
 }
 

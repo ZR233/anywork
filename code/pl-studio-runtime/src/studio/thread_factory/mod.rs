@@ -141,7 +141,7 @@ impl StudioThreadFactory {
     async fn project_record(
         &self,
         id: &str,
-    ) -> Result<crate::studio::ProjectRecord, crate::thread_assembler::ThreadAssemblyError> {
+    ) -> Result<crate::studio::WorkspaceRecord, crate::thread_assembler::ThreadAssemblyError> {
         if let Some(record) = self
             .services
             .product_events

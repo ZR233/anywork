@@ -4,7 +4,7 @@ use anyhow::Result;
 use pl_protocol::remote::RemoteDirectoryListing;
 use pl_tool::remote::{SshConnectionSnapshot, SshServerProfile};
 
-use crate::studio::records::ProjectRecord;
+use crate::studio::records::WorkspaceRecord;
 use crate::studio::store::directory::{DirectoryDelta, ProjectDirectoryRecord};
 
 use super::StudioRuntime;
@@ -211,7 +211,7 @@ impl StudioRuntime {
             .map_err(|error| anyhow::anyhow!(error))
     }
 
-    pub async fn open_remote_project(&self, alias: &str, path: String) -> Result<ProjectRecord> {
+    pub async fn open_remote_project(&self, alias: &str, path: String) -> Result<WorkspaceRecord> {
         self.ensure_ssh_password_hydrated(alias).await;
         let workspace = self
             .ssh_manager
@@ -262,7 +262,7 @@ impl StudioRuntime {
             .product_events
             .commit_directory(DirectoryDelta::upsert_project(delta))
             .await?;
-        Ok(ProjectRecord {
+        Ok(WorkspaceRecord {
             id,
             kind: pl_protocol::studio::WorkspaceKind::Project,
             name,

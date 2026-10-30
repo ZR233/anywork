@@ -92,7 +92,7 @@ pub enum BridgeThreadRuntimeAvailability {
 #[serde(rename_all = "camelCase")]
 pub struct BridgeThread {
     pub id: String,
-    pub project_id: String,
+    pub workspace_id: String,
     pub title: String,
     /// 完整 Thread Mode ID，例如 `mode.simple` 或 `mode.release`。
     pub mode: String,

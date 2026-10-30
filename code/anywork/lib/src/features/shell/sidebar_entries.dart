@@ -75,7 +75,7 @@ class _ProjectTile extends ConsumerWidget {
                     final commands = ref
                         .read(anyworkClientProvider)
                         .directoryCommands;
-                    await commands.beginNewThread(projectId: project.id);
+                    await commands.beginNewThread(workspaceId: project.id);
                     if (!context.mounted) return;
                     onNavigate?.call();
                   }
@@ -104,7 +104,7 @@ class _ProjectTile extends ConsumerWidget {
                   await _saveSidebarPreferences(
                     ref,
                     general: general,
-                    projectId: project.id,
+                    workspaceId: project.id,
                   );
                 }
                 if (action == 'copy') {

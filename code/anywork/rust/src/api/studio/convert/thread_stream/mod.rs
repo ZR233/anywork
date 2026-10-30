@@ -110,7 +110,7 @@ pub(crate) fn bridge_thread_snapshot(value: ThreadSnapshot) -> Result<BridgeThre
 pub(crate) fn bridge_thread(value: Thread) -> BridgeThread {
     BridgeThread {
         id: value.id,
-        project_id: value.project_id,
+        workspace_id: value.workspace_id,
         title: value.title,
         mode: value.mode.as_str().to_string(),
         delegation_mode: value.delegation_mode.into(),

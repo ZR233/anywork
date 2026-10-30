@@ -10,7 +10,7 @@ pub mod thread {
     pub struct Model {
         #[sea_orm(primary_key, auto_increment = false)]
         pub id: String,
-        pub project_id: String,
+        pub workspace_id: String,
         pub title: String,
         pub mode: String,
         pub root_thread_id: String,

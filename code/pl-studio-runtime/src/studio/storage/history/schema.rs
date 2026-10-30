@@ -616,7 +616,7 @@ impl MigrationTrait for CheckpointV5 {
 }
 
 /// Checkpoint Project bindings predate kind. Upgrade only at the named history boundary,
-/// so ordinary ProjectRecord decoding remains strict and old saved paths remain authoritative.
+/// so ordinary WorkspaceRecord decoding remains strict and old saved paths remain authoritative.
 struct ProjectKind {
     thread_id: String,
 }

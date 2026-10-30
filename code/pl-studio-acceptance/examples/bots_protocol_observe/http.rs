@@ -7,7 +7,7 @@ use pl_protocol::studio::{
     SetBotEnabledRequest, SetBotTrustedChatRequest, SetBotTrustedUserRequest,
     StartBotRegistrationRequest, StudioError,
 };
-use pl_studio_runtime::ProjectRecord;
+use pl_studio_runtime::WorkspaceRecord;
 use pl_studio_runtime::StudioThreadDirectoryPage;
 use reqwest::StatusCode;
 use reqwest::redirect::Policy as RedirectPolicy;
@@ -115,7 +115,7 @@ impl StudioHttp {
         Ok(())
     }
 
-    pub async fn open_project(&self, path: &str) -> Result<ProjectRecord> {
+    pub async fn open_project(&self, path: &str) -> Result<WorkspaceRecord> {
         self.post_json(
             "/api/v1/projects",
             &pl_protocol::studio::OpenProjectRequest {
@@ -127,10 +127,10 @@ impl StudioHttp {
 
     pub async fn create_thread(
         &self,
-        project_id: &str,
+        workspace_id: &str,
         request: &pl_protocol::studio::CreateThreadRequest,
     ) -> Result<pl_studio_runtime::StudioStartNewThreadResponse> {
-        let path = format!("/api/v1/projects/{project_id}/threads");
+        let path = format!("/api/v1/projects/{workspace_id}/threads");
         let (status, body) = self
             .post_raw_with(&self.command_client, &path, request)
             .await?;

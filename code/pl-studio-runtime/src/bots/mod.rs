@@ -79,7 +79,7 @@ pub(crate) enum BotInteractionRead {
 pub(crate) enum SendAuthority {
     Owner,
     AutoReply,
-    Tool { project_id: String },
+    Tool { workspace_id: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

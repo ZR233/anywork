@@ -65,7 +65,7 @@ pub async fn query_threads(
         .studio
         .query_threads(
             &pl_protocol::studio::ThreadDirectoryQuery {
-                project_id: request.project_id,
+                workspace_id: request.workspace_id,
                 search: request.search,
                 archived: request.archived,
                 filter,

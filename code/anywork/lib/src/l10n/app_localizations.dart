@@ -10389,14 +10389,14 @@ abstract class AppLocalizations {
   /// No description provided for @recoveryOwnerProject.
   ///
   /// In en, this message translates to:
-  /// **'Project {projectId}'**
-  String recoveryOwnerProject(String projectId);
+  /// **'Project {workspaceId}'**
+  String recoveryOwnerProject(String workspaceId);
 
   /// No description provided for @recoveryOwnerThread.
   ///
   /// In en, this message translates to:
-  /// **'Session {threadId} · project {projectId}'**
-  String recoveryOwnerThread(String threadId, String projectId);
+  /// **'Session {threadId} · project {workspaceId}'**
+  String recoveryOwnerThread(String threadId, String workspaceId);
 
   /// No description provided for @recoveryUnknownOwner.
   ///

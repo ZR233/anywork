@@ -64,7 +64,7 @@ void main() {
     final root = _factsThread();
     final other = StudioThread(
       id: 'other-root',
-      projectId: 'other-project',
+      workspaceId: 'other-project',
       title: 'Other project',
       mode: ThreadModeId.simple,
       delegationMode: DelegationMode.profile,
@@ -166,7 +166,7 @@ void main() {
       ThreadDirectoryWindow(threads: [root, other], revision: 1),
     );
     client.selection.restoreStartup(
-      projectId: root.projectId,
+      workspaceId: root.workspaceId,
       threadId: root.id,
       needsOpen: true,
     );
@@ -208,7 +208,7 @@ void main() {
       [root.id, 'cold-executor', 'cold-closed', 'nested', 'faulted'],
     );
     client.selection.restoreStartup(
-      projectId: root.projectId,
+      workspaceId: root.workspaceId,
       threadId: 'cold-closed',
       needsOpen: true,
     );
@@ -234,7 +234,7 @@ void main() {
           'Enumeration and cold navigation restore cannot load child sessions',
     );
     client.selection.restoreStartup(
-      projectId: other.projectId,
+      workspaceId: other.workspaceId,
       threadId: other.id,
       needsOpen: true,
     );
@@ -243,7 +243,7 @@ void main() {
       'other-child',
     ]);
     client.selection.restoreStartup(
-      projectId: root.projectId,
+      workspaceId: root.workspaceId,
       threadId: 'cold-closed',
       needsOpen: true,
     );
@@ -290,7 +290,7 @@ void main() {
       final root = _factsThread();
       final child = StudioThread(
         id: 'child',
-        projectId: 'project',
+        workspaceId: 'project',
         title: 'Review final changes',
         mode: ThreadModeId.task,
         delegationMode: DelegationMode.automatic,
@@ -339,7 +339,7 @@ void main() {
         ),
       );
       client.selection.restoreStartup(
-        projectId: 'project',
+        workspaceId: 'project',
         threadId: child.id,
         needsOpen: true,
       );
@@ -543,7 +543,7 @@ void main() {
       );
       final thread = StudioThread(
         id: 'thread',
-        projectId: 'project',
+        workspaceId: 'project',
         title: 'Original title',
         mode: ThreadModeId.simple,
         delegationMode: DelegationMode.profile,
@@ -1013,7 +1013,7 @@ void main() {
     final timeline = graph.timeline;
     (graph..setConversationPageVisible(true)).client.selection.selectThread(
       threadId: 'thread',
-      projectId: 'project',
+      workspaceId: 'project',
     );
     await timeline.source.waitFor(
       (state) => state != null && state.generation > 0,
@@ -1108,7 +1108,7 @@ void main() {
       final timeline = graph.timeline;
       (graph..setConversationPageVisible(true)).client.selection.selectThread(
         threadId: 'thread',
-        projectId: 'project',
+        workspaceId: 'project',
       );
       await timeline.source.waitFor(
         (state) => state != null && state.generation > 0,
@@ -1354,7 +1354,7 @@ void main() {
 
 StudioThread _factsThread() => StudioThread(
   id: 'thread',
-  projectId: 'project',
+  workspaceId: 'project',
   title: 'Thread',
   mode: ThreadModeId.simple,
   delegationMode: DelegationMode.profile,

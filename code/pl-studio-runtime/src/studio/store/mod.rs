@@ -67,14 +67,14 @@ impl StudioStore {
     /// 弱表回收，不会留下永不过期的强缓存。不存在的库继续读成空且不被创建。
     pub(crate) async fn history(&self, thread_id: &str) -> anyhow::Result<HistoryStore> {
         let session = self.registered_session_paths(thread_id)?;
-        self.history_for(session.project_id(), thread_id).await
+        self.history_for(session.workspace_id(), thread_id).await
     }
 
     /// Explicit Project + Thread history handle for tests and child prepare before catalog
     /// publication. Cold reads still do not create the database file.
     pub(crate) async fn history_for(
         &self,
-        project_id: &str,
+        workspace_id: &str,
         thread_id: &str,
     ) -> anyhow::Result<HistoryStore> {
         if let Some(shared) = self.thread_persistence.shared_history(thread_id) {
@@ -82,7 +82,7 @@ impl StudioStore {
         }
         let opened = HistoryStore::open(
             &self
-                .session_paths(project_id, thread_id)?
+                .session_paths(workspace_id, thread_id)?
                 .history_database(),
             thread_id,
         )
@@ -99,18 +99,18 @@ impl StudioStore {
         thread_id: &str,
     ) -> anyhow::Result<pl_core::chat::Session> {
         let session = self.registered_session_paths(thread_id)?;
-        self.chat_session_for(session.project_id(), thread_id).await
+        self.chat_session_for(session.workspace_id(), thread_id).await
     }
 
     pub(crate) async fn chat_session_for(
         &self,
-        project_id: &str,
+        workspace_id: &str,
         thread_id: &str,
     ) -> anyhow::Result<pl_core::chat::Session> {
         if let Some(active) = self.thread_persistence.chat_session(thread_id) {
             return Ok(active);
         }
-        let session = pl_core::chat::Session::new(self.history_for(project_id, thread_id).await?);
+        let session = pl_core::chat::Session::new(self.history_for(workspace_id, thread_id).await?);
         Ok(self
             .thread_persistence
             .install_chat_session(thread_id, session))
@@ -118,11 +118,11 @@ impl StudioStore {
 
     pub(crate) fn state_for(
         &self,
-        project_id: &str,
+        workspace_id: &str,
         thread_id: &str,
     ) -> anyhow::Result<StateStore> {
         Ok(StateStore::new(
-            self.session_paths(project_id, thread_id)?
+            self.session_paths(workspace_id, thread_id)?
                 .root()
                 .to_path_buf(),
             thread_id,
@@ -176,18 +176,18 @@ impl StudioStore {
 
     pub(crate) fn session_resources_dir_for(
         &self,
-        project_id: &str,
+        workspace_id: &str,
         thread_id: &str,
     ) -> anyhow::Result<PathBuf> {
-        Ok(self.session_paths(project_id, thread_id)?.resources_dir())
+        Ok(self.session_paths(workspace_id, thread_id)?.resources_dir())
     }
 
     pub(crate) fn session_scratch_dir_for(
         &self,
-        project_id: &str,
+        workspace_id: &str,
         thread_id: &str,
     ) -> anyhow::Result<PathBuf> {
-        Ok(self.session_paths(project_id, thread_id)?.scratch_dir())
+        Ok(self.session_paths(workspace_id, thread_id)?.scratch_dir())
     }
 }
 

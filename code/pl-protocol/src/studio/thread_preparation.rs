@@ -17,7 +17,7 @@ pub enum ThreadPreparationStage {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ThreadPreparationProgress {
-    pub project_id: String,
+    pub workspace_id: String,
     pub input_id: String,
     pub stage: ThreadPreparationStage,
     pub workspace_path: Option<String>,

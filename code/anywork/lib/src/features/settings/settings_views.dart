@@ -285,13 +285,13 @@ final settingsMcpViewProvider = Provider.autoDispose<SettingsMcpView>((ref) {
 
 class SettingsLspView {
   const SettingsLspView({
-    required this.projectId,
+    required this.workspaceId,
     required this.runtime,
     required this.runtimeRevision,
     required this.sync,
   });
 
-  final String? projectId;
+  final String? workspaceId;
   final LspStateSnapshot? runtime;
   final int runtimeRevision;
   final DomainSyncStatus sync;
@@ -303,25 +303,25 @@ class SettingsLspView {
   bool operator ==(Object other) =>
       identical(this, other) ||
       other is SettingsLspView &&
-          projectId == other.projectId &&
+          workspaceId == other.workspaceId &&
           runtimeRevision == other.runtimeRevision &&
           sync == other.sync &&
           identical(runtime, other.runtime);
 
   @override
   int get hashCode =>
-      Object.hash(projectId, runtimeRevision, sync, identityHashCode(runtime));
+      Object.hash(workspaceId, runtimeRevision, sync, identityHashCode(runtime));
 }
 
 final settingsLspViewProvider = Provider.autoDispose<SettingsLspView>((ref) {
-  final projectId = ref.watch(
+  final workspaceId = ref.watch(
     selectionStoreProvider.select(
       (state) => _nonBlank(state.selectedProjectId),
     ),
   );
   final runtime = ref.watch(lspStoreProvider);
   return SettingsLspView(
-    projectId: projectId,
+    workspaceId: workspaceId,
     runtime: runtime.value,
     runtimeRevision: runtime.revision,
     sync: runtime.sync,
@@ -330,7 +330,7 @@ final settingsLspViewProvider = Provider.autoDispose<SettingsLspView>((ref) {
 
 class SettingsSkillsView {
   const SettingsSkillsView({
-    required this.projectId,
+    required this.workspaceId,
     required this.settings,
     required this.catalog,
     required this.activeSkills,
@@ -341,7 +341,7 @@ class SettingsSkillsView {
     required this.sync,
   });
 
-  final String? projectId;
+  final String? workspaceId;
   final SkillsSettingsView? settings;
   final SkillsStateSnapshot? catalog;
   final List<String> activeSkills;
@@ -355,7 +355,7 @@ class SettingsSkillsView {
   bool operator ==(Object other) =>
       identical(this, other) ||
       other is SettingsSkillsView &&
-          projectId == other.projectId &&
+          workspaceId == other.workspaceId &&
           settingsRevision == other.settingsRevision &&
           catalogRevision == other.catalogRevision &&
           catalogStoreRevision == other.catalogStoreRevision &&
@@ -367,7 +367,7 @@ class SettingsSkillsView {
 
   @override
   int get hashCode => Object.hash(
-    projectId,
+    workspaceId,
     settingsRevision,
     catalogRevision,
     catalogStoreRevision,
@@ -382,7 +382,7 @@ class SettingsSkillsView {
 final settingsSkillsViewProvider = Provider.autoDispose<SettingsSkillsView>((
   ref,
 ) {
-  final projectId = ref.watch(
+  final workspaceId = ref.watch(
     selectionStoreProvider.select(
       (state) => _nonBlank(state.selectedProjectId),
     ),
@@ -393,12 +393,12 @@ final settingsSkillsViewProvider = Provider.autoDispose<SettingsSkillsView>((
           (skills: state.canonical?.skills, revision: state.settingsRevision),
     ),
   );
-  final catalog = projectId == null
+  final catalog = workspaceId == null
       ? null
-      : ref.watch(skillsStoreProvider(projectId));
+      : ref.watch(skillsStoreProvider(workspaceId));
   final session = _watchSelectedSession(ref);
   return SettingsSkillsView(
-    projectId: projectId,
+    workspaceId: workspaceId,
     settings: settings.skills,
     catalog: catalog?.value,
     activeSkills: session?.activeSkills ?? const <String>[],

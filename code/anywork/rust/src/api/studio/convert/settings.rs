@@ -146,7 +146,7 @@ pub(crate) fn bridge_settings(
             compact_timeline: settings.general.compact_timeline,
             sidebar_width: settings.general.sidebar_width,
             pinned_thread_ids: settings.general.pinned_thread_ids.clone(),
-            pinned_project_ids: settings.general.pinned_project_ids.clone(),
+            pinned_workspace_ids: settings.general.pinned_workspace_ids.clone(),
         },
         delegation: super::super::types::BridgeDelegationSettings {
             mode: settings.delegation.mode.into(),

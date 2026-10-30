@@ -488,12 +488,12 @@ ComposerThreadState _newThreadComposer(
   AnyworkClient client,
   SelectionStoreState selection,
 ) {
-  final projectId = selection.selectedProjectId;
+  final workspaceId = selection.selectedProjectId;
   final draft = client.drafts.startDraft.state;
-  final text = draft.forProject(projectId).text;
-  final attachments = projectId == null
+  final text = draft.forProject(workspaceId).text;
+  final attachments = workspaceId == null
       ? const ComposerThreadState.idle()
-      : client.drafts.attachments.state.newThread(projectId);
+      : client.drafts.attachments.state.newThread(workspaceId);
   final submitting = draft.submitting || attachments.isSubmissionPending;
   if (!submitting && attachments is FailedComposerThreadState) {
     return FailedComposerThreadState(
