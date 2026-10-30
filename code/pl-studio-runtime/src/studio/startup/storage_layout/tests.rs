@@ -1062,6 +1062,11 @@ async fn proven_bot_root_and_child_relocate_only_typed_fields_on_demand() -> Res
     );
     let store = StudioStore::prepare_database(&paths.database()).await?;
     assert_eq!(
+        store.paths().home(),
+        paths.home(),
+        "database preparation must preserve the migration home's logical identity"
+    );
+    assert_eq!(
         store
             .workspace_identity(THREAD)
             .await?

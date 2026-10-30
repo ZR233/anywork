@@ -572,7 +572,9 @@ async fn resolve_configured_database_path(path: &Path) -> Result<PathBuf> {
         .parent()
         .context("configured Studio database path has no parent")?;
     tokio::fs::create_dir_all(parent).await?;
-    let parent = std::fs::canonicalize(parent)
+    // Keep StudioPaths in the same logical spelling as workspace identities. Native SQLite
+    // paths are derived separately at the IO boundary, not retained as a different home.
+    let parent = dunce::canonicalize(parent)
         .context("failed to resolve configured Studio database directory")?;
     let resolved = parent.join(file_name);
     if tokio::fs::try_exists(&resolved).await? {
