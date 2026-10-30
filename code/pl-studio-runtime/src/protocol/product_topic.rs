@@ -33,7 +33,7 @@ pub enum StudioProductTopic {
     Recovery,
     Mcp,
     Lsp,
-    Skills { project_id: String },
+    Skills { workspace_id: String },
     ThreadModeCatalog,
     AccountUsage,
     AcpAuth,
@@ -59,8 +59,8 @@ impl StudioProductTopic {
     /// 校验作用域身份；空/空白 scope 是协议错误，不静默落到全局。
     pub fn validate(&self) -> Result<(), StudioProductTopicScopeError> {
         match self {
-            Self::Skills { project_id } if project_id.trim().is_empty() => {
-                Err(scope_error("skills", "projectId"))
+            Self::Skills { workspace_id } if workspace_id.trim().is_empty() => {
+                Err(scope_error("skills", "workspaceId"))
             }
             Self::SessionCosts { root_thread_id } if root_thread_id.trim().is_empty() => {
                 Err(scope_error("sessionCosts", "rootThreadId"))
@@ -81,7 +81,7 @@ impl StudioProductTopic {
             StudioProductEventKind::McpStateChanged(_) => Self::Mcp,
             StudioProductEventKind::LspStateChanged(_) => Self::Lsp,
             StudioProductEventKind::SkillsStateChanged(state) => Self::Skills {
-                project_id: state.project_id.clone(),
+                workspace_id: state.workspace_id.clone(),
             },
             StudioProductEventKind::ThreadModeCatalogChanged(_) => Self::ThreadModeCatalog,
             StudioProductEventKind::AccountUsageStateChanged(_) => Self::AccountUsage,

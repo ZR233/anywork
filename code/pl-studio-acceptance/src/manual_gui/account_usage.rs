@@ -26,7 +26,7 @@ fn prefix() -> String {
 }
 
 pub(super) fn write_config(home: &Path, ready: &FixtureReady) -> Result<()> {
-    let mut config = fixture_config(home, ready, ModelTransportProfile::responses_http())?;
+    let mut config = fixture_config(ready, ModelTransportProfile::responses_http())?;
     let catalog = builtin_account_catalog()?;
     for (suffix, preset, env) in [
         ("slow", "deepseek", SLOW_ENV),

@@ -3,12 +3,12 @@ part of 'settings_bots_tab.dart';
 class _BotEdits {
   const _BotEdits({
     required this.name,
-    required this.projectId,
+    required this.workspaceId,
     required this.appId,
     required this.secret,
   });
   final String name;
-  final String projectId;
+  final String workspaceId;
   final String appId;
   final BotSecretUpdate secret;
 }
@@ -28,7 +28,7 @@ class _BotEditorState extends State<_BotEditor> {
   late final _name = TextEditingController(text: widget.bot.name);
   late final _appId = TextEditingController(text: widget.bot.appId);
   final _secret = TextEditingController();
-  late final String _projectId = widget.bot.projectId;
+  late final String _workspaceId = widget.bot.workspaceId;
   bool _clearSecret = false;
   bool _busy = false;
   String? _error;
@@ -119,7 +119,7 @@ class _BotEditorState extends State<_BotEditor> {
                   await widget.onSave(
                     _BotEdits(
                       name: _name.text,
-                      projectId: _projectId,
+                      workspaceId: _workspaceId,
                       appId: _appId.text,
                       secret: secret,
                     ),

@@ -3,6 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct SkillsConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
@@ -12,8 +13,6 @@ pub struct SkillsConfig {
     pub system: SystemSkillsConfig,
     #[serde(default = "default_project_skills_dir")]
     pub project_dir: String,
-    #[serde(default = "default_user_skills_dir")]
-    pub user_dir: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub external_dirs: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -35,7 +34,6 @@ impl Default for SkillsConfig {
             auto_learn: true,
             system: SystemSkillsConfig::default(),
             project_dir: default_project_skills_dir(),
-            user_dir: default_user_skills_dir(),
             external_dirs: Vec::new(),
             disabled: Vec::new(),
             auto_learn_min_tool_calls: default_auto_learn_min_tool_calls(),
@@ -63,10 +61,17 @@ fn default_project_skills_dir() -> String {
     ".agents/skills".to_string()
 }
 
-fn default_user_skills_dir() -> String {
-    "~/.local/share/pl/skills".to_string()
-}
-
 fn default_auto_learn_min_tool_calls() -> u32 {
     5
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn private_user_directory_is_not_a_valid_config_field() {
+        let parsed = serde_json::from_str::<SkillsConfig>(r#"{"user_dir":"/custom/skills"}"#);
+        assert!(parsed.is_err());
+    }
 }

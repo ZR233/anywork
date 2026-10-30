@@ -83,7 +83,7 @@ impl ConfigStore {
 
     pub(crate) fn chatgpt_host_id(&self) -> Result<String> {
         use fs4::FileExt;
-        let directory = self.paths().config_dir().join("v2");
+        let directory = self.paths().config_dir().join("data");
         std::fs::create_dir_all(&directory)?;
         let path = directory.join("chatgpt-host.toml");
         let lock = std::fs::OpenOptions::new()
@@ -206,7 +206,7 @@ mod tests {
         assert!(uuid::Uuid::parse_str(first.strip_prefix("urn:uuid:").unwrap()).is_ok());
         let restarted = ConfigStore::new(super::super::ConfigPaths::from_config_dir(home.path()));
         assert_eq!(restarted.chatgpt_host_id().unwrap(), first);
-        let file = home.path().join("v2/chatgpt-host.toml");
+        let file = home.path().join("data/chatgpt-host.toml");
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;

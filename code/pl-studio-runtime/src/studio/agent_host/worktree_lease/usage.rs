@@ -128,6 +128,12 @@ impl Drop for UsageToken {
 /// Opaque Studio workspace use; only the canonical product owner can issue or assign it.
 #[derive(Clone)]
 pub struct WorkspaceUsageLease(Arc<UsageToken>);
+/// An already-admitted write, not a durable binding proof.
+pub(in crate::studio) struct VerifiedBindingWrite {
+    confirmed: super::WorktreeLease,
+    ticket: u64,
+    identity: WorkspaceIdentity,
+}
 impl std::fmt::Debug for WorkspaceUsageLease {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
@@ -208,17 +214,17 @@ impl WorkspaceCloseSeal {
 impl WorktreeLeaseOwner {
     /// Confirms exactly the binding physically verified by the factory, while its real
     /// preparation use still protects it. Even an unchanged Active lease waits for its own ACK.
-    pub(in crate::studio) async fn confirm_verified_binding(
+    pub(in crate::studio) fn prepare_verified_binding(
         &self,
         expected: &super::WorktreeLease,
         usage: &WorkspaceUsageLease,
-    ) -> Result<super::WorktreeLease> {
+    ) -> Result<VerifiedBindingWrite> {
         expected.validate_identity()?;
         ensure!(
             Weak::ptr_eq(&usage.0.state, &Arc::downgrade(&self.state)),
             "workspace use belongs to another runtime owner"
         );
-        let (confirmed, ticket) = {
+        let (confirmed, ticket, identity) = {
             let mut state = self
                 .state
                 .lock()
@@ -281,18 +287,72 @@ impl WorktreeLeaseOwner {
                     .context("worktree lease revision exhausted")?;
                 confirmed.state = super::WorktreeLeaseState::Active;
             }
+            let identity = identity.clone();
             let ticket = self.record_ticket_locked(&mut state, confirmed.clone())?;
-            (confirmed, ticket)
+            (confirmed, ticket, identity)
         };
+        Ok(VerifiedBindingWrite {
+            confirmed,
+            ticket,
+            identity,
+        })
+    }
+
+    pub(in crate::studio) async fn confirm_prepared_binding(
+        &self,
+        write: VerifiedBindingWrite,
+    ) -> Result<super::WorktreeLease> {
+        let VerifiedBindingWrite {
+            confirmed,
+            ticket,
+            identity,
+        } = write;
         self.writer.flush_through(ticket).await?;
+        // A real ACK cannot revoke retirement/removal or a newer binding admitted while
+        // this waiter yielded. Do not return a usable proof of that stale generation.
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        ensure!(
+            state
+                .entries
+                .get(&confirmed.owner_thread_id)
+                .is_some_and(|entry| entry.lease == confirmed),
+            "verified worktree binding or revision changed while awaiting durability"
+        );
+        ensure!(
+            !state.workspace.is_retiring(&confirmed.owner_thread_id)
+                && !state
+                    .workspace
+                    .seals
+                    .values()
+                    .any(|seal| identity.within(&seal.identity))
+                && !state
+                    .workspace
+                    .removals
+                    .values()
+                    .any(|(_, target)| identity.within(target)),
+            "verified worktree was sealed for retirement or removal while awaiting durability"
+        );
         Ok(confirmed)
+    }
+
+    #[cfg(test)]
+    pub(in crate::studio) async fn confirm_verified_binding(
+        &self,
+        expected: &super::WorktreeLease,
+        usage: &WorkspaceUsageLease,
+    ) -> Result<super::WorktreeLease> {
+        let write = self.prepare_verified_binding(expected, usage)?;
+        self.confirm_prepared_binding(write).await
     }
 
     pub(in crate::studio) async fn reserve_project_workspace(
         &self,
         owner: &str,
         ssh: &pl_tool::remote::SshManager,
-        project: &crate::studio::ProjectRecord,
+        project: &crate::studio::WorkspaceRecord,
     ) -> Result<WorkspaceUsageLease> {
         let profile = match project.ssh_alias.as_deref() {
             Some(alias) => Some(

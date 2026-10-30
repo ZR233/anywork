@@ -65,7 +65,7 @@ Future<void> main(List<String> args) async {
         tap: (finder, timeout) => driver.rawTap(finder, timeout: timeout),
       ),
       identity: ColdStartIdentity(
-        projectId: identity.projectId!,
+        workspaceId: identity.workspaceId!,
         threadId: identity.threadId!,
       ),
       phase: 'compact-cold-reopen',

@@ -47,7 +47,8 @@ class _SkillsTabState extends ConsumerState<SkillsTab> {
     if (visible) unawaited(_refreshSkillsState());
   }
 
-  String? _currentProjectId() => ref.read(settingsSkillsViewProvider).projectId;
+  String? _currentProjectId() =>
+      ref.read(settingsSkillsViewProvider).workspaceId;
 
   int _currentCatalogRevision() {
     return ref.read(settingsSkillsViewProvider).catalogRevision;
@@ -63,17 +64,17 @@ class _SkillsTabState extends ConsumerState<SkillsTab> {
       ref,
       visible: visible,
       kind: BridgeSettingsScopeKind.skills,
-      projectId: selection.projectId,
+      workspaceId: selection.workspaceId,
     );
-    final projectId = selection.projectId;
+    final workspaceId = selection.workspaceId;
     final catalog = selection.catalog;
     final settings = selection.settings;
     final summaries = catalog?.summaries ?? const <SkillSummaryView>[];
     final catalogRevision = catalog?.catalogRevision ?? 0;
     // 项目/catalog 身份变化时释放旧搜索：不把旧 project 的结果混进新作用域。
-    if (projectId != _lastProjectId ||
+    if (workspaceId != _lastProjectId ||
         catalogRevision != _lastCatalogRevision) {
-      _lastProjectId = projectId;
+      _lastProjectId = workspaceId;
       _lastCatalogRevision = catalogRevision;
       _searchTimer?.cancel();
       _searchRequest += 1;
@@ -109,13 +110,13 @@ class _SkillsTabState extends ConsumerState<SkillsTab> {
                     ? context.l10n.settingsDiscovering
                     : context.l10n.settingsDiscover,
               ),
-              onPressed: projectId == null || _discovering
+              onPressed: workspaceId == null || _discovering
                   ? null
                   : _discoverSkills,
             ),
           ),
-          if (visible && projectId != null)
-            SettingsTopicStatus(topic: SkillsTopic(projectId: projectId)),
+          if (visible && workspaceId != null)
+            SettingsTopicStatus(topic: SkillsTopic(workspaceId: workspaceId)),
         ],
       ),
       toolbar: SettingsSearchField(
@@ -182,10 +183,10 @@ class _SkillsTabState extends ConsumerState<SkillsTab> {
           const SizedBox(height: 12),
           SettingsEmptyMessage(
             icon: Icons.extension_outlined,
-            title: projectId == null
+            title: workspaceId == null
                 ? context.l10n.settingsOpenProjectToDiscoverSkills
                 : context.l10n.settingsNoSkillsMatchFilter,
-            body: projectId == null
+            body: workspaceId == null
                 ? context.l10n.settingsSkillsDiscoverySources
                 : context.l10n.settingsClearSearchOrDiscoverAgain,
           ),
@@ -259,7 +260,7 @@ class _SkillsTabState extends ConsumerState<SkillsTab> {
       if (!mounted || request != _searchRequest || result == null) {
         return;
       }
-      if (result.projectId != _currentProjectId() ||
+      if (result.workspaceId != _currentProjectId() ||
           result.catalogRevision != _currentCatalogRevision()) {
         return;
       }

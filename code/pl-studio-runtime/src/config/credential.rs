@@ -594,7 +594,7 @@ impl CredentialStore for MemoryCredentialStore {
     fn account_lock_directory(&self, isolated_root: &Path) -> Result<PathBuf> {
         Ok(self
             .lock_directory
-            .get_or_init(|| isolated_root.join("v2").join("credential-locks"))
+            .get_or_init(|| isolated_root.join("credential-locks"))
             .clone())
     }
     fn delete_strict(&self, account_id: &str) -> Result<()> {

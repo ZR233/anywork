@@ -780,7 +780,7 @@ void main() {
       );
       fixture.client.selection.selectThread(
         threadId: 'thread',
-        projectId: 'project',
+        workspaceId: 'project',
       );
       expect(visibleTargets, [null]);
       final consumer = fixture.attach('thread');
@@ -900,7 +900,7 @@ void main() {
 
 StudioThread testThread() => StudioThread(
   id: 'thread',
-  projectId: 'project',
+  workspaceId: 'project',
   workspacePath: '/workspace',
   title: 'Thread',
   mode: ThreadModeId.simple,

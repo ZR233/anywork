@@ -96,7 +96,7 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.byKey(StudioDriverKeys.startPage), findsOneWidget);
       expect(transport.bootstrapCalls, 1);
-      final projectId = graph.client.selection.state.selectedProjectId!;
+      final workspaceId = graph.client.selection.state.selectedProjectId!;
       final startOwner = graph.client.drafts.startDraft;
       await tester.enterText(
         find.byKey(StudioDriverKeys.composerInput),
@@ -110,7 +110,7 @@ void main() {
       expect(graph.client.drafts.startDraft, same(startOwner));
       expect(startOwner.state.revision, startRevision);
       expect(
-        startOwner.state.forProject(projectId).text,
+        startOwner.state.forProject(workspaceId).text,
         'start draft entered before Settings',
       );
       expect(_composerText(tester), 'start draft entered before Settings');
@@ -314,7 +314,7 @@ void main() {
         reason: 'the visible composer must no longer display send-and-continue',
       );
       expect(
-        startOwner.state.forProject(projectId).text,
+        startOwner.state.forProject(workspaceId).text,
         'start draft entered before Settings',
       );
       expect(session.content.currentAttemptId?.value, isNot(attemptId));
@@ -328,13 +328,13 @@ void main() {
       expect(transport.runtimeSubscriptions, 2);
       expect(transport.runtimeCancellations, 1);
 
-      transport.botProjectId = projectId;
+      transport.botProjectId = workspaceId;
       final bots = await pumpClientFuture(
         tester,
         graph.client.botsCommands.saveBot(
           expectedConfigRevision: 0,
           name: 'Route acceptance bot',
-          projectId: projectId,
+          workspaceId: workspaceId,
           appId: 'route-acceptance-app',
           secret: const BotSecretPreserve(),
         ),
@@ -621,7 +621,7 @@ void main() {
           graph.client.threadDirectory.state = directory;
           graph.client.selection.selectThread(
             threadId: 'thread-main',
-            projectId: projectId,
+            workspaceId: workspaceId,
           );
           expect(graph.client.conversations.visibleThreadId.value, isNull);
         },
@@ -713,7 +713,7 @@ final class _RouteTurnTransport extends RecordingDemoTransport {
         threadBinding: BotConversationThreadBinding(
           botId: request.botId,
           chatId: 'route-chat',
-          projectId: botProjectId,
+          workspaceId: botProjectId,
           threadId: 'thread-alt',
           revision: 1,
           state: BotConversationThreadState.bound,

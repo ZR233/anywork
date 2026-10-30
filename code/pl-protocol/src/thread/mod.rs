@@ -58,7 +58,7 @@ impl ThreadWorkspaceMode {
 #[serde(rename_all = "camelCase")]
 pub struct Thread {
     pub id: String,
-    pub project_id: String,
+    pub workspace_id: String,
     pub title: String,
     pub mode: ThreadModeId,
     /// 会话工作区模式；缺失的旧编码按默认 `local` 解码。
@@ -103,7 +103,7 @@ impl Thread {
     pub fn placeholder(id: impl Into<String>) -> Self {
         let id = id.into();
         Self {
-            project_id: String::new(),
+            workspace_id: String::new(),
             title: String::new(),
             mode: ThreadModeId::simple(),
             workspace_mode: ThreadWorkspaceMode::Local,

@@ -77,7 +77,7 @@ final class SkillsStoreProvider
   }
 }
 
-String _$skillsStoreHash() => r'd0e049d02b634653a16848539a4a212f69e6c6e3';
+String _$skillsStoreHash() => r'e4932f8d254506e39547960acbf1cbbaed5bbc63';
 
 /// Riverpod owns this display observation; the Client owns the resource.
 
@@ -98,8 +98,8 @@ final class SkillsStoreFamily extends $Family
 
   /// Riverpod owns this display observation; the Client owns the resource.
 
-  SkillsStoreProvider call(String projectId) =>
-      SkillsStoreProvider._(argument: projectId, from: this);
+  SkillsStoreProvider call(String workspaceId) =>
+      SkillsStoreProvider._(argument: workspaceId, from: this);
 
   @override
   String toString() => r'skillsStoreProvider';

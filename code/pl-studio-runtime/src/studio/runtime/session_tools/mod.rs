@@ -433,7 +433,7 @@ fn default_limit() -> u32 {
 #[derive(Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ListInput {
-    project_id: Option<String>,
+    workspace_id: Option<String>,
     search: Option<String>,
     #[serde(default)]
     archived: bool,
@@ -456,7 +456,7 @@ enum StatusFilter {
 impl ListInput {
     fn query(&self) -> ThreadDirectoryQuery {
         ThreadDirectoryQuery {
-            project_id: self.project_id.clone(),
+            workspace_id: self.workspace_id.clone(),
             search: self.search.clone(),
             archived: self.archived,
             filter: match self.status {

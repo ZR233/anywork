@@ -115,7 +115,7 @@ void main() {
       expect(
         recoveryIssueBlockingAccess(
           recovery.values,
-          projectId: null,
+          workspaceId: null,
           threadId: 'thread-archive-1',
         ),
         expectedImpact == RecoveryIssueImpact.accessBlocked
@@ -125,7 +125,7 @@ void main() {
       expect(
         recoveryIssueBlockingExecution(
           recovery.values,
-          projectId: null,
+          workspaceId: null,
           threadId: 'thread-archive-1',
         ),
         expectedImpact == RecoveryIssueImpact.advisory
@@ -135,7 +135,7 @@ void main() {
       expect(
         recoveryIssueBlockingExecution(
           recovery.values,
-          projectId: null,
+          workspaceId: null,
           threadId: 'healthy-root',
         ),
         isNull,

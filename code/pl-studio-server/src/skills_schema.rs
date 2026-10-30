@@ -6,7 +6,7 @@ use utoipa::ToSchema;
 #[derive(Debug, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SkillSearchResultSchema {
-    pub project_id: String,
+    pub workspace_id: String,
     pub catalog_revision: u64,
     pub matches: Vec<SkillSummarySchema>,
     pub truncated: bool,
@@ -15,7 +15,7 @@ pub(crate) struct SkillSearchResultSchema {
 #[derive(Debug, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SkillsStateSnapshotSchema {
-    pub project_id: String,
+    pub workspace_id: String,
     pub state: SkillsObservedStateSchema,
 }
 

@@ -10,13 +10,13 @@ use crate::studio::records::ThreadRecord;
 use crate::studio::store::StudioStore;
 
 impl StudioStore {
-    pub async fn list_root_threads(&self, project_id: &str) -> Result<Vec<ThreadRecord>> {
+    pub async fn list_root_threads(&self, workspace_id: &str) -> Result<Vec<ThreadRecord>> {
         Ok(self
             .catalog()
             .entries()
             .into_iter()
             .filter(|entry| {
-                entry.project_id == project_id
+                entry.workspace_id == workspace_id
                     && !entry.archived
                     && entry.parent_thread_id.is_none()
             })
@@ -37,7 +37,7 @@ impl StudioStore {
             .entries()
             .into_iter()
             .filter(|entry| {
-                entry.project_id == root.project_id
+                entry.workspace_id == root.workspace_id
                     && !entry.archived
                     && entry.parent_thread_id.is_none()
             })
@@ -73,12 +73,12 @@ impl StudioStore {
     }
 
     /// Project 归档 activation 一次性装载其完整 Thread 目录。
-    pub async fn list_threads_for_project(&self, project_id: &str) -> Result<Vec<ThreadRecord>> {
+    pub async fn list_threads_for_project(&self, workspace_id: &str) -> Result<Vec<ThreadRecord>> {
         let mut entries = self
             .catalog()
             .entries()
             .into_iter()
-            .filter(|entry| entry.project_id == project_id)
+            .filter(|entry| entry.workspace_id == workspace_id)
             .collect::<Vec<_>>();
         entries.sort_by(|left, right| {
             left.created_at
@@ -91,12 +91,12 @@ impl StudioStore {
             .collect())
     }
 
-    pub async fn list_project_thread_ids(&self, project_id: &str) -> Result<Vec<String>> {
+    pub async fn list_project_thread_ids(&self, workspace_id: &str) -> Result<Vec<String>> {
         Ok(self
             .catalog()
             .entries()
             .into_iter()
-            .filter(|entry| entry.project_id == project_id)
+            .filter(|entry| entry.workspace_id == workspace_id)
             .map(|entry| entry.id)
             .collect())
     }

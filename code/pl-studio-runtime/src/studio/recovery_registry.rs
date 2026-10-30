@@ -20,7 +20,7 @@ impl RemovedIssue {
             Self::Worktree(lease) => {
                 issue.id == format!("worktree-lease-{}", lease.owner_thread_id)
                     && issue.thread_id.as_deref() == Some(&lease.owner_thread_id)
-                    && issue.project_id.as_deref() == Some(&lease.project_id)
+                    && issue.workspace_id.as_deref() == Some(&lease.workspace_id)
                     && issue.worktree.as_ref().is_some_and(|preview| {
                         preview.owner_thread_id == lease.owner_thread_id
                             && preview.owner_kind
@@ -145,9 +145,10 @@ impl StudioRecoveryRegistry {
                     Scope::Project => false,
                     Scope::Thread => {
                         issue.thread_id.as_deref() == Some(thread.id.as_str())
-                            && (issue.project_id.is_none()
-                                || thread.project_id.is_empty()
-                                || issue.project_id.as_deref() == Some(thread.project_id.as_str()))
+                            && (issue.workspace_id.is_none()
+                                || thread.workspace_id.is_empty()
+                                || issue.workspace_id.as_deref()
+                                    == Some(thread.workspace_id.as_str()))
                     }
                 };
                 applies
@@ -173,7 +174,7 @@ impl StudioRecoveryRegistry {
         .into())
     }
 
-    pub(crate) fn ensure_project_execution_access(&self, project_id: &str) -> anyhow::Result<()> {
+    pub(crate) fn ensure_project_execution_access(&self, workspace_id: &str) -> anyhow::Result<()> {
         use crate::{StudioRecoveryImpact as Impact, StudioRecoveryIssueScope as Scope};
         let issues = self
             .snapshot()
@@ -181,7 +182,7 @@ impl StudioRecoveryRegistry {
             .filter(|issue| {
                 (issue.scope == Scope::Application
                     || (issue.scope == Scope::Project
-                        && issue.project_id.as_deref() == Some(project_id)))
+                        && issue.workspace_id.as_deref() == Some(workspace_id)))
                     && issue.impact != Impact::Advisory
             })
             .collect::<Vec<_>>();
@@ -193,7 +194,7 @@ impl StudioRecoveryRegistry {
             "Project execution preparation is blocked by recovery",
             true,
         )
-        .with_details(serde_json::json!({"projectId": project_id, "issues": issues}))
+        .with_details(serde_json::json!({"workspaceId": workspace_id, "issues": issues}))
         .into())
     }
 
@@ -218,7 +219,7 @@ impl StudioRecoveryRegistry {
             category: crate::StudioRecoveryIssueCategory::Repository,
             impact: crate::StudioRecoveryImpact::ExecutionBlocked,
             action: crate::StudioRecoveryIssueAction::Retry,
-            project_id: Some(thread.project_id.clone()),
+            workspace_id: Some(thread.workspace_id.clone()),
             thread_id: Some(thread.id.clone()),
             message: format!("Thread execution workspace is unavailable: {error:#}"),
             worktree: None,
@@ -383,7 +384,7 @@ mod binding_confirmation_tests {
             owner_kind: WorktreeLeaseOwnerKind::Child,
             owner_thread_id: id.into(),
             root_thread_id: "root".into(),
-            project_id: "project".into(),
+            workspace_id: "project".into(),
             ssh_alias: None,
             repository_root: "/repo".into(),
             path: format!("/repo/{id}"),
@@ -398,7 +399,7 @@ mod binding_confirmation_tests {
             category: StudioRecoveryIssueCategory::Repository,
             impact: StudioRecoveryImpact::Advisory,
             action: StudioRecoveryIssueAction::Retry,
-            project_id: Some(lease.project_id.clone()),
+            workspace_id: Some(lease.workspace_id.clone()),
             thread_id: Some(lease.owner_thread_id.clone()),
             message: "old physical observation".into(),
             worktree: Some(StudioWorktreeRecoveryPreview {

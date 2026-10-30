@@ -247,7 +247,7 @@ ThreadStorageStateView _threadStorageFromFrb(
 StudioThread _threadFromFrb(frb.BridgeThread value) {
   return StudioThread(
     id: value.id,
-    projectId: value.projectId,
+    workspaceId: value.workspaceId,
     title: value.title,
     mode: ThreadModeId.fromId(value.mode),
     delegationMode: _delegationModeFromFrb(value.delegationMode),

@@ -82,7 +82,6 @@ async fn canonical_project_without_sqlite_mirror_accepts_and_restores_new_thread
     use pl_model::config::{AccountConfig, AccountId, ModelRouteConfig};
     use pl_model::model::ModelInfo;
     use pl_model::protocol::ProtocolEndpoint;
-    use sea_orm::EntityTrait;
 
     let temp = tempfile::tempdir()?;
     let home = temp.path().join("home");
@@ -145,11 +144,12 @@ async fn canonical_project_without_sqlite_mirror_accepts_and_restores_new_thread
     shutdown?;
 
     let runtime = StudioRuntime::initialize(options(&home)).await?;
-    let mirrored = crate::studio::entity::thread::Entity::find_by_id(&thread.id)
-        .one(runtime.store.database())
-        .await?
-        .expect("Thread mirror survived restart");
-    assert_eq!(mirrored.project_id, "project-published");
+    let persisted = runtime
+        .store
+        .catalog()
+        .get(&thread.id)
+        .expect("canonical Thread survived restart");
+    assert_eq!(persisted.workspace_id, "project-published");
     assert!(
         runtime
             .store
@@ -270,7 +270,7 @@ async fn recovery_scope_and_execution_dependencies_survive_bot_materialization_a
         .map_err(anyhow::Error::new)?;
     let issues = runtime.recovery_issues();
     assert!(issues.iter().any(|issue| issue.scope == Scope::Project
-        && issue.project_id.as_deref() == Some(&project.id)
+        && issue.workspace_id.as_deref() == Some(&project.id)
         && issue.impact == Impact::ExecutionBlocked));
     assert!(issues.iter().any(|issue| issue.scope == Scope::Thread
         && issue.thread_id.as_deref() == Some(&ordinary.id)
@@ -369,7 +369,7 @@ async fn seed(home: &Path) -> Result<StudioPaths> {
     for (path, bytes) in [
         (home.join("agents/preserved.bin"), b"agent bytes".as_slice()),
         (
-            session.blobs_dir().join("attachment"),
+            session.resources_dir().join("attachment"),
             b"attachment bytes".as_slice(),
         ),
         (
@@ -532,7 +532,7 @@ async fn configuration_agent_and_cache_migration_faults_preserve_originals() -> 
 }
 
 #[tokio::test]
-async fn corrupted_global_inputs_backup_once_and_preserve_external_data() -> Result<()> {
+async fn corrupted_current_storage_refuses_reset_and_preserves_external_data() -> Result<()> {
     for fault in ["product", "calls", "log"] {
         let temp = tempfile::tempdir()?;
         let home = temp.path().join("home");
@@ -549,27 +549,23 @@ async fn corrupted_global_inputs_backup_once_and_preserve_external_data() -> Res
         std::fs::create_dir_all(broken.parent().expect("fault parent"))?;
         std::fs::write(&broken, b"invalid persistent data\n")?;
         let original = std::fs::read(&broken)?;
-        let runtime = StudioRuntime::initialize(options(&home)).await?;
-        let snapshot = runtime.runtime_snapshot().await?;
-        assert!(snapshot.state.is_ready(), "{fault}");
-        let report = snapshot.startup_recovery.expect("fault triggered recovery");
-        let backup = Path::new(&report.backup_path).join("original");
+        for _ in 0..2 {
+            let error = StudioRuntime::initialize(options(&home))
+                .await
+                .err()
+                .expect("damaged current storage must stop startup");
+            assert_eq!(error.kind, StudioStartupErrorKind::Migration, "{fault}");
+            assert_eq!(std::fs::read(&broken)?, original, "{fault}");
+            assert!(!home.join("startup-backups").exists());
+            assert!(!home.join("startup-recovery.toml").exists());
+        }
         assert_eq!(
-            std::fs::read(backup.join(broken.strip_prefix(&home)?))?,
-            original,
-            "{fault}"
-        );
-        assert_eq!(
-            std::fs::read(backup.join("agents/preserved.bin"))?,
-            b"agent bytes"
-        );
-        assert_eq!(
-            std::fs::read(
-                backup
-                    .join(cold_session(&paths)?.blobs_dir().strip_prefix(&home)?)
-                    .join("attachment")
-            )?,
+            std::fs::read(cold_session(&paths)?.resources_dir().join("attachment"))?,
             b"attachment bytes"
+        );
+        assert_eq!(
+            std::fs::read(home.join("agents/preserved.bin"))?,
+            b"agent bytes"
         );
         assert_eq!(
             std::fs::read(home.join("sessions/old/checkpoint"))?,
@@ -580,19 +576,6 @@ async fn corrupted_global_inputs_backup_once_and_preserve_external_data() -> Res
             b"old product"
         );
         assert_eq!(std::fs::read(workspace.join("work.txt"))?, b"user work");
-        assert!(!home.join("startup-recovery.toml").exists());
-        assert!(runtime.store.catalog().entries().is_empty());
-        runtime.shutdown_runtime().await?;
-        let reopened = StudioRuntime::initialize(options(&home)).await?;
-        assert!(
-            reopened
-                .runtime_snapshot()
-                .await?
-                .startup_recovery
-                .is_none()
-        );
-        assert_eq!(std::fs::read_dir(home.join("startup-backups"))?.count(), 1);
-        reopened.shutdown_runtime().await?;
     }
     Ok(())
 }
@@ -792,8 +775,10 @@ async fn parallel_environment_failure_blocks_reset_and_releases_instance_lock() 
 #[tokio::test]
 async fn default_failure_does_not_create_a_second_backup() -> Result<()> {
     let temp = tempfile::tempdir()?;
-    let paths = seed(temp.path()).await?;
-    std::fs::write(paths.database(), b"first failure")?;
+    seed(temp.path()).await?;
+    // An already-authorized recovery operation may predate this layout upgrade. A failed
+    // unpublished attempt must resume that operation, never start a second backup/reset.
+    crate::studio::startup::StartupBackup::begin(temp.path(), "existing recovery".into())?;
     let home = temp.path().to_owned();
     let observer = Arc::new(move |stage| {
         if stage == StudioStartupStage::Resetting {
@@ -897,153 +882,12 @@ async fn invalid_mode_files_stop_startup_without_resetting_configuration_or_sess
     assert_eq!(std::fs::read(&mode_path)?, original);
     assert_eq!(std::fs::read(home.join("config.toml"))?, config);
     assert_eq!(
-        std::fs::read(cold_session(&paths)?.blobs_dir().join("attachment"))?,
+        std::fs::read(cold_session(&paths)?.resources_dir().join("attachment"))?,
         b"attachment bytes"
     );
     assert_eq!(
         std::fs::read(home.join("sessions/old/checkpoint"))?,
         b"old session"
-    );
-    Ok(())
-}
-
-async fn seed_legacy_layout_home() -> Result<(tempfile::TempDir, StudioPaths, std::path::PathBuf)> {
-    let temp = tempfile::tempdir()?;
-    let home = temp.path().to_path_buf();
-    let runtime = StudioRuntime::initialize(options(&home)).await?;
-    let store = runtime.store.clone();
-    let mut delta = crate::studio::store::directory::DirectoryDelta::upsert_project(
-        crate::studio::store::directory::ProjectDirectoryRecord {
-            id: "project-a".into(),
-            kind: pl_protocol::studio::WorkspaceKind::Project,
-            name: "Layout".into(),
-            path: "/tmp/layout".into(),
-            ssh_alias: None,
-            created_at: 1,
-            updated_at: 1,
-            last_opened_at: None,
-            closed: false,
-        },
-    );
-    let (thread_delta, _) = crate::studio::store::directory::DirectoryDelta::register_root_thread(
-        "thread-a".into(),
-        "project-a",
-        "layout",
-        pl_protocol::ThreadModeId::simple(),
-        pl_protocol::ThreadWorkspaceMode::Local,
-        "/tmp/layout".into(),
-    );
-    delta.thread_upserts = thread_delta.thread_upserts;
-    store.persist_directory_summaries(&delta).await?;
-    runtime.shutdown_runtime().await?;
-    let studio = StudioPaths::resolve(Some(home.clone()))?;
-    let session = studio.session_paths("project-a", "thread-a")?;
-    if tokio::fs::try_exists(session.root()).await? {
-        tokio::fs::remove_dir_all(session.root()).await?;
-    }
-    for name in [
-        "session-project-layout.toml",
-        "session-project-layout.complete",
-    ] {
-        let path = studio.migrations_dir().join(name);
-        match tokio::fs::remove_file(&path).await {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error.into()),
-        }
-    }
-    let source = studio.legacy_thread_dir("thread-a")?;
-    tokio::fs::create_dir_all(source.join("blobs/aa")).await?;
-    tokio::fs::write(source.join("history.sqlite"), b"history-bytes").await?;
-    tokio::fs::write(source.join("blobs/aa/blob"), b"blob-bytes").await?;
-    Ok((temp, studio, source))
-}
-
-#[tokio::test]
-async fn layout_attachment_toml_fault_does_not_reset_home() -> Result<()> {
-    let (temp, paths, source) = seed_legacy_layout_home().await?;
-    tokio::fs::write(source.join("attachments.toml"), b"not = [toml").await?;
-    let original = tokio::fs::read(source.join("attachments.toml")).await?;
-    let error = StudioRuntime::initialize(options(paths.home()))
-        .await
-        .err()
-        .expect("layout toml fault must fail initialize");
-    assert_eq!(error.kind, StudioStartupErrorKind::Migration);
-    assert!(!temp.path().join("startup-backups").exists());
-    let session = paths.session_paths("project-a", "thread-a")?;
-    assert_eq!(
-        tokio::fs::read(session.attachments_catalog()).await?,
-        original
-    );
-    assert_eq!(
-        tokio::fs::read(session.history_database()).await?,
-        b"history-bytes"
-    );
-    tokio::fs::write(
-        session.attachments_catalog(),
-        toml::to_string(&crate::studio::store::attachment::AttachmentCatalog {
-            schema_version: 1,
-            thread_id: "thread-a".into(),
-            records: Vec::new(),
-        })?,
-    )
-    .await?;
-    let runtime = StudioRuntime::initialize(options(paths.home())).await?;
-    runtime.shutdown_runtime().await?;
-    Ok(())
-}
-
-#[tokio::test]
-async fn layout_target_manifest_fault_does_not_reset_home() -> Result<()> {
-    let (temp, paths, source) = seed_legacy_layout_home().await?;
-    tokio::fs::write(
-        source.join("attachments.toml"),
-        toml::to_string(&crate::studio::store::attachment::AttachmentCatalog {
-            schema_version: 1,
-            thread_id: "thread-a".into(),
-            records: Vec::new(),
-        })?,
-    )
-    .await?;
-    let session = paths.session_paths("project-a", "thread-a")?;
-    tokio::fs::create_dir_all(session.root().parent().expect("parent")).await?;
-    pl_tool::workspace::move_owned_path(&source, session.root())?;
-    tokio::fs::write(session.session_manifest(), "schemaVersion = 99\nthreadId = \"thread-a\"\nprojectId = \"project-a\"\nrootThreadId = \"thread-a\"\nworkspaceMode = \"local\"\nworkspacePath = \"/tmp/layout\"\ncreatedAt = 1\n").await?;
-    let journal = format!(
-        "schemaVersion = 1\ncompleted = false\norphans = []\n\n[[moves]]\nthreadId = \"thread-a\"\nprojectId = \"project-a\"\nsourceKey = \"{source}\"\ntargetProjectKey = \"{project}\"\ntargetThreadKey = \"{source}\"\nphase = \"moved\"\n",
-        source = crate::studio::paths::thread_storage_key("thread-a")?,
-        project = crate::studio::paths::storage_key("project-a", "Project")?,
-    );
-    tokio::fs::create_dir_all(paths.migrations_dir()).await?;
-    tokio::fs::write(
-        paths.migrations_dir().join("session-project-layout.toml"),
-        journal,
-    )
-    .await?;
-    let original = tokio::fs::read(session.session_manifest()).await?;
-    let error = StudioRuntime::initialize(options(paths.home()))
-        .await
-        .err()
-        .expect("bad target manifest must fail initialize");
-    assert_eq!(error.kind, StudioStartupErrorKind::Migration);
-    let mut cause = std::error::Error::source(&error);
-    let mut has_document_migration_failure = false;
-    while let Some(error) = cause {
-        if error
-            .downcast_ref::<crate::toml_schema::DocumentMigrationFailed>()
-            .is_some()
-        {
-            has_document_migration_failure = true;
-            break;
-        }
-        cause = std::error::Error::source(error);
-    }
-    assert!(has_document_migration_failure);
-    assert!(!temp.path().join("startup-backups").exists());
-    assert_eq!(tokio::fs::read(session.session_manifest()).await?, original);
-    assert_eq!(
-        tokio::fs::read(session.history_database()).await?,
-        b"history-bytes"
     );
     Ok(())
 }

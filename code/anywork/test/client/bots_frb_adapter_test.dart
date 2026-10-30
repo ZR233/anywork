@@ -29,7 +29,7 @@ frb_bots.BridgeBotSnapshot _frbBot() {
   return frb_bots.BridgeBotSnapshot(
     id: 'bot-frb-1',
     name: '中文机器人',
-    projectId: 'project-a',
+    workspaceId: 'project-a',
     appId: 'cli_frb_1',
     platform: frb_bots.BridgeBotPlatform.feishuChina,
     enabled: true,
@@ -82,7 +82,7 @@ frb_bots.BridgeBotsStateSnapshot _frbSnapshot({
         : frb_bots.BridgeBotRegistrationAttempt(
             attemptId: 'attempt-9',
             name: '中文机器人',
-            projectId: 'project-a',
+            workspaceId: 'project-a',
             status: registrationStatus,
             completedBotId: completedBotId,
           ),
@@ -194,7 +194,7 @@ void main() {
       final bot = snapshot.bots.single;
       expect(bot.id, 'bot-frb-1');
       expect(bot.name, '中文机器人');
-      expect(bot.projectId, 'project-a');
+      expect(bot.workspaceId, 'project-a');
       expect(bot.appId, 'cli_frb_1');
       expect(bot.platform, BotPlatform.feishuChina);
       expect(bot.enabled, isTrue);

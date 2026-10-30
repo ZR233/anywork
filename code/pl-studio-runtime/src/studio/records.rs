@@ -15,7 +15,7 @@ pub struct MaterializedAttachment {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub struct ProjectRecord {
+pub struct WorkspaceRecord {
     pub id: String,
     pub kind: pl_protocol::studio::WorkspaceKind,
     pub name: String,
@@ -28,7 +28,7 @@ pub struct ProjectRecord {
 #[serde(rename_all = "camelCase")]
 pub struct ThreadRecord {
     pub id: String,
-    pub project_id: String,
+    pub workspace_id: String,
     pub title: String,
     pub mode: pl_protocol::ThreadModeId,
     /// 会话工作区模式：Thread 的 canonical 产品事实，不由 GUI 或目录查询推导。
@@ -71,7 +71,7 @@ impl ThreadRecord {
                 ThreadVisibility::Active
             },
             id: thread.id,
-            project_id: thread.project_id,
+            workspace_id: thread.workspace_id,
             title: thread.title,
             mode: thread.mode,
             workspace_mode: thread.workspace_mode,
@@ -98,7 +98,7 @@ impl From<ThreadRecord> for pl_protocol::Thread {
     fn from(value: ThreadRecord) -> Self {
         Self {
             id: value.id,
-            project_id: value.project_id,
+            workspace_id: value.workspace_id,
             title: value.title,
             mode: value.mode,
             workspace_mode: value.workspace_mode,
@@ -176,27 +176,4 @@ pub struct AttachmentRecord {
 pub(in crate::studio) struct DirectoryState {
     pub kind: pl_protocol::ThreadStatus,
     pub error: Option<String>,
-}
-impl DirectoryState {
-    pub(in crate::studio) fn kind_label(&self) -> &'static str {
-        use pl_protocol::ThreadStatus;
-        match self.kind {
-            ThreadStatus::Idle => "idle",
-            ThreadStatus::Queued => "queued",
-            ThreadStatus::Running => "running",
-            ThreadStatus::WaitingTool => "waitingTool",
-            ThreadStatus::WaitingInteraction => "waitingInteraction",
-            ThreadStatus::Cancelling => "cancelling",
-            ThreadStatus::Closing => "closing",
-            ThreadStatus::Closed => "closed",
-            ThreadStatus::Faulted => "faulted",
-        }
-    }
-
-    pub(in crate::studio) fn idle() -> Self {
-        Self {
-            kind: pl_protocol::ThreadStatus::Idle,
-            error: None,
-        }
-    }
 }

@@ -61,7 +61,7 @@ impl AgentServices {
             ensure!(
                 close.parent_id == caller
                     && close.root_id == record.root_thread_id
-                    && close.project_id == record.project_id,
+                    && close.workspace_id == record.workspace_id,
                 "closed evaluation target identity conflicts with its directory"
             );
         }

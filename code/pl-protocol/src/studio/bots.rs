@@ -239,7 +239,7 @@ pub struct BotSnapshot {
     pub last_activity_at: Option<i64>,
     pub id: String,
     pub name: String,
-    pub project_id: String,
+    pub workspace_id: String,
     pub app_id: String,
     pub platform: BotPlatform,
     pub enabled: bool,
@@ -304,7 +304,7 @@ pub struct BotPendingCredentialOperation {
 pub struct BotRegistrationAttempt {
     pub attempt_id: String,
     pub name: String,
-    pub project_id: String,
+    pub workspace_id: String,
     pub status: BotRegistrationStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub completed_bot_id: Option<String>,
@@ -341,7 +341,7 @@ pub struct SaveBotRequest {
     pub bot_id: Option<String>,
     pub expected_config_revision: u64,
     pub name: String,
-    pub project_id: String,
+    pub workspace_id: String,
     pub app_id: String,
     pub secret: BotSecretUpdate,
     #[serde(default)]
@@ -359,7 +359,7 @@ impl std::fmt::Debug for SaveBotRequest {
             .field("bot_id", &self.bot_id)
             .field("expected_config_revision", &self.expected_config_revision)
             .field("name", &self.name)
-            .field("project_id", &self.project_id)
+            .field("workspace_id", &self.workspace_id)
             .field("app_id", &self.app_id)
             .field("secret", &self.secret)
             .field("enabled", &self.enabled)
@@ -374,7 +374,7 @@ impl std::fmt::Debug for SaveBotRequest {
 pub struct StartBotRegistrationRequest {
     pub operation_id: String,
     pub name: String,
-    pub project_id: String,
+    pub workspace_id: String,
 }
 
 /// 取消当前扫码注册。
@@ -480,7 +480,7 @@ pub enum BotConversationThreadState {
 pub struct BotConversationThreadBinding {
     pub bot_id: String,
     pub chat_id: String,
-    pub project_id: String,
+    pub workspace_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thread_id: Option<String>,
     pub revision: u64,

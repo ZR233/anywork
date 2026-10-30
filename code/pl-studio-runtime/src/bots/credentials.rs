@@ -1614,7 +1614,7 @@ fn take_journal_fault() -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::super::config::assert_current_v3_document;
+    use super::super::config::assert_current_document;
     use super::*;
     use crate::config::{ConfigPaths, ConfigStore, memory_faults};
 
@@ -1648,7 +1648,7 @@ mod tests {
             "schema_version": source,
             "id": config.id,
             "name": config.name,
-            "project_id": config.project_id,
+            "project_id": config.workspace_id,
             "platform": "feishuChina",
             "platform_config": {
                 "app_id": config.feishu().app_id,
@@ -2076,8 +2076,8 @@ mod tests {
         assert_eq!(reopened.schema_version, BOT_CONFIG_SCHEMA_VERSION);
         assert_eq!(reopened.config_revision, 1);
         let persisted = std::fs::read_to_string(directory.path().join("config.toml")).unwrap();
-        assert!(persisted.contains("schema_version = 3"));
-        assert_current_v3_document(&persisted, "cli_a");
+        assert!(persisted.contains("schema_version = 4"));
+        assert_current_document(&persisted, "cli_a");
         let recovered =
             recover_bot_credentials(directory.path(), "botA1234", &credentials, Some(reopened))
                 .unwrap();

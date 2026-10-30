@@ -2,7 +2,7 @@
 use super::StudioThreadFactory;
 use super::errors::resource_error;
 use crate::resource_store::FileResourceStore;
-use crate::studio::ProjectRecord;
+use crate::studio::WorkspaceRecord;
 use crate::thread_assembler::{
     StudioCommandBinding, StudioGitBinding, StudioThreadTools, StudioWorkspaceTools,
     ThreadAssemblyError,
@@ -18,7 +18,7 @@ pub(super) struct ThreadToolAssembly<'a> {
     pub cancellation: &'a tokio_util::sync::CancellationToken,
     pub config: &'a crate::config::StudioConfig,
     pub route: &'a pl_model::config::ResolvedModelRoute,
-    pub project: &'a ProjectRecord,
+    pub project: &'a WorkspaceRecord,
     pub root_thread_id: &'a str,
     pub workspace: ToolWorkspace,
     pub store: FileResourceStore,
@@ -78,6 +78,10 @@ impl StudioThreadFactory {
         assembly.workspace =
             super::session_files::bind_thread_session_files(assembly.workspace, assembly.thread_id);
         if let Some(proof) = assembly.verified_local {
+            proof
+                .confirm_admission()
+                .await
+                .map_err(|error| resource_error("restricted review archive admission", error))?;
             proof
                 .check_inputs(
                     assembly.project,
@@ -238,6 +242,22 @@ impl StudioThreadFactory {
             },
         }
         .map_err(Self::workspace_usage_error)?;
+        if self
+            .services
+            .store
+            .thread_preparation(thread_id)
+            .await
+            .map_err(|error| resource_error("read assembly binding owner", error))?
+            .is_some()
+        {
+            self.services
+                .store
+                .bind_thread_preparation(thread_id, &identity)
+                .await
+                .map_err(|error| {
+                    resource_error("fix assembly binding before session files", error)
+                })?;
+        }
         self.services
             .worktrees
             .assign_workspace(&workspace_usage, identity.clone())
@@ -263,9 +283,8 @@ impl StudioThreadFactory {
             .map_err(|error| resource_error("resolve Python workspace", error))?
             .is_some()
         {
-            let path = root
-                .join(pl_tool::workspace::SessionFiles::new(thread_id).root())
-                .join(".venv");
+            let path =
+                root.join(pl_tool::workspace::SessionFiles::new(thread_id).python_environment());
             std::collections::BTreeMap::from([(
                 "UV_PROJECT_ENVIRONMENT".into(),
                 path.to_string_lossy().into_owned(),

@@ -160,7 +160,7 @@ void main() {
     );
     final thread = StudioThread(
       id: 'thread',
-      projectId: 'project',
+      workspaceId: 'project',
       title: 'Thread',
       mode: ThreadModeId.simple,
       delegationMode: DelegationMode.profile,

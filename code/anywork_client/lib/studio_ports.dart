@@ -131,13 +131,13 @@ abstract class StudioTransport
   /// Reads saved/live metadata for one explicitly selected member without
   /// activating its execution owner or subscribing other child histories.
   Future<StudioThread> readThread(String threadId);
-  Future<void> activateProject(String projectId);
+  Future<void> activateProject(String workspaceId);
   Future<StudioProject> openProject(String path);
 
   /// Prepares standalone drafts and returns the versioned canonical directory.
   /// Does not create a Thread or fabricate a client-owned directory revision.
   Future<ProjectDirectoryState> prepareStandaloneWorkspace();
-  Future<StudioProject> renameProject(String projectId, String name);
+  Future<StudioProject> renameProject(String workspaceId, String name);
   Future<List<SshServer>> listSshServers();
   Future<SshServer> saveSshServer(SaveSshServerCommand command);
   Future<void> deleteSshServer(String alias);
@@ -157,7 +157,7 @@ abstract class StudioTransport
   /// One creation command, with progress followed by exactly one terminal outcome.
   /// EOF or a transport error before that outcome does not prove rejection.
   Stream<NewThreadStartEvent> startNewThread(
-    String projectId,
+    String workspaceId,
     StudioPromptInput input,
     ThreadModeId mode, {
     required ModeModelRouteView route,
@@ -174,7 +174,7 @@ abstract class StudioTransport
     String threadId, {
     required OperationId operationId,
   });
-  Future<void> archiveProject(String projectId);
+  Future<void> archiveProject(String workspaceId);
   Future<PersistenceStateSnapshot> retryPersistence();
 
   /// 重试保存的命令响应仍是 raw 队列观测（不带发布 revision）：不伪造领域水位，
@@ -300,10 +300,10 @@ abstract class StudioTransport
 
   /// 重新读取 backend canonical settings 快照（不依赖本地缓存）。
   Future<SettingsStateSnapshot> readSettingsState();
-  Future<SkillsStateSnapshot> readSkillsState(String projectId);
-  Future<SkillsStateSnapshot> discoverSkills(String projectId);
+  Future<SkillsStateSnapshot> readSkillsState(String workspaceId);
+  Future<SkillsStateSnapshot> discoverSkills(String workspaceId);
   Future<SkillSearchResultView> searchSkills(
-    String projectId,
+    String workspaceId,
     String query, {
     int limit = 50,
   });
@@ -311,10 +311,10 @@ abstract class StudioTransport
   Future<McpStateSnapshot> resetMcpServer(String serverId);
   Future<McpStateSnapshot> resetAllMcp();
   Future<LspStateSnapshot> readLspState();
-  Future<LspStateSnapshot> probeLspServer(String projectId);
-  Future<LspStateSnapshot> repairLspServer(String projectId, String serverId);
-  Future<LspStateSnapshot> resetLspServer(String projectId, String serverId);
-  Future<LspStateSnapshot> resetLspWorkspace(String projectId);
+  Future<LspStateSnapshot> probeLspServer(String workspaceId);
+  Future<LspStateSnapshot> repairLspServer(String workspaceId, String serverId);
+  Future<LspStateSnapshot> resetLspServer(String workspaceId, String serverId);
+  Future<LspStateSnapshot> resetLspWorkspace(String workspaceId);
 
   Future<BotsStateSnapshot> readBots();
   Future<BotsCommandReply> saveBot(SaveBotRequest request);

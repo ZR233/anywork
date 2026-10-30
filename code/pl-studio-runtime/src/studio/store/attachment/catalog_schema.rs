@@ -1,6 +1,6 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use version_migrate::{IntoDomain, Migrator, Versioned};
+use version_migrate::{IntoDomain, MigratesTo, Migrator, Versioned};
 
 use super::{ATTACHMENT_CATALOG_SCHEMA_VERSION, AttachmentCatalog};
 
@@ -73,8 +73,28 @@ impl IntoDomain<AttachmentCatalogV1> for AttachmentCatalogV1 {
     }
 }
 
-fn from_domain(document: &AttachmentCatalog) -> AttachmentCatalogV1 {
-    AttachmentCatalogV1 {
+#[derive(Debug, Serialize, Deserialize, Versioned)]
+#[versioned(version = "2.0.0")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct AttachmentCatalogV2 {
+    thread_id: String,
+    records: Vec<AttachmentRecordV1>,
+}
+impl MigratesTo<AttachmentCatalogV2> for AttachmentCatalogV1 {
+    fn migrate(self) -> AttachmentCatalogV2 {
+        AttachmentCatalogV2 {
+            thread_id: self.thread_id,
+            records: self.records,
+        }
+    }
+}
+impl IntoDomain<AttachmentCatalogV2> for AttachmentCatalogV2 {
+    fn into_domain(self) -> Self {
+        self
+    }
+}
+fn from_domain(document: &AttachmentCatalog) -> AttachmentCatalogV2 {
+    AttachmentCatalogV2 {
         thread_id: document.thread_id.clone(),
         records: document
             .records
@@ -96,8 +116,8 @@ fn from_domain(document: &AttachmentCatalog) -> AttachmentCatalogV1 {
     }
 }
 
-impl From<AttachmentCatalogV1> for AttachmentCatalog {
-    fn from(document: AttachmentCatalogV1) -> Self {
+impl From<AttachmentCatalogV2> for AttachmentCatalog {
+    fn from(document: AttachmentCatalogV2) -> Self {
         Self {
             schema_version: ATTACHMENT_CATALOG_SCHEMA_VERSION,
             thread_id: document.thread_id,
@@ -129,14 +149,15 @@ fn migrator() -> Result<Migrator> {
             Migrator::define(ENTITY)
                 .with_keys(VERSION_KEY, "data")
                 .from::<AttachmentCatalogV1>()
-                .into::<AttachmentCatalogV1>(),
+                .step::<AttachmentCatalogV2>()
+                .into::<AttachmentCatalogV2>(),
         )
         .map_err(|error| crate::toml_schema::chain_error(ENTITY, error))?;
     Ok(migrator)
 }
 
-pub(super) fn decode(path: &std::path::Path, content: &str) -> Result<AttachmentCatalog> {
-    let loaded = crate::toml_schema::load::<AttachmentCatalogV1, AttachmentCatalogV1>(
+pub(super) fn decode_v2(path: &std::path::Path, content: &str) -> Result<AttachmentCatalog> {
+    let loaded = crate::toml_schema::load::<AttachmentCatalogV1, AttachmentCatalogV2>(
         path,
         content,
         &migrator()?,
@@ -146,6 +167,21 @@ pub(super) fn decode(path: &std::path::Path, content: &str) -> Result<Attachment
     Ok(loaded.document.into())
 }
 
+pub(super) fn decode(path: &std::path::Path, content: &str) -> Result<AttachmentCatalog> {
+    let document = decode_v2(path, content)?;
+    let version: toml::Table = toml::from_str(content)?;
+    if version.get(VERSION_KEY).and_then(toml::Value::as_integer) != Some(2) {
+        return Err(crate::toml_schema::migration_error(
+            path,
+            ENTITY,
+            Some(1),
+            2,
+            "preflight",
+            anyhow::anyhow!("legacy attachment catalog requires explicit layout migration"),
+        ));
+    }
+    Ok(document)
+}
 pub(super) fn encode(document: &AttachmentCatalog) -> Result<String> {
     crate::toml_schema::encode(&from_domain(document), VERSION_KEY)
 }
@@ -179,7 +215,7 @@ mod tests {
         let expected = catalog();
         let encoded = encode(&expected)?;
         let table: toml::Table = toml::from_str(&encoded)?;
-        assert_eq!(table[VERSION_KEY].as_integer(), Some(1));
+        assert_eq!(table[VERSION_KEY].as_integer(), Some(2));
         let wire_record = table["records"]
             .as_array()
             .and_then(|records| records.first())

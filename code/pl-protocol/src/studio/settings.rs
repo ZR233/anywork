@@ -331,7 +331,6 @@ pub struct StudioSkillsSettings {
     pub auto_learn: bool,
     pub system_enabled: bool,
     pub project_dir: String,
-    pub user_dir: String,
     pub external_dirs: Vec<String>,
     pub disabled: Vec<String>,
     pub auto_learn_min_tool_calls: u32,

@@ -4,6 +4,7 @@ use anyhow::{Context, Result, bail};
 
 use crate::studio::records::ThreadRecord;
 use crate::studio::store::directory::DirectoryDelta;
+use crate::studio::store::thread_archive::{ArchivePhase, ArchiveScope};
 
 use super::super::StudioRuntime;
 use super::super::thread_title::{
@@ -18,22 +19,22 @@ use super::super::{
 const ARCHIVE_TREE_SETTLE_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(25);
 
 impl StudioRuntime {
-    pub async fn create_thread(&self, project_id: &str, title: &str) -> Result<ThreadRecord> {
-        self.create_thread_with_id(crate::studio::ids::new_id("thread"), project_id, title)
+    pub async fn create_thread(&self, workspace_id: &str, title: &str) -> Result<ThreadRecord> {
+        self.create_thread_with_id(crate::studio::ids::new_id("thread"), workspace_id, title)
             .await
     }
 
     pub(crate) async fn create_thread_with_id(
         &self,
         thread_id: impl Into<String>,
-        project_id: &str,
+        workspace_id: &str,
         title: &str,
     ) -> Result<ThreadRecord> {
         let _lifecycle_guard = self.thread_lifecycle_admission().await?;
         let thread_id = thread_id.into();
         if let Some(existing) = self.find_owned_thread(&thread_id).await? {
             anyhow::ensure!(
-                existing.project_id == project_id,
+                existing.workspace_id == workspace_id,
                 "bot Thread identity is bound to another project"
             );
             anyhow::ensure!(
@@ -47,14 +48,14 @@ impl StudioRuntime {
             self.check_thread_execution_access(&protocol)?;
             return Ok(existing);
         }
-        self.ensure_project_thread_admission_open(project_id)?;
+        self.ensure_project_thread_admission_open(workspace_id)?;
         let project = self
             .agent_facility
             .product_events
             .project_snapshot()
             .await
             .into_iter()
-            .find(|project| project.id == project_id)
+            .find(|project| project.id == workspace_id)
             .context("selected Project not found")?;
         self.thread_factory
             .verify_project_workspace(&project)
@@ -62,7 +63,7 @@ impl StudioRuntime {
         let workspace_path = local_thread_workspace(&project, &thread_id).await?;
         let (mut delta, mut thread) = DirectoryDelta::register_root_thread(
             thread_id,
-            project_id,
+            workspace_id,
             title,
             pl_protocol::ThreadModeId::simple(),
             pl_protocol::ThreadWorkspaceMode::Local,
@@ -85,12 +86,12 @@ impl StudioRuntime {
         &self,
         request: StudioStartNewThreadRequest,
     ) -> Result<StudioStartNewThreadResponse> {
-        let project_id = request.project_id.clone();
+        let workspace_id = request.workspace_id.clone();
         let input_id = request.input.input_id.clone();
         let report = |stage, workspace_path: Option<&str>, branch: Option<&str>| {
             if let Some(observer) = &request.preparation_observer {
                 observer(super::super::ThreadPreparationProgress {
-                    project_id: project_id.clone(),
+                    workspace_id: workspace_id.clone(),
                     input_id: input_id.clone(),
                     stage,
                     workspace_path: workspace_path.map(str::to_owned),
@@ -137,7 +138,7 @@ impl StudioRuntime {
         let projects = self.agent_facility.product_events.project_snapshot().await;
         let project = projects
             .iter()
-            .find(|project| project.id == request.project_id)
+            .find(|project| project.id == request.workspace_id)
             .cloned()
             .context("selected Project not found")?;
         anyhow::ensure!(
@@ -145,7 +146,7 @@ impl StudioRuntime {
                 || request.workspace_mode == pl_protocol::ThreadWorkspaceMode::Local,
             "standalone sessions only support local workspaces"
         );
-        self.ensure_project_thread_admission_open(&request.project_id)?;
+        self.ensure_project_thread_admission_open(&request.workspace_id)?;
         self.thread_factory
             .verify_project_workspace(&project)
             .await?;
@@ -201,7 +202,7 @@ impl StudioRuntime {
         );
         let (mut delta, mut thread) = DirectoryDelta::register_root_thread(
             thread_id,
-            &request.project_id,
+            &request.workspace_id,
             &provisional,
             request.mode,
             request.workspace_mode,
@@ -423,58 +424,93 @@ impl StudioRuntime {
         operation_id: String,
         thread_id: String,
     ) -> Result<Option<ArchiveThreadCommandReply>> {
-        let root_operation = self.threads.agent_operation(&thread_id).await;
         let Some((thread, roots, thread_tree)) = self.load_thread_archive_scope(&thread_id).await?
         else {
             return Ok(None);
         };
-        let _pins = self
-            .residency
-            .pin_many(thread_tree.iter().map(|thread| thread.id.clone()));
-        let root_index = roots
-            .iter()
-            .position(|candidate| candidate.id == thread_id)
-            .context("selected root Thread not found")?;
-        let next_root = roots
-            .get(root_index + 1)
-            .or_else(|| root_index.checked_sub(1).and_then(|index| roots.get(index)))
-            .cloned();
-        let removed_thread_ids = thread_tree
-            .iter()
-            .map(|candidate| candidate.id.clone())
-            .chain(std::iter::once(thread.id.clone()))
-            .collect::<Vec<_>>();
-        let _child_seals = self
+        let scope = self
             .threads
-            .seal_agent_operations(
-                &removed_thread_ids
-                    .iter()
-                    .filter(|id| **id != thread_id)
-                    .cloned()
-                    .collect::<Vec<_>>(),
+            .seal_archive_scope(std::slice::from_ref(&thread_id))?;
+        let admitted = scope.preparation_identities(&thread.workspace_id);
+        let mut admitted_ids = scope.thread_ids();
+        admitted_ids.extend(thread_tree.iter().map(|thread| thread.id.clone()));
+        admitted_ids.sort();
+        admitted_ids.dedup();
+        let _pins = self.residency.pin_many(admitted_ids.iter().cloned());
+        let root_index = roots.iter().position(|candidate| candidate.id == thread_id);
+        let next_root = root_index
+            .and_then(|index| {
+                roots
+                    .get(index + 1)
+                    .or_else(|| index.checked_sub(1).and_then(|index| roots.get(index)))
+            })
+            .or_else(|| root_index.is_none().then(|| roots.first()).flatten())
+            .cloned();
+        let frozen = self
+            .freeze_thread_archive(
+                ArchiveScope::Thread(thread_id.clone()),
+                &thread_tree,
+                &admitted,
             )
-            .await;
-        let _root_seal = self.threads.seal_agent_operation(&thread_id);
-        drop(root_operation);
+            .await?;
+        admitted_ids.extend(frozen.thread_ids());
+        scope.cancel_preparations();
+        admitted_ids.sort();
+        admitted_ids.dedup();
+        let _bot_archive = self.bots.quiesce_archive_threads(&admitted_ids).await?;
+        for id in &admitted_ids {
+            self.title_tasks
+                .cancel(id, ThreadTitleCancellationCause::ThreadArchive)
+                .await;
+        }
         // 归档先结束整棵树的活动工作（design/01 §1.4）：中断当前 Turn、丢弃未消费输入，
         // 再有界等待收束；无法结束时返回类型化失败并保留会话现场。
-        self.end_thread_tree_work(&removed_thread_ids).await?;
-        // 关闭与保存不得探测或清理物理工作树；目录归档只在整棵树关闭成功后发布。
-        self.retire_archived_thread_tree(&removed_thread_ids)
+        self.end_thread_tree_work(&admitted_ids).await?;
+        tokio::time::timeout(
+            self.archive_settle_timeout(),
+            self.threads.drain_archive_preparations(&scope),
+        )
+        .await
+        .context("archive preparations did not join")??;
+        let (_, _, settled_tree) = self
+            .load_thread_archive_scope(&thread_id)
+            .await?
+            .context("sealed archive root disappeared")?;
+        anyhow::ensure!(
+            settled_tree
+                .iter()
+                .all(|thread| admitted_ids.contains(&thread.id)),
+            "archive member has no frozen preparation responsibility"
+        );
+        // A preparation may have durably published just before the registry seal. Preserve its
+        // original physical binding before any deletion; unpublished failures were joined above.
+        let mut archive = self
+            .freeze_thread_archive(
+                ArchiveScope::Thread(thread_id.clone()),
+                &settled_tree,
+                &admitted,
+            )
             .await?;
+        let removed_thread_ids = settled_tree
+            .iter()
+            .map(|thread| thread.id.clone())
+            .collect::<Vec<_>>();
+        // 关闭与保存不得探测或清理物理工作树；目录归档只在整棵树关闭成功后发布。
+        if archive.phase == ArchivePhase::Sealed {
+            self.retire_archived_thread_tree(&removed_thread_ids)
+                .await?;
+            self.retire_private_archive_members(&mut archive).await?;
+        }
+        // Saved/Cleaned already own the durable stop/save/retirement ACKs. Reopening a cold
+        // writer on retry would recreate temp through directory projection after its cleanup ACK.
+        self.archive_save_confirmed(&mut archive).await?;
+        self.clean_archive_temps(&mut archive).await?;
         let committed = self
             .agent_facility
             .product_events
             .commit_directory(DirectoryDelta::archive_threads(removed_thread_ids.clone()))
             .await?;
-        for removed_thread_id in &removed_thread_ids {
-            self.title_tasks
-                .cancel(
-                    removed_thread_id,
-                    ThreadTitleCancellationCause::ThreadArchive,
-                )
-                .await;
-        }
+        self.archive_published(&mut archive).await?;
         self.model_performance.remove_session(&thread.id).await?;
         Ok(Some(ArchiveThreadCommandReply {
             result: StudioArchiveThreadResult {
@@ -495,6 +531,11 @@ impl StudioRuntime {
     /// Restores an archived root and its descendants without executing historical work.
     pub async fn restore_thread(&self, thread_id: String) -> Result<ThreadRecord> {
         let _guard = self.lifecycle_lock.lock().await;
+        if let Some(root) = self.store.read_thread(&thread_id).await? {
+            self.store
+                .ensure_archive_execution_allowed(&root.workspace_id, Some(&thread_id))
+                .await?;
+        }
         let root = self.read_protocol_thread(&thread_id).await?;
         anyhow::ensure!(
             root.parent_thread_id.is_none(),
@@ -502,7 +543,9 @@ impl StudioRuntime {
         );
         let projects = self.agent_facility.product_events.project_snapshot().await;
         anyhow::ensure!(
-            projects.iter().any(|project| project.id == root.project_id),
+            projects
+                .iter()
+                .any(|project| project.id == root.workspace_id),
             "open the original Project before restoring its Threads"
         );
         if !root.archived {
@@ -613,6 +656,20 @@ impl StudioRuntime {
     }
 
     pub(super) async fn retire_archived_thread_tree(&self, thread_ids: &[String]) -> Result<()> {
+        for id in thread_ids {
+            if self.threads.observed_thread(id).is_none() {
+                if self
+                    .store
+                    .thread_preparation(id)
+                    .await?
+                    .is_some_and(|record| !record.published)
+                {
+                    continue;
+                }
+                let record = self.read_protocol_thread(id).await?;
+                self.threads.ensure_archive_storage_owner(&record).await?;
+            }
+        }
         self.close_project_agent_trees(thread_ids).await?;
         for thread_id in thread_ids {
             self.residency.remove(thread_id).await;
@@ -632,6 +689,17 @@ impl StudioRuntime {
             self.store.list_root_threads_for_archive(root_thread_id),
             self.store.list_threads_for_archive(root_thread_id),
         )?;
+        if tree.is_empty()
+            && self
+                .store
+                .thread_archive(&ArchiveScope::Thread(root_thread_id.to_owned()))
+                .await?
+                .is_some_and(|operation| operation.phase != ArchivePhase::Published)
+        {
+            // Directory publication may have committed before its operation ACK. Retry the
+            // frozen responsibility from cold catalog facts without activating execution.
+            tree = self.store.read_directory_tree(root_thread_id).await?;
+        }
         for hot in self
             .agent_facility
             .product_events
@@ -657,7 +725,7 @@ impl StudioRuntime {
             .await?;
         if let Some(directory) = hot.state.value() {
             for thread in &directory.threads {
-                if thread.project_id == root.project_id
+                if thread.workspace_id == root.workspace_id
                     && thread.parent_thread_id.is_none()
                     && !thread.archived
                 {
@@ -720,8 +788,8 @@ impl StudioRuntime {
     ///
     /// 只复用既有能力：`ThreadHandle::interrupt_turn(None)` 停止当前正在执行的那个 Turn
     /// （不指定预期身份），`ThreadHandle::discard_input(id)` 逐条丢弃尚未消费的输入。
-    /// 等待期间以 `thread_is_busy` 为唯一判定，不引入第二份并发状态；不得无限自旋，也
-    /// 不得在仍 busy 时继续归档。
+    /// 此处只收束可见工作，不是准备资源、工具生产者或 writer 的最终 ACK；后续仍必须
+    /// drain_archive_preparations 与 close_tree 成功，才能清理 temp。
     ///
     /// 并发契约：`archive_thread` 与所有输入提交入口（`prompt_runner/submit.rs` 的
     /// `submit_prompt*`、`threads.rs` 的 `start_new_thread`）都在同一把 `lifecycle_lock`
@@ -794,7 +862,7 @@ impl StudioRuntime {
 }
 
 async fn local_thread_workspace(
-    project: &crate::studio::ProjectRecord,
+    project: &crate::studio::WorkspaceRecord,
     thread_id: &str,
 ) -> Result<String> {
     if project.kind == pl_protocol::studio::WorkspaceKind::Project {

@@ -399,11 +399,27 @@ class PlanRecoveryJourney {
 
     // Stage the Revise branch: a second session with its own pending Plan, so
     // the second normal shutdown also happens while a confirmation is pending.
+    final navigation = (await snapshot())['navigation'];
+    final projectId = navigation is Map
+        ? navigation['selectedProjectId']
+        : null;
+    if (projectId is! String || projectId.isEmpty) {
+      throw StateError('plan-recovery: current project identity is missing');
+    }
+    bool projectStartPage(Map<String, dynamic> snapshot) {
+      final navigation = snapshot['navigation'];
+      return navigation is Map &&
+          navigation['selectedProjectId'] == projectId &&
+          navigation['selectedThreadId'] == null &&
+          navigation['isStartPage'] == true;
+    }
+
     await _tapForEffect(
-      'sidebar-new-session',
-      threadDeselected,
+      'project-new-session-$projectId',
+      projectStartPage,
       'restart_new_session',
     );
+    await waitFor(projectStartPage, 'restart_new_session_start_page');
     await driver.waitFor(
       find.byValueKey('composer-input'),
       timeout: const Duration(seconds: 60),
@@ -759,13 +775,6 @@ class PlanRecoveryJourney {
   String? threadIdOf(Map<String, dynamic> snapshot) {
     final value = workspaceOf(snapshot)?['threadId'];
     return value is String ? value : null;
-  }
-
-  /// Whether the start page is active again (no Thread selected), the effect
-  /// of the sidebar's new-session action.
-  bool threadDeselected(Map<String, dynamic> snapshot) {
-    final navigation = snapshot['navigation'];
-    return navigation is Map && navigation['selectedThreadId'] == null;
   }
 
   Map<String, dynamic>? activeInteractionOf(Map<String, dynamic> snapshot) {

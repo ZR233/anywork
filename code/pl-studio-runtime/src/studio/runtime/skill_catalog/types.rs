@@ -7,7 +7,6 @@ use std::sync::Arc;
 use crate::studio::ids::unix_seconds;
 use anyhow::{Context, Result};
 use pl_protocol::ObservedResource;
-use pl_tool::skill::SkillsConfig;
 use pl_tool::skill::{
     FileSystemSkillProvider, FrozenSkillCatalog, SkillProviderRegistration, SkillRegistry,
     SkillSummary,
@@ -31,7 +30,7 @@ pub struct SkillCatalogRuntime {
 /// 某 Project 已发布且可被未来 Turn 冻结的 catalog。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SkillsStateSnapshot {
-    pub project_id: String,
+    pub workspace_id: String,
     pub state: ObservedResource<SkillsStateData>,
 }
 
@@ -46,7 +45,7 @@ pub struct SkillsStateData {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SkillSearchResult {
-    pub project_id: String,
+    pub workspace_id: String,
     pub catalog_revision: u64,
     pub matches: Vec<SkillSummary>,
     pub truncated: bool,
@@ -72,22 +71,16 @@ impl SkillCatalogRuntime {
         }
     }
 
-    pub(in crate::studio::runtime) async fn refresh_system_skills(
-        &self,
-        config: &SkillsConfig,
-    ) -> Result<()> {
+    pub(in crate::studio::runtime) async fn refresh_system_skills(&self) -> Result<()> {
         let system_skills_dir = self
             .system_skills_dir
             .as_ref()
             .context("system Skills directory is not configured")?
             .as_ref()
             .clone();
-        let config = config.clone();
-        tokio::task::spawn_blocking(move || {
-            system::refresh_system_skills(&system_skills_dir, &config)
-        })
-        .await
-        .map_err(|error| anyhow::anyhow!("system Skills refresh task failed: {error}"))?
+        tokio::task::spawn_blocking(move || system::refresh_system_skills(&system_skills_dir))
+            .await
+            .map_err(|error| anyhow::anyhow!("system Skills refresh task failed: {error}"))?
     }
 }
 
@@ -105,9 +98,9 @@ impl Default for SkillCatalogRuntime {
     }
 }
 
-pub(super) fn empty_snapshot(project_id: &str) -> SkillsStateSnapshot {
+pub(super) fn empty_snapshot(workspace_id: &str) -> SkillsStateSnapshot {
     SkillsStateSnapshot {
-        project_id: project_id.to_string(),
+        workspace_id: workspace_id.to_string(),
         state: ObservedResource::uninitialized(unix_seconds()),
     }
 }

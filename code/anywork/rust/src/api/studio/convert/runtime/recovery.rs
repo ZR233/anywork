@@ -50,7 +50,7 @@ pub(crate) fn bridge_recovery_issue(issue: StudioRecoveryIssue) -> BridgeStudioR
                 ]
             }
         },
-        project_id: issue.project_id,
+        workspace_id: issue.workspace_id,
         thread_id: issue.thread_id,
         detail: issue.message,
         worktree: issue

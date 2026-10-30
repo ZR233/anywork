@@ -48,7 +48,7 @@ impl StudioThreadFactory {
         &self,
         thread_id: &str,
         root_id: &str,
-        project: &mut crate::studio::ProjectRecord,
+        project: &mut crate::studio::WorkspaceRecord,
         execution: &crate::studio::WorkspaceUsageLease,
         preparation: BotWorkspacePreparation,
     ) -> Result<Option<std::path::PathBuf>, ThreadAssemblyError> {
@@ -112,6 +112,22 @@ impl StudioThreadFactory {
                 planned.to_string_lossy().into_owned(),
             )
             .map_err(Self::workspace_usage_error)?;
+            if self
+                .services
+                .store
+                .thread_preparation(thread_id)
+                .await
+                .map_err(|error| resource_error("read managed preparation owner", error))?
+                .is_some()
+            {
+                self.services
+                    .store
+                    .bind_thread_preparation(thread_id, &identity)
+                    .await
+                    .map_err(|error| {
+                        resource_error("fix managed execution binding before preparation", error)
+                    })?;
+            }
             if let Some(frozen) = self
                 .services
                 .store
@@ -199,12 +215,24 @@ impl StudioThreadFactory {
         } = request;
         let id = identity.id.as_str();
         let thread = self.thread_record(id).await?;
+        self.services
+            .store
+            .begin_thread_preparation(
+                crate::studio::store::thread_preparation::PreparationIdentity {
+                    thread_id: thread.id.clone(),
+                    workspace_id: thread.workspace_id.clone(),
+                    parent_id: None,
+                    root_id: thread.id.clone(),
+                },
+            )
+            .await
+            .map_err(|error| resource_error("record root assembly owner", error))?;
         if identity.parent_id.is_some() || thread.parent_thread_id.is_some() {
             return Err(ThreadAssemblyError::Identity(id.into()));
         }
         self.ensure_bot_execution_workspace(&thread.clone().into(), None)
             .await?;
-        let mut project = self.project_record(&thread.project_id).await?;
+        let mut project = self.project_record(&thread.workspace_id).await?;
         let workspace_usage = self
             .reserve_thread_workspace_use(id, id, &project)
             .await
@@ -245,7 +273,7 @@ impl StudioThreadFactory {
             let history = self
                 .services
                 .store
-                .history_for(&thread.project_id, id)
+                .history_for(&thread.workspace_id, id)
                 .await
                 .map_err(|error| resource_error("open Mode recovery writer", error))?;
             *checkpoint = history
@@ -387,7 +415,7 @@ impl StudioThreadFactory {
         let store = FileResourceStore::new(
             self.services
                 .store
-                .session_resources_dir_for(&thread.project_id, id)
+                .session_resources_dir_for(&thread.workspace_id, id)
                 .map_err(|error| resource_error("resolve root session resources", error))?,
         );
         let mut prepared = self
@@ -539,6 +567,7 @@ impl StudioThreadFactory {
             self.confirm_worktree_binding(
                 &lease,
                 spec.workspace_usage.as_ref().expect("root preparation use"),
+                &workspace_owner,
             )
             .await
             .map_err(|error| resource_error("confirm root worktree binding", error))?;

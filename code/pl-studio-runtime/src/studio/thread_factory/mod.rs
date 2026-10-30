@@ -9,6 +9,8 @@ pub(crate) mod recovery;
 mod restore_child;
 mod worktree_close;
 pub(crate) use execution_admission::ExecutionWorkspaceCheck;
+#[cfg(test)]
+mod review_archive_tests;
 mod root_resources;
 mod session_files;
 mod thread_seed;
@@ -142,7 +144,7 @@ impl StudioThreadFactory {
     async fn project_record(
         &self,
         id: &str,
-    ) -> Result<crate::studio::ProjectRecord, crate::thread_assembler::ThreadAssemblyError> {
+    ) -> Result<crate::studio::WorkspaceRecord, crate::thread_assembler::ThreadAssemblyError> {
         if let Some(record) = self
             .services
             .product_events

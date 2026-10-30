@@ -35,7 +35,7 @@ const CLAIM_VERSION: u32 = 1;
 /// Keep acquisition order across removals and restarts. Persisting the watermark
 /// before a cache may leave a harmless gap; it can never make an old field newer.
 pub(super) fn next_observation_order(paths: &ConfigPaths, minimum: u64) -> Result<u64> {
-    let directory = paths.config_dir().join("v2/model-catalogs");
+    let directory = paths.model_catalogs_dir();
     fs::create_dir_all(&directory)?;
     let path = directory.canonicalize()?.join("sequence.json");
     let previous = match fs::read(&path) {
@@ -490,8 +490,7 @@ fn full_identity(account: &AccountId, query: &str) -> String {
 }
 fn cache_path(paths: &ConfigPaths, account: &AccountId, query: &str) -> PathBuf {
     paths
-        .config_dir()
-        .join("v2/model-catalogs")
+        .model_catalogs_dir()
         .join(hex::encode(Sha256::digest(account.as_str().as_bytes())))
         .join(full_identity(account, query))
         .join("model.json")
@@ -716,7 +715,7 @@ mod migration_tests {
         let paths = ConfigPaths::from_config_dir(home.path());
         assert_eq!(next_observation_order(&paths, 17).unwrap(), 18);
         assert_eq!(next_observation_order(&paths, 0).unwrap(), 19);
-        let path = paths.config_dir().join("v2/model-catalogs/sequence.json");
+        let path = paths.model_catalogs_dir().join("sequence.json");
         fs::write(&path, b"broken").unwrap();
         assert!(next_observation_order(&paths, 0).is_err());
         assert_eq!(fs::read(path).unwrap(), b"broken");

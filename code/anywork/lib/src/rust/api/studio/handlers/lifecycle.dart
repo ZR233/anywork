@@ -111,22 +111,22 @@ Future<BridgeProjectDirectoryState> prepareStandaloneWorkspace() => RustLib
     .api
     .crateApiStudioHandlersLifecyclePrepareStandaloneWorkspace();
 
-Future<void> activateProject({required String projectId}) => RustLib
+Future<void> activateProject({required String workspaceId}) => RustLib
     .instance
     .api
-    .crateApiStudioHandlersLifecycleActivateProject(projectId: projectId);
+    .crateApiStudioHandlersLifecycleActivateProject(workspaceId: workspaceId);
 
-Future<ProjectDto?> archiveProject({required String projectId}) => RustLib
+Future<ProjectDto?> archiveProject({required String workspaceId}) => RustLib
     .instance
     .api
-    .crateApiStudioHandlersLifecycleArchiveProject(projectId: projectId);
+    .crateApiStudioHandlersLifecycleArchiveProject(workspaceId: workspaceId);
 
 /// Changes a Project display name, preserving its path and connection.
 Future<ProjectDto> renameProject({
-  required String projectId,
+  required String workspaceId,
   required String name,
 }) => RustLib.instance.api.crateApiStudioHandlersLifecycleRenameProject(
-  projectId: projectId,
+  workspaceId: workspaceId,
   name: name,
 );
 

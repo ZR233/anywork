@@ -45,7 +45,7 @@ impl StudioRuntime {
         };
         Ok(Some(ThreadRecord {
             id: thread.id,
-            project_id: thread.project_id,
+            workspace_id: thread.workspace_id,
             title: thread.title,
             mode: thread.mode,
             workspace_mode: thread.workspace_mode,

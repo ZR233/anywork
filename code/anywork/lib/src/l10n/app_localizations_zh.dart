@@ -5533,13 +5533,13 @@ class AppLocalizationsZh extends AppLocalizations {
   String get recoveryOwnerApplication => '应用';
 
   @override
-  String recoveryOwnerProject(String projectId) {
-    return '项目 $projectId';
+  String recoveryOwnerProject(String workspaceId) {
+    return '项目 $workspaceId';
   }
 
   @override
-  String recoveryOwnerThread(String threadId, String projectId) {
-    return '会话 $threadId · 项目 $projectId';
+  String recoveryOwnerThread(String threadId, String workspaceId) {
+    return '会话 $threadId · 工作区 $workspaceId';
   }
 
   @override

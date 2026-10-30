@@ -23,7 +23,7 @@ impl WriterFixture {
             active_threads > 0,
             "a benchmark writer needs an active Thread"
         );
-        let store = StudioStore::open(root.join("studio/v2/studio.sqlite")).await?;
+        let store = StudioStore::open(root.join("data/studio.sqlite")).await?;
         let mut fixture = Self {
             store,
             threads: Vec::new(),
@@ -46,7 +46,7 @@ impl WriterFixture {
                 .map(|index| {
                     let id = format!("bench-thread-{index:04}");
                     let mut thread = pl_protocol::Thread::placeholder(&id);
-                    thread.project_id = "bench-project".into();
+                    thread.workspace_id = "bench-project".into();
                     thread.agent_path = id.clone();
                     thread.root_thread_id = id;
                     thread

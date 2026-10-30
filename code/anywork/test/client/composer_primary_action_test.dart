@@ -21,7 +21,7 @@ const _recoveryBlocker = ComposerRecoveryBlocker(
     category: RecoveryIssueCategory.repository,
     impact: RecoveryIssueImpact.executionBlocked,
     availableActions: [RecoveryIssueAction.retry],
-    projectId: 'project',
+    workspaceId: 'project',
     threadId: 'thread',
     detail: 'Workspace unavailable',
   ),

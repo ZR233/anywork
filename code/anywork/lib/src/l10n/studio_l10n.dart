@@ -257,15 +257,15 @@ extension StudioLocalizationsX on BuildContext {
     final owner = switch (issue.scope) {
       RecoveryIssueScope.application => l10n.recoveryOwnerApplication,
       RecoveryIssueScope.project =>
-        issue.projectId == null
+        issue.workspaceId == null
             ? l10n.recoveryUnknownOwner
-            : l10n.recoveryOwnerProject(issue.projectId!),
+            : l10n.recoveryOwnerProject(issue.workspaceId!),
       RecoveryIssueScope.thread =>
         issue.threadId == null
             ? l10n.recoveryUnknownOwner
             : l10n.recoveryOwnerThread(
                 issue.threadId!,
-                issue.projectId ?? l10n.recoveryUnknownOwner,
+                issue.workspaceId ?? l10n.recoveryUnknownOwner,
               ),
     };
     final impact = switch (issue.impact) {

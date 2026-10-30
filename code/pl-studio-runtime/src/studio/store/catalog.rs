@@ -54,7 +54,7 @@ impl StudioStore {
         // Workspace/Project TOML is the canonical directory fact; the product SQLite tables remain
         // write-behind mirrors for migration and diagnostics only.
         for project in &delta.project_upserts {
-            self.prepare_project_manifest(&crate::studio::records::ProjectRecord {
+            self.prepare_workspace_manifest(&crate::studio::records::WorkspaceRecord {
                 id: project.id.clone(),
                 kind: project.kind,
                 name: project.name.clone(),
@@ -97,6 +97,14 @@ impl StudioStore {
         }
         if !delta.session_activity.is_empty() {
             catalog.touch(&delta.session_activity).await?;
+        }
+        for fault in &delta.unregistered_faults {
+            let mut entry = catalog.get(&fault.thread_id).ok_or_else(|| {
+                anyhow::anyhow!("spawn compensation Thread not found: {}", fault.thread_id)
+            })?;
+            entry.status = fault.state.kind;
+            entry.updated_at = crate::studio::ids::unix_seconds();
+            catalog.upsert(entry).await?;
         }
         Ok(())
     }

@@ -99,7 +99,7 @@ final class _DraftTransport extends AccountsTestTransport {
   }
 
   @override
-  Future<void> activateProject(String projectId) async {
+  Future<void> activateProject(String workspaceId) async {
     activateProjectCalls += 1;
     final entered = activateProjectEntered;
     if (entered != null && !entered.isCompleted) entered.complete();
@@ -207,7 +207,7 @@ final class _DraftTransport extends AccountsTestTransport {
 
   @override
   Stream<NewThreadStartEvent> startNewThread(
-    String projectId,
+    String workspaceId,
     StudioPromptInput input,
     ThreadModeId mode, {
     required ModeModelRouteView route,
@@ -318,7 +318,7 @@ const _project = StudioProject(
 StudioThread _thread([String id = 'thread', String? parentThreadId]) =>
     StudioThread(
       id: id,
-      projectId: _project.id,
+      workspaceId: _project.id,
       title: 'Thread',
       mode: ThreadModeId.simple,
       delegationMode: DelegationMode.profile,
@@ -364,7 +364,7 @@ StudioRecoveryIssue _recoveryIssue({
   required String id,
   required RecoveryIssueScope scope,
   required RecoveryIssueImpact impact,
-  String? projectId,
+  String? workspaceId,
   String? threadId,
   List<RecoveryIssueAction> availableActions = const [],
   String detail = 'Recovery needs attention',
@@ -374,7 +374,7 @@ StudioRecoveryIssue _recoveryIssue({
   category: RecoveryIssueCategory.repository,
   impact: impact,
   availableActions: availableActions,
-  projectId: projectId,
+  workspaceId: workspaceId,
   threadId: threadId,
   detail: detail,
 );
@@ -951,14 +951,14 @@ void main() {
       'owner': {'scope': 'thread', 'id': 'child'},
       'category': 'repository',
       'impact': 'executionBlocked',
-      'projectId': null,
+      'workspaceId': null,
       'threadId': 'child',
       'detail': 'The child worktree is unavailable',
       'availableActions': [],
     });
     final decoded = recoveryIssueFromFailure(validThreadOnly);
     expect(decoded?.scope, RecoveryIssueScope.thread);
-    expect(decoded?.projectId, isNull);
+    expect(decoded?.workspaceId, isNull);
     expect(decoded?.threadId, 'child');
 
     final malformedDetails = <Map<String, Object?>>[
@@ -968,7 +968,7 @@ void main() {
         'owner': {'scope': 'thread', 'id': null},
         'category': 'repository',
         'impact': 'executionBlocked',
-        'projectId': null,
+        'workspaceId': null,
         'detail': 'Partial diagnosis',
         'availableActions': [],
       },
@@ -978,7 +978,7 @@ void main() {
         'owner': {'scope': 'thread', 'id': '  '},
         'category': 'repository',
         'impact': 'executionBlocked',
-        'projectId': null,
+        'workspaceId': null,
         'threadId': '  ',
         'detail': 'Partial diagnosis',
         'availableActions': [],
@@ -989,7 +989,7 @@ void main() {
         'owner': {'scope': 'project', 'id': null},
         'category': 'repository',
         'impact': 'executionBlocked',
-        'projectId': null,
+        'workspaceId': null,
         'threadId': null,
         'detail': 'Partial diagnosis',
         'availableActions': [],
@@ -1000,7 +1000,7 @@ void main() {
         'owner': {'scope': 'project', 'id': 17},
         'category': 'repository',
         'impact': 'executionBlocked',
-        'projectId': 17,
+        'workspaceId': 17,
         'threadId': null,
         'detail': 'Partial diagnosis',
         'availableActions': [],
@@ -1011,7 +1011,7 @@ void main() {
         'owner': {'scope': 'thread', 'id': 'another-thread'},
         'category': 'repository',
         'impact': 'executionBlocked',
-        'projectId': null,
+        'workspaceId': null,
         'threadId': 'child',
         'detail': 'Partial diagnosis',
         'availableActions': [],
@@ -1022,7 +1022,7 @@ void main() {
         'owner': {'scope': 'thread', 'id': 'child'},
         'category': 'repository',
         'impact': 'futureImpact',
-        'projectId': null,
+        'workspaceId': null,
         'threadId': 'child',
         'detail': 'Partial diagnosis',
         'availableActions': [],
@@ -1033,7 +1033,7 @@ void main() {
         'owner': {'scope': 'thread', 'id': 'child'},
         'category': 'repository',
         'impact': 'executionBlocked',
-        'projectId': null,
+        'workspaceId': null,
         'threadId': 'child',
         'detail': 'Partial diagnosis',
         'availableActions': ['removeProject'],
@@ -1059,17 +1059,17 @@ void main() {
     owner.updateDraft(_project.id, 'keep this draft');
     owner.setModelIntent(ThreadModeId.simple, 'account', 'beta');
     await client.drafts.attachments.admitNewThread(
-      projectId: _project.id,
+      workspaceId: _project.id,
       mode: ThreadModeId.simple,
       sources: [const AttachmentDraftSource.localFile('/first.bin')],
     );
     await client.drafts.attachments.addNewThreadRemote(
-      projectId: _project.id,
+      workspaceId: _project.id,
       mode: ThreadModeId.simple,
       url: 'https://example.invalid/second.bin',
     );
     final paste = client.drafts.attachments.addNewThreadClipboard(
-      projectId: _project.id,
+      workspaceId: _project.id,
       mode: ThreadModeId.simple,
       pngBytes: Uint8List.fromList([1, 2, 3]),
     );
@@ -1095,7 +1095,7 @@ void main() {
       correlationId: 'rejected-file',
     );
     await client.drafts.attachments.admitNewThread(
-      projectId: _project.id,
+      workspaceId: _project.id,
       mode: ThreadModeId.simple,
       sources: [const AttachmentDraftSource.localFile('/unsupported.bin')],
     );
@@ -1106,7 +1106,7 @@ void main() {
     expect(client.budget.used(ResourceKind.attachment), 3);
     transport.admissionFailure = null;
     await client.drafts.attachments.admitNewThread(
-      projectId: _project.id,
+      workspaceId: _project.id,
       mode: ThreadModeId.simple,
       sources: [const AttachmentDraftSource.localFile('/supported.bin')],
     );
@@ -1237,7 +1237,7 @@ void main() {
     owner.setDelegationModeOverride('other-project', DelegationMode.profile);
     defaults(2, DelegationMode.automatic, DelegationPreference.economy);
     await client.drafts.attachments.admitNewThread(
-      projectId: _project.id,
+      workspaceId: _project.id,
       mode: ThreadModeId.simple,
       sources: [const AttachmentDraftSource.localFile('/one.bin')],
     );
@@ -1253,7 +1253,7 @@ void main() {
     transport.startEvents.add(
       NewThreadStartProgress(
         ThreadPreparationProgress(
-          projectId: _project.id,
+          workspaceId: _project.id,
           inputId: request.input.inputId,
           stage: ThreadPreparationStage.creatingWorktree,
           workspacePath: '/isolated/worktree',
@@ -1282,7 +1282,7 @@ void main() {
       ThreadWorkspaceMode.worktree,
     );
     await client.drafts.attachments.admitNewThread(
-      projectId: _project.id,
+      workspaceId: _project.id,
       mode: ThreadModeId.simple,
       sources: [const AttachmentDraftSource.localFile('/two.bin')],
     );
@@ -1603,7 +1603,7 @@ void main() {
 
       await expectLater(
         client.threadCommands.submitNewThread(
-          projectId: standalone.id,
+          workspaceId: standalone.id,
           input: const StudioPromptInput(
             inputId: 'standalone-worktree',
             text: 'must not enter a worktree',
@@ -1640,7 +1640,7 @@ void main() {
     final owner = client.drafts.startDraft;
     owner.updateDraft(_project.id, 'first request');
     await client.drafts.attachments.admitNewThread(
-      projectId: _project.id,
+      workspaceId: _project.id,
       mode: ThreadModeId.simple,
       sources: [const AttachmentDraftSource.localFile('/one.bin')],
     );
@@ -1654,7 +1654,7 @@ void main() {
     transport.startEvents.add(
       NewThreadStartProgress(
         ThreadPreparationProgress(
-          projectId: _project.id,
+          workspaceId: _project.id,
           inputId: request.input.inputId,
           stage: ThreadPreparationStage.creatingWorktree,
           workspacePath: '/isolated/worktree',
@@ -1694,7 +1694,7 @@ void main() {
     transport.startEvents.add(
       NewThreadStartProgress(
         ThreadPreparationProgress(
-          projectId: _project.id,
+          workspaceId: _project.id,
           inputId: request.input.inputId,
           stage: ThreadPreparationStage.submittingPrompt,
         ),
@@ -1791,7 +1791,7 @@ void main() {
     transport.startEvents.add(
       NewThreadStartProgress(
         ThreadPreparationProgress(
-          projectId: _project.id,
+          workspaceId: _project.id,
           inputId: request.input.inputId,
           stage: ThreadPreparationStage.initializingSession,
         ),
@@ -2260,7 +2260,7 @@ void main() {
       },
     );
     final admission = client.drafts.attachments.addNewThreadClipboard(
-      projectId: _project.id,
+      workspaceId: _project.id,
       mode: ThreadModeId.simple,
       pngBytes: Uint8List.fromList([1, 2, 3]),
     );
@@ -2353,7 +2353,7 @@ void main() {
         },
       );
       final admission = client.drafts.attachments.addNewThreadClipboard(
-        projectId: _project.id,
+        workspaceId: _project.id,
         mode: ThreadModeId.simple,
         pngBytes: Uint8List.fromList([1, 2, 3]),
       );
@@ -2388,7 +2388,7 @@ void main() {
       },
     );
     await client.drafts.attachments.addNewThreadClipboard(
-      projectId: _project.id,
+      workspaceId: _project.id,
       mode: ThreadModeId.simple,
       pngBytes: Uint8List.fromList([1, 2, 3]),
     );
@@ -2432,14 +2432,14 @@ void main() {
             id: 'project-preparation-block',
             scope: RecoveryIssueScope.project,
             impact: RecoveryIssueImpact.executionBlocked,
-            projectId: _project.id,
+            workspaceId: _project.id,
             detail: 'Project preparation requires recovery, not this healthy Thread',
           ),
           _recoveryIssue(
             id: 'preserved-child-worktree',
             scope: RecoveryIssueScope.thread,
             impact: RecoveryIssueImpact.advisory,
-            projectId: null,
+            workspaceId: null,
             threadId: 'child-thread',
             availableActions: [RecoveryIssueAction.cleanupWorktree],
             detail: 'Preserved child worktree remains available for review',
@@ -2512,7 +2512,7 @@ void main() {
             id: 'project-preparation-block',
             scope: RecoveryIssueScope.project,
             impact: RecoveryIssueImpact.executionBlocked,
-            projectId: _project.id,
+            workspaceId: _project.id,
             detail: 'Project preparation remains unavailable',
           ),
           _recoveryIssue(
@@ -2541,7 +2541,7 @@ void main() {
               'thread-only-child-execution',
             )
             .having(
-              (failure) => recoveryIssueFromFailure(failure)?.projectId,
+              (failure) => recoveryIssueFromFailure(failure)?.workspaceId,
               'optional project id',
               isNull,
             )
@@ -2594,7 +2594,7 @@ void main() {
         final owner = client.drafts.startDraft;
         owner.updateDraft(_project.id, 'retry after queued recovery rejection');
         await client.drafts.attachments.admitNewThread(
-          projectId: _project.id,
+          workspaceId: _project.id,
           mode: ThreadModeId.simple,
           sources: [const AttachmentDraftSource.localFile('/retry.bin')],
         );
@@ -2613,7 +2613,7 @@ void main() {
                 id: 'queued-${scope.name}-block',
                 scope: scope,
                 impact: RecoveryIssueImpact.executionBlocked,
-                projectId: scope == RecoveryIssueScope.project
+                workspaceId: scope == RecoveryIssueScope.project
                     ? _project.id
                     : null,
                 availableActions: [RecoveryIssueAction.retry],
@@ -2734,7 +2734,7 @@ void main() {
     expect(transport.compactCalls, 0);
 
     final owner = client.drafts.startDraft;
-    await client.directoryCommands.beginNewThread(projectId: _project.id);
+    await client.directoryCommands.beginNewThread(workspaceId: _project.id);
     expect(
       transport.standalonePrepareCalls,
       0,
@@ -2743,7 +2743,7 @@ void main() {
     );
     owner.updateDraft(_project.id, 'retain under application block');
     await client.drafts.attachments.admitNewThread(
-      projectId: _project.id,
+      workspaceId: _project.id,
       mode: ThreadModeId.simple,
       sources: [const AttachmentDraftSource.localFile('/application.bin')],
     );
@@ -2781,7 +2781,7 @@ void main() {
             id: 'project-execution-pause',
             scope: RecoveryIssueScope.project,
             impact: RecoveryIssueImpact.executionBlocked,
-            projectId: _project.id,
+            workspaceId: _project.id,
             availableActions: [RecoveryIssueAction.retry],
             detail: 'Project helper preparation is unavailable',
           ),
@@ -2789,7 +2789,7 @@ void main() {
             id: 'dependent-thread-execution-pause',
             scope: RecoveryIssueScope.thread,
             impact: RecoveryIssueImpact.executionBlocked,
-            projectId: _project.id,
+            workspaceId: _project.id,
             threadId: 'affected-thread',
             detail: 'This existing Thread still uses the unavailable resource',
           ),
@@ -2806,7 +2806,7 @@ void main() {
       reason:
           'Project execution recovery changes selection without preparing it',
     );
-    await client.directoryCommands.beginNewThread(projectId: _project.id);
+    await client.directoryCommands.beginNewThread(workspaceId: _project.id);
     await client.directoryCommands.resumeThreadHistory('thread', 9);
     expect(transport.resumedThreads, ['thread']);
     await expectLater(
@@ -2825,7 +2825,7 @@ void main() {
 
     owner.updateDraft(_project.id, 'retain this new-session request');
     await client.drafts.attachments.admitNewThread(
-      projectId: _project.id,
+      workspaceId: _project.id,
       mode: ThreadModeId.simple,
       sources: [const AttachmentDraftSource.localFile('/request.bin')],
     );
@@ -2871,14 +2871,14 @@ void main() {
             id: 'project-execution-block',
             scope: RecoveryIssueScope.project,
             impact: RecoveryIssueImpact.executionBlocked,
-            projectId: _project.id,
+            workspaceId: _project.id,
             detail: 'Project worktree preparation is blocked',
           ),
           _recoveryIssue(
             id: 'thread-access-block',
             scope: RecoveryIssueScope.thread,
             impact: RecoveryIssueImpact.accessBlocked,
-            projectId: _project.id,
+            workspaceId: _project.id,
             threadId: 'thread',
             availableActions: [
               RecoveryIssueAction.retry,
@@ -2898,14 +2898,14 @@ void main() {
             id: 'project-execution-block',
             scope: RecoveryIssueScope.project,
             impact: RecoveryIssueImpact.executionBlocked,
-            projectId: _project.id,
+            workspaceId: _project.id,
             detail: 'Project preparation still requires recovery',
           ),
           _recoveryIssue(
             id: 'thread-execution-block',
             scope: RecoveryIssueScope.thread,
             impact: RecoveryIssueImpact.executionBlocked,
-            projectId: null,
+            workspaceId: null,
             threadId: 'thread',
             detail: 'This Thread actual execution resource blocks continuation',
           ),
@@ -2936,14 +2936,14 @@ void main() {
             id: 'project-execution-block',
             scope: RecoveryIssueScope.project,
             impact: RecoveryIssueImpact.executionBlocked,
-            projectId: _project.id,
+            workspaceId: _project.id,
             detail: 'Project worktree preparation is blocked',
           ),
           _recoveryIssue(
             id: 'thread-access-block',
             scope: RecoveryIssueScope.thread,
             impact: RecoveryIssueImpact.accessBlocked,
-            projectId: _project.id,
+            workspaceId: _project.id,
             threadId: 'thread',
             availableActions: [
               RecoveryIssueAction.retry,
@@ -3018,7 +3018,7 @@ void main() {
     expect(details['kind'], 'recovery');
     expect(details['issueId'], 'thread-access-block');
     expect(details['owner'], {'scope': 'thread', 'id': 'thread'});
-    expect(details['projectId'], _project.id);
+    expect(details['workspaceId'], _project.id);
     expect(details['threadId'], 'thread');
     expect(
       details['detail'],

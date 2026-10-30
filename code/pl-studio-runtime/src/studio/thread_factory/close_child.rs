@@ -70,7 +70,7 @@ impl StudioThreadFactory {
                 .clone()
                 .context("cannot close a root as a child")?,
             root_id: thread.root_thread_id.clone(),
-            project_id: thread.project_id.clone(),
+            workspace_id: thread.workspace_id.clone(),
             revision: 1,
             force,
             worktree,
@@ -123,7 +123,7 @@ impl StudioThreadFactory {
             record.agent_id == thread.id
                 && Some(&record.parent_id) == thread.parent_thread_id.as_ref()
                 && record.root_id == thread.root_thread_id
-                && record.project_id == thread.project_id,
+                && record.workspace_id == thread.workspace_id,
             "saved close identity differs from the original collaboration tree"
         );
         if let Some(binding) = &record.worktree {
@@ -138,7 +138,7 @@ impl StudioThreadFactory {
                 current.owner_kind == original.owner_kind
                     && current.owner_thread_id == original.owner_thread_id
                     && current.root_thread_id == original.root_thread_id
-                    && current.project_id == original.project_id
+                    && current.workspace_id == original.workspace_id
                     && current.repository_root == original.repository_root
                     && current.path == original.path
                     && current.base_commit == original.base_commit
@@ -293,7 +293,7 @@ impl StudioThreadFactory {
                 lease.owner_kind == WorktreeLeaseOwnerKind::Child
                     && lease.owner_thread_id == thread.id
                     && lease.root_thread_id == thread.root_thread_id
-                    && lease.project_id == thread.project_id
+                    && lease.workspace_id == thread.workspace_id
                     && lease.repository_root == receipt.repository_root
                     && lease.path == receipt.path
                     && lease.base_commit == receipt.base_commit
@@ -322,8 +322,8 @@ impl StudioThreadFactory {
         if root.parent_thread_id.is_some()
             || root.id != root.root_thread_id
             || parent.root_thread_id != root.id
-            || parent.project_id != thread.project_id
-            || root.project_id != thread.project_id
+            || parent.workspace_id != thread.workspace_id
+            || root.workspace_id != thread.workspace_id
             || parent.workspace_path != thread.workspace_path
             || root.workspace_path != thread.workspace_path
             || parent.workspace_mode != thread.workspace_mode

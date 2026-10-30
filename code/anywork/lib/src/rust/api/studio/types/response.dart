@@ -306,7 +306,7 @@ class BridgeAgentProfilesStateSnapshot {
 enum BridgeDirectoryFilter { all, running, attention }
 
 class BridgeDirectoryQuery {
-  final String? projectId;
+  final String? workspaceId;
   final String? search;
   final bool archived;
   final BridgeDirectoryFilter filter;
@@ -314,7 +314,7 @@ class BridgeDirectoryQuery {
   final int limit;
 
   const BridgeDirectoryQuery({
-    this.projectId,
+    this.workspaceId,
     this.search,
     required this.archived,
     required this.filter,
@@ -324,7 +324,7 @@ class BridgeDirectoryQuery {
 
   @override
   int get hashCode =>
-      projectId.hashCode ^
+      workspaceId.hashCode ^
       search.hashCode ^
       archived.hashCode ^
       filter.hashCode ^
@@ -336,7 +336,7 @@ class BridgeDirectoryQuery {
       identical(this, other) ||
       other is BridgeDirectoryQuery &&
           runtimeType == other.runtimeType &&
-          projectId == other.projectId &&
+          workspaceId == other.workspaceId &&
           search == other.search &&
           archived == other.archived &&
           filter == other.filter &&
@@ -974,13 +974,13 @@ class BridgeSettingsStateResponse {
 }
 
 class BridgeSkillSearchResult {
-  final String projectId;
+  final String workspaceId;
   final BigInt catalogRevision;
   final List<SkillSummaryDto> matches;
   final bool truncated;
 
   const BridgeSkillSearchResult({
-    required this.projectId,
+    required this.workspaceId,
     required this.catalogRevision,
     required this.matches,
     required this.truncated,
@@ -988,7 +988,7 @@ class BridgeSkillSearchResult {
 
   @override
   int get hashCode =>
-      projectId.hashCode ^
+      workspaceId.hashCode ^
       catalogRevision.hashCode ^
       matches.hashCode ^
       truncated.hashCode;
@@ -998,7 +998,7 @@ class BridgeSkillSearchResult {
       identical(this, other) ||
       other is BridgeSkillSearchResult &&
           runtimeType == other.runtimeType &&
-          projectId == other.projectId &&
+          workspaceId == other.workspaceId &&
           catalogRevision == other.catalogRevision &&
           matches == other.matches &&
           truncated == other.truncated;
@@ -1073,23 +1073,23 @@ class BridgeSkillsStateData {
 }
 
 class BridgeSkillsStateSnapshot {
-  final String projectId;
+  final String workspaceId;
   final BridgeSkillsResourceState state;
 
   const BridgeSkillsStateSnapshot({
-    required this.projectId,
+    required this.workspaceId,
     required this.state,
   });
 
   @override
-  int get hashCode => projectId.hashCode ^ state.hashCode;
+  int get hashCode => workspaceId.hashCode ^ state.hashCode;
 
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
       other is BridgeSkillsStateSnapshot &&
           runtimeType == other.runtimeType &&
-          projectId == other.projectId &&
+          workspaceId == other.workspaceId &&
           state == other.state;
 }
 

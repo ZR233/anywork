@@ -11,6 +11,13 @@ use std::sync::{
 struct PreparationResources {
     usage: Option<super::WorkspaceUsageLease>,
     review: Option<crate::studio::thread_factory::VerifiedLocalResume>,
+    admission: Option<PreparationAdmission>,
+}
+#[derive(Debug, Clone)]
+struct PreparationAdmission {
+    registry: std::sync::Weak<super::Registry>,
+    id: String,
+    cancellation: tokio_util::sync::CancellationToken,
 }
 #[derive(Debug, Clone, Default)]
 pub struct WorkspacePreparationOwner(Arc<std::sync::Mutex<PreparationResources>>);
@@ -21,7 +28,60 @@ impl WorkspacePreparationOwner {
         Self(Arc::new(std::sync::Mutex::new(PreparationResources {
             usage: Some(proof.usage()),
             review: Some(proof),
+            admission: None,
         })))
+    }
+    pub(crate) fn bind_admission(
+        &self,
+        assembler: &super::StudioThreadAssembler,
+        id: &str,
+        cancellation: &tokio_util::sync::CancellationToken,
+    ) -> Result<(), ThreadAssemblyError> {
+        let mut resources = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if resources.admission.is_some() {
+            return Err(ThreadAssemblyError::Identity(id.into()));
+        }
+        resources.admission = Some(PreparationAdmission {
+            registry: Arc::downgrade(&assembler.0),
+            id: id.into(),
+            cancellation: cancellation.clone(),
+        });
+        Ok(())
+    }
+    /// Only synchronous, IO-free handoffs may run here. Archive sealing uses this same lock.
+    pub(crate) fn with_binding_admission<T>(
+        &self,
+        id: &str,
+        handoff: impl FnOnce() -> anyhow::Result<T>,
+    ) -> anyhow::Result<T> {
+        let admission = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .admission
+            .clone()
+            .ok_or(ThreadAssemblyError::Closed)?;
+        if admission.id != id {
+            return Err(ThreadAssemblyError::Identity(id.into()).into());
+        }
+        let registry = admission
+            .registry
+            .upgrade()
+            .ok_or(ThreadAssemblyError::Closed)?;
+        let state = registry.state();
+        if state.closing
+            || state.sealed_agents.contains_key(id)
+            || admission.cancellation.is_cancelled()
+            || !(state.creating.contains_key(id)
+                || state.preparing_children.contains_key(id)
+                || state.unpublished_children.contains_key(id))
+        {
+            return Err(ThreadAssemblyError::Closed.into());
+        }
+        handoff()
     }
     pub(crate) fn take_review(&self) -> Option<crate::studio::thread_factory::VerifiedLocalResume> {
         self.0
@@ -84,6 +144,8 @@ type DisposalTask =
 
 #[derive(Debug, Clone)]
 pub(super) struct UnpublishedChild {
+    pub(super) retirement:
+        Arc<std::sync::Mutex<Option<pl_tool::collaboration::thread::WorkspaceRelease>>>,
     pub(super) workspace: WorkspacePreparationOwner,
     pub(super) parent: String,
     pub(super) factory: ChildFactory,
@@ -95,6 +157,7 @@ impl super::StudioThreadAssembler {
     pub(super) fn publish_child_resources(&self, id: &str) -> Result<(), ThreadAssemblyError> {
         let mut state = self.0.state();
         if state.closing
+            || state.sealed_agents.contains_key(id)
             || state
                 .preparing_children
                 .get(id)
@@ -168,19 +231,110 @@ impl super::StudioThreadAssembler {
         // permit. close_thread consumes that permit and may release it while joining producers.
         let operation = self.agent_operation(id).await;
         self.close_thread(id, operation).await?;
+        let services = { self.0.state().agent_services.clone() };
+        if let Some(services) = &services
+            && services
+                .store
+                .thread_preparation(id)
+                .await
+                .map_err(retirement_error)?
+                .is_some()
+        {
+            services
+                .store
+                .confirm_preparation_stop(id)
+                .await
+                .map_err(retirement_error)?;
+        }
+        let disposition = {
+            let _state = self.0.state();
+            let mut retirement = pending
+                .retirement
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let disposition =
+                retirement.unwrap_or(pl_tool::collaboration::thread::WorkspaceRelease::Cleanup);
+            *retirement = Some(disposition);
+            disposition
+        };
+        let retain_disposition = async {
+            if let Some(services) = &services
+                && services
+                    .store
+                    .thread_preparation(id)
+                    .await
+                    .map_err(retirement_error)?
+                    .is_some()
+            {
+                use crate::studio::store::thread_preparation::PreparationDisposition;
+                services
+                    .store
+                    .set_preparation_disposition(
+                        id,
+                        match disposition {
+                            pl_tool::collaboration::thread::WorkspaceRelease::Preserve => {
+                                PreparationDisposition::ArchivePreserve
+                            }
+                            pl_tool::collaboration::thread::WorkspaceRelease::Cleanup => {
+                                PreparationDisposition::Remove
+                            }
+                        },
+                    )
+                    .await
+                    .map_err(retirement_error)?;
+            }
+            Ok::<(), ThreadAssemblyError>(())
+        }
+        .await;
+        if let Err(error) = retain_disposition {
+            if disposition == pl_tool::collaboration::thread::WorkspaceRelease::Cleanup {
+                *pending
+                    .retirement
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+            }
+            return Err(error);
+        }
         let usage = pending.workspace.take();
         if let Err(error) = pending
             .factory
-            .discard_unpublished(id, usage.as_ref())
+            .discard_unpublished(id, usage.as_ref(), disposition)
             .await
         {
             if let Some(usage) = &usage {
                 pending.workspace.retain(usage);
             }
+            if disposition == pl_tool::collaboration::thread::WorkspaceRelease::Cleanup {
+                *pending
+                    .retirement
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+            }
             return Err(error);
+        }
+        if let Some(services) = services
+            && services
+                .store
+                .thread_preparation(id)
+                .await
+                .map_err(retirement_error)?
+                .is_some()
+        {
+            services
+                .store
+                .confirm_preparation_retirement(id)
+                .await
+                .map_err(retirement_error)?;
         }
         let removed = { self.0.state().unpublished_children.remove(id) };
         drop(removed);
         Ok(())
+    }
+}
+
+fn retirement_error(source: anyhow::Error) -> ThreadAssemblyError {
+    ThreadAssemblyError::Resource {
+        operation: "confirm private preparation retirement",
+        source: source.into_boxed_dyn_error(),
     }
 }

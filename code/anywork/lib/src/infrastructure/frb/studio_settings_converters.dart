@@ -29,9 +29,6 @@ frb.SettingsFieldInput _settingsFieldInputFromDomain(
     frb.SettingsFieldInput.skillsSystemEnabled(value: value),
   SkillsProjectDirCommand(:final value) =>
     frb.SettingsFieldInput.skillsProjectDir(value: value),
-  SkillsUserDirCommand(:final value) => frb.SettingsFieldInput.skillsUserDir(
-    value: value,
-  ),
   SkillsExternalDirsCommand(:final value) =>
     frb.SettingsFieldInput.skillsExternalDirs(value: value),
   SkillsDisabledCommand(:final value) => frb.SettingsFieldInput.skillsDisabled(
@@ -266,7 +263,6 @@ SkillsSettingsView _skillsSettingsFromFrb(frb.BridgeSkillsSettingsDto value) {
     autoLearn: value.autoLearn,
     systemEnabled: value.systemEnabled,
     projectDir: value.projectDir,
-    userDir: value.userDir,
     externalDirs: value.externalDirs,
     disabled: value.disabled,
     autoLearnMinToolCalls: value.autoLearnMinToolCalls,

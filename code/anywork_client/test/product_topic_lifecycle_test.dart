@@ -122,7 +122,7 @@ void main() {
       expect(client.existingSessionCosts('root'), isNull);
       expect(budget.used(ResourceKind.readModel), 0);
       final leases = client.channels.acquireTopics([
-        const SkillsTopic(projectId: 'project'),
+        const SkillsTopic(workspaceId: 'project'),
         const SessionCostsTopic(rootThreadId: 'root'),
       ]);
       final skills = client.existingSkills('project')!;
@@ -134,11 +134,11 @@ void main() {
       final costSource = await transport.opened(1);
       skillSource.emit(
         ProductTopicBaselineFrame(
-          topic: const SkillsTopic(projectId: 'project'),
+          topic: const SkillsTopic(workspaceId: 'project'),
           revision: 1,
           state: SkillsBaseline(
             SkillsStateSnapshot(
-              projectId: 'project',
+              workspaceId: 'project',
               configFingerprint: 'configured',
               catalogRevision: 2,
               skills: const ['skill'],
@@ -393,7 +393,7 @@ void main() {
                 BotSnapshot(
                   id: 'bot-boot',
                   name: '启动机器人',
-                  projectId: 'project',
+                  workspaceId: 'project',
                   appId: 'cli_boot',
                   platform: BotPlatform.feishuChina,
                   enabled: true,

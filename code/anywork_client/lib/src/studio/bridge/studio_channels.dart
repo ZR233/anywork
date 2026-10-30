@@ -36,8 +36,8 @@ class StudioChannels {
     // Scoped mirrors belong to explicit topic demand, before connection
     // callbacks or frames. Observers only borrow the installed owner.
     switch (topic) {
-      case SkillsTopic(:final projectId):
-        _client.skills(projectId);
+      case SkillsTopic(:final workspaceId):
+        _client.skills(workspaceId);
       case SessionCostsTopic(:final rootThreadId):
         _client.sessionCosts(rootThreadId);
       default:
@@ -52,8 +52,8 @@ class StudioChannels {
   /// 设置页作用域的统一租约入口，替代按页面复制的样板 account。
   BridgeTopicLeaseBundle acquireSettingsScope(
     BridgeSettingsScopeKind kind,
-    String? projectId,
-  ) => acquireTopics(bridgeSettingsScopeTopics(kind, projectId));
+    String? workspaceId,
+  ) => acquireTopics(bridgeSettingsScopeTopics(kind, workspaceId));
 
   BridgeTopicLease acquirePersistenceQueue() =>
       acquireTopic(const PersistenceQueueTopic());
@@ -142,8 +142,8 @@ class StudioChannels {
       RecoveryTopic() => _clock(_client.recovery.state),
       McpTopic() => _clock(_client.mcp.state),
       LspTopic() => _clock(_client.lsp.state),
-      SkillsTopic(:final projectId) => _clock(
-        _client.existingSkills(projectId)?.state,
+      SkillsTopic(:final workspaceId) => _clock(
+        _client.existingSkills(workspaceId)?.state,
       ),
       ThreadModeCatalogTopic() => _clock(_client.modeCatalog.state),
       AccountUsageTopic() => throw StateError('Use account usage domain'),
@@ -203,7 +203,7 @@ class StudioChannels {
       case LspBaseline(:final state):
         _client.lsp.apply(state);
       case SkillsBaseline(:final state):
-        _client.existingSkills(state.projectId)?.apply(state);
+        _client.existingSkills(state.workspaceId)?.apply(state);
       case ThreadModeCatalogBaseline(:final state):
         _client.modeCatalog.apply(state);
       case AccountUsageBaseline():
@@ -265,7 +265,7 @@ class StudioChannels {
       case LspStateChangedPayload(:final state):
         _client.lsp.apply(state);
       case SkillsStateChangedPayload(:final state):
-        _client.existingSkills(state.projectId)?.apply(state);
+        _client.existingSkills(state.workspaceId)?.apply(state);
       case ThreadModeCatalogChangedPayload(:final state):
         _client.modeCatalog.apply(state);
       case AccountUsageStateChangedPayload():
@@ -309,8 +309,8 @@ class StudioChannels {
         _client.mcp.applyTransport(sync);
       case LspTopic():
         _client.lsp.applyTransport(sync);
-      case SkillsTopic(:final projectId):
-        _client.existingSkills(projectId)?.applyTransport(sync);
+      case SkillsTopic(:final workspaceId):
+        _client.existingSkills(workspaceId)?.applyTransport(sync);
       case ThreadModeCatalogTopic():
         _client.modeCatalog.applyTransport(sync);
       case AccountUsageTopic():

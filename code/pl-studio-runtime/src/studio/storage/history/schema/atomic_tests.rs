@@ -14,6 +14,7 @@ impl MigratorTraitSelf for PublishedV9 {
                 .checkpoint
                 .as_ref()
                 .map(|checkpoint| std::sync::Arc::new((checkpoint.clone(), checkpoint.clone()))),
+            bot_root: None,
         }
         .migrations()
         .into_iter()
@@ -38,6 +39,7 @@ impl MigratorTraitSelf for PublishedV10 {
         Migrator {
             thread_id: THREAD.into(),
             execution_identity: None,
+            bot_root: None,
         }
         .migrations()
         .into_iter()

@@ -105,7 +105,7 @@ enum BridgeBotConversationSource { remoteGroup, observedDirect }
 class BridgeBotConversationThreadBinding {
   final String botId;
   final String chatId;
-  final String projectId;
+  final String workspaceId;
   final String? threadId;
   final BigInt revision;
   final BridgeBotConversationThreadState state;
@@ -114,7 +114,7 @@ class BridgeBotConversationThreadBinding {
   const BridgeBotConversationThreadBinding({
     required this.botId,
     required this.chatId,
-    required this.projectId,
+    required this.workspaceId,
     this.threadId,
     required this.revision,
     required this.state,
@@ -125,7 +125,7 @@ class BridgeBotConversationThreadBinding {
   int get hashCode =>
       botId.hashCode ^
       chatId.hashCode ^
-      projectId.hashCode ^
+      workspaceId.hashCode ^
       threadId.hashCode ^
       revision.hashCode ^
       state.hashCode ^
@@ -138,7 +138,7 @@ class BridgeBotConversationThreadBinding {
           runtimeType == other.runtimeType &&
           botId == other.botId &&
           chatId == other.chatId &&
-          projectId == other.projectId &&
+          workspaceId == other.workspaceId &&
           threadId == other.threadId &&
           revision == other.revision &&
           state == other.state &&
@@ -397,14 +397,14 @@ enum BridgeBotPlatform { feishuChina }
 class BridgeBotRegistrationAttempt {
   final String attemptId;
   final String name;
-  final String projectId;
+  final String workspaceId;
   final BridgeBotRegistrationStatus status;
   final String? completedBotId;
 
   const BridgeBotRegistrationAttempt({
     required this.attemptId,
     required this.name,
-    required this.projectId,
+    required this.workspaceId,
     required this.status,
     this.completedBotId,
   });
@@ -413,7 +413,7 @@ class BridgeBotRegistrationAttempt {
   int get hashCode =>
       attemptId.hashCode ^
       name.hashCode ^
-      projectId.hashCode ^
+      workspaceId.hashCode ^
       status.hashCode ^
       completedBotId.hashCode;
 
@@ -424,7 +424,7 @@ class BridgeBotRegistrationAttempt {
           runtimeType == other.runtimeType &&
           attemptId == other.attemptId &&
           name == other.name &&
-          projectId == other.projectId &&
+          workspaceId == other.workspaceId &&
           status == other.status &&
           completedBotId == other.completedBotId;
 }
@@ -562,7 +562,7 @@ class BridgeBotSnapshot {
   final PlatformInt64? lastActivityAt;
   final String id;
   final String name;
-  final String projectId;
+  final String workspaceId;
   final String appId;
   final BridgeBotPlatform platform;
   final bool enabled;
@@ -586,7 +586,7 @@ class BridgeBotSnapshot {
     this.lastActivityAt,
     required this.id,
     required this.name,
-    required this.projectId,
+    required this.workspaceId,
     required this.appId,
     required this.platform,
     required this.enabled,
@@ -612,7 +612,7 @@ class BridgeBotSnapshot {
       lastActivityAt.hashCode ^
       id.hashCode ^
       name.hashCode ^
-      projectId.hashCode ^
+      workspaceId.hashCode ^
       appId.hashCode ^
       platform.hashCode ^
       enabled.hashCode ^
@@ -640,7 +640,7 @@ class BridgeBotSnapshot {
           lastActivityAt == other.lastActivityAt &&
           id == other.id &&
           name == other.name &&
-          projectId == other.projectId &&
+          workspaceId == other.workspaceId &&
           appId == other.appId &&
           platform == other.platform &&
           enabled == other.enabled &&
@@ -865,7 +865,7 @@ class BridgeSaveBotRequest {
   final String? botId;
   final BigInt expectedConfigRevision;
   final String name;
-  final String projectId;
+  final String workspaceId;
   final String appId;
   final BridgeBotSecretUpdate secret;
   final bool enabled;
@@ -877,7 +877,7 @@ class BridgeSaveBotRequest {
     this.botId,
     required this.expectedConfigRevision,
     required this.name,
-    required this.projectId,
+    required this.workspaceId,
     required this.appId,
     required this.secret,
     required this.enabled,
@@ -891,7 +891,7 @@ class BridgeSaveBotRequest {
       botId.hashCode ^
       expectedConfigRevision.hashCode ^
       name.hashCode ^
-      projectId.hashCode ^
+      workspaceId.hashCode ^
       appId.hashCode ^
       secret.hashCode ^
       enabled.hashCode ^
@@ -907,7 +907,7 @@ class BridgeSaveBotRequest {
           botId == other.botId &&
           expectedConfigRevision == other.expectedConfigRevision &&
           name == other.name &&
-          projectId == other.projectId &&
+          workspaceId == other.workspaceId &&
           appId == other.appId &&
           secret == other.secret &&
           enabled == other.enabled &&
@@ -1047,16 +1047,17 @@ class BridgeSetBotTrustedUserRequest {
 class BridgeStartBotRegistrationRequest {
   final String operationId;
   final String name;
-  final String projectId;
+  final String workspaceId;
 
   const BridgeStartBotRegistrationRequest({
     required this.operationId,
     required this.name,
-    required this.projectId,
+    required this.workspaceId,
   });
 
   @override
-  int get hashCode => operationId.hashCode ^ name.hashCode ^ projectId.hashCode;
+  int get hashCode =>
+      operationId.hashCode ^ name.hashCode ^ workspaceId.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -1065,5 +1066,5 @@ class BridgeStartBotRegistrationRequest {
           runtimeType == other.runtimeType &&
           operationId == other.operationId &&
           name == other.name &&
-          projectId == other.projectId;
+          workspaceId == other.workspaceId;
 }

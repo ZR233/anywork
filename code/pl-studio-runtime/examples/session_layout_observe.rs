@@ -54,7 +54,7 @@ async fn main() -> Result<()> {
 
     let host_scratch = artifacts.join("host-scratch");
     std::fs::create_dir_all(&host_scratch)?;
-    let resources = artifacts.join("thread-resources");
+    let resources = artifacts.join("resources");
     let store = FileResourceStore::new(resources.clone());
     let named = host_scratch.join("named-capture.log");
     std::fs::write(&named, b"captured remote bytes\n")?;

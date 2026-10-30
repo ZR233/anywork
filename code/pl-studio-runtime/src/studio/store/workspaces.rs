@@ -5,6 +5,42 @@
 
 mod schema;
 
+pub(in crate::studio) fn migrate_v2_content(
+    path: &std::path::Path,
+    content: &str,
+) -> Result<String> {
+    let loaded = schema::load_document(path, content)?;
+    crate::toml_schema::encode(&loaded.document, schema::SCHEMA_KEY)
+}
+
+pub(in crate::studio) async fn relocate_managed_v2_paths(
+    path: &std::path::Path,
+    mappings: &[crate::studio::startup::storage_layout::bot_roots::BotRootMove],
+) -> Result<()> {
+    let content = tokio::fs::read_to_string(path).await?;
+    let mut document = schema::load_document(path, &content)?.document;
+    for entry in &mut document.workspaces {
+        for mapping in mappings {
+            if entry.id == mapping.workspace_id
+                && entry.ssh_alias.is_none()
+                && entry.path == mapping.old_root
+                && mapping
+                    .threads
+                    .values()
+                    .any(|proof| proof.proven_local_root)
+            {
+                entry.path = mapping.new_root.clone();
+            }
+        }
+    }
+    // Physical representation maintenance does not advance the product revision.
+    crate::studio::store::session_layout::write_manifest(
+        path,
+        &crate::toml_schema::encode(&document, schema::SCHEMA_KEY)?,
+    )
+    .await
+}
+
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -12,7 +48,7 @@ use anyhow::{Result, bail, ensure};
 use pl_protocol::studio::WorkspaceKind;
 use version_migrate::Versioned;
 
-use crate::studio::records::ProjectRecord;
+use crate::studio::records::WorkspaceRecord;
 use crate::studio::store::StudioStore;
 use crate::studio::store::directory::DirectoryDelta;
 use crate::studio::toml_store::{self, RevisionedDocument};
@@ -35,8 +71,8 @@ pub(in crate::studio) struct WorkspaceEntry {
 }
 
 impl WorkspaceEntry {
-    pub(in crate::studio) fn project(&self) -> ProjectRecord {
-        ProjectRecord {
+    pub(in crate::studio) fn project(&self) -> WorkspaceRecord {
+        WorkspaceRecord {
             id: self.id.clone(),
             kind: self.kind,
             name: self.name.clone(),
@@ -147,7 +183,7 @@ impl WorkspaceStore {
         let removals = delta
             .project_removals
             .iter()
-            .map(|removal| (removal.project_id.clone(), removal.closed_at))
+            .map(|removal| (removal.workspace_id.clone(), removal.closed_at))
             .collect::<Vec<_>>();
         self.mutate(move |document| {
             let mut changed = false;
@@ -404,7 +440,7 @@ closed = true
                     WorkspaceKind::Standalone,
                 )],
                 project_removals: vec![ProjectRemoval {
-                    project_id: "created-standalone".into(),
+                    workspace_id: "created-standalone".into(),
                     thread_ids: Vec::new(),
                     closed_at: 3,
                 }],

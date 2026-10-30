@@ -225,12 +225,12 @@ class ContextStateJourney {
     if (phase == 'isolation-first') {
       await openProject();
       final opened = await driver.readSnapshot();
-      final projectId =
+      final workspaceId =
           (opened['navigation'] as Map)['selectedProjectId'] as String;
       final roots = <String, String>{};
       for (final label in ['ROOT_A', 'ROOT_B']) {
         if (roots.isNotEmpty) {
-          await tap('project-new-session-$projectId');
+          await tap('project-new-session-$workspaceId');
         }
         await submit(
           '仅进行只读会话隔离观察，不需要实施计划。'
@@ -243,7 +243,7 @@ class ContextStateJourney {
         await answerWith('$marker-$label');
         await capture(label);
       }
-      await tap('project-new-session-$projectId');
+      await tap('project-new-session-$workspaceId');
       await submit(
         '进行只读代理上下文隔离观察，不需要实施计划，不修改文件。'
         '父会话私有标记为 $marker-PARENT_PRIVATE，禁止将此标记传给子代理。'

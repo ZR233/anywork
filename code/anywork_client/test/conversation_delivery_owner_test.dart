@@ -593,7 +593,7 @@ void main() {
             workspace: ThreadWorkspace(
               thread: StudioThread(
                 id: 'thread',
-                projectId: 'project',
+                workspaceId: 'project',
                 title: 'Thread',
                 mode: ThreadModeId.simple,
                 delegationMode: DelegationMode.profile,

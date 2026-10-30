@@ -40,7 +40,7 @@ fn bridge_bot_snapshot(value: BotSnapshot) -> BridgeBotSnapshot {
         workspace_path: value.workspace_path,
         id: value.id,
         name: value.name,
-        project_id: value.project_id,
+        workspace_id: value.workspace_id,
         app_id: value.app_id,
         platform: match value.platform {
             BotPlatform::FeishuChina => BridgeBotPlatform::FeishuChina,
@@ -136,7 +136,7 @@ fn bridge_registration_attempt(value: BotRegistrationAttempt) -> BridgeBotRegist
     BridgeBotRegistrationAttempt {
         attempt_id: value.attempt_id,
         name: value.name,
-        project_id: value.project_id,
+        workspace_id: value.workspace_id,
         status: bridge_registration_status(value.status),
         completed_bot_id: value.completed_bot_id,
     }
@@ -226,7 +226,7 @@ pub(crate) fn protocol_save_bot(value: BridgeSaveBotRequest) -> SaveBotRequest {
         bot_id: value.bot_id,
         expected_config_revision: value.expected_config_revision,
         name: value.name,
-        project_id: value.project_id,
+        workspace_id: value.workspace_id,
         app_id: value.app_id,
         secret: match value.secret {
             BridgeBotSecretUpdate::Preserve => BotSecretUpdate::Preserve,
@@ -244,7 +244,7 @@ pub(crate) fn protocol_start_registration(
     StartBotRegistrationRequest {
         operation_id: value.operation_id,
         name: value.name,
-        project_id: value.project_id,
+        workspace_id: value.workspace_id,
     }
 }
 
@@ -390,7 +390,7 @@ fn bridge_thread_binding(
     BridgeBotConversationThreadBinding {
         bot_id: value.bot_id,
         chat_id: value.chat_id,
-        project_id: value.project_id,
+        workspace_id: value.workspace_id,
         thread_id: value.thread_id,
         revision: value.revision,
         state: match value.state {

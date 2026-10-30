@@ -217,7 +217,7 @@ pub struct BridgeStudioRecoveryIssueDto {
     pub category: BridgeRecoveryIssueCategory,
     pub impact: BridgeRecoveryImpact,
     pub available_actions: Vec<BridgeRecoveryIssueAction>,
-    pub project_id: Option<String>,
+    pub workspace_id: Option<String>,
     pub thread_id: Option<String>,
     pub detail: String,
     pub worktree: Option<BridgeWorktreeRecoveryPreviewDto>,

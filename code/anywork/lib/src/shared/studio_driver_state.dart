@@ -933,7 +933,7 @@ abstract final class StudioDriverState {
               'syncState': workspace.syncState.name,
               'loadError': workspace.loadError,
               'title': workspace.rootThread.title,
-              'projectId': workspace.thread.projectId,
+              'workspaceId': workspace.thread.workspaceId,
               'rootThreadId': workspace.rootThread.id,
               'threadMode': workspace.thread.mode.name,
               'threadStatus': workspace.thread.status.name,

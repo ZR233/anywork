@@ -3,6 +3,7 @@
 //! 本模块是机器人配置、连接、入站受理、会话映射与发送的唯一 owner。
 //! HTTP、WebSocket、Protobuf 复用成熟组件，产品只维护所需飞书协议。
 
+mod archive;
 mod commands;
 mod config;
 mod connect;
@@ -20,6 +21,7 @@ mod send;
 mod storage;
 mod workspace;
 
+pub(crate) use config::load_config;
 pub(crate) use config::validate_bot_id;
 pub(crate) use host::StudioBotSessionHost;
 pub(crate) use owner::BotRuntime;
@@ -71,7 +73,7 @@ pub(crate) enum BotInteractionRead {
 pub(crate) enum SendAuthority {
     Owner,
     AutoReply,
-    Tool { project_id: String },
+    Tool { workspace_id: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

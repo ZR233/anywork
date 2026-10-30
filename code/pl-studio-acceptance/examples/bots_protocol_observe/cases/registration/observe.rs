@@ -24,10 +24,10 @@ pub(super) async fn start_ok(
     session: &Session,
     operation_id: &str,
     name: &str,
-    project_id: &str,
+    workspace_id: &str,
     budget: Duration,
 ) -> Result<BotsCommandReply> {
-    match start_result(session, operation_id, name, project_id, budget).await? {
+    match start_result(session, operation_id, name, workspace_id, budget).await? {
         Ok(reply) => {
             ensure!(reply.receipt.operation_id == operation_id);
             ensure!(!reply.receipt.durable);
@@ -44,14 +44,14 @@ pub(super) async fn start_result(
     session: &Session,
     operation_id: &str,
     name: &str,
-    project_id: &str,
+    workspace_id: &str,
     budget: Duration,
 ) -> Result<std::result::Result<BotsCommandReply, StudioError>> {
     let http = session.http()?.clone();
     let request = StartBotRegistrationRequest {
         operation_id: operation_id.to_owned(),
         name: name.to_owned(),
-        project_id: project_id.to_owned(),
+        workspace_id: workspace_id.to_owned(),
     };
     tokio::time::timeout(budget, http.start_registration_result(&request))
         .await

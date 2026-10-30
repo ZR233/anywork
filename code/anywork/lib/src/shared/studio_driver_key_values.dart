@@ -51,8 +51,8 @@ abstract final class StudioDriverKeyValues {
   static const standalonePreparationFailureMessage =
       'standalone-preparation-failure-message';
   static const standalonePreparationRetry = 'standalone-preparation-retry';
-  static String projectNewSession(String projectId) =>
-      'project-new-session-$projectId';
+  static String projectNewSession(String workspaceId) =>
+      'project-new-session-$workspaceId';
   static const sidebarResize = 'sidebar-resize';
   static const settingsBack = 'settings-back';
   static const sessionMode = 'session-mode-selector';

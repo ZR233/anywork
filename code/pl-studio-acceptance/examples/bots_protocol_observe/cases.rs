@@ -1227,7 +1227,7 @@ impl Session {
                 bot_id: None,
                 expected_config_revision: 0,
                 name: "prepare-fail-bot".into(),
-                project_id: project.id.clone(),
+                workspace_id: project.id.clone(),
                 app_id: PREPARE_APP_ID.into(),
                 secret: BotSecretUpdate::Replace {
                     value: "   ".into(),
@@ -1278,7 +1278,7 @@ impl Session {
                 bot_id: None,
                 expected_config_revision: 0,
                 name: "prepare-retry-bot".into(),
-                project_id: project.id.clone(),
+                workspace_id: project.id.clone(),
                 app_id: PREPARE_APP_ID.into(),
                 secret: BotSecretUpdate::Replace {
                     value: DEFAULT_APP_SECRET.into(),
@@ -1347,7 +1347,7 @@ impl Session {
                 bot_id: None,
                 expected_config_revision: 0,
                 name: "cas-bot".into(),
-                project_id: project.id.clone(),
+                workspace_id: project.id.clone(),
                 app_id: CAS_APP_ID.into(),
                 secret: BotSecretUpdate::Replace {
                     value: DEFAULT_APP_SECRET.into(),
@@ -1377,7 +1377,7 @@ impl Session {
                 bot_id: Some(bot_id.clone()),
                 expected_config_revision: created_revision,
                 name: "cas-bot-renamed".into(),
-                project_id: project.id.clone(),
+                workspace_id: project.id.clone(),
                 app_id: CAS_APP_ID.into(),
                 secret: BotSecretUpdate::Preserve,
                 enabled: false,
@@ -1408,7 +1408,7 @@ impl Session {
                 bot_id: Some(bot_id.clone()),
                 expected_config_revision: created_revision,
                 name: "cas-bot-stale".into(),
-                project_id: project.id.clone(),
+                workspace_id: project.id.clone(),
                 app_id: CAS_APP_ID.into(),
                 secret: BotSecretUpdate::Preserve,
                 enabled: false,
@@ -1444,7 +1444,7 @@ impl Session {
             bot_id: Some(bot_id.clone()),
             expected_config_revision: current_revision,
             name: "cas-bot-concurrent-a".into(),
-            project_id: project.id.clone(),
+            workspace_id: project.id.clone(),
             app_id: CAS_APP_ID.into(),
             secret: BotSecretUpdate::Preserve,
             enabled: false,
@@ -1456,7 +1456,7 @@ impl Session {
             bot_id: Some(bot_id.clone()),
             expected_config_revision: current_revision,
             name: "cas-bot-concurrent-b".into(),
-            project_id: project.id.clone(),
+            workspace_id: project.id.clone(),
             app_id: CAS_APP_ID.into(),
             secret: BotSecretUpdate::Preserve,
             enabled: false,
@@ -1528,7 +1528,7 @@ impl Session {
                 bot_id: None,
                 expected_config_revision: 0,
                 name: "topic-bot".into(),
-                project_id: project.id.clone(),
+                workspace_id: project.id.clone(),
                 app_id: DEFAULT_APP_ID.into(),
                 secret: BotSecretUpdate::Replace {
                     value: DEFAULT_APP_SECRET.into(),
@@ -1688,7 +1688,7 @@ impl Session {
                 bot_id: None,
                 expected_config_revision: 0,
                 name: "observe-bot".into(),
-                project_id: project.id.clone(),
+                workspace_id: project.id.clone(),
                 app_id: DEFAULT_APP_ID.into(),
                 secret: BotSecretUpdate::Replace {
                     value: DEFAULT_APP_SECRET.into(),
@@ -1726,13 +1726,13 @@ impl Session {
 
     async fn ensure_manual_bot(&self) -> Result<(String, String)> {
         if let Some(bot) = self.http()?.read_bots().await?.bots.first() {
-            return Ok((bot.id.clone(), bot.project_id.clone()));
+            return Ok((bot.id.clone(), bot.workspace_id.clone()));
         }
         self.save_manual_bot(false).await
     }
 
     async fn ensure_trusted_direct(&self) -> Result<(String, String)> {
-        let (bot_id, project_id) = self.ensure_manual_bot().await?;
+        let (bot_id, workspace_id) = self.ensure_manual_bot().await?;
         let snapshot = self.bot(&bot_id).await?;
         if !snapshot
             .trusted_open_ids
@@ -1749,7 +1749,7 @@ impl Session {
                 })
                 .await?;
         }
-        Ok((bot_id, project_id))
+        Ok((bot_id, workspace_id))
     }
 
     async fn bot(&self, bot_id: &str) -> Result<pl_protocol::studio::BotSnapshot> {
@@ -2011,7 +2011,7 @@ fn scan_bot_ordinary_store(
     files: &mut usize,
     bytes: &mut u64,
 ) -> Result<()> {
-    let bots = home.join("v2").join("bots");
+    let bots = home.join("data").join("bots");
     match std::fs::read_dir(&bots) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(_) => bail!("ordinary bot store could not be listed"),

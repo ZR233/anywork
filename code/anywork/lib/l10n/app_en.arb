@@ -2851,15 +2851,15 @@
 }
   },
   "recoveryOwnerApplication": "Application",
-  "recoveryOwnerProject": "Project {projectId}",
+  "recoveryOwnerProject": "Project {workspaceId}",
   "@recoveryOwnerProject": {
-    "placeholders": { "projectId": { "type": "String" } }
+    "placeholders": { "workspaceId": { "type": "String" } }
   },
-  "recoveryOwnerThread": "Session {threadId} · project {projectId}",
+  "recoveryOwnerThread": "Session {threadId} · workspace {workspaceId}",
   "@recoveryOwnerThread": {
     "placeholders": {
       "threadId": { "type": "String" },
-      "projectId": { "type": "String" }
+      "workspaceId": { "type": "String" }
     }
   },
   "accountsAuthApiKey": "API key",

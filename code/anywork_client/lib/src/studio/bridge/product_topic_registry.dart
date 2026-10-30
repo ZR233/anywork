@@ -47,10 +47,10 @@ List<ProductTopic> bridgeSettingsScopeTopics(
     case BridgeSettingsScopeKind.lsp:
       return const [LspTopic()];
     case BridgeSettingsScopeKind.skills:
-      final projectId = selectedProjectId?.trim();
-      return projectId == null || projectId.isEmpty
+      final workspaceId = selectedProjectId?.trim();
+      return workspaceId == null || workspaceId.isEmpty
           ? const []
-          : [SkillsTopic(projectId: projectId)];
+          : [SkillsTopic(workspaceId: workspaceId)];
     case BridgeSettingsScopeKind.bots:
       return const [BotsTopic()];
   }
@@ -560,7 +560,7 @@ String describeBridgeProductTopic(ProductTopic topic) {
     RecoveryTopic() => 'recovery',
     McpTopic() => 'mcp',
     LspTopic() => 'lsp',
-    SkillsTopic(:final projectId) => 'skills:$projectId',
+    SkillsTopic(:final workspaceId) => 'skills:$workspaceId',
     ThreadModeCatalogTopic() => 'threadModeCatalog',
     AccountUsageTopic() => 'accountUsage',
     SessionCostsTopic(:final rootThreadId) => 'sessionCosts:$rootThreadId',

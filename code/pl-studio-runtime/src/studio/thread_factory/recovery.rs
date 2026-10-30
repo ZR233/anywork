@@ -1,6 +1,6 @@
 //! Current-layout checkpoint loading for cold Threads.
 //!
-//! Old shared journals remain isolated outside v2; checkpoints are validated on explicit activation.
+//! Pre-v2 shared journals remain isolated; current checkpoints are validated on explicit activation.
 //!
 //! Which entries may touch storage:
 //!
@@ -26,9 +26,9 @@ pub(crate) async fn load_checkpoint_read_only(
     store: &StudioStore,
     thread: &pl_protocol::Thread,
 ) -> Result<Option<ThreadCheckpoint>> {
-    let history = store.history_for(&thread.project_id, &thread.id).await?;
+    let history = store.history_for(&thread.workspace_id, &thread.id).await?;
     store
-        .state_for(&thread.project_id, &thread.id)?
+        .state_for(&thread.workspace_id, &thread.id)?
         .load_read_only(&history)
         .await
 }
@@ -48,9 +48,9 @@ pub(crate) fn load_checkpoint_for_recovery<'a>(
     // activation and parent continuation shares this boundary; polling and cancellation stay
     // with the caller, rather than creating an independently running recovery task.
     Box::pin(async move {
-        let history = store.history_for(&thread.project_id, &thread.id).await?;
+        let history = store.history_for(&thread.workspace_id, &thread.id).await?;
         let Some(_) = store
-            .state_for(&thread.project_id, &thread.id)?
+            .state_for(&thread.workspace_id, &thread.id)?
             .prepare_recovery(&history)
             .await?
         else {

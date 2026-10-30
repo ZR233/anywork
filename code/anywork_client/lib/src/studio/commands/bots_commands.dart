@@ -73,7 +73,7 @@ class BotsCommands {
     String? botId,
     required int expectedConfigRevision,
     required String name,
-    required String projectId,
+    required String workspaceId,
     required String appId,
     required BotSecretUpdate secret,
     bool enabled = false,
@@ -89,7 +89,7 @@ class BotsCommands {
           botId: botId,
           expectedConfigRevision: expectedConfigRevision,
           name: name,
-          projectId: projectId,
+          workspaceId: workspaceId,
           appId: appId,
           secret: secret,
           enabled: enabled,
@@ -102,7 +102,7 @@ class BotsCommands {
 
   Future<BotsStateSnapshot> startRegistration({
     required String name,
-    required String projectId,
+    required String workspaceId,
   }) {
     return _mutate(
       'register',
@@ -110,7 +110,7 @@ class BotsCommands {
         StartBotRegistrationRequest(
           operationId: operationId,
           name: name,
-          projectId: projectId,
+          workspaceId: workspaceId,
         ),
       ),
     );

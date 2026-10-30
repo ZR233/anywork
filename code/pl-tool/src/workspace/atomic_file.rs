@@ -60,6 +60,16 @@ fn atomic_write(path: &Path, content: &[u8], permissions: AtomicPermissions) -> 
         .parent()
         .ok_or_else(|| io::Error::other("atomic write target has no parent directory"))?;
     fs::create_dir_all(directory)?;
+    // tempfile::keep and the native move API consume the spelling directly. Use the
+    // existing parent's native Windows form without resolving the final file itself.
+    #[cfg(windows)]
+    let native_path = native_parent_path(path)?;
+    #[cfg(windows)]
+    let path = native_path.as_path();
+    #[cfg(windows)]
+    let directory = path
+        .parent()
+        .ok_or_else(|| io::Error::other("atomic write target has no parent directory"))?;
     let existing = match permissions {
         AtomicPermissions::Private => None,
         AtomicPermissions::Workspace => match fs::metadata(path) {
@@ -120,6 +130,18 @@ fn replace_file(source: &Path, target: &Path) -> io::Result<()> {
     move_path(source, target, true)
 }
 
+#[cfg(windows)]
+fn native_parent_path(path: &Path) -> io::Result<std::path::PathBuf> {
+    let name = path
+        .file_name()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "path has no file name"))?;
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    Ok(fs::canonicalize(parent)?.join(name))
+}
+
 fn move_path(source: &Path, target: &Path, replace: bool) -> io::Result<()> {
     #[cfg(windows)]
     {
@@ -129,6 +151,8 @@ fn move_path(source: &Path, target: &Path, replace: bool) -> io::Result<()> {
             MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
         };
 
+        let source = native_parent_path(source)?;
+        let target = native_parent_path(target)?;
         let source = source
             .as_os_str()
             .encode_wide()

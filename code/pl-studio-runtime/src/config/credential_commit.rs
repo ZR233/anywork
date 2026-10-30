@@ -198,7 +198,9 @@ fn file_bytes(path: &Path) -> Result<Option<Vec<u8>>> {
 
 impl ConfigStore {
     fn transaction_root(&self) -> PathBuf {
-        self.paths().config_dir().join("v2/credential-transactions")
+        self.paths()
+            .config_dir()
+            .join("data/credential-transactions")
     }
     fn transaction_dir(&self, journal: &Journal) -> PathBuf {
         self.transaction_root().join(&journal.transaction_id)
@@ -523,6 +525,46 @@ impl ConfigStore {
         replace: &impl Fn(&Path, &[u8]) -> Result<()>,
         cleanup_io: &CleanupIo<'_>,
     ) -> Result<()> {
+        let home = self.paths().config_dir();
+        crate::studio::startup::validate_credential_recovery(home)
+            .map_err(|_| recovery_required())?;
+        let layout = home.join("storage-migration.toml");
+        match fs::symlink_metadata(&layout) {
+            Ok(_) => {
+                pl_tool::workspace::path_safety::validate_path_for_write(home, &layout)
+                    .map_err(|_| recovery_required())?;
+                if crate::studio::startup::storage_layout::incomplete_operation(&layout)
+                    .map_err(|_| recovery_required())?
+                {
+                    return Err(recovery_required());
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return Err(recovery_required()),
+        }
+        for relative in [
+            "v2/credential-transactions",
+            "studio/v2/credential-transactions",
+        ] {
+            let legacy = home.join(relative);
+            match fs::symlink_metadata(&legacy) {
+                Ok(meta) => {
+                    pl_tool::workspace::path_safety::validate_path_for_write(home, &legacy)
+                        .map_err(|_| recovery_required())?;
+                    if !meta.is_dir()
+                        || pl_tool::workspace::path_safety::is_link_or_reparse(&meta)
+                        || fs::read_dir(&legacy)
+                            .map_err(|_| recovery_required())?
+                            .next()
+                            .is_some()
+                    {
+                        return Err(recovery_required());
+                    }
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(_) => return Err(recovery_required()),
+            }
+        }
         let root = self.transaction_root();
         let directories = match fs::read_dir(&root) {
             Ok(entries) => entries,

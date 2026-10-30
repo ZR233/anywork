@@ -14,10 +14,10 @@ const ENTITY: &str = "studio-config";
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[serde(bound(
-    serialize = "M: Serialize, R: Serialize, A: Serialize + Default + PartialEq",
-    deserialize = "M: Deserialize<'de>, R: Deserialize<'de>, A: Deserialize<'de> + Default"
+    serialize = "M: Serialize, R: Serialize, A: Serialize + Default + PartialEq, S: Serialize + Default + PartialEq",
+    deserialize = "M: Deserialize<'de>, R: Deserialize<'de>, A: Deserialize<'de> + Default, S: Deserialize<'de> + Default"
 ))]
-struct Document<M, R, A> {
+struct Document<M, R, A, S = wire::SkillsConfig> {
     models: M,
     #[serde(default)]
     delegation: wire::DelegationSettings,
@@ -34,7 +34,7 @@ struct Document<M, R, A> {
     #[serde(default, skip_serializing_if = "wire::is_default")]
     instructions: wire::InstructionsConfig,
     #[serde(default, skip_serializing_if = "wire::is_default")]
-    skills: wire::SkillsConfig,
+    skills: S,
     #[serde(default)]
     mcp: wire::StudioMcpConfig,
     #[serde(default, skip_serializing_if = "wire::is_default")]
@@ -45,13 +45,13 @@ struct Document<M, R, A> {
     acp: A,
 }
 
-impl<M, R, A> Document<M, R, A> {
-    fn map<N, S, B>(
+impl<M, R, A, S> Document<M, R, A, S> {
+    fn map<N, T, B>(
         self,
         models: impl FnOnce(M) -> N,
-        route: impl Fn(R) -> S,
+        route: impl Fn(R) -> T,
         acp: impl FnOnce(A) -> B,
-    ) -> Document<N, S, B> {
+    ) -> Document<N, T, B, S> {
         Document {
             models: models(self.models),
             delegation: self.delegation,
@@ -70,6 +70,24 @@ impl<M, R, A> Document<M, R, A> {
             lsp: self.lsp,
             ui: self.ui,
             acp: acp(self.acp),
+        }
+    }
+
+    fn map_skills<K>(self, skills: impl FnOnce(S) -> K) -> Document<M, R, A, K> {
+        Document {
+            models: self.models,
+            delegation: self.delegation,
+            mode_model_routes: self.mode_model_routes,
+            disabled_system_agents: self.disabled_system_agents,
+            web_search: self.web_search,
+            deepseek_web_search: self.deepseek_web_search,
+            runtime: self.runtime,
+            instructions: self.instructions,
+            skills: skills(self.skills),
+            mcp: self.mcp,
+            lsp: self.lsp,
+            ui: self.ui,
+            acp: self.acp,
         }
     }
 }
@@ -479,7 +497,10 @@ type BeforeAcp = Document<Models<Account23<wire::ModelInfo>>, Route, LegacyAcp>;
 type BeforePricing = Document<Models<Account23<wire::ModelInfo>>, Route, wire::AcpConfig>;
 type BeforeEnablement = Document<Models<Account26<wire::ModelInfo>>, Route, wire::AcpConfig>;
 type BeforeAuthentication = Document<Models<Account27<wire::ModelInfo>>, Route, wire::AcpConfig>;
-type Current = Document<Models<Account28<wire::ModelInfo>>, Route, wire::AcpConfig>;
+type BeforeSkillDirectoryRemoval =
+    Document<Models<Account28<wire::ModelInfo>>, Route, wire::AcpConfig>;
+type Current =
+    Document<Models<Account28<wire::ModelInfo>>, Route, wire::AcpConfig, wire::SkillsConfigCurrent>;
 
 account!(Account28,
     authentication: wire::AuthenticationMethod,
@@ -514,7 +535,8 @@ version!(MainV24, "24.0.0", BeforeAcp);
 version!(MainV25, "25.0.0", BeforePricing);
 version!(MainV26, "26.0.0", BeforeEnablement);
 version!(MainV27, "27.0.0", BeforeAuthentication);
-version!(MainV28, "28.0.0", Current);
+version!(MainV28, "28.0.0", BeforeSkillDirectoryRemoval);
+version!(MainV29, "29.0.0", Current);
 
 fn validate_pre_mode_routes(document: &PreModes) -> Result<()> {
     for (mode, route) in &document.mode_model_routes {
@@ -806,19 +828,66 @@ impl MigratesTo<MainV28> for MainV27 {
     }
 }
 
+impl MigratesTo<MainV29> for MainV28 {
+    fn migrate(self) -> MainV29 {
+        MainV29(self.0.map_skills(wire::SkillsConfigCurrent::from))
+    }
+}
+
+impl IntoDomain<MainV27> for MainV27 {
+    fn into_domain(self) -> Self {
+        self
+    }
+}
+
 impl IntoDomain<MainV28> for MainV28 {
     fn into_domain(self) -> Self {
         self
     }
 }
 
-impl MainV28 {
+#[cfg(test)]
+impl MainV27 {
+    pub(crate) fn from_config(config: &super::super::StudioConfig) -> Result<Self> {
+        let mut value = toml::Value::try_from(config)?;
+        value
+            .as_table_mut()
+            .ok_or_else(|| anyhow::anyhow!("config is not a table"))?
+            .remove(VERSION_KEY);
+        if let Some(accounts) = value
+            .get_mut("models")
+            .and_then(|models| models.get_mut("accounts"))
+            .and_then(toml::Value::as_table_mut)
+        {
+            for (_, account) in accounts.iter_mut() {
+                let account = account
+                    .as_table_mut()
+                    .ok_or_else(|| anyhow::anyhow!("account is not a table"))?;
+                account.remove("authentication");
+                account.remove("chatgpt_account");
+            }
+        }
+        value.try_into().map_err(Into::into)
+    }
+
+    pub(crate) fn encode(&self) -> Result<String> {
+        toml_schema::encode(self, VERSION_KEY)
+    }
+}
+
+impl IntoDomain<MainV29> for MainV29 {
+    fn into_domain(self) -> Self {
+        self
+    }
+}
+
+impl MainV29 {
     pub(crate) fn into_config(self) -> Result<super::super::StudioConfig> {
         let mut value = toml::Value::try_from(self)?;
         value
             .as_table_mut()
             .ok_or_else(|| anyhow::anyhow!("config DTO is not a table"))?
-            .insert(VERSION_KEY.into(), 28.into());
+            .insert(VERSION_KEY.into(), 29.into());
         let config: super::super::StudioConfig = value.try_into()?;
         ensure!(
             config
@@ -863,18 +932,19 @@ fn migrator() -> Result<Migrator> {
                 .step::<MainV26>()
                 .step::<MainV27>()
                 .step::<MainV28>()
-                .into::<MainV28>(),
+                .step::<MainV29>()
+                .into::<MainV29>(),
         )
         .map_err(|error| toml_schema::chain_error(ENTITY, error))?;
     Ok(migrator)
 }
 
-pub(crate) fn load_main(path: &Path, content: &str) -> Result<LoadedDocument<MainV28>> {
-    toml_schema::load::<MainV18, MainV28>(path, content, &migrator()?, ENTITY, VERSION_KEY)
+pub(crate) fn load_main(path: &Path, content: &str) -> Result<LoadedDocument<MainV29>> {
+    toml_schema::load::<MainV18, MainV29>(path, content, &migrator()?, ENTITY, VERSION_KEY)
 }
 
-pub(crate) fn load_current_main(path: &Path, content: &str) -> Result<MainV28> {
-    toml_schema::load::<MainV28, MainV28>(path, content, &migrator()?, ENTITY, VERSION_KEY)
+pub(crate) fn load_current_main(path: &Path, content: &str) -> Result<MainV29> {
+    toml_schema::load::<MainV29, MainV29>(path, content, &migrator()?, ENTITY, VERSION_KEY)
         .map(|loaded| loaded.document)
 }
 
@@ -944,8 +1014,8 @@ enabled = false
         let integer = toml_schema::encode(document, VERSION_KEY).unwrap();
         let loaded = load_main(Path::new("historical.toml"), &integer).expect("official path");
         assert_eq!(loaded.source_version, version);
-        assert_eq!(loaded.migrated, version != 28);
-        assert_eq!(loaded.document.into_config().unwrap().schema_version, 28);
+        assert_eq!(loaded.migrated, version != 29);
+        assert_eq!(loaded.document.into_config().unwrap().schema_version, 29);
     }
 
     #[test]
@@ -972,6 +1042,8 @@ enabled = false
         round_trip(&v27);
         let v28: MainV28 = v27.migrate();
         round_trip(&v28);
+        let v29: MainV29 = v28.migrate();
+        round_trip(&v29);
     }
 
     #[test]
@@ -995,7 +1067,7 @@ enabled = false
                 config.instructions.user,
                 "Keep deep_seek_anthropic_messages in user text"
             );
-            let encoded = MainV28::from_config(&config).unwrap().encode().unwrap();
+            let encoded = MainV29::from_config(&config).unwrap().encode().unwrap();
             let table: toml::Table = toml::from_str(&encoded).unwrap();
             assert_eq!(
                 table["models"]["accounts"]["saved"]["capabilities"]["web_search"]["standalone"]
@@ -1012,7 +1084,7 @@ enabled = false
             "",
             "schema_version=0\n",
             "schema_version=17\n",
-            "schema_version=29\n",
+            "schema_version=30\n",
             "schema_version=-1\n",
             "schema_version=4294967296\n",
             "schema_version='27'\n",
@@ -1124,5 +1196,63 @@ enabled = false
         // The retired array is accepted only in the migration boundary.
         equal[VERSION_KEY] = 27.into();
         assert!(load_main(Path::new("saved.toml"), &toml::to_string(&equal).unwrap()).is_err());
+    }
+
+    #[test]
+    fn schema_27_skill_user_directory_is_dropped_without_changing_other_settings() {
+        let mut config = crate::config::StudioConfig::default_config().unwrap();
+        config.skills.enabled = false;
+        config.skills.auto_learn = false;
+        config.skills.system.enabled = false;
+        config.skills.project_dir = ".workspace/skills".into();
+        config.skills.external_dirs = vec!["/readonly/skills".into()];
+        config.skills.disabled = vec!["paused-skill".into()];
+        config.skills.auto_learn_min_tool_calls = 9;
+        config.ui.language = pl_protocol::studio::StudioUiLanguage::En;
+        let old_models = config.models.clone();
+        let old_routes = config.mode_model_routes.clone();
+        let old_ui = config.ui.clone();
+
+        let mut old = toml::Value::try_from(MainV27::from_config(&config).unwrap()).unwrap();
+        old.as_table_mut()
+            .unwrap()
+            .entry("skills")
+            .or_insert_with(|| toml::Value::Table(toml::Table::new()));
+        old["skills"]["user_dir"] = "~/.anywork/skills".into();
+        let old: MainV27 = old.try_into().unwrap();
+        let loaded = load_main(Path::new("v27.toml"), &old.encode().unwrap()).unwrap();
+
+        assert_eq!(loaded.source_version, 27);
+        let current = loaded.document.encode().unwrap();
+        assert!(!current.contains("user_dir"));
+        let mut invalid_current: toml::Value = toml::from_str(&current).unwrap();
+        invalid_current
+            .as_table_mut()
+            .unwrap()
+            .entry("skills")
+            .or_insert_with(|| toml::Value::Table(toml::Table::new()));
+        invalid_current["skills"]
+            .as_table_mut()
+            .unwrap()
+            .insert("user_dir".into(), "/custom/skills".into());
+        assert!(
+            load_current_main(
+                Path::new("v29.toml"),
+                &toml::to_string(&invalid_current).unwrap()
+            )
+            .is_err()
+        );
+        let migrated = loaded.document.into_config().unwrap();
+        assert_eq!(migrated.schema_version, 29);
+        assert_eq!(migrated.models, old_models);
+        assert_eq!(migrated.mode_model_routes, old_routes);
+        assert_eq!(migrated.ui, old_ui);
+        assert!(!migrated.skills.enabled);
+        assert!(!migrated.skills.auto_learn);
+        assert!(!migrated.skills.system.enabled);
+        assert_eq!(migrated.skills.project_dir, ".workspace/skills");
+        assert_eq!(migrated.skills.external_dirs, ["/readonly/skills"]);
+        assert_eq!(migrated.skills.disabled, ["paused-skill"]);
+        assert_eq!(migrated.skills.auto_learn_min_tool_calls, 9);
     }
 }

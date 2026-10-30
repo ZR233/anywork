@@ -113,7 +113,7 @@ pub struct Environment {
     pub root_provider: FixtureServer,
     pub child_provider: FixtureServer,
     pub runtime: StudioRuntime,
-    pub project: pl_studio_runtime::ProjectRecord,
+    pub project: pl_studio_runtime::WorkspaceRecord,
 }
 
 impl Environment {

@@ -820,7 +820,7 @@ class BridgeStudioRecoveryIssueDto {
   final BridgeRecoveryIssueCategory category;
   final BridgeRecoveryImpact impact;
   final List<BridgeRecoveryIssueAction> availableActions;
-  final String? projectId;
+  final String? workspaceId;
   final String? threadId;
   final String detail;
   final BridgeWorktreeRecoveryPreviewDto? worktree;
@@ -831,7 +831,7 @@ class BridgeStudioRecoveryIssueDto {
     required this.category,
     required this.impact,
     required this.availableActions,
-    this.projectId,
+    this.workspaceId,
     this.threadId,
     required this.detail,
     this.worktree,
@@ -844,7 +844,7 @@ class BridgeStudioRecoveryIssueDto {
       category.hashCode ^
       impact.hashCode ^
       availableActions.hashCode ^
-      projectId.hashCode ^
+      workspaceId.hashCode ^
       threadId.hashCode ^
       detail.hashCode ^
       worktree.hashCode;
@@ -859,7 +859,7 @@ class BridgeStudioRecoveryIssueDto {
           category == other.category &&
           impact == other.impact &&
           availableActions == other.availableActions &&
-          projectId == other.projectId &&
+          workspaceId == other.workspaceId &&
           threadId == other.threadId &&
           detail == other.detail &&
           worktree == other.worktree;

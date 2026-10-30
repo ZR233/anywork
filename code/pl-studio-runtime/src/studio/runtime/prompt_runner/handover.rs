@@ -119,7 +119,7 @@ impl StudioRuntime {
             category: crate::studio::StudioRecoveryIssueCategory::Storage,
             impact: crate::studio::StudioRecoveryImpact::ExecutionBlocked,
             action: crate::studio::StudioRecoveryIssueAction::Retry,
-            project_id: None,
+            workspace_id: None,
             thread_id: Some(child_id.to_owned()),
             worktree: None,
             message: format!(

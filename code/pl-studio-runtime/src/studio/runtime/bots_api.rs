@@ -13,12 +13,38 @@ fn bot_err(error: crate::bots::FeishuError) -> anyhow::Error {
 }
 
 impl StudioRuntime {
+    /// The bot reply owner serializes this final check with Thread-scoped sealing.
+    /// Do not take lifecycle_lock: archive holds it while joining these producers.
+    pub(crate) async fn ensure_bot_dispatch_allowed(
+        &self,
+        workspace_id: &str,
+        thread_id: &str,
+    ) -> Result<()> {
+        self.store
+            .ensure_archive_execution_allowed(workspace_id, Some(thread_id))
+            .await?;
+        if let Some(thread) = self.store.catalog().get(thread_id) {
+            anyhow::ensure!(
+                thread.workspace_id == workspace_id && !thread.archived,
+                "bot Thread is archived or belongs to another workspace"
+            );
+        }
+        Ok(())
+    }
+
     pub(crate) async fn prepare_bot_attachment_drafts(
         &self,
         thread_id: &str,
         sources: Vec<pl_protocol::studio::StudioAttachmentDraftSource>,
+        cancel: &tokio_util::sync::CancellationToken,
     ) -> Result<pl_protocol::studio::AdmitAttachmentDraftsResponse> {
-        let _guard = self.lifecycle_lock.lock().await;
+        // Only admission is cancellable. Once admitted, the reply retains this
+        // future through the actual file/resource handoff before reporting stop.
+        let _guard = tokio::select! {
+            _ = cancel.cancelled() => anyhow::bail!("bot attachment admission cancelled"),
+            guard = self.lifecycle_lock.lock() => guard,
+        };
+        anyhow::ensure!(!cancel.is_cancelled(), "bot attachment admission cancelled");
         let thread = self.ensure_thread_owner(thread_id).await?;
         self.reconcile_bot_model(thread_id, &thread).await?;
         self.admit_attachment_drafts(pl_protocol::studio::AdmitAttachmentDraftsRequest {
@@ -115,7 +141,7 @@ impl StudioRuntime {
             .start_registration(
                 request.operation_id,
                 request.name,
-                request.project_id,
+                request.workspace_id,
                 &self.owner_epoch,
             )
             .await
