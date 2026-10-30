@@ -42,9 +42,14 @@ impl SessionFiles {
             .join(&self.thread_key)
     }
 
+    /// Disposable execution files. Artifacts are deliberately outside this directory.
+    pub fn temp(&self) -> PathBuf {
+        self.root().join("temp")
+    }
+
     /// Temporary scripts, probes, and intermediate files for this Thread.
     pub fn scratch(&self) -> PathBuf {
-        self.root().join("scratch")
+        self.temp()
     }
 
     /// Outputs that are not yet at a user-specified location.
@@ -54,7 +59,17 @@ impl SessionFiles {
 
     /// Command capture directories for this Thread.
     pub fn commands(&self) -> PathBuf {
-        self.root().join("commands")
+        self.temp().join("commands")
+    }
+
+    /// Input materializations, not the reliable attachment store.
+    pub fn uploads(&self) -> PathBuf {
+        self.temp().join("uploads")
+    }
+
+    /// An optional, lazily created Python environment. Never relocate an old venv.
+    pub fn python_environment(&self) -> PathBuf {
+        self.temp().join(".venv")
     }
 
     /// Model-readable command capture path for one call.

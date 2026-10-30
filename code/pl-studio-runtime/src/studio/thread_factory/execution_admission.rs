@@ -19,6 +19,10 @@ pub(crate) enum ExecutionWorkspaceCheck {
 
 impl StudioThreadFactory {
     pub(crate) async fn verify_project_workspace(&self, project: &WorkspaceRecord) -> Result<()> {
+        self.services
+            .store
+            .ensure_archive_execution_allowed(&project.id, None)
+            .await?;
         let identity = self
             .resolve_workspace_identity(project, Path::new(&project.path))
             .await
@@ -34,6 +38,12 @@ impl StudioThreadFactory {
         snapshot: Option<&pl_core::thread::ThreadSnapshot>,
         check: ExecutionWorkspaceCheck,
     ) -> Result<()> {
+        if check != ExecutionWorkspaceCheck::Audit {
+            self.services
+                .store
+                .ensure_archive_execution_allowed(&thread.workspace_id, Some(&thread.id))
+                .await?;
+        }
         let associated = self.project_record(&thread.workspace_id).await?;
         let frozen = self.services.store.workspace_identity(&thread.id).await?;
         if let Some(bot) = self

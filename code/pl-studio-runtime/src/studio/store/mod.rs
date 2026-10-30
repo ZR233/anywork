@@ -20,6 +20,7 @@ pub(super) mod schema;
 pub(in crate::studio) mod session_layout;
 pub(in crate::studio) mod settings;
 mod thread;
+pub(in crate::studio) mod thread_archive;
 pub(in crate::studio) mod workspaces;
 
 #[derive(Clone)]

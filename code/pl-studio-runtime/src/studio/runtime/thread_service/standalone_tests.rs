@@ -14,6 +14,165 @@ fn options(home: &Path) -> StudioRuntimeOptions {
     }
 }
 
+#[tokio::test]
+async fn archive_temp_removes_only_bound_disposable_directories_and_restores_lazily() -> Result<()>
+{
+    use pl_tool::workspace::SessionFiles;
+    let temp = tempfile::tempdir()?;
+    let home = temp.path().join("home");
+    let _endpoint = configure(&home)?;
+    let workspace = temp.path().join("workspace");
+    tokio::fs::create_dir_all(&workspace).await?;
+    let runtime = StudioRuntime::initialize(options(&home)).await?;
+    let project = runtime.open_project(&workspace).await?;
+    let thread = runtime
+        .create_thread_with_id("archive-temp", &project.id, "archive")
+        .await?;
+    let neighbor = runtime
+        .create_thread_with_id("neighbor-temp", &project.id, "neighbor")
+        .await?;
+    runtime
+        .ensure_thread_owner(&thread.id)
+        .await?
+        .flush()
+        .await?;
+    let files = SessionFiles::new(&thread.id);
+    let neighbor_files = SessionFiles::new(&neighbor.id);
+    let session = runtime.store.registered_session_paths(&thread.id)?;
+    tokio::fs::create_dir_all(session.temp_dir()).await?;
+    tokio::fs::write(session.temp_dir().join("transfer"), b"disposable").await?;
+    let resources = runtime.store.session_resources_dir(&thread.id)?;
+    tokio::fs::create_dir_all(&resources).await?;
+    tokio::fs::write(resources.join("reliable"), b"keep reliable").await?;
+    tokio::fs::write(workspace.join(files.temp()).join("probe"), b"disposable").await?;
+    tokio::fs::write(
+        workspace.join(files.artifacts()).join("delivery"),
+        b"keep artifact",
+    )
+    .await?;
+    tokio::fs::write(
+        workspace.join(neighbor_files.temp()).join("active"),
+        b"keep neighbor",
+    )
+    .await?;
+    tokio::fs::write(workspace.join("business"), b"keep business").await?;
+
+    runtime
+        .archive_thread("archive-temp-operation".into(), thread.id.clone())
+        .await?
+        .context("archive reply")?;
+    assert!(!session.temp_dir().exists());
+    assert!(!workspace.join(files.temp()).exists());
+    assert!(session.history_database().is_file());
+    assert_eq!(
+        tokio::fs::read(resources.join("reliable")).await?,
+        b"keep reliable"
+    );
+    assert_eq!(
+        tokio::fs::read(workspace.join(files.artifacts()).join("delivery")).await?,
+        b"keep artifact"
+    );
+    assert_eq!(
+        tokio::fs::read(workspace.join(neighbor_files.temp()).join("active")).await?,
+        b"keep neighbor"
+    );
+    assert_eq!(
+        tokio::fs::read(workspace.join("business")).await?,
+        b"keep business"
+    );
+    runtime.restore_thread(thread.id.clone()).await?;
+    assert!(
+        !workspace.join(files.temp()).exists(),
+        "catalog restoration is not execution"
+    );
+    runtime.ensure_thread_owner(&thread.id).await?;
+    assert!(workspace.join(files.commands()).is_dir());
+    assert!(!workspace.join(files.temp()).join("probe").exists());
+    runtime.shutdown_runtime().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn archive_temp_failure_survives_restart_and_cold_reads_do_not_recreate_temp() -> Result<()> {
+    use crate::studio::store::thread_archive::{ArchivePhase, ArchiveScope};
+    use pl_tool::workspace::SessionFiles;
+    let temp = tempfile::tempdir()?;
+    let home = temp.path().join("home");
+    let _endpoint = configure(&home)?;
+    let workspace = temp.path().join("workspace");
+    tokio::fs::create_dir_all(&workspace).await?;
+    let runtime = StudioRuntime::initialize(options(&home)).await?;
+    let project = runtime.open_project(&workspace).await?;
+    let thread = runtime
+        .create_thread_with_id("retry-temp", &project.id, "retry")
+        .await?;
+    let files = SessionFiles::new(&thread.id);
+    let session = runtime.store.registered_session_paths(&thread.id)?;
+    tokio::fs::create_dir_all(session.temp_dir()).await?;
+    tokio::fs::write(session.temp_dir().join("transfer"), b"disposable").await?;
+    // A non-directory at the dedicated temp address is a deterministic I/O failure even under root.
+    tokio::fs::remove_dir_all(workspace.join(files.temp())).await?;
+    tokio::fs::write(workspace.join(files.temp()), b"wrong kind").await?;
+    assert!(
+        runtime
+            .archive_thread("retry-temp-first".into(), thread.id.clone())
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        runtime
+            .store
+            .thread_archive(&ArchiveScope::Thread(thread.id.clone()))
+            .await?
+            .unwrap()
+            .phase,
+        ArchivePhase::Saved
+    );
+    assert_eq!(
+        runtime
+            .store
+            .read_thread(&thread.id)
+            .await?
+            .unwrap()
+            .visibility,
+        ThreadVisibility::Active
+    );
+    runtime.shutdown_runtime().await?;
+    drop(runtime);
+
+    let runtime = StudioRuntime::initialize(options(&home)).await?;
+    assert!(runtime.ensure_thread_owner(&thread.id).await.is_err());
+    assert!(runtime.restore_thread(thread.id.clone()).await.is_err());
+    assert_eq!(
+        tokio::fs::read(workspace.join(files.temp())).await?,
+        b"wrong kind"
+    );
+    runtime
+        .store
+        .read_thread(&thread.id)
+        .await?
+        .context("cold catalog")?;
+    assert!(runtime.threads.observed_thread(&thread.id).is_none());
+    tokio::fs::remove_file(workspace.join(files.temp())).await?;
+    runtime
+        .archive_thread("retry-temp-second".into(), thread.id.clone())
+        .await?
+        .context("retry reply")?;
+    assert!(!session.temp_dir().exists());
+    assert!(!workspace.join(files.temp()).exists());
+    assert_eq!(
+        runtime
+            .store
+            .thread_archive(&ArchiveScope::Thread(thread.id))
+            .await?
+            .unwrap()
+            .phase,
+        ArchivePhase::Published
+    );
+    runtime.shutdown_runtime().await?;
+    Ok(())
+}
+
 fn configure(home: &Path) -> Result<std::net::TcpListener> {
     // Activation may construct this anonymous route but these storage tests never submit a model
     // request. Retain the listener to also detect accidental outbound network work.

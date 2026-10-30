@@ -358,7 +358,7 @@ async fn session_layout_and_directory_policy() -> anyhow::Result<()> {
     anyhow::ensure!(
         workspace
             .ensure_path_writable(&root.path().join(files.commands()).join("output.log"))
-            .is_err()
+            .is_ok()
     );
     anyhow::ensure!(
         workspace
@@ -403,7 +403,7 @@ async fn session_layout_and_directory_policy() -> anyhow::Result<()> {
     anyhow::ensure!(
         workspace
             .ensure_relative_path_writable(None, &files.commands().join("x").to_string_lossy())
-            .is_err()
+            .is_ok()
     );
 
     let empty =
@@ -418,7 +418,7 @@ async fn session_layout_and_directory_policy() -> anyhow::Result<()> {
     anyhow::ensure!(
         empty
             .ensure_path_writable(&root.path().join(files.commands()).join("output.log"))
-            .is_err()
+            .is_ok()
     );
     anyhow::ensure!(
         empty

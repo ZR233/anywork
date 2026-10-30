@@ -5,8 +5,9 @@ use std::path::Path;
 use anyhow::{Context, Result, bail, ensure};
 use pl_protocol::studio::WorkspaceKind;
 
-use crate::studio::records::{WorkspaceRecord, ThreadRecord, ThreadVisibility};
+use crate::studio::records::{ThreadRecord, ThreadVisibility, WorkspaceRecord};
 use crate::studio::store::directory::{DirectoryDelta, ProjectDirectoryRecord, ProjectRemoval};
+use crate::studio::store::thread_archive::{ArchivePhase, ArchiveScope};
 
 use super::super::StudioRuntime;
 use super::super::thread_title::ThreadTitleCancellationCause;
@@ -299,12 +300,16 @@ impl StudioRuntime {
                 .project_snapshot()
                 .await
                 .iter()
-                .any(
-                    |project| project.id == workspace_id && project.kind == WorkspaceKind::Standalone
-                ),
+                .any(|project| project.id == workspace_id
+                    && project.kind == WorkspaceKind::Standalone),
             "the standalone workspace cannot be archived"
         );
         let threads = self.load_project_archive_scope(workspace_id).await?;
+        let has_pending_archive = self
+            .store
+            .thread_archive(&ArchiveScope::Workspace(workspace_id.into()))
+            .await?
+            .is_some_and(|operation| operation.phase != ArchivePhase::Published);
         let Some(project) = self
             .agent_facility
             .product_events
@@ -316,16 +321,17 @@ impl StudioRuntime {
                 // workspaces.toml is written before catalog.toml. If the latter failed (including
                 // across restart), the canonical closed Project must still allow finishing its
                 // active catalog rows; absence from the open-project projection is not completion.
-                threads
-                    .iter()
-                    .any(|thread| thread.visibility == ThreadVisibility::Active)
-                    .then(|| {
-                        self.store
-                            .workspaces()
-                            .get(workspace_id)
-                            .map(|entry| entry.project())
-                    })
-                    .flatten()
+                (has_pending_archive
+                    || threads
+                        .iter()
+                        .any(|thread| thread.visibility == ThreadVisibility::Active))
+                .then(|| {
+                    self.store
+                        .workspaces()
+                        .get(workspace_id)
+                        .map(|entry| entry.project())
+                })
+                .flatten()
             })
         else {
             return Ok(None);
@@ -374,7 +380,17 @@ impl StudioRuntime {
                 }
             }
         }
+        let mut archive = self
+            .freeze_thread_archive(ArchiveScope::Workspace(workspace_id.into()), &threads)
+            .await?;
+        for thread_id in &thread_ids {
+            self.title_tasks
+                .cancel(thread_id, ThreadTitleCancellationCause::ProjectArchive)
+                .await;
+        }
         self.retire_archived_thread_tree(&thread_ids).await?;
+        self.archive_save_confirmed(&mut archive).await?;
+        self.clean_archive_temps(&mut archive).await?;
         self.agent_facility
             .product_events
             .commit_directory(DirectoryDelta {
@@ -386,17 +402,16 @@ impl StudioRuntime {
                 ..Default::default()
             })
             .await?;
+        self.archive_published(&mut archive).await?;
         for thread_id in &thread_ids {
-            self.title_tasks
-                .cancel(thread_id, ThreadTitleCancellationCause::ProjectArchive)
-                .await;
             self.model_performance.remove_session(thread_id).await?;
         }
         Ok(Some(project))
     }
 
     pub(super) fn ensure_project_thread_admission_open(&self, workspace_id: &str) -> Result<()> {
-        self.recovery.ensure_project_execution_access(workspace_id)?;
+        self.recovery
+            .ensure_project_execution_access(workspace_id)?;
         anyhow::ensure!(
             self.store
                 .workspaces()
