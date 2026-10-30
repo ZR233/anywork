@@ -125,9 +125,6 @@ pub enum SettingsFieldInput {
     SkillsProjectDir {
         value: String,
     },
-    SkillsUserDir {
-        value: String,
-    },
     SkillsExternalDirs {
         value: Vec<String>,
     },
@@ -240,7 +237,6 @@ impl From<SettingsFieldInput> for pl_protocol::studio::SettingsFieldUpdate {
                 Update::SkillsSystemEnabled { value }
             }
             SettingsFieldInput::SkillsProjectDir { value } => Update::SkillsProjectDir { value },
-            SettingsFieldInput::SkillsUserDir { value } => Update::SkillsUserDir { value },
             SettingsFieldInput::SkillsExternalDirs { value } => {
                 Update::SkillsExternalDirs { value }
             }
@@ -600,7 +596,6 @@ pub struct BridgeSkillsSettingsDto {
     pub auto_learn: bool,
     pub system_enabled: bool,
     pub project_dir: String,
-    pub user_dir: String,
     pub external_dirs: Vec<String>,
     pub disabled: Vec<String>,
     pub auto_learn_min_tool_calls: u32,

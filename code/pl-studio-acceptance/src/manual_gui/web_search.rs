@@ -238,12 +238,10 @@ fn start_gui(
 ) -> Result<OwnedProcess> {
     let log = File::create(log_path)?;
     let mut command = Command::new("cargo");
+    configure_isolated_gui_home(&mut command, home)?;
     command
         .current_dir(workspace)
         .args(["xtask", "run-gui", "--driver"])
-        .env("ANYWORK_HOME", home)
-        .env("HOME", home)
-        .env("USERPROFILE", home)
         .stdout(Stdio::from(log.try_clone()?))
         .stderr(Stdio::from(log));
     let openai_value = match fault {

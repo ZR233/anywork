@@ -6068,15 +6068,53 @@ fn plan_recovery_quiet_window(
     Ok(())
 }
 
-fn start_recovery_gui(workspace: &Path, home: &Path, log_path: &Path) -> Result<OwnedProcess> {
-    let log = File::create(log_path)?;
-    let mut command = Command::new("cargo");
+/// Isolate the GUI's user Skills home without changing Cargo or rustup's home.
+///
+/// Cargo is started before the GUI, so preserving its toolchain locations here
+/// keeps the build on the operator's existing installation while the GUI sees
+/// only synthetic user configuration and Skills.
+fn configure_isolated_gui_home(command: &mut Command, home: &Path) -> Result<()> {
+    let cargo_home = preserved_toolchain_home(std::env::var_os("CARGO_HOME"), ".cargo")?;
+    let rustup_home = preserved_toolchain_home(std::env::var_os("RUSTUP_HOME"), ".rustup")?;
+
     command
-        .current_dir(workspace)
-        .args(["xtask", "run-gui", "--driver"])
         .env("ANYWORK_HOME", home)
         .env("HOME", home)
         .env("USERPROFILE", home)
+        .env("CARGO_HOME", cargo_home)
+        .env("RUSTUP_HOME", rustup_home);
+    Ok(())
+}
+
+fn real_platform_user_home() -> Result<PathBuf> {
+    #[cfg(windows)]
+    let real_user_home = std::env::var_os("USERPROFILE");
+    #[cfg(not(windows))]
+    let real_user_home = std::env::var_os("HOME");
+
+    real_user_home
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from)
+        .context("could not resolve the real user home before isolating GUI HOME")
+}
+
+fn preserved_toolchain_home(
+    explicit: Option<std::ffi::OsString>,
+    relative: &str,
+) -> Result<std::ffi::OsString> {
+    match explicit.filter(|path| !path.is_empty()) {
+        Some(path) => Ok(path),
+        None => Ok(real_platform_user_home()?.join(relative).into_os_string()),
+    }
+}
+
+fn start_recovery_gui(workspace: &Path, home: &Path, log_path: &Path) -> Result<OwnedProcess> {
+    let log = File::create(log_path)?;
+    let mut command = Command::new("cargo");
+    configure_isolated_gui_home(&mut command, home)?;
+    command
+        .current_dir(workspace)
+        .args(["xtask", "run-gui", "--driver"])
         .stdout(Stdio::from(log.try_clone()?))
         .stderr(Stdio::from(log));
     OwnedProcess::start(&mut command, false)
@@ -7015,6 +7053,27 @@ mod vm_service_url_tests {
             ))
             .as_deref(),
             Some("http://127.0.0.1:12346/auth-token=/")
+        );
+    }
+}
+
+#[cfg(test)]
+mod toolchain_home_tests {
+    use super::preserved_toolchain_home;
+    use std::ffi::OsString;
+
+    #[test]
+    fn explicit_toolchain_homes_are_preserved_and_defaults_use_real_home() {
+        assert_eq!(
+            preserved_toolchain_home(Some(OsString::from("/custom/cargo-home")), ".cargo").unwrap(),
+            OsString::from("/custom/cargo-home")
+        );
+        assert_eq!(
+            preserved_toolchain_home(Some(OsString::new()), ".rustup").unwrap(),
+            real_platform_user_home()
+                .unwrap()
+                .join(".rustup")
+                .into_os_string()
         );
     }
 }
