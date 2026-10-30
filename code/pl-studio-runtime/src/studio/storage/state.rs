@@ -203,27 +203,43 @@ impl StateStore {
             let auxiliary = calls.legacy_auxiliary_usage(&self.thread_id).await?;
             let summary = &mut checkpoint.state.usage_summary;
             for (target, value) in [
-                (&mut summary.inference_count, auxiliary.inference_count),
-                (&mut summary.prompt_tokens, auxiliary.prompt_tokens),
-                (&mut summary.completion_tokens, auxiliary.completion_tokens),
                 (
-                    &mut summary.cached_prompt_tokens,
-                    auxiliary.cached_prompt_tokens,
+                    &mut summary.totals.inference_count,
+                    auxiliary.totals.inference_count,
                 ),
                 (
-                    &mut summary.cache_write_tokens,
-                    auxiliary.cache_write_tokens,
+                    &mut summary.totals.prompt_tokens,
+                    auxiliary.totals.prompt_tokens,
                 ),
-                (&mut summary.reasoning_tokens, auxiliary.reasoning_tokens),
-                (&mut summary.total_tokens, auxiliary.total_tokens),
+                (
+                    &mut summary.totals.completion_tokens,
+                    auxiliary.totals.completion_tokens,
+                ),
+                (
+                    &mut summary.totals.cached_prompt_tokens,
+                    auxiliary.totals.cached_prompt_tokens,
+                ),
+                (
+                    &mut summary.totals.cache_write_tokens,
+                    auxiliary.totals.cache_write_tokens,
+                ),
+                (
+                    &mut summary.totals.reasoning_tokens,
+                    auxiliary.totals.reasoning_tokens,
+                ),
+                (
+                    &mut summary.totals.total_tokens,
+                    auxiliary.totals.total_tokens,
+                ),
             ] {
                 *target = target
                     .checked_add(value)
                     .context("legacy auxiliary accounting overflow")?;
             }
-            summary.has_incomplete_usage |= auxiliary.has_incomplete_usage;
-            summary.cache_incomplete |= auxiliary.cache_incomplete;
-            summary.has_unpriced_usage |= auxiliary.has_unpriced_usage;
+            summary.diagnostics.legacy_incomplete |= auxiliary.has_incomplete_usage();
+            summary.diagnostics.legacy_unknown = true;
+            summary.cache.incomplete |= auxiliary.cache.incomplete;
+            summary.pricing.incomplete |= auxiliary.pricing.incomplete;
         }
         history
             .import_checkpoint(&checkpoint, &legacy_costs)

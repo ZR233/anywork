@@ -808,7 +808,7 @@ enum _StorageStage {
   none,
 }
 
-/// 一行逐 Thread 持久化诊断：state/history/calls 各自按“未知 vs 已观测”区分显示。
+/// 一行逐 Thread 可靠持久化诊断，按“未知 vs 已观测”区分显示。
 String _persistenceThreadLine(ThreadPersistenceSnapshot thread) {
   final state = _persistenceWatermark(
     thread.stateDurableRevision,
@@ -818,9 +818,5 @@ String _persistenceThreadLine(ThreadPersistenceSnapshot thread) {
     thread.historyDurableSequence,
     thread.historyAdmittedSequence,
   );
-  final calls = _persistenceWatermark(
-    thread.callsDurableSequence,
-    thread.callsAdmittedSequence,
-  );
-  return '${thread.threadId} · state $state · history $history · calls $calls';
+  return '${thread.threadId} · state $state · history $history';
 }

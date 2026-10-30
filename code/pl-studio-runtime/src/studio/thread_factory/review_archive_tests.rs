@@ -1,5 +1,8 @@
-//! Durable archive admission at the actual restricted review feedback consumer.
-use crate::thread_assembler::{StudioThreadAssembler, archive_test_spec as spec};
+//! Archive admission at real binding confirmation and restricted review feedback consumers.
+use crate::thread_assembler::{
+    StudioActivationFactory, StudioThreadAssembler, StudioThreadSpec, ThreadActivation,
+    ThreadAssemblyError, ThreadPreparation, archive_test_spec as spec,
+};
 use crate::{
     studio::{
         StudioStore,
@@ -22,6 +25,214 @@ use pl_core::{
     context::OpaquePayload,
     thread::{ThreadHandle, cold::ColdStoreHandle, inbox::ThreadMessage},
 };
+
+#[tokio::test]
+async fn archive_seal_rejects_late_factory_binding_confirmation() -> anyhow::Result<()> {
+    check_sealed_factory_binding(true).await
+}
+
+#[tokio::test]
+async fn archive_registry_seal_rejects_factory_binding_before_scope_commit() -> anyhow::Result<()> {
+    check_sealed_factory_binding(false).await
+}
+
+/// Captures the real preparation issued by activate_owned; no test-created admission or
+/// fallback owner substitutes for the registry identity being exercised below.
+type PreparationHandoff = (ThreadPreparation, tokio::sync::oneshot::Sender<()>);
+
+#[derive(Debug)]
+struct CapturedPreparation {
+    entered: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<PreparationHandoff>>>,
+}
+
+impl StudioActivationFactory for CapturedPreparation {
+    async fn root_delegation(
+        &self,
+        _: &ThreadActivation,
+    ) -> Result<pl_protocol::DelegationSettings, ThreadAssemblyError> {
+        Ok(Default::default())
+    }
+
+    async fn prepare(
+        &self,
+        request: ThreadPreparation,
+    ) -> Result<StudioThreadSpec, ThreadAssemblyError> {
+        let (release, waiting) = tokio::sync::oneshot::channel();
+        let entered = self
+            .entered
+            .lock()
+            .unwrap()
+            .take()
+            .ok_or(ThreadAssemblyError::Closed)?;
+        entered
+            .send((request, release))
+            .map_err(|_| ThreadAssemblyError::Closed)?;
+        // Dropping the test's sender also releases this owner on an early test error.
+        let _ = waiting.await;
+        Err(ThreadAssemblyError::Closed)
+    }
+}
+
+async fn check_sealed_factory_binding(durable: bool) -> anyhow::Result<()> {
+    use crate::{
+        agent::worktree::{WorktreeManager, WorktreeOwnership},
+        studio::agent_host::worktree_lease::{
+            WorktreeLease, WorktreeLeaseOwnerKind, WorktreeLeaseState,
+        },
+    };
+    let temp = tempfile::tempdir()?;
+    let root = dunce::canonicalize(temp.path())?;
+    let store = StudioStore::open(root.join("home/data/studio.sqlite")).await?;
+    let physical = close_factory(&store)?;
+    let factory = &physical.factory;
+    let owner = StudioThreadAssembler::default();
+    physical.install(&owner)?;
+    let mut protocol = pl_protocol::Thread::placeholder("root");
+    protocol.workspace_id = "review-workspace".into();
+    protocol.root_thread_id = "root".into();
+    protocol.workspace_path = root.to_string_lossy().into_owned();
+    register(&store, &protocol, &protocol.workspace_path).await?;
+    let path = WorktreeManager::allocate_path(
+        &root,
+        "root",
+        &WorktreeOwnership::Session {
+            thread_id: "root".into(),
+        },
+    );
+    let mut lease = WorktreeLease {
+        revision: 1,
+        state: WorktreeLeaseState::Prepared,
+        owner_kind: WorktreeLeaseOwnerKind::Session,
+        owner_thread_id: "root".into(),
+        root_thread_id: "root".into(),
+        workspace_id: protocol.workspace_id.clone(),
+        ssh_alias: None,
+        repository_root: protocol.workspace_path.clone(),
+        path: path.to_string_lossy().into_owned(),
+        base_commit: "a".repeat(40),
+    };
+    let identity = WorkspaceIdentity::canonical(WorkspaceEndpoint::Local, lease.path.clone())?;
+    let usage = factory
+        .services
+        .worktrees
+        .reserve_workspace("root", WorkspaceEndpoint::Local)?;
+    factory
+        .services
+        .worktrees
+        .assign_workspace(&usage, identity.clone())?;
+    factory
+        .services
+        .worktrees
+        .record_durable(lease.clone())
+        .await?;
+    let (entered, waiting) = tokio::sync::oneshot::channel();
+    let activating = owner.clone();
+    let activation = tokio::spawn(async move {
+        activating
+            .activate(
+                ThreadActivation {
+                    id: "root".into(),
+                    parent_id: None,
+                },
+                CapturedPreparation {
+                    entered: std::sync::Mutex::new(Some(entered)),
+                },
+            )
+            .await
+    });
+    let (preparation, release) =
+        tokio::time::timeout(std::time::Duration::from_secs(5), waiting).await??;
+    preparation.workspace_owner.retain(&usage);
+    // Establish a valid binding through the real factory boundary before sealing it.
+    factory
+        .confirm_worktree_binding(&lease, &usage, &preparation.workspace_owner)
+        .await?;
+    lease = factory.services.worktrees.get("root").unwrap();
+    lease.transition(WorktreeLeaseState::Preserved);
+    factory
+        .services
+        .worktrees
+        .record_durable(lease.clone())
+        .await?;
+    let scope = if durable {
+        let paths = store.registered_session_paths("root")?;
+        store
+            .save_thread_archive(&ThreadArchiveOperation {
+                scope: ArchiveScope::Thread("root".into()),
+                revision: 1,
+                members: vec![ArchiveMember {
+                    parent_id: None,
+                    thread_id: "root".into(),
+                    workspace_id: protocol.workspace_id.clone(),
+                    root_id: "root".into(),
+                    host_session: paths.root().into(),
+                    host_temp: paths.temp_dir(),
+                    execution: identity,
+                    host_cleaned: false,
+                    execution_cleaned: false,
+                }],
+                private_members: Vec::new(),
+                phase: ArchivePhase::Sealed,
+            })
+            .await?;
+        None
+    } else {
+        let scope = owner.seal_archive_scope(&["root".into()])?;
+        assert_eq!(scope.thread_ids(), vec!["root".to_owned()]);
+        assert!(
+            !preparation.cancellation.is_cancelled(),
+            "the volatile seal must win before durable commit and cancellation"
+        );
+        assert!(store.thread_archives().await?.is_empty());
+        store
+            .ensure_archive_execution_allowed(&protocol.workspace_id, Some("root"))
+            .await?;
+        Some(scope)
+    };
+    let failure = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        factory.confirm_worktree_binding(&lease, &usage, &preparation.workspace_owner),
+    )
+    .await?
+    .unwrap_err();
+    if durable {
+        assert!(
+            failure
+                .to_string()
+                .contains("archive cleanup must be retried"),
+            "{failure:#}"
+        );
+    } else {
+        assert!(
+            matches!(
+                failure.downcast_ref::<ThreadAssemblyError>(),
+                Some(ThreadAssemblyError::Closed)
+            ),
+            "{failure:#}"
+        );
+    }
+    assert_eq!(factory.services.worktrees.get("root"), Some(lease.clone()));
+    assert_eq!(
+        crate::studio::agent_host::worktree_lease::load_leases(&store).await?,
+        vec![lease]
+    );
+    assert!(owner.thread("root").is_none(), "no owner may be published");
+    drop(preparation);
+    drop(release);
+    // Coalesced activation preserves the original failure under its public typed wrapper.
+    let activation_result = activation.await?;
+    assert!(
+        matches!(
+            &activation_result,
+            Err(ThreadAssemblyError::ActivationFailed(source))
+                if matches!(source.as_ref(), ThreadAssemblyError::Closed)
+        ),
+        "{activation_result:?}"
+    );
+    drop(scope);
+    physical.shutdown().await?;
+    Ok(())
+}
 
 async fn register(
     store: &StudioStore,

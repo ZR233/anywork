@@ -161,8 +161,11 @@ class SkillsSettingsView {
   }
 }
 
+enum UiLanguage { system, zh, en }
+
 class GeneralSettingsView {
   const GeneralSettingsView({
+    this.language = UiLanguage.system,
     this.followActiveTurn = true,
     this.compactTimeline = false,
     this.sidebarWidth = 336,
@@ -170,6 +173,7 @@ class GeneralSettingsView {
     this.pinnedProjectIds = const [],
   });
 
+  final UiLanguage language;
   final bool followActiveTurn;
   final bool compactTimeline;
   final int sidebarWidth;
@@ -177,6 +181,7 @@ class GeneralSettingsView {
   final List<String> pinnedProjectIds;
 
   GeneralSettingsView copyWith({
+    UiLanguage? language,
     bool? followActiveTurn,
     bool? compactTimeline,
     int? sidebarWidth,
@@ -184,6 +189,7 @@ class GeneralSettingsView {
     List<String>? pinnedProjectIds,
   }) {
     return GeneralSettingsView(
+      language: language ?? this.language,
       followActiveTurn: followActiveTurn ?? this.followActiveTurn,
       compactTimeline: compactTimeline ?? this.compactTimeline,
       sidebarWidth: sidebarWidth ?? this.sidebarWidth,

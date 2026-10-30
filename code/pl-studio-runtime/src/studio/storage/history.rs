@@ -16,9 +16,13 @@ use sea_orm::{
     Statement, TransactionOptions, TransactionTrait, Value,
 };
 
-const HISTORY_SCHEMA_VERSION: i64 = 9;
+const HISTORY_SCHEMA_VERSION: i64 = 10;
 
 mod checkpoint;
+pub(crate) use checkpoint::SessionAccounting;
+#[cfg(test)]
+#[path = "history/legacy_usage.rs"]
+pub(super) mod legacy_usage;
 mod parent_report;
 mod producer;
 mod review_delivery;
@@ -188,6 +192,11 @@ pub(crate) struct EffectCommit<'a> {
     pub attempt: Option<&'a pl_core::thread::journal::AttemptUpdate>,
 }
 
+pub(crate) struct AccountingCommit<'a> {
+    pub facts: &'a crate::studio::thread_projection::PreparedAccounting,
+    pub material_changed: bool,
+}
+
 impl std::fmt::Debug for HistoryStore {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
@@ -350,44 +359,50 @@ impl HistoryStore {
         {
             return Ok(None);
         }
-        let writer =
-            self.state
-                .writer
-                .get_or_try_init(|| async {
-                    schema::inspect_existing(&self.state.path, &self.state.thread_id).await?;
-                    let parent = self
-                        .state
-                        .path
-                        .parent()
-                        .context("history database path has no parent directory")?;
-                    if matches!(mode, crate::studio::paths::SqliteFileMode::Create) {
-                        tokio::fs::create_dir_all(parent).await?;
-                    }
-                    let db = connect(&self.state.path, mode).await?;
-                    #[cfg(test)]
-                    if let Some((entered, release)) = self.state.init_gate.lock().await.take() {
-                        let _ = entered.send(());
-                        let _ = release.await;
-                    }
-                    let (database_id, schema_version) =
-                        match schema::initialize(&db, &self.state.thread_id).await {
-                            Ok(identity) => identity,
-                            Err(error) => {
-                                if let Err(cleanup) = db.close().await {
-                                    return Err(crate::studio::startup::cleanup_error(cleanup)
-                                        .context(error));
-                                }
-                                return Err(error);
-                            }
-                        };
-                    Ok::<HistoryConnection, anyhow::Error>(HistoryConnection {
-                        db,
-                        database_id,
-                        schema_version,
-                    })
-                })
-                .await?;
+        // First-connect migration state belongs only to this branch. Do not carry it through
+        // every current-history read/recovery poll frame, even when the writer is already open.
+        let writer = self
+            .state
+            .writer
+            .get_or_try_init(|| Box::pin(self.clone().initialize_writer(mode)))
+            .await?;
         Ok(Some(writer))
+    }
+
+    async fn initialize_writer(
+        self,
+        mode: crate::studio::paths::SqliteFileMode,
+    ) -> Result<HistoryConnection> {
+        schema::inspect_existing(&self.state.path, &self.state.thread_id).await?;
+        let parent = self
+            .state
+            .path
+            .parent()
+            .context("history database path has no parent directory")?;
+        if matches!(mode, crate::studio::paths::SqliteFileMode::Create) {
+            tokio::fs::create_dir_all(parent).await?;
+        }
+        let db = connect(&self.state.path, mode).await?;
+        #[cfg(test)]
+        if let Some((entered, release)) = self.state.init_gate.lock().await.take() {
+            let _ = entered.send(());
+            let _ = release.await;
+        }
+        let (database_id, schema_version) =
+            match schema::initialize(&db, &self.state.thread_id).await {
+                Ok(identity) => identity,
+                Err(error) => {
+                    if let Err(cleanup) = db.close().await {
+                        return Err(crate::studio::startup::cleanup_error(cleanup).context(error));
+                    }
+                    return Err(error);
+                }
+            };
+        Ok(HistoryConnection {
+            db,
+            database_id,
+            schema_version,
+        })
     }
 
     /// Atomically applies one immutable writer batch and advances its fixed waterline.
@@ -434,7 +449,9 @@ impl HistoryStore {
         write_seq: u64,
         commit: EffectCommit<'_>,
     ) -> Result<()> {
-        self.commit_inner(write_seq, commit, None).await
+        self.commit_inner(write_seq, commit, None, None)
+            .await
+            .map(|_| ())
     }
 
     /// Publishes history and the matching latest recovery state in one transaction.
@@ -443,16 +460,24 @@ impl HistoryStore {
         checkpoint: &pl_core::thread::ThreadCheckpoint,
         effect: &pl_core::thread::ThreadEffectBatch,
         commit: EffectCommit<'_>,
-    ) -> Result<()> {
+        accounting: AccountingCommit<'_>,
+    ) -> Result<Option<SessionAccounting>> {
         ensure!(
             checkpoint.thread_id == self.state.thread_id
                 && effect.thread_id == self.state.thread_id
                 && checkpoint.state_revision == effect.sequence
-                && checkpoint.history_fence == effect.sequence,
+                && checkpoint.history_fence == effect.sequence
+                && accounting.facts.thread_id == effect.thread_id
+                && accounting.facts.sequence == effect.sequence,
             "checkpoint and history effect identities differ"
         );
-        self.commit_inner(effect.sequence, commit, Some((checkpoint, effect)))
-            .await
+        self.commit_inner(
+            effect.sequence,
+            commit,
+            Some((checkpoint, effect)),
+            Some(accounting),
+        )
+        .await
     }
 
     async fn commit_inner(
@@ -463,7 +488,8 @@ impl HistoryStore {
             &pl_core::thread::ThreadCheckpoint,
             &pl_core::thread::ThreadEffectBatch,
         )>,
-    ) -> Result<()> {
+        accounting: Option<AccountingCommit<'_>>,
+    ) -> Result<Option<SessionAccounting>> {
         let EffectCommit {
             items,
             rolled_back_turns,
@@ -478,13 +504,28 @@ impl HistoryStore {
         ensure!(write_seq > 0, "history write sequence must be positive");
         let write_seq = integer(write_seq)?;
         let tx = begin_write(&self.writer().await?.db).await?;
-        let current = applied_write_seq(&tx).await?;
+        let (current, prior_context) = if checkpoint.is_some() {
+            let head = checkpoint::read_commit_head(&tx).await?;
+            (head.applied_write_seq, head.context)
+        } else {
+            (applied_write_seq(&tx).await?, None)
+        };
         if write_seq <= current {
             if let Some((checkpoint, _)) = checkpoint {
                 checkpoint::verify_committed(&tx, checkpoint, current).await?;
             }
+            // An interrupted caller may retry after its commit succeeded. Read the actual stored
+            // accounting only on this exceptional path, never return an unverified candidate.
+            let result = if accounting
+                .as_ref()
+                .is_some_and(|accounting| accounting.material_changed)
+            {
+                checkpoint::read_accounting(&tx, &self.state.thread_id).await?
+            } else {
+                None
+            };
             tx.rollback().await?;
-            return Ok(());
+            return Ok(result);
         }
         if checkpoint.is_some() {
             ensure!(
@@ -594,11 +635,32 @@ impl HistoryStore {
             .await?;
         }
         if let Some((checkpoint, effect)) = checkpoint {
-            checkpoint::write(&tx, checkpoint, effect.context.as_ref()).await?;
-            checkpoint::fold_costs(&tx, effect).await?;
+            checkpoint::write(
+                &tx,
+                checkpoint,
+                effect.context.as_ref(),
+                prior_context.as_ref(),
+            )
+            .await?;
+            if let Some(accounting) = &accounting {
+                checkpoint::fold_costs(&tx, accounting.facts).await?;
+            }
         }
+        let committed_accounting = if let Some((checkpoint, _)) = checkpoint
+            && accounting
+                .as_ref()
+                .is_some_and(|accounting| accounting.material_changed)
+        {
+            Some(SessionAccounting {
+                revision: checkpoint.state_revision,
+                has_unpriced_usage: checkpoint.state.usage_summary.pricing.incomplete,
+                purpose_costs: checkpoint::read_purpose_costs(&tx).await?,
+            })
+        } else {
+            None
+        };
         tx.commit().await?;
-        Ok(())
+        Ok(committed_accounting)
     }
 
     /// Reads the committed task identity and exact delivery, never a call-statistics projection.
@@ -2599,7 +2661,7 @@ mod storage_fault_tests {
         );
         item.ordinal = 41;
         item.revision = 3;
-        let checkpoint = ThreadCheckpoint::capture(
+        let mut checkpoint = ThreadCheckpoint::capture(
             thread.into(),
             1,
             ThreadSnapshot {
@@ -2608,6 +2670,7 @@ mod storage_fault_tests {
                 ..Default::default()
             },
         );
+        checkpoint.state.usage_summary.diagnostics.legacy_unknown = true;
         let effect = ThreadEffectBatch {
             thread_id: thread.into(),
             sequence: 1,
@@ -2638,20 +2701,63 @@ mod storage_fault_tests {
                     delivery_repairs: &[],
                     attempt: None,
                 },
+                crate::studio::storage::history::AccountingCommit {
+                    facts: &crate::studio::thread_projection::PreparedAccounting::prepare(&effect)?,
+                    material_changed: true,
+                },
             )
             .await?;
         // Reproduce a v8 DB which already completed *all* published lifecycle steps. The new
         // content step must still run without asking for a new execution-identity candidate.
         store.prepare_execution_identity(|_| Ok(())).await?;
+        let mut legacy =
+            serde_json::to_value(store.checkpoint().await?.context("saved checkpoint")?)?;
+        // The migration normalizes the legacy envelope, then inserts the current typed usage.
+        // Build that representation before taking the byte-exact post-upgrade expectation.
+        let current_usage = legacy["state"]["usageSummary"].clone();
+        legacy.sort_all_objects();
+        legacy["state"]["usageSummary"] = current_usage;
+        let canonical = serde_json::to_string(&legacy)?;
+        store
+            .writer()
+            .await?
+            .db
+            .execute_raw(statement(
+                "UPDATE session_checkpoint SET payload=?,payload_hash=? WHERE id=1",
+                vec![
+                    canonical.clone().into(),
+                    pl_core::context::content_hash(canonical.as_bytes()).into(),
+                ],
+            ))
+            .await?;
         let expected = history_facts(&store.writer().await?.db).await?;
+        legacy_usage::flatten(&mut legacy);
+        legacy["schemaVersion"] = serde_json::json!(5);
+        let encoded = serde_json::to_string(&legacy)?;
+        store
+            .writer()
+            .await?
+            .db
+            .execute_raw(statement(
+                "UPDATE session_checkpoint SET payload=?,payload_hash=? WHERE id=1",
+                vec![
+                    encoded.clone().into(),
+                    pl_core::context::content_hash(encoded.as_bytes()).into(),
+                ],
+            ))
+            .await?;
         store.writer().await?.db.execute_unprepared(
-            "DELETE FROM seaql_migrations WHERE version='m20261027_000001_history_retire_ordinals';
+            "DELETE FROM seaql_migrations WHERE version IN (
+                 'm20261027_000001_history_retire_ordinals',
+                 'm20261028_000001_history_metering_facts'
+             );
              UPDATE history_meta SET schema_version=8;
              CREATE TABLE history_ordinals (next_ordinal INTEGER NOT NULL);
              INSERT INTO history_ordinals VALUES(9000);
              CREATE TRIGGER reject_retire BEFORE UPDATE OF schema_version ON history_meta
              WHEN NEW.schema_version=9 BEGIN SELECT RAISE(ABORT,'injected retirement failure'); END;"
         ).await?;
+        let legacy_facts = history_facts(&store.writer().await?.db).await?;
         drop(store);
         let history = HistoryStore::open(&path, thread).await?;
         assert!(history.watermark().await.is_err());
@@ -2660,7 +2766,7 @@ mod storage_fault_tests {
         assert!(history.prepare_history_access().await.is_err());
         let inspect = connect_read_only(&path).await?;
         assert_eq!(schema::version(&inspect).await?, 8);
-        assert_eq!(history_facts(&inspect).await?, expected);
+        assert_eq!(history_facts(&inspect).await?, legacy_facts);
         assert!(
             sea_orm_migration::SchemaManager::new(&inspect)
                 .has_table("history_ordinals")
@@ -3772,7 +3878,7 @@ mod storage_fault_tests {
             },
             ..Default::default()
         };
-        state.usage_summary.inference_count = 1;
+        state.usage_summary.totals.inference_count = 1;
         state.usage_summary.applied_sequence = 1;
         let first = ThreadCheckpoint::capture("atomic".into(), 1, state.clone());
         let effect = ThreadEffectBatch {
@@ -3785,7 +3891,15 @@ mod storage_fault_tests {
             ..Default::default()
         };
         store
-            .commit_checkpoint_effect(&first, &effect, commit())
+            .commit_checkpoint_effect(
+                &first,
+                &effect,
+                commit(),
+                crate::studio::storage::history::AccountingCommit {
+                    facts: &crate::studio::thread_projection::PreparedAccounting::prepare(&effect)?,
+                    material_changed: true,
+                },
+            )
             .await?;
         // Reject any rewrite of the existing prefix: a normal append must only insert the suffix.
         store.writer().await?.db.execute_unprepared(
@@ -3794,7 +3908,7 @@ mod storage_fault_tests {
              CREATE TRIGGER fail_checkpoint BEFORE UPDATE ON session_checkpoint BEGIN SELECT RAISE(FAIL, 'injected checkpoint failure'); END;"
         ).await?;
         state.commit_sequence = 2;
-        state.usage_summary.inference_count = 2;
+        state.usage_summary.totals.inference_count = 2;
         state.usage_summary.applied_sequence = 2;
         state.context.revision = 2;
         state.context.records = vec![record("first")?, record("second")?].into();
@@ -3810,7 +3924,17 @@ mod storage_fault_tests {
         };
         assert!(
             store
-                .commit_checkpoint_effect(&second, &effect, commit())
+                .commit_checkpoint_effect(
+                    &second,
+                    &effect,
+                    commit(),
+                    crate::studio::storage::history::AccountingCommit {
+                        facts: &crate::studio::thread_projection::PreparedAccounting::prepare(
+                            &effect
+                        )?,
+                        material_changed: true
+                    },
+                )
                 .await
                 .is_err()
         );
@@ -3822,6 +3946,7 @@ mod storage_fault_tests {
                 .unwrap()
                 .state
                 .usage_summary
+                .totals
                 .inference_count,
             1
         );
@@ -3841,11 +3966,27 @@ mod storage_fault_tests {
             .execute_unprepared("DROP TRIGGER fail_checkpoint")
             .await?;
         store
-            .commit_checkpoint_effect(&second, &effect, commit())
+            .commit_checkpoint_effect(
+                &second,
+                &effect,
+                commit(),
+                crate::studio::storage::history::AccountingCommit {
+                    facts: &crate::studio::thread_projection::PreparedAccounting::prepare(&effect)?,
+                    material_changed: true,
+                },
+            )
             .await?;
         // A lost acknowledgement retries the same transaction without duplicating the append.
         store
-            .commit_checkpoint_effect(&second, &effect, commit())
+            .commit_checkpoint_effect(
+                &second,
+                &effect,
+                commit(),
+                crate::studio::storage::history::AccountingCommit {
+                    facts: &crate::studio::thread_projection::PreparedAccounting::prepare(&effect)?,
+                    material_changed: true,
+                },
+            )
             .await?;
         assert_eq!(store.watermark().await?, 2);
         assert_eq!(
@@ -3855,6 +3996,7 @@ mod storage_fault_tests {
                 .unwrap()
                 .state
                 .usage_summary
+                .totals
                 .inference_count,
             2
         );
@@ -3896,7 +4038,17 @@ mod storage_fault_tests {
                 ..Default::default()
             };
             store
-                .commit_checkpoint_effect(&checkpoint, &effect, commit())
+                .commit_checkpoint_effect(
+                    &checkpoint,
+                    &effect,
+                    commit(),
+                    crate::studio::storage::history::AccountingCommit {
+                        facts: &crate::studio::thread_projection::PreparedAccounting::prepare(
+                            &effect,
+                        )?,
+                        material_changed: true,
+                    },
+                )
                 .await?;
         }
         let after: i64 = store
@@ -4092,6 +4244,7 @@ mod storage_fault_tests {
             .context("checkpoint")?;
         let mut legacy: serde_json::Value =
             serde_json::from_str(&row.try_get::<String>("", "payload")?)?;
+        crate::studio::storage::history::legacy_usage::flatten(&mut legacy);
         legacy["schemaVersion"] = serde_json::json!(3);
         legacy["state"]
             .as_object_mut()
@@ -4190,6 +4343,7 @@ mod storage_fault_tests {
         let mut state = pl_core::thread::ThreadSnapshot::default();
         state
             .usage_summary
+            .pricing
             .estimated_costs
             .push(pl_core::thread::UsageCost {
                 currency: "USD".into(),
@@ -4249,6 +4403,7 @@ mod storage_fault_tests {
                 turn_id: "frozen-turn".into(),
                 accounting: receipt.billing.accounting.clone(),
                 model_observation: None,
+                timing: None,
                 implementation: Some("textSummary".into()),
                 error: None,
             };
@@ -4261,7 +4416,7 @@ mod storage_fault_tests {
                 )?
             } else {
                 let payload = compaction.into_payload()?;
-                assert_eq!(payload.version(), 3);
+                assert_eq!(payload.version(), 4);
                 payload
             };
             state.extensions.insert(
@@ -4280,7 +4435,7 @@ mod storage_fault_tests {
                 )?
             } else {
                 let payload = receipt.into_payload()?;
-                assert_eq!(payload.version(), 3);
+                assert_eq!(payload.version(), 4);
                 payload
             };
             state.extension_sequence += 1;
@@ -4315,7 +4470,7 @@ mod storage_fault_tests {
         for (id, old) in frozen_billing {
             let actual = &restored.state.extensions[&id];
             assert_eq!(actual.revision, old.revision);
-            assert_eq!(actual.payload.version(), 3);
+            assert_eq!(actual.payload.version(), 4);
             let expected =
                 crate::studio::producer_migration::normalize(&old.payload)?.unwrap_or(old.payload);
             assert_eq!(actual.payload, expected);
@@ -4367,7 +4522,10 @@ mod storage_fault_tests {
                 "NoCharge is not valid in a historical v2 billing/compaction payload"
             );
         }
-        assert_eq!(restored.state.usage_summary.estimated_costs[0].amount, 9.0);
+        assert_eq!(
+            restored.state.usage_summary.pricing.estimated_costs[0].amount,
+            9.0
+        );
         let saved = history.accounting().await?.unwrap().purpose_costs;
         assert_eq!(
             saved
@@ -4437,6 +4595,7 @@ mod storage_fault_tests {
             };
             let mut legacy =
                 serde_json::to_value(toml::from_str::<toml::Value>(&toml::to_string(&external)?)?)?;
+            crate::studio::storage::history::legacy_usage::flatten(&mut legacy);
             legacy["schemaVersion"] = serde_json::json!(schema);
             legacy["state"]["attempts"] = serde_json::json!([{
                 "turnId":"old", "attemptId":"old-attempt", "input":{"revision":0,"records":[]},

@@ -11,6 +11,65 @@ use anyhow::Result;
 use std::path::Path;
 
 impl StudioThreadFactory {
+    pub(super) async fn confirm_worktree_binding(
+        &self,
+        verified: &WorktreeLease,
+        usage: &WorkspaceUsageLease,
+        preparation: &crate::thread_assembler::WorkspacePreparationOwner,
+    ) -> Result<()> {
+        self.services
+            .store
+            .ensure_archive_execution_allowed(
+                &verified.workspace_id,
+                Some(&verified.owner_thread_id),
+            )
+            .await?;
+        self.services
+            .store
+            .ensure_agent_execution_allowed(&verified.owner_thread_id)
+            .await?;
+        let write = preparation.with_binding_admission(&verified.owner_thread_id, || {
+            self.services
+                .worktrees
+                .prepare_verified_binding(verified, usage)
+        })?;
+        let confirmed = self
+            .services
+            .worktrees
+            .confirm_prepared_binding(write)
+            .await?;
+        // The lease ACK is independent from archive/close admission. A durable seal may
+        // have arrived while the writer was saving this binding; it must win before
+        // Recovery retirement or handing the prepared owner back for publication.
+        self.services
+            .store
+            .ensure_archive_execution_allowed(
+                &verified.workspace_id,
+                Some(&verified.owner_thread_id),
+            )
+            .await?;
+        self.services
+            .store
+            .ensure_agent_execution_allowed(&verified.owner_thread_id)
+            .await?;
+        preparation.with_binding_admission(&verified.owner_thread_id, || {
+            self.services.recovery.confirm_worktree(
+                verified,
+                &confirmed,
+                || {
+                    self.services
+                        .worktrees
+                        .get(&confirmed.owner_thread_id)
+                        .as_ref()
+                        == Some(&confirmed)
+                },
+                |state| {
+                    self.services.product_events.emit_recovery_state(state);
+                },
+            );
+            Ok(())
+        })
+    }
     /// Restore execution seals and only unfinished physical delete seals before preparation opens.
     pub(in crate::studio) async fn restore_workspace_admission(
         &self,

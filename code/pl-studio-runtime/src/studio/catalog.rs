@@ -195,6 +195,15 @@ impl CatalogStore {
         entries
     }
 
+    pub(in crate::studio) fn archived_roots(&self) -> std::collections::HashSet<String> {
+        self.lock()
+            .entries
+            .iter()
+            .filter(|entry| entry.archived)
+            .map(|entry| entry.id.clone())
+            .collect()
+    }
+
     pub(in crate::studio) fn get(&self, thread_id: &str) -> Option<CatalogEntry> {
         self.lock()
             .entries

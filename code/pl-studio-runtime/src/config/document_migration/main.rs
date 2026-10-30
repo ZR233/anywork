@@ -1133,8 +1133,10 @@ enabled = false
         config.skills.external_dirs = vec!["/readonly/skills".into()];
         config.skills.disabled = vec!["paused-skill".into()];
         config.skills.auto_learn_min_tool_calls = 9;
+        config.ui.language = pl_protocol::studio::StudioUiLanguage::En;
         let old_models = config.models.clone();
         let old_routes = config.mode_model_routes.clone();
+        let old_ui = config.ui.clone();
 
         let mut old = toml::Value::try_from(MainV27::from_config(&config).unwrap()).unwrap();
         old.as_table_mut()
@@ -1169,6 +1171,7 @@ enabled = false
         assert_eq!(migrated.schema_version, 28);
         assert_eq!(migrated.models, old_models);
         assert_eq!(migrated.mode_model_routes, old_routes);
+        assert_eq!(migrated.ui, old_ui);
         assert!(!migrated.skills.enabled);
         assert!(!migrated.skills.auto_learn);
         assert!(!migrated.skills.system.enabled);

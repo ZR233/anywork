@@ -99,7 +99,7 @@ impl StudioChildResources for StudioThreadFactory {
                 .map_err(|error| resource_error("resolve child project root", error))?,
             }
         };
-        let session_root =
+        let (session_root, _) =
             crate::studio::agent_host::workspace_preparation::root_session_workspace_root(
                 &self.services.store,
                 &self.services.worktrees,
@@ -272,13 +272,13 @@ impl StudioChildResources for StudioThreadFactory {
             ("studio.creation-metadata".into(), request.metadata.clone()),
         ]);
         if let Some(worktree) = worktree {
-            let mut lease = worktree.lease;
-            lease.transition(crate::studio::agent_host::worktree_lease::WorktreeLeaseState::Active);
-            self.services
-                .worktrees
-                .record_durable(lease)
-                .await
-                .map_err(|error| resource_error("activate workspace lease", error))?;
+            self.confirm_worktree_binding(
+                &worktree.lease,
+                &workspace_usage,
+                &request.workspace_owner,
+            )
+            .await
+            .map_err(|error| resource_error("activate workspace lease", error))?;
         }
         self.services
             .product_events
@@ -382,17 +382,8 @@ impl StudioChildResources for StudioThreadFactory {
                 "generic release cannot authorize worktree deletion".into(),
             ));
         }
-        let mut lease = lease;
-        if lease.state != crate::studio::agent_host::worktree_lease::WorktreeLeaseState::Cleaned {
-            lease.transition(
-                crate::studio::agent_host::worktree_lease::WorktreeLeaseState::Preserved,
-            );
-            self.services
-                .worktrees
-                .record_durable(lease)
-                .await
-                .map_err(|error| resource_error("preserve published workspace ownership", error))?;
-        }
+        // Preserve returns only the runtime use. A healthy confirmed binding remains Active;
+        // failed preparations and explicit close retain their independent settlement owners.
         Ok(())
     }
 

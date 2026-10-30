@@ -124,8 +124,9 @@ List<StudioAgentView> _members({bool stoppedRunning = false}) => [
 Future<void> _pump(
   WidgetTester tester,
   AppGraph graph,
-  List<StudioAgentView> agents,
-) async {
+  List<StudioAgentView> agents, {
+  List<StudioRecoveryIssue> recoveryIssues = const [],
+}) async {
   await tester.pumpWidget(
     ProviderScope(
       overrides: [appGraphProvider.overrideWithValue(graph)],
@@ -138,6 +139,7 @@ Future<void> _pump(
           body: AgentSwitcherMenu(
             agents: agents,
             workspaceThreads: const [],
+            recoveryIssues: recoveryIssues,
             selectedThreadId: _rootId,
           ),
         ),
@@ -194,6 +196,65 @@ Future<void> _close(WidgetTester tester, AppGraph graph) async {
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+
+  testWidgets('恢复诊断不替换智能体状态，导航只按访问阻断禁用', (tester) async {
+    for (final impact in RecoveryIssueImpact.values) {
+      final graph = await _graph(tester, _AgentStopTransport());
+      final issue = StudioRecoveryIssue(
+        id: 'issue-${impact.name}',
+        scope: RecoveryIssueScope.thread,
+        category: RecoveryIssueCategory.repository,
+        impact: impact,
+        availableActions: const [],
+        threadId: _runningChild,
+        detail: 'Repository recovery is required',
+      );
+      await _pump(tester, graph, _members(), recoveryIssues: [issue]);
+      await _openMenu(tester);
+      expect(
+        find.text('Running'),
+        findsOneWidget,
+        reason: '${impact.name} 不覆盖 canonical 生命周期状态',
+      );
+      expect(
+        find.byWidgetPredicate(
+          (widget) =>
+              widget is Tooltip &&
+              (widget.message?.contains('Repository recovery is required') ??
+                  false),
+        ),
+        findsOneWidget,
+        reason: '${impact.name} 的具体诊断仍可查看',
+      );
+      final diagnosticIcon = tester.widget<Icon>(
+        find.byIcon(
+          impact == RecoveryIssueImpact.advisory
+              ? Icons.info_outline
+              : Icons.error_outline,
+        ),
+      );
+      expect(
+        diagnosticIcon.color,
+        impact == RecoveryIssueImpact.advisory
+            ? Theme.of(tester.element(find.byType(AgentSwitcherMenu)))
+                  .colorScheme
+                  .primary
+            : Theme.of(tester.element(find.byType(AgentSwitcherMenu)))
+                  .colorScheme
+                  .error,
+        reason: '${impact.name} 使用相应诊断等级颜色',
+      );
+      final row = tester.widget<MenuItemButton>(
+        find.byKey(StudioDriverKeys.agentRow(_runningChild)),
+      );
+      expect(
+        row.onPressed == null,
+        impact == RecoveryIssueImpact.accessBlocked,
+        reason: '仅 accessBlocked 禁止历史导航',
+      );
+      await _close(tester, graph);
+    }
+  });
 
   testWidgets('行内停止只停该行执行，不切页、不开会话、不建草稿', (tester) async {
     final transport = _AgentStopTransport();

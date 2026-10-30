@@ -535,8 +535,6 @@ PersistenceQueueSnapshot _persistenceQueueFromFrb(
           stateDurableRevision: thread.stateDurableRevision?.toInt(),
           historyAdmittedSequence: thread.historyAdmittedSequence?.toInt(),
           historyDurableSequence: thread.historyDurableSequence?.toInt(),
-          callsAdmittedSequence: thread.callsAdmittedSequence?.toInt(),
-          callsDurableSequence: thread.callsDurableSequence?.toInt(),
           pendingOperations: thread.pendingOperations.toInt(),
           pendingBytes: thread.pendingBytes.toInt(),
           oldestPendingAgeMillis: thread.oldestPendingAgeMillis?.toInt(),

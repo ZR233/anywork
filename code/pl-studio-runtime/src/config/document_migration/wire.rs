@@ -726,8 +726,20 @@ pub struct StudioLspConfig {
     pub servers: BTreeMap<String, LspUserServerConfig>,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum StudioUiLanguage {
+    System,
+    Zh,
+    En,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct StudioUiConfig {
+    // Optional so historical documents keep their original shape; the domain
+    // supplies System when this additive preference was not present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<StudioUiLanguage>,
     #[serde(default = "default_true")]
     pub follow_active_turn: bool,
     #[serde(default)]
@@ -743,6 +755,7 @@ pub struct StudioUiConfig {
 impl Default for StudioUiConfig {
     fn default() -> Self {
         Self {
+            language: None,
             follow_active_turn: true,
             compact_timeline: false,
             sidebar_width: None,

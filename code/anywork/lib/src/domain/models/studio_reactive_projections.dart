@@ -31,6 +31,7 @@ class StudioContextProjection {
     required this.estimatedCacheSavings,
     required this.hasUnpricedUsage,
     required this.hasIncompleteUsage,
+    this.usageDiagnostics = const ThreadUsageDiagnostics.empty(),
   });
 
   factory StudioContextProjection.fromState(StudioState state) {
@@ -81,6 +82,7 @@ class StudioContextProjection {
       estimatedCacheSavings: runtime.estimatedCacheSavings,
       hasUnpricedUsage: runtime.hasUnpricedUsage,
       hasIncompleteUsage: runtime.hasIncompleteUsage,
+      usageDiagnostics: runtime.usageDiagnostics,
     );
   }
 
@@ -107,6 +109,7 @@ class StudioContextProjection {
   final List<RuntimeCostView> estimatedCacheSavings;
   final bool hasUnpricedUsage;
   final bool hasIncompleteUsage;
+  final ThreadUsageDiagnostics usageDiagnostics;
 
   bool get hasUsage =>
       inferenceCount > 0 || promptTokens > 0 || completionTokens > 0;
@@ -133,7 +136,8 @@ class StudioContextProjection {
             listEquals(estimatedCosts, other.estimatedCosts) &&
             listEquals(estimatedCacheSavings, other.estimatedCacheSavings) &&
             hasUnpricedUsage == other.hasUnpricedUsage &&
-            hasIncompleteUsage == other.hasIncompleteUsage;
+            hasIncompleteUsage == other.hasIncompleteUsage &&
+            usageDiagnostics == other.usageDiagnostics;
   }
 
   @override
@@ -157,6 +161,7 @@ class StudioContextProjection {
     Object.hashAll(estimatedCacheSavings),
     hasUnpricedUsage,
     hasIncompleteUsage,
+    usageDiagnostics,
   );
 }
 

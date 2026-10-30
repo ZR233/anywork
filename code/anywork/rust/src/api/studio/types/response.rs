@@ -150,10 +150,6 @@ pub struct BridgeThreadPersistenceSnapshot {
     pub history_admitted_sequence: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub history_durable_sequence: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub calls_admitted_sequence: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub calls_durable_sequence: Option<u64>,
     pub pending_operations: u64,
     pub pending_bytes: u64,
     pub oldest_pending_age_millis: Option<u64>,

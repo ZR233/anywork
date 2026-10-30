@@ -1,10 +1,47 @@
 //! Recovery issues and scan lifecycle share one owner and revision.
-use crate::studio::{StudioRecoveryIssue, ids::unix_seconds};
+use crate::studio::agent_host::worktree_lease::{WorktreeLease, WorktreeLeaseOwnerKind};
+use crate::studio::{StudioRecoveryIssue, StudioRecoveryWorktreeOwner, ids::unix_seconds};
 use pl_protocol::{ObservedResource, ObservedResourceCommand, StateError, StateOperation};
 use std::{
     collections::BTreeSet,
     sync::{Arc, Mutex},
 };
+
+#[derive(Debug)]
+enum RemovedIssue {
+    Issue(String),
+    Worktree(Box<WorktreeLease>),
+}
+
+impl RemovedIssue {
+    fn matches(&self, issue: &StudioRecoveryIssue) -> bool {
+        match self {
+            Self::Issue(id) => *id == issue.id,
+            Self::Worktree(lease) => {
+                issue.id == format!("worktree-lease-{}", lease.owner_thread_id)
+                    && issue.thread_id.as_deref() == Some(&lease.owner_thread_id)
+                    && issue.workspace_id.as_deref() == Some(&lease.workspace_id)
+                    && issue.worktree.as_ref().is_some_and(|preview| {
+                        preview.owner_thread_id == lease.owner_thread_id
+                            && preview.owner_kind
+                                == match lease.owner_kind {
+                                    WorktreeLeaseOwnerKind::Session => {
+                                        StudioRecoveryWorktreeOwner::Session
+                                    }
+                                    WorktreeLeaseOwnerKind::Child => {
+                                        StudioRecoveryWorktreeOwner::Child
+                                    }
+                                }
+                            && preview.lease_revision == lease.revision
+                            && preview.path == lease.path
+                            && preview.repository_root == lease.repository_root
+                            && preview.base_commit == lease.base_commit
+                            && preview.state == lease.state.label()
+                    })
+            }
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 enum ScanState {
@@ -16,7 +53,7 @@ enum ScanState {
 #[derive(Debug)]
 struct State {
     issues: Vec<StudioRecoveryIssue>,
-    removed: BTreeSet<String>,
+    removed: Vec<RemovedIssue>,
     retired_threads: BTreeSet<String>,
     scan: ScanState,
     revision: u64,
@@ -193,7 +230,7 @@ impl StudioRecoveryRegistry {
         Self {
             inner: Arc::new(Mutex::new(State {
                 issues: Vec::new(),
-                removed: BTreeSet::new(),
+                removed: Vec::new(),
                 retired_threads: BTreeSet::new(),
                 scan: ScanState::Idle,
                 revision: 0,
@@ -239,7 +276,7 @@ impl StudioRecoveryRegistry {
             issue.id.starts_with("tool-refresh:") || issue.id.starts_with("tool-cleanup:")
         });
         for issue in issues {
-            if !inner.removed.contains(&issue.id)
+            if !inner.removed.iter().any(|removed| removed.matches(&issue))
                 && !issue.thread_id.as_ref().is_some_and(|id| {
                     inner.retired_threads.contains(id) && !is_worktree_issue(&issue)
                 })
@@ -271,6 +308,35 @@ impl StudioRecoveryRegistry {
         inner.touch();
         publish(inner.snapshot());
     }
+
+    /// Retire only the binding versions covered by successful durable confirmation.
+    /// The scan tombstones also cover Active -> Active, where revision filtering alone
+    /// cannot prevent an older physical observation from reappearing.
+    pub(in crate::studio) fn confirm_worktree(
+        &self,
+        verified: &WorktreeLease,
+        confirmed: &WorktreeLease,
+        is_current: impl FnOnce() -> bool,
+        publish: impl FnOnce(ObservedResource<Vec<StudioRecoveryIssue>>),
+    ) {
+        let mut inner = self.inner.lock().expect("recovery lock poisoned");
+        if !is_current() {
+            return;
+        }
+        for lease in [verified, confirmed] {
+            let removed = RemovedIssue::Worktree(Box::new(lease.clone()));
+            inner.issues.retain(|issue| !removed.matches(issue));
+            if matches!(inner.scan, ScanState::Checking)
+                && !inner.removed.iter().any(|previous| {
+                    matches!(previous, RemovedIssue::Worktree(previous) if previous.as_ref() == lease)
+                })
+            {
+                inner.removed.push(removed);
+            }
+        }
+        inner.touch();
+        publish(inner.snapshot());
+    }
     pub(crate) fn retire_thread(
         &self,
         thread_id: &str,
@@ -285,7 +351,7 @@ impl StudioRecoveryRegistry {
     }
     pub fn remove(&self, issue_id: &str) -> ObservedResource<Vec<StudioRecoveryIssue>> {
         let mut inner = self.inner.lock().expect("recovery lock poisoned");
-        inner.removed.insert(issue_id.into());
+        inner.removed.push(RemovedIssue::Issue(issue_id.into()));
         inner.issues.retain(|current| current.id != issue_id);
         inner.touch();
         inner.snapshot()
@@ -298,5 +364,128 @@ fn is_worktree_issue(issue: &StudioRecoveryIssue) -> bool {
 impl Default for StudioRecoveryRegistry {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod binding_confirmation_tests {
+    use super::*;
+    use crate::studio::agent_host::worktree_lease::{WorktreeLeaseOwnerKind, WorktreeLeaseState};
+    use crate::{
+        StudioRecoveryImpact, StudioRecoveryIssueAction, StudioRecoveryIssueCategory,
+        StudioRecoveryIssueScope, StudioRecoveryWorktreeOwner, StudioWorktreeInspection,
+        StudioWorktreeRecoveryPreview,
+    };
+
+    fn lease(id: &str) -> WorktreeLease {
+        WorktreeLease {
+            revision: 4,
+            state: WorktreeLeaseState::Active,
+            owner_kind: WorktreeLeaseOwnerKind::Child,
+            owner_thread_id: id.into(),
+            root_thread_id: "root".into(),
+            workspace_id: "project".into(),
+            ssh_alias: None,
+            repository_root: "/repo".into(),
+            path: format!("/repo/{id}"),
+            base_commit: "a".repeat(40),
+        }
+    }
+
+    fn issue(lease: &WorktreeLease) -> StudioRecoveryIssue {
+        StudioRecoveryIssue {
+            id: format!("worktree-lease-{}", lease.owner_thread_id),
+            scope: StudioRecoveryIssueScope::Thread,
+            category: StudioRecoveryIssueCategory::Repository,
+            impact: StudioRecoveryImpact::Advisory,
+            action: StudioRecoveryIssueAction::Retry,
+            workspace_id: Some(lease.workspace_id.clone()),
+            thread_id: Some(lease.owner_thread_id.clone()),
+            message: "old physical observation".into(),
+            worktree: Some(StudioWorktreeRecoveryPreview {
+                inspection: StudioWorktreeInspection::Missing,
+                owner_kind: StudioRecoveryWorktreeOwner::Child,
+                owner_thread_id: lease.owner_thread_id.clone(),
+                lease_revision: lease.revision,
+                state: lease.state.label().into(),
+                repository_root: lease.repository_root.clone(),
+                path: lease.path.clone(),
+                branch: None,
+                base_commit: lease.base_commit.clone(),
+                head_commit: None,
+                dirty: None,
+                changed_files: None,
+            }),
+        }
+    }
+
+    #[test]
+    fn confirmation_retires_only_verified_versions_and_blocks_same_revision_scan_revival() {
+        let registry = StudioRecoveryRegistry::new();
+        let active = lease("child");
+        let old = issue(&active);
+        let sibling = issue(&lease("sibling"));
+        let mut other_repository_problem = old.clone();
+        other_repository_problem.id = "execution-workspace:child".into();
+        other_repository_problem.worktree = None;
+        registry.replace(vec![
+            old.clone(),
+            sibling.clone(),
+            other_repository_problem.clone(),
+        ]);
+        registry.begin();
+        registry.confirm_worktree(&active, &active, || false, |_| panic!("stale confirmation"));
+        assert_eq!(registry.snapshot().len(), 3);
+        registry.confirm_worktree(&active, &active, || true, |_| {});
+        assert_eq!(registry.snapshot().len(), 2);
+        // Physical inspection began before successful Active -> Active confirmation.
+        registry.replace(vec![old, sibling.clone(), other_repository_problem.clone()]);
+        assert_eq!(registry.snapshot().len(), 2);
+        assert!(
+            registry
+                .snapshot()
+                .iter()
+                .any(|issue| issue.id == sibling.id)
+        );
+        assert!(
+            registry
+                .snapshot()
+                .iter()
+                .any(|issue| issue.id == other_repository_problem.id)
+        );
+
+        registry.begin();
+        let mut preserved = active.clone();
+        preserved.state = WorktreeLeaseState::Preserved;
+        let mut confirmed = preserved.clone();
+        confirmed.transition(WorktreeLeaseState::Active);
+        registry.confirm_worktree(&preserved, &confirmed, || true, |_| {});
+        let mut newer = confirmed.clone();
+        newer.transition(WorktreeLeaseState::Preserved);
+        let mut different_binding = confirmed.clone();
+        different_binding.path = "/replacement".into();
+        registry.replace(vec![
+            issue(&preserved),
+            issue(&confirmed),
+            issue(&newer),
+            issue(&different_binding),
+        ]);
+        assert_eq!(registry.snapshot().len(), 2);
+        assert!(
+            registry
+                .snapshot()
+                .iter()
+                .any(|issue| { issue.worktree.as_ref().unwrap().lease_revision == newer.revision })
+        );
+        assert!(
+            registry
+                .snapshot()
+                .iter()
+                .any(|issue| { issue.worktree.as_ref().unwrap().path == "/replacement" })
+        );
+        // A genuinely later scan is allowed to publish new physical failures.
+        registry.begin();
+        registry.replace(vec![issue(&confirmed)]);
+        assert_eq!(registry.snapshot().len(), 1);
     }
 }

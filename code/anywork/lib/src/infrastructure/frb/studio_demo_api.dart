@@ -2555,6 +2555,7 @@ class DemoStudioTransport extends StudioTransport
       switch (command) {
         GeneralFollowActiveTurnCommand() ||
         GeneralCompactTimelineCommand() ||
+        GeneralLanguageCommand() ||
         GeneralSidebarWidthCommand() ||
         GeneralPinnedThreadIdsCommand() ||
         GeneralPinnedProjectIdsCommand() => EffectPoint.immediate,
@@ -2635,6 +2636,7 @@ class DemoStudioTransport extends StudioTransport
       s.skills.autoLearnMinToolCalls,
     ],
     [
+      s.general.language,
       s.general.followActiveTurn,
       s.general.compactTimeline,
       s.general.sidebarWidth,
@@ -2947,6 +2949,8 @@ class DemoStudioTransport extends StudioTransport
         _general = _general.copyWith(followActiveTurn: value);
       case GeneralCompactTimelineCommand(:final value):
         _general = _general.copyWith(compactTimeline: value);
+      case GeneralLanguageCommand(:final value):
+        _general = _general.copyWith(language: value);
       case GeneralSidebarWidthCommand(:final value):
         _general = _general.copyWith(sidebarWidth: value ?? 336);
       case GeneralPinnedThreadIdsCommand(:final value):

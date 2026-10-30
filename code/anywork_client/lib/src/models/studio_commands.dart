@@ -1,4 +1,5 @@
 import 'delegation_models.dart';
+import 'settings_models.dart';
 
 enum AccountSecretAction { preserve, replace, clear }
 
@@ -157,6 +158,11 @@ class GeneralFollowActiveTurnCommand extends SettingsFieldCommand {
 class GeneralCompactTimelineCommand extends SettingsFieldCommand {
   const GeneralCompactTimelineCommand(this.value);
   final bool value;
+}
+
+class GeneralLanguageCommand extends SettingsFieldCommand {
+  const GeneralLanguageCommand(this.value);
+  final UiLanguage value;
 }
 
 class GeneralSidebarWidthCommand extends SettingsFieldCommand {

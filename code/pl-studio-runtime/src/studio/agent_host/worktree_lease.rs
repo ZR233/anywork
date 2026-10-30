@@ -288,27 +288,36 @@ impl WorktreeLeaseOwner {
     }
 
     /// Revision admission and queue order share one short, IO-free critical section.
-    pub(in crate::studio) fn record(&self, lease: WorktreeLease) -> Result<()> {
-        self.record_ticket(lease).map(|_| ())
-    }
-
     fn record_ticket(&self, lease: WorktreeLease) -> Result<u64> {
         let mut state = self.state.lock().expect("worktree lease lock poisoned");
+        self.record_ticket_locked(&mut state, lease)
+    }
+
+    fn record_ticket_locked(
+        &self,
+        state: &mut LeaseOwnerState,
+        lease: WorktreeLease,
+    ) -> Result<u64> {
         let entries = &mut state.entries;
         if let Some(previous) = entries.get(&lease.owner_thread_id) {
             if previous.lease == lease {
-                return Ok(previous.ticket);
+                if previous.ticket != 0 {
+                    return Ok(previous.ticket);
+                }
+                // Hydration proves the old database fact, not an ACK from this writer.
+                // Re-admit that same value without changing its business revision.
+            } else {
+                anyhow::ensure!(
+                    lease.revision
+                        == previous
+                            .lease
+                            .revision
+                            .checked_add(1)
+                            .ok_or_else(|| anyhow::anyhow!("worktree lease revision exhausted"))?,
+                    "worktree lease revision conflict for {}",
+                    lease.owner_thread_id
+                );
             }
-            anyhow::ensure!(
-                lease.revision
-                    == previous
-                        .lease
-                        .revision
-                        .checked_add(1)
-                        .ok_or_else(|| anyhow::anyhow!("worktree lease revision exhausted"))?,
-                "worktree lease revision conflict for {}",
-                lease.owner_thread_id
-            );
         } else {
             anyhow::ensure!(
                 lease.state == WorktreeLeaseState::Prepared,
@@ -326,6 +335,65 @@ impl WorktreeLeaseOwner {
         let ticket = self.record_ticket(lease)?;
         self.writer.flush_through(ticket).await?;
         Ok(())
+    }
+
+    /// Failed root preparation retains its original binding, including when factory
+    /// confirmation advanced that same binding after the caller captured it.
+    pub(in crate::studio) async fn preserve_failed_session_binding(
+        &self,
+        expected: &WorktreeLease,
+    ) -> Result<WorktreeLease> {
+        expected.validate_identity()?;
+        anyhow::ensure!(
+            expected.owner_kind == WorktreeLeaseOwnerKind::Session
+                && matches!(
+                    expected.state,
+                    WorktreeLeaseState::Prepared
+                        | WorktreeLeaseState::Active
+                        | WorktreeLeaseState::Preserved
+                ),
+            "failed session retention requires a root session binding"
+        );
+        let (retained, ticket) = {
+            let mut state = self.state.lock().expect("worktree lease lock poisoned");
+            let current = &state
+                .entries
+                .get(&expected.owner_thread_id)
+                .ok_or_else(|| anyhow::anyhow!("failed session binding no longer exists"))?
+                .lease;
+            let mut binding = expected.clone();
+            binding.revision = current.revision;
+            binding.state = current.state;
+            anyhow::ensure!(
+                binding == *current
+                    && current.revision >= expected.revision
+                    && (current.revision > expected.revision || current.state == expected.state),
+                "failed session binding changed"
+            );
+            anyhow::ensure!(
+                !state.workspace.is_retiring(&expected.owner_thread_id)
+                    && !state.workspace.is_removing(&expected.owner_thread_id)
+                    && matches!(
+                        current.state,
+                        WorktreeLeaseState::Prepared
+                            | WorktreeLeaseState::Active
+                            | WorktreeLeaseState::Preserved
+                    ),
+                "retiring, cleaned or cleanup-requested session cannot be retained"
+            );
+            let mut retained = current.clone();
+            if retained.state != WorktreeLeaseState::Preserved {
+                retained.revision = retained
+                    .revision
+                    .checked_add(1)
+                    .ok_or_else(|| anyhow::anyhow!("worktree lease revision exhausted"))?;
+                retained.state = WorktreeLeaseState::Preserved;
+            }
+            let ticket = self.record_ticket_locked(&mut state, retained.clone())?;
+            (retained, ticket)
+        };
+        self.writer.flush_through(ticket).await?;
+        Ok(retained)
     }
 }
 

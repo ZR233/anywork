@@ -21,7 +21,7 @@ void main() {
         final efforts = <int, Iterable<StatisticsEffortSummary>>{
           0: List.generate(129, (index) => _effort('effort-$index')),
         };
-        final history = List.generate(129, (index) => _sample(index));
+        final history = List.generate(3000, (index) => _sample(index));
         final initial = _publication(
           summaries: summaries,
           history: history,
@@ -52,13 +52,15 @@ void main() {
               state.snapshot?.publicationRevision == 1,
         );
         expect(baseline.snapshot!.summaries, hasLength(129));
-        expect(baseline.snapshot!.history, hasLength(129));
+        expect(baseline.snapshot!.history, hasLength(3000));
         expect(
           baseline.snapshot!.summaries.first.effortBreakdowns,
           hasLength(129),
         );
         expect(connection.summaryOffsets, [0, 128]);
-        expect(connection.historyOffsets, [0, 128]);
+        expect(connection.historyOffsets, [
+          for (var offset = 0; offset < 3000; offset += 128) offset,
+        ]);
         expect(
           connection.effortReads
               .where((read) => read.$1 == 0)
@@ -81,8 +83,27 @@ void main() {
               state.snapshot?.publicationRevision == 2,
         );
         expect(statusUpdate.snapshot!.statisticsPending, isTrue);
-        expect(statusUpdate.snapshot!.summaries, baseline.snapshot!.summaries);
-        expect(statusUpdate.snapshot!.history, baseline.snapshot!.history);
+        expect(
+          statusUpdate.snapshot!.summaries,
+          same(baseline.snapshot!.summaries),
+        );
+        expect(
+          statusUpdate.snapshot!.history,
+          same(baseline.snapshot!.history),
+        );
+        expect(
+          () => statusUpdate.snapshot!.history.clear(),
+          throwsUnsupportedError,
+        );
+        expect(
+          () => statusUpdate.snapshot!.summaries.clear(),
+          throwsUnsupportedError,
+        );
+        final republished = baseline.snapshot!.withPublication(
+          statusOnly.identity,
+        );
+        expect(republished.history, same(baseline.snapshot!.history));
+        expect(republished.summaries, same(baseline.snapshot!.summaries));
         expect((
           connection.scopeOpenCalls,
           connection.summaryOffsets.length,
@@ -90,6 +111,30 @@ void main() {
           connection.effortReads.length,
         ), materialReads);
         expect(connection.acknowledgedSequences, [1, 2]);
+
+        final changedHistory = [_sample(500)];
+        connection.emit(
+          _publication(
+            sequence: 3,
+            publicationRevision: 3,
+            historyRevision: 2,
+            summaries: summaries,
+            history: changedHistory,
+            efforts: efforts,
+          ),
+        );
+        final changed = await _waitForState(
+          repository,
+          (state) => state.snapshot?.publicationRevision == 3,
+        );
+        expect(changed.snapshot!.summaries, same(baseline.snapshot!.summaries));
+        expect(
+          changed.snapshot!.history,
+          isNot(same(baseline.snapshot!.history)),
+        );
+        expect(changed.snapshot!.history.single.callId, 'call-500');
+        expect(baseline.snapshot!.history, hasLength(3000));
+        expect(connection.acknowledgedSequences, [1, 2, 3]);
 
         demand.release();
         expect(
@@ -911,6 +956,13 @@ StatisticsEffortSummary _effort(String effort) => StatisticsEffortSummary(
 );
 
 StatisticsSample _sample(int index, {String? modelId}) => StatisticsSample(
+  threadId: 'thread-statistics',
+  callId: 'call-$index',
+  purpose: 'primary',
+  firstOutputSource: FirstOutputSource.incremental,
+  usageStatus: UsageReportStatus.reported,
+  ttftAvailability: MetricAvailability.available,
+  throughputAvailability: MetricAvailability.available,
   completedAt: DateTime.utc(2026, 3, 1).add(Duration(seconds: index)),
   accountId: 'account-$index',
   accountDisplayName: 'Account $index',

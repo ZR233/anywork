@@ -353,9 +353,21 @@ pub enum StudioMcpServerConfiguration {
     MissingCredential,
 }
 
+/// Persisted interface language preference, independent of conversation content.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum StudioUiLanguage {
+    #[default]
+    System,
+    Zh,
+    En,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StudioGeneralSettings {
+    #[serde(default)]
+    pub language: StudioUiLanguage,
     pub follow_active_turn: bool,
     pub compact_timeline: bool,
     #[serde(default)]

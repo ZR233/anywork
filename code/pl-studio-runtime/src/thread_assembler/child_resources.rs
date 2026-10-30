@@ -11,6 +11,13 @@ use std::sync::{
 struct PreparationResources {
     usage: Option<super::WorkspaceUsageLease>,
     review: Option<crate::studio::thread_factory::VerifiedLocalResume>,
+    admission: Option<PreparationAdmission>,
+}
+#[derive(Debug, Clone)]
+struct PreparationAdmission {
+    registry: std::sync::Weak<super::Registry>,
+    id: String,
+    cancellation: tokio_util::sync::CancellationToken,
 }
 #[derive(Debug, Clone, Default)]
 pub struct WorkspacePreparationOwner(Arc<std::sync::Mutex<PreparationResources>>);
@@ -21,7 +28,60 @@ impl WorkspacePreparationOwner {
         Self(Arc::new(std::sync::Mutex::new(PreparationResources {
             usage: Some(proof.usage()),
             review: Some(proof),
+            admission: None,
         })))
+    }
+    pub(crate) fn bind_admission(
+        &self,
+        assembler: &super::StudioThreadAssembler,
+        id: &str,
+        cancellation: &tokio_util::sync::CancellationToken,
+    ) -> Result<(), ThreadAssemblyError> {
+        let mut resources = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if resources.admission.is_some() {
+            return Err(ThreadAssemblyError::Identity(id.into()));
+        }
+        resources.admission = Some(PreparationAdmission {
+            registry: Arc::downgrade(&assembler.0),
+            id: id.into(),
+            cancellation: cancellation.clone(),
+        });
+        Ok(())
+    }
+    /// Only synchronous, IO-free handoffs may run here. Archive sealing uses this same lock.
+    pub(crate) fn with_binding_admission<T>(
+        &self,
+        id: &str,
+        handoff: impl FnOnce() -> anyhow::Result<T>,
+    ) -> anyhow::Result<T> {
+        let admission = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .admission
+            .clone()
+            .ok_or(ThreadAssemblyError::Closed)?;
+        if admission.id != id {
+            return Err(ThreadAssemblyError::Identity(id.into()).into());
+        }
+        let registry = admission
+            .registry
+            .upgrade()
+            .ok_or(ThreadAssemblyError::Closed)?;
+        let state = registry.state();
+        if state.closing
+            || state.sealed_agents.contains_key(id)
+            || admission.cancellation.is_cancelled()
+            || !(state.creating.contains_key(id)
+                || state.preparing_children.contains_key(id)
+                || state.unpublished_children.contains_key(id))
+        {
+            return Err(ThreadAssemblyError::Closed.into());
+        }
+        handoff()
     }
     pub(crate) fn take_review(&self) -> Option<crate::studio::thread_factory::VerifiedLocalResume> {
         self.0

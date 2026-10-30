@@ -2993,7 +2993,7 @@ abstract class AppLocalizations {
   /// No description provided for @statisticsSpeed.
   ///
   /// In en, this message translates to:
-  /// **'Output TPS (incl. first token)'**
+  /// **'Output TPS (incl. first content)'**
   String get statisticsSpeed;
 
   /// No description provided for @statisticsSamples.
@@ -3011,7 +3011,7 @@ abstract class AppLocalizations {
   /// No description provided for @statisticsAverageTtft.
   ///
   /// In en, this message translates to:
-  /// **'Average first token'**
+  /// **'Average first content'**
   String get statisticsAverageTtft;
 
   /// No description provided for @statisticsAverageResponse.
@@ -3029,7 +3029,7 @@ abstract class AppLocalizations {
   /// No description provided for @statisticsDecode.
   ///
   /// In en, this message translates to:
-  /// **'After first token'**
+  /// **'After first content'**
   String get statisticsDecode;
 
   /// No description provided for @statisticsTotalResponse.
@@ -3041,13 +3041,13 @@ abstract class AppLocalizations {
   /// No description provided for @statisticsTtftSampleCount.
   ///
   /// In en, this message translates to:
-  /// **'{count} first-token samples'**
+  /// **'{count} first-content samples'**
   String statisticsTtftSampleCount(int count);
 
   /// No description provided for @settingsStatisticsThroughputNote.
   ///
   /// In en, this message translates to:
-  /// **'Output TPS = provider-confirmed output tokens × 1000 ÷ total response time (including the first-token wait). Total response runs from the request that produced the result to its normalized terminal event; failed retries, backoff, tool execution and post-terminal collection or saving are excluded. The first token is the first non-empty text, reasoning or tool-input increment, and output may include reasoning tokens without double counting. The after-first-token time is diagnostic, not hardware decode time. Samples from the previous statistics definition were discarded; raw calls and billing remain.'**
+  /// **'Output TPS = provider-reported output tokens × 1000 ÷ total response time (including the first-content wait). Total response runs from the request that produced the result to its normalized terminal event; failed retries, backoff, tool execution and post-terminal collection or saving are excluded. First content is the client’s first observation of non-empty text, reasoning, tool-input increments or complete tool input; the source is shown per call, not claimed as the provider’s first token. Output may include reasoning tokens without double counting. Time after first content is diagnostic, may be 0, and is not hardware decode time. Missing historical counters, sources and timing remain unknown, not 0.'**
   String get settingsStatisticsThroughputNote;
 
   /// No description provided for @statusTurnQueued.
@@ -5195,6 +5195,24 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Keep new timeline output pinned to the latest turn.'**
   String get settingsFollowActiveTurnSubtitle;
+
+  /// No description provided for @settingsInterfaceLanguage.
+  ///
+  /// In en, this message translates to:
+  /// **'Interface language'**
+  String get settingsInterfaceLanguage;
+
+  /// No description provided for @settingsInterfaceLanguageSubtitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Change the interface language without changing conversation content.'**
+  String get settingsInterfaceLanguageSubtitle;
+
+  /// No description provided for @settingsLanguageSystem.
+  ///
+  /// In en, this message translates to:
+  /// **'Follow system'**
+  String get settingsLanguageSystem;
 
   /// No description provided for @settingsCompactTimeline.
   ///
@@ -10427,6 +10445,354 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'None currently available'**
   String get recoveryNoAvailableActions;
+
+  /// No description provided for @usagePurpose.
+  ///
+  /// In en, this message translates to:
+  /// **'Purpose'**
+  String get usagePurpose;
+
+  /// No description provided for @usageUnknown.
+  ///
+  /// In en, this message translates to:
+  /// **'Unknown'**
+  String get usageUnknown;
+
+  /// No description provided for @usageThreadId.
+  ///
+  /// In en, this message translates to:
+  /// **'Thread'**
+  String get usageThreadId;
+
+  /// No description provided for @usageCallId.
+  ///
+  /// In en, this message translates to:
+  /// **'Call'**
+  String get usageCallId;
+
+  /// No description provided for @usageFirstOutput.
+  ///
+  /// In en, this message translates to:
+  /// **'First content source'**
+  String get usageFirstOutput;
+
+  /// No description provided for @usageSourceUnobserved.
+  ///
+  /// In en, this message translates to:
+  /// **'No visible content observed'**
+  String get usageSourceUnobserved;
+
+  /// No description provided for @usageSourceIncremental.
+  ///
+  /// In en, this message translates to:
+  /// **'Incremental content'**
+  String get usageSourceIncremental;
+
+  /// No description provided for @usageSourceCompletedToolInput.
+  ///
+  /// In en, this message translates to:
+  /// **'First complete tool input observed'**
+  String get usageSourceCompletedToolInput;
+
+  /// No description provided for @usageSourceLegacyUnknown.
+  ///
+  /// In en, this message translates to:
+  /// **'Historical source unknown'**
+  String get usageSourceLegacyUnknown;
+
+  /// No description provided for @usageFirstOutputNote.
+  ///
+  /// In en, this message translates to:
+  /// **'A completed item marks the client’s first observation of complete tool input, not the provider’s first token; decode time can be 0.'**
+  String get usageFirstOutputNote;
+
+  /// No description provided for @usageMetricAvailable.
+  ///
+  /// In en, this message translates to:
+  /// **'Available'**
+  String get usageMetricAvailable;
+
+  /// No description provided for @usageMetricNotCollected.
+  ///
+  /// In en, this message translates to:
+  /// **'Timing not collected'**
+  String get usageMetricNotCollected;
+
+  /// No description provided for @usageMetricNoVisibleOutput.
+  ///
+  /// In en, this message translates to:
+  /// **'No visible output observed'**
+  String get usageMetricNoVisibleOutput;
+
+  /// No description provided for @usageMetricMissingOutput.
+  ///
+  /// In en, this message translates to:
+  /// **'Output usage unknown'**
+  String get usageMetricMissingOutput;
+
+  /// No description provided for @usageMetricZeroOutput.
+  ///
+  /// In en, this message translates to:
+  /// **'Reported output is 0'**
+  String get usageMetricZeroOutput;
+
+  /// No description provided for @usageMetricInvalidUsage.
+  ///
+  /// In en, this message translates to:
+  /// **'Inconsistent or overflowing usage'**
+  String get usageMetricInvalidUsage;
+
+  /// No description provided for @usageMetricInvalidTiming.
+  ///
+  /// In en, this message translates to:
+  /// **'Invalid timing'**
+  String get usageMetricInvalidTiming;
+
+  /// No description provided for @usageMetricLegacyUnknown.
+  ///
+  /// In en, this message translates to:
+  /// **'Historical timing source unknown'**
+  String get usageMetricLegacyUnknown;
+
+  /// No description provided for @usageStatusLegacyUnknown.
+  ///
+  /// In en, this message translates to:
+  /// **'Historical usage status unknown'**
+  String get usageStatusLegacyUnknown;
+
+  /// No description provided for @usageStatusMissing.
+  ///
+  /// In en, this message translates to:
+  /// **'Usage not retained at completion'**
+  String get usageStatusMissing;
+
+  /// No description provided for @usageStatusPartial.
+  ///
+  /// In en, this message translates to:
+  /// **'Partial usage retained'**
+  String get usageStatusPartial;
+
+  /// No description provided for @usageStatusReported.
+  ///
+  /// In en, this message translates to:
+  /// **'Usage complete'**
+  String get usageStatusReported;
+
+  /// No description provided for @usageStatusInvalid.
+  ///
+  /// In en, this message translates to:
+  /// **'Invalid usage'**
+  String get usageStatusInvalid;
+
+  /// No description provided for @usageCumulativeTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Cumulative usage coverage'**
+  String get usageCumulativeTitle;
+
+  /// No description provided for @usageLatestTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Latest main-model call'**
+  String get usageLatestTitle;
+
+  /// No description provided for @usageIncompleteCalls.
+  ///
+  /// In en, this message translates to:
+  /// **'Incomplete calls'**
+  String get usageIncompleteCalls;
+
+  /// No description provided for @usageMissingCalls.
+  ///
+  /// In en, this message translates to:
+  /// **'Calls missing usage'**
+  String get usageMissingCalls;
+
+  /// No description provided for @usagePartialCalls.
+  ///
+  /// In en, this message translates to:
+  /// **'Calls with partial usage'**
+  String get usagePartialCalls;
+
+  /// No description provided for @usageInvalidCalls.
+  ///
+  /// In en, this message translates to:
+  /// **'Calls with invalid usage'**
+  String get usageInvalidCalls;
+
+  /// No description provided for @usageOverflowCalls.
+  ///
+  /// In en, this message translates to:
+  /// **'Calls with overflow'**
+  String get usageOverflowCalls;
+
+  /// No description provided for @usageHistoryUnknown.
+  ///
+  /// In en, this message translates to:
+  /// **'Call counts, usage or purpose sources in older history cannot be proven; unknown is not 0.'**
+  String get usageHistoryUnknown;
+
+  /// No description provided for @usageCountsOverflowed.
+  ///
+  /// In en, this message translates to:
+  /// **'Cumulative counts overflowed; displayed counts are not the complete total.'**
+  String get usageCountsOverflowed;
+
+  /// No description provided for @usageRecentGapsTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Recent gaps'**
+  String get usageRecentGapsTitle;
+
+  /// No description provided for @usageRecentGaps.
+  ///
+  /// In en, this message translates to:
+  /// **'Recent gaps (at most 8, not the full history)'**
+  String get usageRecentGaps;
+
+  /// No description provided for @usageCumulativeNote.
+  ///
+  /// In en, this message translates to:
+  /// **'Later complete calls do not erase cumulative gaps; the latest call’s completeness is shown separately.'**
+  String get usageCumulativeNote;
+
+  /// No description provided for @usageCancelledNote.
+  ///
+  /// In en, this message translates to:
+  /// **'A cancelled call only means the corresponding usage was not retained at completion; this does not establish that the provider did not send it.'**
+  String get usageCancelledNote;
+
+  /// No description provided for @usageCacheCoverage.
+  ///
+  /// In en, this message translates to:
+  /// **'Cache coverage samples (since upgrade)'**
+  String get usageCacheCoverage;
+
+  /// No description provided for @usageCacheCoverageNote.
+  ///
+  /// In en, this message translates to:
+  /// **'Only samples eligible for cache accumulation are counted; the sample count behind older cache totals cannot be inferred from post-upgrade counts.'**
+  String get usageCacheCoverageNote;
+
+  /// No description provided for @usageCacheLegacyUnknown.
+  ///
+  /// In en, this message translates to:
+  /// **'Older cache sample counts are unknown; the current count starts after the upgrade.'**
+  String get usageCacheLegacyUnknown;
+
+  /// No description provided for @usageStatisticsGapNote.
+  ///
+  /// In en, this message translates to:
+  /// **'A statistics synchronization gap is separate from unknown cumulative usage; recovered synchronization does not prove complete historical usage.'**
+  String get usageStatisticsGapNote;
+
+  /// No description provided for @usageOutcomeSucceeded.
+  ///
+  /// In en, this message translates to:
+  /// **'Succeeded'**
+  String get usageOutcomeSucceeded;
+
+  /// No description provided for @usageOutcomeRejected.
+  ///
+  /// In en, this message translates to:
+  /// **'Rejected'**
+  String get usageOutcomeRejected;
+
+  /// No description provided for @usageOutcomeCancelled.
+  ///
+  /// In en, this message translates to:
+  /// **'Cancelled'**
+  String get usageOutcomeCancelled;
+
+  /// No description provided for @usageOutcomeFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Failed'**
+  String get usageOutcomeFailed;
+
+  /// No description provided for @usageOutcomeInterrupted.
+  ///
+  /// In en, this message translates to:
+  /// **'Interrupted'**
+  String get usageOutcomeInterrupted;
+
+  /// No description provided for @usageOtherPurposeCalls.
+  ///
+  /// In en, this message translates to:
+  /// **'Calls with other purposes'**
+  String get usageOtherPurposeCalls;
+
+  /// No description provided for @usageGapUnreported.
+  ///
+  /// In en, this message translates to:
+  /// **'Not retained'**
+  String get usageGapUnreported;
+
+  /// No description provided for @usageGapInconsistent.
+  ///
+  /// In en, this message translates to:
+  /// **'Inconsistent'**
+  String get usageGapInconsistent;
+
+  /// No description provided for @usageGapOverflow.
+  ///
+  /// In en, this message translates to:
+  /// **'Overflow'**
+  String get usageGapOverflow;
+
+  /// No description provided for @usageFieldInput.
+  ///
+  /// In en, this message translates to:
+  /// **'Input'**
+  String get usageFieldInput;
+
+  /// No description provided for @usageFieldOutput.
+  ///
+  /// In en, this message translates to:
+  /// **'Output'**
+  String get usageFieldOutput;
+
+  /// No description provided for @usageFieldCacheRead.
+  ///
+  /// In en, this message translates to:
+  /// **'Cache read'**
+  String get usageFieldCacheRead;
+
+  /// No description provided for @usageFieldCacheWrite.
+  ///
+  /// In en, this message translates to:
+  /// **'Cache write'**
+  String get usageFieldCacheWrite;
+
+  /// No description provided for @usageFieldReasoning.
+  ///
+  /// In en, this message translates to:
+  /// **'Reasoning'**
+  String get usageFieldReasoning;
+
+  /// No description provided for @usageFieldTotal.
+  ///
+  /// In en, this message translates to:
+  /// **'Total'**
+  String get usageFieldTotal;
+
+  /// No description provided for @usageFieldInferenceCount.
+  ///
+  /// In en, this message translates to:
+  /// **'Call count'**
+  String get usageFieldInferenceCount;
+
+  /// No description provided for @usageFieldCachePair.
+  ///
+  /// In en, this message translates to:
+  /// **'Cache counters'**
+  String get usageFieldCachePair;
+
+  /// No description provided for @usageFieldThroughputPair.
+  ///
+  /// In en, this message translates to:
+  /// **'Throughput counters'**
+  String get usageFieldThroughputPair;
 }
 
 class _AppLocalizationsDelegate

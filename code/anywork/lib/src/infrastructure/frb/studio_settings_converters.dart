@@ -46,6 +46,14 @@ frb.SettingsFieldInput _settingsFieldInputFromDomain(
     frb.SettingsFieldInput.generalFollowActiveTurn(value: value),
   GeneralCompactTimelineCommand(:final value) =>
     frb.SettingsFieldInput.generalCompactTimeline(value: value),
+  GeneralLanguageCommand(:final value) =>
+    frb.SettingsFieldInput.generalLanguage(
+      value: switch (value) {
+        UiLanguage.system => frb.BridgeUiLanguage.system,
+        UiLanguage.zh => frb.BridgeUiLanguage.zh,
+        UiLanguage.en => frb.BridgeUiLanguage.en,
+      },
+    ),
   GeneralSidebarWidthCommand(:final value) =>
     frb.SettingsFieldInput.generalSidebarWidth(value: value),
   GeneralPinnedThreadIdsCommand(:final value) =>
@@ -289,6 +297,11 @@ GeneralSettingsView _generalSettingsFromFrb(
   frb.BridgeGeneralSettingsDto value,
 ) {
   return GeneralSettingsView(
+    language: switch (value.language) {
+      frb.BridgeUiLanguage.system => UiLanguage.system,
+      frb.BridgeUiLanguage.zh => UiLanguage.zh,
+      frb.BridgeUiLanguage.en => UiLanguage.en,
+    },
     followActiveTurn: value.followActiveTurn,
     compactTimeline: value.compactTimeline,
     sidebarWidth: value.sidebarWidth ?? 336,

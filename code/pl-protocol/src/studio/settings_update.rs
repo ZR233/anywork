@@ -69,6 +69,9 @@ pub enum SettingsFieldUpdate {
     GeneralCompactTimeline {
         value: bool,
     },
+    GeneralLanguage {
+        value: super::StudioUiLanguage,
+    },
     GeneralSidebarWidth {
         value: Option<u16>,
     },

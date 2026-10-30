@@ -293,6 +293,7 @@ String settingsFieldMutationKey(SettingsFieldCommand command) =>
       McpServerEndpointCommand(:final id) => 'mcp:$id:endpoint',
       GeneralFollowActiveTurnCommand() => 'general:follow-active-turn',
       GeneralCompactTimelineCommand() => 'general:compact-timeline',
+      GeneralLanguageCommand() => 'general:language',
       GeneralSidebarWidthCommand() => 'general:sidebar-width',
       GeneralPinnedThreadIdsCommand() => 'general:pinned-thread-ids',
       GeneralPinnedProjectIdsCommand() => 'general:pinned-project-ids',

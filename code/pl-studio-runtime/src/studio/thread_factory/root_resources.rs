@@ -391,16 +391,17 @@ impl StudioThreadFactory {
         })
         .await?
         .map_err(|error| resource_error("resolve root workspace", error))?;
-        let root = crate::studio::agent_host::workspace_preparation::root_session_workspace_root(
-            &self.services.store,
-            &self.services.worktrees,
-            &self.services.ssh_manager,
-            &thread,
-            &project,
-            local_root,
-        )
-        .await
-        .map_err(|error| resource_error("resolve root workspace", error))?;
+        let (root, verified_lease) =
+            crate::studio::agent_host::workspace_preparation::root_session_workspace_root(
+                &self.services.store,
+                &self.services.worktrees,
+                &self.services.ssh_manager,
+                &thread,
+                &project,
+                local_root,
+            )
+            .await
+            .map_err(|error| resource_error("resolve root workspace", error))?;
         let workspace = ToolWorkspace::new(match workspace_mode {
             pl_protocol::ThreadWorkspaceMode::Local => AgentWorkspace::local(&root),
             pl_protocol::ThreadWorkspaceMode::Worktree => {
@@ -562,6 +563,15 @@ impl StudioThreadFactory {
             capacity: Default::default(),
             cold_store: Some(pl_core::thread::cold::ColdStoreHandle::new(persistence)),
         };
+        if let Some(lease) = verified_lease {
+            self.confirm_worktree_binding(
+                &lease,
+                spec.workspace_usage.as_ref().expect("root preparation use"),
+                &workspace_owner,
+            )
+            .await
+            .map_err(|error| resource_error("confirm root worktree binding", error))?;
+        }
         Ok(prepared.tools.install(spec))
     }
 }

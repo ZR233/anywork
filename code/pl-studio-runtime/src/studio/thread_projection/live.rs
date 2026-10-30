@@ -279,6 +279,7 @@ fn revision_bytes(id: &str) -> u64 {
 pub(in crate::studio) struct PreparedEffect {
     /// Effect sequence this batch belongs to; the writer matches it against its admission queue.
     pub(in crate::studio) sequence: u64,
+    pub(in crate::studio) accounting: Arc<super::PreparedAccounting>,
     /// The canonical items the effect committed, in the order the durable rows are written.
     pub(in crate::studio) items: Vec<ThreadItem>,
     /// Exact terminal handoff, committed in the same history transaction as its terminal effect.
@@ -350,6 +351,7 @@ impl PreparedEffect {
                 .saturating_add(256)
         });
         retained_bytes(&self.items)
+            .saturating_add(self.accounting.retained_bytes())
             .saturating_add(parent_report)
             .saturating_add(review_delivery)
     }
@@ -1306,6 +1308,7 @@ impl LiveProjection {
         effect: &ThreadEffectBatch,
         state: &ThreadSnapshot,
     ) -> Result<Arc<PreparedEffect>, ProjectionError> {
+        let accounting = Arc::new(super::PreparedAccounting::prepare(effect)?);
         let review_delivery =
             review_delivery_facts(&thread.id, effect).map_err(ProjectionError::ReviewDelivery)?;
         self.turn_failures
@@ -1469,6 +1472,7 @@ impl LiveProjection {
         }
         Ok(Arc::new(PreparedEffect {
             sequence: effect.sequence,
+            accounting,
             items,
             parent_report: None,
             terminal_retention: None,

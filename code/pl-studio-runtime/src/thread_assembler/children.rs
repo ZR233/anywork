@@ -355,11 +355,13 @@ impl super::StudioThreadAssembler {
         }
         let id = crate::studio::new_id("thread");
         let cancellation = context.cancellation.child_token();
+        let workspace = super::WorkspacePreparationOwner::default();
+        workspace.bind_admission(self, &id, &cancellation)?;
         state.unpublished_children.insert(
             id.clone(),
             UnpublishedChild {
                 retirement: Default::default(),
-                workspace: Default::default(),
+                workspace,
                 disposal: Default::default(),
                 parent: context.thread_id.clone(),
                 factory: factory.clone(),

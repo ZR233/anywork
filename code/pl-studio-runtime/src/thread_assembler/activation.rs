@@ -203,6 +203,7 @@ impl StudioThreadAssembler {
                         }
                         None => Vec::new(),
                     };
+                    workspace_owner.bind_admission(&owner, &identity.id, &cancellation)?;
                     let spec = factory
                         .prepare(ThreadPreparation {
                             workspace_owner: workspace_owner.clone(),

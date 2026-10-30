@@ -114,6 +114,8 @@ impl StudioLspConfig {
 /// Studio UI 本地偏好，由 [`ConfigRuntime`] 与其余 desired settings 一起持有。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct StudioUiConfig {
+    #[serde(default)]
+    pub language: pl_protocol::studio::StudioUiLanguage,
     #[serde(default = "default_true")]
     pub follow_active_turn: bool,
     #[serde(default)]
@@ -129,6 +131,7 @@ pub struct StudioUiConfig {
 impl Default for StudioUiConfig {
     fn default() -> Self {
         Self {
+            language: pl_protocol::studio::StudioUiLanguage::System,
             follow_active_turn: true,
             compact_timeline: false,
             sidebar_width: None,

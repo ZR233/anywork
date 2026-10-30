@@ -1308,8 +1308,6 @@ class BridgeThreadPersistenceSnapshot {
   final BigInt? stateDurableRevision;
   final BigInt? historyAdmittedSequence;
   final BigInt? historyDurableSequence;
-  final BigInt? callsAdmittedSequence;
-  final BigInt? callsDurableSequence;
   final BigInt pendingOperations;
   final BigInt pendingBytes;
   final BigInt? oldestPendingAgeMillis;
@@ -1326,8 +1324,6 @@ class BridgeThreadPersistenceSnapshot {
     this.stateDurableRevision,
     this.historyAdmittedSequence,
     this.historyDurableSequence,
-    this.callsAdmittedSequence,
-    this.callsDurableSequence,
     required this.pendingOperations,
     required this.pendingBytes,
     this.oldestPendingAgeMillis,
@@ -1346,8 +1342,6 @@ class BridgeThreadPersistenceSnapshot {
       stateDurableRevision.hashCode ^
       historyAdmittedSequence.hashCode ^
       historyDurableSequence.hashCode ^
-      callsAdmittedSequence.hashCode ^
-      callsDurableSequence.hashCode ^
       pendingOperations.hashCode ^
       pendingBytes.hashCode ^
       oldestPendingAgeMillis.hashCode ^
@@ -1368,8 +1362,6 @@ class BridgeThreadPersistenceSnapshot {
           stateDurableRevision == other.stateDurableRevision &&
           historyAdmittedSequence == other.historyAdmittedSequence &&
           historyDurableSequence == other.historyDurableSequence &&
-          callsAdmittedSequence == other.callsAdmittedSequence &&
-          callsDurableSequence == other.callsDurableSequence &&
           pendingOperations == other.pendingOperations &&
           pendingBytes == other.pendingBytes &&
           oldestPendingAgeMillis == other.oldestPendingAgeMillis &&

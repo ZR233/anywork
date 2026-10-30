@@ -169,6 +169,7 @@ fn settings_view(
         },
         mcp_servers,
         general: StudioGeneralSettings {
+            language: config.ui.language,
             follow_active_turn: config.ui.follow_active_turn,
             compact_timeline: config.ui.compact_timeline,
             sidebar_width: config.ui.sidebar_width,

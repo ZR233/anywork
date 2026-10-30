@@ -14,16 +14,20 @@ import 'thread_activity.dart';
 import 'thread_stream/item.dart';
 part 'thread_stream.freezed.dart';
 
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
 
 /// FRB mirror of the canonical prompt cache effective-usage summary.
 class BridgeCacheUsageSummary {
+  final BigInt sampleCount;
+  final bool legacySampleCountUnknown;
   final BigInt inputTokens;
   final BigInt cacheReadTokens;
   final double? hitRate;
   final bool hasIncompleteUsage;
 
   const BridgeCacheUsageSummary({
+    required this.sampleCount,
+    required this.legacySampleCountUnknown,
     required this.inputTokens,
     required this.cacheReadTokens,
     this.hitRate,
@@ -35,6 +39,8 @@ class BridgeCacheUsageSummary {
 
   @override
   int get hashCode =>
+      sampleCount.hashCode ^
+      legacySampleCountUnknown.hashCode ^
       inputTokens.hashCode ^
       cacheReadTokens.hashCode ^
       hitRate.hashCode ^
@@ -45,6 +51,8 @@ class BridgeCacheUsageSummary {
       identical(this, other) ||
       other is BridgeCacheUsageSummary &&
           runtimeType == other.runtimeType &&
+          sampleCount == other.sampleCount &&
+          legacySampleCountUnknown == other.legacySampleCountUnknown &&
           inputTokens == other.inputTokens &&
           cacheReadTokens == other.cacheReadTokens &&
           hitRate == other.hitRate &&
@@ -129,6 +137,13 @@ class BridgeContinuationView {
           reason == other.reason &&
           createdAt == other.createdAt &&
           claimed == other.claimed;
+}
+
+enum BridgeFirstOutputSource {
+  unobserved,
+  incremental,
+  completedToolInput,
+  legacyUnknown,
 }
 
 @freezed
@@ -233,6 +248,17 @@ class BridgeInteractionScope {
           itemId == other.itemId &&
           toolId == other.toolId &&
           agentPath == other.agentPath;
+}
+
+enum BridgeMetricAvailability {
+  available,
+  notCollected,
+  noVisibleOutput,
+  missingOutput,
+  zeroOutput,
+  invalidUsage,
+  invalidTiming,
+  legacyUnknown,
 }
 
 class BridgePlanDocument {
@@ -773,6 +799,7 @@ class BridgeThreadRuntimeSnapshot {
 }
 
 class BridgeThreadRuntimeUsage {
+  final BridgeThreadUsageDiagnostics diagnostics;
   final bool hasIncompleteUsage;
   final String modelId;
   final BigInt? contextWindow;
@@ -796,6 +823,7 @@ class BridgeThreadRuntimeUsage {
   final PlatformInt64 updatedAt;
 
   const BridgeThreadRuntimeUsage({
+    required this.diagnostics,
     required this.hasIncompleteUsage,
     required this.modelId,
     this.contextWindow,
@@ -821,6 +849,7 @@ class BridgeThreadRuntimeUsage {
 
   @override
   int get hashCode =>
+      diagnostics.hashCode ^
       hasIncompleteUsage.hashCode ^
       modelId.hashCode ^
       contextWindow.hashCode ^
@@ -848,6 +877,7 @@ class BridgeThreadRuntimeUsage {
       identical(this, other) ||
       other is BridgeThreadRuntimeUsage &&
           runtimeType == other.runtimeType &&
+          diagnostics == other.diagnostics &&
           hasIncompleteUsage == other.hasIncompleteUsage &&
           modelId == other.modelId &&
           contextWindow == other.contextWindow &&
@@ -951,6 +981,73 @@ sealed class BridgeThreadSubscriptionUpdate
   const factory BridgeThreadSubscriptionUpdate.notification({
     required BridgeThreadNotificationEnvelope notification,
   }) = BridgeThreadSubscriptionUpdate_Notification;
+}
+
+class BridgeThreadUsageDiagnostics {
+  final BigInt incompleteCalls;
+  final BigInt missingCalls;
+  final BigInt partialCalls;
+  final BigInt invalidCalls;
+  final BigInt overflowCalls;
+  final List<BridgeUsageOutcomeCountSnapshot> byOutcome;
+  final List<BridgeUsagePurposeCountSnapshot> byPurpose;
+  final BigInt otherPurposeCalls;
+  final List<BridgeUsageIssueCountSnapshot> byIssue;
+  final List<BridgeUsageCallSnapshot> recentGaps;
+  final BridgeUsageCallSnapshot? latestCall;
+  final bool legacyUnknown;
+  final bool countsOverflowed;
+
+  const BridgeThreadUsageDiagnostics({
+    required this.incompleteCalls,
+    required this.missingCalls,
+    required this.partialCalls,
+    required this.invalidCalls,
+    required this.overflowCalls,
+    required this.byOutcome,
+    required this.byPurpose,
+    required this.otherPurposeCalls,
+    required this.byIssue,
+    required this.recentGaps,
+    this.latestCall,
+    required this.legacyUnknown,
+    required this.countsOverflowed,
+  });
+
+  @override
+  int get hashCode =>
+      incompleteCalls.hashCode ^
+      missingCalls.hashCode ^
+      partialCalls.hashCode ^
+      invalidCalls.hashCode ^
+      overflowCalls.hashCode ^
+      byOutcome.hashCode ^
+      byPurpose.hashCode ^
+      otherPurposeCalls.hashCode ^
+      byIssue.hashCode ^
+      recentGaps.hashCode ^
+      latestCall.hashCode ^
+      legacyUnknown.hashCode ^
+      countsOverflowed.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeThreadUsageDiagnostics &&
+          runtimeType == other.runtimeType &&
+          incompleteCalls == other.incompleteCalls &&
+          missingCalls == other.missingCalls &&
+          partialCalls == other.partialCalls &&
+          invalidCalls == other.invalidCalls &&
+          overflowCalls == other.overflowCalls &&
+          byOutcome == other.byOutcome &&
+          byPurpose == other.byPurpose &&
+          otherPurposeCalls == other.otherPurposeCalls &&
+          byIssue == other.byIssue &&
+          recentGaps == other.recentGaps &&
+          latestCall == other.latestCall &&
+          legacyUnknown == other.legacyUnknown &&
+          countsOverflowed == other.countsOverflowed;
 }
 
 class BridgeTodoItem {
@@ -1287,6 +1384,219 @@ sealed class BridgeTurnState with _$BridgeTurnState {
     required BridgeTurnBudgetLimit limit,
     required BridgeTurnRolloverOutcome rollover,
   }) = BridgeTurnState_BudgetLimited;
+}
+
+class BridgeUsageCallSnapshot {
+  final String threadId;
+  final String callId;
+  final String? turnId;
+  final BigInt effectSequence;
+  final PlatformInt64 observedAt;
+  final String? purpose;
+  final BridgeUsageTerminalStatus outcome;
+  final BridgeUsageReportStatus status;
+  final BridgeUsageReport usage;
+  final List<BridgeUsageGapIssue> issues;
+
+  const BridgeUsageCallSnapshot({
+    required this.threadId,
+    required this.callId,
+    this.turnId,
+    required this.effectSequence,
+    required this.observedAt,
+    this.purpose,
+    required this.outcome,
+    required this.status,
+    required this.usage,
+    required this.issues,
+  });
+
+  @override
+  int get hashCode =>
+      threadId.hashCode ^
+      callId.hashCode ^
+      turnId.hashCode ^
+      effectSequence.hashCode ^
+      observedAt.hashCode ^
+      purpose.hashCode ^
+      outcome.hashCode ^
+      status.hashCode ^
+      usage.hashCode ^
+      issues.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeUsageCallSnapshot &&
+          runtimeType == other.runtimeType &&
+          threadId == other.threadId &&
+          callId == other.callId &&
+          turnId == other.turnId &&
+          effectSequence == other.effectSequence &&
+          observedAt == other.observedAt &&
+          purpose == other.purpose &&
+          outcome == other.outcome &&
+          status == other.status &&
+          usage == other.usage &&
+          issues == other.issues;
+}
+
+enum BridgeUsageCounterField {
+  input,
+  output,
+  cacheRead,
+  cacheWrite,
+  reasoning,
+  total,
+  inferenceCount,
+  cachePair,
+  throughputPair,
+}
+
+class BridgeUsageGapIssue {
+  final BridgeUsageCounterField field;
+  final BridgeUsageGapReason reason;
+
+  const BridgeUsageGapIssue({required this.field, required this.reason});
+
+  @override
+  int get hashCode => field.hashCode ^ reason.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeUsageGapIssue &&
+          runtimeType == other.runtimeType &&
+          field == other.field &&
+          reason == other.reason;
+}
+
+enum BridgeUsageGapReason { unreported, inconsistent, overflow }
+
+class BridgeUsageIssueCountSnapshot {
+  final BridgeUsageGapIssue issue;
+  final BigInt calls;
+
+  const BridgeUsageIssueCountSnapshot({
+    required this.issue,
+    required this.calls,
+  });
+
+  @override
+  int get hashCode => issue.hashCode ^ calls.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeUsageIssueCountSnapshot &&
+          runtimeType == other.runtimeType &&
+          issue == other.issue &&
+          calls == other.calls;
+}
+
+class BridgeUsageOutcomeCountSnapshot {
+  final BridgeUsageTerminalStatus outcome;
+  final BigInt calls;
+  final BigInt incompleteCalls;
+
+  const BridgeUsageOutcomeCountSnapshot({
+    required this.outcome,
+    required this.calls,
+    required this.incompleteCalls,
+  });
+
+  @override
+  int get hashCode =>
+      outcome.hashCode ^ calls.hashCode ^ incompleteCalls.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeUsageOutcomeCountSnapshot &&
+          runtimeType == other.runtimeType &&
+          outcome == other.outcome &&
+          calls == other.calls &&
+          incompleteCalls == other.incompleteCalls;
+}
+
+class BridgeUsagePurposeCountSnapshot {
+  final String? purpose;
+  final BigInt calls;
+  final BigInt incompleteCalls;
+
+  const BridgeUsagePurposeCountSnapshot({
+    this.purpose,
+    required this.calls,
+    required this.incompleteCalls,
+  });
+
+  @override
+  int get hashCode =>
+      purpose.hashCode ^ calls.hashCode ^ incompleteCalls.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeUsagePurposeCountSnapshot &&
+          runtimeType == other.runtimeType &&
+          purpose == other.purpose &&
+          calls == other.calls &&
+          incompleteCalls == other.incompleteCalls;
+}
+
+class BridgeUsageReport {
+  final BigInt? inputTokens;
+  final BigInt? outputTokens;
+  final BigInt? cacheReadTokens;
+  final BigInt? cacheWriteTokens;
+  final BigInt? reasoningTokens;
+  final BigInt? totalTokens;
+
+  const BridgeUsageReport({
+    this.inputTokens,
+    this.outputTokens,
+    this.cacheReadTokens,
+    this.cacheWriteTokens,
+    this.reasoningTokens,
+    this.totalTokens,
+  });
+
+  @override
+  int get hashCode =>
+      inputTokens.hashCode ^
+      outputTokens.hashCode ^
+      cacheReadTokens.hashCode ^
+      cacheWriteTokens.hashCode ^
+      reasoningTokens.hashCode ^
+      totalTokens.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeUsageReport &&
+          runtimeType == other.runtimeType &&
+          inputTokens == other.inputTokens &&
+          outputTokens == other.outputTokens &&
+          cacheReadTokens == other.cacheReadTokens &&
+          cacheWriteTokens == other.cacheWriteTokens &&
+          reasoningTokens == other.reasoningTokens &&
+          totalTokens == other.totalTokens;
+}
+
+enum BridgeUsageReportStatus {
+  legacyUnknown,
+  missing,
+  partial,
+  reported,
+  invalid,
+}
+
+enum BridgeUsageTerminalStatus {
+  succeeded,
+  rejected,
+  cancelled,
+  failed,
+  interrupted,
 }
 
 class BridgeUserInputAnswer {

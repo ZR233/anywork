@@ -193,8 +193,6 @@ class ThreadPersistenceSnapshot {
     this.stateDurableRevision,
     this.historyAdmittedSequence,
     this.historyDurableSequence,
-    this.callsAdmittedSequence,
-    this.callsDurableSequence,
     this.pendingOperations = 0,
     this.pendingBytes = 0,
     this.oldestPendingAgeMillis,
@@ -213,12 +211,10 @@ class ThreadPersistenceSnapshot {
   /// 正在序列化或同步的 checkpoint 修订；未知为 null。
   final int? stateSavingRevision;
 
-  /// 已作为 `state.toml` 发布的 checkpoint 修订；未知为 null。
+  /// 已与 history 同事务提交的 checkpoint 修订；未知为 null。
   final int? stateDurableRevision;
   final int? historyAdmittedSequence;
   final int? historyDurableSequence;
-  final int? callsAdmittedSequence;
-  final int? callsDurableSequence;
   final int pendingOperations;
   final int pendingBytes;
   final int? oldestPendingAgeMillis;
@@ -238,8 +234,6 @@ class ThreadPersistenceSnapshot {
           stateDurableRevision == other.stateDurableRevision &&
           historyAdmittedSequence == other.historyAdmittedSequence &&
           historyDurableSequence == other.historyDurableSequence &&
-          callsAdmittedSequence == other.callsAdmittedSequence &&
-          callsDurableSequence == other.callsDurableSequence &&
           pendingOperations == other.pendingOperations &&
           pendingBytes == other.pendingBytes &&
           oldestPendingAgeMillis == other.oldestPendingAgeMillis &&
@@ -257,8 +251,6 @@ class ThreadPersistenceSnapshot {
     stateDurableRevision,
     historyAdmittedSequence,
     historyDurableSequence,
-    callsAdmittedSequence,
-    callsDurableSequence,
     pendingOperations,
     pendingBytes,
     oldestPendingAgeMillis,

@@ -469,6 +469,28 @@ mod tests {
         (directory, store)
     }
 
+    #[test]
+    fn ui_language_defaults_for_existing_config_and_rejects_unknown_values() {
+        let (_directory, store) = isolated_store();
+        let mut config = StudioConfig::default_config().unwrap();
+        config.ui.compact_timeline = true;
+        store.save(&config).unwrap();
+        let path = store.paths.config_file();
+        let mut table = read_table(path);
+        table["ui"].as_table_mut().unwrap().remove("language");
+        fs::write(path, toml::to_string(&table).unwrap()).unwrap();
+        assert_eq!(store.load().unwrap(), config);
+
+        table["ui"]
+            .as_table_mut()
+            .unwrap()
+            .insert("language".into(), "unsupported".into());
+        let invalid = toml::to_string(&table).unwrap();
+        fs::write(path, &invalid).unwrap();
+        assert!(store.load().is_err());
+        assert_eq!(fs::read_to_string(path).unwrap(), invalid);
+    }
+
     /// 把当前 canonical 文档改写成 HEAD 的 22/21 真实结构（providers/preset/adapter/路由 provider,model）。
     fn downgrade_to_legacy_document(table: &mut toml::Table, schema_version: i64, slug: bool) {
         table.insert(

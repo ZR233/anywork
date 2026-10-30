@@ -141,6 +141,7 @@ pub(crate) fn bridge_settings(
             })
             .collect(),
         general: BridgeGeneralSettingsDto {
+            language: settings.general.language.into(),
             follow_active_turn: settings.general.follow_active_turn,
             compact_timeline: settings.general.compact_timeline,
             sidebar_width: settings.general.sidebar_width,

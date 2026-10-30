@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use serde::{Deserialize, Serialize};
 
 /// Global performance projection retained for the existing HTTP product API.
@@ -14,8 +16,10 @@ pub struct StudioModelPerformanceSnapshot {
     pub statistics_gap: bool,
     #[serde(default)]
     pub read_failed: bool,
-    pub summaries: Vec<StudioModelPerformanceSummary>,
-    pub history: Vec<StudioModelPerformanceSample>,
+    /// Frozen by the owner and shared with product events and feed read scopes.
+    /// Serde still encodes the inner array; pointer identity is process-local only.
+    pub summaries: Arc<Vec<StudioModelPerformanceSummary>>,
+    pub history: Arc<Vec<StudioModelPerformanceSample>>,
 }
 
 /// One `(account_id, model_id)` aggregate; effort is a group-local breakdown.
@@ -66,6 +70,13 @@ pub struct StudioModelPerformanceEffortSummary {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct StudioModelPerformanceSample {
+    pub thread_id: String,
+    pub call_id: String,
+    pub purpose: Option<String>,
+    pub first_output_source: pl_protocol::FirstOutputSource,
+    pub usage_status: pl_protocol::UsageReportStatus,
+    pub ttft_availability: pl_protocol::MetricAvailability,
+    pub throughput_availability: pl_protocol::MetricAvailability,
     pub completed_at: i64,
     pub account_id: String,
     pub account_display_name: String,
@@ -79,7 +90,7 @@ pub struct StudioModelPerformanceSample {
     pub model_match_state: pl_protocol::ModelMatchState,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<String>,
-    pub completion_tokens: u64,
+    pub completion_tokens: Option<u64>,
     pub ttft_millis: Option<u64>,
     pub decode_millis: Option<u64>,
     pub total_response_millis: Option<u64>,

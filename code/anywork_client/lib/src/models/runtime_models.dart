@@ -1,5 +1,6 @@
 import 'agent_models.dart';
 import 'collection_equality.dart';
+import 'usage_diagnostics.dart';
 
 /// 继续点存在的原因。只有中断本身能证明的原因才会记录。
 enum ContinuationReason {
@@ -173,11 +174,16 @@ class SessionCostView {
 /// 命中率分母是累计 input，因为它已经包含 cache read。
 class CacheUsageView {
   const CacheUsageView({
+    this.sampleCount = 0,
+    this.legacySampleCountUnknown = false,
     this.inputTokens = 0,
     this.cacheReadTokens = 0,
     this.hitRate,
     this.hasIncompleteUsage = false,
   });
+
+  final int sampleCount;
+  final bool legacySampleCountUnknown;
 
   /// 计入累计的有效样本 input 总量，已包含 cache read。
   final int inputTokens;
@@ -200,14 +206,22 @@ class CacheUsageView {
   @override
   bool operator ==(Object other) =>
       other is CacheUsageView &&
+      sampleCount == other.sampleCount &&
+      legacySampleCountUnknown == other.legacySampleCountUnknown &&
       inputTokens == other.inputTokens &&
       cacheReadTokens == other.cacheReadTokens &&
       hitRate == other.hitRate &&
       hasIncompleteUsage == other.hasIncompleteUsage;
 
   @override
-  int get hashCode =>
-      Object.hash(inputTokens, cacheReadTokens, hitRate, hasIncompleteUsage);
+  int get hashCode => Object.hash(
+    sampleCount,
+    legacySampleCountUnknown,
+    inputTokens,
+    cacheReadTokens,
+    hitRate,
+    hasIncompleteUsage,
+  );
 }
 
 enum ThreadRuntimeUsageState { live, authoritative }
@@ -261,6 +275,7 @@ const _threadRuntimeUnset = Object();
 
 class ThreadRuntimeView {
   const ThreadRuntimeView({
+    this.usageDiagnostics = const ThreadUsageDiagnostics.empty(),
     required this.modelId,
     required this.contextTokens,
     required this.contextWindow,
@@ -296,6 +311,7 @@ class ThreadRuntimeView {
   });
 
   final String modelId;
+  final ThreadUsageDiagnostics usageDiagnostics;
   final int contextTokens;
   final int contextWindow;
 
@@ -350,6 +366,7 @@ class ThreadRuntimeView {
   bool operator ==(Object other) {
     return identical(this, other) ||
         other is ThreadRuntimeView &&
+            usageDiagnostics == other.usageDiagnostics &&
             modelId == other.modelId &&
             contextTokens == other.contextTokens &&
             contextWindow == other.contextWindow &&
@@ -386,6 +403,7 @@ class ThreadRuntimeView {
 
   @override
   int get hashCode => Object.hashAll([
+    usageDiagnostics,
     modelId,
     contextTokens,
     contextWindow,
@@ -421,6 +439,7 @@ class ThreadRuntimeView {
   ]);
 
   ThreadRuntimeView copyWith({
+    ThreadUsageDiagnostics? usageDiagnostics,
     String? modelId,
     int? contextTokens,
     int? contextWindow,
@@ -455,6 +474,7 @@ class ThreadRuntimeView {
     Object? continuation = _threadRuntimeUnset,
   }) {
     return ThreadRuntimeView(
+      usageDiagnostics: usageDiagnostics ?? this.usageDiagnostics,
       modelId: modelId ?? this.modelId,
       contextTokens: contextTokens ?? this.contextTokens,
       contextWindow: contextWindow ?? this.contextWindow,

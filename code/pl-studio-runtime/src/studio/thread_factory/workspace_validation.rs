@@ -115,6 +115,15 @@ impl VerifiedLocalResume {
     pub(super) async fn confirm_admission(&self) -> Result<(), ReviewWorkspaceError> {
         self.check.confirm().await
     }
+    pub(super) fn verified_lease(&self) -> Option<WorktreeLease> {
+        // A Directory/Review child may borrow a root or sibling lease. Its preparation
+        // protects that site but cannot confirm a different owner's durable binding.
+        self.check
+            .lease
+            .as_ref()
+            .filter(|lease| lease.owner_thread_id == self.check.target)
+            .cloned()
+    }
     pub(super) fn identity(&self) -> WorkspaceIdentity {
         self.identity.clone()
     }

@@ -321,14 +321,8 @@ abstract final class StudioDriverKeys {
     'statistics-summary-effort-row:${jsonEncode(<Object?>[accountId, modelId, effort])}',
   );
 
-  static ValueKey<String> statisticsHistoryRow(
-    String accountId,
-    String modelId,
-    String? effort,
-    int sampleIndex,
-  ) => ValueKey<String>(
-    'statistics-history-row:${jsonEncode(<Object?>[accountId, modelId, effort, sampleIndex])}',
-  );
+  static ValueKey<String> statisticsHistoryCall(String callKey) =>
+      ValueKey<String>('statistics-history-call:$callKey');
   static const accountEditor = ValueKey<String>('account-editor');
   static const accountEdit = ValueKey<String>('account-edit');
   static const accountSave = ValueKey<String>('account-save');

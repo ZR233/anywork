@@ -7,11 +7,13 @@ license.workspace = true
 [features]
 default = []
 live-tests = []
+benchmarks = ["dep:criterion"]
 
 [dev-dependencies]
 pl-provider-fixture = { workspace = true }
 
 [dependencies]
+criterion = { workspace = true, optional = true }
 pl-remote-helper = { workspace = true }
 pl-acp = { workspace = true }
 pl-model = { workspace = true }
@@ -23,7 +25,7 @@ pl-lsp = { workspace = true }
 anyhow = { workspace = true }
 sea-orm = { workspace = true }
 sea-orm-migration = { workspace = true }
-serde = { workspace = true }
+serde = { workspace = true, features = ["rc"] }
 serde_json = { workspace = true }
 prost = { workspace = true }
 flate2 = { workspace = true }
@@ -85,3 +87,9 @@ required-features = ["live-tests"]
 [[example]]
 name = "updater_observe"
 required-features = ["live-tests"]
+
+[[bench]]
+name = "statistics_pipeline"
+harness = false
+test = false
+required-features = ["benchmarks"]

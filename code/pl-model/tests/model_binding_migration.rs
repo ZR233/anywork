@@ -15,6 +15,77 @@ fn current(payload: &OpaquePayload) -> OpaquePayload {
         .unwrap_or_else(|| payload.clone())
 }
 
+#[test]
+fn timing_provenance_upgrades_only_at_the_producer_boundary() {
+    let frame = current(&legacy_frame_payload(2));
+    let original: serde_json::Value = serde_json::from_str(frame.content()).unwrap();
+    let binding = original["receipt"]["binding"].clone();
+    for (format, old_version, new_version, mut value) in [
+        ("pl.model.assistant", 4, 5, original),
+        (
+            "pl.model.failure",
+            4,
+            5,
+            json!({
+                "binding": binding, "accounting": legacy_accounting()
+            }),
+        ),
+        (
+            "pl.model.compaction",
+            3,
+            4,
+            json!({
+                "binding": binding,
+                "item": {"type":"compaction","encryptedContent":"opaque-old-material"}
+            }),
+        ),
+    ] {
+        for has_timing in [false, true] {
+            let owner = if format == "pl.model.assistant" {
+                &mut value["receipt"]["response"]
+            } else {
+                &mut value
+            };
+            if has_timing {
+                owner["timing"] = json!({"ttftMillis":9,"decodeMillis":11,"responseMillis":20});
+            } else {
+                owner.as_object_mut().unwrap().remove("timing");
+            }
+            let legacy = OpaquePayload::new(format, old_version, value.to_string()).unwrap();
+            let migrated = migrate_payload(&legacy).unwrap().unwrap();
+            assert_eq!(migrated.version(), new_version);
+            let migrated_value: serde_json::Value =
+                serde_json::from_str(migrated.content()).unwrap();
+            let new_owner = if format == "pl.model.assistant" {
+                &migrated_value["receipt"]["response"]
+            } else {
+                &migrated_value
+            };
+            if has_timing {
+                assert_eq!(new_owner["timing"]["firstOutputSource"], "legacyUnknown");
+                assert_eq!(new_owner["timing"]["ttftMillis"], 9);
+                assert_eq!(new_owner["timing"]["decodeMillis"], 11);
+                assert_eq!(new_owner["timing"]["responseMillis"], 20);
+                let invalid_current =
+                    OpaquePayload::new(format, new_version, value.to_string()).unwrap();
+                assert!(
+                    migrate_payload(&invalid_current).is_err(),
+                    "new formats cannot silently default provenance"
+                );
+            } else {
+                assert!(
+                    new_owner.get("timing").is_none(),
+                    "absent timing must remain absent"
+                );
+            }
+            if format == "pl.model.compaction" {
+                assert_eq!(migrated_value["item"], value["item"]);
+            }
+            assert!(migrate_payload(&migrated).unwrap().is_none());
+        }
+    }
+}
+
 fn legacy_binding() -> serde_json::Value {
     json!({
         "providerInstanceId": "deepseek",
@@ -278,7 +349,12 @@ fn legacy_assistant_frame_migrates_its_binding() {
             _ => unreachable!(),
         };
         let migrated = migrate_payload(payload);
-        let decoded = migrated.and_then(|_| model_response_receipt(&current));
+        let decoded = migrated.and_then(|migrated| {
+            if let Some(payload) = migrated {
+                current.content = vec![pl_core::context::ContextContent::Opaque { payload }];
+            }
+            model_response_receipt(&current)
+        });
         if version == 3 {
             assert!(
                 decoded.is_err(),
@@ -380,7 +456,7 @@ fn legacy_failure_receipts_migrate_and_unknown_versions_fail_closed() {
     }
     current["accounting"]["pricing"] = json!({"kind":"noCharge"});
     for version in [3, 4] {
-        let frozen = pl_core::model::ModelError {
+        let mut frozen = pl_core::model::ModelError {
             details: Some(Box::new(
                 OpaquePayload::new("pl.model.failure", version, current.to_string()).unwrap(),
             )),
@@ -388,8 +464,12 @@ fn legacy_failure_receipts_migrate_and_unknown_versions_fail_closed() {
             usage: Box::default(),
             source: None,
         };
-        let decoded = migrate_payload(frozen.details.as_ref().unwrap())
-            .and_then(|_| model_failure_receipt(&frozen));
+        let decoded = migrate_payload(frozen.details.as_ref().unwrap()).and_then(|payload| {
+            if let Some(payload) = payload {
+                frozen.details = Some(Box::new(payload));
+            }
+            model_failure_receipt(&frozen)
+        });
         if version == 3 {
             assert!(
                 decoded.is_err(),

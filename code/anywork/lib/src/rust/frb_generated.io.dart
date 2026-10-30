@@ -969,6 +969,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   dco_decode_box_autoadd_bridge_updater_state_snapshot(dynamic raw);
 
   @protected
+  BridgeUsageCallSnapshot dco_decode_box_autoadd_bridge_usage_call_snapshot(
+    dynamic raw,
+  );
+
+  @protected
   BridgeUserInputInteractionState
   dco_decode_box_autoadd_bridge_user_input_interaction_state(dynamic raw);
 
@@ -1697,6 +1702,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   BridgeFaultedAgent dco_decode_bridge_faulted_agent(dynamic raw);
 
   @protected
+  BridgeFirstOutputSource dco_decode_bridge_first_output_source(dynamic raw);
+
+  @protected
   BridgeGeneralSettingsDto dco_decode_bridge_general_settings_dto(dynamic raw);
 
   @protected
@@ -1806,6 +1814,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeMcpStateSnapshot dco_decode_bridge_mcp_state_snapshot(dynamic raw);
+
+  @protected
+  BridgeMetricAvailability dco_decode_bridge_metric_availability(dynamic raw);
 
   @protected
   BridgeModeModelSettingsDto dco_decode_bridge_mode_model_settings_dto(
@@ -2517,6 +2528,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeThreadUsageDiagnostics dco_decode_bridge_thread_usage_diagnostics(
+    dynamic raw,
+  );
+
+  @protected
   BridgeThreadUserInputFieldPart dco_decode_bridge_thread_user_input_field_part(
     dynamic raw,
   );
@@ -2716,6 +2732,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   BridgeTurnState dco_decode_bridge_turn_state(dynamic raw);
 
   @protected
+  BridgeUiLanguage dco_decode_bridge_ui_language(dynamic raw);
+
+  @protected
   BridgeUninitializedResource dco_decode_bridge_uninitialized_resource(
     dynamic raw,
   );
@@ -2730,6 +2749,42 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeUpdaterStateSnapshot dco_decode_bridge_updater_state_snapshot(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeUsageCallSnapshot dco_decode_bridge_usage_call_snapshot(dynamic raw);
+
+  @protected
+  BridgeUsageCounterField dco_decode_bridge_usage_counter_field(dynamic raw);
+
+  @protected
+  BridgeUsageGapIssue dco_decode_bridge_usage_gap_issue(dynamic raw);
+
+  @protected
+  BridgeUsageGapReason dco_decode_bridge_usage_gap_reason(dynamic raw);
+
+  @protected
+  BridgeUsageIssueCountSnapshot dco_decode_bridge_usage_issue_count_snapshot(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeUsageOutcomeCountSnapshot
+  dco_decode_bridge_usage_outcome_count_snapshot(dynamic raw);
+
+  @protected
+  BridgeUsagePurposeCountSnapshot
+  dco_decode_bridge_usage_purpose_count_snapshot(dynamic raw);
+
+  @protected
+  BridgeUsageReport dco_decode_bridge_usage_report(dynamic raw);
+
+  @protected
+  BridgeUsageReportStatus dco_decode_bridge_usage_report_status(dynamic raw);
+
+  @protected
+  BridgeUsageTerminalStatus dco_decode_bridge_usage_terminal_status(
     dynamic raw,
   );
 
@@ -3194,6 +3249,26 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<BridgeTodoItem> dco_decode_list_bridge_todo_item(dynamic raw);
 
   @protected
+  List<BridgeUsageCallSnapshot> dco_decode_list_bridge_usage_call_snapshot(
+    dynamic raw,
+  );
+
+  @protected
+  List<BridgeUsageGapIssue> dco_decode_list_bridge_usage_gap_issue(dynamic raw);
+
+  @protected
+  List<BridgeUsageIssueCountSnapshot>
+  dco_decode_list_bridge_usage_issue_count_snapshot(dynamic raw);
+
+  @protected
+  List<BridgeUsageOutcomeCountSnapshot>
+  dco_decode_list_bridge_usage_outcome_count_snapshot(dynamic raw);
+
+  @protected
+  List<BridgeUsagePurposeCountSnapshot>
+  dco_decode_list_bridge_usage_purpose_count_snapshot(dynamic raw);
+
+  @protected
   List<BridgeUserInputAnswer> dco_decode_list_bridge_user_input_answer(
     dynamic raw,
   );
@@ -3484,6 +3559,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeTurn? dco_decode_opt_box_autoadd_bridge_turn(dynamic raw);
+
+  @protected
+  BridgeUsageCallSnapshot?
+  dco_decode_opt_box_autoadd_bridge_usage_call_snapshot(dynamic raw);
 
   @protected
   BridgeWorkflowDefinition?
@@ -4713,6 +4792,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeUsageCallSnapshot sse_decode_box_autoadd_bridge_usage_call_snapshot(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   BridgeUserInputInteractionState
   sse_decode_box_autoadd_bridge_user_input_interaction_state(
     SseDeserializer deserializer,
@@ -5669,6 +5753,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeFirstOutputSource sse_decode_bridge_first_output_source(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   BridgeGeneralSettingsDto sse_decode_bridge_general_settings_dto(
     SseDeserializer deserializer,
   );
@@ -5820,6 +5909,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeMcpStateSnapshot sse_decode_bridge_mcp_state_snapshot(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeMetricAvailability sse_decode_bridge_metric_availability(
     SseDeserializer deserializer,
   );
 
@@ -6677,6 +6771,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeThreadUsageDiagnostics sse_decode_bridge_thread_usage_diagnostics(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   BridgeThreadUserInputFieldPart sse_decode_bridge_thread_user_input_field_part(
     SseDeserializer deserializer,
   );
@@ -6924,6 +7023,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   BridgeTurnState sse_decode_bridge_turn_state(SseDeserializer deserializer);
 
   @protected
+  BridgeUiLanguage sse_decode_bridge_ui_language(SseDeserializer deserializer);
+
+  @protected
   BridgeUninitializedResource sse_decode_bridge_uninitialized_resource(
     SseDeserializer deserializer,
   );
@@ -6940,6 +7042,54 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeUpdaterStateSnapshot sse_decode_bridge_updater_state_snapshot(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeUsageCallSnapshot sse_decode_bridge_usage_call_snapshot(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeUsageCounterField sse_decode_bridge_usage_counter_field(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeUsageGapIssue sse_decode_bridge_usage_gap_issue(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeUsageGapReason sse_decode_bridge_usage_gap_reason(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeUsageIssueCountSnapshot sse_decode_bridge_usage_issue_count_snapshot(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeUsageOutcomeCountSnapshot
+  sse_decode_bridge_usage_outcome_count_snapshot(SseDeserializer deserializer);
+
+  @protected
+  BridgeUsagePurposeCountSnapshot
+  sse_decode_bridge_usage_purpose_count_snapshot(SseDeserializer deserializer);
+
+  @protected
+  BridgeUsageReport sse_decode_bridge_usage_report(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeUsageReportStatus sse_decode_bridge_usage_report_status(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeUsageTerminalStatus sse_decode_bridge_usage_terminal_status(
     SseDeserializer deserializer,
   );
 
@@ -7512,6 +7662,34 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  List<BridgeUsageCallSnapshot> sse_decode_list_bridge_usage_call_snapshot(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  List<BridgeUsageGapIssue> sse_decode_list_bridge_usage_gap_issue(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  List<BridgeUsageIssueCountSnapshot>
+  sse_decode_list_bridge_usage_issue_count_snapshot(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  List<BridgeUsageOutcomeCountSnapshot>
+  sse_decode_list_bridge_usage_outcome_count_snapshot(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  List<BridgeUsagePurposeCountSnapshot>
+  sse_decode_list_bridge_usage_purpose_count_snapshot(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   List<BridgeUserInputAnswer> sse_decode_list_bridge_user_input_answer(
     SseDeserializer deserializer,
   );
@@ -7878,6 +8056,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeTurn? sse_decode_opt_box_autoadd_bridge_turn(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeUsageCallSnapshot?
+  sse_decode_opt_box_autoadd_bridge_usage_call_snapshot(
     SseDeserializer deserializer,
   );
 
@@ -9274,6 +9458,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_box_autoadd_bridge_usage_call_snapshot(
+    BridgeUsageCallSnapshot self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_box_autoadd_bridge_user_input_interaction_state(
     BridgeUserInputInteractionState self,
     SseSerializer serializer,
@@ -10423,6 +10613,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_bridge_first_output_source(
+    BridgeFirstOutputSource self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_bridge_general_settings_dto(
     BridgeGeneralSettingsDto self,
     SseSerializer serializer,
@@ -10605,6 +10801,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_bridge_mcp_state_snapshot(
     BridgeMcpStateSnapshot self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_metric_availability(
+    BridgeMetricAvailability self,
     SseSerializer serializer,
   );
 
@@ -11644,6 +11846,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_bridge_thread_usage_diagnostics(
+    BridgeThreadUsageDiagnostics self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_bridge_thread_user_input_field_part(
     BridgeThreadUserInputFieldPart self,
     SseSerializer serializer,
@@ -11947,6 +12155,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_bridge_ui_language(
+    BridgeUiLanguage self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_bridge_uninitialized_resource(
     BridgeUninitializedResource self,
     SseSerializer serializer,
@@ -11967,6 +12181,66 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_bridge_updater_state_snapshot(
     BridgeUpdaterStateSnapshot self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_usage_call_snapshot(
+    BridgeUsageCallSnapshot self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_usage_counter_field(
+    BridgeUsageCounterField self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_usage_gap_issue(
+    BridgeUsageGapIssue self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_usage_gap_reason(
+    BridgeUsageGapReason self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_usage_issue_count_snapshot(
+    BridgeUsageIssueCountSnapshot self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_usage_outcome_count_snapshot(
+    BridgeUsageOutcomeCountSnapshot self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_usage_purpose_count_snapshot(
+    BridgeUsagePurposeCountSnapshot self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_usage_report(
+    BridgeUsageReport self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_usage_report_status(
+    BridgeUsageReportStatus self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_usage_terminal_status(
+    BridgeUsageTerminalStatus self,
     SseSerializer serializer,
   );
 
@@ -12634,6 +12908,36 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_list_bridge_usage_call_snapshot(
+    List<BridgeUsageCallSnapshot> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_bridge_usage_gap_issue(
+    List<BridgeUsageGapIssue> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_bridge_usage_issue_count_snapshot(
+    List<BridgeUsageIssueCountSnapshot> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_bridge_usage_outcome_count_snapshot(
+    List<BridgeUsageOutcomeCountSnapshot> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_bridge_usage_purpose_count_snapshot(
+    List<BridgeUsagePurposeCountSnapshot> self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_list_bridge_user_input_answer(
     List<BridgeUserInputAnswer> self,
     SseSerializer serializer,
@@ -13038,6 +13342,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_opt_box_autoadd_bridge_turn(
     BridgeTurn? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_bridge_usage_call_snapshot(
+    BridgeUsageCallSnapshot? self,
     SseSerializer serializer,
   );
 
