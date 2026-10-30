@@ -147,6 +147,7 @@ abstract final class AccountTemplatePreviewFixtures {
           ? const AccountDetailsContent.acp(AccountPreviewFixtures.acp)
           : AccountDetailsContent.native(
               NativeAccountDetailsPresentation(
+                authentication: AccountAuthenticationMethod.apiKey,
                 credentialReady: id != 'openai-compatible',
                 billing: billingControl(id),
                 catalog: AccountCatalogPresentation(
@@ -177,6 +178,7 @@ abstract final class AccountTemplatePreviewFixtures {
         credential: const AccountTextPresentation(),
         hasStoredCredential: id != 'openai-compatible',
         credentialRequired: id != 'openai-compatible',
+        isOpenAiTemplate: id == 'openai',
         protocolLabel: protocol(id),
         canSave: true,
         canAddModel: true,

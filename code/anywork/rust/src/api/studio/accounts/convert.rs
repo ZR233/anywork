@@ -2,6 +2,7 @@ use super::types::*;
 use crate::api::studio::convert::{
     acp::{bridge_acp_account_settings, bridge_acp_auth_snapshot},
     acp_install::bridge_acp_install_snapshot,
+    chatgpt_auth::bridge_chatgpt_login_snapshot,
     settings::{bridge_account_settings, bridge_model_catalog_account},
 };
 use crate::api::studio::types::BridgeResourceStamp;
@@ -36,6 +37,9 @@ impl From<BridgeAccountObservationTarget> for p::AccountObservationTarget {
             BridgeAccountObservationTarget::Usage => Self::Usage,
             BridgeAccountObservationTarget::AcpAuth => Self::AcpAuth,
             BridgeAccountObservationTarget::AcpInstall => Self::AcpInstall,
+            BridgeAccountObservationTarget::ChatGptLogin { login_id } => {
+                Self::ChatGptLogin { login_id }
+            }
         }
     }
 }
@@ -125,6 +129,13 @@ pub(super) fn frame(value: p::AccountDomainFrame) -> BridgeAccountDomainFrame {
         } => BridgeAccountDomainFrame::AcpInstall {
             stamp: stamp(source),
             snapshot: bridge_acp_install_snapshot(snapshot),
+        },
+        p::AccountDomainFrame::ChatGptLogin {
+            stamp: source,
+            snapshot,
+        } => BridgeAccountDomainFrame::ChatGptLogin {
+            stamp: stamp(source),
+            snapshot: bridge_chatgpt_login_snapshot(snapshot),
         },
     }
 }

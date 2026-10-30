@@ -37,6 +37,9 @@ use utoipa_axum::{router::OpenApiRouter, routes};
 use crate::AppState;
 use crate::error::ApiError;
 use crate::sse;
+use pl_protocol::studio::{
+    CancelChatGptLoginRequest, ChatGptLoginCommandReply, StartChatGptLoginRequest,
+};
 
 #[derive(OpenApi)]
 #[openapi(
@@ -260,6 +263,8 @@ pub(crate) fn api_router() -> OpenApiRouter<AppState> {
         .routes(routes!(stop_thread))
         .routes(routes!(read_continuation_operation))
         .routes(routes!(account_catalog))
+        .routes(routes!(start_chatgpt_login))
+        .routes(routes!(cancel_chatgpt_login))
         .routes(routes!(list_delegation_models))
         .routes(routes!(get_delegation_model))
         .routes(routes!(read_settings))
@@ -1074,6 +1079,22 @@ async fn set_account_billing_kind(
             .set_account_billing_kind(request)
             .map_err(ApiError::from)?,
     ))
+}
+
+#[utoipa::path(post, path = "/api/v1/accounts/chatgpt-login", operation_id = "accounts.startChatGptLogin", request_body = StartChatGptLoginRequest, responses(StudioApiErrors, (status = 200, body = ChatGptLoginCommandReply)))]
+async fn start_chatgpt_login(
+    State(state): State<AppState>,
+    ApiJson(request): ApiJson<StartChatGptLoginRequest>,
+) -> Result<Json<ChatGptLoginCommandReply>, ApiError> {
+    Ok(Json(state.runtime.start_chatgpt_login(request).await?))
+}
+
+#[utoipa::path(post, path = "/api/v1/accounts/chatgpt-login/cancel", operation_id = "accounts.cancelChatGptLogin", request_body = CancelChatGptLoginRequest, responses(StudioApiErrors, (status = 200, body = ChatGptLoginCommandReply)))]
+async fn cancel_chatgpt_login(
+    State(state): State<AppState>,
+    ApiJson(request): ApiJson<CancelChatGptLoginRequest>,
+) -> Result<Json<ChatGptLoginCommandReply>, ApiError> {
+    Ok(Json(state.runtime.cancel_chatgpt_login(request).await?))
 }
 
 #[utoipa::path(post, path = "/api/v1/accounts", operation_id = "accounts.create", request_body = CreateAccountRequest, responses(StudioApiErrors, (status = 200, body = SettingsCommandReply)))]

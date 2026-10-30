@@ -1,4 +1,3 @@
-use std::collections::BTreeSet;
 use std::env;
 use std::fs::{self, OpenOptions};
 use std::io::{ErrorKind, Write};
@@ -22,7 +21,8 @@ pub struct ConfigPaths {
 #[derive(Clone)]
 pub struct ConfigStore {
     paths: ConfigPaths,
-    credentials: Arc<dyn CredentialStore>,
+    pub(super) credentials: Arc<dyn CredentialStore>,
+    observed: Arc<std::sync::Mutex<Option<super::credential_commit::Baseline>>>,
 }
 
 impl std::fmt::Debug for ConfigStore {
@@ -94,8 +94,15 @@ impl ConfigStore {
         Self::with_credential_store(paths, Arc::new(MemoryCredentialStore::default()))
     }
 
-    fn with_credential_store(paths: ConfigPaths, credentials: Arc<dyn CredentialStore>) -> Self {
-        Self { paths, credentials }
+    pub(super) fn with_credential_store(
+        paths: ConfigPaths,
+        credentials: Arc<dyn CredentialStore>,
+    ) -> Self {
+        Self {
+            paths,
+            credentials,
+            observed: Arc::new(std::sync::Mutex::new(None)),
+        }
     }
 
     /// 测试专用：用调用方持有的内存凭据库构造 store。
@@ -107,7 +114,11 @@ impl ConfigStore {
         paths: ConfigPaths,
         credentials: Arc<super::credential::MemoryCredentialStore>,
     ) -> Self {
-        Self { paths, credentials }
+        Self {
+            paths,
+            credentials,
+            observed: Arc::new(std::sync::Mutex::new(None)),
+        }
     }
 
     pub fn paths(&self) -> &ConfigPaths {
@@ -146,6 +157,7 @@ impl ConfigStore {
     }
 
     pub fn load_or_default(&self) -> Result<StudioConfig> {
+        self.recover_credentials()?;
         if self.config_absent()? {
             let mut config = StudioConfig::default_config()?;
             self.hydrate_credentials(&mut config)?;
@@ -167,6 +179,7 @@ impl ConfigStore {
     pub(crate) fn load_for_startup(
         &self,
     ) -> std::result::Result<StudioConfig, super::ConfigRuntimeError> {
+        self.recover_credentials()?;
         // 中断的迁移必须先接续同一操作，不能先按当前结构解析后发布新旧混合状态。
         super::schema_migration::resume_for_startup(&self.paths, self.credentials.as_ref())
             .map_err(super::ConfigRuntimeError::Migration)?;
@@ -234,6 +247,7 @@ impl ConfigStore {
     }
 
     pub fn load(&self) -> Result<StudioConfig> {
+        self.recover_credentials()?;
         let content = fs::read_to_string(self.paths.config_file())
             .map_err(|error| self.config_path_error(error.into()))?;
         let mut config =
@@ -242,18 +256,71 @@ impl ConfigStore {
         Ok(config)
     }
 
+    /// Saves against the binding last observed by this store. Existing unobserved files
+    /// require a load first; the current system value is never adopted as an expected binding.
     pub fn save(&self, config: &StudioConfig) -> Result<()> {
-        config.validate_declarations()?;
-        let persisted_account_ids = self.persisted_account_ids()?;
-        let content = serialize_persisted_config(config)?;
-        fs::create_dir_all(self.paths.config_dir())?;
-        let previous = self.apply_credentials(config, persisted_account_ids)?;
-        if let Err(error) =
-            pl_tool::workspace::write_file_atomically(self.paths.config_file(), content.as_bytes())
-        {
-            self.restore_credentials(&previous);
-            return Err(error.into());
-        }
+        self.save_with(config, |path, bytes| {
+            pl_tool::workspace::write_file_atomically(path, bytes).map_err(Into::into)
+        })
+    }
+
+    fn save_with(
+        &self,
+        config: &StudioConfig,
+        replace: impl Fn(&Path, &[u8]) -> Result<()>,
+    ) -> Result<()> {
+        let baseline = self
+            .observed
+            .lock()
+            .map_err(|_| super::credential_commit::recovery_required())?
+            .clone();
+        let baseline = match baseline {
+            Some(value) => value,
+            None if self.config_absent()? => super::credential_commit::Baseline::default(),
+            None => {
+                return Err(PureError::ConfigError(
+                    "load configuration before saving its credential bindings".into(),
+                ));
+            }
+        };
+        self.commit_credentials(
+            &baseline,
+            config,
+            &super::credential_commit::CredentialIntents::default(),
+            &replace,
+        )?;
+        self.remember_bindings(config)
+    }
+
+    pub(super) fn commit_config(
+        &self,
+        baseline: &StudioConfig,
+        candidate: &StudioConfig,
+        intents: &super::credential_commit::CredentialIntents,
+    ) -> Result<()> {
+        self.commit_config_with(baseline, candidate, intents, &|path, bytes| {
+            pl_tool::workspace::write_file_atomically(path, bytes).map_err(Into::into)
+        })
+    }
+
+    pub(crate) fn commit_config_with(
+        &self,
+        baseline: &StudioConfig,
+        candidate: &StudioConfig,
+        intents: &super::credential_commit::CredentialIntents,
+        replace: &impl Fn(&Path, &[u8]) -> Result<()>,
+    ) -> Result<()> {
+        let baseline = super::credential_commit::Baseline::from_config(baseline)?;
+        self.commit_credentials(&baseline, candidate, intents, replace)?;
+        self.remember_bindings(candidate)
+    }
+
+    fn remember_bindings(&self, config: &StudioConfig) -> Result<()> {
+        *self
+            .observed
+            .lock()
+            .map_err(|_| super::credential_commit::recovery_required())? =
+            Some(super::credential_commit::Baseline::from_config(config)?);
         Ok(())
     }
 
@@ -270,87 +337,53 @@ impl ConfigStore {
     }
 
     fn hydrate_credentials(&self, config: &mut StudioConfig) -> Result<()> {
+        let _locks = self.lock_accounts(config.models.accounts.keys().map(ToString::to_string))?;
         for (account_id, account) in &mut config.models.accounts {
-            account.bearer_token = self.credentials.load(account_id.as_str())?;
-        }
-        Ok(())
-    }
-
-    fn persisted_account_ids(&self) -> Result<BTreeSet<String>> {
-        if self.config_absent()? {
-            return Ok(BTreeSet::new());
-        }
-        let content = fs::read_to_string(self.paths.config_file())
-            .map_err(|error| self.config_path_error(error.into()))?;
-        let persisted =
-            parse_current_config(&content).map_err(|error| self.config_path_error(error))?;
-        Ok(persisted
-            .models
-            .accounts
-            .keys()
-            .map(|account_id| account_id.as_str().to_string())
-            .collect())
-    }
-
-    fn apply_credentials(
-        &self,
-        config: &StudioConfig,
-        mut account_ids: BTreeSet<String>,
-    ) -> Result<Vec<(String, Option<String>)>> {
-        let mut previous = Vec::new();
-        account_ids.extend(
-            config
-                .models
-                .accounts
-                .keys()
-                .map(|account_id| account_id.as_str().to_string()),
-        );
-        for account_id in account_ids {
-            let desired = config
-                .models
-                .accounts
-                .iter()
-                .find(|(candidate, _)| candidate.as_str() == account_id)
-                .and_then(|(_, account)| account.bearer_token.as_deref())
-                .filter(|secret| !secret.trim().is_empty());
-            let old = self.credentials.load(&account_id)?;
-            previous.push((account_id.clone(), old));
-            let result = match desired {
-                Some(secret) => self.credentials.save(&account_id, secret),
-                None => self.credentials.delete(&account_id),
-            }
-            .and_then(|()| {
-                let actual = self.credentials.load(&account_id)?;
-                if actual.as_deref() == desired {
-                    Ok(())
-                } else {
-                    Err(PureError::ConfigError(format!(
-                        "system credential verification failed for account {account_id}"
-                    )))
+            self.ensure_credential_available(account_id.as_str())?;
+            if account.authentication == pl_protocol::studio::AccountAuthenticationMethod::ChatGpt {
+                account.bearer_token = None;
+                let payload = self
+                    .credentials
+                    .load_strict(account_id.as_str())?
+                    .ok_or_else(|| {
+                        PureError::ConfigError("ChatGPT credential is missing".into())
+                    })?;
+                let record: pl_model::protocol::chatgpt::ChatGptCredentialRecord =
+                    serde_json::from_str(&payload).map_err(|_| {
+                        PureError::ConfigError("ChatGPT credential is invalid".into())
+                    })?;
+                record
+                    .validate()
+                    .map_err(|error| PureError::ConfigError(error.to_string()))?;
+                if account.chatgpt_account.as_ref() != Some(&record.account) {
+                    return Err(PureError::ConfigError(
+                        "ChatGPT credential identity conflicts with account".into(),
+                    ));
                 }
-            });
-            if let Err(error) = result {
-                self.restore_credentials(&previous);
-                return Err(error);
+                account.chatgpt_session = Some(self.chatgpt_session(account_id.as_str(), &record)?);
+                account.chatgpt_credentials = Some(record);
+            } else {
+                let secret = self.credentials.load(account_id.as_str())?;
+                if secret.as_deref().is_some_and(|payload| {
+                    serde_json::from_str::<pl_model::protocol::chatgpt::ChatGptCredentialRecord>(
+                        payload,
+                    )
+                    .is_ok()
+                }) {
+                    // A crash or external inconsistency between config and keyring must fail
+                    // closed, never reinterpret an OAuth record as an API Authorization value.
+                    return Err(PureError::ConfigError(
+                        "protected credential authentication does not match the account".into(),
+                    ));
+                }
+                account.bearer_token = secret;
             }
         }
-        Ok(previous)
-    }
-
-    fn restore_credentials(&self, previous: &[(String, Option<String>)]) {
-        for (account_id, secret) in previous.iter().rev() {
-            let result = match secret {
-                Some(secret) => self.credentials.save(account_id, secret),
-                None => self.credentials.delete(account_id),
-            };
-            if let Err(error) = result {
-                tracing::error!(%error, account_id, "回滚系统凭据失败");
-            }
-        }
+        self.remember_bindings(config)
     }
 }
 
-fn parse_current_config(content: &str) -> Result<StudioConfig> {
+pub(super) fn parse_current_config(content: &str) -> Result<StudioConfig> {
     parse_config(content)
 }
 
@@ -428,7 +461,7 @@ fn config_backup_path(config_path: &Path, kind: &str, stamp: u128, collision: u3
 pub(super) fn serialize_persisted_config(config: &StudioConfig) -> Result<String> {
     let mut persisted = config.clone();
     clear_inline_credentials(&mut persisted);
-    super::document_migration::MainV27::from_config(&persisted)
+    super::document_migration::MainV28::from_config(&persisted)
         .and_then(|document| document.encode())
         .map_err(|error| {
             PureError::ConfigError(format!("failed to serialize Studio config: {error}"))
@@ -458,6 +491,195 @@ mod tests {
     use pl_model::config::{AccountCapabilitySelection, AccountId};
     use pl_model::protocol::StandaloneWebSearchDialect;
     use pl_protocol::search::WebSearchMode;
+
+    #[test]
+    fn chatgpt_schema_27_startup_preserves_api_credentials_routes_headers_and_overrides() {
+        let (_directory, store) = isolated_store();
+        let mut expected = StudioConfig::default_config().unwrap();
+        let (id, account) = expected.models.accounts.iter_mut().next().unwrap();
+        let id = id.to_string();
+        let model_id = account.effective_catalog(None).unwrap()[0]
+            .model
+            .model_id
+            .clone();
+        account.set_model_enabled(&model_id, false).unwrap();
+        account
+            .set_model_auto_compact_override(&model_id, Some(32_000))
+            .unwrap();
+        match &mut account.catalog {
+            pl_model::config::AccountModelCatalogConfig::Bundled {
+                connection_overrides,
+                ..
+            }
+            | pl_model::config::AccountModelCatalogConfig::Explicit {
+                connection_overrides,
+                ..
+            } => {
+                connection_overrides.insert(model_id, pl_model::protocol::ConnectionMode::Http);
+            }
+        }
+        account.bearer_token = Some("migration-api-secret".into());
+        account.http_headers = Some(
+            [("x-fixture".into(), "preserved".into())]
+                .into_iter()
+                .collect(),
+        );
+        account.billing_kind = Some(pl_protocol::BillingKind::NoCharge);
+        store.save(&expected).unwrap();
+        let mut historical: toml::Value =
+            toml::from_str(&std::fs::read_to_string(store.paths.config_file()).unwrap()).unwrap();
+        historical["schema_version"] = 27.into();
+        for (_, account) in historical["models"]["accounts"]
+            .as_table_mut()
+            .unwrap()
+            .iter_mut()
+        {
+            account.as_table_mut().unwrap().remove("authentication");
+        }
+        let original = toml::to_string(&historical).unwrap();
+        std::fs::write(store.paths.config_file(), &original).unwrap();
+        let migrated = store.load_for_startup().unwrap();
+        assert_eq!(migrated, expected);
+        assert_eq!(
+            migrated.models.accounts[&pl_model::config::AccountId::new(&id).unwrap()]
+                .authentication,
+            pl_protocol::studio::AccountAuthenticationMethod::ApiKey
+        );
+        assert_eq!(
+            store.credentials.load_strict(&id).unwrap().as_deref(),
+            Some("migration-api-secret")
+        );
+        let saved = std::fs::read_to_string(store.paths.config_file()).unwrap();
+        assert!(saved.contains("schema_version = 28"));
+        assert!(!saved.contains("migration-api-secret"));
+        assert_eq!(store.load_for_startup().unwrap(), expected);
+        assert!(
+            std::fs::read_dir(store.paths.config_dir())
+                .unwrap()
+                .filter_map(|entry| entry.ok())
+                .filter(|entry| entry.file_name().to_string_lossy().ends_with(".bak"))
+                .any(|entry| std::fs::read_to_string(entry.path()).unwrap() == original)
+        );
+    }
+
+    #[test]
+    fn chatgpt_save_rolls_back_original_credentials_and_preserves_refresh_markers() {
+        use pl_model::protocol::chatgpt::ChatGptCredentialRecord;
+        use pl_protocol::studio::{AccountAuthenticationMethod, ChatGptAccountInfo};
+        let (_directory, store) = isolated_store();
+        let mut initial = StudioConfig::default_config().unwrap();
+        let id = pl_model::config::AccountId::new("transaction-fixture").unwrap();
+        let mut api = pl_model::config::builtin_account_catalog()
+            .unwrap()
+            .templates
+            .into_iter()
+            .find(|template| template.id.as_str() == "openai")
+            .unwrap()
+            .account;
+        api.bearer_token = Some("original-api-key".into());
+        api.bearer_token_env = None;
+        initial.models.accounts.insert(id.clone(), api);
+        store.save(&initial).unwrap();
+        let original_bytes = fs::read(store.paths.config_file()).unwrap();
+        let record = ChatGptCredentialRecord {
+            schema_version: 1,
+            registration_id: "transaction-registration".into(),
+            account: ChatGptAccountInfo {
+                issuer: "https://auth.openai.com".into(),
+                subject: "fixture-subject".into(),
+                client_id: "fixture-client".into(),
+                email: None,
+                plan_usage_enabled: true,
+            },
+            ext_agent_host_id: "urn:uuid:00000000-0000-4000-8000-000000000001".into(),
+            access_token: "transaction-access".into(),
+            refresh_token: "transaction-refresh".into(),
+            id_token: "transaction-verified-id".into(),
+            scopes: vec!["chatgpt.tokens.use.direct".into()],
+            expires_at: crate::studio::unix_seconds() + 3600,
+            earliest_refresh_at: None,
+            refresh_in_flight: false,
+        };
+        let mut candidate = initial.clone();
+        let account = candidate.models.accounts.get_mut(&id).unwrap();
+        account.authentication = AccountAuthenticationMethod::ChatGpt;
+        account.chatgpt_account = Some(record.account.clone());
+        account.chatgpt_credentials = Some(record.clone());
+        account.chatgpt_session = Some(store.chatgpt_session(id.as_str(), &record).unwrap());
+        account.bearer_token = None;
+        let intents = super::super::credential_commit::CredentialIntents::for_account(
+            id.as_str(),
+            &pl_protocol::studio::AccountAuthenticationIntent::ChatGpt {
+                login_id: "fixture-login".into(),
+                editor_id: "fixture-editor".into(),
+            },
+        );
+        let calls = std::cell::Cell::new(0);
+        let error = store
+            .commit_config_with(&initial, &candidate, &intents, &|path, bytes| {
+                pl_tool::workspace::write_file_atomically(path, bytes)?;
+                calls.set(calls.get() + 1);
+                if calls.get() > 1 {
+                    return Ok(());
+                }
+                let protected = store.credentials.load_strict(id.as_str())?.unwrap();
+                let written: ChatGptCredentialRecord = serde_json::from_str(&protected).unwrap();
+                assert_eq!(written, record);
+                Err(PureError::ConfigError(
+                    "injected configuration commit failure".into(),
+                ))
+            })
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("injected configuration commit failure")
+        );
+        assert_eq!(
+            store
+                .credentials
+                .load_strict(id.as_str())
+                .unwrap()
+                .as_deref(),
+            Some("original-api-key")
+        );
+        assert_eq!(fs::read(store.paths.config_file()).unwrap(), original_bytes);
+        assert_eq!(store.load().unwrap(), initial);
+        store
+            .credentials
+            .save_strict(id.as_str(), &serde_json::to_string(&record).unwrap())
+            .unwrap();
+        assert!(
+            store.load().is_err(),
+            "an OAuth record is never hydrated as an API key"
+        );
+        store
+            .credentials
+            .save_strict(id.as_str(), "original-api-key")
+            .unwrap();
+        store.commit_config(&initial, &candidate, &intents).unwrap();
+        let mut in_flight = record.clone();
+        in_flight.refresh_in_flight = true;
+        store
+            .credentials
+            .save_strict(id.as_str(), &serde_json::to_string(&in_flight).unwrap())
+            .unwrap();
+        // An unrelated settings save carries a cached original record. It must not resurrect
+        // a consumed refresh token or erase another process's pending-operation marker.
+        store.save(&candidate).unwrap();
+        let protected: ChatGptCredentialRecord =
+            serde_json::from_str(&store.credentials.load_strict(id.as_str()).unwrap().unwrap())
+                .unwrap();
+        assert!(protected.refresh_in_flight);
+        let encoded = fs::read_to_string(store.paths.config_file()).unwrap();
+        assert!(!encoded.contains("transaction-access"));
+        assert!(!encoded.contains("transaction-refresh"));
+        let hydrated = store.load().unwrap();
+        assert_eq!(
+            hydrated.models.accounts[&id].chatgpt_credentials.as_ref(),
+            Some(&in_flight)
+        );
+    }
 
     fn isolated_store() -> (tempfile::TempDir, ConfigStore) {
         let directory = tempfile::tempdir().expect("isolated config directory");
@@ -531,6 +753,7 @@ mod tests {
             let Some(account) = account.as_table_mut() else {
                 continue;
             };
+            account.remove("authentication");
             if let Some(template) = account.remove("template") {
                 account.insert("preset".into(), template);
             }
@@ -603,6 +826,13 @@ mod tests {
         let path = store.paths.config_file();
         let mut table = read_table(path);
         table["schema_version"] = 21.into();
+        for (_, account) in table["models"]["accounts"]
+            .as_table_mut()
+            .unwrap()
+            .iter_mut()
+        {
+            account.as_table_mut().unwrap().remove("authentication");
+        }
         let model = table
             .get_mut("models")
             .unwrap()
@@ -657,6 +887,7 @@ mod tests {
             let account = account.as_table_mut().unwrap();
             account.remove("disabled_models");
             account.remove("billing_kind");
+            account.remove("authentication");
         }
         write_table(path, &table);
         let original = fs::read(path).unwrap();
@@ -1159,6 +1390,13 @@ mod tests {
         let path = store.paths.config_file();
         let mut table = read_table(path);
         table.insert("schema_version".into(), toml::Value::Integer(23));
+        for (_, account) in table["models"]["accounts"]
+            .as_table_mut()
+            .unwrap()
+            .iter_mut()
+        {
+            account.as_table_mut().unwrap().remove("authentication");
+        }
         let _ = table.remove("acp");
         write_table(path, &table);
         let original = fs::read(path).expect("original schema 23 bytes");

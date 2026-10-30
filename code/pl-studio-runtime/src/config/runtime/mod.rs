@@ -404,6 +404,18 @@ impl ConfigRuntime {
         self.store.bot_credentials()
     }
 
+    pub(crate) fn chatgpt_host_id(&self) -> Result<String> {
+        self.store.chatgpt_host_id()
+    }
+
+    pub(crate) fn chatgpt_session(
+        &self,
+        id: &str,
+        record: &pl_model::protocol::chatgpt::ChatGptCredentialRecord,
+    ) -> Result<pl_model::protocol::chatgpt::ChatGptSession> {
+        self.store.chatgpt_session(id, record)
+    }
+
     /// Resolves an enabled Profile and its model from the same snapshot; reads the published cache.
     ///
     /// # Errors
@@ -550,6 +562,19 @@ impl ConfigRuntime {
         expected_revision: u64,
         edit: impl FnOnce(&StudioConfig, &StudioConfig) -> Result<StudioConfig>,
     ) -> ConfigRuntimeResult<ConfigRuntimeSnapshot> {
+        self.update_with_credential_intents(
+            expected_revision,
+            super::credential_commit::CredentialIntents::default(),
+            edit,
+        )
+    }
+
+    pub(crate) fn update_with_credential_intents(
+        &self,
+        expected_revision: u64,
+        intents: super::credential_commit::CredentialIntents,
+        edit: impl FnOnce(&StudioConfig, &StudioConfig) -> Result<StudioConfig>,
+    ) -> ConfigRuntimeResult<ConfigRuntimeSnapshot> {
         let _command = self
             .command_lock
             .lock()
@@ -578,7 +603,19 @@ impl ConfigRuntime {
         validate_changed_selections(&desired, &effective)?;
 
         // 文件和 credential IO 不持有 state lock；command lock 只负责串行化 Settings 命令。
-        self.store.save(&next_config)?;
+        self.store.commit_config(&desired, &next_config, &intents)?;
+        for (id, old) in &desired.models.accounts {
+            if let Some(session) = &old.chatgpt_session {
+                let retained = next_config
+                    .models
+                    .accounts
+                    .get(id)
+                    .and_then(|account| account.chatgpt_session.as_ref());
+                if retained != Some(session) {
+                    session.revoke();
+                }
+            }
+        }
 
         let next = ConfigRuntimeSnapshot {
             revision: current.revision.saturating_add(1),
@@ -747,6 +784,8 @@ fn next_usage_query_revisions(
         .map(|(id, account)| {
             let unchanged = previous.config.models.accounts.get(id).is_some_and(|old| {
                 old.protocol == account.protocol
+                    && old.authentication == account.authentication
+                    && old.chatgpt_session == account.chatgpt_session
                     && old.template_id() == account.template_id()
                     && old.base_url == account.base_url
                     && old.http_headers == account.http_headers

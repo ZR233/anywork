@@ -356,6 +356,42 @@ class FrbStudioTransport
   }
 
   @override
+  Future<ChatGptLoginCommandReply> startChatGptLogin({
+    required String loginId,
+    required String editorId,
+    required String accountId,
+  }) async {
+    await _ensureReady();
+    return _chatGptLoginCommandReplyFromFrb(
+      await _bridgeCall(
+        () => frb_account_chatgpt.startChatgptLogin(
+          loginId: loginId,
+          editorId: editorId,
+          accountId: accountId,
+        ),
+      ),
+    );
+  }
+
+  @override
+  Future<ChatGptLoginCommandReply> cancelChatGptLogin({
+    required String loginId,
+    required String editorId,
+    required String accountId,
+  }) async {
+    await _ensureReady();
+    return _chatGptLoginCommandReplyFromFrb(
+      await _bridgeCall(
+        () => frb_account_chatgpt.cancelChatgptLogin(
+          loginId: loginId,
+          editorId: editorId,
+          accountId: accountId,
+        ),
+      ),
+    );
+  }
+
+  @override
   Future<SettingsCommandReply> patchAccount(
     int revision,
     PatchAccountCommand command, {
@@ -369,6 +405,9 @@ class FrbStudioTransport
           expectedSettingsRevision: BigInt.from(revision),
           accountId: command.identity.accountId,
           input: frb_accounts.BridgePatchAccountInput(
+            authentication: _accountAuthenticationIntentToFrb(
+              command.authentication,
+            ),
             name: _textPatchInput(command.name),
             baseUrl: _textPatchInput(command.baseUrl),
             templateId: _textPatchInput(command.templateId),
@@ -2620,6 +2659,9 @@ class FrbStudioTransport
           input: frb.AccountSettingsInput(
             account: frb.AccountInput(
               accountId: command.identity.accountId,
+              authentication: _accountAuthenticationIntentToFrb(
+                command.authentication,
+              ),
               templateId: command.templateId,
               protocol: command.protocol,
               name: command.name,

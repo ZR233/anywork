@@ -206,13 +206,22 @@ class _NativeDetails extends StatelessWidget {
               Row(
                 crossAxisAlignment: CrossAxisAlignment.center,
                 children: [
-                  const Icon(Icons.key_outlined, size: 20),
+                  Icon(
+                    value.authentication == AccountAuthenticationMethod.chatGpt
+                        ? Icons.account_circle_outlined
+                        : Icons.key_outlined,
+                    size: 20,
+                  ),
                   const SizedBox(width: 16),
                   Expanded(
                     child: AccountFacts(
                       facts: [
                         AccountDisplayFact(
-                          label: l10n.settingsApiKey,
+                          label:
+                              value.authentication ==
+                                  AccountAuthenticationMethod.chatGpt
+                              ? l10n.accountsAuthChatGpt
+                              : l10n.settingsApiKey,
                           value: value.credentialReady
                               ? l10n.settingsConfigured
                               : l10n.settingsMissing,

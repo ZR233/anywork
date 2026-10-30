@@ -10434,6 +10434,126 @@ abstract class AppLocalizations {
   /// **'Session {threadId} · project {projectId}'**
   String recoveryOwnerThread(String threadId, String projectId);
 
+  /// No description provided for @accountsAuthApiKey.
+  ///
+  /// In en, this message translates to:
+  /// **'API key'**
+  String get accountsAuthApiKey;
+
+  /// No description provided for @accountsAuthChatGpt.
+  ///
+  /// In en, this message translates to:
+  /// **'ChatGPT subscription'**
+  String get accountsAuthChatGpt;
+
+  /// No description provided for @accountsChatGptConnectionHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Connect ChatGPT through OpenAI\'s official browser sign-in.'**
+  String get accountsChatGptConnectionHint;
+
+  /// No description provided for @accountsChatGptLogin.
+  ///
+  /// In en, this message translates to:
+  /// **'Sign in with ChatGPT'**
+  String get accountsChatGptLogin;
+
+  /// No description provided for @accountsChatGptNotConnected.
+  ///
+  /// In en, this message translates to:
+  /// **'ChatGPT is not connected.'**
+  String get accountsChatGptNotConnected;
+
+  /// No description provided for @accountsChatGptPreparing.
+  ///
+  /// In en, this message translates to:
+  /// **'Preparing secure sign-in…'**
+  String get accountsChatGptPreparing;
+
+  /// No description provided for @accountsChatGptWaitingBrowser.
+  ///
+  /// In en, this message translates to:
+  /// **'Complete OpenAI authorization in your browser.'**
+  String get accountsChatGptWaitingBrowser;
+
+  /// No description provided for @accountsChatGptChecking.
+  ///
+  /// In en, this message translates to:
+  /// **'Verifying the ChatGPT connection…'**
+  String get accountsChatGptChecking;
+
+  /// No description provided for @accountsChatGptConnected.
+  ///
+  /// In en, this message translates to:
+  /// **'ChatGPT is connected and ready to save.'**
+  String get accountsChatGptConnected;
+
+  /// No description provided for @accountsChatGptPermissionMissing.
+  ///
+  /// In en, this message translates to:
+  /// **'The account is verified, but direct API access was not granted. Sign in again and approve access.'**
+  String get accountsChatGptPermissionMissing;
+
+  /// No description provided for @accountsChatGptCancelled.
+  ///
+  /// In en, this message translates to:
+  /// **'Sign-in was cancelled.'**
+  String get accountsChatGptCancelled;
+
+  /// No description provided for @accountsChatGptAuthorizationDenied.
+  ///
+  /// In en, this message translates to:
+  /// **'OpenAI did not authorize this connection. Retry and approve access.'**
+  String get accountsChatGptAuthorizationDenied;
+
+  /// No description provided for @accountsChatGptExpired.
+  ///
+  /// In en, this message translates to:
+  /// **'The sign-in link expired. Start again.'**
+  String get accountsChatGptExpired;
+
+  /// No description provided for @accountsChatGptFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'ChatGPT sign-in could not be completed. Retry.'**
+  String get accountsChatGptFailed;
+
+  /// No description provided for @accountsChatGptOpenBrowser.
+  ///
+  /// In en, this message translates to:
+  /// **'Reopen browser'**
+  String get accountsChatGptOpenBrowser;
+
+  /// No description provided for @accountsChatGptCancel.
+  ///
+  /// In en, this message translates to:
+  /// **'Cancel sign-in'**
+  String get accountsChatGptCancel;
+
+  /// No description provided for @accountsChatGptUsage.
+  ///
+  /// In en, this message translates to:
+  /// **'View ChatGPT usage'**
+  String get accountsChatGptUsage;
+
+  /// No description provided for @accountsChatGptApiKeyRequired.
+  ///
+  /// In en, this message translates to:
+  /// **'Enter a new API key when switching to API key authentication.'**
+  String get accountsChatGptApiKeyRequired;
+
+  /// No description provided for @accountsChatGptOpenLinkFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Could not open the OpenAI sign-in page. Try opening it again.'**
+  String get accountsChatGptOpenLinkFailed;
+
+  /// No description provided for @accountsChatGptOpenUsageFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Could not open ChatGPT usage settings.'**
+  String get accountsChatGptOpenUsageFailed;
+
   /// No description provided for @recoveryUnknownOwner.
   ///
   /// In en, this message translates to:

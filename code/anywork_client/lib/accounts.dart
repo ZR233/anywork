@@ -2,6 +2,7 @@
 library;
 
 export 'src/accounts/domain/account_identity.dart';
+export 'src/accounts/domain/account_authentication.dart';
 export 'src/accounts/domain/account_values.dart';
 export 'src/accounts/domain/account_intents.dart';
 export 'src/accounts/domain/accounts_repository.dart';

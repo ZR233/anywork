@@ -74,6 +74,7 @@ pub enum AccountObservationTarget {
     Usage,
     AcpAuth,
     AcpInstall,
+    ChatGptLogin { login_id: String },
 }
 
 /// Complete replacement for one domain only. Missing detail/catalog means the target was deleted.
@@ -109,6 +110,10 @@ pub enum AccountDomainFrame {
     AcpInstall {
         stamp: ResourceStamp,
         snapshot: AcpInstallSnapshot,
+    },
+    ChatGptLogin {
+        stamp: ResourceStamp,
+        snapshot: super::ChatGptLoginSnapshot,
     },
 }
 
@@ -246,6 +251,8 @@ pub struct PatchAccountRequest {
     pub operation_id: String,
     pub expected_revision: u64,
     pub account_id: String,
+    #[serde(default)]
+    pub authentication: super::AccountAuthenticationIntent,
     #[serde(default)]
     pub name: AccountTextPatch,
     #[serde(default)]

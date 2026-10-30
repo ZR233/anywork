@@ -8,6 +8,7 @@ import 'acp.dart';
 import 'acp_install.dart';
 import 'agent_profile.dart';
 import 'bots.dart';
+import 'chatgpt_auth.dart';
 import 'delegation.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';

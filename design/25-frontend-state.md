@@ -33,6 +33,7 @@ flowchart LR
 | 当前选中项目、会话 | Client 本地选择意图 | 选择控制器（Selection controller） | 选择身份；旧异步命令结果不得覆盖较新的选择意图 |
 | 输入文本、参数、路由与附件引用 | Client 草稿（受理后可靠附件归 Rust） | 草稿所有者与附件所有权账本（ownership ledger） | `DraftStamp + OperationId`；所有权明确转移或显式放弃 |
 | 命令提交、待确认覆盖层（pending overlay）与未知结果 | Rust 变更所有者 / Client 操作所有者 | `MutationBoard` | `OperationId` 与目标资源戳；真实结果按操作独立记录 |
+| 原生 OpenAI 登录状态与待保存授权 | Rust 原生认证所有者 | 账号 Repository 的类型化观察；共享 Native 编辑器只持有认证选择与登录身份 | `loginId + editorId + accountId`；显式取消、编辑意图丢弃或应用关闭，保存按 [20.18](./20-config.md#2018-openai-api-与-chatgpt-订阅认证) 认领 |
 | 已加载历史与阅读/跟随意图 | Flutter 呈现 owner | 原子引用、分页边界、连续完成 cursor、展示控制器与局部 UI | Thread + 呈现代次；真正释放才退役，回到最新不重建订阅 |
 | 光标、输入法组词（composing）、焦点、折叠态与滚动几何 | 组件 / 局部 UI 控制器 | 局部 UI 控制器 | `draftId` 或阅读代次；组件销毁（dispose）时释放 |
 

@@ -282,6 +282,8 @@ class DemoStudioTransport extends StudioTransport
   AccountDomainFrame _readAccountDomain(AccountObservationTarget target) {
     final accounts = _accounts ?? [_demoDefaultAccount()];
     switch (target) {
+      case ChatGptLoginTarget():
+        throw UnsupportedError('ChatGPT login is unavailable in demo mode');
       case AccountSummariesTarget():
         return AccountSummariesFrame(
           _demoStamp('settings', _settingsRevision),
@@ -1698,6 +1700,24 @@ class DemoStudioTransport extends StudioTransport
 
   @override
   Future<AccountCatalogView> loadAccountCatalog() async => _accountCatalog;
+
+  @override
+  Future<ChatGptLoginCommandReply> startChatGptLogin({
+    required String loginId,
+    required String editorId,
+    required String accountId,
+  }) => Future.error(
+    UnsupportedError('ChatGPT login is unavailable in demo mode'),
+  );
+
+  @override
+  Future<ChatGptLoginCommandReply> cancelChatGptLogin({
+    required String loginId,
+    required String editorId,
+    required String accountId,
+  }) => Future.error(
+    UnsupportedError('ChatGPT login is unavailable in demo mode'),
+  );
 
   @override
   Future<AcpAccountCatalogView> loadAcpAccountCatalog() async =>
@@ -3779,6 +3799,7 @@ class DemoStudioTransport extends StudioTransport
         AccountUsageTarget() => const AccountUsageTopic(),
         AcpAuthTarget() => const AcpAuthTopic(),
         AcpInstallTarget() => const AcpInstallTopic(),
+        ChatGptLoginTarget() => const SettingsConfigTopic(),
       };
       if (source == payload.topic) entry.key.notify();
     }

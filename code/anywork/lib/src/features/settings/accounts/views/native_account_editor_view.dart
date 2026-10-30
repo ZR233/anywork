@@ -29,6 +29,11 @@ class NativeAccountEditorView extends StatefulWidget {
     this.focusManualModelEditorKey,
     this.focusManualModelId = false,
     this.onSetDefaultOnCreateChanged,
+    this.onAuthenticationChanged,
+    this.onStartChatGptLogin,
+    this.onCancelChatGptLogin,
+    this.onOpenChatGptAuthorization,
+    this.onOpenChatGptUsage,
     super.key,
   });
   final NativeAccountEditorPresentation value;
@@ -53,6 +58,11 @@ class NativeAccountEditorView extends StatefulWidget {
   final String? focusManualModelEditorKey;
   final bool focusManualModelId;
   final ValueChanged<bool>? onSetDefaultOnCreateChanged;
+  final ValueChanged<AccountAuthenticationMethod>? onAuthenticationChanged;
+  final VoidCallback? onStartChatGptLogin;
+  final VoidCallback? onCancelChatGptLogin;
+  final VoidCallback? onOpenChatGptAuthorization;
+  final VoidCallback? onOpenChatGptUsage;
 
   @override
   State<NativeAccountEditorView> createState() =>
@@ -126,6 +136,23 @@ class _NativeAccountEditorViewState extends State<NativeAccountEditorView> {
       _rowKeys.putIfAbsent(id, GlobalKey.new);
     }
     _scheduleFocus();
+    final templateSection = AccountSection(
+      title: l10n.settingsAccountTemplate,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text(l10n.accountsTemplatesHint),
+          const SizedBox(height: 16),
+          widget.templateSelector ??
+              AccountTemplateSelector(
+                templates: value.templates,
+                selected: value.templateKey,
+                enabled: value.canChangeTemplate && !value.saving,
+                onSelected: widget.onTemplateChanged,
+              ),
+        ],
+      ),
+    );
     return AccountEditorScaffold(
       title: value.accountKey == null
           ? l10n.settingsNewAccount
@@ -139,32 +166,52 @@ class _NativeAccountEditorViewState extends State<NativeAccountEditorView> {
       ),
       scrollController: widget.scrollController,
       children: [
-        AccountSection(
-          title: l10n.settingsAccountTemplate,
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Text(l10n.accountsTemplatesHint),
-              const SizedBox(height: 16),
-              widget.templateSelector ??
-                  AccountTemplateSelector(
-                    templates: value.templates,
-                    selected: value.templateKey,
-                    enabled: value.canChangeTemplate && !value.saving,
-                    onSelected: widget.onTemplateChanged,
-                  ),
-            ],
-          ),
-        ),
+        if (!value.isOpenAiTemplate) templateSection,
         if (value.error != null) AccountInlineError(message: value.error!),
         AccountSection(
           title: l10n.accountsConnectionBillingTitle,
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
+              if (value.isOpenAiTemplate) ...[
+                SegmentedButton<AccountAuthenticationMethod>(
+                  segments: [
+                    ButtonSegment(
+                      value: AccountAuthenticationMethod.apiKey,
+                      label: Text(l10n.accountsAuthApiKey),
+                    ),
+                    ButtonSegment(
+                      value: AccountAuthenticationMethod.chatGpt,
+                      label: Text(l10n.accountsAuthChatGpt),
+                    ),
+                  ],
+                  selected: {value.authentication},
+                  onSelectionChanged:
+                      value.saving || widget.onAuthenticationChanged == null
+                      ? null
+                      : (selection) =>
+                            widget.onAuthenticationChanged!(selection.single),
+                ),
+                const SizedBox(height: 20),
+              ],
+              if (value.isOpenAiTemplate &&
+                  value.authentication ==
+                      AccountAuthenticationMethod.chatGpt) ...[
+                _ChatGptConnection(
+                  value: value,
+                  onStart: widget.onStartChatGptLogin,
+                  onCancel: widget.onCancelChatGptLogin,
+                  onOpenAuthorization: widget.onOpenChatGptAuthorization,
+                  onOpenUsage: widget.onOpenChatGptUsage,
+                ),
+                const SizedBox(height: 20),
+              ],
               AccountNativeConnectionFields(
                 value: value,
                 onChanged: widget.onFieldChanged,
+                hideApiCredentials:
+                    value.isOpenAiTemplate &&
+                    value.authentication == AccountAuthenticationMethod.chatGpt,
                 billingControl: AccountBillingControl(
                   value: value.billing,
                   onChanged: widget.onBillingChanged,
@@ -200,6 +247,7 @@ class _NativeAccountEditorViewState extends State<NativeAccountEditorView> {
             ],
           ),
         ),
+        if (value.isOpenAiTemplate) templateSection,
         if (value.declaredModels.isNotEmpty)
           AccountSection(
             title: l10n.settingsAccountModelsTitle,
@@ -275,6 +323,119 @@ class _NativeAccountEditorViewState extends State<NativeAccountEditorView> {
                 ),
             ],
           ),
+        ),
+      ],
+    );
+  }
+}
+
+class _ChatGptConnection extends StatelessWidget {
+  const _ChatGptConnection({
+    required this.value,
+    required this.onStart,
+    required this.onCancel,
+    required this.onOpenAuthorization,
+    required this.onOpenUsage,
+  });
+
+  final NativeAccountEditorPresentation value;
+  final VoidCallback? onStart;
+  final VoidCallback? onCancel;
+  final VoidCallback? onOpenAuthorization;
+  final VoidCallback? onOpenUsage;
+
+  @override
+  Widget build(BuildContext context) {
+    final l10n = AppLocalizations.of(context);
+    final login = value.chatGptLogin;
+    final phase = login?.phase;
+    final waiting = phase == ChatGptLoginPhase.awaitingBrowser;
+    final busy =
+        phase == ChatGptLoginPhase.preparing ||
+        phase == ChatGptLoginPhase.exchangingCode;
+    final savedConnection = login == null && value.savedChatGptAccount != null;
+    final succeeded = phase == ChatGptLoginPhase.succeeded || savedConnection;
+    final hasPermission =
+        login?.account?.planUsageEnabled ??
+        value.savedChatGptAccount?.planUsageEnabled ??
+        false;
+    final status = switch (phase) {
+      ChatGptLoginPhase.preparing => l10n.accountsChatGptPreparing,
+      ChatGptLoginPhase.awaitingBrowser => l10n.accountsChatGptWaitingBrowser,
+      ChatGptLoginPhase.exchangingCode => l10n.accountsChatGptChecking,
+      ChatGptLoginPhase.succeeded when hasPermission =>
+        l10n.accountsChatGptConnected,
+      ChatGptLoginPhase.succeeded => l10n.accountsChatGptPermissionMissing,
+      ChatGptLoginPhase.cancelled => l10n.accountsChatGptCancelled,
+      ChatGptLoginPhase.failed => switch (login?.failure) {
+        ChatGptLoginFailureCode.missingPlanPermission =>
+          l10n.accountsChatGptPermissionMissing,
+        ChatGptLoginFailureCode.authorizationDenied =>
+          l10n.accountsChatGptAuthorizationDenied,
+        ChatGptLoginFailureCode.expired => l10n.accountsChatGptExpired,
+        _ => l10n.accountsChatGptFailed,
+      },
+      null when savedConnection => l10n.accountsChatGptConnected,
+      null => l10n.accountsChatGptNotConnected,
+    };
+    final email = login?.account?.email ?? value.savedChatGptAccount?.email;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          l10n.accountsChatGptConnectionHint,
+          style: Theme.of(context).textTheme.bodyMedium,
+        ),
+        const SizedBox(height: 12),
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            if (busy) ...[
+              const SizedBox.square(
+                dimension: 18,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+              const SizedBox(width: 10),
+            ],
+            Expanded(child: Text(status)),
+          ],
+        ),
+        if (succeeded && email != null && email.isNotEmpty) ...[
+          const SizedBox(height: 4),
+          Text(email, style: Theme.of(context).textTheme.bodySmall),
+        ],
+        const SizedBox(height: 12),
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: [
+            if (waiting)
+              OutlinedButton.icon(
+                onPressed: onOpenAuthorization,
+                icon: const Icon(Icons.open_in_new),
+                label: Text(l10n.accountsChatGptOpenBrowser),
+              ),
+            if (value.chatGptLogin == null ||
+                phase == ChatGptLoginPhase.cancelled ||
+                phase == ChatGptLoginPhase.failed ||
+                (succeeded && !hasPermission))
+              FilledButton.icon(
+                onPressed: onStart,
+                icon: const Icon(Icons.login),
+                label: Text(l10n.accountsChatGptLogin),
+              ),
+            if (busy || waiting)
+              OutlinedButton(
+                onPressed: onCancel,
+                child: Text(l10n.accountsChatGptCancel),
+              ),
+            if (succeeded)
+              TextButton.icon(
+                onPressed: onOpenUsage,
+                icon: const Icon(Icons.open_in_new),
+                label: Text(l10n.accountsChatGptUsage),
+              ),
+          ],
         ),
       ],
     );

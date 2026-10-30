@@ -11,6 +11,7 @@ import 'types/acp.dart';
 import 'types/acp_install.dart';
 import 'types/agent_profile.dart';
 import 'types/bots.dart';
+import 'types/chatgpt_auth.dart';
 import 'types/delegation.dart';
 import 'types/error.dart';
 import 'types/event.dart';

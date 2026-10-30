@@ -1,4 +1,7 @@
-import 'package:anywork_client/accounts.dart';
+import 'package:anywork_client/accounts.dart' hide AccountAuthenticationMethod;
+import 'package:anywork_client/accounts.dart'
+    as account_domain
+    show AccountAuthenticationMethod;
 import 'package:anywork_client/model_directory.dart' show AccountModelView;
 
 import '../state/account_presentations.dart';
@@ -15,6 +18,10 @@ final class NativeAccountDraft {
     required this.templateId,
     required this.rows,
     this.billing,
+    this.authentication = account_domain.AccountAuthenticationMethod.apiKey,
+    this.loginId,
+    this.apiEndpoint,
+    this.mustEnterApiKey = false,
   });
   final String name;
   final String endpoint;
@@ -23,6 +30,10 @@ final class NativeAccountDraft {
   final String? templateId;
   final List<ManualModelDraft> rows;
   final BillingKind? billing;
+  final account_domain.AccountAuthenticationMethod authentication;
+  final String? loginId;
+  final String? apiEndpoint;
+  final bool mustEnterApiKey;
 
   factory NativeAccountDraft.fromDetails(
     NativeAccountDetails details,
@@ -33,6 +44,12 @@ final class NativeAccountDraft {
     credential: '',
     protocol: details.protocol,
     templateId: details.templateId,
+    authentication: details.authentication,
+    apiEndpoint:
+        details.authentication ==
+            account_domain.AccountAuthenticationMethod.apiKey
+        ? details.baseUrl
+        : null,
     rows: [
       for (var i = 0; i < details.customModels.length; i++)
         ManualModelDraft.fromCommand(
@@ -50,6 +67,7 @@ final class NativeAccountDraft {
         protocol: template.protocol,
         templateId: template.id,
         rows: const [],
+        apiEndpoint: template.baseUrl,
       );
 
   NativeAccountDraft field(NativeAccountField field, String raw) =>
@@ -61,7 +79,47 @@ final class NativeAccountDraft {
         templateId: templateId,
         rows: rows,
         billing: billing,
+        authentication: authentication,
+        loginId: loginId,
+        mustEnterApiKey:
+            field == NativeAccountField.credential && raw.trim().isNotEmpty
+            ? false
+            : mustEnterApiKey,
+        apiEndpoint:
+            field == NativeAccountField.endpoint &&
+                authentication ==
+                    account_domain.AccountAuthenticationMethod.apiKey
+            ? raw
+            : apiEndpoint,
       );
+  NativeAccountDraft withAuthentication(
+    account_domain.AccountAuthenticationMethod value, {
+    String? loginId,
+  }) => NativeAccountDraft(
+    name: name,
+    endpoint: value == account_domain.AccountAuthenticationMethod.chatGpt
+        ? 'https://api.openai.com/v1'
+        : authentication == account_domain.AccountAuthenticationMethod.chatGpt
+        ? apiEndpoint ?? endpoint
+        : endpoint,
+    credential:
+        value == account_domain.AccountAuthenticationMethod.chatGpt ||
+            authentication == account_domain.AccountAuthenticationMethod.chatGpt
+        ? ''
+        : credential,
+    protocol: protocol,
+    templateId: templateId,
+    rows: rows,
+    billing: billing,
+    authentication: value,
+    loginId: loginId,
+    mustEnterApiKey: mustEnterApiKey || authentication != value,
+    apiEndpoint: value == account_domain.AccountAuthenticationMethod.chatGpt
+        ? authentication == account_domain.AccountAuthenticationMethod.apiKey
+              ? endpoint
+              : apiEndpoint
+        : apiEndpoint,
+  );
   NativeAccountDraft withRows(List<ManualModelDraft> value) =>
       NativeAccountDraft(
         name: name,
@@ -71,6 +129,10 @@ final class NativeAccountDraft {
         templateId: templateId,
         rows: List.unmodifiable(value),
         billing: billing,
+        authentication: authentication,
+        loginId: loginId,
+        apiEndpoint: apiEndpoint,
+        mustEnterApiKey: mustEnterApiKey,
       );
   NativeAccountDraft withBilling(BillingKind? value) => NativeAccountDraft(
     name: name,
@@ -80,6 +142,10 @@ final class NativeAccountDraft {
     templateId: templateId,
     rows: rows,
     billing: value,
+    authentication: authentication,
+    loginId: loginId,
+    apiEndpoint: apiEndpoint,
+    mustEnterApiKey: mustEnterApiKey,
   );
 
   bool sameFields(NativeAccountDraft other) =>
@@ -90,7 +156,12 @@ final class NativeAccountDraft {
       templateId == other.templateId &&
       sameModels(other) &&
       sameConnections(other) &&
-      billing == other.billing;
+      billing == other.billing &&
+      authentication == other.authentication &&
+      loginId == other.loginId &&
+      apiEndpoint == other.apiEndpoint &&
+      mustEnterApiKey == other.mustEnterApiKey;
+
   bool sameModels(NativeAccountDraft other) =>
       rows.length == other.rows.length &&
       List.generate(
@@ -123,34 +194,52 @@ final class NativeAccountDraft {
   List<AccountModelCommand> get commands => [
     for (final row in rows) row.command,
   ];
-  CreateAccountCommand create(NativeAccountIdentity identity) =>
-      CreateAccountCommand(
-        identity: identity,
-        name: name.trim(),
-        protocol: protocol.trim(),
-        templateId: templateId,
-        baseUrl: endpoint.trim(),
-        secret: credential.trim().isEmpty
-            ? const AccountSecretCommand.preserve()
-            : AccountSecretCommand.replace(credential.trim()),
-        initialBillingKind: billing,
-        customModels: commands,
-        modelConnectionModes: [
-          for (final row in rows)
-            if (row.connection != AccountConnection.automatic)
-              AccountModelConnectionCommand(
-                modelId: row.id.trim(),
-                connectionMode: row.connection == AccountConnection.webSocket
-                    ? 'web_socket'
-                    : 'http',
-              ),
-        ],
-      );
+  CreateAccountCommand create(
+    NativeAccountIdentity identity, {
+    required String editorId,
+  }) => CreateAccountCommand(
+    identity: identity,
+    authentication:
+        authentication == account_domain.AccountAuthenticationMethod.apiKey
+        ? const AccountAuthenticationIntent.apiKey()
+        : AccountAuthenticationIntent.chatGpt(
+            loginId: _requiredLoginId,
+            editorId: editorId,
+          ),
+    name: name.trim(),
+    protocol: protocol.trim(),
+    templateId: templateId,
+    baseUrl: endpoint.trim(),
+    secret: credential.trim().isEmpty
+        ? const AccountSecretCommand.preserve()
+        : AccountSecretCommand.replace(credential.trim()),
+    initialBillingKind: billing,
+    customModels: commands,
+    modelConnectionModes: [
+      for (final row in rows)
+        if (row.connection != AccountConnection.automatic)
+          AccountModelConnectionCommand(
+            modelId: row.id.trim(),
+            connectionMode: row.connection == AccountConnection.webSocket
+                ? 'web_socket'
+                : 'http',
+          ),
+    ],
+  );
   PatchAccountCommand patch(
     NativeAccountIdentity identity,
-    NativeAccountDraft baseline,
-  ) => PatchAccountCommand(
+    NativeAccountDraft baseline, {
+    required String editorId,
+  }) => PatchAccountCommand(
     identity: identity,
+    authentication: authentication == baseline.authentication && loginId == null
+        ? const AccountAuthenticationIntent.keep()
+        : authentication == account_domain.AccountAuthenticationMethod.apiKey
+        ? const AccountAuthenticationIntent.apiKey()
+        : AccountAuthenticationIntent.chatGpt(
+            loginId: _requiredLoginId,
+            editorId: editorId,
+          ),
     name: name == baseline.name
         ? const AccountTextPatch.keep()
         : AccountTextPatch.set(name.trim()),
@@ -172,6 +261,10 @@ final class NativeAccountDraft {
         ? const AccountModelsPatch.keep()
         : AccountModelsPatch.set(commands),
   );
+
+  String get _requiredLoginId =>
+      loginId ??
+      (throw StateError('ChatGPT account save requires a successful login'));
 }
 
 final class ManualModelDraft {

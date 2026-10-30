@@ -5861,6 +5861,75 @@ class AppLocalizationsEn extends AppLocalizations {
   }
 
   @override
+  String get accountsAuthApiKey => 'API key';
+
+  @override
+  String get accountsAuthChatGpt => 'ChatGPT subscription';
+
+  @override
+  String get accountsChatGptConnectionHint =>
+      'Connect ChatGPT through OpenAI\'s official browser sign-in.';
+
+  @override
+  String get accountsChatGptLogin => 'Sign in with ChatGPT';
+
+  @override
+  String get accountsChatGptNotConnected => 'ChatGPT is not connected.';
+
+  @override
+  String get accountsChatGptPreparing => 'Preparing secure sign-in…';
+
+  @override
+  String get accountsChatGptWaitingBrowser =>
+      'Complete OpenAI authorization in your browser.';
+
+  @override
+  String get accountsChatGptChecking => 'Verifying the ChatGPT connection…';
+
+  @override
+  String get accountsChatGptConnected =>
+      'ChatGPT is connected and ready to save.';
+
+  @override
+  String get accountsChatGptPermissionMissing =>
+      'The account is verified, but direct API access was not granted. Sign in again and approve access.';
+
+  @override
+  String get accountsChatGptCancelled => 'Sign-in was cancelled.';
+
+  @override
+  String get accountsChatGptAuthorizationDenied =>
+      'OpenAI did not authorize this connection. Retry and approve access.';
+
+  @override
+  String get accountsChatGptExpired => 'The sign-in link expired. Start again.';
+
+  @override
+  String get accountsChatGptFailed =>
+      'ChatGPT sign-in could not be completed. Retry.';
+
+  @override
+  String get accountsChatGptOpenBrowser => 'Reopen browser';
+
+  @override
+  String get accountsChatGptCancel => 'Cancel sign-in';
+
+  @override
+  String get accountsChatGptUsage => 'View ChatGPT usage';
+
+  @override
+  String get accountsChatGptApiKeyRequired =>
+      'Enter a new API key when switching to API key authentication.';
+
+  @override
+  String get accountsChatGptOpenLinkFailed =>
+      'Could not open the OpenAI sign-in page. Try opening it again.';
+
+  @override
+  String get accountsChatGptOpenUsageFailed =>
+      'Could not open ChatGPT usage settings.';
+
+  @override
   String get recoveryUnknownOwner => 'Not recorded';
 
   @override

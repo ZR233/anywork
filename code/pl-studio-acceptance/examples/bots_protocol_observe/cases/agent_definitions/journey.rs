@@ -613,6 +613,7 @@ impl Observation<'_> {
                 operation_id: format!("agent-{operation}"),
                 expected_revision: current.config.revision,
                 account_id: config::CHILD_ACCOUNT.into(),
+                authentication: pl_protocol::studio::AccountAuthenticationIntent::Keep,
                 name: AccountTextPatch::Keep,
                 base_url: AccountTextPatch::Keep,
                 template_id: AccountTextPatch::Keep,

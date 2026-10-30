@@ -221,6 +221,7 @@ pub(crate) fn account_settings_request(
         expected_revision,
         account: pl_protocol::studio::AccountSettingsUpdate {
             account_id: account.account_id,
+            authentication: account.authentication.into(),
             template_id: account.template_id,
             protocol: account.protocol,
             name: account.name,
@@ -342,6 +343,8 @@ pub(crate) fn bridge_account_settings(
     account: pl_protocol::studio::StudioAccountSettings,
 ) -> BridgeAccountSettingsDto {
     BridgeAccountSettingsDto {
+        authentication: account.authentication.into(),
+        chatgpt_account: account.chatgpt_account.map(Into::into),
         billing_kind: account.billing_kind.into(),
         billing_kind_override: account.billing_kind_override.map(Into::into),
         model_enabled_overrides: account.model_enabled_overrides.into_iter().collect(),

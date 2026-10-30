@@ -1023,7 +1023,7 @@ class RealtimeJourney {
         final Map<String, dynamic> rendered;
         try {
           rendered = await driver.sendCommand(
-            ToolProbe(activityToolOutput, 'readSelectableText'),
+            ToolProbe(activityToolOutput, 'readText'),
           );
         } on DriverError {
           final retired = await this.snapshot();

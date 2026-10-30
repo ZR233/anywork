@@ -121,10 +121,11 @@ class ToolProbeExtension extends CommandExtension {
             'height': presentationBox.size.height,
           },
         'expanded': ?expanded,
-        // A failed tool can expose a typed failure without an output payload.
-        // Read only this mounted tile's ordinary labels/error Text; arguments
-        // and successful payloads live in SelectableText and are not included.
-        if (probe.action == 'readText')
+        // Read this mounted target's standard Text labels, errors and payloads.
+        // Code payloads join the surrounding SelectionArea through Text.
+        if (probe.action == 'readText') ...{
+          'visibleHeight': _visibleInViewports(box).height
+              .clamp(0.0, double.infinity),
           'texts': [
             for (final e
                 in find
@@ -132,23 +133,6 @@ class ToolProbeExtension extends CommandExtension {
                     .evaluate())
               (e.widget as Text).data ??
                   (e.widget as Text).textSpan?.toPlainText() ??
-                  '',
-          ],
-        // Live output uses the production SelectableText, not the ordinary
-        // labels covered by readText. Keep that existing observation separate.
-        if (probe.action == 'readSelectableText') ...{
-          'visibleHeight': _visibleInViewports(box).height
-              .clamp(0.0, double.infinity),
-          'texts': [
-            for (final e
-                in find
-                    .descendant(
-                      of: target,
-                      matching: find.byType(SelectableText),
-                    )
-                    .evaluate())
-              (e.widget as SelectableText).data ??
-                  (e.widget as SelectableText).textSpan?.toPlainText() ??
                   '',
           ],
         },
@@ -171,7 +155,7 @@ class ToolProbeExtension extends CommandExtension {
     }
 
     final samples = <Object?>[sample()];
-    if (probe.action == 'readText' || probe.action == 'readSelectableText') {
+    if (probe.action == 'readText') {
       return _ProbeResult(samples);
     }
     final box = target.evaluate().single.renderObject! as RenderBox;

@@ -7,7 +7,7 @@ use super::{AccountId, AccountTemplateId, ModelCatalogId, builtin_model_catalog}
 use crate::model::ModelInfo;
 use crate::protocol::{
     ApplyPatchToolType, ConnectionMode, ImageGenerationCapabilities, ProtocolEndpoint,
-    ProtocolServiceCapabilities, StandaloneWebSearchDialect, ToolWirePolicy,
+    ProtocolServiceCapabilities, StandaloneWebSearchDialect, ToolWirePolicy, WireApi,
 };
 
 /// Account 模型目录来源。
@@ -141,6 +141,15 @@ impl AccountModelEntry {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AccountConfig {
     #[serde(default)]
+    pub authentication: pl_protocol::studio::AccountAuthenticationMethod,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chatgpt_account: Option<pl_protocol::studio::ChatGptAccountInfo>,
+    /// Rust-only pending/loaded protected record. Never serialized into configuration.
+    #[serde(skip)]
+    pub chatgpt_credentials: Option<crate::protocol::chatgpt::ChatGptCredentialRecord>,
+    #[serde(skip)]
+    pub chatgpt_session: Option<crate::protocol::chatgpt::ChatGptSession>,
+    #[serde(default)]
     pub protocol: crate::protocol::ProtocolKind,
     /// 显式设置的计费类别；`None` 表示未显式配置，由 [`Self::billing_kind`] 按明确模板与
     /// canonical endpoint 推导。
@@ -222,6 +231,10 @@ impl AccountConfig {
     fn from_parts(info: ProtocolEndpoint, catalog: AccountModelCatalogConfig) -> Self {
         let service_capabilities = info.service_capabilities.clone();
         Self {
+            authentication: Default::default(),
+            chatgpt_account: None,
+            chatgpt_credentials: None,
+            chatgpt_session: info.chatgpt_session,
             protocol: info.protocol,
             template: None,
             billing_kind: None,
@@ -255,7 +268,14 @@ impl AccountConfig {
     ///
     /// 这是服务能力的唯一解析入口：声明不一致在此处失败，调用方不会拿到无效声明。
     pub fn service_capabilities(&self) -> Result<ProtocolServiceCapabilities> {
-        let capabilities = self.resolve_service_capabilities()?;
+        let mut capabilities = self.resolve_service_capabilities()?;
+        if self.authentication == pl_protocol::studio::AccountAuthenticationMethod::ChatGpt {
+            capabilities.files = Default::default();
+            capabilities.image_generation = None;
+            capabilities.web_search.standalone = None;
+            capabilities.remote_compaction = false;
+            capabilities.responses_tools.programmatic_tool_calling = false;
+        }
         validate_image_generation_declaration(capabilities.image_generation.as_ref())?;
         Ok(capabilities)
     }
@@ -447,6 +467,9 @@ impl AccountConfig {
     /// # Errors
     /// 引用未知模板时返回配置定义错误。
     pub fn inferred_billing_kind(&self) -> Result<pl_protocol::BillingKind> {
+        if self.authentication == pl_protocol::studio::AccountAuthenticationMethod::ChatGpt {
+            return Ok(pl_protocol::BillingKind::Subscription);
+        }
         let Some(template_id) = self.template_id() else {
             return Ok(pl_protocol::BillingKind::Unknown);
         };
@@ -538,7 +561,7 @@ impl AccountConfig {
             );
         }
         let Some(overlay) = &self.model_catalog_overlay else {
-            return Ok(local.into_values().collect());
+            return Ok(self.restrict_authentication_transport(local.into_values().collect()));
         };
         let mut entries = local.clone();
         let discovery = self.discovery_profile()?;
@@ -586,7 +609,22 @@ impl AccountConfig {
                 AccountModelEntry::new(model, origin),
             );
         }
-        Ok(entries.into_values().collect())
+        Ok(self.restrict_authentication_transport(entries.into_values().collect()))
+    }
+
+    fn restrict_authentication_transport(
+        &self,
+        mut entries: Vec<AccountModelEntry>,
+    ) -> Vec<AccountModelEntry> {
+        if self.authentication == pl_protocol::studio::AccountAuthenticationMethod::ChatGpt {
+            entries.retain(|entry| entry.model.binding.transport.protocol == WireApi::Responses);
+            for entry in &mut entries {
+                entry.model.binding.transport.supported_connection_modes =
+                    vec![ConnectionMode::Http];
+                entry.model.binding.transport.default_connection_mode = ConnectionMode::Http;
+            }
+        }
+        entries
     }
 
     /// Publish a complete successful online inventory; absent bundled members default to disabled.
@@ -878,11 +916,16 @@ impl AccountConfig {
 
     /// 解析不包含模型与 transport 事实的 runtime endpoint。
     pub fn to_endpoint(&self) -> Result<ProtocolEndpoint> {
+        if self.authentication == pl_protocol::studio::AccountAuthenticationMethod::ChatGpt {
+            crate::protocol::chatgpt::ChatGptSession::validate_resource(&self.base_url)
+                .map_err(|error| PureError::ConfigError(error.to_string()))?;
+        }
         Ok(ProtocolEndpoint {
             protocol: self.protocol,
             name: self.name.clone(),
             base_url: self.base_url.clone(),
             bearer_token: self.resolved_bearer_token(),
+            chatgpt_session: self.chatgpt_session.clone(),
             http_headers: self.http_headers.clone(),
             tool_wire_policy: self.tool_wire_policy,
             apply_patch_tool_type: self.apply_patch_tool_type,
@@ -892,6 +935,9 @@ impl AccountConfig {
 
     /// 解析运行时凭证；配置中的显式 secret 优先于环境变量。
     pub fn resolved_bearer_token(&self) -> Option<String> {
+        if self.authentication == pl_protocol::studio::AccountAuthenticationMethod::ChatGpt {
+            return None;
+        }
         self.bearer_token
             .clone()
             .filter(|token| !token.trim().is_empty())
@@ -909,6 +955,27 @@ impl AccountConfig {
     }
 
     fn validate_structure(&self, account_id: &AccountId, strict_availability: bool) -> Result<()> {
+        if self.authentication == pl_protocol::studio::AccountAuthenticationMethod::ChatGpt {
+            if self.template.as_ref().map(|id| id.as_str()) != Some("openai")
+                || self.protocol != crate::protocol::ProtocolKind::OpenAi
+                || self.chatgpt_account.is_none()
+                || self.bearer_token.is_some()
+                || self.bearer_token_env.is_some()
+            {
+                return Err(PureError::ConfigError(
+                    "invalid ChatGPT account configuration".into(),
+                ));
+            }
+            crate::protocol::chatgpt::ChatGptSession::validate_resource(&self.base_url)
+                .map_err(|error| PureError::ConfigError(error.to_string()))?;
+        } else if self.chatgpt_account.is_some()
+            || self.chatgpt_session.is_some()
+            || self.chatgpt_credentials.is_some()
+        {
+            return Err(PureError::ConfigError(
+                "API account contains ChatGPT authentication".into(),
+            ));
+        }
         if self.name.trim().is_empty() {
             return Err(PureError::ConfigError(format!(
                 "account {account_id} has empty name"

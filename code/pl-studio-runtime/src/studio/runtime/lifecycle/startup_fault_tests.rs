@@ -646,6 +646,18 @@ async fn known_configuration_migration_and_cold_sessions_survive_initialization(
         .as_table_mut()
         .expect("role routes")
         .insert("planner".into(), routes["mode.simple"].clone());
+    // Schema 18 predates the explicit account authentication field.
+    for (_, account) in value["models"]["accounts"]
+        .as_table_mut()
+        .expect("account table")
+        .iter_mut()
+    {
+        account
+            .as_table_mut()
+            .expect("account")
+            .remove("authentication")
+            .expect("current account authentication");
+    }
     value["schema_version"] = 18.into();
     std::fs::write(home.join("config.toml"), toml::to_string(&value)?)?;
     let cold = cold_session(&paths)?.history_database();

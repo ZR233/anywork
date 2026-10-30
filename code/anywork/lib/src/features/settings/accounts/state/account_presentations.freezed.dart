@@ -6498,7 +6498,7 @@ as String?,
 /// @nodoc
 mixin _$NativeAccountDetailsPresentation {
 
- bool get credentialReady; AccountBillingPresentation get billing; AccountCatalogPresentation get catalog; AccountUsagePresentation get usage; List<AccountDisplayFact> get advanced;
+ AccountAuthenticationMethod get authentication; bool get credentialReady; AccountBillingPresentation get billing; AccountCatalogPresentation get catalog; AccountUsagePresentation get usage; List<AccountDisplayFact> get advanced;
 /// Create a copy of NativeAccountDetailsPresentation
 /// with the given fields replaced by the non-null parameter values.
 @JsonKey(includeFromJson: false, includeToJson: false)
@@ -6510,20 +6510,20 @@ $NativeAccountDetailsPresentationCopyWith<NativeAccountDetailsPresentation> get 
 @override
 bool operator ==(Object other) {
   final _this = this as NativeAccountDetailsPresentation;
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is NativeAccountDetailsPresentation&&(identical(other.credentialReady, _this.credentialReady) || other.credentialReady == _this.credentialReady)&&(identical(other.billing, _this.billing) || other.billing == _this.billing)&&(identical(other.catalog, _this.catalog) || other.catalog == _this.catalog)&&(identical(other.usage, _this.usage) || other.usage == _this.usage)&&const DeepCollectionEquality().equals(other.advanced, _this.advanced));
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is NativeAccountDetailsPresentation&&(identical(other.authentication, _this.authentication) || other.authentication == _this.authentication)&&(identical(other.credentialReady, _this.credentialReady) || other.credentialReady == _this.credentialReady)&&(identical(other.billing, _this.billing) || other.billing == _this.billing)&&(identical(other.catalog, _this.catalog) || other.catalog == _this.catalog)&&(identical(other.usage, _this.usage) || other.usage == _this.usage)&&const DeepCollectionEquality().equals(other.advanced, _this.advanced));
 }
 
 
 @override
 int get hashCode {
   final _this = this as NativeAccountDetailsPresentation;
-  return Object.hash(runtimeType,_this.credentialReady,_this.billing,_this.catalog,_this.usage,const DeepCollectionEquality().hash(_this.advanced));
+  return Object.hash(runtimeType,_this.authentication,_this.credentialReady,_this.billing,_this.catalog,_this.usage,const DeepCollectionEquality().hash(_this.advanced));
 }
 
 @override
 String toString() {
   final _this = this as NativeAccountDetailsPresentation;
-  return 'NativeAccountDetailsPresentation(credentialReady: ${_this.credentialReady}, billing: ${_this.billing}, catalog: ${_this.catalog}, usage: ${_this.usage}, advanced: ${_this.advanced})';
+  return 'NativeAccountDetailsPresentation(authentication: ${_this.authentication}, credentialReady: ${_this.credentialReady}, billing: ${_this.billing}, catalog: ${_this.catalog}, usage: ${_this.usage}, advanced: ${_this.advanced})';
 }
 
 
@@ -6534,7 +6534,7 @@ abstract mixin class $NativeAccountDetailsPresentationCopyWith<$Res>  {
   factory $NativeAccountDetailsPresentationCopyWith(NativeAccountDetailsPresentation value, $Res Function(NativeAccountDetailsPresentation) _then) = _$NativeAccountDetailsPresentationCopyWithImpl;
 @useResult
 $Res call({
- bool credentialReady, AccountBillingPresentation billing, AccountCatalogPresentation catalog, AccountUsagePresentation usage, List<AccountDisplayFact> advanced
+ AccountAuthenticationMethod authentication, bool credentialReady, AccountBillingPresentation billing, AccountCatalogPresentation catalog, AccountUsagePresentation usage, List<AccountDisplayFact> advanced
 });
 
 
@@ -6551,9 +6551,10 @@ class _$NativeAccountDetailsPresentationCopyWithImpl<$Res>
 
 /// Create a copy of NativeAccountDetailsPresentation
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') @override $Res call({Object? credentialReady = null,Object? billing = null,Object? catalog = null,Object? usage = null,Object? advanced = null,}) {
+@pragma('vm:prefer-inline') @override $Res call({Object? authentication = null,Object? credentialReady = null,Object? billing = null,Object? catalog = null,Object? usage = null,Object? advanced = null,}) {
   return _then(NativeAccountDetailsPresentation(
-credentialReady: null == credentialReady ? _self.credentialReady : credentialReady // ignore: cast_nullable_to_non_nullable
+authentication: null == authentication ? _self.authentication : authentication // ignore: cast_nullable_to_non_nullable
+as AccountAuthenticationMethod,credentialReady: null == credentialReady ? _self.credentialReady : credentialReady // ignore: cast_nullable_to_non_nullable
 as bool,billing: null == billing ? _self.billing : billing // ignore: cast_nullable_to_non_nullable
 as AccountBillingPresentation,catalog: null == catalog ? _self.catalog : catalog // ignore: cast_nullable_to_non_nullable
 as AccountCatalogPresentation,usage: null == usage ? _self.usage : usage // ignore: cast_nullable_to_non_nullable
@@ -6670,10 +6671,10 @@ return $default(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( bool credentialReady,  AccountBillingPresentation billing,  AccountCatalogPresentation catalog,  AccountUsagePresentation usage,  List<AccountDisplayFact> advanced)?  $default,{required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( AccountAuthenticationMethod authentication,  bool credentialReady,  AccountBillingPresentation billing,  AccountCatalogPresentation catalog,  AccountUsagePresentation usage,  List<AccountDisplayFact> advanced)?  $default,{required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case _NativeAccountDetailsPresentation() when $default != null:
-return $default(_that.credentialReady,_that.billing,_that.catalog,_that.usage,_that.advanced);case _:
+return $default(_that.authentication,_that.credentialReady,_that.billing,_that.catalog,_that.usage,_that.advanced);case _:
   return orElse();
 
 }
@@ -6691,10 +6692,10 @@ return $default(_that.credentialReady,_that.billing,_that.catalog,_that.usage,_t
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( bool credentialReady,  AccountBillingPresentation billing,  AccountCatalogPresentation catalog,  AccountUsagePresentation usage,  List<AccountDisplayFact> advanced)  $default,) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( AccountAuthenticationMethod authentication,  bool credentialReady,  AccountBillingPresentation billing,  AccountCatalogPresentation catalog,  AccountUsagePresentation usage,  List<AccountDisplayFact> advanced)  $default,) {final _that = this;
 switch (_that) {
 case _NativeAccountDetailsPresentation():
-return $default(_that.credentialReady,_that.billing,_that.catalog,_that.usage,_that.advanced);case _:
+return $default(_that.authentication,_that.credentialReady,_that.billing,_that.catalog,_that.usage,_that.advanced);case _:
   throw StateError('Unexpected subclass');
 
 }
@@ -6711,10 +6712,10 @@ return $default(_that.credentialReady,_that.billing,_that.catalog,_that.usage,_t
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( bool credentialReady,  AccountBillingPresentation billing,  AccountCatalogPresentation catalog,  AccountUsagePresentation usage,  List<AccountDisplayFact> advanced)?  $default,) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( AccountAuthenticationMethod authentication,  bool credentialReady,  AccountBillingPresentation billing,  AccountCatalogPresentation catalog,  AccountUsagePresentation usage,  List<AccountDisplayFact> advanced)?  $default,) {final _that = this;
 switch (_that) {
 case _NativeAccountDetailsPresentation() when $default != null:
-return $default(_that.credentialReady,_that.billing,_that.catalog,_that.usage,_that.advanced);case _:
+return $default(_that.authentication,_that.credentialReady,_that.billing,_that.catalog,_that.usage,_that.advanced);case _:
   return null;
 
 }
@@ -6726,9 +6727,10 @@ return $default(_that.credentialReady,_that.billing,_that.catalog,_that.usage,_t
 
 
 class _NativeAccountDetailsPresentation implements NativeAccountDetailsPresentation {
-  const _NativeAccountDetailsPresentation({required this.credentialReady, required this.billing, required this.catalog, required this.usage,  List<AccountDisplayFact> advanced = const <AccountDisplayFact>[]}): _advanced = advanced;
+  const _NativeAccountDetailsPresentation({required this.authentication, required this.credentialReady, required this.billing, required this.catalog, required this.usage,  List<AccountDisplayFact> advanced = const <AccountDisplayFact>[]}): _advanced = advanced;
 
 
+@override final  AccountAuthenticationMethod authentication;
 @override final  bool credentialReady;
 @override final  AccountBillingPresentation billing;
 @override final  AccountCatalogPresentation catalog;
@@ -6751,18 +6753,18 @@ _$NativeAccountDetailsPresentationCopyWith<_NativeAccountDetailsPresentation> ge
 
 @override
 bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is _NativeAccountDetailsPresentation&&(identical(other.credentialReady, credentialReady) || other.credentialReady == credentialReady)&&(identical(other.billing, billing) || other.billing == billing)&&(identical(other.catalog, catalog) || other.catalog == catalog)&&(identical(other.usage, usage) || other.usage == usage)&&const DeepCollectionEquality().equals(other.advanced, _advanced));
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is _NativeAccountDetailsPresentation&&(identical(other.authentication, authentication) || other.authentication == authentication)&&(identical(other.credentialReady, credentialReady) || other.credentialReady == credentialReady)&&(identical(other.billing, billing) || other.billing == billing)&&(identical(other.catalog, catalog) || other.catalog == catalog)&&(identical(other.usage, usage) || other.usage == usage)&&const DeepCollectionEquality().equals(other.advanced, _advanced));
 }
 
 
 @override
 int get hashCode {
-    return Object.hash(runtimeType,credentialReady,billing,catalog,usage,const DeepCollectionEquality().hash(_advanced));
+    return Object.hash(runtimeType,authentication,credentialReady,billing,catalog,usage,const DeepCollectionEquality().hash(_advanced));
 }
 
 @override
 String toString() {
-    return 'NativeAccountDetailsPresentation(credentialReady: $credentialReady, billing: $billing, catalog: $catalog, usage: $usage, advanced: $advanced)';
+    return 'NativeAccountDetailsPresentation(authentication: $authentication, credentialReady: $credentialReady, billing: $billing, catalog: $catalog, usage: $usage, advanced: $advanced)';
 }
 
 
@@ -6773,7 +6775,7 @@ abstract mixin class _$NativeAccountDetailsPresentationCopyWith<$Res> implements
   factory _$NativeAccountDetailsPresentationCopyWith(_NativeAccountDetailsPresentation value, $Res Function(_NativeAccountDetailsPresentation) _then) = __$NativeAccountDetailsPresentationCopyWithImpl;
 @override @useResult
 $Res call({
- bool credentialReady, AccountBillingPresentation billing, AccountCatalogPresentation catalog, AccountUsagePresentation usage, List<AccountDisplayFact> advanced
+ AccountAuthenticationMethod authentication, bool credentialReady, AccountBillingPresentation billing, AccountCatalogPresentation catalog, AccountUsagePresentation usage, List<AccountDisplayFact> advanced
 });
 
 
@@ -6790,9 +6792,10 @@ class __$NativeAccountDetailsPresentationCopyWithImpl<$Res>
 
 /// Create a copy of NativeAccountDetailsPresentation
 /// with the given fields replaced by the non-null parameter values.
-@override @pragma('vm:prefer-inline') $Res call({Object? credentialReady = null,Object? billing = null,Object? catalog = null,Object? usage = null,Object? advanced = null,}) {
+@override @pragma('vm:prefer-inline') $Res call({Object? authentication = null,Object? credentialReady = null,Object? billing = null,Object? catalog = null,Object? usage = null,Object? advanced = null,}) {
   return _then(_NativeAccountDetailsPresentation(
-credentialReady: null == credentialReady ? _self.credentialReady : credentialReady // ignore: cast_nullable_to_non_nullable
+authentication: null == authentication ? _self.authentication : authentication // ignore: cast_nullable_to_non_nullable
+as AccountAuthenticationMethod,credentialReady: null == credentialReady ? _self.credentialReady : credentialReady // ignore: cast_nullable_to_non_nullable
 as bool,billing: null == billing ? _self.billing : billing // ignore: cast_nullable_to_non_nullable
 as AccountBillingPresentation,catalog: null == catalog ? _self.catalog : catalog // ignore: cast_nullable_to_non_nullable
 as AccountCatalogPresentation,usage: null == usage ? _self.usage : usage // ignore: cast_nullable_to_non_nullable
@@ -8717,7 +8720,7 @@ $AccountTextPresentationCopyWith<$Res> get maxOutputTokens {
 /// @nodoc
 mixin _$NativeAccountEditorPresentation {
 
- String get editorId; AccountDisplayKey? get accountKey; AccountTemplateKey get templateKey; List<AccountTemplatePresentation> get templates; AccountTextPresentation get name; AccountTextPresentation get endpoint; AccountTextPresentation get credential; String get protocolLabel; bool get canChangeTemplate; bool get hasStoredCredential; bool get credentialRequired; bool get dirty; bool get saving; bool get canSave; bool get canAddModel; bool get setDefaultOnCreate; bool get showSetDefaultOnCreate; List<ManualAccountModelPresentation> get manualModels; List<AccountModelPresentation> get declaredModels; AccountBillingPresentation get billing; String? get error;
+ String get editorId; AccountDisplayKey? get accountKey; AccountTemplateKey get templateKey; List<AccountTemplatePresentation> get templates; AccountTextPresentation get name; AccountTextPresentation get endpoint; AccountTextPresentation get credential; AccountAuthenticationMethod get authentication; bool get isOpenAiTemplate; ChatGptLoginSnapshot? get chatGptLogin; ChatGptAccountInfo? get savedChatGptAccount; String get protocolLabel; bool get canChangeTemplate; bool get hasStoredCredential; bool get credentialRequired; bool get dirty; bool get saving; bool get canSave; bool get canAddModel; bool get setDefaultOnCreate; bool get showSetDefaultOnCreate; List<ManualAccountModelPresentation> get manualModels; List<AccountModelPresentation> get declaredModels; AccountBillingPresentation get billing; String? get error;
 /// Create a copy of NativeAccountEditorPresentation
 /// with the given fields replaced by the non-null parameter values.
 @JsonKey(includeFromJson: false, includeToJson: false)
@@ -8729,20 +8732,20 @@ $NativeAccountEditorPresentationCopyWith<NativeAccountEditorPresentation> get co
 @override
 bool operator ==(Object other) {
   final _this = this as NativeAccountEditorPresentation;
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is NativeAccountEditorPresentation&&(identical(other.editorId, _this.editorId) || other.editorId == _this.editorId)&&(identical(other.accountKey, _this.accountKey) || other.accountKey == _this.accountKey)&&(identical(other.templateKey, _this.templateKey) || other.templateKey == _this.templateKey)&&const DeepCollectionEquality().equals(other.templates, _this.templates)&&(identical(other.name, _this.name) || other.name == _this.name)&&(identical(other.endpoint, _this.endpoint) || other.endpoint == _this.endpoint)&&(identical(other.credential, _this.credential) || other.credential == _this.credential)&&(identical(other.protocolLabel, _this.protocolLabel) || other.protocolLabel == _this.protocolLabel)&&(identical(other.canChangeTemplate, _this.canChangeTemplate) || other.canChangeTemplate == _this.canChangeTemplate)&&(identical(other.hasStoredCredential, _this.hasStoredCredential) || other.hasStoredCredential == _this.hasStoredCredential)&&(identical(other.credentialRequired, _this.credentialRequired) || other.credentialRequired == _this.credentialRequired)&&(identical(other.dirty, _this.dirty) || other.dirty == _this.dirty)&&(identical(other.saving, _this.saving) || other.saving == _this.saving)&&(identical(other.canSave, _this.canSave) || other.canSave == _this.canSave)&&(identical(other.canAddModel, _this.canAddModel) || other.canAddModel == _this.canAddModel)&&(identical(other.setDefaultOnCreate, _this.setDefaultOnCreate) || other.setDefaultOnCreate == _this.setDefaultOnCreate)&&(identical(other.showSetDefaultOnCreate, _this.showSetDefaultOnCreate) || other.showSetDefaultOnCreate == _this.showSetDefaultOnCreate)&&const DeepCollectionEquality().equals(other.manualModels, _this.manualModels)&&const DeepCollectionEquality().equals(other.declaredModels, _this.declaredModels)&&(identical(other.billing, _this.billing) || other.billing == _this.billing)&&(identical(other.error, _this.error) || other.error == _this.error));
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is NativeAccountEditorPresentation&&(identical(other.editorId, _this.editorId) || other.editorId == _this.editorId)&&(identical(other.accountKey, _this.accountKey) || other.accountKey == _this.accountKey)&&(identical(other.templateKey, _this.templateKey) || other.templateKey == _this.templateKey)&&const DeepCollectionEquality().equals(other.templates, _this.templates)&&(identical(other.name, _this.name) || other.name == _this.name)&&(identical(other.endpoint, _this.endpoint) || other.endpoint == _this.endpoint)&&(identical(other.credential, _this.credential) || other.credential == _this.credential)&&(identical(other.authentication, _this.authentication) || other.authentication == _this.authentication)&&(identical(other.isOpenAiTemplate, _this.isOpenAiTemplate) || other.isOpenAiTemplate == _this.isOpenAiTemplate)&&(identical(other.chatGptLogin, _this.chatGptLogin) || other.chatGptLogin == _this.chatGptLogin)&&(identical(other.savedChatGptAccount, _this.savedChatGptAccount) || other.savedChatGptAccount == _this.savedChatGptAccount)&&(identical(other.protocolLabel, _this.protocolLabel) || other.protocolLabel == _this.protocolLabel)&&(identical(other.canChangeTemplate, _this.canChangeTemplate) || other.canChangeTemplate == _this.canChangeTemplate)&&(identical(other.hasStoredCredential, _this.hasStoredCredential) || other.hasStoredCredential == _this.hasStoredCredential)&&(identical(other.credentialRequired, _this.credentialRequired) || other.credentialRequired == _this.credentialRequired)&&(identical(other.dirty, _this.dirty) || other.dirty == _this.dirty)&&(identical(other.saving, _this.saving) || other.saving == _this.saving)&&(identical(other.canSave, _this.canSave) || other.canSave == _this.canSave)&&(identical(other.canAddModel, _this.canAddModel) || other.canAddModel == _this.canAddModel)&&(identical(other.setDefaultOnCreate, _this.setDefaultOnCreate) || other.setDefaultOnCreate == _this.setDefaultOnCreate)&&(identical(other.showSetDefaultOnCreate, _this.showSetDefaultOnCreate) || other.showSetDefaultOnCreate == _this.showSetDefaultOnCreate)&&const DeepCollectionEquality().equals(other.manualModels, _this.manualModels)&&const DeepCollectionEquality().equals(other.declaredModels, _this.declaredModels)&&(identical(other.billing, _this.billing) || other.billing == _this.billing)&&(identical(other.error, _this.error) || other.error == _this.error));
 }
 
 
 @override
 int get hashCode {
   final _this = this as NativeAccountEditorPresentation;
-  return Object.hashAll([runtimeType,_this.editorId,_this.accountKey,_this.templateKey,const DeepCollectionEquality().hash(_this.templates),_this.name,_this.endpoint,_this.credential,_this.protocolLabel,_this.canChangeTemplate,_this.hasStoredCredential,_this.credentialRequired,_this.dirty,_this.saving,_this.canSave,_this.canAddModel,_this.setDefaultOnCreate,_this.showSetDefaultOnCreate,const DeepCollectionEquality().hash(_this.manualModels),const DeepCollectionEquality().hash(_this.declaredModels),_this.billing,_this.error]);
+  return Object.hashAll([runtimeType,_this.editorId,_this.accountKey,_this.templateKey,const DeepCollectionEquality().hash(_this.templates),_this.name,_this.endpoint,_this.credential,_this.authentication,_this.isOpenAiTemplate,_this.chatGptLogin,_this.savedChatGptAccount,_this.protocolLabel,_this.canChangeTemplate,_this.hasStoredCredential,_this.credentialRequired,_this.dirty,_this.saving,_this.canSave,_this.canAddModel,_this.setDefaultOnCreate,_this.showSetDefaultOnCreate,const DeepCollectionEquality().hash(_this.manualModels),const DeepCollectionEquality().hash(_this.declaredModels),_this.billing,_this.error]);
 }
 
 @override
 String toString() {
   final _this = this as NativeAccountEditorPresentation;
-  return 'NativeAccountEditorPresentation(editorId: ${_this.editorId}, accountKey: ${_this.accountKey}, templateKey: ${_this.templateKey}, templates: ${_this.templates}, name: ${_this.name}, endpoint: ${_this.endpoint}, credential: ${_this.credential}, protocolLabel: ${_this.protocolLabel}, canChangeTemplate: ${_this.canChangeTemplate}, hasStoredCredential: ${_this.hasStoredCredential}, credentialRequired: ${_this.credentialRequired}, dirty: ${_this.dirty}, saving: ${_this.saving}, canSave: ${_this.canSave}, canAddModel: ${_this.canAddModel}, setDefaultOnCreate: ${_this.setDefaultOnCreate}, showSetDefaultOnCreate: ${_this.showSetDefaultOnCreate}, manualModels: ${_this.manualModels}, declaredModels: ${_this.declaredModels}, billing: ${_this.billing}, error: ${_this.error})';
+  return 'NativeAccountEditorPresentation(editorId: ${_this.editorId}, accountKey: ${_this.accountKey}, templateKey: ${_this.templateKey}, templates: ${_this.templates}, name: ${_this.name}, endpoint: ${_this.endpoint}, credential: ${_this.credential}, authentication: ${_this.authentication}, isOpenAiTemplate: ${_this.isOpenAiTemplate}, chatGptLogin: ${_this.chatGptLogin}, savedChatGptAccount: ${_this.savedChatGptAccount}, protocolLabel: ${_this.protocolLabel}, canChangeTemplate: ${_this.canChangeTemplate}, hasStoredCredential: ${_this.hasStoredCredential}, credentialRequired: ${_this.credentialRequired}, dirty: ${_this.dirty}, saving: ${_this.saving}, canSave: ${_this.canSave}, canAddModel: ${_this.canAddModel}, setDefaultOnCreate: ${_this.setDefaultOnCreate}, showSetDefaultOnCreate: ${_this.showSetDefaultOnCreate}, manualModels: ${_this.manualModels}, declaredModels: ${_this.declaredModels}, billing: ${_this.billing}, error: ${_this.error})';
 }
 
 
@@ -8753,7 +8756,7 @@ abstract mixin class $NativeAccountEditorPresentationCopyWith<$Res>  {
   factory $NativeAccountEditorPresentationCopyWith(NativeAccountEditorPresentation value, $Res Function(NativeAccountEditorPresentation) _then) = _$NativeAccountEditorPresentationCopyWithImpl;
 @useResult
 $Res call({
- String editorId, AccountDisplayKey? accountKey, AccountTemplateKey templateKey, List<AccountTemplatePresentation> templates, AccountTextPresentation name, AccountTextPresentation endpoint, AccountTextPresentation credential, String protocolLabel, bool canChangeTemplate, bool hasStoredCredential, bool credentialRequired, bool dirty, bool saving, bool canSave, bool canAddModel, bool setDefaultOnCreate, bool showSetDefaultOnCreate, List<ManualAccountModelPresentation> manualModels, List<AccountModelPresentation> declaredModels, AccountBillingPresentation billing, String? error
+ String editorId, AccountDisplayKey? accountKey, AccountTemplateKey templateKey, List<AccountTemplatePresentation> templates, AccountTextPresentation name, AccountTextPresentation endpoint, AccountTextPresentation credential, AccountAuthenticationMethod authentication, bool isOpenAiTemplate, ChatGptLoginSnapshot? chatGptLogin, ChatGptAccountInfo? savedChatGptAccount, String protocolLabel, bool canChangeTemplate, bool hasStoredCredential, bool credentialRequired, bool dirty, bool saving, bool canSave, bool canAddModel, bool setDefaultOnCreate, bool showSetDefaultOnCreate, List<ManualAccountModelPresentation> manualModels, List<AccountModelPresentation> declaredModels, AccountBillingPresentation billing, String? error
 });
 
 
@@ -8770,7 +8773,7 @@ class _$NativeAccountEditorPresentationCopyWithImpl<$Res>
 
 /// Create a copy of NativeAccountEditorPresentation
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') @override $Res call({Object? editorId = null,Object? accountKey = freezed,Object? templateKey = null,Object? templates = null,Object? name = null,Object? endpoint = null,Object? credential = null,Object? protocolLabel = null,Object? canChangeTemplate = null,Object? hasStoredCredential = null,Object? credentialRequired = null,Object? dirty = null,Object? saving = null,Object? canSave = null,Object? canAddModel = null,Object? setDefaultOnCreate = null,Object? showSetDefaultOnCreate = null,Object? manualModels = null,Object? declaredModels = null,Object? billing = null,Object? error = freezed,}) {
+@pragma('vm:prefer-inline') @override $Res call({Object? editorId = null,Object? accountKey = freezed,Object? templateKey = null,Object? templates = null,Object? name = null,Object? endpoint = null,Object? credential = null,Object? authentication = null,Object? isOpenAiTemplate = null,Object? chatGptLogin = freezed,Object? savedChatGptAccount = freezed,Object? protocolLabel = null,Object? canChangeTemplate = null,Object? hasStoredCredential = null,Object? credentialRequired = null,Object? dirty = null,Object? saving = null,Object? canSave = null,Object? canAddModel = null,Object? setDefaultOnCreate = null,Object? showSetDefaultOnCreate = null,Object? manualModels = null,Object? declaredModels = null,Object? billing = null,Object? error = freezed,}) {
   return _then(NativeAccountEditorPresentation(
 editorId: null == editorId ? _self.editorId : editorId // ignore: cast_nullable_to_non_nullable
 as String,accountKey: freezed == accountKey ? _self.accountKey : accountKey // ignore: cast_nullable_to_non_nullable
@@ -8779,7 +8782,11 @@ as AccountTemplateKey,templates: null == templates ? _self.templates : templates
 as List<AccountTemplatePresentation>,name: null == name ? _self.name : name // ignore: cast_nullable_to_non_nullable
 as AccountTextPresentation,endpoint: null == endpoint ? _self.endpoint : endpoint // ignore: cast_nullable_to_non_nullable
 as AccountTextPresentation,credential: null == credential ? _self.credential : credential // ignore: cast_nullable_to_non_nullable
-as AccountTextPresentation,protocolLabel: null == protocolLabel ? _self.protocolLabel : protocolLabel // ignore: cast_nullable_to_non_nullable
+as AccountTextPresentation,authentication: null == authentication ? _self.authentication : authentication // ignore: cast_nullable_to_non_nullable
+as AccountAuthenticationMethod,isOpenAiTemplate: null == isOpenAiTemplate ? _self.isOpenAiTemplate : isOpenAiTemplate // ignore: cast_nullable_to_non_nullable
+as bool,chatGptLogin: freezed == chatGptLogin ? _self.chatGptLogin : chatGptLogin // ignore: cast_nullable_to_non_nullable
+as ChatGptLoginSnapshot?,savedChatGptAccount: freezed == savedChatGptAccount ? _self.savedChatGptAccount : savedChatGptAccount // ignore: cast_nullable_to_non_nullable
+as ChatGptAccountInfo?,protocolLabel: null == protocolLabel ? _self.protocolLabel : protocolLabel // ignore: cast_nullable_to_non_nullable
 as String,canChangeTemplate: null == canChangeTemplate ? _self.canChangeTemplate : canChangeTemplate // ignore: cast_nullable_to_non_nullable
 as bool,hasStoredCredential: null == hasStoredCredential ? _self.hasStoredCredential : hasStoredCredential // ignore: cast_nullable_to_non_nullable
 as bool,credentialRequired: null == credentialRequired ? _self.credentialRequired : credentialRequired // ignore: cast_nullable_to_non_nullable
@@ -8935,10 +8942,10 @@ return $default(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( String editorId,  AccountDisplayKey? accountKey,  AccountTemplateKey templateKey,  List<AccountTemplatePresentation> templates,  AccountTextPresentation name,  AccountTextPresentation endpoint,  AccountTextPresentation credential,  String protocolLabel,  bool canChangeTemplate,  bool hasStoredCredential,  bool credentialRequired,  bool dirty,  bool saving,  bool canSave,  bool canAddModel,  bool setDefaultOnCreate,  bool showSetDefaultOnCreate,  List<ManualAccountModelPresentation> manualModels,  List<AccountModelPresentation> declaredModels,  AccountBillingPresentation billing,  String? error)?  $default,{required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( String editorId,  AccountDisplayKey? accountKey,  AccountTemplateKey templateKey,  List<AccountTemplatePresentation> templates,  AccountTextPresentation name,  AccountTextPresentation endpoint,  AccountTextPresentation credential,  AccountAuthenticationMethod authentication,  bool isOpenAiTemplate,  ChatGptLoginSnapshot? chatGptLogin,  ChatGptAccountInfo? savedChatGptAccount,  String protocolLabel,  bool canChangeTemplate,  bool hasStoredCredential,  bool credentialRequired,  bool dirty,  bool saving,  bool canSave,  bool canAddModel,  bool setDefaultOnCreate,  bool showSetDefaultOnCreate,  List<ManualAccountModelPresentation> manualModels,  List<AccountModelPresentation> declaredModels,  AccountBillingPresentation billing,  String? error)?  $default,{required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case _NativeAccountEditorPresentation() when $default != null:
-return $default(_that.editorId,_that.accountKey,_that.templateKey,_that.templates,_that.name,_that.endpoint,_that.credential,_that.protocolLabel,_that.canChangeTemplate,_that.hasStoredCredential,_that.credentialRequired,_that.dirty,_that.saving,_that.canSave,_that.canAddModel,_that.setDefaultOnCreate,_that.showSetDefaultOnCreate,_that.manualModels,_that.declaredModels,_that.billing,_that.error);case _:
+return $default(_that.editorId,_that.accountKey,_that.templateKey,_that.templates,_that.name,_that.endpoint,_that.credential,_that.authentication,_that.isOpenAiTemplate,_that.chatGptLogin,_that.savedChatGptAccount,_that.protocolLabel,_that.canChangeTemplate,_that.hasStoredCredential,_that.credentialRequired,_that.dirty,_that.saving,_that.canSave,_that.canAddModel,_that.setDefaultOnCreate,_that.showSetDefaultOnCreate,_that.manualModels,_that.declaredModels,_that.billing,_that.error);case _:
   return orElse();
 
 }
@@ -8956,10 +8963,10 @@ return $default(_that.editorId,_that.accountKey,_that.templateKey,_that.template
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( String editorId,  AccountDisplayKey? accountKey,  AccountTemplateKey templateKey,  List<AccountTemplatePresentation> templates,  AccountTextPresentation name,  AccountTextPresentation endpoint,  AccountTextPresentation credential,  String protocolLabel,  bool canChangeTemplate,  bool hasStoredCredential,  bool credentialRequired,  bool dirty,  bool saving,  bool canSave,  bool canAddModel,  bool setDefaultOnCreate,  bool showSetDefaultOnCreate,  List<ManualAccountModelPresentation> manualModels,  List<AccountModelPresentation> declaredModels,  AccountBillingPresentation billing,  String? error)  $default,) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( String editorId,  AccountDisplayKey? accountKey,  AccountTemplateKey templateKey,  List<AccountTemplatePresentation> templates,  AccountTextPresentation name,  AccountTextPresentation endpoint,  AccountTextPresentation credential,  AccountAuthenticationMethod authentication,  bool isOpenAiTemplate,  ChatGptLoginSnapshot? chatGptLogin,  ChatGptAccountInfo? savedChatGptAccount,  String protocolLabel,  bool canChangeTemplate,  bool hasStoredCredential,  bool credentialRequired,  bool dirty,  bool saving,  bool canSave,  bool canAddModel,  bool setDefaultOnCreate,  bool showSetDefaultOnCreate,  List<ManualAccountModelPresentation> manualModels,  List<AccountModelPresentation> declaredModels,  AccountBillingPresentation billing,  String? error)  $default,) {final _that = this;
 switch (_that) {
 case _NativeAccountEditorPresentation():
-return $default(_that.editorId,_that.accountKey,_that.templateKey,_that.templates,_that.name,_that.endpoint,_that.credential,_that.protocolLabel,_that.canChangeTemplate,_that.hasStoredCredential,_that.credentialRequired,_that.dirty,_that.saving,_that.canSave,_that.canAddModel,_that.setDefaultOnCreate,_that.showSetDefaultOnCreate,_that.manualModels,_that.declaredModels,_that.billing,_that.error);case _:
+return $default(_that.editorId,_that.accountKey,_that.templateKey,_that.templates,_that.name,_that.endpoint,_that.credential,_that.authentication,_that.isOpenAiTemplate,_that.chatGptLogin,_that.savedChatGptAccount,_that.protocolLabel,_that.canChangeTemplate,_that.hasStoredCredential,_that.credentialRequired,_that.dirty,_that.saving,_that.canSave,_that.canAddModel,_that.setDefaultOnCreate,_that.showSetDefaultOnCreate,_that.manualModels,_that.declaredModels,_that.billing,_that.error);case _:
   throw StateError('Unexpected subclass');
 
 }
@@ -8976,10 +8983,10 @@ return $default(_that.editorId,_that.accountKey,_that.templateKey,_that.template
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( String editorId,  AccountDisplayKey? accountKey,  AccountTemplateKey templateKey,  List<AccountTemplatePresentation> templates,  AccountTextPresentation name,  AccountTextPresentation endpoint,  AccountTextPresentation credential,  String protocolLabel,  bool canChangeTemplate,  bool hasStoredCredential,  bool credentialRequired,  bool dirty,  bool saving,  bool canSave,  bool canAddModel,  bool setDefaultOnCreate,  bool showSetDefaultOnCreate,  List<ManualAccountModelPresentation> manualModels,  List<AccountModelPresentation> declaredModels,  AccountBillingPresentation billing,  String? error)?  $default,) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( String editorId,  AccountDisplayKey? accountKey,  AccountTemplateKey templateKey,  List<AccountTemplatePresentation> templates,  AccountTextPresentation name,  AccountTextPresentation endpoint,  AccountTextPresentation credential,  AccountAuthenticationMethod authentication,  bool isOpenAiTemplate,  ChatGptLoginSnapshot? chatGptLogin,  ChatGptAccountInfo? savedChatGptAccount,  String protocolLabel,  bool canChangeTemplate,  bool hasStoredCredential,  bool credentialRequired,  bool dirty,  bool saving,  bool canSave,  bool canAddModel,  bool setDefaultOnCreate,  bool showSetDefaultOnCreate,  List<ManualAccountModelPresentation> manualModels,  List<AccountModelPresentation> declaredModels,  AccountBillingPresentation billing,  String? error)?  $default,) {final _that = this;
 switch (_that) {
 case _NativeAccountEditorPresentation() when $default != null:
-return $default(_that.editorId,_that.accountKey,_that.templateKey,_that.templates,_that.name,_that.endpoint,_that.credential,_that.protocolLabel,_that.canChangeTemplate,_that.hasStoredCredential,_that.credentialRequired,_that.dirty,_that.saving,_that.canSave,_that.canAddModel,_that.setDefaultOnCreate,_that.showSetDefaultOnCreate,_that.manualModels,_that.declaredModels,_that.billing,_that.error);case _:
+return $default(_that.editorId,_that.accountKey,_that.templateKey,_that.templates,_that.name,_that.endpoint,_that.credential,_that.authentication,_that.isOpenAiTemplate,_that.chatGptLogin,_that.savedChatGptAccount,_that.protocolLabel,_that.canChangeTemplate,_that.hasStoredCredential,_that.credentialRequired,_that.dirty,_that.saving,_that.canSave,_that.canAddModel,_that.setDefaultOnCreate,_that.showSetDefaultOnCreate,_that.manualModels,_that.declaredModels,_that.billing,_that.error);case _:
   return null;
 
 }
@@ -8991,7 +8998,7 @@ return $default(_that.editorId,_that.accountKey,_that.templateKey,_that.template
 
 
 class _NativeAccountEditorPresentation implements NativeAccountEditorPresentation {
-  const _NativeAccountEditorPresentation({required this.editorId, this.accountKey, required this.templateKey,  List<AccountTemplatePresentation> templates = const <AccountTemplatePresentation>[], required this.name, required this.endpoint, required this.credential, required this.protocolLabel, this.canChangeTemplate = false, this.hasStoredCredential = false, this.credentialRequired = true, this.dirty = false, this.saving = false, this.canSave = false, this.canAddModel = false, this.setDefaultOnCreate = false, this.showSetDefaultOnCreate = false,  List<ManualAccountModelPresentation> manualModels = const <ManualAccountModelPresentation>[],  List<AccountModelPresentation> declaredModels = const <AccountModelPresentation>[], required this.billing, this.error}): _templates = templates,_manualModels = manualModels,_declaredModels = declaredModels;
+  const _NativeAccountEditorPresentation({required this.editorId, this.accountKey, required this.templateKey,  List<AccountTemplatePresentation> templates = const <AccountTemplatePresentation>[], required this.name, required this.endpoint, required this.credential, this.authentication = AccountAuthenticationMethod.apiKey, this.isOpenAiTemplate = false, this.chatGptLogin, this.savedChatGptAccount, required this.protocolLabel, this.canChangeTemplate = false, this.hasStoredCredential = false, this.credentialRequired = true, this.dirty = false, this.saving = false, this.canSave = false, this.canAddModel = false, this.setDefaultOnCreate = false, this.showSetDefaultOnCreate = false,  List<ManualAccountModelPresentation> manualModels = const <ManualAccountModelPresentation>[],  List<AccountModelPresentation> declaredModels = const <AccountModelPresentation>[], required this.billing, this.error}): _templates = templates,_manualModels = manualModels,_declaredModels = declaredModels;
 
 
 @override final  String editorId;
@@ -9007,6 +9014,10 @@ class _NativeAccountEditorPresentation implements NativeAccountEditorPresentatio
 @override final  AccountTextPresentation name;
 @override final  AccountTextPresentation endpoint;
 @override final  AccountTextPresentation credential;
+@override@JsonKey() final  AccountAuthenticationMethod authentication;
+@override@JsonKey() final  bool isOpenAiTemplate;
+@override final  ChatGptLoginSnapshot? chatGptLogin;
+@override final  ChatGptAccountInfo? savedChatGptAccount;
 @override final  String protocolLabel;
 @override@JsonKey() final  bool canChangeTemplate;
 @override@JsonKey() final  bool hasStoredCredential;
@@ -9044,18 +9055,18 @@ _$NativeAccountEditorPresentationCopyWith<_NativeAccountEditorPresentation> get 
 
 @override
 bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is _NativeAccountEditorPresentation&&(identical(other.editorId, editorId) || other.editorId == editorId)&&(identical(other.accountKey, accountKey) || other.accountKey == accountKey)&&(identical(other.templateKey, templateKey) || other.templateKey == templateKey)&&const DeepCollectionEquality().equals(other.templates, _templates)&&(identical(other.name, name) || other.name == name)&&(identical(other.endpoint, endpoint) || other.endpoint == endpoint)&&(identical(other.credential, credential) || other.credential == credential)&&(identical(other.protocolLabel, protocolLabel) || other.protocolLabel == protocolLabel)&&(identical(other.canChangeTemplate, canChangeTemplate) || other.canChangeTemplate == canChangeTemplate)&&(identical(other.hasStoredCredential, hasStoredCredential) || other.hasStoredCredential == hasStoredCredential)&&(identical(other.credentialRequired, credentialRequired) || other.credentialRequired == credentialRequired)&&(identical(other.dirty, dirty) || other.dirty == dirty)&&(identical(other.saving, saving) || other.saving == saving)&&(identical(other.canSave, canSave) || other.canSave == canSave)&&(identical(other.canAddModel, canAddModel) || other.canAddModel == canAddModel)&&(identical(other.setDefaultOnCreate, setDefaultOnCreate) || other.setDefaultOnCreate == setDefaultOnCreate)&&(identical(other.showSetDefaultOnCreate, showSetDefaultOnCreate) || other.showSetDefaultOnCreate == showSetDefaultOnCreate)&&const DeepCollectionEquality().equals(other.manualModels, _manualModels)&&const DeepCollectionEquality().equals(other.declaredModels, _declaredModels)&&(identical(other.billing, billing) || other.billing == billing)&&(identical(other.error, error) || other.error == error));
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is _NativeAccountEditorPresentation&&(identical(other.editorId, editorId) || other.editorId == editorId)&&(identical(other.accountKey, accountKey) || other.accountKey == accountKey)&&(identical(other.templateKey, templateKey) || other.templateKey == templateKey)&&const DeepCollectionEquality().equals(other.templates, _templates)&&(identical(other.name, name) || other.name == name)&&(identical(other.endpoint, endpoint) || other.endpoint == endpoint)&&(identical(other.credential, credential) || other.credential == credential)&&(identical(other.authentication, authentication) || other.authentication == authentication)&&(identical(other.isOpenAiTemplate, isOpenAiTemplate) || other.isOpenAiTemplate == isOpenAiTemplate)&&(identical(other.chatGptLogin, chatGptLogin) || other.chatGptLogin == chatGptLogin)&&(identical(other.savedChatGptAccount, savedChatGptAccount) || other.savedChatGptAccount == savedChatGptAccount)&&(identical(other.protocolLabel, protocolLabel) || other.protocolLabel == protocolLabel)&&(identical(other.canChangeTemplate, canChangeTemplate) || other.canChangeTemplate == canChangeTemplate)&&(identical(other.hasStoredCredential, hasStoredCredential) || other.hasStoredCredential == hasStoredCredential)&&(identical(other.credentialRequired, credentialRequired) || other.credentialRequired == credentialRequired)&&(identical(other.dirty, dirty) || other.dirty == dirty)&&(identical(other.saving, saving) || other.saving == saving)&&(identical(other.canSave, canSave) || other.canSave == canSave)&&(identical(other.canAddModel, canAddModel) || other.canAddModel == canAddModel)&&(identical(other.setDefaultOnCreate, setDefaultOnCreate) || other.setDefaultOnCreate == setDefaultOnCreate)&&(identical(other.showSetDefaultOnCreate, showSetDefaultOnCreate) || other.showSetDefaultOnCreate == showSetDefaultOnCreate)&&const DeepCollectionEquality().equals(other.manualModels, _manualModels)&&const DeepCollectionEquality().equals(other.declaredModels, _declaredModels)&&(identical(other.billing, billing) || other.billing == billing)&&(identical(other.error, error) || other.error == error));
 }
 
 
 @override
 int get hashCode {
-    return Object.hashAll([runtimeType,editorId,accountKey,templateKey,const DeepCollectionEquality().hash(_templates),name,endpoint,credential,protocolLabel,canChangeTemplate,hasStoredCredential,credentialRequired,dirty,saving,canSave,canAddModel,setDefaultOnCreate,showSetDefaultOnCreate,const DeepCollectionEquality().hash(_manualModels),const DeepCollectionEquality().hash(_declaredModels),billing,error]);
+    return Object.hashAll([runtimeType,editorId,accountKey,templateKey,const DeepCollectionEquality().hash(_templates),name,endpoint,credential,authentication,isOpenAiTemplate,chatGptLogin,savedChatGptAccount,protocolLabel,canChangeTemplate,hasStoredCredential,credentialRequired,dirty,saving,canSave,canAddModel,setDefaultOnCreate,showSetDefaultOnCreate,const DeepCollectionEquality().hash(_manualModels),const DeepCollectionEquality().hash(_declaredModels),billing,error]);
 }
 
 @override
 String toString() {
-    return 'NativeAccountEditorPresentation(editorId: $editorId, accountKey: $accountKey, templateKey: $templateKey, templates: $templates, name: $name, endpoint: $endpoint, credential: $credential, protocolLabel: $protocolLabel, canChangeTemplate: $canChangeTemplate, hasStoredCredential: $hasStoredCredential, credentialRequired: $credentialRequired, dirty: $dirty, saving: $saving, canSave: $canSave, canAddModel: $canAddModel, setDefaultOnCreate: $setDefaultOnCreate, showSetDefaultOnCreate: $showSetDefaultOnCreate, manualModels: $manualModels, declaredModels: $declaredModels, billing: $billing, error: $error)';
+    return 'NativeAccountEditorPresentation(editorId: $editorId, accountKey: $accountKey, templateKey: $templateKey, templates: $templates, name: $name, endpoint: $endpoint, credential: $credential, authentication: $authentication, isOpenAiTemplate: $isOpenAiTemplate, chatGptLogin: $chatGptLogin, savedChatGptAccount: $savedChatGptAccount, protocolLabel: $protocolLabel, canChangeTemplate: $canChangeTemplate, hasStoredCredential: $hasStoredCredential, credentialRequired: $credentialRequired, dirty: $dirty, saving: $saving, canSave: $canSave, canAddModel: $canAddModel, setDefaultOnCreate: $setDefaultOnCreate, showSetDefaultOnCreate: $showSetDefaultOnCreate, manualModels: $manualModels, declaredModels: $declaredModels, billing: $billing, error: $error)';
 }
 
 
@@ -9066,7 +9077,7 @@ abstract mixin class _$NativeAccountEditorPresentationCopyWith<$Res> implements 
   factory _$NativeAccountEditorPresentationCopyWith(_NativeAccountEditorPresentation value, $Res Function(_NativeAccountEditorPresentation) _then) = __$NativeAccountEditorPresentationCopyWithImpl;
 @override @useResult
 $Res call({
- String editorId, AccountDisplayKey? accountKey, AccountTemplateKey templateKey, List<AccountTemplatePresentation> templates, AccountTextPresentation name, AccountTextPresentation endpoint, AccountTextPresentation credential, String protocolLabel, bool canChangeTemplate, bool hasStoredCredential, bool credentialRequired, bool dirty, bool saving, bool canSave, bool canAddModel, bool setDefaultOnCreate, bool showSetDefaultOnCreate, List<ManualAccountModelPresentation> manualModels, List<AccountModelPresentation> declaredModels, AccountBillingPresentation billing, String? error
+ String editorId, AccountDisplayKey? accountKey, AccountTemplateKey templateKey, List<AccountTemplatePresentation> templates, AccountTextPresentation name, AccountTextPresentation endpoint, AccountTextPresentation credential, AccountAuthenticationMethod authentication, bool isOpenAiTemplate, ChatGptLoginSnapshot? chatGptLogin, ChatGptAccountInfo? savedChatGptAccount, String protocolLabel, bool canChangeTemplate, bool hasStoredCredential, bool credentialRequired, bool dirty, bool saving, bool canSave, bool canAddModel, bool setDefaultOnCreate, bool showSetDefaultOnCreate, List<ManualAccountModelPresentation> manualModels, List<AccountModelPresentation> declaredModels, AccountBillingPresentation billing, String? error
 });
 
 
@@ -9083,7 +9094,7 @@ class __$NativeAccountEditorPresentationCopyWithImpl<$Res>
 
 /// Create a copy of NativeAccountEditorPresentation
 /// with the given fields replaced by the non-null parameter values.
-@override @pragma('vm:prefer-inline') $Res call({Object? editorId = null,Object? accountKey = freezed,Object? templateKey = null,Object? templates = null,Object? name = null,Object? endpoint = null,Object? credential = null,Object? protocolLabel = null,Object? canChangeTemplate = null,Object? hasStoredCredential = null,Object? credentialRequired = null,Object? dirty = null,Object? saving = null,Object? canSave = null,Object? canAddModel = null,Object? setDefaultOnCreate = null,Object? showSetDefaultOnCreate = null,Object? manualModels = null,Object? declaredModels = null,Object? billing = null,Object? error = freezed,}) {
+@override @pragma('vm:prefer-inline') $Res call({Object? editorId = null,Object? accountKey = freezed,Object? templateKey = null,Object? templates = null,Object? name = null,Object? endpoint = null,Object? credential = null,Object? authentication = null,Object? isOpenAiTemplate = null,Object? chatGptLogin = freezed,Object? savedChatGptAccount = freezed,Object? protocolLabel = null,Object? canChangeTemplate = null,Object? hasStoredCredential = null,Object? credentialRequired = null,Object? dirty = null,Object? saving = null,Object? canSave = null,Object? canAddModel = null,Object? setDefaultOnCreate = null,Object? showSetDefaultOnCreate = null,Object? manualModels = null,Object? declaredModels = null,Object? billing = null,Object? error = freezed,}) {
   return _then(_NativeAccountEditorPresentation(
 editorId: null == editorId ? _self.editorId : editorId // ignore: cast_nullable_to_non_nullable
 as String,accountKey: freezed == accountKey ? _self.accountKey : accountKey // ignore: cast_nullable_to_non_nullable
@@ -9092,7 +9103,11 @@ as AccountTemplateKey,templates: null == templates ? _self._templates : template
 as List<AccountTemplatePresentation>,name: null == name ? _self.name : name // ignore: cast_nullable_to_non_nullable
 as AccountTextPresentation,endpoint: null == endpoint ? _self.endpoint : endpoint // ignore: cast_nullable_to_non_nullable
 as AccountTextPresentation,credential: null == credential ? _self.credential : credential // ignore: cast_nullable_to_non_nullable
-as AccountTextPresentation,protocolLabel: null == protocolLabel ? _self.protocolLabel : protocolLabel // ignore: cast_nullable_to_non_nullable
+as AccountTextPresentation,authentication: null == authentication ? _self.authentication : authentication // ignore: cast_nullable_to_non_nullable
+as AccountAuthenticationMethod,isOpenAiTemplate: null == isOpenAiTemplate ? _self.isOpenAiTemplate : isOpenAiTemplate // ignore: cast_nullable_to_non_nullable
+as bool,chatGptLogin: freezed == chatGptLogin ? _self.chatGptLogin : chatGptLogin // ignore: cast_nullable_to_non_nullable
+as ChatGptLoginSnapshot?,savedChatGptAccount: freezed == savedChatGptAccount ? _self.savedChatGptAccount : savedChatGptAccount // ignore: cast_nullable_to_non_nullable
+as ChatGptAccountInfo?,protocolLabel: null == protocolLabel ? _self.protocolLabel : protocolLabel // ignore: cast_nullable_to_non_nullable
 as String,canChangeTemplate: null == canChangeTemplate ? _self.canChangeTemplate : canChangeTemplate // ignore: cast_nullable_to_non_nullable
 as bool,hasStoredCredential: null == hasStoredCredential ? _self.hasStoredCredential : hasStoredCredential // ignore: cast_nullable_to_non_nullable
 as bool,credentialRequired: null == credentialRequired ? _self.credentialRequired : credentialRequired // ignore: cast_nullable_to_non_nullable

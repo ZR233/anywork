@@ -5543,6 +5543,67 @@ class AppLocalizationsZh extends AppLocalizations {
   }
 
   @override
+  String get accountsAuthApiKey => 'API 密钥';
+
+  @override
+  String get accountsAuthChatGpt => 'ChatGPT 订阅';
+
+  @override
+  String get accountsChatGptConnectionHint => '通过 OpenAI 官方浏览器登录连接 ChatGPT。';
+
+  @override
+  String get accountsChatGptLogin => '使用 ChatGPT 登录';
+
+  @override
+  String get accountsChatGptNotConnected => '尚未连接 ChatGPT。';
+
+  @override
+  String get accountsChatGptPreparing => '正在准备安全登录…';
+
+  @override
+  String get accountsChatGptWaitingBrowser => '请在浏览器中完成 OpenAI 授权。';
+
+  @override
+  String get accountsChatGptChecking => '正在验证 ChatGPT 连接…';
+
+  @override
+  String get accountsChatGptConnected => 'ChatGPT 已连接，可保存此账号。';
+
+  @override
+  String get accountsChatGptPermissionMissing =>
+      '账号已验证，但未授予直接 API 使用权限。请重新登录并确认授权。';
+
+  @override
+  String get accountsChatGptCancelled => '登录已取消。';
+
+  @override
+  String get accountsChatGptAuthorizationDenied => 'OpenAI 未授权此连接。请重试并确认授权。';
+
+  @override
+  String get accountsChatGptExpired => '登录链接已过期，请重新登录。';
+
+  @override
+  String get accountsChatGptFailed => '无法完成 ChatGPT 登录，请重试。';
+
+  @override
+  String get accountsChatGptOpenBrowser => '重新打开浏览器';
+
+  @override
+  String get accountsChatGptCancel => '取消登录';
+
+  @override
+  String get accountsChatGptUsage => '查看 ChatGPT 用量';
+
+  @override
+  String get accountsChatGptApiKeyRequired => '切换到 API 密钥认证时，请输入新的 API 密钥。';
+
+  @override
+  String get accountsChatGptOpenLinkFailed => '无法打开 OpenAI 登录页面，请重试打开。';
+
+  @override
+  String get accountsChatGptOpenUsageFailed => '无法打开 ChatGPT 用量设置。';
+
+  @override
   String get recoveryUnknownOwner => '未记录';
 
   @override
