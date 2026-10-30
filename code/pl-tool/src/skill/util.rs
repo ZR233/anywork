@@ -128,21 +128,6 @@ pub(super) fn save_usage(
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn standard_user_skill_directory_is_derived_only_from_platform_home() {
-        let home = Path::new("/isolated-user");
-
-        assert_eq!(
-            agents_user_skills_dir_from_home(home),
-            home.join(".agents/skills")
-        );
-    }
-}
-
 pub(super) fn validate_usage_write(project_dir: &Path, skill_dir: &Path) -> Result<()> {
     validate_existing_path(project_dir, skill_dir)
         .map_err(|error| PureError::ConfigError(error.to_string()))?;
@@ -164,4 +149,19 @@ pub(super) fn validate_usage_write(project_dir: &Path, skill_dir: &Path) -> Resu
     validate_path_for_write(project_dir, &usage_path)
         .map_err(|error| PureError::ConfigError(error.to_string()))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn standard_user_skill_directory_is_derived_only_from_platform_home() {
+        let home = Path::new("/isolated-user");
+
+        assert_eq!(
+            agents_user_skills_dir_from_home(home),
+            home.join(".agents/skills")
+        );
+    }
 }

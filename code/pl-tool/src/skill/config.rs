@@ -53,17 +53,6 @@ impl SkillsConfig {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn private_user_directory_is_not_a_valid_config_field() {
-        let parsed = serde_json::from_str::<SkillsConfig>(r#"{"user_dir":"/custom/skills"}"#);
-        assert!(parsed.is_err());
-    }
-}
-
 fn default_true() -> bool {
     true
 }
@@ -74,4 +63,15 @@ fn default_project_skills_dir() -> String {
 
 fn default_auto_learn_min_tool_calls() -> u32 {
     5
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn private_user_directory_is_not_a_valid_config_field() {
+        let parsed = serde_json::from_str::<SkillsConfig>(r#"{"user_dir":"/custom/skills"}"#);
+        assert!(parsed.is_err());
+    }
 }

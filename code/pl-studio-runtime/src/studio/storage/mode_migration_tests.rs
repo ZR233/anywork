@@ -3245,8 +3245,7 @@ async fn unknown_close_intent_encoding_preserves_checkpoint_and_history() -> Res
     ] {
         let directory = tempfile::tempdir()?;
         let store =
-            crate::studio::StudioStore::open(directory.path().join("data/studio.sqlite"))
-                .await?;
+            crate::studio::StudioStore::open(directory.path().join("data/studio.sqlite")).await?;
         let thread = bound_thread("migration");
         let history = registered_history(&store, &thread).await?;
         let state = saved_state(BTreeMap::from([(

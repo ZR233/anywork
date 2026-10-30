@@ -222,7 +222,7 @@ impl StudioPaths {
 
     /// 官方 ACP server 安装根：`<Studio home>/studio/acp-servers`。
     ///
-    /// 与会话版本数据根（`studio/v2`）、空探测 cwd、更新安装器缓存和会话 scratch 隔离；下载、
+    /// 与当前产品数据根（`data/`）、空探测 cwd、更新安装器缓存和会话 temp 隔离；下载、
     /// 私有 staging、锁与已发布安装都在该根下按 provider/target/安装身份分层。它不绑定账号，
     /// 删除账号不删除资产（见 design/17、design/28 §28.5–28.7）。
     pub fn acp_servers_root(&self) -> PathBuf {
