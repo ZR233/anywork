@@ -22,6 +22,9 @@ mod acp;
 mod acp_install;
 mod view;
 
+#[cfg(test)]
+mod tests;
+
 use account_edit::invalid_settings_argument;
 pub(crate) use view::{
     account_settings, model_catalog_snapshot, settings_config_snapshot, settings_state_response,
@@ -116,6 +119,7 @@ impl StudioRuntime {
         let effect = match &request.update {
             SettingsFieldUpdate::GeneralFollowActiveTurn { .. }
             | SettingsFieldUpdate::GeneralCompactTimeline { .. }
+            | SettingsFieldUpdate::GeneralLanguage { .. }
             | SettingsFieldUpdate::GeneralSidebarWidth { .. }
             | SettingsFieldUpdate::GeneralPinnedThreadIds { .. }
             | SettingsFieldUpdate::GeneralPinnedProjectIds { .. } => CommandEffectPoint::Immediate,
@@ -200,6 +204,9 @@ impl StudioRuntime {
                     }
                     SettingsFieldUpdate::GeneralCompactTimeline { value } => {
                         config.ui.compact_timeline = value;
+                    }
+                    SettingsFieldUpdate::GeneralLanguage { value } => {
+                        config.ui.language = value;
                     }
                     SettingsFieldUpdate::GeneralSidebarWidth { value } => {
                         if !value.is_none_or(|width| (300..=440).contains(&width)) {
