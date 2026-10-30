@@ -1528,6 +1528,14 @@ class FrbStudioTransport
   }
 
   @override
+  Future<ProjectDirectoryState> prepareStandaloneWorkspace() async {
+    await _ensureReady();
+    return _projectDirectoryFromFrb(
+      await _bridgeCall(frb.prepareStandaloneWorkspace),
+    );
+  }
+
+  @override
   Future<List<SshServer>> listSshServers() async {
     await _ensureReady();
     final servers = await _bridgeCall(frb_ssh.listSshServers);

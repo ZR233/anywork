@@ -654,6 +654,9 @@ class AppLocalizationsZh extends AppLocalizations {
   }
 
   @override
+  String get startPageStandaloneBody => '无需选择项目，文件会保存在 Documents/anywork 目录中。';
+
+  @override
   String get startPageOpenProjectTitle => '请先打开项目';
 
   @override
@@ -3409,6 +3412,17 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get sidebarEmptyProject => '还没有会话，点击项目右侧 ＋ 开始';
+
+  @override
+  String get sidebarStandaloneSessions => '非项目会话';
+
+  @override
+  String get sidebarStandaloneEmpty => '还没有非项目会话。';
+
+  @override
+  String sidebarStandalonePrepareFailed(String error) {
+    return '准备工作区失败：$error。点击“新建会话”重试。';
+  }
 
   @override
   String get sidebarEarlier => '查看更早会话';

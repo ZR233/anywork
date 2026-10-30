@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../presentation/providers/client_provider.dart';
+import '../../../../presentation/providers/project_store.dart';
 import '../../../../presentation/providers/settings_store.dart';
 import '../../../../presentation/providers/start_session_controller.dart';
 import '../../../../shared/delegation_labels.dart';
@@ -21,6 +22,12 @@ class SessionSettingsConnector extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final draft = ref.watch(startSessionControllerProvider);
     final project = draft.forProject(projectId);
+    final workspace = ref
+        .watch(projectStoreProvider)
+        .projects
+        ?.values
+        .where((candidate) => candidate.id == projectId)
+        .firstOrNull;
     final defaults = ref.watch(settingsStoreProvider).canonical?.delegation;
     if (defaults == null) return const SizedBox.shrink();
     final effective = project.resolveDelegation(defaults);
@@ -32,6 +39,7 @@ class SessionSettingsConnector extends ConsumerWidget {
       modeOverride: project.delegationModeOverride,
       preferenceOverride: project.delegationPreferenceOverride,
       workspaceMode: project.workspaceMode,
+      isStandalone: workspace?.isStandalone ?? false,
       enabled: enabled && !draft.submitting,
       onModeChanged: (mode) => owner.setDelegationModeOverride(projectId, mode),
       onPreferenceChanged: (preference) =>

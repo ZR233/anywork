@@ -21,10 +21,54 @@ use super::{
 };
 use crate::{PureError, Result};
 
+mod resources;
+
+/// New resource journals and frozen v1 journals share the same operation directory and writers.
+pub(super) fn resume_for_startup(
+    paths: &ConfigPaths,
+    credentials: &dyn CredentialStore,
+) -> anyhow::Result<()> {
+    let journal_path = operation_dir(paths).join(JOURNAL_FILE_NAME);
+    let bytes = match fs::read(&journal_path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    #[derive(serde::Deserialize)]
+    struct Header {
+        version: u32,
+    }
+    let header: Header = serde_json::from_slice(&bytes)?;
+    match header.version {
+        JOURNAL_VERSION => {
+            // Complete the immutable old operation before preparing any current candidate.
+            if let Some(resumed) = resume_legacy(paths, credentials)? {
+                tracing::debug!(
+                    target_version = resumed.target_version,
+                    current = resumed.config.is_some(),
+                    "completed recorded legacy config migration"
+                );
+            }
+        }
+        resources::VERSION => {
+            resources::resume(paths, credentials, &bytes)?;
+        }
+        _ => anyhow::bail!("unsupported configuration migration journal version"),
+    }
+    Ok(())
+}
+
+pub(super) fn prepare_for_startup(
+    paths: &ConfigPaths,
+    credentials: &dyn CredentialStore,
+    original: Option<&[u8]>,
+    write: ResourceWriter<'_>,
+) -> anyhow::Result<StudioConfig> {
+    resources::prepare(paths, credentials, original, write)
+}
+
 /// 迁移前最后一个使用 Provider/Preset 模型接入语义的配置版本。
 pub(super) const LEGACY_ACCOUNT_SCHEMA: u32 = 22;
-/// 仍受支持但需要迁移的最后一个配置版本（每次提升 `STUDIO_CONFIG_SCHEMA_VERSION` 时自动前进）。
-pub(super) const PREVIOUS_CONFIG_SCHEMA: u32 = STUDIO_CONFIG_SCHEMA_VERSION - 1;
 /// 仍受支持的迁移源版本下界。
 pub(super) const OLDEST_SUPPORTED_SCHEMA: u32 = 18;
 /// 操作记录格式版本；与配置 schema 版本相互独立。
@@ -112,10 +156,10 @@ pub(super) struct ResumedOperation {
 }
 
 /// 启动时先接续未完成操作；没有待续操作时返回 `None`。
-pub(super) fn resume(
+fn resume_legacy(
     paths: &ConfigPaths,
     credentials: &dyn CredentialStore,
-) -> Result<Option<ResumedOperation>> {
+) -> anyhow::Result<Option<ResumedOperation>> {
     let directory = operation_dir(paths);
     let journal_path = directory.join(JOURNAL_FILE_NAME);
     let bytes = match fs::read(&journal_path) {
@@ -123,22 +167,20 @@ pub(super) fn resume(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error.into()),
     };
-    let mut journal: MigrationJournal = serde_json::from_slice(&bytes).map_err(|_| {
-        PureError::ConfigError(
-            "unreadable Studio config migration journal; existing files preserved".to_string(),
-        )
-    })?;
+    let mut journal: MigrationJournal = serde_json::from_slice(&bytes)?;
     if journal.version != JOURNAL_VERSION {
         return Err(PureError::ConfigError(format!(
             "unsupported Studio config migration journal version: {}",
             journal.version
-        )));
+        ))
+        .into());
     }
     if !(23..=STUDIO_CONFIG_SCHEMA_VERSION).contains(&journal.target_version) {
         return Err(PureError::ConfigError(format!(
             "Studio config migration target {} does not match the current schema",
             journal.target_version
-        )));
+        ))
+        .into());
     }
     tracing::warn!(
         operation_id = %journal.operation_id,
@@ -147,17 +189,45 @@ pub(super) fn resume(
         "resuming interrupted Studio config migration"
     );
     let target_version = journal.target_version;
-    let config = commit(paths, credentials, &mut journal, &atomic_write)?;
+    let config = commit_legacy(paths, credentials, &mut journal, &atomic_write)?;
     Ok(Some(ResumedOperation {
         target_version,
         config,
     }))
 }
 
+#[cfg(test)]
+fn resume(
+    paths: &ConfigPaths,
+    credentials: &dyn CredentialStore,
+) -> Result<Option<ResumedOperation>> {
+    let bytes = match fs::read(operation_dir(paths).join(JOURNAL_FILE_NAME)) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    if serde_json::from_slice::<serde_json::Value>(&bytes)
+        .ok()
+        .and_then(|value| value.get("version").and_then(serde_json::Value::as_u64))
+        == Some(u64::from(resources::VERSION))
+    {
+        return resources::resume(paths, credentials, &bytes)
+            .map(|config| {
+                Some(ResumedOperation {
+                    target_version: STUDIO_CONFIG_SCHEMA_VERSION,
+                    config: Some(config),
+                })
+            })
+            .map_err(test_migration_error);
+    }
+    resume_legacy(paths, credentials).map_err(test_migration_error)
+}
+
 /// 一次迁移的源侧输入。
 ///
 /// 这些字段描述同一个源版本与同一份候选改写，必须一起传递：拆成散装参数容易把版本、
 /// 原文与候选配对错。是否需要重排 Profile 不单独传入，由 [`migrate`] 从源版本推导。
+#[cfg(test)]
 pub(super) struct MigrationSource<'a> {
     /// 主配置在磁盘上的原始字节；迁移期间不允许被外部改写。
     pub original: &'a [u8],
@@ -174,6 +244,7 @@ pub(super) struct MigrationSource<'a> {
 /// 是否需要重排 Profile 只由源版本决定：只有确实改变了 Profile 键（`provider`/`model` →
 /// `account_id`/`model_id`）的旧版本才重写。仅前进版本（如 23→24）时 Profile 原字节保留，
 /// 不重新序列化、不丢注释，也不产生多余资源计划。
+#[cfg(test)]
 pub(super) fn migrate(
     paths: &ConfigPaths,
     credentials: &dyn CredentialStore,
@@ -189,96 +260,39 @@ pub(super) fn migrate(
     // 源/目标元数据先于任何写入校验：只判范围无法识别"原件其实是 22、日志却记成 source 23"，
     // 那会静默跳过旧 `provider:<id>` 凭据复制。
     validate_operation_metadata(source_version, STUDIO_CONFIG_SCHEMA_VERSION, original)?;
-    let rewrite_profiles = source_version <= LEGACY_ACCOUNT_SCHEMA;
-    let mut plans = vec![ResourcePlan {
-        relative_path: super::STUDIO_CONFIG_FILE_NAME.to_string(),
-        original: original.to_vec(),
-        candidate,
-    }];
-    if rewrite_profiles {
-        plans.extend(profile_plans(paths)?);
+    super::store::parse_migrated_config(&candidate)?;
+    if inline_tokens != inline_tokens_from_verified_original(original) {
+        return Err(PureError::ConfigError(
+            "credential intent differs from preserved original".into(),
+        ));
     }
-    for plan in &plans {
-        // 迁移失败时不允许覆盖中途被外部改写的原件。
-        let disk = fs::read(config_resource_path(paths, &plan.relative_path))?;
-        if disk != plan.original {
-            return Err(PureError::ConfigError(format!(
-                "Studio config resource {} changed during migration; existing files preserved",
-                plan.relative_path
-            )));
-        }
-    }
-    // 任何资源落盘前先完成候选校验与全部引用校验。
-    let candidate_config = super::store::parse_migrated_config(&plans[0].candidate)?;
-    for plan in plans.iter().skip(1) {
-        let name = plan
-            .relative_path
-            .strip_prefix("agents/")
-            .unwrap_or(&plan.relative_path);
-        let profile_id = name.strip_suffix(".toml").unwrap_or(name);
-        let text = std::str::from_utf8(&plan.candidate).map_err(|error| {
-            PureError::ConfigError(format!("invalid migrated Agent Profile UTF-8: {error}"))
-        })?;
-        super::agent_profile::validate_profile_content(profile_id, text, &candidate_config)?;
-    }
-    let directory = operation_dir(paths);
-    if let Err(error) = fs::remove_dir_all(&directory)
-        && error.kind() != std::io::ErrorKind::NotFound
-    {
-        return Err(error.into());
-    }
-    for plan in &plans {
-        write_protected(&directory, ORIGINAL_DIR_NAME, plan, &plan.original)?;
-        write_protected(&directory, CANDIDATE_DIR_NAME, plan, &plan.candidate)?;
-    }
-    let mut journal = MigrationJournal {
-        version: JOURNAL_VERSION,
-        operation_id: format!("schema-{source_version}-to-{STUDIO_CONFIG_SCHEMA_VERSION}"),
-        source_version,
-        target_version: STUDIO_CONFIG_SCHEMA_VERSION,
-        phase: MigrationPhase::Prepared,
-        resources: plans
-            .iter()
-            .map(|plan| JournalResource {
-                relative_path: plan.relative_path.clone(),
-                original_hash: plan.original_hash(),
-                candidate_hash: plan.candidate_hash(),
-                replaced: false,
-            })
-            .collect(),
-    };
-    write_journal(&directory, &journal)?;
-    commit_with_tokens(
-        paths,
-        credentials,
-        &mut journal,
-        Some(&inline_tokens),
-        write,
-    )?
-    .ok_or_else(|| {
-        PureError::ConfigError(
-            "Studio config migration did not produce the current schema".to_string(),
-        )
-    })
+    resources::prepare(paths, credentials, Some(original), write).map_err(test_migration_error)
 }
 
+#[cfg(test)]
+fn test_migration_error(error: anyhow::Error) -> PureError {
+    match error.downcast::<PureError>() {
+        Ok(error) => error,
+        Err(error) => PureError::ConfigError(format!("{error:#}")),
+    }
+}
+
+#[cfg(test)]
 fn commit(
     paths: &ConfigPaths,
     credentials: &dyn CredentialStore,
     journal: &mut MigrationJournal,
     write: ResourceWriter<'_>,
 ) -> Result<Option<StudioConfig>> {
-    // 恢复路径不预先读原件：内联 token 必须从**已核验的同一份原件字节**提取。
-    commit_with_tokens(paths, credentials, journal, None, write)
+    commit_legacy(paths, credentials, journal, write).map_err(test_migration_error)
 }
 
-fn commit_with_tokens(
+fn commit_legacy(
     paths: &ConfigPaths,
     credentials: &dyn CredentialStore,
     journal: &mut MigrationJournal,
-    inline_tokens: Option<&BTreeMap<String, String>>,
     write: ResourceWriter<'_>,
-) -> Result<Option<StudioConfig>> {
+) -> anyhow::Result<Option<StudioConfig>> {
     let directory = operation_dir(paths);
     // 1) 集合身份：journal 是外部可变的输入，不能假定 migrate 构造的不变量——空集合、首项不是
     //    主配置或主配置重复都必须在这里拒绝，绝不索引越界、不默认补配置、不重排旧日志。
@@ -292,8 +306,41 @@ fn commit_with_tokens(
         return Err(PureError::ConfigError(
             "Studio config migration has no verified resources; existing files preserved"
                 .to_string(),
-        ));
+        )
+        .into());
     };
+    // A v1 operation keeps its producer's original admission rules. Only its recorded header
+    // and verified bytes establish source identity; do not re-admit the original with new DTOs.
+    #[derive(serde::Deserialize)]
+    struct OriginalHeader {
+        schema_version: u32,
+    }
+    let original_text = std::str::from_utf8(&config_resource.original).map_err(|error| {
+        crate::toml_schema::migration_error(
+            paths.config_file(),
+            "studio-config",
+            None,
+            journal.target_version,
+            "journal original UTF-8",
+            error,
+        )
+    })?;
+    let original: OriginalHeader = toml::from_str(original_text).map_err(|error| {
+        crate::toml_schema::migration_error(
+            paths.config_file(),
+            "studio-config",
+            None,
+            journal.target_version,
+            "journal original header",
+            error,
+        )
+    })?;
+    anyhow::ensure!(
+        original.schema_version == journal.source_version,
+        "journal source {} contradicts preserved original schema {}",
+        journal.source_version,
+        original.schema_version,
+    );
     // 3) 元数据：source/target 必须受支持、且记录的 source 与已核验原件实际 schema 一致。
     validate_operation_metadata(
         journal.source_version,
@@ -301,34 +348,25 @@ fn commit_with_tokens(
         &config_resource.original,
     )?;
     // 4) 内联 token 只来自已核验原件；恢复路径不再从路径读未验证的新值。
-    let derived_tokens;
-    let inline_tokens = match inline_tokens {
-        Some(tokens) => tokens,
-        None => {
-            derived_tokens = inline_tokens_from_verified_original(&config_resource.original);
-            &derived_tokens
-        }
-    };
+    let inline_tokens = inline_tokens_from_verified_original(&config_resource.original);
     let candidate = &config_resource.candidate;
     // 盘上写入的始终是日志记录的原始候选字节；这里只解码一份**只读**的当前形状视图，供候选
     // 校验与凭据复制使用。旧目标（23–26）候选可能带当前 schema 已退役的字段（ACP 的
     // `program`/`args`、账号 `pricing_mode` 或 `disabled_models`），视图先转换它们，不改变原候选写入内容。
     let target_is_current = journal.target_version == STUDIO_CONFIG_SCHEMA_VERSION;
-    let candidate_view = if target_is_current {
-        candidate.clone()
-    } else {
-        let text = std::str::from_utf8(candidate).map_err(|error| {
-            PureError::ConfigError(format!("migrated Studio config is not UTF-8: {error}"))
-        })?;
-        retire_legacy_config_fields_document(text)?.into_bytes()
-    };
-    let candidate_config =
-        super::store::parse_migration_candidate(&candidate_view, journal.target_version)?;
+    let (candidate_config, candidate_version, _) =
+        resources::main_document(paths.config_file(), candidate)?;
+    anyhow::ensure!(
+        candidate_version == journal.target_version,
+        "candidate schema contradicts recorded target"
+    );
+    // The historical producer already admitted its Profile candidates. Finish those exact bytes
+    // first; independent Profile schema admission belongs to the next operation.
     if journal.phase == MigrationPhase::Prepared {
         // The 23→24 change preserves the already canonical credential association.
         // Re-reading the retired provider namespace here could reject valid newer credentials.
         if journal.source_version <= LEGACY_ACCOUNT_SCHEMA {
-            copy_credentials(credentials, &candidate_config, inline_tokens)?;
+            copy_credentials(credentials, &candidate_config, &inline_tokens)?;
         }
         journal.phase = MigrationPhase::Credentials;
         write_journal(&directory, journal)?;
@@ -353,7 +391,7 @@ fn commit_with_tokens(
                 return Err(PureError::ConfigError(format!(
                     "Studio config resource {} changed outside the pending migration; existing files preserved",
                     resource.relative_path
-                )));
+                )).into());
             }
             write(&path, verified_candidate)?;
             if let Some(entry) = journal.resource_mut(&resource.relative_path) {
@@ -371,7 +409,8 @@ fn commit_with_tokens(
             return Err(PureError::ConfigError(format!(
                 "Studio config resource {} did not reach its verified candidate",
                 resource.relative_path
-            )));
+            ))
+            .into());
         }
     }
     // 提交确认后才清理操作目录；普通迁移备份已经另行保留。
@@ -619,48 +658,11 @@ fn config_resource_path(paths: &ConfigPaths, relative_path: &str) -> PathBuf {
     paths.config_dir().join(relative_path)
 }
 
-/// 用户 Profile 的候选计划；没有 Profile 目录时为空集合。
-fn profile_plans(paths: &ConfigPaths) -> Result<Vec<ResourcePlan>> {
-    let directory = paths.agents_dir();
-    let mut names = Vec::new();
-    let entries = match fs::read_dir(&directory) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(error) => return Err(error.into()),
-    };
-    for entry in entries {
-        let path = entry?.path();
-        if path.extension().and_then(|value| value.to_str()) == Some("toml") {
-            names.push(path);
-        }
-    }
-    names.sort();
-    let mut plans = Vec::new();
-    for path in names {
-        let name = path
-            .file_name()
-            .and_then(|value| value.to_str())
-            .ok_or_else(|| {
-                PureError::ConfigError("Agent Profile filename is not UTF-8".to_string())
-            })?;
-        let original = fs::read(&path)?;
-        let text = std::str::from_utf8(&original).map_err(|error| {
-            PureError::ConfigError(format!("invalid Agent Profile UTF-8: {error}"))
-        })?;
-        let candidate = rewrite_profile_document(text)?;
-        plans.push(ResourcePlan {
-            relative_path: format!("agents/{name}"),
-            original,
-            candidate: candidate.into_bytes(),
-        });
-    }
-    Ok(plans)
-}
-
 /// 把一份用户 Profile 的 `provider`/`model` 转为 `account_id`/`model_id`。
 ///
 /// 只改写这两个已知键；其它键与用户文本原样保留。旧新键同时存在但不一致时明确报冲突，
 /// 不以覆盖丢弃用户选择。
+#[cfg(test)]
 pub(super) fn rewrite_profile_document(text: &str) -> Result<String> {
     let mut table: toml::Table = toml::from_str(text)
         .map_err(|error| PureError::ConfigError(format!("invalid Agent Profile TOML: {error}")))?;
@@ -672,196 +674,18 @@ pub(super) fn rewrite_profile_document(text: &str) -> Result<String> {
 
 /// 主配置迁移边界的账号接入改写：22→23 的 Provider/Preset → Account/Template 改写，以及
 /// 24→25 退役旧 ACP 接入的执行字段。
+#[cfg(test)]
 pub(super) fn rewrite_account_document(
     text: &str,
     inline_tokens: &mut BTreeMap<String, String>,
 ) -> Result<String> {
-    let mut value: toml::Value = toml::from_str(text)
-        .map_err(|error| PureError::ConfigError(format!("invalid legacy config TOML: {error}")))?;
-    // 候选文档本身就是目标结构：版本与账号接入键在同一次改写内前进。
-    let table = value.as_table_mut().ok_or_else(|| {
-        PureError::ConfigError("legacy Studio config is not a TOML document".to_string())
-    })?;
-    table.insert(
-        "schema_version".into(),
-        toml::Value::Integer(i64::from(STUDIO_CONFIG_SCHEMA_VERSION)),
-    );
-    let Some(models) = value.get_mut("models").and_then(toml::Value::as_table_mut) else {
-        return Err(PureError::ConfigError(
-            "legacy Studio config has no models table".to_string(),
-        ));
-    };
-    move_table(models, "providers", "accounts")?;
-    if let Some(routes) = models.get_mut("routes").and_then(toml::Value::as_table_mut) {
-        rewrite_route_table(routes)?;
-    }
-    if let Some(accounts) = models
-        .get_mut("accounts")
-        .and_then(toml::Value::as_table_mut)
-    {
-        let ids: Vec<String> = accounts.keys().cloned().collect();
-        for id in ids {
-            let Some(account) = accounts.get_mut(&id).and_then(toml::Value::as_table_mut) else {
-                continue;
-            };
-            move_key(account, "preset", "template")?;
-            if let Some(adapter) = account.remove("adapter") {
-                let protocol = protocol_from_adapter(adapter)?;
-                if let Some(existing) = account.get("protocol")
-                    && existing.as_str() != Some(protocol.as_str())
-                {
-                    return Err(PureError::ConfigError(format!(
-                        "conflicting account protocol for {id}; existing files preserved"
-                    )));
-                }
-                account.insert("protocol".into(), toml::Value::String(protocol));
-            }
-            // 能力来源 token：旧 `preset_defaults` 只在迁移边界改写为当前 `template_defaults`。
-            if let Some(capabilities) = account
-                .get_mut("capabilities")
-                .and_then(toml::Value::as_table_mut)
-            {
-                match capabilities.get("source").and_then(toml::Value::as_str) {
-                    Some("preset_defaults") => {
-                        capabilities.insert(
-                            "source".into(),
-                            toml::Value::String("template_defaults".into()),
-                        );
-                    }
-                    Some("template_defaults") | Some("explicit") | None => {}
-                    Some(other) => {
-                        return Err(PureError::ConfigError(format!(
-                            "unsupported account capability source: {other}"
-                        )));
-                    }
-                }
-            }
-            // 历史内联凭据只在迁移边界转入系统凭据库，不进入当前配置正文。
-            if let Some(toml::Value::String(token)) = account.remove("bearer_token")
-                && !token.trim().is_empty()
-            {
-                inline_tokens.insert(id.clone(), token);
-            }
-        }
-    }
-    if let Some(mode_routes) = value
-        .get_mut("mode_model_routes")
-        .and_then(toml::Value::as_table_mut)
-    {
-        rewrite_route_table(mode_routes)?;
-    }
-    let _retired = retire_acp_execution_fields(&mut value)?;
-    toml::to_string(&value).map_err(|error| {
-        PureError::ConfigError(format!("could not encode migrated config: {error}"))
-    })
+    let loaded = super::document_migration::load_main(Path::new("config.toml"), text)
+        .map_err(test_migration_error)?;
+    *inline_tokens = inline_tokens_from_verified_original(text.as_bytes());
+    loaded.document.encode().map_err(test_migration_error)
 }
 
-/// 迁移边界的文档级入口：退役 ACP 旧执行字段与账号旧估算开关。
-///
-/// 23 及以上的规范化配置不再改写账号/路由/Profile 键，也不读旧 `provider:<id>` 凭据命名空间；
-/// 24→25 移除 ACP 的 `program`/`args`，25→26 移除账号 `pricing_mode`，
-/// 26→27 将禁用集合转换为显式关闭映射。没有旧字段时
-/// 原字节返回，避免对同一内容做额外重编码；有旧字段时才按候选重写。
-pub(super) fn retire_legacy_config_fields_document(text: &str) -> Result<String> {
-    let mut value: toml::Value = toml::from_str(text)
-        .map_err(|error| PureError::ConfigError(format!("invalid legacy config TOML: {error}")))?;
-    let retired_acp = retire_acp_execution_fields(&mut value)?;
-    // 旧估算开关不表达计费意图。只在版本迁移边界删除，绝不推导 NoCharge，
-    // 也不触碰 billing_kind、目录参考价格、凭据及其他账号字段。
-    let mut retired_pricing = false;
-    let mut migrated_enablement = false;
-    if let Some(accounts) = value
-        .get_mut("models")
-        .and_then(|models| models.get_mut("accounts"))
-        .and_then(toml::Value::as_table_mut)
-    {
-        for account in accounts
-            .iter_mut()
-            .filter_map(|(_, account)| account.as_table_mut())
-        {
-            retired_pricing |= account.remove("pricing_mode").is_some();
-            if let Some(disabled) = account.remove("disabled_models") {
-                let disabled = disabled.as_array().ok_or_else(|| {
-                    PureError::ConfigError("legacy disabled_models must be an array".into())
-                })?;
-                let mut overrides = toml::Table::new();
-                for model in disabled {
-                    let model_id = model.as_str().ok_or_else(|| {
-                        PureError::ConfigError("legacy disabled model must be a string".into())
-                    })?;
-                    overrides.insert(model_id.to_string(), toml::Value::Boolean(false));
-                }
-                account.insert(
-                    "model_enabled_overrides".into(),
-                    toml::Value::Table(overrides),
-                );
-                migrated_enablement = true;
-            }
-        }
-    }
-    if !retired_acp && !retired_pricing && !migrated_enablement {
-        return Ok(text.to_string());
-    }
-    toml::to_string(&value).map_err(|error| {
-        PureError::ConfigError(format!("could not encode migrated config: {error}"))
-    })
-}
-
-/// 24→25：退役 ACP 接入的自定义执行字段。
-///
-/// 旧版本把 `program`/`args` 存在 `[acp.accounts.<id>]` 里；当前结构不再有这两个键，且
-/// `deny_unknown_fields`，因此必须在迁移边界显式丢弃，不能让它们静默留在现役配置里，也不能让
-/// 它们重新获得执行语义。只读取稳定 ID、`name` 与 `provider`，其余 ACP 之外的设置、Native 账号、
-/// 路由、Profile 与凭据关联全部原样保留；不删除安装目录，也不触发下载或认证。
-///
-/// 返回是否真的移除了字段；`false` 表示文档不含旧执行字段（或根本没有 ACP 集合）。
-fn retire_acp_execution_fields(value: &mut toml::Value) -> Result<bool> {
-    let Some(acp) = value.get_mut("acp").and_then(toml::Value::as_table_mut) else {
-        return Ok(false);
-    };
-    let Some(accounts) = acp.get_mut("accounts").and_then(toml::Value::as_table_mut) else {
-        return Ok(false);
-    };
-    let mut retired = false;
-    for (account_id, account) in accounts.iter_mut() {
-        let Some(account) = account.as_table_mut() else {
-            return Err(PureError::ConfigError(format!(
-                "ACP account {account_id} is not a table; existing files preserved"
-            )));
-        };
-        retired |= account.remove("program").is_some();
-        retired |= account.remove("args").is_some();
-    }
-    Ok(retired)
-}
-
-fn rewrite_route_table(routes: &mut toml::Table) -> Result<()> {
-    for (_, route) in routes.iter_mut() {
-        let Some(route) = route.as_table_mut() else {
-            continue;
-        };
-        move_key(route, "provider", "account_id")?;
-        move_key(route, "model", "model_id")?;
-    }
-    Ok(())
-}
-
-fn move_table(table: &mut toml::Table, old: &str, new: &str) -> Result<()> {
-    let Some(legacy) = table.remove(old) else {
-        return Ok(());
-    };
-    if let Some(existing) = table.get(new) {
-        if existing != &legacy {
-            return Err(PureError::ConfigError(format!(
-                "conflicting `{new}` and legacy `{old}` tables; existing files preserved"
-            )));
-        }
-        return Ok(());
-    }
-    table.insert(new.to_string(), legacy);
-    Ok(())
-}
-
+#[cfg(test)]
 fn move_key(table: &mut toml::Table, old: &str, new: &str) -> Result<()> {
     let Some(legacy) = table.remove(old) else {
         return Ok(());
@@ -876,29 +700,6 @@ fn move_key(table: &mut toml::Table, old: &str, new: &str) -> Result<()> {
     }
     table.insert(new.to_string(), legacy);
     Ok(())
-}
-
-/// 旧 adapter 值只在这里转换为 protocol wire 值；正常运行不做别名解析。
-fn protocol_from_adapter(adapter: toml::Value) -> Result<String> {
-    let Some(value) = adapter.as_str() else {
-        return Err(PureError::ConfigError(
-            "legacy account adapter is not a string".to_string(),
-        ));
-    };
-    let protocol = match value {
-        "openAi" | "open_ai" => "open_ai",
-        "deepSeek" | "deep_seek" => "deep_seek",
-        "zhipu" => "zhipu",
-        "miMo" | "mi_mo" => "mi_mo",
-        "xai" => "xai",
-        "openAiCompatible" | "open_ai_compatible" => "open_ai_compatible",
-        other => {
-            return Err(PureError::ConfigError(format!(
-                "unsupported legacy account adapter: {other}"
-            )));
-        }
-    };
-    Ok(protocol.to_string())
 }
 
 /// 从受保护原件重新提取内联凭据，供中断后接续使用；不写入操作记录。
@@ -1042,7 +843,6 @@ effort = "high"
         let text = std::str::from_utf8(&original).unwrap();
         let mut inline_tokens = BTreeMap::new();
         let rewritten = rewrite_account_document(text, &mut inline_tokens)?;
-        let rewritten = retire_legacy_config_fields_document(&rewritten)?;
         let mut config = crate::config::store::parse_migrated_config(rewritten.as_bytes())?;
         config.schema_version = STUDIO_CONFIG_SCHEMA_VERSION;
         let candidate = crate::config::store::serialize_persisted_config(&config)?;
@@ -2323,7 +2123,7 @@ catalog = "deepseek"
     impl PendingLegacy {
         fn load(&self) -> Result<StudioConfig> {
             self.store.load_for_startup().map_err(|error| match error {
-                super::super::ConfigRuntimeError::Migration(inner) => inner,
+                super::super::ConfigRuntimeError::Migration(inner) => test_migration_error(inner),
                 other => PureError::ConfigError(other.to_string()),
             })
         }
@@ -2423,6 +2223,18 @@ catalog = "deepseek"
 
     /// 磁盘上的规范化 Profile（带注释与空白，用于证明 23+ 原字节保留）。
     fn canonical_profile_on_disk() -> String {
+        let imported = super::super::document_migration::load_profile(
+            Path::new("verify.toml"),
+            LEGACY_PROFILE,
+        )
+        .unwrap();
+        format!(
+            "# 用户 Profile 原字节必须保留\n\n{}",
+            imported.document.encode().unwrap()
+        )
+    }
+
+    fn legacy_canonical_profile_on_disk() -> String {
         format!(
             "# 用户 Profile 原字节必须保留\n\n{}",
             rewrite_profile_document(LEGACY_PROFILE).unwrap()
@@ -2461,7 +2273,7 @@ catalog = "deepseek"
             if include_profile_resource {
                 LEGACY_PROFILE.as_bytes().to_vec()
             } else {
-                canonical_profile_on_disk().into_bytes()
+                legacy_canonical_profile_on_disk().into_bytes()
             }
         });
         build_pending_with_resources(
@@ -2555,10 +2367,18 @@ catalog = "deepseek"
                     assert!(profile.contains("account_id = \"deepseek\""));
                     assert!(profile.contains("model_id = \"deepseek-flash\""));
                     assert!(!profile.contains("provider ="));
-                } else {
-                    // 23+ 的历史 producer 没有 Profile 计划：既有文件原字节逐字保留（含注释/空白）。
-                    assert_eq!(profile, canonical_profile_on_disk().into_bytes());
                 }
+                let profile =
+                    fs::read_to_string(fixture.paths.agents_dir().join("verify.toml")).unwrap();
+                let loaded = super::super::document_migration::load_profile(
+                    Path::new("verify.toml"),
+                    &profile,
+                )
+                .unwrap();
+                assert!(
+                    !loaded.migrated,
+                    "Profile independently reaches its own schema after the old operation"
+                );
             }
         }
     }
@@ -2571,6 +2391,30 @@ catalog = "deepseek"
     #[test]
     fn legacy_journal_targeting_24_recovers_then_upgrades_to_current() {
         legacy_journal_round_trip(23, 24);
+    }
+
+    #[test]
+    fn legacy_journal_keeps_original_admission_rules_until_its_candidate_is_committed() {
+        // The v1 producer ignored unknown main fields when it prepared its canonical candidate.
+        // A resumed operation must not reinterpret that verified original with today's DTOs.
+        let original = format!("{LEGACY_CONFIG}\n[old_unowned_section]\nnote='kept in original'\n");
+        let fixture = pending_operation_with(22, 23, original.into_bytes(), 23);
+        fixture
+            .credentials
+            .seed_legacy_provider("deepseek", "legacy-secret");
+        let candidate = candidate_config_bytes(&fixture.paths);
+        fixture
+            .load()
+            .expect("recorded operation completes before independent upgrade");
+        assert_eq!(
+            fixture.credentials.load("deepseek").unwrap().as_deref(),
+            Some("legacy-secret")
+        );
+        assert_eq!(
+            fs::read(config_backups(&fixture.paths).pop().unwrap()).unwrap(),
+            candidate
+        );
+        assert!(!operation_dir(&fixture.paths).exists());
     }
 
     /// 源/目标元数据矛盾必须在任何凭据或资源写入之前 fail closed。
@@ -2728,11 +2572,10 @@ catalog = "deepseek"
             }
             pl_tool::workspace::write_file_atomically(path, content).map_err(Into::into)
         };
-        let committed = commit_with_tokens(
+        let committed = commit(
             &fixture.paths,
             fixture.credentials.as_ref(),
             &mut journal,
-            Some(&BTreeMap::new()),
             &write,
         )
         .expect("commit consumes the verified candidate snapshot");

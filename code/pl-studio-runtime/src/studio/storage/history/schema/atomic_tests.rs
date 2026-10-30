@@ -28,7 +28,7 @@ async fn v9(path: &Path, cold: bool) -> Result<DatabaseConnection> {
     let content_steps = published
         .migrations()
         .iter()
-        .position(|migration| migration.name() == MODEL_ACCESS)
+        .position(|migration| is_lifecycle_migration(migration.name()))
         .context("published lifecycle boundary")?;
     published
         .up(&db, Some(u32::try_from(content_steps)?))
@@ -848,6 +848,7 @@ async fn atomic_timeline_upgrades_complete_v9_and_pending_cold_store() -> Result
         prepare(&db, THREAD, Preparation::Schema, None).await?;
         assert_eq!(version(&db).await?, HISTORY_SCHEMA_VERSION);
         assert!(applied(&db, ATOMIC_TIMELINE).await?);
+        assert_eq!(applied(&db, PROJECT_KIND).await?, !cold);
         assert_eq!(applied(&db, MODEL_ACCESS).await?, !cold);
         validate_current(&db, THREAD).await?;
         assert_eq!(super::super::timeline::latest_append_seq(&db).await?, 0);

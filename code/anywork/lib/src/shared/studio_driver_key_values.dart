@@ -46,6 +46,13 @@ abstract final class StudioDriverKeyValues {
   static String threadPreparationStage(ThreadPreparationStage stage) =>
       'thread-preparation-${stage.name}';
   static const newSession = 'sidebar-new-session';
+  static const nonProjectSessionsArea = 'sidebar-non-project-sessions';
+  static const standalonePreparationFailure = 'standalone-preparation-failure';
+  static const standalonePreparationFailureMessage =
+      'standalone-preparation-failure-message';
+  static const standalonePreparationRetry = 'standalone-preparation-retry';
+  static String projectNewSession(String projectId) =>
+      'project-new-session-$projectId';
   static const sidebarResize = 'sidebar-resize';
   static const settingsBack = 'settings-back';
   static const sessionMode = 'session-mode-selector';

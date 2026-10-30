@@ -227,6 +227,7 @@ pub(crate) fn api_router() -> OpenApiRouter<AppState> {
         .routes(routes!(read_state))
         .routes(routes!(read_product_baseline))
         .routes(routes!(open_project))
+        .routes(routes!(prepare_standalone_workspace))
         .routes(routes!(activate_project))
         .routes(routes!(archive_project))
         .routes(routes!(rename_project))
@@ -359,6 +360,19 @@ async fn open_project(
         state
             .runtime
             .open_project(request.path)
+            .await
+            .map_err(ApiError::from)?,
+    ))
+}
+
+#[utoipa::path(post, path = "/api/v1/standalone-workspace", operation_id = "workspace.prepareStandalone", responses(StudioApiErrors, (status = 200, description = "Prepared standalone workspace")))]
+async fn prepare_standalone_workspace(
+    State(state): State<AppState>,
+) -> Result<impl IntoResponse, ApiError> {
+    Ok(Json(
+        state
+            .runtime
+            .prepare_standalone_workspace()
             .await
             .map_err(ApiError::from)?,
     ))

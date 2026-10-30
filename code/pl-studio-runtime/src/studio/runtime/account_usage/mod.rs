@@ -22,11 +22,11 @@ use tokio_util::sync::CancellationToken;
 use crate::account_usage::query_account_usage;
 use crate::config::{ConfigRuntime, ConfigRuntimeSnapshot};
 use crate::studio::ids::unix_seconds;
+use crate::studio::store::settings::payload::KEY as CACHE_KEY;
 use crate::{AccountUsageRecord, StudioStore};
 
-const CACHE_KEY: &str = "observed:accountUsage:v2";
-
-/// Legacy public product-topic representation; the v2 load decoder remains unchanged.
+/// Public product-topic projection only. Historical persisted shapes are decoded by the
+/// frozen wire types at the Settings schema migration boundary, not here.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AccountUsageStateSnapshot {
@@ -181,14 +181,13 @@ impl AccountUsageRuntime {
     pub(crate) async fn load_cache(&self) -> Result<()> {
         let config = self.config.read()?;
         if let Some(value) = self.store.load_setting(CACHE_KEY).await? {
-            let loaded = cache::load(&value, &config)?;
-            // Explicit domain load migration, before normal observers. The old bytes are retained.
-            if loaded.migrated {
-                self.store
-                    .save_setting(CACHE_KEY, &cache::encode(&loaded.state)?)
-                    .await?;
-            }
-            *self.state.lock().unwrap_or_else(PoisonError::into_inner) = loaded.state;
+            // The value is already the current payload: the Settings schema migration
+            // boundary converted any historical bytes exactly once. Loading only binds
+            // the retained observations to the current configuration; it never writes.
+            let state = cache::load(&value, &config.config.models.accounts, |id| {
+                config.usage_query_revision(id)
+            })?;
+            *self.state.lock().unwrap_or_else(PoisonError::into_inner) = state;
         }
         self.config
             .install_settings_observer(Arc::new(UsageConfigObserver {

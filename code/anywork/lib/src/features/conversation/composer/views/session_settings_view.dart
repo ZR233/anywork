@@ -13,6 +13,7 @@ class SessionSettingsView extends StatelessWidget {
     required this.modeOverride,
     required this.preferenceOverride,
     required this.workspaceMode,
+    required this.isStandalone,
     required this.enabled,
     required this.onModeChanged,
     required this.onPreferenceChanged,
@@ -26,6 +27,7 @@ class SessionSettingsView extends StatelessWidget {
   final DelegationMode? modeOverride;
   final DelegationPreference? preferenceOverride;
   final ThreadWorkspaceMode workspaceMode;
+  final bool isStandalone;
   final bool enabled;
   final ValueChanged<DelegationMode?> onModeChanged;
   final ValueChanged<DelegationPreference?> onPreferenceChanged;
@@ -103,24 +105,27 @@ class SessionSettingsView extends StatelessWidget {
             onPressed: null,
             child: label(context.l10n.delegationOnlyAutomatic),
           ),
-        SubmenuButton(
-          key: StudioDriverKeys.sessionWorkspaceMode,
-          menuStyle: submenuStyle,
-          menuChildren: [
-            for (final mode in ThreadWorkspaceMode.values)
-              MenuItemButton(
-                key: StudioDriverKeys.sessionWorkspaceModeOption(mode.id),
-                leadingIcon: Icon(workspaceMode == mode ? Icons.check : null),
-                onPressed: enabled ? () => onWorkspaceModeChanged(mode) : null,
-                child: label(
-                  mode == ThreadWorkspaceMode.worktree
-                      ? context.l10n.composerWorkspaceModeWorktree
-                      : context.l10n.composerWorkspaceModeLocal,
+        if (!isStandalone)
+          SubmenuButton(
+            key: StudioDriverKeys.sessionWorkspaceMode,
+            menuStyle: submenuStyle,
+            menuChildren: [
+              for (final mode in ThreadWorkspaceMode.values)
+                MenuItemButton(
+                  key: StudioDriverKeys.sessionWorkspaceModeOption(mode.id),
+                  leadingIcon: Icon(workspaceMode == mode ? Icons.check : null),
+                  onPressed: enabled
+                      ? () => onWorkspaceModeChanged(mode)
+                      : null,
+                  child: label(
+                    mode == ThreadWorkspaceMode.worktree
+                        ? context.l10n.composerWorkspaceModeWorktree
+                        : context.l10n.composerWorkspaceModeLocal,
+                  ),
                 ),
-              ),
-          ],
-          child: Text(context.l10n.composerWorkspaceModeLabel),
-        ),
+            ],
+            child: Text(context.l10n.composerWorkspaceModeLabel),
+          ),
       ],
       builder: (context, controller, child) => IconButton(
         key: StudioDriverKeys.sessionSettings,

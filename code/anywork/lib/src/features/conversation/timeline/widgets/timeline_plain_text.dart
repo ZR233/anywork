@@ -14,10 +14,6 @@ class TimelinePlainText extends StatelessWidget {
   final TextStyle? style;
 
   @override
-  Widget build(BuildContext context) => Text(
-    text,
-    key: ValueKey('plain-text-$id'),
-    style: style,
-    softWrap: true,
-  );
+  Widget build(BuildContext context) =>
+      Text(text, key: ValueKey('plain-text-$id'), style: style, softWrap: true);
 }

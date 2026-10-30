@@ -17,6 +17,8 @@ use crate::studio::records::ProjectRecord;
 use crate::studio::store::workspaces::WorkspaceStore;
 use crate::studio::store::{SessionLayoutMigrationFailed, StudioStore};
 
+mod schema;
+
 pub(crate) const PROJECT_MANIFEST_SCHEMA_VERSION: u32 = 1;
 pub(crate) const SESSION_MANIFEST_SCHEMA_VERSION: u32 = 1;
 pub(crate) const LAYOUT_JOURNAL_SCHEMA_VERSION: u32 = 1;
@@ -152,14 +154,27 @@ pub(crate) async fn persist_project_manifest(
     match tokio::fs::read_to_string(&path).await {
         Ok(content) => {
             let existing = decode_project_manifest(&path, &content)?;
-            ensure!(
-                existing == *expected,
-                "existing project manifest does not match the identity being published"
-            );
+            (|| {
+                ensure!(
+                    existing == *expected,
+                    "existing project manifest does not match the identity being published"
+                );
+                Ok(())
+            })()
+            .map_err(|error: anyhow::Error| {
+                crate::toml_schema::migration_error(
+                    &path,
+                    "project-manifest",
+                    Some(PROJECT_MANIFEST_SCHEMA_VERSION),
+                    PROJECT_MANIFEST_SCHEMA_VERSION,
+                    "validate",
+                    error,
+                )
+            })?;
             Ok(())
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            write_toml(&path, expected).await
+            write_manifest_toml(&path, schema::encode_project(expected)?).await
         }
         Err(error) => Err(error.into()),
     }
@@ -196,20 +211,33 @@ pub(crate) async fn persist_session_manifest(
 }
 
 fn ensure_session_manifest_compatible(
+    path: &Path,
     existing: &SessionManifest,
     expected: &SessionManifest,
 ) -> Result<()> {
-    ensure!(
-        existing.thread_id == expected.thread_id
-            && existing.project_id == expected.project_id
-            && existing.parent_thread_id == expected.parent_thread_id
-            && existing.root_thread_id == expected.root_thread_id
-            && existing.workspace_mode == expected.workspace_mode
-            && existing.workspace_path == expected.workspace_path
-            && existing.created_at == expected.created_at,
-        "existing session manifest does not match the identity being published"
-    );
-    Ok(())
+    (|| {
+        ensure!(
+            existing.thread_id == expected.thread_id
+                && existing.project_id == expected.project_id
+                && existing.parent_thread_id == expected.parent_thread_id
+                && existing.root_thread_id == expected.root_thread_id
+                && existing.workspace_mode == expected.workspace_mode
+                && existing.workspace_path == expected.workspace_path
+                && existing.created_at == expected.created_at,
+            "existing session manifest does not match the identity being published"
+        );
+        Ok(())
+    })()
+    .map_err(|error: anyhow::Error| {
+        crate::toml_schema::migration_error(
+            path,
+            "session-manifest",
+            Some(SESSION_MANIFEST_SCHEMA_VERSION),
+            SESSION_MANIFEST_SCHEMA_VERSION,
+            "validate",
+            error,
+        )
+    })
 }
 
 /// Migrates leftover `v2/sessions/<thread-key>` directories into the project layout.
@@ -522,80 +550,95 @@ async fn migrate_attachment_catalog(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(error) => return Err(error.into()),
     };
-    let mut catalog: crate::studio::store::attachment::AttachmentCatalog = toml::from_str(&content)
-        .with_context(|| format!("invalid attachment catalog {}", path.display()))?;
-    ensure!(
-        catalog.schema_version
-            == crate::studio::store::attachment::ATTACHMENT_CATALOG_SCHEMA_VERSION
-            && catalog.thread_id == thread_id,
-        "attachment catalog identity or schema mismatch"
-    );
+    let mut catalog = crate::studio::store::attachment::decode_attachment_catalog(&path, &content)?;
     let source_blobs = source_root.join("blobs");
     let target_blobs = target_root.join("blobs");
     let mut changed = false;
-    for record in &mut catalog.records {
+    let validation = async {
         ensure!(
-            record.thread_id == thread_id,
-            "attachment catalog record belongs to another Thread"
+            catalog.schema_version
+                == crate::studio::store::attachment::ATTACHMENT_CATALOG_SCHEMA_VERSION
+                && catalog.thread_id == thread_id,
+            "attachment catalog identity or schema mismatch"
         );
-        let recorded = PathBuf::from(&record.blob_relative_path);
-        let relative = if recorded.is_absolute() {
+        for record in &mut catalog.records {
             ensure!(
-                recorded.starts_with(&source_blobs),
-                "attachment {} is outside its Thread source blob root",
-                recorded.display()
+                record.thread_id == thread_id,
+                "attachment catalog record belongs to another Thread"
             );
-            let relative = recorded.strip_prefix(source_root).with_context(|| {
-                format!(
-                    "attachment {} escaped its session source root",
+            let recorded = PathBuf::from(&record.blob_relative_path);
+            let relative = if recorded.is_absolute() {
+                ensure!(
+                    recorded.starts_with(&source_blobs),
+                    "attachment {} is outside its Thread source blob root",
                     recorded.display()
-                )
-            })?;
-            posix_relative(relative)?
-        } else {
-            posix_relative(&recorded)?
-        };
-        let relative_path = Path::new(&relative);
-        ensure!(
-            relative_path
-                .components()
-                .next()
-                .is_some_and(|component| component.as_os_str() == "blobs"),
-            "attachment path must stay under the session blobs directory"
-        );
-        let host = target_root.join(relative_path);
-        ensure!(
-            host.starts_with(&target_blobs),
-            "attachment {} is outside its Thread blob root",
-            host.display()
-        );
-        pl_tool::workspace::path_safety::validate_existing_path_async(target_root, &host)
-            .await
-            .with_context(|| {
-                format!(
-                    "attachment blob escaped the session root or followed a link: {}",
-                    host.display()
-                )
-            })?;
-        let metadata = tokio::fs::symlink_metadata(&host)
-            .await
-            .with_context(|| format!("attachment blob is missing: {}", host.display()))?;
-        ensure!(
-            metadata.is_file() && !pl_tool::workspace::path_safety::is_link_or_reparse(&metadata),
-            "attachment blob is not a regular file: {}",
-            host.display()
-        );
-        ensure!(
-            metadata.len() == record.byte_size,
-            "attachment blob length does not match its catalog record"
-        );
-        if record.blob_relative_path != relative {
-            record.blob_relative_path = relative;
-            changed = true;
+                );
+                let relative = recorded.strip_prefix(source_root).with_context(|| {
+                    format!(
+                        "attachment {} escaped its session source root",
+                        recorded.display()
+                    )
+                })?;
+                posix_relative(relative)?
+            } else {
+                posix_relative(&recorded)?
+            };
+            let relative_path = Path::new(&relative);
+            ensure!(
+                relative_path
+                    .components()
+                    .next()
+                    .is_some_and(|component| component.as_os_str() == "blobs"),
+                "attachment path must stay under the session blobs directory"
+            );
+            let host = target_root.join(relative_path);
+            ensure!(
+                host.starts_with(&target_blobs),
+                "attachment {} is outside its Thread blob root",
+                host.display()
+            );
+            pl_tool::workspace::path_safety::validate_existing_path_async(target_root, &host)
+                .await
+                .with_context(|| {
+                    format!(
+                        "attachment blob escaped the session root or followed a link: {}",
+                        host.display()
+                    )
+                })?;
+            let metadata = tokio::fs::symlink_metadata(&host)
+                .await
+                .with_context(|| format!("attachment blob is missing: {}", host.display()))?;
+            ensure!(
+                metadata.is_file()
+                    && !pl_tool::workspace::path_safety::is_link_or_reparse(&metadata),
+                "attachment blob is not a regular file: {}",
+                host.display()
+            );
+            ensure!(
+                metadata.len() == record.byte_size,
+                "attachment blob length does not match its catalog record"
+            );
+            if record.blob_relative_path != relative {
+                record.blob_relative_path = relative;
+                changed = true;
+            }
         }
+        Ok::<(), anyhow::Error>(())
     }
+    .await;
+    validation.map_err(|error| {
+        crate::toml_schema::migration_error(
+            &path,
+            "attachment-catalog",
+            Some(catalog.schema_version),
+            crate::studio::store::attachment::ATTACHMENT_CATALOG_SCHEMA_VERSION,
+            "validate",
+            error,
+        )
+    })?;
     if changed {
-        write_toml(&path, &catalog).await?;
+        crate::studio::store::attachment::write_migrated_attachment_catalog(&path, &catalog)
+            .await?;
     }
     Ok(())
 }
@@ -768,26 +811,22 @@ async fn write_toml<T: Serialize>(path: &Path, value: &T) -> Result<()> {
     Ok(())
 }
 
+async fn write_manifest_toml(path: &Path, contents: String) -> Result<()> {
+    let path = path.to_path_buf();
+    let contents = contents.into_bytes();
+    tokio::task::spawn_blocking(move || {
+        pl_tool::workspace::write_file_atomically(&path, &contents)
+    })
+    .await??;
+    Ok(())
+}
+
 fn decode_project_manifest(path: &Path, content: &str) -> Result<ProjectManifest> {
-    let document: ProjectManifest = toml::from_str(content)
-        .with_context(|| format!("invalid project manifest {}", path.display()))?;
-    ensure!(
-        document.schema_version == PROJECT_MANIFEST_SCHEMA_VERSION,
-        "unsupported project manifest schema in {}",
-        path.display()
-    );
-    Ok(document)
+    schema::decode_project(path, content)
 }
 
 fn decode_session_manifest(path: &Path, content: &str) -> Result<SessionManifest> {
-    let document: SessionManifest = toml::from_str(content)
-        .with_context(|| format!("invalid session manifest {}", path.display()))?;
-    ensure!(
-        document.schema_version == SESSION_MANIFEST_SCHEMA_VERSION,
-        "unsupported session manifest schema in {}",
-        path.display()
-    );
-    Ok(document)
+    schema::decode_session(path, content)
 }
 
 fn expected_session_manifest(
@@ -824,10 +863,10 @@ async fn persist_session_manifest_in(
     match tokio::fs::read_to_string(&path).await {
         Ok(content) => {
             let existing = decode_session_manifest(&path, &content)?;
-            ensure_session_manifest_compatible(&existing, expected)
+            ensure_session_manifest_compatible(&path, &existing, expected)
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            write_toml(&path, expected).await
+            write_manifest_toml(&path, schema::encode_session(expected)?).await
         }
         Err(error) => Err(error.into()),
     }
@@ -845,7 +884,7 @@ async fn load_matching_session_manifest(
         )
     })?;
     let existing = decode_session_manifest(&path, &content)?;
-    ensure_session_manifest_compatible(&existing, expected)?;
+    ensure_session_manifest_compatible(&path, &existing, expected)?;
     Ok(existing)
 }
 
@@ -956,6 +995,7 @@ mod layout_migration_tests {
     ) -> Result<()> {
         let mut delta = DirectoryDelta::upsert_project(ProjectDirectoryRecord {
             id: project_id.into(),
+            kind: pl_protocol::studio::WorkspaceKind::Project,
             name: "Layout".into(),
             path: "/tmp/layout".into(),
             ssh_alias: ssh_alias.map(str::to_owned),
@@ -1206,11 +1246,11 @@ mod layout_migration_tests {
             .prepare_session_manifest(&store.catalog().get("thread-a").unwrap().to_thread())
             .await
             .expect_err("future manifest must fail");
-        assert!(
-            error
-                .to_string()
-                .contains("unsupported session manifest schema")
-        );
+        assert!(error.chain().any(|cause| {
+            cause
+                .downcast_ref::<crate::toml_schema::DocumentMigrationFailed>()
+                .is_some()
+        }));
         Ok(())
     }
 
@@ -1293,6 +1333,11 @@ mod layout_migration_tests {
             Err(error) => error,
         };
         assert!(is_layout_error(&error));
+        assert!(error.chain().any(|cause| {
+            cause
+                .downcast_ref::<crate::toml_schema::DocumentMigrationFailed>()
+                .is_some()
+        }));
         let session = paths.session_paths("project-a", "thread-a")?;
         assert_eq!(
             tokio::fs::read(session.history_database()).await?,
@@ -1322,6 +1367,11 @@ mod layout_migration_tests {
             Err(error) => error,
         };
         assert!(is_layout_error(&error));
+        assert!(error.chain().any(|cause| {
+            cause
+                .downcast_ref::<crate::toml_schema::DocumentMigrationFailed>()
+                .is_some()
+        }));
         assert!(
             !paths
                 .migrations_dir()

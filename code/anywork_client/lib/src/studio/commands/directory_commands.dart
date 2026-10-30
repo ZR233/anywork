@@ -9,6 +9,7 @@ class DirectoryCommands extends ReadModel<DirectoryCommandState> {
   DirectoryCommands(this._client) : super(const DirectoryCommandState());
   final AnyworkClient _client;
   final CommandLane _lane = CommandLane();
+  int _standalonePreparationGeneration = 0;
 
   Future<void> close() {
     _lane.seal();
@@ -32,6 +33,7 @@ class DirectoryCommands extends ReadModel<DirectoryCommandState> {
   /// 返回 true 仅当打开、激活并采用快照后，选中项目与请求身份一致。
   Future<bool> openRemoteProject(String alias, String path, {String? name}) {
     final intent = _client.selection.beginNavigation();
+    _setStandalonePreparation(isPreparing: false, error: null);
     return _lane.enqueue(() async {
       if (!_ownsNavigation(intent)) return false;
       try {
@@ -187,6 +189,59 @@ class DirectoryCommands extends ReadModel<DirectoryCommandState> {
       }
       _client.selection.selectProject(target);
     });
+  }
+
+  /// Prepare the canonical standalone owner and select it as a new-thread
+  /// target. This never creates a Thread; submission remains owned by drafts.
+  Future<void> beginStandaloneThread() {
+    final preparation = ++_standalonePreparationGeneration;
+    return _navigate(
+      (intent) async {
+        try {
+          _throwIfAccessBlocked(projectId: null);
+          final directory = await _api.prepareStandaloneWorkspace();
+          if (_client.project.applyProjectDirectory(directory)) {
+            _client.reconcileSelectedProject();
+          }
+          if (!_ownsNavigation(intent)) return;
+          final standaloneProjects =
+              (_client.project.state.projects?.values ??
+                      const <StudioProject>[])
+                  .where((project) => project.isStandalone)
+                  .toList(growable: false);
+          if (standaloneProjects.length != 1) {
+            throw const StudioFailure(
+              code: StudioFailureCode.protocol,
+              message: 'Project directory must contain exactly one standalone workspace',
+              retryable: false,
+              correlationId: 'client-standalone-workspace',
+            );
+          }
+          final project = standaloneProjects.single;
+          _throwIfAccessBlocked(projectId: project.id);
+          if (_shouldActivateProject(project.id)) {
+            await _api.activateProject(project.id);
+          }
+          if (!_ownsNavigation(intent)) return;
+          _client.drafts.startDraft.setWorkspaceMode(
+            project.id,
+            ThreadWorkspaceMode.local,
+          );
+          _setStandalonePreparation(isPreparing: false, error: null);
+          _client.selection.selectProject(project.id);
+        } catch (error) {
+          if (_ownsNavigation(intent)) {
+            _setStandalonePreparation(
+              isPreparing: false,
+              error: error.toString(),
+            );
+          }
+          rethrow;
+        }
+      },
+      standalonePreparation: true,
+      preparationGeneration: preparation,
+    );
   }
 
   Future<void> restoreThread(String threadId) {
@@ -381,16 +436,32 @@ class DirectoryCommands extends ReadModel<DirectoryCommandState> {
   bool _ownsNavigation(int intent) =>
       !_client.isClosed && _client.selection.isCurrentNavigation(intent);
 
-  Future<void> _navigate(Future<void> Function(int intent) action) {
+  Future<void> _navigate(
+    Future<void> Function(int intent) action, {
+    bool standalonePreparation = false,
+    int? preparationGeneration,
+  }) {
     final intent = _client.selection.beginNavigation();
+    _setStandalonePreparation(isPreparing: standalonePreparation, error: null);
     return _lane.enqueue(() async {
-      if (!_ownsNavigation(intent)) return;
       try {
-        await action(intent);
-      } catch (_) {
-        // Current failures stay visible. A superseded read must not deliver a
-        // stale error to the menu after a newer navigation has been accepted.
-        if (_ownsNavigation(intent)) rethrow;
+        if (!_ownsNavigation(intent)) return;
+        try {
+          await action(intent);
+        } catch (_) {
+          // Current failures stay visible. A superseded read must not deliver a
+          // stale error to the menu after a newer navigation has been accepted.
+          if (_ownsNavigation(intent)) rethrow;
+        }
+      } finally {
+        if (preparationGeneration != null &&
+            preparationGeneration == _standalonePreparationGeneration &&
+            state.standalonePreparationInProgress) {
+          _setStandalonePreparation(
+            isPreparing: false,
+            error: state.standalonePreparationError,
+          );
+        }
       }
     });
   }
@@ -511,22 +582,68 @@ class DirectoryCommands extends ReadModel<DirectoryCommandState> {
 
   void _setLoadMoreError(String? message) {
     if (state.loadMoreError == message) return;
-    state = DirectoryCommandState(loadMoreError: message);
+    state = state.copyWith(loadMoreError: message);
+  }
+
+  void _setStandalonePreparation({
+    required bool isPreparing,
+    required String? error,
+  }) {
+    if (state.standalonePreparationInProgress == isPreparing &&
+        state.standalonePreparationError == error) {
+      return;
+    }
+    state = state.copyWith(
+      standalonePreparationInProgress: isPreparing,
+      standalonePreparationError: error,
+    );
   }
 
   StudioTransport get _api => _client.transport;
 }
 
 class DirectoryCommandState {
-  const DirectoryCommandState({this.loadMoreError});
+  const DirectoryCommandState({
+    this.loadMoreError,
+    this.standalonePreparationInProgress = false,
+    this.standalonePreparationError,
+  });
 
   final String? loadMoreError;
+  final bool standalonePreparationInProgress;
+  final String? standalonePreparationError;
+
+  DirectoryCommandState copyWith({
+    Object? loadMoreError = _directoryCommandUnchanged,
+    bool? standalonePreparationInProgress,
+    Object? standalonePreparationError = _directoryCommandUnchanged,
+  }) => DirectoryCommandState(
+    loadMoreError: identical(loadMoreError, _directoryCommandUnchanged)
+        ? this.loadMoreError
+        : loadMoreError as String?,
+    standalonePreparationInProgress:
+        standalonePreparationInProgress ?? this.standalonePreparationInProgress,
+    standalonePreparationError:
+        identical(standalonePreparationError, _directoryCommandUnchanged)
+        ? this.standalonePreparationError
+        : standalonePreparationError as String?,
+  );
 
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
-      other is DirectoryCommandState && loadMoreError == other.loadMoreError;
+      other is DirectoryCommandState &&
+          loadMoreError == other.loadMoreError &&
+          standalonePreparationInProgress ==
+              other.standalonePreparationInProgress &&
+          standalonePreparationError == other.standalonePreparationError;
 
   @override
-  int get hashCode => loadMoreError.hashCode;
+  int get hashCode => Object.hash(
+    loadMoreError,
+    standalonePreparationInProgress,
+    standalonePreparationError,
+  );
 }
+
+const _directoryCommandUnchanged = Object();

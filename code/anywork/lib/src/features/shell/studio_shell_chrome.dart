@@ -12,7 +12,11 @@ class _Header extends ConsumerWidget {
     final recoveryIssues =
         ref.watch(recoveryStoreProvider).value?.values ??
         const <StudioRecoveryIssue>[];
-    final projectLabel = project?.name.trim() ?? '';
+    final projectLabel = project == null
+        ? ''
+        : project.isStandalone
+        ? thread?.workspacePath ?? ''
+        : project.name.trim();
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
       child: LayoutBuilder(

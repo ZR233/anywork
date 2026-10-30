@@ -133,6 +133,10 @@ abstract class StudioTransport
   Future<StudioThread> readThread(String threadId);
   Future<void> activateProject(String projectId);
   Future<StudioProject> openProject(String path);
+
+  /// Prepares standalone drafts and returns the versioned canonical directory.
+  /// Does not create a Thread or fabricate a client-owned directory revision.
+  Future<ProjectDirectoryState> prepareStandaloneWorkspace();
   Future<StudioProject> renameProject(String projectId, String name);
   Future<List<SshServer>> listSshServers();
   Future<SshServer> saveSshServer(SaveSshServerCommand command);

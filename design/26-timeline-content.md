@@ -118,7 +118,7 @@ Flutter Model 先按原子分类/相邻分组，再映射 Flyer Message。用户
 
 继续使用 Chat、ChatAnimatedListReversed、InMemoryChatController、Builders、ExpansionTile、SelectionArea 和标准布局/滚动组件，不自写 Sliver、RenderSliver、像素锚点、逐行测量、滚轮倍率或持续帧末预取。真实滚动/度量/分页事件可合并触发不足一屏补页，不按帧轮询。普通空基线也挂载标准 Chat；键盘、滚动条、焦点与减少动画沿用 Flutter。
 
-Markdown、回答和 Plan 卡片的视觉归 [19](./19-studio-ui.md)。所有正文服从有限宽度，优先使用现有 Markdown 的 wrap、公开 builder 与 Flutter 原生软换行；不新增解析器或文本修复算法。换行不改变原文、缩进或复制。工具参数/结果按字面代码显示，只有语义正文使用 Markdown。安全链接和授权图片边界保留。
+Markdown、回答和 Plan 卡片的视觉归 [19](./19-studio-ui.md)。完成与实时语义正文共享安全 Markdown 展示边界，标题、分隔线、列表与链接语法候选交由现有组件解释；没有语法的普通正文复用 Flutter 标准 Text，保留多行、缩进及尾随换行的选择复制。所有正文服从有限宽度，优先使用现有 Markdown 的 wrap、公开 builder 与 Flutter 原生软换行；不新增解析器、文本修复或自制排版分块算法。换行不改变原文、缩进或复制。工具参数/结果按字面代码显示。安全链接和授权图片边界保留。
 
 ## 26.9 只读展示诊断
 

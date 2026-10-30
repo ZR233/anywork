@@ -65,9 +65,7 @@ class _ProjectTile extends ConsumerWidget {
                 : Tooltip(message: nameTooltip, child: nameArea),
           ),
           _tileIconButton(
-            key: selected
-                ? StudioDriverKeys.newSession
-                : ValueKey('project-new-session-${project.id}'),
+            key: StudioDriverKeys.projectNewSession(project.id),
             tooltip: '${context.l10n.sidebarNewSession} · ${project.name}',
             icon: Icons.add,
             iconSize: 18,
@@ -422,7 +420,9 @@ class _ThreadTile extends ConsumerWidget {
             size: 15,
             color: context.colors.onSurfaceVariant,
           ),
-          value: project.name,
+          value: project.isStandalone
+              ? context.l10n.sidebarStandaloneSessions
+              : project.name,
         ),
         _SidebarDetailRow(
           leading: Icon(

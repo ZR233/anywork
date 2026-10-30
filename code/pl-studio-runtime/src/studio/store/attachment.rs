@@ -9,9 +9,11 @@ use crate::studio::ids::{new_id, unix_seconds};
 use crate::studio::records::{AttachmentRecord, MaterializedAttachment};
 use crate::studio::store::StudioStore;
 
+mod catalog_schema;
+
 pub(in crate::studio) const ATTACHMENT_CATALOG_SCHEMA_VERSION: u32 = 1;
 
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(in crate::studio) struct AttachmentCatalog {
     pub(in crate::studio) schema_version: u32,
@@ -278,21 +280,32 @@ impl StudioStore {
         let path = session.attachments_catalog();
         match tokio::fs::read_to_string(&path).await {
             Ok(content) => {
-                let catalog: AttachmentCatalog = toml::from_str(&content)
-                    .with_context(|| format!("invalid attachment catalog {}", path.display()))?;
-                anyhow::ensure!(
-                    catalog.schema_version == ATTACHMENT_CATALOG_SCHEMA_VERSION
-                        && catalog.thread_id == thread_id
-                        && catalog
-                            .records
-                            .iter()
-                            .all(|record| record.thread_id == thread_id),
-                    "attachment catalog identity or schema mismatch"
-                );
-                for record in &catalog.records {
-                    resolve_attachment_host_path(&session, &record.blob_relative_path)?;
-                }
-                Ok(catalog.records)
+                let catalog = catalog_schema::decode(&path, &content)?;
+                (|| {
+                    anyhow::ensure!(
+                        catalog.schema_version == ATTACHMENT_CATALOG_SCHEMA_VERSION
+                            && catalog.thread_id == thread_id
+                            && catalog
+                                .records
+                                .iter()
+                                .all(|record| record.thread_id == thread_id),
+                        "attachment catalog identity or schema mismatch"
+                    );
+                    for record in &catalog.records {
+                        resolve_attachment_host_path(&session, &record.blob_relative_path)?;
+                    }
+                    Ok(catalog.records)
+                })()
+                .map_err(|error: anyhow::Error| {
+                    crate::toml_schema::migration_error(
+                        &path,
+                        "attachment-catalog",
+                        Some(ATTACHMENT_CATALOG_SCHEMA_VERSION),
+                        ATTACHMENT_CATALOG_SCHEMA_VERSION,
+                        "validate",
+                        error,
+                    )
+                })
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 // A missing catalog means this Thread has no attachments yet.
@@ -344,12 +357,32 @@ async fn write_attachment_catalog(
     thread_id: &str,
     records: &[AttachmentRecord],
 ) -> Result<()> {
-    let contents = toml::to_string(&AttachmentCatalog {
+    let contents = catalog_schema::encode(&AttachmentCatalog {
         schema_version: ATTACHMENT_CATALOG_SCHEMA_VERSION,
         thread_id: thread_id.to_owned(),
         records: records.to_vec(),
     })?
     .into_bytes();
+    let path = path.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        pl_tool::workspace::write_file_atomically(&path, &contents)
+    })
+    .await??;
+    Ok(())
+}
+
+pub(in crate::studio) fn decode_attachment_catalog(
+    path: &Path,
+    content: &str,
+) -> Result<AttachmentCatalog> {
+    catalog_schema::decode(path, content)
+}
+
+pub(in crate::studio) async fn write_migrated_attachment_catalog(
+    path: &Path,
+    catalog: &AttachmentCatalog,
+) -> Result<()> {
+    let contents = catalog_schema::encode(catalog)?.into_bytes();
     let path = path.to_path_buf();
     tokio::task::spawn_blocking(move || {
         pl_tool::workspace::write_file_atomically(&path, &contents)

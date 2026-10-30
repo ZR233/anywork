@@ -10,6 +10,7 @@ import 'package:multi_split_view/multi_split_view.dart';
 import '../../app/app_graph.dart';
 import '../../app/routing/app_route.dart';
 import '../../presentation/providers/client_provider.dart';
+import '../../presentation/providers/observe_client.dart';
 import '../../presentation/providers/recovery_store.dart';
 
 import '../../shared/studio_loading.dart';
@@ -211,12 +212,18 @@ class _StudioShellState extends ConsumerState<StudioShell> {
               debugPrint(
                 'startup_stage=first_usable_frame elapsed_ms=${_startupClock.elapsedMilliseconds}',
               );
-              unawaited(
-                ref
-                    .read(anyworkClientProvider)
-                    .directoryCommands
-                    .openSelectedThread(),
-              );
+              final client = ref.read(anyworkClientProvider);
+              final selection = client.selection.state;
+              if (selection.selectedProjectId == null &&
+                  selection.selectedThreadId == null) {
+                unawaited(
+                  client.directoryCommands.beginStandaloneThread().catchError(
+                    (Object _) {},
+                  ),
+                );
+              } else {
+                unawaited(client.directoryCommands.openSelectedThread());
+              }
             }
           });
         }

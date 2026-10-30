@@ -262,7 +262,7 @@ final class _Journey {
     await _capture('directory-guards');
 
     setStage('new-worktree-root');
-    await _tap('sidebar-new-session');
+    await _tap('project-new-session-$projectId');
     await _waitFor(
       (state) => _map(state['navigation'])?['selectedThreadId'] == null,
       'new session start page',

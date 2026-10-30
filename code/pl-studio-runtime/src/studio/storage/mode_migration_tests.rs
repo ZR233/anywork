@@ -2366,6 +2366,72 @@ const LEGACY_NATIVE_RECEIPT: &str = r#"{
     "error": null
 }"#;
 
+#[tokio::test]
+async fn standalone_project_kind_migration_preserves_legacy_checkpoint_and_reopens() -> Result<()> {
+    let directory = tempfile::tempdir()?;
+    let path = directory.path().join("history.sqlite");
+    let history = HistoryStore::open(&path, "migration").await?;
+    let original = saved_state(BTreeMap::from([
+        (
+            "studio.project".into(),
+            record(
+                4,
+                "pl.studio.project",
+                1,
+                r#"{"id":"project-test","name":"保留","path":"/workspace","sshAlias":null,"updatedAt":19}"#,
+            )?,
+        ),
+        (
+            "studio.delegation".into(),
+            record(
+                5,
+                "pl.studio.delegation",
+                1,
+                r#"{"mode":"profile","preference":"balanced"}"#,
+            )?,
+        ),
+    ]));
+    persist(&history, original, true).await?;
+    let before = history.checkpoint().await?.context("legacy checkpoint")?;
+    // Model an existing database whose earlier official steps have already completed.
+    let raw = raw_database(&path).await?;
+    raw.execute_unprepared(
+        "DELETE FROM seaql_migrations WHERE version='m20261027_000004_history_project_kind'",
+    )
+    .await?;
+    raw.close().await?;
+    drop(history);
+    let reopened = HistoryStore::open(&path, "migration").await?;
+    let migrated = migrate_model_access(&reopened).await?;
+    let project: crate::studio::ProjectRecord = serde_json::from_str(
+        migrated.state.extensions["studio.project"]
+            .payload
+            .content(),
+    )?;
+    assert_eq!(project.kind, pl_protocol::studio::WorkspaceKind::Project);
+    assert_eq!(project.path, "/workspace");
+    assert_eq!(project.updated_at, 19);
+    let mut expected = before;
+    expected
+        .state
+        .extensions
+        .get_mut("studio.project")
+        .unwrap()
+        .payload = migrated.state.extensions["studio.project"].payload.clone();
+    assert_eq!(
+        serde_json::to_value(&expected)?,
+        serde_json::to_value(&migrated)?
+    );
+    assert_eq!(migrated.state.extensions["studio.project"].revision, 4);
+    drop(reopened);
+    let reopened = HistoryStore::open(&path, "migration").await?;
+    assert_eq!(
+        serde_json::to_value(migrate_model_access(&reopened).await?)?,
+        serde_json::to_value(migrated)?
+    );
+    Ok(())
+}
+
 fn record(revision: u64, format: &str, version: u32, content: &str) -> Result<ExtensionRecord> {
     Ok(ExtensionRecord {
         revision,
@@ -2635,6 +2701,7 @@ async fn register_test_thread(
     let mut delta = crate::studio::store::directory::DirectoryDelta::upsert_project(
         crate::studio::store::directory::ProjectDirectoryRecord {
             id: thread.project_id.clone(),
+            kind: pl_protocol::studio::WorkspaceKind::Project,
             name: "Test".into(),
             path: "/tmp/project-test".into(),
             ssh_alias: None,

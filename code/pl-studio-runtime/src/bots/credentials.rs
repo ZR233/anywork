@@ -1,5 +1,8 @@
 //! 每个机器人的凭据/配置共同提交、journal 与可恢复版本引用。
-use super::config::{BOT_CONFIG_SCHEMA_VERSION, BotConfigFile, load_config, save_config};
+use super::config::{
+    BOT_CONFIG_SCHEMA_VERSION, BotConfigFile, decode_config_snapshot_at, encode_config_snapshot,
+    load_config, save_config, save_recognized_config,
+};
 use super::protocol::error::{FeishuError, FeishuErrorKind};
 use crate::config::{
     BotCredentialCapability, BotCredentialIoError, BotCredentialIoKind, BotCredentialRef,
@@ -20,8 +23,7 @@ const MIGRATION_INTENT_FILE: &str = "credential-migration.json";
 // reinterpret its protected payload as the original plaintext credential format.
 const VERSIONED_CREDENTIAL_CONFIG_SCHEMA: u32 = 2;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct CredentialJournal {
     schema_version: u32,
     operation_id: String,
@@ -29,6 +31,18 @@ struct CredentialJournal {
     phase: CredentialJournalPhase,
     previous: Option<BotConfigFile>,
     target: BotConfigFile,
+    candidate_version: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct StoredCredentialJournal {
+    schema_version: u32,
+    operation_id: String,
+    bot_id: String,
+    phase: CredentialJournalPhase,
+    previous: Option<serde_json::Value>,
+    target: serde_json::Value,
     candidate_version: Option<String>,
 }
 
@@ -1268,7 +1282,7 @@ fn confirm_recognized_config(
                     None,
                 ));
             }
-            write_config(dir, expected)
+            save_recognized_config(&path, expected)
         }
     }
 }
@@ -1307,7 +1321,20 @@ fn write_journal(dir: &Path, journal: &CredentialJournal) -> Result<(), FeishuEr
             None,
         ));
     }
-    let encoded = serde_json::to_vec_pretty(journal).map_err(|_| {
+    let stored = StoredCredentialJournal {
+        schema_version: journal.schema_version,
+        operation_id: journal.operation_id.clone(),
+        bot_id: journal.bot_id.clone(),
+        phase: journal.phase,
+        previous: journal
+            .previous
+            .as_ref()
+            .map(encode_config_snapshot)
+            .transpose()?,
+        target: encode_config_snapshot(&journal.target)?,
+        candidate_version: journal.candidate_version.clone(),
+    };
+    let encoded = serde_json::to_vec_pretty(&stored).map_err(|_| {
         FeishuError::new(
             FeishuErrorKind::Protocol,
             "failed to encode bot credential journal",
@@ -1319,19 +1346,82 @@ fn write_journal(dir: &Path, journal: &CredentialJournal) -> Result<(), FeishuEr
 }
 
 fn read_journal(dir: &Path) -> Result<Option<CredentialJournal>, FeishuError> {
-    match std::fs::read(dir.join(JOURNAL_FILE)) {
-        Ok(bytes) => match serde_json::from_slice::<CredentialJournal>(&bytes) {
-            Ok(journal) if journal.schema_version == JOURNAL_SCHEMA => Ok(Some(journal)),
-            Ok(_) | Err(_) => Err(FeishuError::new(
-                FeishuErrorKind::Protocol,
-                "unreadable bot credential journal; original association preserved",
-                false,
-                None,
-            )),
-        },
+    let path = dir.join(JOURNAL_FILE);
+    match std::fs::read(&path) {
+        Ok(bytes) => decode_journal_bytes(&path, &bytes).map(Some),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(io_error(error)),
     }
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("bot credential journal {stage} failed in {path}")]
+struct JournalDecodeFailed {
+    path: std::path::PathBuf,
+    stage: &'static str,
+    #[source]
+    source: anyhow::Error,
+}
+
+fn journal_decode_error(
+    path: &Path,
+    stage: &'static str,
+    error: impl Into<anyhow::Error>,
+) -> FeishuError {
+    FeishuError::new(
+        FeishuErrorKind::Protocol,
+        "unreadable bot credential journal; original association preserved",
+        false,
+        None,
+    )
+    .with_source(JournalDecodeFailed {
+        path: path.to_owned(),
+        stage,
+        source: error.into(),
+    })
+}
+
+fn decode_journal_bytes(path: &Path, bytes: &[u8]) -> Result<CredentialJournal, FeishuError> {
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Header {
+        schema_version: u32,
+    }
+    let header: Header = serde_json::from_slice(bytes)
+        .map_err(|error| journal_decode_error(path, "version", error))?;
+    if header.schema_version != JOURNAL_SCHEMA {
+        return Err(FeishuError::new(
+            FeishuErrorKind::Protocol,
+            "unsupported bot credential journal schema; original association preserved",
+            false,
+            None,
+        )
+        .with_source(JournalDecodeFailed {
+            path: path.to_owned(),
+            stage: "version",
+            source: anyhow::anyhow!("unsupported journal schema {}", header.schema_version),
+        }));
+    }
+    let stored: StoredCredentialJournal = serde_json::from_slice(bytes)
+        .map_err(|error| journal_decode_error(path, "decode", error))?;
+    let previous = stored
+        .previous
+        .map(|snapshot| {
+            decode_config_snapshot_at(path, snapshot)
+                .map_err(|error| journal_decode_error(path, "previous", error))
+        })
+        .transpose()?;
+    let target = decode_config_snapshot_at(path, stored.target)
+        .map_err(|error| journal_decode_error(path, "target", error))?;
+    Ok(CredentialJournal {
+        schema_version: stored.schema_version,
+        operation_id: stored.operation_id,
+        bot_id: stored.bot_id,
+        phase: stored.phase,
+        previous,
+        target,
+        candidate_version: stored.candidate_version,
+    })
 }
 
 fn remove_journal(dir: &Path) -> Result<(), FeishuError> {
@@ -1447,6 +1537,7 @@ fn io_error(error: std::io::Error) -> FeishuError {
         true,
         None,
     )
+    .with_source(error)
 }
 
 #[cfg(test)]
@@ -1523,6 +1614,7 @@ fn take_journal_fault() -> bool {
 
 #[cfg(test)]
 mod tests {
+    use super::super::config::assert_current_v3_document;
     use super::*;
     use crate::config::{ConfigPaths, ConfigStore, memory_faults};
 
@@ -1547,8 +1639,162 @@ mod tests {
 
     fn write_schema1_config(dir: &Path, mut config: BotConfigFile) {
         config.schema_version = 1;
-        let encoded = toml::to_string_pretty(&config).unwrap();
-        std::fs::write(dir.join("config.toml"), encoded).unwrap();
+        save_recognized_config(&dir.join("config.toml"), &config).unwrap();
+    }
+
+    /// Exact nested shape emitted by the old confirm writer while retaining the header.
+    fn nested_confirmation_snapshot(config: &BotConfigFile, source: u32) -> serde_json::Value {
+        serde_json::json!({
+            "schema_version": source,
+            "id": config.id,
+            "name": config.name,
+            "project_id": config.project_id,
+            "platform": "feishuChina",
+            "platform_config": {
+                "app_id": config.feishu().app_id,
+                "trusted_open_ids": config.feishu().trusted_open_ids,
+                "trusted_chat_ids": config.feishu().trusted_chat_ids
+            },
+            "enabled": config.enabled,
+            "tools_enabled": config.tools_enabled,
+            "config_revision": config.config_revision,
+            "created_at": config.created_at,
+            "updated_at": config.updated_at
+        })
+    }
+
+    fn write_nested_confirmation(dir: &Path, value: &serde_json::Value) -> Vec<u8> {
+        let table = toml::Value::try_from(value).unwrap();
+        let bytes = toml::to_string_pretty(&table).unwrap().into_bytes();
+        std::fs::write(dir.join("config.toml"), &bytes).unwrap();
+        bytes
+    }
+
+    #[test]
+    fn nested_v1_and_v2_confirmation_files_resume_the_original_journal() {
+        for source in [1, 2] {
+            for phase in [
+                CredentialJournalPhase::Prepared,
+                CredentialJournalPhase::CommitUncertain,
+            ] {
+                let directory = tempfile::tempdir().unwrap();
+                let credentials = capability();
+                let previous = bot_config("cli_old");
+                let previous_snapshot = nested_confirmation_snapshot(&previous, source);
+                let original = write_nested_confirmation(directory.path(), &previous_snapshot);
+                let path = directory.path().join("config.toml");
+                let loaded = load_config(&path).expect("old producer's nested file is recognized");
+                assert_eq!(loaded.schema_version, source);
+                assert_eq!(loaded.config_revision, previous.config_revision);
+                assert_eq!(std::fs::read(&path).unwrap(), original);
+
+                let mut target = bot_config("cli_new");
+                target.config_revision = previous.config_revision + 1;
+                let stored = StoredCredentialJournal {
+                    schema_version: JOURNAL_SCHEMA,
+                    operation_id: "original-confirm-operation".into(),
+                    bot_id: previous.id.clone(),
+                    phase,
+                    previous: Some(previous_snapshot),
+                    target: nested_confirmation_snapshot(&target, 3),
+                    candidate_version: None,
+                };
+                std::fs::write(
+                    directory.path().join(JOURNAL_FILE),
+                    serde_json::to_vec(&stored).unwrap(),
+                )
+                .unwrap();
+                let journal = read_journal(directory.path()).unwrap().unwrap();
+                assert_eq!(journal.previous.as_ref().unwrap(), &loaded);
+                let recovered = recover_operation(directory.path(), &credentials, journal).unwrap();
+                assert_eq!(recovered.operation_id, "original-confirm-operation");
+                assert_eq!(recovered.decision, CredentialDecision::NotApplied);
+                assert_eq!(recovered.config, loaded);
+                assert_eq!(recovered.operation, BotCredentialOperation::Idle);
+                assert!(!directory.path().join(JOURNAL_FILE).exists());
+                assert_eq!(load_config(&path).unwrap(), loaded);
+            }
+        }
+    }
+
+    #[test]
+    fn nested_v1_confirmation_still_imports_its_original_opaque_secret() {
+        let directory = tempfile::tempdir().unwrap();
+        let credentials = capability();
+        let config = bot_config("cli_old");
+        credentials
+            .persist_system_raw(&config.id, "synthetic-opaque-secret")
+            .unwrap();
+        write_nested_confirmation(directory.path(), &nested_confirmation_snapshot(&config, 1));
+        let path = directory.path().join("config.toml");
+        let loaded = load_config(&path).unwrap();
+        assert_eq!(loaded.schema_version, 1);
+        let recovered =
+            recover_bot_directory(directory.path(), &config.id, &credentials, Some(loaded))
+                .unwrap();
+        let current = recovered.config.unwrap();
+        assert_eq!(current.schema_version, BOT_CONFIG_SCHEMA_VERSION);
+        assert_eq!(current.config_revision, config.config_revision);
+        assert_eq!(recovered.availability, BotCredentialAvailability::Stored);
+        assert_eq!(recovered.secret.as_deref(), Some("synthetic-opaque-secret"));
+        let bytes = std::fs::read(&path).unwrap();
+        let reopened = recover_bot_directory(
+            directory.path(),
+            &config.id,
+            &credentials,
+            Some(load_config(&path).unwrap()),
+        )
+        .unwrap();
+        assert_eq!(reopened.config.unwrap(), current);
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    }
+
+    #[test]
+    fn journal_decode_keeps_json_and_snapshot_causes_with_file_context() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join(JOURNAL_FILE);
+        std::fs::write(&path, b"{private-sentinel").unwrap();
+        let error = anyhow::Error::new(read_journal(directory.path()).unwrap_err());
+        assert!(error.chain().any(|cause| cause.is::<serde_json::Error>()));
+        assert!(!format!("{error:#}").contains("private-sentinel"));
+        assert!(format!("{error:#}").contains(path.to_str().unwrap()));
+
+        let config = bot_config("cli_old");
+        for slot in ["previous", "target"] {
+            let mut previous = nested_confirmation_snapshot(&config, 2);
+            let mut target = nested_confirmation_snapshot(&config, 3);
+            let invalid = if slot == "previous" {
+                &mut previous
+            } else {
+                &mut target
+            };
+            invalid["platform_config"]["app_id"] = "".into();
+            let stored = StoredCredentialJournal {
+                schema_version: JOURNAL_SCHEMA,
+                operation_id: "unchanged-operation".into(),
+                bot_id: config.id.clone(),
+                phase: CredentialJournalPhase::Prepared,
+                previous: Some(previous),
+                target,
+                candidate_version: None,
+            };
+            let bytes = serde_json::to_vec(&stored).unwrap();
+            std::fs::write(&path, &bytes).unwrap();
+            let error = anyhow::Error::new(read_journal(directory.path()).unwrap_err());
+            assert!(
+                error
+                    .chain()
+                    .any(|cause| cause.is::<crate::toml_schema::DocumentMigrationFailed>())
+            );
+            let diagnostic = format!("{error:#}");
+            assert!(diagnostic.contains(slot));
+            assert!(diagnostic.contains(path.to_str().unwrap()));
+            assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        }
+        std::fs::write(&path, br#"{"schemaVersion":999}"#).unwrap();
+        let error = read_journal(directory.path()).unwrap_err();
+        assert!(error.diagnostic().message.starts_with("unsupported"));
+        assert!(!error.retryable());
     }
 
     #[test]
@@ -1572,7 +1818,7 @@ mod tests {
                 },
             )
             .unwrap();
-        save_config(&directory.path().join("config.toml"), &previous).unwrap();
+        save_recognized_config(&directory.path().join("config.toml"), &previous).unwrap();
         let recovered = recover_bot_directory(
             directory.path(),
             &previous.id,
@@ -1827,6 +2073,11 @@ mod tests {
             .unwrap();
         assert_eq!(selected.kind, BotCredentialRefKind::System);
         let reopened = load_config(&directory.path().join("config.toml")).unwrap();
+        assert_eq!(reopened.schema_version, BOT_CONFIG_SCHEMA_VERSION);
+        assert_eq!(reopened.config_revision, 1);
+        let persisted = std::fs::read_to_string(directory.path().join("config.toml")).unwrap();
+        assert!(persisted.contains("schema_version = 3"));
+        assert_current_v3_document(&persisted, "cli_a");
         let recovered =
             recover_bot_credentials(directory.path(), "botA1234", &credentials, Some(reopened))
                 .unwrap();
@@ -1837,8 +2088,26 @@ mod tests {
                 .and_then(|config| config.selected_ref.clone()),
             Some(selected.clone())
         );
+        assert_eq!(
+            recovered
+                .config
+                .as_ref()
+                .map(|config| config.schema_version),
+            Some(BOT_CONFIG_SCHEMA_VERSION)
+        );
+        assert_eq!(
+            recovered
+                .config
+                .as_ref()
+                .map(|config| config.config_revision),
+            Some(1)
+        );
         assert_eq!(recovered.availability, BotCredentialAvailability::Stored);
         assert_eq!(recovered.secret.as_deref(), Some("opaque-system-secret"));
+        assert_eq!(
+            std::fs::read_to_string(directory.path().join("config.toml")).unwrap(),
+            persisted
+        );
         let payload = credentials
             .load_system_payload("botA1234")
             .unwrap()
@@ -2634,5 +2903,110 @@ mod tests {
         );
         let on_disk = load_config(&directory.path().join("config.toml")).unwrap();
         assert_eq!(on_disk.selected_ref, previous.selected_ref);
+    }
+
+    #[test]
+    fn journal_historical_v2_snapshot_matches_disk_without_upgrading_schema() {
+        let directory = tempfile::tempdir().unwrap();
+        let credentials = capability();
+        let mut previous = bot_config("cli_a");
+        previous.schema_version = 2;
+        previous.selected_ref = Some(BotCredentialRef::system("cred-old"));
+        save_recognized_config(&directory.path().join("config.toml"), &previous).unwrap();
+        let on_disk = std::fs::read_to_string(directory.path().join("config.toml")).unwrap();
+        assert!(on_disk.contains("schema_version = 2"));
+        assert!(on_disk.contains("app_id ="));
+        credentials
+            .persist_system(
+                "botA1234",
+                &BotProtectedPayload {
+                    schema_version: 1,
+                    versions: vec![BotSecretVersion {
+                        id: "cred-old".into(),
+                        bot_id: "botA1234".into(),
+                        app_id: "cli_a".into(),
+                        secret: "old-secret".into(),
+                    }],
+                },
+            )
+            .unwrap();
+        let mut target = previous.clone();
+        target.schema_version = 2;
+        target.feishu_mut().app_id = "cli_b".into();
+        target.selected_ref = Some(BotCredentialRef::system("cred-new"));
+        let journal = CredentialJournal {
+            schema_version: JOURNAL_SCHEMA,
+            operation_id: "op-historical".into(),
+            bot_id: "botA1234".into(),
+            phase: CredentialJournalPhase::Prepared,
+            previous: Some(previous.clone()),
+            target,
+            candidate_version: Some("cred-new".into()),
+        };
+        write_journal(directory.path(), &journal).unwrap();
+        let stored: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(directory.path().join(JOURNAL_FILE)).unwrap())
+                .unwrap();
+        assert_eq!(stored["previous"]["schema_version"], 2);
+        assert_eq!(stored["previous"]["app_id"], "cli_a");
+        assert!(stored["previous"].get("platform_config").is_none());
+        let recovered = recover_operation(directory.path(), &credentials, journal).unwrap();
+        assert_eq!(recovered.decision, CredentialDecision::NotApplied);
+        assert_eq!(recovered.config.schema_version, 2);
+        assert_eq!(
+            recovered.config.selected_ref,
+            Some(BotCredentialRef::system("cred-old"))
+        );
+        let still = std::fs::read_to_string(directory.path().join("config.toml")).unwrap();
+        assert!(still.contains("schema_version = 2"));
+        assert_eq!(
+            load_config(&directory.path().join("config.toml"))
+                .unwrap()
+                .schema_version,
+            2
+        );
+    }
+
+    #[test]
+    fn v1_legacy_import_is_not_skipped_after_current_shaped_decode() {
+        let directory = tempfile::tempdir().unwrap();
+        let credentials = capability();
+        credentials
+            .persist_system_raw("botA1234", "opaque-system-secret")
+            .unwrap();
+        let config = bot_config("cli_a");
+        write_schema1_config(directory.path(), config.clone());
+        let raw = std::fs::read_to_string(directory.path().join("config.toml")).unwrap();
+        assert!(raw.contains("schema_version = 1"));
+        assert!(raw.contains("app_id ="));
+        let loaded = load_config(&directory.path().join("config.toml")).unwrap();
+        assert_eq!(loaded.schema_version, 1);
+        assert!(loaded.selected_ref.is_none());
+        let migrated =
+            recover_bot_credentials(directory.path(), "botA1234", &credentials, Some(loaded))
+                .unwrap();
+        assert_eq!(migrated.availability, BotCredentialAvailability::Stored);
+        assert_eq!(migrated.secret.as_deref(), Some("opaque-system-secret"));
+        assert_eq!(
+            migrated.config.as_ref().map(|config| config.schema_version),
+            Some(BOT_CONFIG_SCHEMA_VERSION)
+        );
+        assert_eq!(
+            migrated
+                .config
+                .as_ref()
+                .map(|config| config.config_revision),
+            Some(config.config_revision)
+        );
+        assert!(matches!(
+            migrated
+                .config
+                .as_ref()
+                .and_then(|config| config.selected_ref.clone()),
+            Some(BotCredentialRef {
+                kind: BotCredentialRefKind::System,
+                ..
+            })
+        ));
     }
 }

@@ -17,6 +17,7 @@ pub struct MaterializedAttachment {
 #[serde(rename_all = "camelCase")]
 pub struct ProjectRecord {
     pub id: String,
+    pub kind: pl_protocol::studio::WorkspaceKind,
     pub name: String,
     pub path: String,
     pub ssh_alias: Option<String>,

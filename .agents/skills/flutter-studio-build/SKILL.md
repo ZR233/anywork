@@ -57,6 +57,11 @@ cargo xtask check-gui-generated
 输出，拒绝生成不稳定或输入未同步；它们不以 Git 暂存或提交状态作为判断依据。生成文件不得手工
 修改，也不得绕过 xtask 直接调用单个生成器。
 
+共享 checkout 中先等待生成命令完整结束，再启动消费生成物的分析、Client 适配测试或原生构建。
+生成器可能先替换输入再重建 Freezed 等产物；此时并发测试看到的缺失 `part` 文件属于不完整
+生成窗口，不能据此修改生成物或判断业务失败。`verify-client` 也会运行 Flutter 适配测试，
+不是仅消费纯 Client 源码。接口返修后重新生成受影响产物，再补失败或受影响的消费者证据。
+
 ## Rust bridge
 
 `pl-studio-bridge` 由 Cargo 预构建；flutter_rust_bridge 负责生成 Dart/Rust 绑定，不负责生成

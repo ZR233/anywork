@@ -169,7 +169,9 @@ class _AgentWorkspacePaneState extends ConsumerState<AgentWorkspacePane> {
       builder: (context, constraints) {
         final todo = workspace.todo;
         final pendingPlan = workspace.activeInteraction?.planConfirmation;
-        final runtimePlan = _runtimeDocumentPresentation(workspace.runtime.plan);
+        final runtimePlan = _runtimeDocumentPresentation(
+          workspace.runtime.plan,
+        );
         // pending 独占确认动作与 interaction 正文；无 pending 时，有 document 的
         // 起草 / 要求修订 / 已批准映射真实 status 作为只读入口，无文档不伪造。
         final presentedPlan = pendingPlan != null
@@ -867,29 +869,51 @@ class _StudioStartPage extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final state = ref.watch(startPageComposerViewModelProvider);
+    final preparationState = ref.watch(_standalonePreparationStateProvider);
+    void retryStandalonePreparation() {
+      unawaited(
+        ref
+            .read(anyworkClientProvider)
+            .directoryCommands
+            .beginStandaloneThread()
+            .catchError((Object _) {}),
+      );
+    }
+
+    Widget failureView(String error) => _StandalonePreparationFailureView(
+      message: context.l10n.sidebarStandalonePrepareFailed(error),
+      onRetry: retryStandalonePreparation,
+    );
+
     final projection = state.asData?.value;
     if (projection == null) {
       return Scaffold(
         key: StudioDriverKeys.startPage,
         backgroundColor: context.colors.surface,
         body: Center(
-          child: state.hasError
-              ? Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Text(state.error.toString()),
-                    TextButton(
-                      onPressed: () =>
-                          ref.invalidate(startPageComposerViewModelProvider),
-                      child: Text(context.l10n.sidebarRetry),
-                    ),
-                  ],
-                )
-              : const CircularProgressIndicator(),
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (state.hasError) ...[
+                  Text(state.error.toString()),
+                  TextButton(
+                    onPressed: () =>
+                        ref.invalidate(startPageComposerViewModelProvider),
+                    child: Text(context.l10n.sidebarRetry),
+                  ),
+                ] else
+                  const CircularProgressIndicator(),
+                if (preparationState.error case final error?)
+                  failureView(error),
+              ],
+            ),
+          ),
         ),
       );
     }
     final project = projection.project;
+    final standalone = project == null || project.isStandalone;
     final preparation = projection.preparation;
     return Scaffold(
       key: StudioDriverKeys.startPage,
@@ -912,6 +936,8 @@ class _StudioStartPage extends ConsumerWidget {
                     child: Column(
                       mainAxisSize: MainAxisSize.min,
                       children: [
+                        if (preparationState.error case final error?)
+                          failureView(error),
                         if (project != null && preparation != null)
                           ThreadPreparationCard(
                             key: ValueKey(preparation.inputId),
@@ -920,9 +946,7 @@ class _StudioStartPage extends ConsumerWidget {
                           )
                         else ...[
                           Text(
-                            project == null
-                                ? context.l10n.startPageOpenProjectTitle
-                                : context.l10n.startPageWelcome,
+                            context.l10n.startPageWelcome,
                             textAlign: TextAlign.center,
                             style: Theme.of(context).textTheme.headlineSmall
                                 ?.copyWith(
@@ -932,8 +956,8 @@ class _StudioStartPage extends ConsumerWidget {
                           ),
                           const SizedBox(height: 10),
                           Text(
-                            project == null
-                                ? context.l10n.startPageOpenProjectBody
+                            standalone
+                                ? context.l10n.startPageStandaloneBody
                                 : context.l10n.startPageProject(project.name),
                             textAlign: TextAlign.center,
                             style: Theme.of(context).textTheme.bodyMedium
@@ -952,6 +976,42 @@ class _StudioStartPage extends ConsumerWidget {
             ),
           );
         },
+      ),
+    );
+  }
+}
+
+class _StandalonePreparationFailureView extends StatelessWidget {
+  const _StandalonePreparationFailureView({
+    required this.message,
+    required this.onRetry,
+  });
+
+  final String message;
+  final VoidCallback onRetry;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      key: StudioDriverKeys.standalonePreparationFailure,
+      padding: const EdgeInsets.only(bottom: 16),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            message,
+            key: StudioDriverKeys.standalonePreparationFailureMessage,
+            textAlign: TextAlign.center,
+            style: TextStyle(color: context.colors.error),
+          ),
+          const SizedBox(height: 8),
+          FilledButton.icon(
+            key: StudioDriverKeys.standalonePreparationRetry,
+            onPressed: onRetry,
+            icon: const Icon(Icons.refresh),
+            label: Text(context.l10n.sidebarNewSession),
+          ),
+        ],
       ),
     );
   }

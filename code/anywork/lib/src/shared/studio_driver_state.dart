@@ -918,7 +918,11 @@ abstract final class StudioDriverState {
       },
       'project': facts.project == null
           ? null
-          : {'id': facts.project!.id, 'path': facts.project!.path},
+          : {
+              'id': facts.project!.id,
+              'kind': facts.project!.kind.name,
+              'path': facts.project!.path,
+            },
       'workspace': workspace == null
           ? null
           : {
