@@ -83,7 +83,21 @@ pub(super) fn decode_checkpoint_at_schema(
         .map_err(|_| SessionStoreError::Invalid("negative checkpoint revision".into()))?;
     let history_fence = u64::try_from(row.try_get::<i64>("", "history_fence")?)
         .map_err(|_| SessionStoreError::Invalid("negative checkpoint fence".into()))?;
-    let checkpoint: ThreadCheckpoint = serde_json::from_str(&envelope)?;
+    let checkpoint: ThreadCheckpoint = if expected_schema < ThreadCheckpoint::SCHEMA_VERSION {
+        let header: serde_json::Value = serde_json::from_str(&envelope)?;
+        if header["schemaVersion"].as_u64() != Some(u64::from(expected_schema)) {
+            return Err(SessionStoreError::Invalid(
+                "checkpoint schema index/envelope mismatch".into(),
+            ));
+        }
+        let mut converted = ThreadCheckpoint::decode_legacy(&envelope)
+            .map_err(|error| SessionStoreError::Invalid(error.to_string()))?;
+        // This reader validates a historical migration's fixed stored version.
+        converted.schema_version = expected_schema;
+        converted
+    } else {
+        serde_json::from_str(&envelope)?
+    };
     if stored_thread != thread_id || checkpoint.thread_id != thread_id {
         return Err(SessionStoreError::Invalid(
             "Thread checkpoint ownership mismatch".into(),

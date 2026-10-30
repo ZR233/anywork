@@ -1,7 +1,7 @@
 //! Per-Thread ordered persistence owner: each effect and its checkpoint commit in one transaction.
 //!
 //! Admission never blocks the executor. Effects are history facts, so every admitted batch is
-//! written to `history.sqlite`/`calls.sqlite` in sequence order, each against the effect-matched
+//! written to `history.sqlite` in sequence order, each against the effect-matched
 //! transfer state it arrived with. The matching checkpoint is not scheduled on its own: the writer
 //! holds `write.checkpoint` as the candidate for exactly that effect and commits it together with
 //! the effect's history facts, the latest context increment and the history watermark in one
@@ -33,11 +33,17 @@ use pl_core::thread::{
 use tokio::time::Instant;
 
 use crate::studio::StudioStore;
-use crate::studio::storage::coordinator::ThreadPersistenceMetrics;
+use crate::studio::storage::coordinator::{ThreadPersistenceMetrics, ThreadPersistenceReport};
 use crate::studio::storage::history::{
-    EffectCommit, InputIdentityWrite, MessageIdentityWrite, is_retryable_write,
+    AccountingCommit, EffectCommit, InputIdentityWrite, MessageIdentityWrite, SessionAccounting,
+    is_retryable_write,
 };
 use crate::studio::thread_projection::PreparedEffect;
+
+#[cfg(feature = "benchmarks")]
+pub(crate) mod benchmark;
+#[cfg(feature = "benchmarks")]
+use super::calls::observation::Metric as BenchMetric;
 
 /// How long one writer incarnation may keep retrying a transient storage conflict before it must
 /// report it.
@@ -91,6 +97,8 @@ struct Progress {
     /// live projection owner took it over, so this queue is the one reliable handoff between a core
     /// commit and both durable history and the live product.
     effects: VecDeque<QueuedEffect>,
+    effect_bytes: u64,
+    pending_accounting: Option<PendingAccounting>,
     /// Retained bytes of the prepared batches the queue still holds.
     ///
     /// A prepared batch is the immutable product content the projection owner published, and the
@@ -114,10 +122,6 @@ struct Progress {
     /// Thread — whose commits were already durable before this process started — never waits for a
     /// watermark that cannot move.
     handoff: u64,
-    /// Highest effect sequence whose call write was admitted.
-    calls_admitted: u64,
-    /// Highest effect sequence whose call write completed.
-    calls_durable: u64,
     /// Encoded bytes of the effect currently being written.
     in_flight_bytes: u64,
     /// Whether the newest admitted state paused inference admission under storage pressure.
@@ -142,6 +146,13 @@ struct Progress {
     last_progress_at: Option<Instant>,
     /// Actual accepted output, separate from each operation's upper bound.
     operation_output: BTreeMap<String, OperationOutput>,
+}
+
+#[derive(Debug)]
+struct PendingAccounting {
+    projection: super::calls::SessionUsageProjection,
+    attempts: u8,
+    retry_at: Instant,
 }
 
 #[derive(Debug)]
@@ -699,10 +710,7 @@ impl HistoryChannel {
             committed_sequence: progress.durable,
             queued_records: progress.effects.len() as u64,
             queued_bytes: progress
-                .effects
-                .iter()
-                .map(|queued| queued.bytes)
-                .sum::<u64>()
+                .effect_bytes
                 .saturating_add(progress.prepared_bytes)
                 .saturating_add(self.delivery_bytes.load(Ordering::Acquire))
                 .saturating_add(progress.projection_bytes),
@@ -853,13 +861,6 @@ struct Inner {
     history: tokio::sync::OnceCell<crate::studio::storage::history::HistoryStore>,
     channel: Arc<HistoryChannel>,
     changed: Arc<tokio::sync::Notify>,
-    call_observer_stop: tokio::sync::watch::Sender<bool>,
-}
-
-impl Drop for Inner {
-    fn drop(&mut self) {
-        self.call_observer_stop.send_replace(true);
-    }
 }
 
 /// Cloneable sink attached to one core owner incarnation.
@@ -946,19 +947,13 @@ fn report(inner: &Inner, progress: &Progress) {
     // The call recorder is one global writer shared by every Thread, so any owning writer can
     // publish its queue pressure; the coordinator stores the latest observation.
     let calls = inner.store.calls();
-    inner
-        .store
-        .thread_persistence()
-        .report_calls(calls.metrics());
+    let calls = calls.metrics();
     let pending = progress
         .effects
         .iter()
         .map(|queued| queued.sequence)
         .collect::<Vec<_>>();
-    let pending_bytes = progress
-        .effects
-        .iter()
-        .fold(0_u64, |total, queued| total.saturating_add(queued.bytes));
+    let pending_bytes = progress.effect_bytes;
     // 每个待写 effect 自带它的候选 checkpoint，并与其在同一个事务落盘：队列非空就意味着历史与
     // checkpoint 都还 dirty，最老待写年龄因此只来自队列里每条 effect 自己的 saved_at。
     let pending_operations = progress.effects.len() as u64;
@@ -992,21 +987,22 @@ fn report(inner: &Inner, progress: &Progress) {
         state_durable_revision: progress.published_revision,
         history_admitted_sequence: max_admitted.max(progress.durable),
         history_durable_sequence: progress.durable,
-        calls_admitted_sequence: progress.calls_admitted,
-        calls_durable_sequence: progress.calls_durable,
         pending_operations,
         pending_bytes,
         in_flight_bytes: progress.in_flight_bytes,
         oldest_pending_age_millis,
         pressure_paused: progress.pressure_paused,
     };
-    inner.store.thread_persistence().update(
+    inner.store.thread_persistence().report(
         &inner.thread.id,
         inner.owner,
-        pending,
-        false,
-        progress.error.clone(),
-        metrics,
+        ThreadPersistenceReport {
+            pending,
+            pending_checkpoint: false,
+            error: progress.error.clone(),
+            metrics,
+            calls,
+        },
     );
 }
 
@@ -1068,7 +1064,6 @@ impl ThreadStorageSink {
             "Thread {} history watermark {durable} does not match checkpoint fence {restored_fence}",
             thread.id
         );
-        let (call_observer_stop, mut stop_observer) = tokio::sync::watch::channel(false);
         let inner = Arc::new(Inner {
             store,
             thread,
@@ -1077,7 +1072,6 @@ impl ThreadStorageSink {
             history: tokio::sync::OnceCell::new(),
             changed: channel.changed.clone(),
             channel: channel.clone(),
-            call_observer_stop,
         });
         // Report the shared queue only after this incarnation has initialized its durable fence.
         // Registration alone cannot discharge a predecessor's obligations: this report proves
@@ -1094,30 +1088,6 @@ impl ThreadStorageSink {
             publish_accounting(&inner, &history).await;
         }
         drop(writer_lease);
-        let observer = Arc::downgrade(&inner);
-        let calls = inner.store.calls().clone();
-        let observer_stop = channel.stopping.clone();
-        workers.push(tokio::spawn(async move {
-            let mut durable_tickets = calls.subscribe_durable_ticket();
-            loop {
-                tokio::select! {
-                    () = refresh_call_watermark(&calls, &observer) => {},
-                    _ = stop_observer.changed() => break,
-                    () = observer_stop.cancelled() => break,
-                }
-                tokio::select! {
-                    Ok(()) = durable_tickets.changed() => {},
-                    _ = tokio::time::sleep(Duration::from_secs(15)) => {
-                        if let Some(inner) = observer.upgrade()
-                            && let Ok(history) = history_store(&inner).await {
-                            publish_accounting(&inner, &history).await;
-                        }
-                    },
-                    _ = stop_observer.changed() => break,
-                    () = observer_stop.cancelled() => break,
-                }
-            }
-        }));
         let worker = inner.clone();
         let watchdog = Arc::downgrade(&inner);
         let watchdog_stop = channel.stopping.clone();
@@ -1137,12 +1107,27 @@ impl ThreadStorageSink {
             // 连续可重试失败的起点；任何一次成功的推进都清零。只有持续超过窗口才升级上报。
             let mut retrying_since: Option<Instant> = None;
             loop {
+                retry_accounting(&inner);
                 // The task keeps the persistence owner alive while it owes facts, even when the
-                // last Thread or GUI handle is dropped. Once clean it may release the connection.
+                // last Thread or GUI handle is dropped. The same owner finishes its bounded
+                // Summary handoff without making diagnostic failure a reliable-save failure.
                 if inner.channel.stopping.is_cancelled() || Arc::strong_count(&inner) == 1 {
-                    let progress = lock_progress(&inner);
-                    if progress.effects.is_empty() && progress.error.is_none() {
-                        return;
+                    let reliable_clean = {
+                        let progress = lock_progress(&inner);
+                        progress.effects.is_empty() && progress.error.is_none()
+                    };
+                    if reliable_clean {
+                        let due = lock_progress(&inner)
+                            .pending_accounting
+                            .as_ref()
+                            .map(|pending| pending.retry_at);
+                        let Some(due) = due else {
+                            return;
+                        };
+                        // Do not select the already-cancelled stop token while handing off:
+                        // that would busy-loop instead of honoring the bounded retry deadline.
+                        tokio::time::sleep_until(due).await;
+                        continue;
                     }
                 }
                 let paused = {
@@ -1162,6 +1147,7 @@ impl ThreadStorageSink {
                     }
                     tokio::select! {
                         () = inner.changed.notified() => {},
+                        () = accounting_retry_due(&inner) => {},
                         () = inner.channel.stopping.cancelled() => {},
                     }
                     continue;
@@ -1176,6 +1162,7 @@ impl ThreadStorageSink {
                         tokio::select! {
                             () = tokio::time::sleep(Duration::from_secs(1)) => {}
                             () = inner.changed.notified() => {}
+                            () = accounting_retry_due(&inner) => {}
                             () = inner.channel.stopping.cancelled() => {}
                         }
                     }
@@ -1198,6 +1185,7 @@ impl ThreadStorageSink {
                             tokio::select! {
                                 () = tokio::time::sleep(Duration::from_secs(1)) => {},
                                 () = inner.store.thread_persistence().retry_notified() => {},
+                                () = accounting_retry_due(&inner) => {},
                                 () = inner.channel.stopping.cancelled() => {},
                             }
                         }
@@ -1213,36 +1201,6 @@ impl ThreadStorageSink {
         ThreadStorageBinding {
             storage: pl_core::thread::cold::ColdStoreHandle::new(self.clone()),
             channel: self.0.channel.clone(),
-        }
-    }
-}
-
-async fn refresh_call_watermark(
-    calls: &crate::studio::storage::calls::CallsStore,
-    observer: &std::sync::Weak<Inner>,
-) {
-    let Some(inner) = observer.upgrade() else {
-        return;
-    };
-    let id = inner.thread.id.clone();
-    let store = inner.store.clone();
-    drop(inner);
-    match calls.durable_effect_sequence(&id).await {
-        Ok(sequence) => {
-            let Some(inner) = observer.upgrade() else {
-                return;
-            };
-            let mut progress = lock_progress(&inner);
-            if sequence > progress.calls_durable {
-                progress.calls_durable = sequence;
-                progress.calls_admitted = progress.calls_admitted.max(sequence);
-                report(&inner, &progress);
-            }
-        }
-        Err(error) => {
-            calls.mark_statistics_gap();
-            tracing::warn!(thread_id = id, %error, "call watermark could not be read");
-            store.thread_persistence().report_calls(calls.metrics());
         }
     }
 }
@@ -1268,9 +1226,10 @@ async fn step(inner: &Inner) -> Result<Step> {
             queued.sequence,
             queued.write.clone(),
             queued.prepared.clone(),
+            queued.bytes,
         )
     });
-    let Some((sequence, write, prepared)) = next_effect else {
+    let Some((sequence, write, prepared, bytes)) = next_effect else {
         return Ok(Step::Idle);
     };
     // The Thread's live projection owner consumed this fact before the durable store may write it:
@@ -1280,7 +1239,7 @@ async fn step(inner: &Inner) -> Result<Step> {
     let Some(prepared) = prepared else {
         return Ok(Step::Idle);
     };
-    persist_effect(inner, sequence, &write, &prepared).await?;
+    persist_effect(inner, sequence, &write, &prepared, bytes).await?;
     let mut progress = lock_progress(inner);
     if let Some(committed) = progress.effects.pop_front() {
         let bytes = committed.bytes;
@@ -1290,6 +1249,7 @@ async fn step(inner: &Inner) -> Result<Step> {
             "history queue head changed before acknowledgement"
         );
         progress.prepared_bytes = progress.prepared_bytes.saturating_sub(prepared_bytes);
+        progress.effect_bytes -= bytes;
         inner.channel.release_process_bytes(bytes);
         progress.durable = progress.durable.max(sequence);
         progress.last_progress_at = (!progress.effects.is_empty()).then(Instant::now);
@@ -1321,32 +1281,97 @@ async fn publish_accounting(
     inner: &Inner,
     history: &crate::studio::storage::history::HistoryStore,
 ) {
+    #[cfg(feature = "benchmarks")]
+    inner
+        .store
+        .calls()
+        .observation()
+        .increment(BenchMetric::AccountingRead);
     match history.accounting().await {
-        Ok(Some(accounting)) => {
-            use super::calls::{PurposeUsageProjection, SessionUsageProjection};
-            let projection = SessionUsageProjection {
-                root_thread_id: inner.thread.root_thread_id.clone(),
-                thread_id: inner.thread.id.clone(),
-                revision: accounting.revision,
-                has_unpriced_usage: accounting.has_unpriced_usage,
-                purpose_costs: accounting
-                    .purpose_costs
-                    .into_iter()
-                    .map(|(purpose, estimated_costs)| PurposeUsageProjection {
-                        purpose,
-                        estimated_costs,
-                    })
-                    .collect(),
-            };
-            if let Err(error) = inner.store.calls().replace_session_usage(projection) {
-                inner.store.calls().mark_statistics_gap();
-                tracing::warn!(%error, "累计统计投影暂未更新，可靠会话累计值已保存");
-            }
-        }
+        Ok(Some(accounting)) => submit_accounting(inner, accounting),
         Ok(None) => {}
         Err(error) => {
             tracing::warn!(%error, "读取累计统计投影失败");
         }
+    }
+}
+
+/// Retain only the latest committed absolute projection; retries never re-read the checkpoint.
+fn submit_accounting(inner: &Inner, accounting: SessionAccounting) {
+    use super::calls::{PurposeUsageProjection, SessionUsageProjection};
+    let projection = SessionUsageProjection {
+        root_thread_id: inner.thread.root_thread_id.clone(),
+        thread_id: inner.thread.id.clone(),
+        revision: accounting.revision,
+        has_unpriced_usage: accounting.has_unpriced_usage,
+        purpose_costs: accounting
+            .purpose_costs
+            .into_iter()
+            .map(|(purpose, estimated_costs)| PurposeUsageProjection {
+                purpose,
+                estimated_costs,
+            })
+            .collect(),
+    };
+    {
+        let mut progress = lock_progress(inner);
+        if progress
+            .pending_accounting
+            .as_ref()
+            .is_some_and(|pending| pending.projection.revision > projection.revision)
+        {
+            return;
+        }
+        progress.pending_accounting = Some(PendingAccounting {
+            projection,
+            attempts: 0,
+            retry_at: Instant::now(),
+        });
+    }
+    retry_accounting(inner);
+    inner.changed.notify_one();
+}
+
+fn retry_accounting(inner: &Inner) {
+    // Admission is synchronous and nonblocking. Keep the shared owner state locked through it so
+    // overlapping writer incarnations cannot consume the same retry or overwrite a newer Summary.
+    let mut progress = lock_progress(inner);
+    let Some(pending) = progress.pending_accounting.as_mut() else {
+        return;
+    };
+    if pending.retry_at > Instant::now() {
+        return;
+    }
+    pending.attempts += 1;
+    pending.retry_at = Instant::now() + Duration::from_millis(100 << (pending.attempts - 1));
+    let result = inner
+        .store
+        .calls()
+        .replace_session_usage(pending.projection.clone());
+    match result {
+        Ok(()) => {
+            progress.pending_accounting = None;
+        }
+        Err(error) => {
+            tracing::warn!(%error, "累计统计投影未受理，可靠会话累计值已保存");
+            if pending.attempts >= 5 {
+                // A bounded, explicit best-effort gap, repaired from authority at reopen.
+                inner.store.calls().mark_statistics_gap();
+                progress.pending_accounting = None;
+            }
+        }
+    }
+}
+
+async fn accounting_retry_due(inner: &Inner) {
+    let due = lock_progress(inner)
+        .pending_accounting
+        .as_ref()
+        .map(|pending| pending.retry_at);
+    if let Some(due) = due {
+        tokio::time::sleep_until(due).await;
+    } else {
+        std::future::pending::<()>().await;
     }
 }
 
@@ -1355,20 +1380,24 @@ async fn persist_effect(
     sequence: u64,
     write: &ThreadWrite,
     projected: &PreparedEffect,
+    encoded_effect_bytes: u64,
 ) -> Result<()> {
     ensure!(
-        projected.sequence == sequence,
+        projected.sequence == sequence
+            && projected.accounting.sequence == sequence
+            && projected.accounting.thread_id == inner.thread.id,
         "prepared history batch {sequence} was handed over as {}",
         projected.sequence
     );
     // 累计摘要按 effect 顺序折叠一次：从 writer 的运行值 clone，折叠本 effect 的绝对增量，放进该
     // effect 自己的 checkpoint，与它的历史事实在同一事务落盘。折叠只作用于 clone，事务失败时运行
     // 值不变，因此热读看到的总量绝不领先于已落库的 checkpoint。
-    let summary = {
+    let (summary, accounting_changed) = {
         let progress = lock_progress(inner);
         let mut summary = progress.usage.clone();
-        crate::studio::thread_projection::fold_effect_accounting(&mut summary, &write.effect)?;
-        summary
+        projected.accounting.fold_into(&mut summary);
+        let changed = summary.pricing != progress.usage.pricing;
+        (summary, changed)
     };
     let mut checkpoint = write.checkpoint.clone();
     checkpoint.state.usage_summary = summary.clone();
@@ -1376,7 +1405,7 @@ async fn persist_effect(
     let referenced = crate::studio::thread_projection::referenced_attachment_ids(&checkpoint.state);
     {
         let mut progress = lock_progress(inner);
-        progress.in_flight_bytes = encoded_bytes(&write.effect);
+        progress.in_flight_bytes = encoded_effect_bytes;
         progress.saving_revision = checkpoint.state_revision;
         report(inner, &progress);
     }
@@ -1398,11 +1427,23 @@ async fn persist_effect(
                 rolled_back_turns: &rolled_back_turns(&write.checkpoint.state),
                 identities: &durable_input_identities(&inner.thread.id, &write.checkpoint.state),
                 messages: &admitted_message_identities(&write.effect),
-                receipts: &fact_receipts(&write.effect, projected)?,
+                receipts: &{
+                    #[cfg(feature = "benchmarks")]
+                    inner
+                        .store
+                        .calls()
+                        .observation()
+                        .increment(BenchMetric::ReceiptExtraction);
+                    fact_receipts(&write.effect, projected)?
+                },
                 tasks: &write.effect.tasks,
                 deliveries: &write.effect.deliveries,
                 delivery_repairs: &write.effect.delivery_repairs,
                 attempt: write.effect.attempt.as_ref(),
+            },
+            AccountingCommit {
+                facts: &projected.accounting,
+                material_changed: accounting_changed,
             },
         )
         .await;
@@ -1410,9 +1451,11 @@ async fn persist_effect(
         let mut progress = lock_progress(inner);
         progress.saving_revision = 0;
     }
-    committed?;
+    let committed_accounting = committed?;
     super::state::clear_checkpoint_recovery(&inner.thread.id);
-    publish_accounting(inner, &history).await;
+    if let Some(accounting) = committed_accounting {
+        submit_accounting(inner, accounting);
+    }
     // The writer confirms exactly the identity and revision this transaction committed, which is the
     // same batch the Thread's live projection published into the shared session before the handoff
     // reached this queue. No body is read back and no second content cache exists, so the saved
@@ -1434,7 +1477,7 @@ async fn persist_effect(
         );
     }
     // 调用统计始终是独立的 best-effort：它与历史/checkpoint 事务无关，失败只影响可丢诊断。
-    let statistics_admitted = inner.store.calls().try_admit_effect(&write.effect);
+    inner.store.calls().record_effect(&write.effect);
     // 事务成功后才发布运行值、已落库 revision 和用量累计。
     inner
         .store
@@ -1442,9 +1485,6 @@ async fn persist_effect(
         .set_usage(&inner.thread.id, summary.clone());
     {
         let mut progress = lock_progress(inner);
-        if statistics_admitted {
-            progress.calls_admitted = progress.calls_admitted.max(sequence);
-        }
         progress.usage = summary;
         progress.published_revision = progress.published_revision.max(checkpoint.state_revision);
         progress.in_flight_bytes = 0;
@@ -1663,11 +1703,8 @@ impl ColdStore for ThreadStorageSink {
                 total.saturating_add(output.retained())
             });
         let bytes = progress
-            .effects
-            .iter()
-            .fold(progress.prepared_bytes, |total, queued| {
-                total.saturating_add(queued.bytes)
-            })
+            .effect_bytes
+            .saturating_add(progress.prepared_bytes)
             .saturating_add(progress.projection_bytes)
             .saturating_add(self.0.channel.delivery_bytes.load(Ordering::Acquire))
             .saturating_add(reserved);
@@ -1715,6 +1752,12 @@ impl ColdStore for ThreadStorageSink {
             });
         }
         let sequence = write.effect.sequence;
+        #[cfg(feature = "benchmarks")]
+        self.0
+            .store
+            .calls()
+            .observation()
+            .increment(BenchMetric::EffectEncode);
         let bytes = encoded_bytes(&write.effect);
         let mut progress = lock_progress(&self.0);
         if progress.stopped {
@@ -1726,10 +1769,7 @@ impl ColdStore for ThreadStorageSink {
                 .iter()
                 .any(|queued| queued.sequence == sequence)
         {
-            let queued_bytes = progress
-                .effects
-                .iter()
-                .fold(0_u64, |total, queued| total.saturating_add(queued.bytes));
+            let queued_bytes = progress.effect_bytes;
             // The fact takes over the bytes of its own operation's reservation instead of being
             // charged next to them; only bytes not already charged need new headroom.
             let (transfer, covered) =
@@ -1767,6 +1807,7 @@ impl ColdStore for ThreadStorageSink {
                 prepared: None,
                 prepared_bytes: 0,
             });
+            progress.effect_bytes += bytes;
             progress.last_progress_at.get_or_insert_with(Instant::now);
         }
         // 首次受理从 checkpoint 继承已折叠的累计摘要，然后只折叠本 incarnation 的新 effect。
@@ -2136,6 +2177,211 @@ pub(crate) mod storage_fault_tests {
         let sink = ThreadStorageSink::new(store.clone(), thread, None).await?;
         spawn_live_projection(&sink);
         Ok((temp, store, sink))
+    }
+
+    #[tokio::test]
+    async fn late_reliable_summary_publishes_without_another_billing() -> Result<()> {
+        use crate::studio::agent_host::ThreadWriteBehindWriter;
+        use crate::studio::runtime::ModelPerformanceOwner;
+        use crate::studio::thread_projection::{AuxiliaryBillingReceipt, LiveProjection};
+        use pl_core::thread::extensions::{ExtensionChange, ExtensionRecord};
+        use pl_protocol::{
+            FirstOutputSource, InferenceAccounting, InferenceBillingRecord, InferenceTiming,
+            PricingOutcome, RuntimeCostAmount, UsageReport,
+        };
+
+        let temp = tempfile::tempdir()?;
+        let store = StudioStore::open(temp.path().join("studio/v2/studio.sqlite")).await?;
+        let thread = test_thread("late-summary");
+        register_test_thread(&store, &thread).await?;
+        let sink = ThreadStorageSink::new(store.clone(), thread.clone(), None).await?;
+        let product_writer = ThreadWriteBehindWriter::new(store.clone());
+        let events = crate::studio::ProductEventBus::new(store.clone(), product_writer.clone());
+        let mut cost_events = events.subscribe_topic(&crate::StudioProductTopic::SessionCosts {
+            root_thread_id: thread.root_thread_id.clone(),
+        });
+        let owner = ModelPerformanceOwner::new(store.clone(), events, "late-summary-owner".into());
+        owner.initialize_projection().await;
+        let feed = owner.subscribe_statistics();
+        let initial = feed.next().await?.context("missing initial statistics")?;
+        feed.acknowledge(initial.delivery_sequence)?;
+
+        let billing = InferenceBillingRecord {
+            inference_id: "title-call".into(),
+            purpose: Some("title".into()),
+            account_id: "account".into(),
+            account_display_name: Some("Account".into()),
+            model_id: Some("model".into()),
+            model_observation: None,
+            effort: None,
+            context_window: None,
+            accounting: InferenceAccounting {
+                usage: UsageReport {
+                    input_tokens: Some(10),
+                    output_tokens: Some(2),
+                    cache_read_tokens: Some(0),
+                    total_tokens: Some(12),
+                    ..Default::default()
+                },
+                pricing: PricingOutcome::Estimated {
+                    cost: RuntimeCostAmount {
+                        currency: "USD".into(),
+                        amount: 1.25,
+                    },
+                    cache_savings: None,
+                },
+                ..Default::default()
+            },
+            prompt_generation: None,
+            prompt_cache_policy: None,
+            prefix_changed_reason: None,
+            orchestration: Default::default(),
+            timing: Some(InferenceTiming {
+                first_output_source: FirstOutputSource::CompletedToolInput,
+                ttft_millis: Some(100),
+                decode_millis: Some(0),
+                response_millis: 100,
+            }),
+            recorded_at: crate::studio::unix_seconds(),
+        };
+        let extension = ExtensionRecord {
+            revision: 1,
+            payload: AuxiliaryBillingReceipt {
+                billing: billing.clone(),
+                succeeded: true,
+            }
+            .into_payload()?,
+        };
+        let mut write = ticket(&thread.id, 1);
+        Arc::make_mut(&mut write.effect).extensions = vec![ExtensionChange::Put {
+            id: "studio.auxiliary-billing.title".into(),
+            record: extension.clone(),
+        }]
+        .into();
+        write.checkpoint.state.extension_sequence = 1;
+        write
+            .checkpoint
+            .state
+            .extensions
+            .insert("studio.auxiliary-billing.title".into(), extension);
+
+        // Block the actual ordered history writer, not a replacement saver or artificial delay.
+        let history_gate = sink.0.channel.step_lock.lock().await;
+        sink.admit(&thread.id, write.clone())?;
+        let mut live = LiveProjection::new();
+        let (_, prepared) = live.advance(
+            &sink.0.chat,
+            &thread,
+            &write.effect,
+            &write.checkpoint.state,
+            false,
+        )?;
+        assert!(sink.0.channel.prepare(prepared.clone()));
+        for fact in prepared.accounting.facts.iter() {
+            owner.record_auxiliary_inference(
+                &thread.root_thread_id,
+                &thread.id,
+                &fact.record,
+                fact.status,
+            )?;
+        }
+        let billing_publication = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let header = feed.next().await?.context("statistics feed closed")?;
+                feed.acknowledge(header.delivery_sequence)?;
+                if owner.snapshot().await.history.len() == 1 {
+                    break Ok::<_, anyhow::Error>(header);
+                }
+            }
+        })
+        .await
+        .context("Billing performance publication timed out")??;
+        assert_eq!(store.history(&thread.id).await?.watermark().await?, 0);
+        assert!(
+            owner
+                .session_costs_snapshot(&thread.id)
+                .await
+                .cost
+                .is_none()
+        );
+        let before_costs = owner.snapshot().await;
+        assert_eq!(
+            billing_publication.history_count,
+            before_costs.history.len() as u64
+        );
+        assert_eq!(before_costs.history[0].completion_tokens, Some(2));
+        assert_eq!(
+            before_costs.history[0].first_output_source,
+            FirstOutputSource::CompletedToolInput
+        );
+        assert_eq!(before_costs.history[0].decode_millis, Some(0));
+
+        drop(history_gate);
+        tokio::time::timeout(Duration::from_secs(5), sink.flush(&thread.id, 1)).await??;
+        // A late cost-only Summary must publish its scoped fact, not manufacture a global
+        // performance revision solely to wake this test. Observe the actual consumer topic.
+        let costs_publication = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if let crate::StudioProductEventKind::SessionCostsChanged(state) =
+                    cost_events.recv().await?.kind
+                    && state
+                        .cost
+                        .as_ref()
+                        .and_then(|cost| cost.estimated_costs.first())
+                        .is_some_and(|cost| cost.amount == 1.25)
+                {
+                    break Ok::<_, anyhow::Error>(state);
+                }
+            }
+        })
+        .await
+        .context("late Summary scoped cost publication timed out")??;
+        assert_eq!(costs_publication.root_thread_id, thread.root_thread_id);
+        assert!(!costs_publication.read_failed);
+        assert_eq!(
+            owner.session_costs_snapshot(&thread.id).await,
+            costs_publication
+        );
+        let after_costs = owner.snapshot().await;
+        assert!(
+            Arc::ptr_eq(&after_costs.history, &before_costs.history),
+            "cost-only publication must retain the frozen history material"
+        );
+        assert!(
+            Arc::ptr_eq(&after_costs.summaries, &before_costs.summaries),
+            "cost-only publication must retain the frozen summary material"
+        );
+        assert_eq!(after_costs.history, before_costs.history);
+        assert_eq!(
+            store
+                .history(&thread.id)
+                .await?
+                .checkpoint()
+                .await?
+                .unwrap()
+                .state
+                .usage_summary
+                .totals
+                .inference_count,
+            1
+        );
+
+        // Repeating the same reliable fact and billing does not add another contribution.
+        let admitted = store.calls().admitted_ticket();
+        sink.admit(&thread.id, write)?;
+        owner.record_auxiliary_inference(
+            &thread.root_thread_id,
+            &thread.id,
+            &billing,
+            super::super::calls::CallStatus::Committed,
+        )?;
+        assert_eq!(store.calls().admitted_ticket(), admitted);
+        sink.0.channel.stop_and_join().await?;
+        feed.close().await?;
+        owner.close().await?;
+        product_writer.shutdown().await?;
+        store.close().await?;
+        Ok(())
     }
 
     pub(crate) struct CloseFactoryFixture {
@@ -3940,6 +4186,8 @@ pub(crate) mod storage_fault_tests {
         let store = StudioStore::open(temp.path().join("studio/v2/studio.sqlite")).await?;
         register_test_thread(&store, &test_thread("no-handoff")).await?;
         let sink = ThreadStorageSink::new(store.clone(), test_thread("no-handoff"), None).await?;
+        let calls_before = store.calls().metrics();
+        let materials_before = store.calls().subscribe_materials().borrow().clone();
         let write = ticket("no-handoff", 1);
         sink.admit("no-handoff", write.clone())?;
         assert!(
@@ -3970,6 +4218,11 @@ pub(crate) mod storage_fault_tests {
         )
         .await??;
         assert_eq!(store.history("no-handoff").await?.watermark().await?, 1);
+        assert_eq!(store.calls().metrics(), calls_before);
+        assert_eq!(
+            *store.calls().subscribe_materials().borrow(),
+            materials_before
+        );
         Ok(())
     }
 
@@ -4358,7 +4611,7 @@ pub(crate) mod storage_fault_tests {
         let frame = OpaquePayload::new(
             "pl.model.assistant",
             // 与 pl-model 当前 `pl.model.assistant` 帧版本一致（该常量不对外重导出）。
-            4,
+            5,
             serde_json::to_string(&Frame {
                 receipt: &receipt,
                 bindings: Vec::new(),
@@ -5453,7 +5706,7 @@ pub(crate) mod storage_fault_tests {
         )?;
         let locked = sink.0.channel.step_lock.lock().await;
         sink.admit("lost-ack", write.clone())?;
-        persist_effect(&sink.0, 1, &write, &prepared).await?;
+        persist_effect(&sink.0, 1, &write, &prepared, encoded_bytes(&write.effect)).await?;
         assert_eq!(store.history("lost-ack").await?.watermark().await?, 1);
         assert_eq!(sink.0.channel.subscribe().borrow().queued_records, 1);
         sink.0.channel.mark_unavailable(|| true);
@@ -5485,7 +5738,9 @@ pub(crate) mod storage_fault_tests {
                     .into_iter()
                     .find(|row| row.thread_id == "lost-ack")
                     .context("missing live Thread persistence row")?;
-                if row.calls_admitted_sequence == Some(1) && row.calls_durable_sequence == Some(1) {
+                if row.history_admitted_sequence == Some(1)
+                    && row.history_durable_sequence == Some(1)
+                {
                     break Ok::<_, anyhow::Error>(());
                 }
                 persistence.changed().await?;
@@ -5699,17 +5954,10 @@ pub(crate) mod storage_fault_tests {
 
     #[tokio::test]
     async fn stopped_statistics_consumer_never_blocks_history_or_checkpoint() -> Result<()> {
-        let (_temp, store, sink) = sink("statistics-gap").await?;
+        let (temp, store, sink) = sink("statistics-gap").await?;
+        let calls_before = store.calls().metrics();
+        let materials_before = store.calls().subscribe_materials().borrow().clone();
         store.calls().stop_best_effort();
-        assert!(
-            !store
-                .calls()
-                .try_admit_effect(&ticket("statistics-gap", 1).effect)
-        );
-        store
-            .thread_persistence()
-            .report_calls(store.calls().metrics());
-        assert!(store.thread_persistence().queue_snapshot().statistics_gap);
         sink.admit("statistics-gap", ticket("statistics-gap", 1))?;
         await_durable(
             Duration::from_secs(5),
@@ -5720,7 +5968,50 @@ pub(crate) mod storage_fault_tests {
         .await??;
         assert_eq!(store.history("statistics-gap").await?.watermark().await?, 1);
         assert_eq!(sink.0.channel.subscribe().borrow().fault, None);
+        assert_eq!(store.calls().metrics(), calls_before);
+        assert_eq!(
+            *store.calls().subscribe_materials().borrow(),
+            materials_before
+        );
+        assert!(!store.thread_persistence().queue_snapshot().statistics_gap);
+
+        // A real committed absolute Summary still has a handoff obligation. The history owner
+        // keeps its bounded retries through shutdown, without a per-Thread calls observer.
+        let accounting = store
+            .history("statistics-gap")
+            .await?
+            .accounting()
+            .await?
+            .context("committed accounting")?;
+        submit_accounting(&sink.0, accounting);
+        assert!(lock_progress(&sink.0).pending_accounting.is_some());
+        tokio::time::timeout(Duration::from_secs(5), sink.0.channel.stop_and_join()).await??;
+        assert!(lock_progress(&sink.0).pending_accounting.is_none());
+        assert!(store.calls().statistics_gap());
+        assert_eq!(sink.0.channel.subscribe().borrow().fault, None);
+        store
+            .thread_persistence()
+            .report_calls(store.calls().metrics());
         assert!(store.thread_persistence().queue_snapshot().statistics_gap);
+        // Later material-free work cannot erase a real rejection.
+        store
+            .calls()
+            .record_effect(&ticket("statistics-gap", 2).effect);
+        assert!(store.calls().statistics_gap());
+        drop(sink);
+        store.close().await?;
+        let reopened = StudioStore::open(temp.path().join("studio/v2/studio.sqlite")).await?;
+        let history = reopened.history("statistics-gap").await?;
+        assert_eq!(history.watermark().await?, 1);
+        assert_eq!(
+            history
+                .checkpoint()
+                .await?
+                .context("checkpoint")?
+                .history_fence,
+            1
+        );
+        reopened.close().await?;
         Ok(())
     }
 
@@ -5728,8 +6019,15 @@ pub(crate) mod storage_fault_tests {
     async fn crashed_statistics_consumer_does_not_block_history_and_restarts() -> Result<()> {
         let (_temp, store, sink) = sink("statistics-crash").await?;
         let calls = store.calls();
+        let summary = |revision| super::super::calls::SessionUsageProjection {
+            root_thread_id: "statistics-crash".into(),
+            thread_id: "statistics-crash".into(),
+            revision,
+            has_unpriced_usage: false,
+            purpose_costs: vec![],
+        };
         calls.panic_on_next_mutation();
-        assert!(calls.try_admit_effect(&ticket("statistics-crash", 1).effect));
+        calls.replace_session_usage(summary(1))?;
         tokio::time::timeout(Duration::from_secs(5), async {
             loop {
                 if calls
@@ -5745,7 +6043,7 @@ pub(crate) mod storage_fault_tests {
         .context("call writer did not report the injected worker exit")?;
         assert!(calls.statistics_gap());
         let dropped_ticket = calls.admitted_ticket();
-        assert!(calls.try_admit_effect(&ticket("statistics-crash", 2).effect));
+        calls.replace_session_usage(summary(2))?;
         let resumed_ticket = calls.admitted_ticket();
         assert!(resumed_ticket > dropped_ticket);
 
@@ -5765,7 +6063,7 @@ pub(crate) mod storage_fault_tests {
         assert_eq!(sink.0.channel.subscribe().borrow().fault, None);
         tokio::time::timeout(Duration::from_secs(5), async {
             loop {
-                if calls.durable_ticket() >= resumed_ticket {
+                if calls.processed_ticket() >= resumed_ticket {
                     break;
                 }
                 tokio::task::yield_now().await;

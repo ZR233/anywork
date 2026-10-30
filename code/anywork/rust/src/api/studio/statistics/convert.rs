@@ -79,6 +79,13 @@ fn bridge_sample(
     value: pl_studio_runtime::statistics::StudioModelPerformanceSample,
 ) -> BridgeStatisticsSample {
     BridgeStatisticsSample {
+        thread_id: value.thread_id,
+        call_id: value.call_id,
+        purpose: value.purpose,
+        first_output_source: value.first_output_source.into(),
+        usage_status: value.usage_status.into(),
+        ttft_availability: value.ttft_availability.into(),
+        throughput_availability: value.throughput_availability.into(),
         completed_at: value.completed_at,
         account_id: value.account_id,
         account_display_name: value.account_display_name,

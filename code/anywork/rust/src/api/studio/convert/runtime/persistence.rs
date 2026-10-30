@@ -90,8 +90,6 @@ pub(crate) fn bridge_persistence_queue(
                 state_durable_revision: thread.state_durable_revision,
                 history_admitted_sequence: thread.history_admitted_sequence,
                 history_durable_sequence: thread.history_durable_sequence,
-                calls_admitted_sequence: thread.calls_admitted_sequence,
-                calls_durable_sequence: thread.calls_durable_sequence,
                 pending_operations: thread.pending_operations,
                 pending_bytes: thread.pending_bytes,
                 oldest_pending_age_millis: thread.oldest_pending_age_millis,

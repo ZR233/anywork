@@ -1076,14 +1076,15 @@ impl LiveOwner {
         let effect = &write.effect;
         let deliver = self.feed.has_subscribers();
         let projected = (|| {
-            crate::studio::thread_projection::fold_effect_accounting(&mut self.usage, effect)?;
-            self.projection.advance(
+            let projected = self.projection.advance(
                 &self.chat,
                 &self.thread,
                 effect,
                 &write.checkpoint.state,
                 deliver,
-            )
+            )?;
+            projected.1.accounting.fold_into(&mut self.usage);
+            Ok::<_, crate::studio::thread_projection::ProjectionError>(projected)
         })();
         let (changes, prepared) = match projected {
             Ok(projected) => projected,
@@ -1164,6 +1165,15 @@ impl LiveOwner {
         }
         self.prepare_parent_report(services).await?;
         self.prepare_terminal_delivery(services)?;
+        if let Some(pending) = &self.pending
+            && pending.mode == HandoffMode::Live
+        {
+            billing::record(
+                &services.performance,
+                &self.thread.root_thread_id,
+                &pending.prepared.accounting,
+            )?;
+        }
         self.handover_pending()
     }
 
@@ -2186,7 +2196,6 @@ impl ProjectionWorker {
         //
         // The association the owner was installed with is what identifies a parent or a billing
         // root; it never changes for a Thread, so a commit does not re-read the directory DTO for it.
-        let owner_product = live.thread.clone();
         let mut newest_commit_at = 0_i64;
         loop {
             // The retained handoff is completed before any new queue work: its write is the very
@@ -2212,11 +2221,6 @@ impl ProjectionWorker {
                 // re-decided delivery — only the report preparation and the handoff are retried.
                 let _parent_report = live.finish_pending(services).await?;
                 if mode == HandoffMode::Live {
-                    billing::record(
-                        &services.performance,
-                        &owner_product.root_thread_id,
-                        &write.effect,
-                    )?;
                     newest_commit_at = newest_commit_at.max(write.effect.committed_at);
                 }
                 transfer_terminal(services, state).await?;
@@ -2230,11 +2234,6 @@ impl ProjectionWorker {
                 continue;
             }
             live.advance(services, id.as_str(), &write).await?;
-            billing::record(
-                &services.performance,
-                &owner_product.root_thread_id,
-                &write.effect,
-            )?;
             newest_commit_at = newest_commit_at.max(write.effect.committed_at);
             transfer_terminal(services, state).await?;
         }
@@ -4126,6 +4125,7 @@ mod storage_fault_tests {
             turn_id: "pruned-turn".into(),
             accounting: Default::default(),
             model_observation: None,
+            timing: None,
             implementation: Some("native".into()),
             error: None,
         };
@@ -4159,7 +4159,7 @@ mod storage_fault_tests {
         };
         let mut usage = Default::default();
         crate::studio::thread_projection::fold_effect_accounting(&mut usage, &effect)?;
-        assert_eq!(usage.inference_count, 1);
+        assert_eq!(usage.totals.inference_count, 1);
         let mut projection = LiveProjection::new();
         let (_, prepared) = projection.advance(&chat, &thread, &effect, &state, true)?;
         let write = ThreadWrite {

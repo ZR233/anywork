@@ -83,6 +83,7 @@ pub(super) async fn compact_context(
     .map_err(|source| CompletionFailure {
         source: Box::new(source),
         accounting: Box::new(accounting.clone()),
+        timing: response.timing,
         model_observation: model_observation.clone().map(Box::new),
         presentation_items: response.presentation_items,
         partial_progress: Some(Box::new(response.observation.into())),
@@ -91,6 +92,7 @@ pub(super) async fn compact_context(
     Ok(ModelCompactionResponse {
         input: vec![replacement],
         accounting,
+        timing: response.timing,
         model_observation,
     })
 }

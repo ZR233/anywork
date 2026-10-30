@@ -11,11 +11,12 @@ use pl_core::{
 };
 
 const FORMAT: &str = "pl.model.compaction";
-pub(super) const NATIVE_CHECKPOINT_VERSION: u32 = 3;
+pub(super) const NATIVE_CHECKPOINT_VERSION: u32 = 4;
 
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct NativeCheckpoint {
+    timing: Option<pl_protocol::InferenceTiming>,
     binding: super::receipt::ModelCallBinding,
     #[serde(default)]
     compatibility_family: Option<String>,
@@ -59,6 +60,7 @@ pub enum ThreadCompactionDecision {
 /// Successful reduction before the host's compare-and-swap commit.
 #[derive(Debug)]
 pub struct ThreadCompaction {
+    pub timing: Option<pl_protocol::InferenceTiming>,
     pub binding: super::receipt::ModelCallBinding,
     pub replacement: ReplaceContext,
     pub accounting: InferenceAccounting,
@@ -168,6 +170,7 @@ impl ThreadModel {
                         None,
                         checkpoint.accounting,
                         checkpoint.model_observation,
+                        checkpoint.timing,
                         ThreadCompactionStrategy::PreferNative,
                     )
                 })
@@ -190,12 +193,13 @@ impl ThreadModel {
                         Some(summary.text),
                         summary.accounting,
                         summary.model_observation,
+                        summary.timing,
                         ThreadCompactionStrategy::TextSummary,
                     )
                 })
         };
         let cleanup = session.close().await;
-        let (item, text, accounting, model_observation, implementation) = match result {
+        let (item, text, accounting, model_observation, timing, implementation) = match result {
             Ok(result) => {
                 if let Err(source) = cleanup {
                     return Err(receipt::failure_error(
@@ -203,6 +207,7 @@ impl ThreadModel {
                         crate::completion::CompletionFailure {
                             source: Box::new(source),
                             accounting: Box::new(result.2),
+                            timing: result.4,
                             model_observation: result.3.map(Box::new),
                             presentation_items: Vec::new(),
                             partial_progress: None,
@@ -227,6 +232,7 @@ impl ThreadModel {
         };
         let content = if let Some(item) = item {
             let content = serde_json::to_string(&NativeCheckpoint {
+                timing,
                 binding: binding.clone(),
                 compatibility_family: self
                     .runtime
@@ -241,6 +247,7 @@ impl ThreadModel {
                     binding.clone(),
                     accounting.clone(),
                     model_observation.clone(),
+                    timing,
                     None,
                     failure(ModelFailureKind::InvalidResponse, error),
                 )
@@ -252,6 +259,7 @@ impl ThreadModel {
                             binding.clone(),
                             accounting.clone(),
                             model_observation.clone(),
+                            timing,
                             None,
                             failure(ModelFailureKind::InvalidResponse, error),
                         )
@@ -325,6 +333,7 @@ impl ThreadModel {
             },
             accounting,
             model_observation,
+            timing,
             implementation,
         })
     }
@@ -424,6 +433,7 @@ pub fn migrate_legacy_compaction(
     #[derive(serde::Serialize)]
     #[serde(rename_all = "camelCase")]
     struct MigratedCheckpoint<'a> {
+        timing: Option<pl_protocol::InferenceTiming>,
         binding: super::receipt::ModelCallBinding,
         compatibility_family: Option<String>,
         item: &'a serde_json::value::RawValue,
@@ -431,6 +441,7 @@ pub fn migrate_legacy_compaction(
     let raw_item = serde_json::from_str(payload.content())
         .map_err(|error| failure(ModelFailureKind::IncompatibleContext, error))?;
     let bytes = serde_json::to_string(&MigratedCheckpoint {
+        timing: None,
         binding,
         compatibility_family: None,
         item: raw_item,

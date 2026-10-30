@@ -15,7 +15,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 pub(super) const FRAME_FORMAT: &str = "pl.model.assistant";
 /// Current frozen assistant-frame version.
-pub const FRAME_VERSION: u32 = 4;
+pub const FRAME_VERSION: u32 = 5;
 
 #[derive(Clone, Copy)]
 enum ArgumentKind {
@@ -549,6 +549,7 @@ pub(super) fn response(
     let failure_binding = context.binding.clone();
     let failure_accounting = response.accounting.clone();
     let failure_model_observation = response.model_observation.clone();
+    let failure_timing = response.timing;
     let failure_progress = context
         .request
         .progress
@@ -559,6 +560,7 @@ pub(super) fn response(
             failure_binding,
             failure_accounting,
             failure_model_observation,
+            failure_timing,
             failure_progress,
             error,
         )

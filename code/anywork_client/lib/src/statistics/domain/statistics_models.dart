@@ -1,6 +1,19 @@
 import 'dart:convert';
+import 'dart:collection';
 
 import '../../models/collection_equality.dart';
+import '../../models/usage_diagnostics.dart';
+
+export '../../models/usage_diagnostics.dart'
+    show FirstOutputSource, UsageReportStatus, MetricAvailability;
+
+/// Owns its backing storage. Reusing this value never exposes a caller-owned mutable list.
+final class StatisticsMaterial<T> extends UnmodifiableListView<T> {
+  StatisticsMaterial(Iterable<T> source) : super(List<T>.unmodifiable(source));
+
+  static StatisticsMaterial<T> freeze<T>(Iterable<T> source) =>
+      source is StatisticsMaterial<T> ? source : StatisticsMaterial<T>(source);
+}
 
 /// Account-scoped configured model identity. Display names and provider aliases are not keys.
 final class AccountModelKey {
@@ -110,9 +123,11 @@ final class StatisticsSummary {
   final double averageResponseMillis;
   final List<StatisticsEffortSummary> effortBreakdowns;
 
-  AccountModelKey get identity =>
-      AccountModelKey(accountId: accountId, modelId: modelId);
-  String get filterKey => identity.encoded;
+  late final AccountModelKey identity = AccountModelKey(
+    accountId: accountId,
+    modelId: modelId,
+  );
+  late final String filterKey = identity.encoded;
 
   @override
   bool operator ==(Object other) =>
@@ -158,7 +173,14 @@ enum StatisticsModelMatchState {
 /// Frozen history diagnostics. Unknown configured model IDs remain null and are never repaired
 /// from current catalog contents or sent/reported aliases.
 final class StatisticsSample {
-  const StatisticsSample({
+  StatisticsSample({
+    required this.threadId,
+    required this.callId,
+    required this.purpose,
+    required this.firstOutputSource,
+    required this.usageStatus,
+    required this.ttftAvailability,
+    required this.throughputAvailability,
     required this.completedAt,
     required this.accountId,
     required this.accountDisplayName,
@@ -174,6 +196,16 @@ final class StatisticsSample {
     required this.tokensPerSecond,
   });
 
+  final String threadId;
+  final String callId;
+  final String? purpose;
+  final FirstOutputSource firstOutputSource;
+  final UsageReportStatus usageStatus;
+  final MetricAvailability ttftAvailability;
+  final MetricAvailability throughputAvailability;
+  (String, String) get callIdentity => (threadId, callId);
+  late final String callKey = jsonEncode(<Object>[threadId, callId]);
+
   final DateTime completedAt;
   final String accountId;
   final String accountDisplayName;
@@ -182,22 +214,31 @@ final class StatisticsSample {
   final String? reportedModel;
   final StatisticsModelMatchState modelMatchState;
   final String? effort;
-  final int completionTokens;
+  final int? completionTokens;
   final int? ttftMillis;
   final int? decodeMillis;
   final int? totalResponseMillis;
   final double? tokensPerSecond;
 
-  AccountModelKey get identity =>
-      AccountModelKey(accountId: accountId, modelId: modelId);
-  String get filterKey => identity.encoded;
+  late final AccountModelKey identity = AccountModelKey(
+    accountId: accountId,
+    modelId: modelId,
+  );
+  late final String filterKey = identity.encoded;
   String get displayModel => modelId ?? sentModel ?? '';
-  String get effortKey => jsonEncode(<Object?>[effort]);
+  late final String effortKey = jsonEncode(<Object?>[effort]);
 
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
       other is StatisticsSample &&
+          threadId == other.threadId &&
+          callId == other.callId &&
+          purpose == other.purpose &&
+          firstOutputSource == other.firstOutputSource &&
+          usageStatus == other.usageStatus &&
+          ttftAvailability == other.ttftAvailability &&
+          throughputAvailability == other.throughputAvailability &&
           completedAt == other.completedAt &&
           accountId == other.accountId &&
           accountDisplayName == other.accountDisplayName &&
@@ -213,7 +254,14 @@ final class StatisticsSample {
           tokensPerSecond == other.tokensPerSecond;
 
   @override
-  int get hashCode => Object.hash(
+  int get hashCode => Object.hashAll([
+    threadId,
+    callId,
+    purpose,
+    firstOutputSource,
+    usageStatus,
+    ttftAvailability,
+    throughputAvailability,
     completedAt,
     accountId,
     accountDisplayName,
@@ -227,7 +275,7 @@ final class StatisticsSample {
     decodeMillis,
     totalResponseMillis,
     tokensPerSecond,
-  );
+  ]);
 }
 
 /// Complete, immutable materialized window from one owner publication.
@@ -243,8 +291,8 @@ final class StatisticsSnapshot {
     required this.statisticsPending,
     required this.statisticsGap,
     required this.readFailed,
-  }) : summaries = List.unmodifiable(summaries),
-       history = List.unmodifiable(history);
+  }) : summaries = StatisticsMaterial.freeze(summaries),
+       history = StatisticsMaterial.freeze(history);
 
   final String ownerEpoch;
   final String feedId;
@@ -257,19 +305,28 @@ final class StatisticsSnapshot {
   final bool statisticsGap;
   final bool readFailed;
 
-  StatisticsSnapshot withPublication(StatisticsFeedIdentity identity) =>
-      StatisticsSnapshot(
-        ownerEpoch: identity.ownerEpoch,
-        feedId: identity.feedId,
-        publicationRevision: identity.publicationRevision,
-        summariesRevision: identity.summariesRevision,
-        historyRevision: identity.historyRevision,
-        summaries: summaries,
-        history: history,
-        statisticsPending: identity.statisticsPending,
-        statisticsGap: identity.statisticsGap,
-        readFailed: identity.readFailed,
-      );
+  StatisticsSnapshot withPublication(StatisticsFeedIdentity identity) {
+    if (identity.ownerEpoch != ownerEpoch ||
+        identity.feedId != feedId ||
+        identity.summariesRevision != summariesRevision ||
+        identity.historyRevision != historyRevision ||
+        identity.summaryCount != summaries.length ||
+        identity.historyCount != history.length) {
+      throw ArgumentError('Publication does not identify the same materials');
+    }
+    return StatisticsSnapshot(
+      ownerEpoch: identity.ownerEpoch,
+      feedId: identity.feedId,
+      publicationRevision: identity.publicationRevision,
+      summariesRevision: identity.summariesRevision,
+      historyRevision: identity.historyRevision,
+      summaries: summaries,
+      history: history,
+      statisticsPending: identity.statisticsPending,
+      statisticsGap: identity.statisticsGap,
+      readFailed: identity.readFailed,
+    );
+  }
 
   @override
   bool operator ==(Object other) =>

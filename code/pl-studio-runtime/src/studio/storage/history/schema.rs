@@ -41,6 +41,9 @@ impl MigratorTraitSelf for Migrator {
             Box::new(ReviewReceipt {
                 thread_id: self.thread_id.clone(),
             }),
+            Box::new(MeteringFacts {
+                thread_id: self.thread_id.clone(),
+            }),
             Box::new(ProjectKind {
                 thread_id: self.thread_id.clone(),
             }),
@@ -73,6 +76,7 @@ pub(super) const EXECUTION_IDENTITY: &str = "m20261026_000008_history_execution_
 const RETIRE_ORDINALS: &str = "m20261027_000001_history_retire_ordinals";
 const PRODUCER_PAYLOADS: &str = "m20261027_000002_history_producer_payloads";
 const REVIEW_RECEIPT: &str = "m20261027_000003_history_review_receipt";
+const METERING_FACTS: &str = "m20261028_000001_history_metering_facts";
 const PROJECT_KIND: &str = "m20261027_000004_history_project_kind";
 
 // Content preparation and current-only readers share the same lifecycle boundary.
@@ -183,11 +187,12 @@ async fn preflight(db: &DatabaseConnection, thread_id: &str) -> Result<()> {
         (1..=HISTORY_SCHEMA_VERSION).contains(&version),
         "unsupported history schema {version}; existing data preserved"
     );
-    // RetireOrdinals is the content step that advances the marker to the current format.
-    // Once it is recorded, pending model/identity recovery cannot justify an older marker.
+    // Published v9 files need the new metering step even when all their older lifecycle steps
+    // completed. Older markers still require their own pending format step, not a repair guess.
     ensure!(
         version == HISTORY_SCHEMA_VERSION
-            || pending.iter().any(|step| step.name() == RETIRE_ORDINALS),
+            || (version == 9 && pending.iter().any(|step| step.name() == METERING_FACTS))
+            || (version < 9 && pending.iter().any(|step| step.name() == RETIRE_ORDINALS)),
         "history format conflicts with completed migrations; existing data preserved"
     );
     ensure!(
@@ -218,7 +223,7 @@ async fn preflight(db: &DatabaseConnection, thread_id: &str) -> Result<()> {
                 "current history table {table} is missing; existing data preserved"
             );
         }
-    } else if version == HISTORY_SCHEMA_VERSION {
+    } else if version == 9 || version == HISTORY_SCHEMA_VERSION {
         validate_tables(db).await?;
     }
     if SchemaManager::new(db)
@@ -234,7 +239,8 @@ async fn preflight(db: &DatabaseConnection, thread_id: &str) -> Result<()> {
         {
             let checkpoint_version: i64 = row.try_get("", "version")?;
             ensure!(
-                (1..=5).contains(&checkpoint_version),
+                (1..=i64::from(pl_core::thread::ThreadCheckpoint::SCHEMA_VERSION))
+                    .contains(&checkpoint_version),
                 "unsupported checkpoint schema {checkpoint_version}; existing data preserved"
             );
         }
@@ -297,6 +303,31 @@ async fn validate_tables(db: &impl ConnectionTrait) -> Result<()> {
 }
 
 struct RetireOrdinals;
+struct MeteringFacts {
+    thread_id: String,
+}
+impl MigrationName for MeteringFacts {
+    fn name(&self) -> &str {
+        METERING_FACTS
+    }
+}
+#[sea_orm_migration::async_trait::async_trait]
+impl MigrationTrait for MeteringFacts {
+    fn use_transaction(&self) -> Option<bool> {
+        Some(true)
+    }
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        let db = manager.get_connection();
+        checkpoint::migrate_envelope(db, &self.thread_id)
+            .await
+            .map_err(conversion)?;
+        super::producer::migrate(db, &self.thread_id)
+            .await
+            .map_err(conversion)?;
+        set_version(db, 10).await
+    }
+}
+
 struct ProducerPayloads {
     thread_id: String,
 }
@@ -331,7 +362,10 @@ impl MigrationTrait for RetireOrdinals {
         validate_tables(db).await.map_err(conversion)?;
         db.execute_unprepared("DROP TABLE IF EXISTS history_ordinals")
             .await?;
-        set_version(db, 9).await
+        if version(db).await? < 9 {
+            set_version(db, 9).await?;
+        }
+        Ok(())
     }
 }
 

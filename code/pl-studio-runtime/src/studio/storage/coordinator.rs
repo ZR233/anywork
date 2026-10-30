@@ -26,13 +26,20 @@ pub(crate) struct ThreadPersistenceMetrics {
     pub(crate) state_durable_revision: u64,
     pub(crate) history_admitted_sequence: u64,
     pub(crate) history_durable_sequence: u64,
-    pub(crate) calls_admitted_sequence: u64,
-    pub(crate) calls_durable_sequence: u64,
     pub(crate) pending_operations: u64,
     pub(crate) pending_bytes: u64,
     pub(crate) in_flight_bytes: u64,
     pub(crate) oldest_pending_age_millis: Option<u64>,
     pub(crate) pressure_paused: bool,
+}
+
+/// One owner's absolute Thread state and the call-queue observation captured with it.
+pub(crate) struct ThreadPersistenceReport {
+    pub(crate) pending: Vec<u64>,
+    pub(crate) pending_checkpoint: bool,
+    pub(crate) error: Option<String>,
+    pub(crate) metrics: ThreadPersistenceMetrics,
+    pub(crate) calls: CallsQueueMetrics,
 }
 
 /// Process-wide persistence pressure plus the per-Thread watermarks behind it.
@@ -49,9 +56,9 @@ pub(crate) struct ThreadPersistenceSnapshot {
     pub(crate) pressure_paused: bool,
     pub(crate) threads: Vec<pl_protocol::ThreadPersistenceSnapshot>,
     /// Newest call-write ticket admitted by the global call recorder.
-    pub(crate) calls_admitted_sequence: u64,
-    /// Newest call-write ticket the global call recorder made durable.
-    pub(crate) calls_durable_sequence: u64,
+    pub(crate) calls_admitted_ticket: u64,
+    /// Newest call-write ticket processed, including explicit rejection; not proof of durability.
+    pub(crate) calls_processed_ticket: u64,
     /// Call mutations still queued in the global recorder.
     pub(crate) calls_pending_operations: u64,
     /// Encoded bytes of the call mutations still queued.
@@ -73,8 +80,8 @@ pub(crate) struct ThreadPersistenceSnapshot {
 /// The call recorder is a single global writer, so any Thread's writer reports the same values.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct CallsQueueMetrics {
-    pub(crate) admitted_sequence: u64,
-    pub(crate) durable_sequence: u64,
+    pub(crate) admitted_ticket: u64,
+    pub(crate) processed_ticket: u64,
     pub(crate) pending_operations: u64,
     pub(crate) pending_bytes: u64,
     pub(crate) in_flight_bytes: u64,
@@ -87,7 +94,7 @@ pub(crate) struct CallsQueueMetrics {
 /// Watermarks reported by one per-Thread writer incarnation.
 #[derive(Debug, Clone, Default)]
 struct IncarnationStatus {
-    /// Admitted effects this incarnation still owes an ordered history/calls write.
+    /// Admitted effects this incarnation still owes an ordered history write.
     pending: BTreeMap<u64, ()>,
     /// Whether this incarnation still owes the publication of a retained checkpoint.
     pending_checkpoint: bool,
@@ -148,6 +155,8 @@ struct ThreadStatus {
 #[derive(Debug)]
 struct Inner {
     #[cfg(test)]
+    aggregate_count: AtomicU64,
+    #[cfg(test)]
     release_gate: Mutex<
         Option<(
             tokio::sync::oneshot::Sender<()>,
@@ -200,6 +209,8 @@ impl Default for ThreadPersistenceCoordinator {
         let (state, _) = watch::channel(ThreadPersistenceSnapshot::default());
         let (capacity, _) = watch::channel(0);
         Self(Arc::new(Inner {
+            #[cfg(test)]
+            aggregate_count: AtomicU64::new(0),
             #[cfg(test)]
             release_gate: Mutex::new(None),
             threads: Mutex::new(BTreeMap::new()),
@@ -459,15 +470,7 @@ impl ThreadPersistenceCoordinator {
         }
     }
 
-    pub(crate) fn update(
-        &self,
-        thread_id: &str,
-        owner: usize,
-        pending: impl IntoIterator<Item = u64>,
-        pending_checkpoint: bool,
-        error: Option<String>,
-        metrics: ThreadPersistenceMetrics,
-    ) {
+    pub(crate) fn report(&self, thread_id: &str, owner: usize, report: ThreadPersistenceReport) {
         {
             let mut threads = self
                 .0
@@ -483,10 +486,14 @@ impl ThreadPersistenceCoordinator {
             let Some(incarnation) = status.incarnations.get_mut(&owner) else {
                 return;
             };
-            incarnation.pending = pending.into_iter().map(|sequence| (sequence, ())).collect();
-            incarnation.pending_checkpoint = pending_checkpoint;
-            incarnation.error = error;
-            incarnation.metrics = metrics;
+            incarnation.pending = report
+                .pending
+                .into_iter()
+                .map(|sequence| (sequence, ()))
+                .collect();
+            incarnation.pending_checkpoint = report.pending_checkpoint;
+            incarnation.error = report.error;
+            incarnation.metrics = report.metrics;
             // A cancelled initializer has not adopted a predecessor's obligations merely by
             // reserving an identity. Retire its stopped predecessor only after a real queue report
             // proves that every owed fact is either adopted by this incarnation or already durable.
@@ -510,6 +517,13 @@ impl ThreadPersistenceCoordinator {
             for id in covered {
                 status.incarnations.remove(&id);
             }
+            // Keep the established threads -> calls lock order. Do not publish a first snapshot
+            // containing this call-queue observation but the Thread's previous watermarks.
+            *self
+                .0
+                .calls
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = report.calls;
         }
         self.refresh();
     }
@@ -540,7 +554,7 @@ impl ThreadPersistenceCoordinator {
                 status.channel = Arc::new(status.channel.next_storage_channel());
             }
             anyhow::ensure!(!status.channel.is_stopping(), "history writer is stopping");
-            // Queue adoption is confirmed by update(), not by this preparation reservation.
+            // Queue adoption is confirmed by report(), not by this preparation reservation.
             let superseded: Vec<usize> = status
                 .incarnations
                 .iter()
@@ -809,8 +823,8 @@ impl ThreadPersistenceCoordinator {
             }
             let queue = self.queue_snapshot();
             tracing::debug!(
-                calls_admitted = snapshot.calls_admitted_sequence,
-                calls_durable = snapshot.calls_durable_sequence,
+                calls_admitted = snapshot.calls_admitted_ticket,
+                calls_processed = snapshot.calls_processed_ticket,
                 calls_oldest_pending_age_millis = ?snapshot.calls_oldest_pending_age_millis,
                 pending_operations = queue.pending_operations,
                 pending_bytes = queue.pending_bytes,
@@ -829,6 +843,8 @@ impl ThreadPersistenceCoordinator {
 
     /// Re-aggregates the process-wide observation from the per-Thread status and recovery map.
     fn refresh(&self) {
+        #[cfg(test)]
+        self.0.aggregate_count.fetch_add(1, Ordering::Relaxed);
         let snapshot = {
             let threads = self
                 .0
@@ -880,8 +896,8 @@ fn aggregate(
     // 显式恢复诊断暴露，不升级为进程级阻塞错误。
     let recovery = crate::studio::storage::state::checkpoint_recovery_snapshot();
     let mut snapshot = ThreadPersistenceSnapshot {
-        calls_admitted_sequence: calls.admitted_sequence,
-        calls_durable_sequence: calls.durable_sequence,
+        calls_admitted_ticket: calls.admitted_ticket,
+        calls_processed_ticket: calls.processed_ticket,
         calls_pending_operations: calls.pending_operations,
         calls_pending_bytes: calls.pending_bytes,
         calls_in_flight_bytes: calls.in_flight_bytes,
@@ -948,8 +964,6 @@ fn aggregate(
                     state_durable_revision: live.then_some(metrics.state_durable_revision),
                     history_admitted_sequence: live.then_some(metrics.history_admitted_sequence),
                     history_durable_sequence: live.then_some(metrics.history_durable_sequence),
-                    calls_admitted_sequence: live.then_some(metrics.calls_admitted_sequence),
-                    calls_durable_sequence: live.then_some(metrics.calls_durable_sequence),
                     pending_operations: metrics.pending_operations,
                     pending_bytes: metrics.pending_bytes,
                     oldest_pending_age_millis: metrics.oldest_pending_age_millis,
@@ -978,4 +992,62 @@ fn aggregate(
     // 会让与之无关的 `wait_for_drain`（runtime shutdown/drain）因别人的恢复诊断失败，
     // 而真实 writer 失败仍通过各 incarnation 的 `failure()` 照常阻断 drain。
     snapshot
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn joint_report_publishes_one_coherent_owned_snapshot() -> Result<()> {
+        let coordinator = ThreadPersistenceCoordinator::default();
+        let _registration = coordinator.claim("joint-report", 7)?;
+        let before = coordinator.0.aggregate_count.load(Ordering::Relaxed);
+        let report = || ThreadPersistenceReport {
+            pending: vec![3],
+            pending_checkpoint: false,
+            error: Some("retained failure".into()),
+            metrics: ThreadPersistenceMetrics {
+                fault_generation: 4,
+                history_admitted_sequence: 3,
+                history_durable_sequence: 2,
+                pending_operations: 1,
+                pending_bytes: 17,
+                ..Default::default()
+            },
+            calls: CallsQueueMetrics {
+                admitted_ticket: 9,
+                processed_ticket: 8,
+                pending_operations: 1,
+                pending_bytes: 23,
+                ..Default::default()
+            },
+        };
+        coordinator.report("joint-report", 7, report());
+        assert_eq!(
+            coordinator.0.aggregate_count.load(Ordering::Relaxed),
+            before + 1
+        );
+        let snapshot = coordinator.snapshot();
+        assert_eq!(snapshot.pending_commits, 1);
+        assert_eq!(snapshot.pending_bytes, 17);
+        assert_eq!(snapshot.calls_admitted_ticket, 9);
+        assert_eq!(snapshot.calls_processed_ticket, 8);
+        assert_eq!(snapshot.calls_pending_bytes, 23);
+        let thread = &snapshot.threads[0];
+        assert_eq!(thread.history_admitted_sequence, Some(3));
+        assert_eq!(thread.history_durable_sequence, Some(2));
+        assert_eq!(thread.last_error.as_deref(), Some("retained failure"));
+
+        // A stale/unregistered incarnation owns neither these watermarks nor a global report.
+        let mut stale = report();
+        stale.calls.admitted_ticket = 999;
+        coordinator.report("joint-report", 8, stale);
+        assert_eq!(coordinator.snapshot(), snapshot);
+        assert_eq!(
+            coordinator.0.aggregate_count.load(Ordering::Relaxed),
+            before + 1
+        );
+        Ok(())
+    }
 }

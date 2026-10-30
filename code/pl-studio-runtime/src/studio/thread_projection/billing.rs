@@ -11,8 +11,8 @@ pub(crate) struct AuxiliaryBillingReceipt {
 }
 
 impl AuxiliaryBillingReceipt {
-    /// v3 adds explicit no-charge accounting, without reinterpreting older Disabled records.
-    pub(crate) const VERSION: u32 = 3;
+    /// v4 retains explicit first-content provenance without inventing historical timing.
+    pub(crate) const VERSION: u32 = 4;
 
     pub(crate) fn into_payload(self) -> Result<pl_core::context::OpaquePayload> {
         Ok(pl_core::context::OpaquePayload::new(
@@ -23,6 +23,7 @@ impl AuxiliaryBillingReceipt {
     }
 }
 
+#[derive(Debug, Clone)]
 pub(in crate::studio) struct BillingFact {
     pub status: super::super::storage::calls::CallStatus,
     pub record: InferenceBillingRecord,
@@ -76,7 +77,7 @@ pub(in crate::studio) fn billing_facts(commit: &ThreadEffectBatch) -> Result<Vec
                 prompt_cache_policy: None,
                 prefix_changed_reason: None,
                 orchestration: Default::default(),
-                timing: None,
+                timing: receipt.timing,
                 recorded_at: commit.committed_at,
             };
             facts.push(BillingFact {
@@ -99,6 +100,9 @@ pub(in crate::studio) fn billing_facts(commit: &ThreadEffectBatch) -> Result<Vec
                 AttemptOutcome::Cancelled { .. } => {
                     super::super::storage::calls::CallStatus::Cancelled
                 }
+                AttemptOutcome::Interrupted => {
+                    super::super::storage::calls::CallStatus::Interrupted
+                }
                 _ => super::super::storage::calls::CallStatus::Failed,
             },
             auxiliary: false,
@@ -112,14 +116,6 @@ fn attempt_billing(
     recorded_at: i64,
 ) -> Result<Option<InferenceBillingRecord>> {
     pl_model::runtime::model_attempt_billing(attempt, recorded_at).map_err(anyhow::Error::new)
-}
-
-/// Current-only auxiliary receipt projection boundary.
-pub(super) fn decode_auxiliary_receipt_for_projection(
-    version: u32,
-    content: &str,
-) -> Result<AuxiliaryBillingReceipt> {
-    decode_auxiliary_receipt(version, content)
 }
 
 fn decode_auxiliary_receipt(version: u32, content: &str) -> Result<AuxiliaryBillingReceipt> {

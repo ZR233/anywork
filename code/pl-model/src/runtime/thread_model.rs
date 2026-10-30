@@ -26,9 +26,11 @@ mod media;
 pub mod migration;
 pub(crate) mod progress;
 mod receipt;
+pub(super) use codec::FRAME_VERSION;
 pub use media::{
     ToolAttachment, attachment_content, decode_attachment, validate_attachment_content,
 };
+pub(super) use receipt::{FAILURE_RECEIPT_VERSION, REQUEST_RECEIPT_VERSION};
 pub use receipt::{
     ModelCallBinding, ModelFailureReceipt, ModelRequestReceipt, ModelResponseReceipt,
     model_failure_receipt, model_request_receipt, model_response_receipt,
@@ -355,7 +357,7 @@ enum AdapterError {
     Content(&'static str),
 }
 
-fn failure(
+pub(super) fn failure(
     kind: ModelFailureKind,
     source: impl std::error::Error + Send + Sync + 'static,
 ) -> ModelError {
@@ -368,12 +370,5 @@ fn failure(
 }
 
 fn usage(report: &pl_protocol::UsageReport) -> ModelUsage {
-    ModelUsage {
-        input_tokens: report.input_tokens,
-        output_tokens: report.output_tokens,
-        cache_read_tokens: report.cache_read_tokens,
-        cache_write_tokens: report.cache_write_tokens,
-        reasoning_tokens: report.reasoning_tokens,
-        total_tokens: report.total_tokens,
-    }
+    crate::model::usage::model_usage(report)
 }

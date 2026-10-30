@@ -74,7 +74,9 @@ pub(super) async fn migrate_context_sources(
     // original checkpoint envelope (including its format number) belongs to CheckpointV5.
     let mut context_view: serde_json::Value = serde_json::from_str(&payload)?;
     context_view["state"]["context"]["records"] = serde_json::to_value(&records)?;
-    let mut checkpoint: ThreadCheckpoint = if context_view["schemaVersion"].as_u64() == Some(5) {
+    let mut checkpoint: ThreadCheckpoint = if context_view["schemaVersion"].as_u64()
+        == Some(u64::from(ThreadCheckpoint::SCHEMA_VERSION))
+    {
         serde_json::from_value(context_view)?
     } else {
         ThreadCheckpoint::decode_legacy(&serde_json::to_string(&context_view)?)?

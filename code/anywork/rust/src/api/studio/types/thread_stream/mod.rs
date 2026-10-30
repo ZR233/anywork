@@ -367,6 +367,7 @@ pub enum BridgePlanPhase {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct BridgeThreadRuntimeUsage {
+    pub diagnostics: BridgeThreadUsageDiagnostics,
     pub has_incomplete_usage: bool,
     pub model_id: String,
     pub context_window: Option<u64>,
@@ -393,6 +394,8 @@ pub struct BridgeThreadRuntimeUsage {
 /// FRB mirror of the canonical prompt cache effective-usage summary.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct BridgeCacheUsageSummary {
+    pub sample_count: u64,
+    pub legacy_sample_count_unknown: bool,
     pub input_tokens: u64,
     pub cache_read_tokens: u64,
     pub hit_rate: Option<f64>,
@@ -604,4 +607,143 @@ pub struct BridgeThreadMcpServerDescriptor {
     pub transport: String,
     pub endpoint: String,
     pub built_in: bool,
+}
+
+// Typed mirrors of canonical usage projections; no accounting rules live here.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum BridgeUsageReportStatus {
+    LegacyUnknown,
+    Missing,
+    Partial,
+    Reported,
+    Invalid,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum BridgeUsageTerminalStatus {
+    Succeeded,
+    Rejected,
+    Cancelled,
+    Failed,
+    Interrupted,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum BridgeUsageCounterField {
+    Input,
+    Output,
+    CacheRead,
+    CacheWrite,
+    Reasoning,
+    Total,
+    InferenceCount,
+    CachePair,
+    ThroughputPair,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum BridgeUsageGapReason {
+    Unreported,
+    Inconsistent,
+    Overflow,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum BridgeMetricAvailability {
+    Available,
+    NotCollected,
+    NoVisibleOutput,
+    MissingOutput,
+    ZeroOutput,
+    InvalidUsage,
+    InvalidTiming,
+    LegacyUnknown,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum BridgeFirstOutputSource {
+    Unobserved,
+    Incremental,
+    CompletedToolInput,
+    LegacyUnknown,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct BridgeUsageGapIssue {
+    pub field: BridgeUsageCounterField,
+    pub reason: BridgeUsageGapReason,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct BridgeUsageCallSnapshot {
+    pub thread_id: String,
+    pub call_id: String,
+    pub turn_id: Option<String>,
+    pub effect_sequence: u64,
+    pub observed_at: i64,
+    pub purpose: Option<String>,
+    pub outcome: BridgeUsageTerminalStatus,
+    pub status: BridgeUsageReportStatus,
+    pub usage: BridgeUsageReport,
+    pub issues: Vec<BridgeUsageGapIssue>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct BridgeUsageOutcomeCountSnapshot {
+    pub outcome: BridgeUsageTerminalStatus,
+    pub calls: u64,
+    pub incomplete_calls: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct BridgeUsagePurposeCountSnapshot {
+    pub purpose: Option<String>,
+    pub calls: u64,
+    pub incomplete_calls: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct BridgeUsageIssueCountSnapshot {
+    pub issue: BridgeUsageGapIssue,
+    pub calls: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct BridgeThreadUsageDiagnostics {
+    pub incomplete_calls: u64,
+    pub missing_calls: u64,
+    pub partial_calls: u64,
+    pub invalid_calls: u64,
+    pub overflow_calls: u64,
+    pub by_outcome: Vec<BridgeUsageOutcomeCountSnapshot>,
+    pub by_purpose: Vec<BridgeUsagePurposeCountSnapshot>,
+    pub other_purpose_calls: u64,
+    pub by_issue: Vec<BridgeUsageIssueCountSnapshot>,
+    pub recent_gaps: Vec<BridgeUsageCallSnapshot>,
+    pub latest_call: Option<BridgeUsageCallSnapshot>,
+    pub legacy_unknown: bool,
+    pub counts_overflowed: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct BridgeUsageReport {
+    pub input_tokens: Option<u64>,
+    pub output_tokens: Option<u64>,
+    pub cache_read_tokens: Option<u64>,
+    pub cache_write_tokens: Option<u64>,
+    pub reasoning_tokens: Option<u64>,
+    pub total_tokens: Option<u64>,
 }

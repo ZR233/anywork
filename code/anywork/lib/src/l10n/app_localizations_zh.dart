@@ -1535,7 +1535,7 @@ class AppLocalizationsZh extends AppLocalizations {
   String get statisticsReasoningEffortUnspecified => '未指定/未记录';
 
   @override
-  String get statisticsSpeed => '输出 TPS（含首字等待）';
+  String get statisticsSpeed => '输出 TPS（含首内容等待）';
 
   @override
   String get statisticsSamples => '样本数';
@@ -1544,7 +1544,7 @@ class AppLocalizationsZh extends AppLocalizations {
   String get statisticsOutputTokens => '输出词元数';
 
   @override
-  String get statisticsAverageTtft => '平均首字';
+  String get statisticsAverageTtft => '平均首内容';
 
   @override
   String get statisticsAverageResponse => '平均总响应';
@@ -1553,19 +1553,19 @@ class AppLocalizationsZh extends AppLocalizations {
   String get statisticsCompletedAt => '完成时间';
 
   @override
-  String get statisticsDecode => '首字后耗时';
+  String get statisticsDecode => '首内容后耗时';
 
   @override
   String get statisticsTotalResponse => '总响应耗时';
 
   @override
   String statisticsTtftSampleCount(int count) {
-    return '$count 个首字样本';
+    return '$count 个首内容样本';
   }
 
   @override
   String get settingsStatisticsThroughputNote =>
-      '输出 TPS = 供应商确认的输出词元 × 1000 ÷ 总响应耗时（含首字等待）。总响应从产生结果的请求开始到归一化终态到达为止，不含失败重试、退避、工具执行与终态后的收集或保存；首字是首个非空文本、推理或工具输入增量，输出可含推理词元且不重复相加。首字后耗时只是诊断，不是硬件解码时间。旧统计口径的样本已丢弃，原始调用与账单保留。';
+      '输出 TPS = 供应商报告的输出词元 × 1000 ÷ 总响应耗时（含首内容等待）。总响应从产生结果的请求开始到归一化终态到达为止，不含失败重试、退避、工具执行与终态后的收集或保存。首内容是客户端首次观测到的非空文本、推理、工具输入增量或完整工具参数；每次调用单独标明来源，不宣称是供应商首 token。输出可含推理词元且不重复相加。首内容后耗时只是诊断，可为 0，不是硬件解码时间。历史中缺失的计数、来源与计时保持未知，不按 0 补齐。';
 
   @override
   String get statusTurnQueued => '排队中';
@@ -5547,4 +5547,179 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get recoveryNoAvailableActions => '当前无可用操作';
+
+  @override
+  String get usagePurpose => '用途';
+
+  @override
+  String get usageUnknown => '未知';
+
+  @override
+  String get usageThreadId => '线程';
+
+  @override
+  String get usageCallId => '调用';
+
+  @override
+  String get usageFirstOutput => '首内容来源';
+
+  @override
+  String get usageSourceUnobserved => '未观测到可见内容';
+
+  @override
+  String get usageSourceIncremental => '增量内容';
+
+  @override
+  String get usageSourceCompletedToolInput => '首次完整工具参数观测';
+
+  @override
+  String get usageSourceLegacyUnknown => '历史来源未知';
+
+  @override
+  String get usageFirstOutputNote =>
+      '完成项表示客户端首次观测到完整工具参数，并非供应商首 token；decode 耗时可为 0。';
+
+  @override
+  String get usageMetricAvailable => '可用';
+
+  @override
+  String get usageMetricNotCollected => '未采集计时';
+
+  @override
+  String get usageMetricNoVisibleOutput => '未观测到可见输出';
+
+  @override
+  String get usageMetricMissingOutput => '输出用量未知';
+
+  @override
+  String get usageMetricZeroOutput => '报告输出为 0';
+
+  @override
+  String get usageMetricInvalidUsage => '用量矛盾或溢出';
+
+  @override
+  String get usageMetricInvalidTiming => '计时无效';
+
+  @override
+  String get usageMetricLegacyUnknown => '历史计时来源未知';
+
+  @override
+  String get usageStatusLegacyUnknown => '历史用量状态未知';
+
+  @override
+  String get usageStatusMissing => '收束时未保留到用量';
+
+  @override
+  String get usageStatusPartial => '仅保留部分用量';
+
+  @override
+  String get usageStatusReported => '用量完整';
+
+  @override
+  String get usageStatusInvalid => '用量无效';
+
+  @override
+  String get usageCumulativeTitle => '累计用量覆盖';
+
+  @override
+  String get usageLatestTitle => '最近主模型调用';
+
+  @override
+  String get usageIncompleteCalls => '不完整调用数';
+
+  @override
+  String get usageMissingCalls => '缺失用量调用数';
+
+  @override
+  String get usagePartialCalls => '部分用量调用数';
+
+  @override
+  String get usageInvalidCalls => '无效用量调用数';
+
+  @override
+  String get usageOverflowCalls => '溢出调用数';
+
+  @override
+  String get usageHistoryUnknown => '旧历史的调用次数、用量或用途来源不可证明；不等于 0。';
+
+  @override
+  String get usageCountsOverflowed => '累计次数已溢出，显示值不是完整总数。';
+
+  @override
+  String get usageRecentGapsTitle => '最近缺口';
+
+  @override
+  String get usageRecentGaps => '最近缺口（最多 8 条，并非全部历史）';
+
+  @override
+  String get usageCumulativeNote => '累计缺口不会被后续完整调用消除；最近调用的完整性单独展示。';
+
+  @override
+  String get usageCancelledNote => '取消调用仅表示收束时未保留到相应用量，不能断言供应商未发送。';
+
+  @override
+  String get usageCacheCoverage => '缓存覆盖样本数（升级后）';
+
+  @override
+  String get usageCacheCoverageNote => '只统计满足缓存累计条件的样本；旧缓存累计量对应的样本数不可由升级后计数反推。';
+
+  @override
+  String get usageCacheLegacyUnknown => '旧缓存样本数未知，当前计数仅从升级后开始。';
+
+  @override
+  String get usageStatisticsGapNote => '统计同步缺口与累计用量未知是不同状态；同步恢复不代表历史用量完整。';
+
+  @override
+  String get usageOutcomeSucceeded => '成功';
+
+  @override
+  String get usageOutcomeRejected => '拒绝';
+
+  @override
+  String get usageOutcomeCancelled => '取消';
+
+  @override
+  String get usageOutcomeFailed => '失败';
+
+  @override
+  String get usageOutcomeInterrupted => '中断';
+
+  @override
+  String get usageOtherPurposeCalls => '其他用途调用数';
+
+  @override
+  String get usageGapUnreported => '未保留';
+
+  @override
+  String get usageGapInconsistent => '矛盾';
+
+  @override
+  String get usageGapOverflow => '溢出';
+
+  @override
+  String get usageFieldInput => '输入';
+
+  @override
+  String get usageFieldOutput => '输出';
+
+  @override
+  String get usageFieldCacheRead => '缓存读取';
+
+  @override
+  String get usageFieldCacheWrite => '缓存写入';
+
+  @override
+  String get usageFieldReasoning => '推理';
+
+  @override
+  String get usageFieldTotal => '总量';
+
+  @override
+  String get usageFieldInferenceCount => '调用次数';
+
+  @override
+  String get usageFieldCachePair => '缓存计数对';
+
+  @override
+  String get usageFieldThroughputPair => '吞吐计数对';
 }

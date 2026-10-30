@@ -122,8 +122,13 @@ async fn persist(store: &HistoryStore, state: ThreadSnapshot, append: bool) -> R
                 delivery_repairs: &[],
                 attempt: None,
             },
+            crate::studio::storage::history::AccountingCommit {
+                facts: &crate::studio::thread_projection::PreparedAccounting::prepare(&effect)?,
+                material_changed: true,
+            },
         )
         .await
+        .map(|_| ())
 }
 
 #[tokio::test]
@@ -1532,6 +1537,10 @@ async fn mode_binding_recovery_replaces_unknown_snapshot_and_keeps_initial_conte
                 delivery_repairs: &[],
                 attempt: None,
             },
+            crate::studio::storage::history::AccountingCommit {
+                facts: &crate::studio::thread_projection::PreparedAccounting::prepare(&effect)?,
+                material_changed: true,
+            },
         )
         .await?;
     drop(history);
@@ -2721,7 +2730,7 @@ async fn registered_history(
     store.history_for(&thread.project_id, &thread.id).await
 }
 
-async fn downgrade_checkpoint_to_schema_four(path: &std::path::Path) -> Result<String> {
+async fn downgrade_checkpoint_to_schema_five(path: &std::path::Path) -> Result<String> {
     use sea_orm::{DatabaseBackend, Statement};
     let db = raw_database(path).await?;
     let row = db
@@ -2733,11 +2742,8 @@ async fn downgrade_checkpoint_to_schema_four(path: &std::path::Path) -> Result<S
         .context("saved checkpoint")?;
     let mut legacy: serde_json::Value =
         serde_json::from_str(&row.try_get::<String>("", "payload")?)?;
-    legacy["schemaVersion"] = serde_json::json!(4);
-    let saved = legacy["state"].as_object_mut().context("saved state")?;
-    for field in ["execution", "executionSequence", "continuation"] {
-        saved.remove(field);
-    }
+    super::history::legacy_usage::flatten(&mut legacy);
+    legacy["schemaVersion"] = serde_json::json!(5);
     let encoded = serde_json::to_string(&legacy)?;
     db.execute_raw(Statement::from_sql_and_values(
         DatabaseBackend::Sqlite,
@@ -2749,7 +2755,7 @@ async fn downgrade_checkpoint_to_schema_four(path: &std::path::Path) -> Result<S
     ))
     .await?;
     db.execute_unprepared(
-        "DROP TABLE IF EXISTS seaql_migrations; UPDATE history_meta SET schema_version=8",
+        "DROP TABLE IF EXISTS seaql_migrations; UPDATE history_meta SET schema_version=9",
     )
     .await?;
     db.close().await?;
@@ -2787,7 +2793,7 @@ async fn checkpoint_envelope_upgrade_is_atomic_and_preserves_v2_history() -> Res
     let before = history.checkpoint().await?.context("saved checkpoint")?;
     drop(history);
 
-    let encoded = downgrade_checkpoint_to_schema_four(&path).await?;
+    let encoded = downgrade_checkpoint_to_schema_five(&path).await?;
     let db = raw_database(&path).await?;
     db.execute_unprepared(
         "CREATE TRIGGER reject_envelope_upgrade BEFORE UPDATE ON session_checkpoint
@@ -2815,7 +2821,7 @@ async fn checkpoint_envelope_upgrade_is_atomic_and_preserves_v2_history() -> Res
     let row = db.query_one_raw(Statement::from_string(DatabaseBackend::Sqlite,
         "SELECT schema_version,payload FROM history_meta,session_checkpoint WHERE history_meta.id=1 AND session_checkpoint.id=1"))
         .await?.context("preserved source")?;
-    assert_eq!(row.try_get::<i64>("", "schema_version")?, 8);
+    assert_eq!(row.try_get::<i64>("", "schema_version")?, 9);
     assert_eq!(row.try_get::<String>("", "payload")?, encoded);
     assert!(db.query_one_raw(Statement::from_string(DatabaseBackend::Sqlite,
         "SELECT version FROM seaql_migrations WHERE version='m20261026_000006_history_checkpoint_v5'"))
@@ -2830,9 +2836,11 @@ async fn checkpoint_envelope_upgrade_is_atomic_and_preserves_v2_history() -> Res
         .checkpoint()
         .await?
         .context("upgraded checkpoint")?;
+    let mut expected = before.clone();
+    expected.state.usage_summary.diagnostics.legacy_unknown = true;
     assert_eq!(
         serde_json::to_value(&after)?,
-        serde_json::to_value(&before)?
+        serde_json::to_value(&expected)?
     );
     let bytes = serde_json::to_vec(&after)?;
     reopened.prepare_activation().await?;
@@ -2854,7 +2862,7 @@ async fn checkpoint_envelope_upgrade_is_atomic_and_preserves_v2_history() -> Res
                 .context("cold checkpoint after upgrade")?
                 .0
         )?,
-        serde_json::to_value(before)?
+        serde_json::to_value(expected)?
     );
     Ok(())
 }
@@ -2929,13 +2937,13 @@ async fn cold_child_open_and_parent_recovery_prepare_checkpoint_envelopes() -> R
         persist(&history, saved_state(BTreeMap::new()), true).await?;
         let path = store.session_paths(&project.id, id)?.history_database();
         drop(history);
-        downgrade_checkpoint_to_schema_four(&path).await?;
+        downgrade_checkpoint_to_schema_five(&path).await?;
         children.push((child, path));
     }
     let root_path = store
         .session_paths(&project.id, &root.id)?
         .history_database();
-    downgrade_checkpoint_to_schema_four(&root_path).await?;
+    downgrade_checkpoint_to_schema_five(&root_path).await?;
     drop(store);
     let runtime = crate::StudioRuntime::initialize(options()).await?;
     let result = async {
@@ -3556,8 +3564,8 @@ async fn legacy_native_compaction_receipt_upgrades_sources_through_the_history_u
         receipt.revision,
         before.state.extensions[crate::compaction::LATEST_RECEIPT].revision
     );
-    assert_eq!(receipt.payload.version(), 3);
-    let decoded = crate::compaction::decode_receipt(3, receipt.payload.content())?;
+    assert_eq!(receipt.payload.version(), 4);
+    let decoded = crate::compaction::decode_receipt(4, receipt.payload.content())?;
     assert_eq!(decoded.inference_id, "compact-call");
     assert_eq!(upgraded.watermark().await?, 1);
 
@@ -3572,7 +3580,7 @@ async fn legacy_native_compaction_receipt_upgrades_sources_through_the_history_u
         anyhow::bail!("migrated compaction record is not opaque");
     };
     assert_eq!(payload.format(), "pl.model.compaction");
-    assert_eq!(payload.version(), 3, "原生 checkpoint 升级到当前结构");
+    assert_eq!(payload.version(), 4, "原生 checkpoint 升级到当前结构");
     let native: serde_json::Value = serde_json::from_str(payload.content())?;
     assert_eq!(native["binding"]["accountId"], "deepseek");
     assert_eq!(native["binding"]["modelId"], "deepseek-flash");
@@ -3865,7 +3873,7 @@ fn finish_shared_history_drive<T>(drive: Result<T>, cleanup: Result<()>) -> Resu
 }
 
 /// All Studio-owned database families reject unknown future formats and migration names before
-/// a writer changes the SQLite file. This also covers takeover of a current pre-framework file.
+/// a writer changes the SQLite file. This also covers takeover of a pre-framework file.
 #[tokio::test]
 async fn studio_databases_adopt_current_files_and_refuse_future_writes() -> Result<()> {
     use crate::studio::{StudioStore, paths::StudioPaths, storage::calls::CallsStore};
@@ -3897,6 +3905,15 @@ async fn studio_databases_adopt_current_files_and_refuse_future_writes() -> Resu
                 }
                 if generation == 0 {
                     let db = raw_database(&path).await?;
+                    if family == "calls" {
+                        // v9 exists only with migration bookkeeping. Model the published v8
+                        // pre-framework shape instead of treating lost v9 bookkeeping as legacy.
+                        db.execute_unprepared(
+                            "ALTER TABLE legacy_call_fences RENAME TO call_watermarks;
+                             UPDATE calls_meta SET schema_version=8 WHERE id=1;",
+                        )
+                        .await?;
+                    }
                     db.execute_unprepared("DROP TABLE seaql_migrations").await?;
                     db.close().await?;
                 }
@@ -3924,7 +3941,7 @@ async fn studio_databases_adopt_current_files_and_refuse_future_writes() -> Resu
             } else if fault == "checkpoint" {
                 let mut checkpoint =
                     ThreadCheckpoint::capture("adoption".into(), 0, ThreadSnapshot::default());
-                checkpoint.schema_version = 6;
+                checkpoint.schema_version = ThreadCheckpoint::SCHEMA_VERSION + 1;
                 let payload = serde_json::to_string(&checkpoint)?;
                 db.execute_unprepared("DROP TABLE seaql_migrations").await?;
                 db.execute_raw(Statement::from_sql_and_values(DatabaseBackend::Sqlite,

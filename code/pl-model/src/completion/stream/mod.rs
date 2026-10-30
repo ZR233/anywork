@@ -40,6 +40,7 @@ pub(crate) struct StreamCollectContext<'a> {
     pub(crate) trace_sink: Option<Arc<dyn TraceEventSink>>,
     pub(crate) cancellation: Option<tokio_util::sync::CancellationToken>,
     pub(crate) model_observation: Option<pl_protocol::InferenceModelObservation>,
+    pub(crate) on_stream_end: &'a (dyn Fn() + Send + Sync),
 }
 
 pub(crate) async fn collect_completion_event_stream_with_idle_timeout(
@@ -54,6 +55,7 @@ pub(crate) async fn collect_completion_event_stream_with_idle_timeout(
         trace_sink,
         cancellation,
         model_observation,
+        on_stream_end,
     } = context;
     let mut accumulator =
         StreamCompletionAccumulator::with_model_observation(trace, trace_sink, model_observation);
@@ -70,6 +72,7 @@ pub(crate) async fn collect_completion_event_stream_with_idle_timeout(
                 tokio::select! {
                     event = next_event => event,
                     _ = token.cancelled() => {
+                        on_stream_end();
                         accumulator.cancel_attempt("model invocation cancelled", event_tx);
                         let mut failure = crate::completion::CompletionFailure::cancelled(
                             PureError::LlmError("model invocation cancelled".to_string()),
@@ -84,8 +87,12 @@ pub(crate) async fn collect_completion_event_stream_with_idle_timeout(
         };
         let event = match next_event {
             Ok(Some(event)) => event,
-            Ok(None) => break,
+            Ok(None) => {
+                on_stream_end();
+                break;
+            }
             Err(_) => {
+                on_stream_end();
                 let error = PureError::transient_model_transport(
                     "stream error: idle timeout waiting for provider event",
                 );
@@ -93,6 +100,7 @@ pub(crate) async fn collect_completion_event_stream_with_idle_timeout(
                 return Err(crate::completion::CompletionFailure {
                     source: Box::new(error),
                     accounting: Box::new(accumulator.accounting()),
+                    timing: None,
                     model_observation: accumulator.model_observation().map(Box::new),
                     presentation_items: accumulator.take_presentation_items(),
                     partial_progress: None,
@@ -103,10 +111,12 @@ pub(crate) async fn collect_completion_event_stream_with_idle_timeout(
         let event = match event {
             Ok(event) => event,
             Err(error) => {
+                on_stream_end();
                 accumulator.fail_attempt(&error, event_tx);
                 return Err(crate::completion::CompletionFailure {
                     source: Box::new(error),
                     accounting: Box::new(accumulator.accounting()),
+                    timing: None,
                     model_observation: accumulator.model_observation().map(Box::new),
                     presentation_items: accumulator.take_presentation_items(),
                     partial_progress: None,
@@ -115,10 +125,12 @@ pub(crate) async fn collect_completion_event_stream_with_idle_timeout(
             }
         };
         if let Err(error) = accumulator.apply(event, event_tx) {
+            on_stream_end();
             accumulator.fail_attempt(&error, event_tx);
             return Err(crate::completion::CompletionFailure {
                 source: Box::new(error),
                 accounting: Box::new(accumulator.accounting()),
+                timing: None,
                 model_observation: accumulator.model_observation().map(Box::new),
                 presentation_items: accumulator.take_presentation_items(),
                 partial_progress: None,
@@ -134,6 +146,7 @@ pub(crate) async fn collect_completion_event_stream_with_idle_timeout(
         .map_err(|source| crate::completion::CompletionFailure {
             source: Box::new(source),
             accounting: Box::new(accounting),
+            timing: None,
             model_observation: model_observation.map(Box::new),
             presentation_items: accumulator.take_presentation_items(),
             partial_progress: None,

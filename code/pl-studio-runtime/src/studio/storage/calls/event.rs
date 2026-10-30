@@ -9,7 +9,8 @@ use super::*;
 ///
 /// v2 把账号/模型接入身份改为 `accountId`/`modelId`/`effort`。v1 行只在读取边界按
 /// 已知字段转换后交给当前类型，不做全局文本替换，也不改写既有日志正文。
-pub(super) const CALL_LOG_RECORD_VERSION: u32 = 2;
+/// v3 保存 core 用量状态与首次内容观测来源；v1/v2 的轻量投影在读取边界明确标为历史未知。
+pub(super) const CALL_LOG_RECORD_VERSION: u32 = 3;
 /// 单条记录的最大字节数；超过即显式 `truncated`，绝不静默截断正文。
 pub(super) const CALL_LOG_RECORD_MAX_BYTES: usize = 1024 * 1024;
 
@@ -36,6 +37,19 @@ pub(super) struct CallUsageRecord {
     pub(super) total_tokens: Option<u64>,
 }
 
+impl CallUsageRecord {
+    pub(super) fn report(&self) -> pl_protocol::UsageReport {
+        pl_protocol::UsageReport {
+            input_tokens: self.input_tokens,
+            output_tokens: self.output_tokens,
+            cache_read_tokens: self.cache_read_tokens,
+            cache_write_tokens: self.cache_write_tokens,
+            reasoning_tokens: self.reasoning_tokens,
+            total_tokens: self.total_tokens,
+        }
+    }
+}
+
 /// 当前统计口径的标识；旧记录没有该字段，解码后为 0，不会被当作当前口径样本。
 ///
 /// 口径从 decode 分母切换到含首字等待的总响应分母时递增一次。原始调用日志保留可读，
@@ -46,6 +60,8 @@ pub(super) const THROUGHPUT_EPOCH: u32 = 1;
 #[derive(Debug, Clone, Copy, Default, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct CallTimingRecord {
+    #[serde(default = "legacy_output_source")]
+    pub(super) first_output_source: pl_protocol::FirstOutputSource,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) ttft_millis: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -58,6 +74,7 @@ impl CallTimingRecord {
     /// 投影一次计时的原始事实。
     pub(super) fn measured(timing: pl_protocol::InferenceTiming) -> Self {
         Self {
+            first_output_source: timing.first_output_source,
             ttft_millis: timing.ttft_millis,
             decode_millis: timing.decode_millis,
             response_millis: Some(timing.response_millis),
@@ -71,6 +88,7 @@ impl CallTimingRecord {
         response_millis: Option<u64>,
     ) -> Self {
         Self {
+            first_output_source: pl_protocol::FirstOutputSource::LegacyUnknown,
             ttft_millis,
             decode_millis,
             response_millis,
@@ -79,11 +97,16 @@ impl CallTimingRecord {
 
     fn protocol_timing(self) -> pl_protocol::InferenceTiming {
         pl_protocol::InferenceTiming {
+            first_output_source: self.first_output_source,
             ttft_millis: self.ttft_millis,
             decode_millis: self.decode_millis,
             response_millis: self.response_millis.unwrap_or(0),
         }
     }
+}
+
+fn legacy_output_source() -> pl_protocol::FirstOutputSource {
+    pl_protocol::FirstOutputSource::LegacyUnknown
 }
 
 /// 一行版本化 JSONL 日志记录；也是队列事件的载荷。
@@ -123,6 +146,7 @@ pub(super) struct CallLogRecord {
     pub(super) effort: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) usage: Option<CallUsageRecord>,
+    pub(super) usage_status: Option<pl_core::usage::UsageStatus>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) cost: Option<RuntimeCostAmount>,
     #[serde(default, skip_serializing_if = "is_false")]
@@ -151,21 +175,38 @@ impl CallLogRecord {
     /// Speed is a derived, paired fact. Raw counters and timings remain in the log even when this
     /// validation rejects them for performance statistics.
     pub(super) fn throughput_sample(&self) -> Option<(u64, pl_protocol::InferenceTiming)> {
+        if self.version != CALL_LOG_RECORD_VERSION
+            || !self.is_current_throughput_epoch()
+            || self.status != CallStatus::Committed.as_str()
+            || self.usage_status == Some(pl_core::usage::UsageStatus::LegacyUnknown)
+        {
+            return None;
+        }
+        let analysis = pl_model::model::usage::analyze(&self.usage.as_ref()?.report());
+        self.throughput_sample_with_analysis(&analysis)
+    }
+
+    /// Product timing stays here; usage validity comes only from core analysis, never from the
+    /// serialized status alone. Recovery also rejects a raw/status pair that disagrees.
+    pub(super) fn throughput_sample_with_analysis(
+        &self,
+        analysis: &pl_core::usage::UsageAnalysis,
+    ) -> Option<(u64, pl_protocol::InferenceTiming)> {
         if self.status != CallStatus::Committed.as_str() || !self.is_current_throughput_epoch() {
             return None;
         }
         let usage = self.usage.as_ref()?;
-        let report = pl_protocol::UsageReport {
-            input_tokens: usage.input_tokens,
-            output_tokens: usage.output_tokens,
-            cache_read_tokens: usage.cache_read_tokens,
-            cache_write_tokens: usage.cache_write_tokens,
-            reasoning_tokens: usage.reasoning_tokens,
-            total_tokens: usage.total_tokens,
-        };
         let timing = self.timing?.protocol_timing();
-        timing
-            .throughput_output_tokens(&report)
+        if self.version != CALL_LOG_RECORD_VERSION
+            || self.usage_status != Some(analysis.status)
+            || analysis.status == pl_core::usage::UsageStatus::Invalid
+            || !timing.has_throughput_sample()
+        {
+            return None;
+        }
+        usage
+            .output_tokens
+            .filter(|tokens| *tokens > 0)
             .map(|output_tokens| (output_tokens, timing))
     }
 
@@ -192,6 +233,7 @@ impl CallLogRecord {
             reported_model: None,
             effort: None,
             usage: None,
+            usage_status: self.usage_status,
             cost: None,
             has_unpriced_usage: self.has_unpriced_usage,
             timing: None,
@@ -213,7 +255,7 @@ fn record_version() -> u32 {
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RawCallLogRecord {
-    #[serde(default = "record_version")]
+    #[serde(default = "legacy_record_version")]
     version: u32,
     #[serde(default)]
     kind: String,
@@ -254,6 +296,8 @@ struct RawCallLogRecord {
     #[serde(default)]
     usage: Option<CallUsageRecord>,
     #[serde(default)]
+    usage_status: Option<pl_core::usage::UsageStatus>,
+    #[serde(default)]
     cost: Option<RuntimeCostAmount>,
     #[serde(default)]
     has_unpriced_usage: bool,
@@ -279,6 +323,10 @@ struct RawCallLogRecord {
     /// v1 的推理强度（真实旧字段 `reasoningEffort`）；只在读取边界并入 `effort`。
     #[serde(default)]
     reasoning_effort: Option<String>,
+}
+
+fn legacy_record_version() -> u32 {
+    1
 }
 
 impl RawCallLogRecord {
@@ -310,6 +358,11 @@ impl RawCallLogRecord {
             reported_model: self.reported_model,
             effort: self.effort.or(self.reasoning_effort),
             usage: self.usage,
+            usage_status: if self.version < 3 {
+                Some(pl_core::usage::UsageStatus::LegacyUnknown)
+            } else {
+                self.usage_status
+            },
             cost: self.cost,
             has_unpriced_usage: self.has_unpriced_usage,
             timing: self.timing,
@@ -364,6 +417,8 @@ pub(super) fn attempt_record(
         reported_model: None,
         effort: None,
         usage: outcome_usage(&attempt.outcome).map(usage_record_from_model),
+        usage_status: outcome_usage(&attempt.outcome)
+            .map(|usage| pl_core::usage::analyze_usage(usage).status),
         cost: None,
         has_unpriced_usage: false,
         timing: None,
@@ -421,6 +476,8 @@ pub(super) fn billing_record(
             reasoning_tokens: usage.reasoning_tokens,
             total_tokens: usage.total_tokens,
         }),
+        // PreparedRecord binds the core analysis to the encoded record and SQL validity.
+        usage_status: None,
         cost,
         has_unpriced_usage: billing.accounting.has_unpriced_usage(),
         timing,
@@ -432,18 +489,13 @@ pub(super) fn billing_record(
 }
 
 fn usage_record_from_model(usage: &ModelUsage) -> CallUsageRecord {
-    let total = usage
-        .input_tokens
-        .zip(usage.output_tokens)
-        .and_then(|(input, output)| input.checked_add(output))
-        .or(usage.total_tokens);
     CallUsageRecord {
         input_tokens: usage.input_tokens,
         output_tokens: usage.output_tokens,
         cache_read_tokens: usage.cache_read_tokens,
         cache_write_tokens: usage.cache_write_tokens,
         reasoning_tokens: usage.reasoning_tokens,
-        total_tokens: total,
+        total_tokens: usage.total_tokens,
     }
 }
 
@@ -452,27 +504,14 @@ pub(super) fn record_day(recorded_at: i64) -> i64 {
     recorded_at.div_euclid(SECONDS_PER_DAY)
 }
 
-/// 队列压力预算用的编码字节估计；只序列化轻量记录，绝不编码整个 effect。
-pub(super) fn estimate_bytes(record: &CallLogRecord) -> usize {
-    serde_json::to_vec(record).map_or(256, |bytes| bytes.len())
-}
-
 /// 编码一行记录；返回 `(line, truncated)`，`line` 不含换行。
 ///
 /// 正文超过 [`CALL_LOG_RECORD_MAX_BYTES`] 时逐步丢弃可选字段并显式标记 `truncated`，绝不写出
 /// 超长或非法的单行，也绝不静默截断。
+#[cfg(test)]
 pub(super) fn encode_record(record: &CallLogRecord) -> Result<(String, bool)> {
-    let line = serde_json::to_string(record)?;
-    if line.len() < CALL_LOG_RECORD_MAX_BYTES {
-        return Ok((line, record.truncated));
-    }
-    let fallback = record.truncated_fallback();
-    let line = serde_json::to_string(&fallback)?;
-    ensure!(
-        line.len() < CALL_LOG_RECORD_MAX_BYTES,
-        "call identity exceeds log record budget"
-    );
-    Ok((line, true))
+    let prepared = PreparedRecord::new(record.clone())?;
+    Ok((prepared.line, prepared.truncated))
 }
 
 /// 解析一行版本化 JSONL 记录；损坏的行返回错误而不猜测内容。
@@ -579,16 +618,18 @@ mod tests {
 
     #[test]
     fn unknown_future_log_version_is_rejected_by_the_shared_gate() {
-        let line = r#"{
-            "version": 3,
+        let mut record = serde_json::json!({
+            "version": CALL_LOG_RECORD_VERSION,
             "kind": "billing",
             "threadId": "thread",
             "callId": "call",
             "status": "committed",
             "terminal": true,
             "recordedAt": 11
-        }"#;
-        assert!(decode_record(line).is_err());
+        });
+        assert!(decode_record(&record.to_string()).is_ok());
+        record["version"] = (CALL_LOG_RECORD_VERSION + 1).into();
+        assert!(decode_record(&record.to_string()).is_err());
     }
 
     #[test]
