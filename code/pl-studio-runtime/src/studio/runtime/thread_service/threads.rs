@@ -485,9 +485,13 @@ impl StudioRuntime {
             .map(|thread| thread.id.clone())
             .collect::<Vec<_>>();
         // 关闭与保存不得探测或清理物理工作树；目录归档只在整棵树关闭成功后发布。
-        self.retire_archived_thread_tree(&removed_thread_ids)
-            .await?;
-        self.retire_private_archive_members(&mut archive).await?;
+        if archive.phase == ArchivePhase::Sealed {
+            self.retire_archived_thread_tree(&removed_thread_ids)
+                .await?;
+            self.retire_private_archive_members(&mut archive).await?;
+        }
+        // Saved/Cleaned already own the durable stop/save/retirement ACKs. Reopening a cold
+        // writer on retry would recreate temp through directory projection after its cleanup ACK.
         self.archive_save_confirmed(&mut archive).await?;
         self.clean_archive_temps(&mut archive).await?;
         let committed = self

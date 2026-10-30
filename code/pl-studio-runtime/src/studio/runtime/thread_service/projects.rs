@@ -418,8 +418,11 @@ impl StudioRuntime {
                 .cancel(thread_id, ThreadTitleCancellationCause::ProjectArchive)
                 .await;
         }
-        self.retire_archived_thread_tree(&thread_ids).await?;
-        self.retire_private_archive_members(&mut archive).await?;
+        if archive.phase == ArchivePhase::Sealed {
+            self.retire_archived_thread_tree(&thread_ids).await?;
+            self.retire_private_archive_members(&mut archive).await?;
+        }
+        // Reuse Saved/Cleaned ACKs without creating a new cold writer or rebuilding cleaned temp.
         self.archive_save_confirmed(&mut archive).await?;
         self.clean_archive_temps(&mut archive).await?;
         self.agent_facility

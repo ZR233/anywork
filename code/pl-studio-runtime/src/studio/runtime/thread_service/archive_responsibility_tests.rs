@@ -451,6 +451,37 @@ async fn produce_private_storage_crash(base: &Path, receipt: bool) -> Result<()>
     std::process::exit(0);
 }
 
+async fn crash_original_private_owner(base: &Path, receipt: bool) -> Result<serde_json::Value> {
+    let mut command = tokio::process::Command::new(std::env::current_exe()?);
+    command
+        .arg("archive_original_required_receipt_is_not_replaced_by_a_cold_checkpoint_after_crash")
+        .arg("--nocapture")
+        .env("ANYWORK_ARCHIVE_PRIVATE_CRASH_FIXTURE", base)
+        .kill_on_drop(true);
+    if receipt {
+        command.env("ANYWORK_ARCHIVE_PRIVATE_RECEIPT", "1");
+    } else {
+        command.env_remove("ANYWORK_ARCHIVE_PRIVATE_RECEIPT");
+    }
+    command
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit());
+    let mut child = command.spawn()?;
+    let status = match tokio::time::timeout(Duration::from_secs(20), child.wait()).await {
+        Ok(result) => result?,
+        Err(error) => {
+            child.kill().await?;
+            child.wait().await?;
+            return Err(error)
+                .context("original private producer did not reach its crash boundary");
+        }
+    };
+    ensure!(status.success(), "original producer fixture: {status}");
+    Ok(serde_json::from_slice(
+        &tokio::fs::read(base.join("original-owner-evidence.json")).await?,
+    )?)
+}
+
 #[tokio::test]
 async fn archive_original_required_receipt_is_not_replaced_by_a_cold_checkpoint_after_crash()
 -> Result<()> {
@@ -468,29 +499,7 @@ async fn archive_original_required_receipt_is_not_replaced_by_a_cold_checkpoint_
         let _endpoint = configure(&home)?;
         let workspace = temp.path().join("workspace");
         tokio::fs::create_dir_all(&workspace).await?;
-        let mut command = tokio::process::Command::new(std::env::current_exe()?);
-        command.arg("archive_original_required_receipt_is_not_replaced_by_a_cold_checkpoint_after_crash")
-            .arg("--nocapture").env(CHILD, temp.path()).kill_on_drop(true);
-        if receipt {
-            command.env("ANYWORK_ARCHIVE_PRIVATE_RECEIPT", "1");
-        }
-        command
-            .stdout(std::process::Stdio::inherit())
-            .stderr(std::process::Stdio::inherit());
-        let mut child = command.spawn()?;
-        let status = match tokio::time::timeout(Duration::from_secs(20), child.wait()).await {
-            Ok(result) => result?,
-            Err(error) => {
-                child.kill().await?;
-                child.wait().await?;
-                return Err(error)
-                    .context("original private producer did not reach its crash boundary");
-            }
-        };
-        ensure!(status.success(), "original producer fixture: {status}");
-        let evidence: serde_json::Value = serde_json::from_slice(
-            &tokio::fs::read(temp.path().join("original-owner-evidence.json")).await?,
-        )?;
+        let evidence = crash_original_private_owner(temp.path(), receipt).await?;
         let original: ThreadPreparationRecord = serde_json::from_value(evidence["record"].clone())?;
         let runtime = StudioRuntime::initialize(options(&home)).await?;
         assert!(
@@ -581,6 +590,310 @@ async fn archive_original_required_receipt_is_not_replaced_by_a_cold_checkpoint_
             b"delivery"
         );
         runtime.shutdown_runtime().await?;
+    }
+    Ok(())
+}
+
+async fn archive_receipt_scope(runtime: &StudioRuntime, scope: &ArchiveScope) -> Result<()> {
+    match scope {
+        ArchiveScope::Thread(id) => {
+            runtime
+                .archive_thread("receipt-retry".into(), id.clone())
+                .await?
+                .context("thread archive")?;
+        }
+        ArchiveScope::Workspace(id) => {
+            runtime
+                .archive_project(id)
+                .await?
+                .context("workspace archive")?;
+        }
+    }
+    Ok(())
+}
+
+async fn reject_changed_saved_projection(
+    runtime: &StudioRuntime,
+    scope: &ArchiveScope,
+) -> Result<()> {
+    let tree = runtime.store.read_directory_tree("required-root").await?;
+    let private_index = tree
+        .iter()
+        .position(|thread| thread.id == "required-private")
+        .unwrap();
+    let frozen = runtime.store.thread_archive(scope).await?.unwrap();
+    assert_eq!(frozen.phase, ArchivePhase::Saved);
+    let mut changed = tree.clone();
+    let mut extra = tree[private_index].clone();
+    extra.id = "unfrozen-member".into();
+    changed.push(extra);
+    let error = runtime
+        .freeze_thread_archive(scope.clone(), &changed, &[])
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("gained a member"), "{error:#}");
+    let mut new_admission = frozen.private_members[0].identity.clone();
+    new_admission.thread_id = "unfrozen-preparation".into();
+    assert!(
+        runtime
+            .freeze_thread_archive(scope.clone(), &tree, &[new_admission])
+            .await
+            .is_err()
+    );
+    assert!(
+        runtime
+            .store
+            .thread_preparation("unfrozen-preparation")
+            .await?
+            .is_none()
+    );
+    let without_public = tree
+        .iter()
+        .filter(|thread| thread.id != "required-root")
+        .cloned()
+        .collect::<Vec<_>>();
+    assert!(
+        runtime
+            .freeze_thread_archive(scope.clone(), &without_public, &[])
+            .await
+            .is_err()
+    );
+    for field in ["workspace", "root", "parent"] {
+        let mut changed = tree.clone();
+        match field {
+            "workspace" => changed[private_index].workspace_id = "different-workspace".into(),
+            "root" => changed[private_index].root_thread_id = "different-root".into(),
+            "parent" => changed[private_index].parent_thread_id = Some("different-parent".into()),
+            _ => unreachable!(),
+        }
+        let error = runtime
+            .freeze_thread_archive(scope.clone(), &changed, &[])
+            .await
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("changed identity"),
+            "{field}: {error:#}"
+        );
+    }
+    // A filtered projection can lose P precisely because its canonical ownership changed.
+    // Its absence must not be mistaken for a private identity that never had a catalog row.
+    let canonical = runtime.store.catalog().get("required-private").unwrap();
+    let without_private = tree
+        .iter()
+        .filter(|thread| thread.id != "required-private")
+        .cloned()
+        .collect::<Vec<_>>();
+    for field in ["workspace", "root", "parent"] {
+        let mut shifted = canonical.clone();
+        match field {
+            "workspace" => shifted.workspace_id = "different-workspace".into(),
+            "root" => shifted.root_thread_id = "different-root".into(),
+            "parent" => shifted.parent_thread_id = Some("different-parent".into()),
+            _ => unreachable!(),
+        }
+        runtime.store.catalog().upsert(shifted).await?;
+        let outcome = runtime
+            .freeze_thread_archive(scope.clone(), &without_private, &[])
+            .await;
+        runtime.store.catalog().upsert(canonical.clone()).await?;
+        let error = outcome.unwrap_err();
+        assert!(
+            error.to_string().contains("changed identity"),
+            "{field}: {error:#}"
+        );
+    }
+    // A validly encoded but conflicting frozen binding must not be repaired from a newer view.
+    let mut conflicting = frozen.clone();
+    let original = match &mut conflicting.private_members[0].binding {
+        PreparationBinding::Bound { identity } => identity,
+        PreparationBinding::Unbound => panic!("receipt fixture has a frozen physical binding"),
+    };
+    original.root.push_str("-different-binding");
+    conflicting.changed()?;
+    runtime.store.save_thread_archive(&conflicting).await?;
+    let error = runtime
+        .freeze_thread_archive(scope.clone(), &tree, &[])
+        .await
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("physical binding changed"),
+        "{error:#}"
+    );
+    let mut restored = frozen;
+    restored.revision = conflicting.revision;
+    restored.changed()?;
+    runtime.store.save_thread_archive(&restored).await?;
+    // A private identity does not owe catalog publication; its original responsibility remains.
+    let without_private = tree
+        .into_iter()
+        .filter(|thread| thread.id != "required-private")
+        .collect::<Vec<_>>();
+    let projected = runtime
+        .freeze_thread_archive(scope.clone(), &without_private, &[])
+        .await?;
+    assert_eq!(projected.members.len(), 1);
+    assert_eq!(projected.private_members.len(), 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn archive_private_catalog_projection_retries_saved_cleaned_and_published_ack() -> Result<()>
+{
+    for workspace_archive in [false, true] {
+        for restart in [false, true] {
+            let temp = tempfile::tempdir()?;
+            let home = temp.path().join("home");
+            let _endpoint = configure(&home)?;
+            let workspace = temp.path().join("workspace");
+            tokio::fs::create_dir_all(&workspace).await?;
+            let evidence = crash_original_private_owner(temp.path(), true).await?;
+            let original: ThreadPreparationRecord =
+                serde_json::from_value(evidence["record"].clone())?;
+            let mut runtime = StudioRuntime::initialize(options(&home)).await?;
+            runtime
+                .store
+                .database()
+                .execute_unprepared("DROP TRIGGER reject_original_stop")
+                .await?;
+            let root = runtime.store.read_thread("required-root").await?.unwrap();
+            let scope = if workspace_archive {
+                ArchiveScope::Workspace(root.workspace_id.clone())
+            } else {
+                ArchiveScope::Thread(root.id.clone())
+            };
+            let files = pl_tool::workspace::SessionFiles::new("required-private");
+            let blocked_temp = workspace.join(files.temp());
+            tokio::fs::write(&blocked_temp, b"recoverable temp obstruction").await?;
+            let error = archive_receipt_scope(&runtime, &scope).await.unwrap_err();
+            let saved = runtime.store.thread_archive(&scope).await?.unwrap();
+            assert_eq!(
+                saved.phase,
+                ArchivePhase::Saved,
+                "must reach the real cleanup failure: {error:#}"
+            );
+            assert_eq!(saved.members.len(), 1);
+            assert_eq!(saved.private_members.len(), 1);
+            assert_eq!(saved.private_members[0].binding, original.binding);
+            assert_eq!(saved.private_members[0].save, PreparationSave::Confirmed);
+            assert!(saved.private_members[0].stopped && saved.private_members[0].retired);
+            assert_eq!(
+                runtime
+                    .store
+                    .read_thread("required-private")
+                    .await?
+                    .unwrap()
+                    .visibility,
+                crate::studio::ThreadVisibility::Active
+            );
+            reject_changed_saved_projection(&runtime, &scope).await?;
+            if restart {
+                runtime.shutdown_runtime().await?;
+                drop(runtime);
+                runtime = StudioRuntime::initialize(options(&home)).await?;
+            }
+            tokio::fs::remove_file(&blocked_temp).await?;
+            runtime.store.database().execute_unprepared(
+                "CREATE TRIGGER reject_cleanup_ack BEFORE UPDATE ON studio_objects
+                 WHEN NEW.object_kind='threadArchive' AND json_extract(NEW.payload_json,'$.phase')='cleaned'
+                 BEGIN SELECT RAISE(ABORT,'injected Cleaned ACK failure'); END",
+            ).await?;
+            let error = archive_receipt_scope(&runtime, &scope).await.unwrap_err();
+            assert!(
+                format!("{error:#}").contains("injected Cleaned ACK failure"),
+                "{error:#}"
+            );
+            let cleaned_without_ack = runtime.store.thread_archive(&scope).await?.unwrap();
+            assert_eq!(cleaned_without_ack.phase, ArchivePhase::Saved);
+            assert!(
+                cleaned_without_ack.private_members[0].host_cleaned
+                    && cleaned_without_ack.private_members[0].execution_cleaned
+            );
+            assert_eq!(
+                runtime
+                    .store
+                    .read_thread("required-private")
+                    .await?
+                    .unwrap()
+                    .visibility,
+                crate::studio::ThreadVisibility::Active
+            );
+            if restart {
+                runtime.shutdown_runtime().await?;
+                drop(runtime);
+                runtime = StudioRuntime::initialize(options(&home)).await?;
+            }
+            runtime
+                .store
+                .database()
+                .execute_unprepared("DROP TRIGGER reject_cleanup_ack")
+                .await?;
+            runtime.store.database().execute_unprepared(
+                "CREATE TRIGGER reject_published_ack BEFORE UPDATE ON studio_objects
+                 WHEN NEW.object_kind='threadArchive' AND json_extract(NEW.payload_json,'$.phase')='published'
+                 BEGIN SELECT RAISE(ABORT,'injected Published ACK failure'); END",
+            ).await?;
+            let error = archive_receipt_scope(&runtime, &scope).await.unwrap_err();
+            assert!(
+                format!("{error:#}").contains("injected Published ACK failure"),
+                "{error:#}"
+            );
+            assert_eq!(
+                runtime.store.thread_archive(&scope).await?.unwrap().phase,
+                ArchivePhase::Cleaned
+            );
+            assert_eq!(
+                runtime
+                    .store
+                    .read_thread("required-private")
+                    .await?
+                    .unwrap()
+                    .visibility,
+                crate::studio::ThreadVisibility::Archived
+            );
+            if restart {
+                runtime.shutdown_runtime().await?;
+                drop(runtime);
+                runtime = StudioRuntime::initialize(options(&home)).await?;
+            }
+            runtime
+                .store
+                .database()
+                .execute_unprepared("DROP TRIGGER reject_published_ack")
+                .await?;
+            archive_receipt_scope(&runtime, &scope).await?;
+            let published = runtime.store.thread_archive(&scope).await?.unwrap();
+            assert_eq!(published.phase, ArchivePhase::Published);
+            assert_eq!(published.members.len(), 1);
+            assert_eq!(published.private_members.len(), 1);
+            assert_eq!(published.private_members[0].binding, original.binding);
+            let preparation = runtime
+                .store
+                .thread_preparation("required-private")
+                .await?
+                .unwrap();
+            assert_eq!(
+                preparation.storage.as_ref().unwrap().incarnation,
+                original.storage.as_ref().unwrap().incarnation
+            );
+            assert_eq!(preparation.disposition, PreparationDisposition::TempCleaned);
+            assert!(!blocked_temp.exists());
+            for id in ["required-root", "required-private"] {
+                assert!(
+                    !runtime
+                        .store
+                        .registered_session_paths(id)?
+                        .temp_dir()
+                        .exists(),
+                    "{id} host temp must stay cleaned across ACK retries"
+                );
+                assert!(runtime.threads.observed_thread(id).is_none());
+            }
+            assert_eq!(
+                tokio::fs::read(workspace.join(files.artifacts()).join("keep")).await?,
+                b"delivery"
+            );
+            runtime.shutdown_runtime().await?;
+        }
     }
     Ok(())
 }
