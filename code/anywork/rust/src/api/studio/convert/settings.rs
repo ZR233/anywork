@@ -114,7 +114,6 @@ pub(crate) fn bridge_settings(
             auto_learn: settings.skills.auto_learn,
             system_enabled: settings.skills.system_enabled,
             project_dir: settings.skills.project_dir,
-            user_dir: settings.skills.user_dir,
             external_dirs: settings.skills.external_dirs,
             disabled: settings.skills.disabled,
             auto_learn_min_tool_calls: settings.skills.auto_learn_min_tool_calls,
