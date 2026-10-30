@@ -545,6 +545,125 @@ async fn fresh_and_cache_only_v2_homes_create_complete_current_installations() -
 }
 
 #[tokio::test]
+async fn building_fresh_staging_resumes_product_and_documents_before_calls() -> Result<()> {
+    for cache_only in [false, true] {
+        let temp = tempfile::tempdir()?;
+        let paths = StudioPaths::from_home(temp.path().to_owned());
+        if cache_only {
+            tokio::fs::create_dir_all(temp.path().join("v2/model-catalogs")).await?;
+            tokio::fs::write(
+                temp.path().join("v2/model-catalogs/cache"),
+                b"retained cache",
+            )
+            .await?;
+        }
+        let mut journal = Journal {
+            schema_version: 1,
+            operation_id: "layout-interrupted-fresh".into(),
+            phase: Phase::Building,
+            roots: ROOTS
+                .into_iter()
+                .map(|source| {
+                    let present = temp.path().join(source).exists();
+                    RootMove {
+                        source: source.into(),
+                        present,
+                        moved: present,
+                    }
+                })
+                .collect(),
+            copied: BTreeSet::new(),
+            bot_roots: Vec::new(),
+        };
+        let backup = backup_root(&paths, &journal);
+        for root in &journal.roots {
+            if root.present {
+                managed_move(&temp.path().join(&root.source), &backup.join(&root.source)).await?;
+            }
+        }
+        let journal_path = temp.path().join(JOURNAL);
+        persist(&journal_path, &journal).await?;
+        let stage = staging(&paths, &journal);
+        tokio::fs::create_dir_all(stage.data_dir()).await?;
+        let _ = build(&paths, &stage, &backup, &journal_path, &mut journal).await?;
+
+        // Synthesize the precise interrupted phase from a closed production donor: product and
+        // all canonical TOML exist, calls has never been created. This is not crash injection.
+        let donor_home = tempfile::tempdir()?;
+        let donor = StudioPaths::from_home(donor_home.path().to_owned());
+        let store = StudioStore::prepare_database(&donor.database()).await?;
+        let payload = r#"{"retained":"staging-owned"}"#;
+        store.database().execute_raw(Statement::from_sql_and_values(
+            DatabaseBackend::Sqlite,
+            "INSERT INTO studio_objects VALUES ('thread','stage-owner','resumeProbe',7,1,?,?,42)",
+            vec![payload.into(), pl_core::context::content_hash(payload.as_bytes()).into()],
+        )).await?;
+        store.close().await?;
+        for name in [
+            "studio.sqlite",
+            "studio.sqlite-wal",
+            "studio.sqlite-shm",
+            "settings.toml",
+            "catalog.toml",
+            "workspaces.toml",
+        ] {
+            let source = donor.data_dir().join(name);
+            if source.exists() {
+                copy_tree(paths.home(), &source, &stage.data_dir().join(name)).await?;
+            }
+        }
+        assert!(!stage.calls_database().exists());
+        assert!(!stage.layout_file().exists());
+        // The same files without the operation's capability still fail the normal Existing gate.
+        let error = StudioStore::prepare_database(&stage.database())
+            .await
+            .err()
+            .context("normal prepare must not treat a missing calls DB as fresh")?;
+        assert!(format!("{error:#}").contains("calls/calls.sqlite is missing"));
+
+        for _ in 0..2 {
+            let runtime = crate::StudioRuntime::initialize(crate::StudioRuntimeOptions {
+                studio_home: Some(temp.path().to_owned()),
+                host: crate::StudioHostKind::Test,
+                ..crate::StudioRuntimeOptions::desktop()
+            })
+            .await?;
+            runtime.shutdown_runtime().await?;
+            assert!(paths.database().exists());
+            assert!(paths.calls_database().exists());
+            let saved = decode_journal(&tokio::fs::read_to_string(&journal_path).await?)?;
+            assert_eq!(saved.operation_id, journal.operation_id);
+            assert_eq!(saved.phase, Phase::Completed);
+            assert!(!stage.data_dir().exists());
+        }
+        let mut database = sea_orm::sqlx::SqliteConnection::connect_with(
+            &sea_orm::sqlx::sqlite::SqliteConnectOptions::new()
+                .filename(paths.database())
+                .read_only(true),
+        )
+        .await?;
+        let retained: (i64, String) = sea_orm::sqlx::query_as(
+            "SELECT revision,payload_json FROM studio_objects WHERE object_kind='resumeProbe'",
+        )
+        .fetch_one(&mut database)
+        .await?;
+        assert_eq!(retained, (7, payload.into()));
+        database.close().await?;
+        if cache_only {
+            assert_eq!(
+                tokio::fs::read(backup.join("v2/model-catalogs/cache")).await?,
+                b"retained cache"
+            );
+            assert_eq!(
+                tokio::fs::read(paths.model_catalogs_dir().join("cache")).await?,
+                b"retained cache"
+            );
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn unknown_v2_material_is_not_a_fresh_installation() -> Result<()> {
     let temp = tempfile::tempdir()?;
     let paths = StudioPaths::from_home(temp.path().to_owned());

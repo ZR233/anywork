@@ -80,10 +80,33 @@ impl StudioStore {
     }
 
     pub(crate) async fn prepare_database(path: &Path) -> Result<Self> {
+        Self::prepare_database_inner(path, None).await
+    }
+
+    /// Only an unpublished layout operation can supply original-source classification instead of
+    /// rediscovering its own half-created target as a pre-existing installation.
+    pub(in crate::studio) async fn prepare_layout_database(
+        database: crate::studio::startup::storage_layout::PreparedLayoutDatabase,
+    ) -> Result<Self> {
+        let installation = if database.has_v2_authority() {
+            InstallationState::Existing
+        } else {
+            InstallationState::Fresh
+        };
+        Self::prepare_database_inner(database.path(), Some(installation)).await
+    }
+
+    async fn prepare_database_inner(
+        path: &Path,
+        source_installation: Option<InstallationState>,
+    ) -> Result<Self> {
         let path = resolve_configured_database_path(path).await?;
         let paths = StudioPaths::resolve(Some(studio_home_from_database(&path)?))?;
         // Inspect installation facts before any SQLite owner can create or migrate a file.
-        let installation = detect_installation(&paths).await?;
+        let installation = match source_installation {
+            Some(installation) => installation,
+            None => detect_installation(&paths).await?,
+        };
         if installation == InstallationState::Existing {
             for (path, name) in [
                 (paths.catalog_file(), "catalog.toml"),

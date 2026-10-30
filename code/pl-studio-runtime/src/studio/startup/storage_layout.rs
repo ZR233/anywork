@@ -56,6 +56,28 @@ struct Journal {
     bot_roots: Vec<bot_roots::BotRootMove>,
 }
 
+enum SourceInstallation {
+    Fresh,
+    V2,
+}
+
+/// Created only after `build` verifies the preserved sources of an unpublished operation.
+/// Its path binds the source classification to that operation's own staging database.
+pub(in crate::studio) struct PreparedLayoutDatabase {
+    path: PathBuf,
+    source: SourceInstallation,
+}
+
+impl PreparedLayoutDatabase {
+    pub(in crate::studio) fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub(in crate::studio) fn has_v2_authority(&self) -> bool {
+        matches!(self.source, SourceInstallation::V2)
+    }
+}
+
 /// Must run while the runtime lock is held, after startup recovery and before config/cache opening.
 pub(in crate::studio) async fn prepare(paths: &StudioPaths) -> Result<()> {
     prepare_inner(paths)
@@ -198,10 +220,10 @@ async fn prepare_inner(paths: &StudioPaths) -> Result<()> {
         );
         session_layout::safe_path(paths, stage.data_dir()).await?;
         tokio::fs::create_dir_all(stage.data_dir()).await?;
-        build(paths, &stage, &backup, &journal_path, &mut journal).await?;
+        let database = build(paths, &stage, &backup, &journal_path, &mut journal).await?;
         // This is the production loader and official SeaORM schema sequence, not a second decoder.
         // Every raw family copy has completed before this may open or checkpoint SQLite.
-        let store = StudioStore::prepare_database(&stage.database()).await?;
+        let store = StudioStore::prepare_layout_database(database).await?;
         let relocated = async {
             crate::studio::agent_host::worktree_lease::migrate_bot_identities(
                 store.database(),
@@ -321,7 +343,7 @@ async fn build(
     backup: &Path,
     journal_path: &Path,
     journal: &mut Journal,
-) -> Result<()> {
+) -> Result<PreparedLayoutDatabase> {
     let roots = [backup.join("v2"), backup.join("studio/v2")];
     // Directory existence is not installation evidence: a cache-only v2 home never owned
     // canonical state. Conversely, any other material must not be adopted as a fresh install.
@@ -600,7 +622,18 @@ async fn build(
         )
         .await?;
     }
-    Ok(())
+    // A fresh operation may resume its own partly-created target, but never adopt an orphan WAL.
+    // Source families, copy hashes and ownership were checked above, independently of target state.
+    validate_family(&stage.database())?;
+    validate_family(&stage.calls_database())?;
+    Ok(PreparedLayoutDatabase {
+        path: stage.database(),
+        source: if has_v2 {
+            SourceInstallation::V2
+        } else {
+            SourceInstallation::Fresh
+        },
+    })
 }
 
 fn existing_candidates(roots: &[PathBuf], name: &str) -> Result<Vec<PathBuf>> {
