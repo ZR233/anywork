@@ -24,6 +24,24 @@ impl StudioRuntime {
         admitted: &[PreparationIdentity],
     ) -> Result<ThreadArchiveOperation> {
         let previous = self.store.thread_archive(&scope).await?;
+        let mut catalog_projection = threads.to_vec();
+        if let Some(operation) = &previous
+            && operation.phase != ArchivePhase::Published
+        {
+            for member in &operation.private_members {
+                if !catalog_projection
+                    .iter()
+                    .any(|thread| thread.id == member.identity.thread_id)
+                    && let Some(canonical) =
+                        self.store.read_thread(&member.identity.thread_id).await?
+                {
+                    // Missing from a filtered tree is not proof of never having a catalog row.
+                    // Validate its original identity below even if its current ancestry changed.
+                    catalog_projection.push(canonical);
+                }
+            }
+        }
+        let threads = catalog_projection.as_slice();
         // These original responsibilities outlive both the registry owner and a failed first
         // threadArchive write. Discover by trusted identity, never by scanning physical paths.
         let mut admitted = admitted.to_vec();
@@ -46,21 +64,37 @@ impl StudioRuntime {
         if let Some(operation) = &previous
             && operation.phase != ArchivePhase::Published
         {
-            let expected = operation
+            let required_catalog = operation
                 .members
                 .iter()
                 .map(|member| &member.thread_id)
+                .collect::<std::collections::BTreeSet<_>>();
+            // Public members owe catalog presence; private identities may be present or absent.
+            // After save, the catalog and admitted preparation projections cannot grow this union.
+            let frozen = required_catalog
+                .iter()
+                .copied()
+                .chain(
+                    operation
+                        .private_members
+                        .iter()
+                        .map(|member| &member.identity.thread_id),
+                )
                 .collect::<std::collections::BTreeSet<_>>();
             let actual = threads
                 .iter()
                 .map(|thread| &thread.id)
                 .collect::<std::collections::BTreeSet<_>>();
             ensure!(
-                expected.is_subset(&actual),
+                required_catalog.is_subset(&actual),
                 "archive scope changed while cleanup was pending"
             );
             ensure!(
-                actual == expected || operation.phase == ArchivePhase::Sealed,
+                (actual.is_subset(&frozen)
+                    && admitted
+                        .iter()
+                        .all(|identity| frozen.contains(&identity.thread_id)))
+                    || operation.phase == ArchivePhase::Sealed,
                 "archive gained a member after durable save confirmation"
             );
         }
@@ -88,11 +122,17 @@ impl StudioRuntime {
         }
         for thread in threads {
             let preparation = self.store.thread_preparation(&thread.id).await?;
-            if preparation.as_ref().is_some_and(|record| !record.published) {
-                members.retain(|member| member.thread_id != thread.id);
-                continue;
-            }
-            if let Some(member) = members.iter().find(|member| member.thread_id == thread.id) {
+            let public = members.iter().find(|member| member.thread_id == thread.id);
+            let private = previous
+                .as_ref()
+                .filter(|operation| operation.phase != ArchivePhase::Published)
+                .and_then(|operation| {
+                    operation
+                        .private_members
+                        .iter()
+                        .find(|member| member.identity.thread_id == thread.id)
+                });
+            if let Some(member) = public {
                 ensure!(
                     member.workspace_id == thread.workspace_id
                         && member.parent_id == thread.parent_thread_id
@@ -100,13 +140,41 @@ impl StudioRuntime {
                     "archive canonical member changed identity"
                 );
                 if let Some(PreparationBinding::Bound { identity }) =
-                    preparation.map(|record| record.binding)
+                    preparation.as_ref().map(|record| &record.binding)
                 {
                     ensure!(
-                        identity == member.execution,
+                        *identity == member.execution,
                         "archive canonical member rebound during preparation"
                     );
                 }
+            }
+            if let Some(member) = private {
+                ensure!(
+                    member.identity.workspace_id == thread.workspace_id
+                        && member.identity.parent_id == thread.parent_thread_id
+                        && member.identity.root_id == thread.root_thread_id,
+                    "archive private catalog projection changed identity"
+                );
+            }
+            let frozen_execution = public.map(|member| &member.execution).or_else(|| {
+                private.and_then(|member| match &member.binding {
+                    PreparationBinding::Bound { identity } => Some(identity),
+                    PreparationBinding::Unbound => None,
+                })
+            });
+            if let Some(original) = frozen_execution
+                && let Some(current) = self.store.workspace_identity(&thread.id).await?
+            {
+                ensure!(
+                    *original == current,
+                    "archive original physical binding changed"
+                );
+            }
+            if preparation.as_ref().is_some_and(|record| !record.published) {
+                members.retain(|member| member.thread_id != thread.id);
+                continue;
+            }
+            if public.is_some() {
                 continue;
             }
             let execution = match self.store.workspace_identity(&thread.id).await? {
