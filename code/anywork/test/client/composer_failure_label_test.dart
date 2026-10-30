@@ -151,7 +151,7 @@ void main() {
     expect(
       _text(tester, ValueKey('blocker-$ComposerRecoveryBlocker')),
       'Recovery issue workspace-recovery\n'
-      'Session thread · project project · '
+      'Session thread · workspace project · '
       'Execution is blocked; safe history remains readable\n'
       'Workspace root is unavailable\n'
       'Available recovery actions: Retry',
@@ -203,7 +203,7 @@ void main() {
     expect(
       _text(tester, ValueKey('blocker-$ComposerRecoveryBlocker')),
       '恢复问题 workspace-recovery\n'
-      '会话 thread · 项目 project · 执行受阻，仍可读取安全的历史\n'
+      '会话 thread · 工作区 project · 执行受阻，仍可读取安全的历史\n'
       'Workspace root is unavailable\n'
       '可用恢复操作：重试',
     );
