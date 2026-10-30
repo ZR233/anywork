@@ -159,13 +159,15 @@ gh pr view PR_NUMBER --repo OWNER/REPO --json body --jq .body
 
 通用设计、实现与测试规则由以下技能维护，本文件只规定项目约束。按任务语义选择，不以文件名或改动规模代替判断；多个边界同时涉及时组合使用，不把普通改动扩展为无关专项审计。
 
+新增或修改内容涉及 Flutter／FRB／Rust 的跨层分工、状态与资源所有权、数据交付或页面路由时，必须先加载并使用 `flutter-frb-rust-design` 技能。
+
 | 任务语义 | 技能 |
 | --- | --- |
-| Rust 实现、错误传播、重构与审查 | [rust-code-quality](.agents/skills/rust-code-quality/SKILL.md) |
-| 公共接口、类型、错误、模块、依赖与协议 | [rust-api-design](.agents/skills/rust-api-design/SKILL.md) |
-| 同步、异步取消、回调与资源生命周期 | [rust-concurrency-safety](.agents/skills/rust-concurrency-safety/SKILL.md) |
-| unsafe、FFI、外部句柄与安全证明 | [rust-unsafe-safety](.agents/skills/rust-unsafe-safety/SKILL.md) |
-| 测试设计、回归、层级、必要性与去重 | [test-quality](.agents/skills/test-quality/SKILL.md) |
+| Rust 实现、错误传播、重构与审查 | `rust-code-quality` |
+| 公共接口、类型、错误、模块、依赖与协议 | `rust-api-design` |
+| 同步、异步取消、回调与资源生命周期 | `rust-concurrency-safety` |
+| unsafe、FFI、外部句柄与安全证明 | `rust-unsafe-safety` |
+| 测试设计、回归、层级、必要性与去重 | `test-quality` |
 
 质量技能以 TGOSKits `4713bfc98f` 为迁移基线，经泛化后在本仓库独立维护；运行任务时不依赖源仓库。命令、授权与项目架构以本文件为准；技能负责相应方法与证明，不复制另一套审批或门禁。
 
@@ -178,18 +180,14 @@ gh pr view PR_NUMBER --repo OWNER/REPO --json body --jq .body
 
 crate 职责、依赖方向与禁止依赖的唯一权威源是 [Crate 边界](design/02-crates.md)。修改前按该边界确认契约所有者；需要调整边界时遵循前文架构演进规则。
 
-### Flutter、Bridge 与 wire
+### 前端工程边界
 
-- Dart reducer 和 projection 优先消费 typed DTO/union，不新增 raw JSON 运行期兼容入口。
-- Settings/GUI 状态更新必须以 bridge 返回的 canonical snapshot 或事件流为准，不能只修改本地 draft。
-- 序列化类型统一使用 `#[serde(rename_all = "camelCase")]`；Rust 字段保持 `snake_case`。
-- ID 使用 `String`，内部按需解析 UUID；时间戳使用 Unix 秒 `i64`，字段命名为 `*_at`。
-- 结构化协议变更必须同步 Rust protocol、FRB DTO、Dart domain model、reducer/projection 和设计文档。
+- 线协议命名与基础类型见 [通用约定](design/05-conventions.md)，客户端契约见 [客户端与前端状态](design/25-frontend-state.md)。
 - 前端测试、浏览器验证和临时 dev server 不得占用 `1420` 端口，该端口保留给用户脚本。
 
 ## 检查与观察入口
 
-- 下列命令是可选入口，不是每次修改、提交或交付的必跑清单；本文件不规定测试目录或类型白名单，也不另设开发、审查或返修流程。可按任务目标和实际影响选择验证，通用方法见 [test-quality](.agents/skills/test-quality/SKILL.md)，基础设施和证据含义见 [测试与人工验收](design/24-testing.md)。
+- 下列命令是可选入口，不是每次修改、提交或交付的必跑清单；本文件不规定测试目录或类型白名单，也不另设开发、审查或返修流程。可按任务目标和实际影响选择验证，通用方法使用 `test-quality` 技能，基础设施和证据含义见 [测试与人工验收](design/24-testing.md)。
 - 验证报告区分实际执行、有效复用、失败和未验证；排队、运行中、零用例、采集完成或模型自述都不能冒充通过。环境或权限阻塞保留原始错误，不伪报完成。
 - `code/anywork/pubspec.lock` 是必须纳入 Git 的 canonical 应用依赖快照，不得加入 ignore；
   Flutter 直接依赖升级后必须同步提交重新解析的 lockfile。

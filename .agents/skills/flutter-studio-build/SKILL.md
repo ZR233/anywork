@@ -7,6 +7,9 @@ platforms: [windows, linux]
 
 # anywork 构建
 
+涉及跨层分工、状态与资源所有权或页面路由时，先使用 `flutter-frb-rust-design`；
+本技能只维护生成、构建与运行观察方法。
+
 ## 会话临时文件
 
 一次性诊断脚本与探针优先使用最新 `studio.session-files` 事实给出的本会话执行 `scratch/`，
@@ -78,9 +81,10 @@ runtime 重编译或 bridge 重链接；用 Cargo Fresh 状态与 bridge 摘要�
 生成产物与输入的差异可帮助定位原因。
 
 Rust 模块移动后，同时核对生成文件集合而非只看已有文件内容：旧模块的 Dart 文件可能仍在目录
-中引用已删除的绑定。`lib/src/rust/` 只保存 FRB 生成物，手写 typed 导出入口属于
+中引用已删除的绑定。`lib/src/rust/` 只保存 FRB 生成物，不放手写转发或业务默认值；手写 typed 导出入口属于
 `infrastructure/frb/`；孤儿产物由统一生成入口清理，不手改生成文件或新增旧 API 转发。分析中的
-加载错误消除只说明生成或分析边界恢复，不证明 adapter、布局或交互行为正确。
+加载错误消除只说明生成或分析边界恢复，不证明 adapter、布局或交互行为正确。生成失败必须原样
+传播，不能将不完整的输出集合判为一致。
 
 ```powershell
 cargo build -p pl-studio-bridge
