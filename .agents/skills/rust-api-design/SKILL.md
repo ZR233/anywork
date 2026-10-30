@@ -7,6 +7,9 @@ description: 设计、修改或审查 Rust 公共与共享接口、类型化错�
 
 公共接口不仅是 `pub`，还包括跨组件约定、配置格式、工具输入输出和测试运行器输入。在糊来帮中，provider 协议、FRB DTO、Dart model 和持久化格式也属于共享契约。
 
+Flutter／FRB／Rust 跨层分工与客户端写入责任使用 `flutter-frb-rust-design`；
+本技能负责 Rust 类型、错误和模块边界，不另设客户端状态或路由规约。
+
 ## 设计关注点
 
 - 调用方、契约所有者、有效状态、失败语义、消费者升级与数据迁移责任；相关项目边界见 [AGENTS.md](../../../AGENTS.md)。
