@@ -7070,7 +7070,7 @@ mod toolchain_home_tests {
         );
         assert_eq!(
             preserved_toolchain_home(Some(OsString::new()), ".rustup").unwrap(),
-            real_platform_user_home()
+            super::real_platform_user_home()
                 .unwrap()
                 .join(".rustup")
                 .into_os_string()
