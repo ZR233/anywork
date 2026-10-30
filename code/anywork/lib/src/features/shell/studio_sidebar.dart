@@ -688,8 +688,9 @@ Future<void> _saveSidebarPreferences(
   final threads = [...general.pinnedThreadIds];
   final projects = [...general.pinnedProjectIds];
   if (threadId != null && !threads.remove(threadId)) threads.add(threadId);
-  if (workspaceId != null && !projects.remove(workspaceId))
+  if (workspaceId != null && !projects.remove(workspaceId)) {
     projects.add(workspaceId);
+  }
   final commands = ref.read(anyworkClientProvider).settingsCommands;
   // A previous width can still be in flight even when this intent equals the
   // observed snapshot. Let the Client's canonical command lane order both.
