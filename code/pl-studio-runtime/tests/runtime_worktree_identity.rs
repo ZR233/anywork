@@ -56,6 +56,425 @@ async fn preview(
     .context("expected explicit Recovery observation was not published")?
 }
 
+async fn recovery_ready(runtime: &pl_studio_runtime::StudioRuntime) -> Result<()> {
+    // Retry may join a scan already in progress. Wait for a complete new Ready result,
+    // never treat an empty Refreshing snapshot as success.
+    let before = runtime.read_recovery_state().state.revision();
+    runtime.retry_recovery().await?;
+    tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            let state = runtime.read_recovery_state().state;
+            ensure!(state.kind() != ObservedResourceKind::Failed, "{state:?}");
+            if state.kind() == ObservedResourceKind::Ready && state.revision() > before {
+                return Ok(());
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .context("Recovery Retry did not complete")?
+}
+
+async fn lease_fact(home: &Path, id: &str, preserve: bool) -> Result<serde_json::Value> {
+    use sea_orm::{ConnectionTrait, Database, DbBackend, Statement};
+    let path = home.join("studio/v2/studio.sqlite");
+    let db = Database::connect(format!("sqlite://{}?mode=rw", path.display())).await?;
+    let row = db.query_one_raw(Statement::from_sql_and_values(
+        DbBackend::Sqlite,
+        "SELECT payload_json FROM studio_objects WHERE owner_kind='agent' AND owner_id=? AND object_kind='worktreeLease'",
+        [id.into()],
+    )).await?.context("durable worktree lease")?;
+    let mut fact: serde_json::Value =
+        serde_json::from_str(&row.try_get::<String>("", "payload_json")?)?;
+    if preserve {
+        // Isolated historical fact, installed only while this test's host is stopped.
+        fact["state"] = "preserved".into();
+        let revision = fact["revision"].as_u64().context("lease revision")? + 1;
+        fact["revision"] = revision.into();
+        let payload = serde_json::to_string(&fact)?;
+        let result = db.execute_raw(Statement::from_sql_and_values(
+            DbBackend::Sqlite,
+            "UPDATE studio_objects SET revision=?,payload_json=?,payload_hash=? WHERE owner_kind='agent' AND owner_id=? AND object_kind='worktreeLease'",
+            [revision.into(), payload.clone().into(), pl_core::context::content_hash(payload.as_bytes()).into(), id.into()],
+        )).await?;
+        ensure!(result.rows_affected() == 1);
+    }
+    db.close().await?;
+    Ok(fact)
+}
+
+#[tokio::test]
+async fn rejected_initial_root_input_preserves_the_confirmed_original_binding() -> Result<()> {
+    let mut env = Environment::new(vec![], vec![]).await?;
+    let result = async {
+        // Admit a real file draft, then fault only its test-owned spool bytes. Preflight
+        // still sees the valid metadata; promotion fails after factory confirmation.
+        let config_store = pl_studio_runtime::config::ConfigStore::new(
+            pl_studio_runtime::config::ConfigPaths::from_config_dir(&env.home),
+        );
+        let mut config = config_store.load()?;
+        let mut model = pl_model::model::ModelInfo::compatible(support::MODEL);
+        model
+            .binding
+            .set_transport(pl_model::model::ModelTransportProfile::responses_http());
+        model.capabilities.instruction_snapshot_overrides = true;
+        model.base_instructions = "Lifecycle fixture model base".into();
+        model
+            .capabilities
+            .input
+            .push(pl_model::model::ModelInputCapability::media(
+                pl_model::model::ModelModality::File,
+                vec![pl_model::model::ModelInputSource::Local],
+            ));
+        model
+            .binding
+            .request
+            .media
+            .push(pl_model::model::ModelMediaInputProfile {
+                modality: pl_model::model::ModelModality::File,
+                wire: pl_model::model::MediaWireFormat::ResponsesInputFile,
+                first_send: vec![pl_model::model::MediaRepresentation::DataUrl],
+                replay: vec![pl_model::model::MediaRepresentation::DataUrl],
+            });
+        config.models.accounts.insert(
+            pl_model::config::AccountId::new("root-fixture")?,
+            pl_model::config::AccountConfig::from_explicit_models(
+                pl_model::protocol::ProtocolEndpoint::compatible(
+                    "root-fixture",
+                    env.root_provider.base_url(),
+                ),
+                vec![model],
+            ),
+        );
+        config_store.save(&config)?;
+        env.restart().await?;
+        let source = env.home.join("failed-initial-attachment.txt");
+        std::fs::write(&source, "retain the original worktree")?;
+        let route = pl_protocol::studio::NewThreadModelRoute {
+            account_id: "root-fixture".into(),
+            model_id: support::MODEL.into(),
+            effort: None,
+        };
+        let drafts = env
+            .runtime
+            .admit_attachment_drafts(pl_protocol::studio::AdmitAttachmentDraftsRequest {
+                context: pl_protocol::studio::StudioAttachmentAdmissionContext::NewThread {
+                    route: route.clone(),
+                },
+                sources: vec![
+                    pl_protocol::studio::StudioAttachmentDraftSource::LocalFile {
+                        path: source.to_string_lossy().into_owned(),
+                    },
+                ],
+            })
+            .await?;
+        let draft = drafts
+            .drafts
+            .first()
+            .context("admitted initial attachment")?;
+        std::fs::remove_file(
+            env.home
+                .join("studio/v2/attachment-drafts")
+                .join(&draft.draft_id),
+        )?;
+        let progress = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let recorded = progress.clone();
+        let failure = env
+            .runtime
+            .create_thread_command(
+                env.project.id.clone(),
+                pl_protocol::studio::CreateThreadRequest {
+                    title: Some("Rejected initial input".into()),
+                    input: StudioPromptInput {
+                        input_id: "input-rejected-initial".into(),
+                        text: "must not reach a model".into(),
+                        attachment_draft_ids: vec![draft.draft_id.clone()],
+                    },
+                    mode: pl_protocol::ThreadModeId::simple().to_string(),
+                    route,
+                    delegation_mode: Some(pl_protocol::DelegationMode::Profile),
+                    delegation_preference: None,
+                    workspace_mode: ThreadWorkspaceMode::Worktree,
+                },
+                Some(std::sync::Arc::new(move |event| {
+                    recorded.lock().unwrap().push(event);
+                })),
+            )
+            .await
+            .err()
+            .context("missing attachment bytes unexpectedly accepted")?;
+        ensure!(
+            failure.chain().any(|cause| cause
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound)),
+            "{failure:#}"
+        );
+        let submitted_path = progress
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|event| {
+                event.stage == pl_studio_runtime::ThreadPreparationStage::SubmittingPrompt
+            })
+            .and_then(|event| event.workspace_path.clone())
+            .context("failure occurred before the confirmed root reached initial input")?;
+        let issue = env
+            .runtime
+            .recovery_issues()
+            .into_iter()
+            .find(|issue| {
+                issue
+                    .worktree
+                    .as_ref()
+                    .is_some_and(|preview| preview.path == submitted_path)
+            })
+            .context("confirmed root failure did not immediately publish its preserved site")?;
+        let preview = issue.worktree.context("failed root preview")?;
+        ensure!(
+            preview.state == "preserved" && preview.lease_revision == 3,
+            "Prepared -> Active -> failed retention lost its revision: {preview:?}"
+        );
+        ensure!(preview.inspection == StudioWorktreeInspection::Available);
+        ensure!(
+            issue.message.contains("first prompt"),
+            "wrong failure diagnosis: {}",
+            issue.message
+        );
+        let retained = lease_fact(&env.home, &preview.owner_thread_id, false).await?;
+        ensure!(retained["state"] == "preserved" && retained["revision"] == 3);
+        ensure!(Path::new(&submitted_path).is_dir());
+        ensure!(
+            std::fs::read_to_string(Path::new(&submitted_path).join("tracked.txt"))?
+                == "preserve project content\n"
+        );
+        ensure!(
+            git(Path::new(&submitted_path), &["rev-parse", "HEAD"])?
+                == git(&env.repo, &["rev-parse", "HEAD"])?
+        );
+        recovery_ready(&env.runtime).await?;
+        ensure!(
+            env.runtime.recovery_issues().iter().any(|issue| {
+                issue.worktree.as_ref().is_some_and(|current| {
+                    current.owner_thread_id == preview.owner_thread_id
+                        && current.state == "preserved"
+                        && current.lease_revision == 3
+                })
+            }),
+            "successful factory confirmation hid its later failed-input retention"
+        );
+        env.restart().await?;
+        recovery_ready(&env.runtime).await?;
+        ensure!(lease_fact(&env.home, &preview.owner_thread_id, false).await? == retained);
+        ensure!(env.runtime.recovery_issues().iter().any(|issue| {
+            issue
+                .worktree
+                .as_ref()
+                .is_some_and(|current| current.owner_thread_id == preview.owner_thread_id)
+        }));
+        ensure!(
+            env.root_provider.recorded().is_empty() && env.child_provider.recorded().is_empty()
+        );
+        Ok(())
+    }
+    .await;
+    env.finish(result).await
+}
+
+#[tokio::test]
+async fn parent_send_confirms_cold_clean_dirty_and_legacy_child_bindings() -> Result<()> {
+    for (dirty, legacy) in [(false, false), (true, false), (true, true)] {
+        let spawned = ReplyStage::new();
+        let child_initial = ReplyStage::new();
+        let child_resumed = ReplyStage::new();
+        let parent_resumed = ReplyStage::new();
+        let mut env = Environment::new(
+            vec![
+                prompt_step(
+                    "cold-spawn",
+                    0,
+                    support::spawn_reply("cold-spawn", "cold-child"),
+                ),
+                Step::tool_output(
+                    Protocol::ResponsesHttp,
+                    "cold-spawn",
+                    "agentId",
+                    1,
+                    held_reply(&spawned, "cold-spawned"),
+                ),
+            ],
+            vec![
+                prompt_step("cold-child", 0, held_reply(&child_initial, "cold-child")),
+                prompt_step(
+                    "cold-resume-child",
+                    1,
+                    held_reply(&child_resumed, "cold-child-resumed"),
+                ),
+            ],
+        )
+        .await?;
+        let result = async {
+            let root = env
+                .start(ThreadWorkspaceMode::Worktree, "cold-spawn")
+                .await?;
+            reached(&spawned).await?;
+            reached(&child_initial).await?;
+            let receipt = support::receipt(&env.root_provider, "cold-spawn")?;
+            let id = support::child_id(&receipt)?.to_owned();
+            let path = support::child_path(&receipt)?.to_owned();
+            if dirty {
+                std::fs::write(path.join("tracked.txt"), "keep modified\n")?;
+                std::fs::write(path.join("untracked.txt"), "keep untracked\n")?;
+                std::fs::write(path.join("ignored.txt"), "keep ignored\n")?;
+            }
+            let head = git(&path, &["rev-parse", "HEAD"])?;
+            let status = git(&path, &["status", "--porcelain", "--ignored"])?;
+            spawned.release();
+            completed_prompt(&env.runtime, &root.thread.id, "cold-spawn").await?;
+            env.runtime.shutdown_runtime().await?;
+            let original = lease_fact(&env.home, &id, false).await?;
+            ensure!(
+                original["state"] == "active",
+                "ordinary shutdown downgraded a healthy child"
+            );
+            let expected = lease_fact(&env.home, &id, legacy).await?;
+
+            // The cold parent uses its actual send_message tool. No child subscription or
+            // Runtime ensure_thread_owner call can mask a missing factory confirmation.
+            let replacement = pl_provider_fixture::FixtureServer::start(vec![
+                prompt_step(
+                    "cold-resume-parent",
+                    0,
+                    support::tool_reply(
+                        "send_message",
+                        "cold-send",
+                        serde_json::json!({"target":id,"message":"cold-resume-child"}),
+                    ),
+                ),
+                Step::tool_output(
+                    Protocol::ResponsesHttp,
+                    "cold-send",
+                    "sequence",
+                    1,
+                    held_reply(&parent_resumed, "cold-parent-resumed"),
+                ),
+            ])
+            .await?;
+            let old = std::mem::replace(&mut env.root_provider, replacement);
+            old.finish().await?;
+            let config_store = pl_studio_runtime::config::ConfigStore::new(
+                pl_studio_runtime::config::ConfigPaths::from_config_dir(&env.home),
+            );
+            let mut config = config_store.load()?;
+            config
+                .models
+                .accounts
+                .get_mut(&pl_model::config::AccountId::new("root-fixture")?)
+                .context("root fixture account")?
+                .base_url = env.root_provider.base_url();
+            config_store.save(&config)?;
+            env.restart().await?;
+            recovery_ready(&env.runtime).await?;
+            ensure!(
+                env.root_provider.recorded().is_empty() && env.child_provider.recorded().len() == 1,
+                "restart or Recovery Retry resumed model execution"
+            );
+            ensure!(
+                !env.runtime
+                    .recovery_issues()
+                    .iter()
+                    .any(|issue| { issue.thread_id.as_deref() == Some(&root.thread.id) }),
+                "healthy cold root binding produced a Recovery issue"
+            );
+            let before = lease_fact(&env.home, &id, false).await?;
+            ensure!(before == expected, "read-only Recovery changed a binding");
+            if legacy {
+                ensure!(
+                    env.runtime.recovery_issues().iter().any(|issue| {
+                        issue.id == format!("worktree-lease-{id}")
+                            && issue
+                                .worktree
+                                .as_ref()
+                                .is_some_and(|preview| preview.state == "preserved")
+                    }),
+                    "old preserved facts disappeared before real activation"
+                );
+            } else {
+                ensure!(
+                    !env.runtime
+                        .recovery_issues()
+                        .iter()
+                        .any(|issue| { issue.thread_id.as_deref() == Some(&id) }),
+                    "healthy cold binding produced a Recovery issue"
+                );
+            }
+            let parent = env.runtime.thread_snapshot(&root.thread.id).await?;
+            env.runtime
+                .submit_prompt_command(
+                    root.thread.id.clone(),
+                    SubmitPromptRequest {
+                        input: StudioPromptInput {
+                            input_id: "input-cold-resume-parent".into(),
+                            text: "cold-resume-parent".into(),
+                            attachment_draft_ids: vec![],
+                        },
+                        expected_model_route_revision: parent
+                            .runtime
+                            .as_ref()
+                            .and_then(|runtime| runtime.model_route.as_ref())
+                            .context("saved parent model route")?
+                            .revision,
+                    },
+                )
+                .await?;
+            reached(&child_resumed).await?;
+            reached(&parent_resumed).await?;
+            let send = support::receipt(&env.root_provider, "cold-send")?;
+            ensure!(send["target"] == id && send["sequence"].as_u64().is_some());
+            let confirmed = lease_fact(&env.home, &id, false).await?;
+            let mut expected_active = expected.clone();
+            expected_active["state"] = "active".into();
+            expected_active["revision"] =
+                (expected["revision"].as_u64().context("original revision")? + u64::from(legacy))
+                    .into();
+            ensure!(
+                confirmed == expected_active,
+                "confirmation changed the original binding"
+            );
+            recovery_ready(&env.runtime).await?;
+            ensure!(
+                !env.runtime
+                    .recovery_issues()
+                    .iter()
+                    .any(|issue| { issue.thread_id.as_deref() == Some(&id) }),
+                "confirmed child retained a stale Recovery issue"
+            );
+            ensure!(git(&path, &["rev-parse", "HEAD"])? == head);
+            ensure!(git(&path, &["status", "--porcelain", "--ignored"])? == status);
+            if dirty {
+                ensure!(std::fs::read_to_string(path.join("tracked.txt"))? == "keep modified\n");
+                ensure!(std::fs::read_to_string(path.join("untracked.txt"))? == "keep untracked\n");
+                ensure!(std::fs::read_to_string(path.join("ignored.txt"))? == "keep ignored\n");
+            }
+            ensure!(env.child_provider.recorded().len() == 2);
+            env.runtime.shutdown_runtime().await?;
+            ensure!(
+                lease_fact(&env.home, &id, false).await? == confirmed,
+                "second ordinary shutdown changed the confirmed binding"
+            );
+            Ok(())
+        }
+        .await;
+        spawned.release();
+        child_initial.release();
+        child_resumed.release();
+        parent_resumed.release();
+        env.finish(result)
+            .await
+            .with_context(|| format!("dirty={dirty}, legacy={legacy}"))?;
+    }
+    Ok(())
+}
+
 #[tokio::test]
 async fn changed_root_is_rebound_in_place_and_recovery_reports_the_observed_branch() -> Result<()> {
     let mut env = Environment::new(
@@ -299,6 +718,8 @@ async fn factory_missing_error_stays_typed_and_recovery_never_calls_missing_deta
             .start(ThreadWorkspaceMode::Worktree, "missing-identity")
             .await?;
         completed_prompt(&env.runtime, &root.thread.id, "missing-identity").await?;
+        env.runtime.shutdown_runtime().await?;
+        let retained = lease_fact(&env.home, &root.thread.id, true).await?;
         env.restart().await?;
         let history = support::saved(&env.home, &root.thread.id).await?;
         let original_snapshot = env.runtime.thread_snapshot(&root.thread.id).await?;
@@ -403,6 +824,11 @@ async fn factory_missing_error_stays_typed_and_recovery_never_calls_missing_deta
             .into_iter()
             .find(|issue| issue.id == format!("execution-workspace:{}", root.thread.id))
             .context("execution rejection did not publish this Thread's Recovery issue")?;
+        recovery_ready(&env.runtime).await?;
+        ensure!(
+            lease_fact(&env.home, &root.thread.id, false).await? == retained,
+            "failed cold verification or Retry washed out the original preserved fact"
+        );
         ensure!(
             execution_issue.scope == StudioRecoveryIssueScope::Thread
                 && execution_issue.category == StudioRecoveryIssueCategory::Repository

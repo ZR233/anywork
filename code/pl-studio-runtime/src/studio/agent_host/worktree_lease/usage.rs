@@ -73,6 +73,9 @@ impl WorkspaceAdmission {
     pub(super) fn is_retiring(&self, id: &str) -> bool {
         self.seals.contains_key(id)
     }
+    pub(super) fn is_removing(&self, id: &str) -> bool {
+        self.removals.values().any(|(owner, _)| owner == id)
+    }
     fn next(&mut self) -> Result<u64> {
         self.serial = self
             .serial
@@ -203,6 +206,88 @@ impl WorkspaceCloseSeal {
 }
 
 impl WorktreeLeaseOwner {
+    /// Confirms exactly the binding physically verified by the factory, while its real
+    /// preparation use still protects it. Even an unchanged Active lease waits for its own ACK.
+    pub(in crate::studio) async fn confirm_verified_binding(
+        &self,
+        expected: &super::WorktreeLease,
+        usage: &WorkspaceUsageLease,
+    ) -> Result<super::WorktreeLease> {
+        expected.validate_identity()?;
+        ensure!(
+            Weak::ptr_eq(&usage.0.state, &Arc::downgrade(&self.state)),
+            "workspace use belongs to another runtime owner"
+        );
+        let (confirmed, ticket) = {
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let entry = state
+                .workspace
+                .active
+                .get(&usage.0.serial)
+                .context("workspace preparer is no longer registered")?;
+            ensure!(
+                entry.owner == expected.owner_thread_id && entry.purpose == UsagePurpose::Execution,
+                "verified worktree does not belong to this execution use"
+            );
+            let UsageTarget::Assigned(identity) = &entry.target else {
+                anyhow::bail!("verified worktree requires an assigned execution workspace");
+            };
+            ensure!(
+                identity.matches_root(&expected.path)
+                    && matches!(
+                        (&identity.endpoint, &expected.ssh_alias),
+                        (WorkspaceEndpoint::Local, None) | (WorkspaceEndpoint::Ssh { .. }, Some(_))
+                    ),
+                "verified worktree differs from the assigned workspace"
+            );
+            ensure!(
+                !state.workspace.is_retiring(&expected.owner_thread_id)
+                    && !state
+                        .workspace
+                        .seals
+                        .values()
+                        .any(|seal| identity.within(&seal.identity))
+                    && !state
+                        .workspace
+                        .removals
+                        .values()
+                        .any(|(_, target)| identity.within(target)),
+                "verified worktree is sealed for retirement or removal"
+            );
+            ensure!(
+                state
+                    .entries
+                    .get(&expected.owner_thread_id)
+                    .is_some_and(|entry| entry.lease == *expected),
+                "verified worktree binding or revision changed"
+            );
+            ensure!(
+                matches!(
+                    expected.state,
+                    super::WorktreeLeaseState::Prepared
+                        | super::WorktreeLeaseState::Preserved
+                        | super::WorktreeLeaseState::Active
+                ),
+                "cleaned or cleanup-requested worktree cannot be confirmed"
+            );
+            let mut confirmed = expected.clone();
+            if confirmed.state != super::WorktreeLeaseState::Active {
+                confirmed.revision = confirmed
+                    .revision
+                    .checked_add(1)
+                    .context("worktree lease revision exhausted")?;
+                confirmed.state = super::WorktreeLeaseState::Active;
+            }
+            let ticket = self.record_ticket_locked(&mut state, confirmed.clone())?;
+            (confirmed, ticket)
+        };
+        self.writer.flush_through(ticket).await?;
+        Ok(confirmed)
+    }
+
     pub(in crate::studio) async fn reserve_project_workspace(
         &self,
         owner: &str,

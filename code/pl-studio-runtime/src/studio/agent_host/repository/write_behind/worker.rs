@@ -107,15 +107,22 @@ async fn run_writer(shared: Arc<WriterShared>, pending_commits: Arc<AtomicUsize>
         match apply_batch(&shared.store, &batch).await {
             Ok(()) => {
                 #[cfg(test)]
-                if batch.entries.iter().any(|entry| {
-                    let super::queue::StudioMutation::Directory(mutation) = &entry.mutation;
-                    matches!(mutation.as_ref(), super::queue::StudioDirectoryMutation::WorktreeLease(lease)
-                        if lease.state == crate::studio::agent_host::worktree_lease::WorktreeLeaseState::Cleaned)
-                }) {
-                    let gate = shared.cleaned_ack_gate.lock().unwrap().take();
-                    if let Some((entered, release)) = gate {
-                        let _ = entered.send(());
-                        let _ = release.await;
+                {
+                    let gate = {
+                        let mut gate = shared.lease_ack_gate.lock().unwrap();
+                        if gate.as_ref().is_some_and(|gate| batch.entries.iter().any(|entry| {
+                            let super::queue::StudioMutation::Directory(mutation) = &entry.mutation;
+                            matches!(mutation.as_ref(), super::queue::StudioDirectoryMutation::WorktreeLease(lease)
+                                if lease.state == gate.state)
+                        })) {
+                            gate.take()
+                        } else {
+                            None
+                        }
+                    };
+                    if let Some(gate) = gate {
+                        let _ = gate.entered.send(());
+                        let _ = gate.release.await;
                     }
                 }
                 let was_unhealthy = matches!(

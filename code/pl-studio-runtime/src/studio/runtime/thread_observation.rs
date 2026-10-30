@@ -3354,6 +3354,7 @@ mod storage_fault_tests {
             crate::studio::thread_factory::StudioThreadServices {
                 store: store.clone(),
                 worktrees: worktrees.clone(),
+                recovery: recovery.clone(),
                 product_events: events.clone(),
                 config_runtime: config.clone(),
                 mcp_runtime: pl_tool::mcp::McpRuntime::new(pl_tool::mcp::McpConnector::default())
