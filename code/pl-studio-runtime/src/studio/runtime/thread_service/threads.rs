@@ -443,6 +443,7 @@ impl StudioRuntime {
             )
             .await?;
         admitted_ids.extend(frozen.thread_ids());
+        scope.cancel_preparations();
         admitted_ids.sort();
         admitted_ids.dedup();
         let _bot_archive = self.bots.quiesce_archive_threads(&admitted_ids).await?;
@@ -647,9 +648,11 @@ impl StudioRuntime {
     pub(super) async fn retire_archived_thread_tree(&self, thread_ids: &[String]) -> Result<()> {
         for id in thread_ids {
             if self.threads.observed_thread(id).is_none() {
-                if self.store.thread_preparation(id).await?.is_some_and(|record|
-                    !record.published && record.stopped && record.retired
-                        && record.save == crate::studio::store::thread_preparation::PreparationSave::Unattached)
+                if self
+                    .store
+                    .thread_preparation(id)
+                    .await?
+                    .is_some_and(|record| !record.published)
                 {
                     continue;
                 }

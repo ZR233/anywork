@@ -235,6 +235,24 @@ impl StudioStore {
                 "Thread archive cleanup must be retried before execution"
             );
         }
+        // A preserve owner can exit after sealing but before the first threadArchive commit.
+        // Its own durable responsibility must keep this original tree closed to execution.
+        for preparation in self.thread_preparations().await? {
+            if !preparation.published
+                && preparation.disposition
+                    == super::thread_preparation::PreparationDisposition::ArchivePreserve
+                && preparation.identity.workspace_id == workspace_id
+                && thread_id.is_some_and(|id| {
+                    id == preparation.identity.thread_id
+                        || id == preparation.identity.root_id
+                        || self.catalog().get(id).is_some_and(|record| {
+                            record.root_thread_id == preparation.identity.root_id
+                        })
+                })
+            {
+                anyhow::bail!("Thread archive cleanup must be retried before execution");
+            }
+        }
         Ok(())
     }
 }

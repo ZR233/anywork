@@ -11,7 +11,9 @@ use crate::studio::{
     store::thread_archive::{
         ArchiveMember, ArchivePhase, ArchiveScope, PrivateArchiveMember, ThreadArchiveOperation,
     },
-    store::thread_preparation::{PreparationBinding, PreparationIdentity, PreparationSave},
+    store::thread_preparation::{
+        PreparationBinding, PreparationDisposition, PreparationIdentity, PreparationSave,
+    },
 };
 
 impl StudioRuntime {
@@ -22,6 +24,25 @@ impl StudioRuntime {
         admitted: &[PreparationIdentity],
     ) -> Result<ThreadArchiveOperation> {
         let previous = self.store.thread_archive(&scope).await?;
+        // These original responsibilities outlive both the registry owner and a failed first
+        // threadArchive write. Discover by trusted identity, never by scanning physical paths.
+        let mut admitted = admitted.to_vec();
+        for record in self.store.thread_preparations().await? {
+            let in_scope = match &scope {
+                ArchiveScope::Thread(root) => record.identity.root_id == *root,
+                ArchiveScope::Workspace(workspace) => record.identity.workspace_id == *workspace,
+            };
+            if in_scope
+                && !record.published
+                && record.disposition != PreparationDisposition::TempCleaned
+                && !(record.disposition == PreparationDisposition::Remove && record.retired)
+                && !admitted
+                    .iter()
+                    .any(|identity| identity.thread_id == record.identity.thread_id)
+            {
+                admitted.push(record.identity);
+            }
+        }
         if let Some(operation) = &previous
             && operation.phase != ArchivePhase::Published
         {
@@ -60,16 +81,15 @@ impl StudioRuntime {
             .filter(|operation| operation.phase != ArchivePhase::Published)
             .map(|operation| operation.members.clone())
             .unwrap_or_default();
-        for identity in admitted {
+        for identity in &admitted {
             self.store
                 .begin_thread_preparation(identity.clone())
                 .await?;
         }
         for thread in threads {
             let preparation = self.store.thread_preparation(&thread.id).await?;
-            if preparation.as_ref().is_some_and(|record| {
-                !record.published && record.binding == PreparationBinding::Unbound
-            }) {
+            if preparation.as_ref().is_some_and(|record| !record.published) {
+                members.retain(|member| member.thread_id != thread.id);
                 continue;
             }
             if let Some(member) = members.iter().find(|member| member.thread_id == thread.id) {
@@ -140,7 +160,7 @@ impl StudioRuntime {
             .iter()
             .map(|member| member.identity.clone())
             .collect::<Vec<_>>();
-        for identity in admitted {
+        for identity in &admitted {
             if !members
                 .iter()
                 .any(|member| member.thread_id == identity.thread_id)
@@ -157,7 +177,7 @@ impl StudioRuntime {
             }
         }
         for identity in private_identities {
-            let record = self
+            let mut record = self
                 .store
                 .thread_preparation(&identity.thread_id)
                 .await?
@@ -184,6 +204,26 @@ impl StudioRuntime {
                 }
                 private_members.retain(|member| member.identity.thread_id != identity.thread_id);
                 continue;
+            }
+            if record.disposition == PreparationDisposition::Remove && record.retired {
+                private_members.retain(|member| member.identity.thread_id != identity.thread_id);
+                continue;
+            }
+            if matches!(
+                record.disposition,
+                PreparationDisposition::Pending | PreparationDisposition::Remove
+            ) {
+                self.store
+                    .set_preparation_disposition(
+                        &identity.thread_id,
+                        PreparationDisposition::ArchivePreserve,
+                    )
+                    .await?;
+                record = self
+                    .store
+                    .thread_preparation(&identity.thread_id)
+                    .await?
+                    .context("original preserve responsibility disappeared")?;
             }
             if let Some(member) = private_members
                 .iter_mut()
@@ -264,11 +304,30 @@ impl StudioRuntime {
     ) -> Result<()> {
         for index in 0..operation.private_members.len() {
             let member = operation.private_members[index].clone();
-            let record = self
+            let mut record = self
                 .store
                 .thread_preparation(&member.identity.thread_id)
                 .await?
                 .context("private archive responsibility is missing")?;
+            // Only the original incarnation can have persisted this closed/joined receipt.
+            // It also proves producer stop if a crash separated receipt persistence from stop.
+            if !record.stopped
+                && record.save == PreparationSave::Confirmed
+                && record.storage.as_ref().is_some_and(|storage| {
+                    storage
+                        .closed_receipt
+                        .is_some_and(|through| through >= storage.required_through)
+                })
+            {
+                self.store
+                    .confirm_preparation_stop(&member.identity.thread_id)
+                    .await?;
+                record = self
+                    .store
+                    .thread_preparation(&member.identity.thread_id)
+                    .await?
+                    .context("original receipt owner disappeared")?;
+            }
             ensure!(
                 record.identity == member.identity && record.binding == member.binding,
                 "private archive original binding changed"
@@ -393,6 +452,9 @@ impl StudioRuntime {
                 operation.changed()?;
                 self.store.save_thread_archive(operation).await?;
             }
+            self.store
+                .confirm_preparation_temp_cleanup(&member.identity, &member.binding)
+                .await?;
         }
         operation.phase = ArchivePhase::Cleaned;
         operation.changed()?;

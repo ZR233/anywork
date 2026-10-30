@@ -9,6 +9,8 @@ pub(crate) mod agent_review;
 mod agent_services;
 mod agents;
 #[cfg(test)]
+pub(crate) use agents::archive_tests::spawn_failed_archive_fixture;
+#[cfg(test)]
 pub(crate) use agents::archive_tests::spec as archive_test_spec;
 mod delegation_models;
 pub(crate) mod observation;
