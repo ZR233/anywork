@@ -80,7 +80,6 @@ widget 不证明 native 句柄和持久化，单平台／模拟对端不证明�
 
 ## 来源与职责
 
-- [issue #220](https://github.com/ZR233/anywork/issues/220)：模式与反例来源，不是现有功能或本次验证的证明。
 - [设计索引](../../../../design/README.md)：产品契约唯一归属，具体协议变化在所属文档维护。
 - [SQLite 隔离](https://sqlite.org/isolation.html) 与 [WAL](https://sqlite.org/wal.html)：读快照和提交边界。
 - [SeaORM migration](https://www.sea-ql.org/SeaORM/docs/migration/writing-migration/)：按实际版本和后端核对事务能力。
