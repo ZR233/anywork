@@ -401,7 +401,29 @@ async fn archive_queued_submit_lost_claim_drains_retention_before_releasing_draf
         "cancellation must not release the source draft before retention ACK"
     );
     retention.release();
-    let guard = tokio::time::timeout(Duration::from_secs(5), quiesce).await??;
+    let released_at = std::time::Instant::now();
+    let guard = tokio::time::timeout(Duration::from_secs(5), quiesce)
+        .await
+        .with_context(|| {
+            let resources = root.read_dir().map(|entries| {
+                entries
+                    .map(|entry| {
+                        entry.and_then(|entry| {
+                            Ok((entry.file_name(), entry.metadata()?.len()))
+                        })
+                    })
+                    .collect::<std::io::Result<Vec<_>>>()
+            });
+            format!(
+                "queued CAS retention released but original reply/quiesce did not join: \
+                 elapsed={:?}, permits={}, draft_exists={}, download_finished={}, resources={resources:?}",
+                released_at.elapsed(),
+                fixture.bots.inner.reply_slots.available_permits(),
+                draft.exists(),
+                download.completed.load(Ordering::SeqCst),
+            )
+        })?
+        .context("original reply/quiesce returned an error after CAS retention release")?;
     assert_eq!(fixture.bots.inner.reply_slots.available_permits(), 32);
     assert!(
         !draft.exists(),
@@ -425,7 +447,8 @@ async fn archive_queued_submit_lost_claim_drains_retention_before_releasing_draf
             .host
             .runtime
             .bot_input_fact(&inbound.creation_id, &input_id)
-            .await?,
+            .await
+            .context("post-quiesce read of the original stable bot input")?,
         BotInputRead::Absent,
         "the safe pre-core cancellation boundary did not submit a new input",
     );
@@ -440,25 +463,36 @@ async fn archive_queued_submit_lost_claim_drains_retention_before_releasing_draf
     assert_eq!(
         resources
             .read(reference.clone(), CancellationToken::new())
-            .await?
+            .await
+            .context("post-quiesce read of the retained CAS resource")?
             .as_ref(),
         RESOURCE_BODY.as_bytes(),
         "an actual retained resource is not rolled back as if copying never happened",
     );
-    SessionTempBackend::Local(&workspace).remove(&files).await?;
+    SessionTempBackend::Local(&workspace)
+        .remove(&files)
+        .await
+        .context("post-quiesce removal of the media producer's temp")?;
     assert!(!workspace.join(files.temp()).exists());
     assert!(!destination.exists());
     assert!(!draft.exists());
     assert_eq!(
         resources
             .read(reference, CancellationToken::new())
-            .await?
+            .await
+            .context("read of the retained CAS resource after temp cleanup")?
             .as_ref(),
         RESOURCE_BODY.as_bytes(),
         "reliable resource and finished draft cleanup survive temp removal",
     );
     drop(guard);
     drop(retention);
-    fixture.shutdown().await?;
-    server.close().await
+    fixture
+        .shutdown()
+        .await
+        .context("queued CAS fixture runtime shutdown after verified quiesce")?;
+    server
+        .close()
+        .await
+        .context("queued CAS fixture HTTP server join")
 }
