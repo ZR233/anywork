@@ -148,6 +148,9 @@ jobs:
           $identity | ConvertTo-Json -Depth 6 | Set-Content -Encoding utf8 (Join-Path $evidence 'platform.json')
           cargo flutter doctor -v
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Build Rust bridge for native profile
+        if: github.event_name != 'workflow_dispatch' || inputs.scenario != 'plan-recovery'
+        run: cargo build --locked -p pl-studio-bridge --release
       - name: Observe realtime native profile
         if: github.event_name != 'workflow_dispatch' || inputs.scenario == 'all' || inputs.scenario == 'realtime'
         run: cargo xtask manual-gui --scenario realtime --output target/native-acceptance/realtime
@@ -157,6 +160,9 @@ jobs:
       - name: Observe full large-body detail and copy profile
         if: github.event_name != 'workflow_dispatch' || inputs.scenario == 'all' || inputs.scenario == 'stress-body-large'
         run: cargo xtask manual-gui --scenario stress-body-large --output target/native-acceptance/stress-body-large
+      - name: Build Rust bridge for native debug
+        if: github.event_name != 'workflow_dispatch' || inputs.scenario == 'all' || inputs.scenario == 'plan-recovery'
+        run: cargo build --locked -p pl-studio-bridge
       - name: Observe plan recovery native debug
         if: github.event_name != 'workflow_dispatch' || inputs.scenario == 'all' || inputs.scenario == 'plan-recovery'
         run: cargo xtask manual-gui --scenario plan-recovery --output target/native-acceptance/plan-recovery

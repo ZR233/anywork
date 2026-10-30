@@ -60,6 +60,8 @@ FRB 慢消费者的严格等待证据来自同一 producer 的实际 credit 等�
 
 Windows 原生验收可通过独立的 `Native Acceptance` 工作流显式启用：PR 使用 `native-acceptance` 标签，合入后的独立调用使用 `workflow_dispatch`。它沿用根目录 `cargo xtask manual-gui`、同次源码构建并校验的双架构 remote-helper 资源及受管 Driver 生命周期，不属于默认 PR Quality Gate，也不以静态 Windows CI 代替真实原生执行。运行记录实际源码身份、Windows/显卡环境、场景报告、帧样本、截图和退出证据；托管 runner 的显示或渲染失败保留为环境事实，不降低正文规模或交互门槛。
 
+CI 在场景启动前显式完成同次源码、相同 Cargo 配置的 Rust bridge 构建：profile 场景使用 `release`，debug 场景使用默认开发配置。独立构建步骤保留完整编译失败，不让首次冷编译占用原生 VM 就绪期限；场景仍由 xtask 校验并消费构件，原有就绪、交互及退出期限保持不变。预构建成功不证明原生程序已启动或任何验收通过。
+
 CI 采集的 profile 帧与截图只代表该 Windows runner、构建模式和场景，人工结论仍须独立核对，不能外推为用户硬件的稳态性能。工作流仅归档正式场景证据，排除隔离环境目录、home、数据库及保留环境清单；截图作为 PR 图片交付前仍须检查内容并按仓库附件规则上传回读。未产出的指标和未执行场景保持缺失，不由工作流退出成功补造。
 
 升级恢复验收可通过 `cargo xtask manual-gui --scenario gui --seed-home-copy <DIR>` 消费已关闭、经 SQLite backup API 制作的一致性 home 副本。工具只读复制该输入到自有隔离环境，拒绝带 WAL/SHM 或符号链接的输入；保留项目、会话及账本事实，将账号端点切换为本地模拟供应商，并在启动前禁用机器人外发、MCP、LSP 与 ACP。来源副本和真实数据根都不修改；截图、快照、迁移前后数据库核对及进程回收共同构成证据。副本模式通过原生启动器运行，Driver 收束后请求产品退出，并核对原生退出报告中的退出码和子进程回收结果。
