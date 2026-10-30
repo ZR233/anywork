@@ -61,6 +61,16 @@ impl Fixture {
         chat_id: &str,
         bound: bool,
     ) -> Result<FrozenInbound> {
+        self.inbound_with_attachments(chat_id, bound, Vec::new())
+            .await
+    }
+
+    pub(in crate::bots) async fn inbound_with_attachments(
+        &self,
+        chat_id: &str,
+        bound: bool,
+        attachments: Vec<crate::bots::inbound::InboundAttachment>,
+    ) -> Result<FrozenInbound> {
         let creation_id = format!("archive-thread-{chat_id}");
         self.managed
             .store
@@ -88,7 +98,7 @@ impl Fixture {
             chat_id: chat_id.into(),
             content_hash: format!("hash-{chat_id}"),
             text: format!("original frozen text for {chat_id}"),
-            attachments: Vec::new(),
+            attachments,
             open_id: "fixture-user".into(),
             chat_kind: "direct".into(),
             app_id: "cli_archive_fixture".into(),
@@ -104,7 +114,7 @@ impl Fixture {
         Ok(inbound)
     }
 
-    async fn ledger_probe(&self) -> Result<DatabaseConnection> {
+    pub(in crate::bots) async fn ledger_probe(&self) -> Result<DatabaseConnection> {
         let path = self
             .bots
             .inner
@@ -120,6 +130,10 @@ impl Fixture {
     pub(in crate::bots) async fn shutdown(&self) -> Result<()> {
         self.host.runtime.shutdown_runtime().await?;
         Ok(())
+    }
+
+    pub(in crate::bots) async fn enqueue(&self, inbound: FrozenInbound) -> Result<()> {
+        Ok(self.bots.enqueue_inbound(inbound).await?)
     }
 }
 

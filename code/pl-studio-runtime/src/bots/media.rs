@@ -20,9 +20,16 @@ impl BotRuntime {
         if attachments.is_empty() {
             return Ok(Vec::new());
         }
-        let managed = self.managed(bot_id).await?;
-        let config = managed.config.lock().await.clone();
-        let token = self.token(&managed, &config).await?;
+        // These waits have no file side effects. After download starts, retain
+        // its future until every started filesystem operation has completed.
+        let token = tokio::select! {
+            _ = cancel.cancelled() => return Err(media_error("附件下载已取消")),
+            token = async {
+                let managed = self.managed(bot_id).await?;
+                let config = managed.config.lock().await.clone();
+                self.token(&managed, &config).await
+            } => token?,
+        };
         let uploads = self
             .inner
             .paths
@@ -60,13 +67,17 @@ impl BotRuntime {
                 .join(hex::encode(Sha256::digest(attachment.key().as_bytes())))
                 .join(filename);
             if !path.is_file() {
-                tokio::select! {
-                    _ = cancel.cancelled() => return Err(media_error("附件下载已取消")),
-                    result = self.inner
+                self.inner
                     .http
-                    .download_message_resource(&token, message_id, attachment.key(), kind, &path)
-                    => result?,
-                }
+                    .download_message_resource(
+                        &token,
+                        message_id,
+                        attachment.key(),
+                        kind,
+                        &path,
+                        cancel,
+                    )
+                    .await?;
             }
             sources.push(
                 pl_protocol::studio::StudioAttachmentDraftSource::LocalFile {
@@ -75,7 +86,7 @@ impl BotRuntime {
             );
         }
         let drafts = runtime
-            .prepare_bot_attachment_drafts(thread_id, sources)
+            .prepare_bot_attachment_drafts(thread_id, sources, cancel)
             .await
             .map_err(|error| media_error(error.to_string()))?;
         Ok(drafts

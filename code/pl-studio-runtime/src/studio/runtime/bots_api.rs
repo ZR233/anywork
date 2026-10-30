@@ -36,8 +36,15 @@ impl StudioRuntime {
         &self,
         thread_id: &str,
         sources: Vec<pl_protocol::studio::StudioAttachmentDraftSource>,
+        cancel: &tokio_util::sync::CancellationToken,
     ) -> Result<pl_protocol::studio::AdmitAttachmentDraftsResponse> {
-        let _guard = self.lifecycle_lock.lock().await;
+        // Only admission is cancellable. Once admitted, the reply retains this
+        // future through the actual file/resource handoff before reporting stop.
+        let _guard = tokio::select! {
+            _ = cancel.cancelled() => anyhow::bail!("bot attachment admission cancelled"),
+            guard = self.lifecycle_lock.lock() => guard,
+        };
+        anyhow::ensure!(!cancel.is_cancelled(), "bot attachment admission cancelled");
         let thread = self.ensure_thread_owner(thread_id).await?;
         self.reconcile_bot_model(thread_id, &thread).await?;
         self.admit_attachment_drafts(pl_protocol::studio::AdmitAttachmentDraftsRequest {

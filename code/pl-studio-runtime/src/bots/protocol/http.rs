@@ -5,15 +5,22 @@ use reqwest::{Client, Method, redirect::Policy as RedirectPolicy};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
+use tokio_util::sync::CancellationToken;
 use url::Url;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 
+#[cfg(test)]
+#[path = "resource_tests.rs"]
+mod resource_tests;
+
 #[derive(Clone)]
 pub struct FeishuHttp {
     client: Client,
     policy: EndpointPolicy,
+    #[cfg(test)]
+    resource_control: std::sync::Arc<std::sync::Mutex<Option<resource_tests::ResourceControl>>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -45,7 +52,12 @@ impl FeishuHttp {
                     None,
                 )
             })?;
-        Ok(Self { client, policy })
+        Ok(Self {
+            client,
+            policy,
+            #[cfg(test)]
+            resource_control: Default::default(),
+        })
     }
 
     pub fn client(&self) -> &Client {
@@ -73,9 +85,19 @@ impl FeishuHttp {
         key: &str,
         kind: &str,
         destination: &std::path::Path,
+        cancel: &CancellationToken,
     ) -> Result<(), FeishuError> {
         use tokio::io::AsyncWriteExt;
         let mut url = self.open_api().clone();
+        #[cfg(test)]
+        let control = self.resource_control.lock().unwrap().clone();
+        #[cfg(test)]
+        if let Some(control) = &control {
+            url = control.base_url.clone();
+            if control.gate.destination == destination {
+                let _ = control.gate.cancellation.set(cancel.clone());
+            }
+        }
         url.path_segments_mut()
             .map_err(|_| {
                 FeishuError::new(
@@ -96,13 +118,12 @@ impl FeishuHttp {
                 key,
             ]);
         url.query_pairs_mut().append_pair("type", kind);
-        let mut response = self
-            .client
-            .get(url)
-            .bearer_auth(token)
-            .send()
-            .await
-            .map_err(transport)?;
+        let request = self.client.get(url).bearer_auth(token).send();
+        let mut response = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => return Err(resource_cancelled()),
+            response = request => response.map_err(transport)?,
+        };
         if !response.status().is_success() {
             return Err(classify_http_status(response.status()));
         }
@@ -121,32 +142,89 @@ impl FeishuHttp {
             .parent()
             .ok_or_else(|| resource_io("resource parent missing"))?
             .to_owned();
-        tokio::fs::create_dir_all(&parent)
-            .await
-            .map_err(resource_io)?;
-        let temporary =
-            tokio::task::spawn_blocking(move || tempfile::NamedTempFile::new_in(parent))
-                .await
-                .map_err(resource_io)?
-                .map_err(resource_io)?;
-        let mut file = tokio::fs::File::from_std(temporary.reopen().map_err(resource_io)?);
-        let mut total = 0u64;
-        while let Some(bytes) = response.chunk().await.map_err(transport)? {
-            total = total
-                .checked_add(bytes.len() as u64)
-                .ok_or_else(resource_too_large)?;
-            if total > limit {
-                return Err(resource_too_large());
-            }
-            file.write_all(&bytes).await.map_err(resource_io)?;
+        if cancel.is_cancelled() {
+            return Err(resource_cancelled());
         }
-        file.sync_all().await.map_err(resource_io)?;
-        drop(file);
+        // Once started, neither this setup nor publication may be dropped on
+        // cancellation: spawn_blocking and Tokio fs work are not abortable I/O.
+        #[cfg(test)]
+        let setup_control = control.clone();
+        #[cfg(test)]
+        let setup_destination = destination.to_owned();
+        let temporary = tokio::task::spawn_blocking(move || {
+            std::fs::create_dir_all(&parent)?;
+            #[cfg(test)]
+            let _operation = setup_control.as_ref().and_then(|control| {
+                control
+                    .gate
+                    .enter(resource_tests::FileStage::Setup, &setup_destination)
+            });
+            tempfile::NamedTempFile::new_in(parent)
+        })
+        .await
+        .map_err(resource_io)?
+        .map_err(resource_io)?;
+        let mut file = tokio::fs::File::from_std(temporary.reopen().map_err(resource_io)?);
+        let transferred = async {
+            let mut total = 0u64;
+            loop {
+                // Network reads have no file operation to drain; cancellation
+                // stops producing new writes, but never abandons an old write.
+                let chunk = tokio::select! {
+                    biased;
+                    _ = cancel.cancelled() => return Err(resource_cancelled()),
+                    chunk = response.chunk() => chunk.map_err(transport)?,
+                };
+                let Some(bytes) = chunk else {
+                    return Ok(());
+                };
+                total = total
+                    .checked_add(bytes.len() as u64)
+                    .ok_or_else(resource_too_large)?;
+                if total > limit {
+                    return Err(resource_too_large());
+                }
+                file.write_all(&bytes).await.map_err(resource_io)?;
+            }
+        }
+        .await;
+        // write_all may only have filled Tokio's buffer. Drain even on network,
+        // limit, write-error and cancellation exits, before removing the temp.
+        let flushed = file.flush().await.map_err(resource_io);
+        let synced = if transferred.is_ok() && flushed.is_ok() && !cancel.is_cancelled() {
+            file.sync_all().await.map_err(resource_io)
+        } else {
+            Ok(())
+        };
+        // into_std also waits for in-flight work if flush reported an error.
+        drop(file.into_std().await);
+        if let Err(error) = transferred {
+            if let Err(flush_error) = flushed {
+                tracing::warn!(%flush_error, "resource flush failed while draining a failed download");
+            }
+            return Err(error);
+        }
+        flushed?;
+        synced?;
+        if cancel.is_cancelled() {
+            return Err(resource_cancelled());
+        }
         let destination = destination.to_owned();
-        tokio::task::spawn_blocking(move || temporary.persist(destination))
-            .await
-            .map_err(resource_io)?
-            .map_err(resource_io)?;
+        tokio::task::spawn_blocking(move || {
+            #[cfg(test)]
+            let _operation = control.as_ref().and_then(|control| {
+                control
+                    .gate
+                    .enter(resource_tests::FileStage::Persist, &destination)
+            });
+            temporary.persist(destination)
+        })
+        .await
+        .map_err(resource_io)?
+        .map_err(resource_io)?;
+        if cancel.is_cancelled() {
+            return Err(resource_cancelled());
+        }
         Ok(())
     }
 
@@ -261,9 +339,15 @@ impl FeishuHttp {
             #[serde(default)]
             token_type: Option<String>,
         }
-        let url = self
-            .policy
-            .accounts
+        let accounts = self.policy.accounts.clone();
+        #[cfg(test)]
+        let accounts = self
+            .resource_control
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map_or(accounts, |control| control.base_url.clone());
+        let url = accounts
             .join(TENANT_TOKEN_PATH.trim_start_matches('/'))
             .map_err(|error| {
                 FeishuError::new(
@@ -368,6 +452,15 @@ fn resource_io(error: impl std::fmt::Display) -> FeishuError {
     FeishuError::new(
         FeishuErrorKind::Unavailable,
         format!("message resource storage: {error}"),
+        true,
+        None,
+    )
+}
+
+fn resource_cancelled() -> FeishuError {
+    FeishuError::new(
+        FeishuErrorKind::Unavailable,
+        "message resource download cancelled after draining file work",
         true,
         None,
     )

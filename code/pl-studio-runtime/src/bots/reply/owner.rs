@@ -155,9 +155,9 @@ impl BotRuntime {
     ) -> InboundWorkOutcome {
         // 整个 dispatch（含初始绑定解析、观察打开、屏障、翻页、submit、发送等全部
         // 长 await）与 ≤20s 的认领续约在同一 JoinSet 任务内结构化并发：heartbeat
-        // 失租即返回 LostClaim 并丢弃主执行；所有副作用都带稳定身份的幂等受理或
-        // 发送账本事实，被丢弃的进行中请求由接管者按原操作核实，不等于未发生、
-        // 也不重放。cancel 由主执行自身收束为 Interrupted；heartbeat 在 cancel 后
+        // 失租先取消主执行，再等它排空已启动的文件 I/O 与可靠发送交接，最后返回
+        // LostClaim，不覆盖后继持有者的账本。所有副作用仍使用原稳定身份核实，
+        // 不把受理未知解释为未发生。cancel 由主执行自身收束；heartbeat 在 cancel 后
         // 挂起，不会把 runtime 停止误报成失租。
         let heartbeat_keys = (
             inbound.bot_id.clone(),
@@ -165,14 +165,21 @@ impl BotRuntime {
             inbound.message_id.clone(),
         );
         let heartbeat_worker = worker_id.to_string();
-        // Keep the reply state out of this select's stack frame. Pinning does not
-        // create another task, so heartbeat loss still drops the same owned work.
-        let reply =
-            Box::pin(self.run_reply(inbound, worker_id, registered_thread_id, cancel.clone()));
+        // The same reply owns every started operation until its real completion,
+        // including on lease loss. No detached successor or cleanup task.
+        let reply_cancel = cancel.child_token();
+        let mut reply = Box::pin(self.run_reply(
+            inbound,
+            worker_id,
+            registered_thread_id,
+            reply_cancel.clone(),
+        ));
         tokio::select! {
-        outcome = reply => outcome,
+        outcome = &mut reply => outcome,
         // heartbeat 只会因失租完成；cancel 后它保持挂起，不误报 runtime 停止。
         _ = heartbeat_claims(self.clone(), heartbeat_keys, heartbeat_worker, cancel.clone()) => {
+                reply_cancel.cancel();
+                let _ = reply.await;
                 InboundWorkOutcome::LostClaim
             }
         }
@@ -490,20 +497,18 @@ impl BotRuntime {
         run: &ReplyRun,
         cancel: &CancellationToken,
     ) -> Step {
-        // Media and draft admission can wait for lifecycle_lock too. They are
-        // owned by this reply (not spawned); cancellation drops that wait,
-        // whereas durable platform send intents below still drain to ACK.
-        let prepared = tokio::select! {
-            _ = cancel.cancelled() => return Step::Done(InboundWorkOutcome::Interrupted),
-            prepared = self.prepare_inbound_attachments(
+        // Media preparation owns and drains started file work. Its admission
+        // boundary observes cancellation without dropping the whole operation.
+        let prepared = self
+            .prepare_inbound_attachments(
                 runtime,
                 &run.bot_id,
                 &run.thread_id,
                 &run.message_id,
                 &run.attachments,
                 cancel,
-            ) => prepared,
-        };
+            )
+            .await;
         let drafts = match prepared {
             Ok(drafts) => drafts,
             Err(error) => {
