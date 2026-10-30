@@ -2775,8 +2775,11 @@ class FrbStudioTransport
     await _ensureReady();
     return _skillSearchResultFromFrb(
       await _bridgeCall(
-        () =>
-            frb.searchSkills(workspaceId: workspaceId, query: query, limit: limit),
+        () => frb.searchSkills(
+          workspaceId: workspaceId,
+          query: query,
+          limit: limit,
+        ),
       ),
     );
   }

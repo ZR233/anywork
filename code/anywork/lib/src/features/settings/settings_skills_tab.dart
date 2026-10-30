@@ -47,7 +47,8 @@ class _SkillsTabState extends ConsumerState<SkillsTab> {
     if (visible) unawaited(_refreshSkillsState());
   }
 
-  String? _currentProjectId() => ref.read(settingsSkillsViewProvider).workspaceId;
+  String? _currentProjectId() =>
+      ref.read(settingsSkillsViewProvider).workspaceId;
 
   int _currentCatalogRevision() {
     return ref.read(settingsSkillsViewProvider).catalogRevision;

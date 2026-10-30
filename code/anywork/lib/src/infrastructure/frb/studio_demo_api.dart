@@ -1414,7 +1414,9 @@ class DemoStudioTransport extends StudioTransport
                 (thread) => !_archivedThreadIds.contains(thread.id),
               ),
             ]
-            .where((thread) => !_archivedProjectIds.contains(thread.workspaceId))
+            .where(
+              (thread) => !_archivedProjectIds.contains(thread.workspaceId),
+            )
             .toList()
           ..sort(StudioThread.compareDirectoryOrder);
     return threads;
@@ -2838,7 +2840,8 @@ class DemoStudioTransport extends StudioTransport
 
   @override
   Future<void> archiveProject(String workspaceId) async {
-    if (workspaceId == 'project-local' && _archivedProjectIds.add(workspaceId)) {
+    if (workspaceId == 'project-local' &&
+        _archivedProjectIds.add(workspaceId)) {
       _projectDirectoryRevision += 1;
       final removed = _workspaces.values
           .where((workspace) => workspace.thread.workspaceId == workspaceId)

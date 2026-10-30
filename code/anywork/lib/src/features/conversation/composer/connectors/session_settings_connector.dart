@@ -41,10 +41,12 @@ class SessionSettingsConnector extends ConsumerWidget {
       workspaceMode: project.workspaceMode,
       isStandalone: workspace?.isStandalone ?? false,
       enabled: enabled && !draft.submitting,
-      onModeChanged: (mode) => owner.setDelegationModeOverride(workspaceId, mode),
+      onModeChanged: (mode) =>
+          owner.setDelegationModeOverride(workspaceId, mode),
       onPreferenceChanged: (preference) =>
           owner.setDelegationPreferenceOverride(workspaceId, preference),
-      onWorkspaceModeChanged: (mode) => owner.setWorkspaceMode(workspaceId, mode),
+      onWorkspaceModeChanged: (mode) =>
+          owner.setWorkspaceMode(workspaceId, mode),
     );
   }
 }

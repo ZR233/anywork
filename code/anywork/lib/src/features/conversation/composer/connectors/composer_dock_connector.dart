@@ -263,7 +263,9 @@ class _StartPageComposerBodyState
             _addLocal,
             _reportFailure,
             isCurrent: () =>
-                context.mounted && isCurrent() && widget.workspaceId == workspaceId,
+                context.mounted &&
+                isCurrent() &&
+                widget.workspaceId == workspaceId,
           ),
       onDropAttachments: (details, isCurrent) => _dropAttachmentsFromConnector(
         details,
@@ -318,7 +320,10 @@ class _StartPageComposerBodyState
   ThreadModeId get _mode {
     final workspaceId = widget.workspaceId;
     if (workspaceId == null) return ThreadModeId.simple;
-    return ref.read(startSessionControllerProvider).forProject(workspaceId).mode;
+    return ref
+        .read(startSessionControllerProvider)
+        .forProject(workspaceId)
+        .mode;
   }
 
   Future<void> _pasteImage(Uint8List bytes) {

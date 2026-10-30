@@ -101,7 +101,10 @@ Future<void> main(List<String> args) async {
     _usage();
     return;
   }
-  final target = ColdStartIdentity(workspaceId: workspaceId, threadId: threadId);
+  final target = ColdStartIdentity(
+    workspaceId: workspaceId,
+    threadId: threadId,
+  );
   final driver = await FlutterDriver.connect(dartVmServiceUrl: args[0]);
   final probe = TimelineRowsProbe(driver.requestData);
   final report = <String, Object?>{

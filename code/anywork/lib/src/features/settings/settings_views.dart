@@ -309,8 +309,12 @@ class SettingsLspView {
           identical(runtime, other.runtime);
 
   @override
-  int get hashCode =>
-      Object.hash(workspaceId, runtimeRevision, sync, identityHashCode(runtime));
+  int get hashCode => Object.hash(
+    workspaceId,
+    runtimeRevision,
+    sync,
+    identityHashCode(runtime),
+  );
 }
 
 final settingsLspViewProvider = Provider.autoDispose<SettingsLspView>((ref) {

@@ -112,9 +112,8 @@ ProductTopic _productTopicFromBridge(frb_topic_types.BridgeProductTopic topic) {
     frb_topic_types.BridgeProductTopic_Recovery() => const RecoveryTopic(),
     frb_topic_types.BridgeProductTopic_Mcp() => const McpTopic(),
     frb_topic_types.BridgeProductTopic_Lsp() => const LspTopic(),
-    frb_topic_types.BridgeProductTopic_Skills(:final workspaceId) => SkillsTopic(
-      workspaceId: workspaceId,
-    ),
+    frb_topic_types.BridgeProductTopic_Skills(:final workspaceId) =>
+      SkillsTopic(workspaceId: workspaceId),
     frb_topic_types.BridgeProductTopic_ThreadModeCatalog() =>
       const ThreadModeCatalogTopic(),
     frb_topic_types.BridgeProductTopic_AccountUsage() =>
@@ -189,9 +188,8 @@ frb_topic_types.BridgeProductTopic bridgeProductTopic(ProductTopic topic) {
     RecoveryTopic() => const frb_topic_types.BridgeProductTopic.recovery(),
     McpTopic() => const frb_topic_types.BridgeProductTopic.mcp(),
     LspTopic() => const frb_topic_types.BridgeProductTopic.lsp(),
-    SkillsTopic(:final workspaceId) => frb_topic_types.BridgeProductTopic.skills(
-      workspaceId: workspaceId,
-    ),
+    SkillsTopic(:final workspaceId) =>
+      frb_topic_types.BridgeProductTopic.skills(workspaceId: workspaceId),
     ThreadModeCatalogTopic() =>
       const frb_topic_types.BridgeProductTopic.threadModeCatalog(),
     AccountUsageTopic() =>

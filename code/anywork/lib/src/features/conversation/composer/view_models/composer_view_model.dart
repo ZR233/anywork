@@ -141,7 +141,11 @@ class StartPageComposerViewModel extends _$StartPageComposerViewModel {
       .read(anyworkClientProvider)
       .drafts
       .attachments
-      .addNewThreadClipboard(workspaceId: workspaceId, mode: mode, pngBytes: bytes);
+      .addNewThreadClipboard(
+        workspaceId: workspaceId,
+        mode: mode,
+        pngBytes: bytes,
+      );
 
   Future<void> addRemoteAttachment(
     String workspaceId,
