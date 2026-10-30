@@ -10,7 +10,6 @@ import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
 import 'package:anywork_client/statistics.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -320,28 +319,8 @@ void main() {
 
   for (final wide in [false, true]) {
     testWidgets(
-      '${wide ? "wide" : "compact"} history copies the typed first-content source',
+      '${wide ? "wide" : "compact"} history renders only performance readings',
       (tester) async {
-        String? copied;
-        tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
-          SystemChannels.platform,
-          (call) async {
-            if (call.method == 'Clipboard.setData') {
-              copied =
-                  (call.arguments as Map<Object?, Object?>)['text'] as String;
-            }
-            if (call.method == 'Clipboard.hasStrings') {
-              return <String, bool>{'value': copied?.isNotEmpty ?? false};
-            }
-            return null;
-          },
-        );
-        addTearDown(
-          () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
-            SystemChannels.platform,
-            null,
-          ),
-        );
         tester.view.devicePixelRatio = 1;
         tester.view.physicalSize = Size(wide ? 1100 : 360, 1000);
         addTearDown(tester.view.reset);
@@ -366,26 +345,20 @@ void main() {
           ),
         );
         await tester.pumpAndSettle();
-        const sourceText =
-            'First content source: First complete tool input observed';
-        final source = find.byWidgetPredicate(
-          (widget) => widget is SelectableText && widget.data == sourceText,
-        );
-        expect(source, findsOneWidget);
-        final editable = tester.state<EditableTextState>(
-          find.descendant(of: source, matching: find.byType(EditableText)),
-        );
-        editable.selectAll(SelectionChangedCause.keyboard);
-        editable.copySelection(SelectionChangedCause.keyboard);
-        await tester.pump();
-        expect(copied, sourceText);
+        // 样本仍保留真实诊断事实，但历史行只呈现性能读数。
+        expect(sample.threadId, 'thread-statistics');
+        expect(sample.callId, 'window-call-0');
+        expect(sample.purpose, 'primary');
+        expect(sample.firstOutputSource, FirstOutputSource.completedToolInput);
+        expect(find.textContaining('Purpose:'), findsNothing);
+        expect(find.textContaining('First content source'), findsNothing);
+        expect(find.textContaining('Thread:'), findsNothing);
+        expect(find.textContaining('Call:'), findsNothing);
         expect(
-          find.byTooltip(
-            'A completed item marks the client’s first observation of complete tool input, '
-            'not the provider’s first token; decode time can be 0.',
-          ),
-          findsOneWidget,
+          find.byWidgetPredicate((widget) => widget is SelectableText),
+          findsNothing,
         );
+        expect(find.text('100'), findsWidgets);
         expect(tester.takeException(), isNull);
       },
     );
@@ -497,7 +470,7 @@ void main() {
   });
 
   testWidgets(
-    'history preserves unknown versus zero, source and copyable call identity',
+    'history preserves typed unknown versus zero without sample diagnostics',
     (tester) async {
       Future<void> pump(int? output, MetricAvailability availability) async {
         final sample = StatisticsSample(
@@ -543,7 +516,7 @@ void main() {
 
       await pump(null, MetricAvailability.missingOutput);
       expect(find.text('Unknown'), findsOneWidget);
-      expect(find.textContaining('Output usage unknown'), findsOneWidget);
+      expect(find.textContaining('Output usage unknown'), findsNothing);
       expect(
         find.byWidgetPredicate(
           (widget) =>
@@ -551,33 +524,24 @@ void main() {
               widget.data?.contains('First complete tool input observed') ==
                   true,
         ),
-        findsOneWidget,
+        findsNothing,
       );
-      expect(find.textContaining('compaction'), findsOneWidget);
-      final identity = tester.widget<SelectableText>(
-        find.byWidgetPredicate(
-          (widget) =>
-              widget is SelectableText &&
-              widget.data == 'Thread: thread-observed\nCall: call-observed',
-        ),
-      );
-      expect(identity.data, 'Thread: thread-observed\nCall: call-observed');
+      expect(find.textContaining('compaction'), findsNothing);
+      expect(find.textContaining('Thread: thread-observed'), findsNothing);
+      expect(find.textContaining('Call: call-observed'), findsNothing);
       expect(
-        find.byTooltip(
-          'A completed item marks the client’s first observation of complete tool input, '
-          'not the provider’s first token; decode time can be 0.',
-        ),
-        findsOneWidget,
+        find.byWidgetPredicate((widget) => widget is SelectableText),
+        findsNothing,
       );
       expect(tester.takeException(), isNull);
 
       await pump(0, MetricAvailability.invalidUsage);
       expect(find.text('Unknown'), findsNothing);
       expect(find.text('0'), findsOneWidget);
-      // The typed reason must be displayed as received, not guessed from output == 0.
+      // 诊断事实不从输出值反推，也不在历史行内联展示。
       expect(
         find.textContaining('Inconsistent or overflowing usage'),
-        findsOneWidget,
+        findsNothing,
       );
       expect(find.textContaining('Reported output is 0'), findsNothing);
       expect(tester.takeException(), isNull);
