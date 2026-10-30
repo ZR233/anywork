@@ -3,7 +3,6 @@
 //! 每个机器人的配置/凭据操作由 `operation` owner 串行推进；本文件保留 runtime
 //! 装配、快照投影与入站 host。
 
-use super::InboundWorkOutcome;
 use super::config::{BotConfigFile, validate_bot_id};
 use super::connect::BotConnectionOwner;
 use super::inbound::{InboundDecision, InboundHost};
@@ -29,7 +28,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use tokio::sync::{Mutex, Notify, Semaphore};
 use tokio::task::JoinHandle;
-use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
 pub struct BotRuntime {
@@ -58,14 +56,13 @@ pub(crate) struct BotRuntimeInner {
     pub(crate) registration: Mutex<Option<ActiveRegistration>>,
     pub(crate) registration_start: Mutex<()>,
     pub(crate) host: std::sync::Mutex<Option<std::sync::Weak<StudioRuntime>>>,
-    pub(crate) replies: Mutex<JoinSet<InboundWorkOutcome>>,
+    pub(super) replies: Mutex<super::archive::BotReplyTasks>,
+    pub(super) reply_archive_seals: std::sync::Mutex<BTreeMap<String, usize>>,
     pub(crate) reply_slots: Arc<Semaphore>,
     pub(crate) reply_cancel: CancellationToken,
     pub(crate) occupancy: OccupancyTasks,
     pub(crate) sealed: AtomicU64,
     pub(crate) recovery: Mutex<Option<JoinHandle<()>>>,
-    /// 回复任务集里已观察到的真实异常终态：由 owner 保留，排空后消费一次。
-    pub(crate) reply_fault: AtomicBool,
     /// canonical 水位已耗尽：不再发射新 frame，避免复用同一 revision。
     pub(crate) publish_exhausted: AtomicBool,
 }
@@ -121,13 +118,13 @@ impl BotRuntime {
                 registration: Mutex::new(None),
                 registration_start: Mutex::new(()),
                 host: std::sync::Mutex::new(None),
-                replies: Mutex::new(JoinSet::new()),
+                replies: Mutex::new(super::archive::BotReplyTasks::default()),
+                reply_archive_seals: std::sync::Mutex::new(BTreeMap::new()),
                 reply_slots: Arc::new(Semaphore::new(32)),
                 reply_cancel: CancellationToken::new(),
                 occupancy: OccupancyTasks::new(),
                 sealed: AtomicU64::new(0),
                 recovery: Mutex::new(None),
-                reply_fault: AtomicBool::new(false),
                 publish_exhausted: AtomicBool::new(false),
             }),
         })

@@ -13,6 +13,25 @@ fn bot_err(error: crate::bots::FeishuError) -> anyhow::Error {
 }
 
 impl StudioRuntime {
+    /// The bot reply owner serializes this final check with Thread-scoped sealing.
+    /// Do not take lifecycle_lock: archive holds it while joining these producers.
+    pub(crate) async fn ensure_bot_dispatch_allowed(
+        &self,
+        workspace_id: &str,
+        thread_id: &str,
+    ) -> Result<()> {
+        self.store
+            .ensure_archive_execution_allowed(workspace_id, Some(thread_id))
+            .await?;
+        if let Some(thread) = self.store.catalog().get(thread_id) {
+            anyhow::ensure!(
+                thread.workspace_id == workspace_id && !thread.archived,
+                "bot Thread is archived or belongs to another workspace"
+            );
+        }
+        Ok(())
+    }
+
     pub(crate) async fn prepare_bot_attachment_drafts(
         &self,
         thread_id: &str,
