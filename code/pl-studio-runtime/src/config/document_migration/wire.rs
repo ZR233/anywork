@@ -920,6 +920,53 @@ pub struct SkillsConfig {
     pub auto_learn_min_tool_calls: u32,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SkillsConfigCurrent {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_true")]
+    pub auto_learn: bool,
+    #[serde(default)]
+    pub system: SystemSkillsConfig,
+    #[serde(default = "default_project_skills_dir")]
+    pub project_dir: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub external_dirs: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub disabled: Vec<String>,
+    #[serde(default = "default_auto_learn_min_tool_calls")]
+    pub auto_learn_min_tool_calls: u32,
+}
+
+impl Default for SkillsConfigCurrent {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            auto_learn: true,
+            system: SystemSkillsConfig::default(),
+            project_dir: default_project_skills_dir(),
+            external_dirs: Vec::new(),
+            disabled: Vec::new(),
+            auto_learn_min_tool_calls: default_auto_learn_min_tool_calls(),
+        }
+    }
+}
+
+impl From<SkillsConfig> for SkillsConfigCurrent {
+    fn from(value: SkillsConfig) -> Self {
+        Self {
+            enabled: value.enabled,
+            auto_learn: value.auto_learn,
+            system: value.system,
+            project_dir: value.project_dir,
+            external_dirs: value.external_dirs,
+            disabled: value.disabled,
+            auto_learn_min_tool_calls: value.auto_learn_min_tool_calls,
+        }
+    }
+}
+
 impl Default for SkillsConfig {
     fn default() -> Self {
         Self {

@@ -3,7 +3,7 @@ mod main;
 mod profile;
 mod wire;
 
-pub(super) use main::{MainV27, load_current_main, load_main};
+pub(super) use main::{MainV28, load_current_main, load_main};
 pub(super) use profile::load_current as load_current_profile;
 pub(super) use profile::{ProfileV1, load_profile};
 
