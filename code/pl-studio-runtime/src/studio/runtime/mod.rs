@@ -20,6 +20,9 @@ mod acp_auth;
 mod acp_install;
 mod attachment_drafts;
 mod background_task;
+#[cfg(test)]
+#[path = "../../bots/archive_test_host.rs"]
+pub(crate) mod bot_archive_test_host;
 mod bots_api;
 mod bots_recovery;
 pub(crate) mod chat_item;

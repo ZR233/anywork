@@ -87,28 +87,29 @@ pub(super) struct BotReplyTasks {
 
 impl BotReplyTasks {
     /// A claimed work item rejected before spawning still owns its original finisher.
-    pub(super) async fn finish_unstarted(
-        &mut self,
-        runtime: &BotRuntime,
+    pub(super) fn finish_unstarted<'a>(
+        &'a mut self,
+        runtime: &'a BotRuntime,
         thread_id: String,
         identity: ReplyIdentity,
         cancellation: CancellationToken,
         permit: OwnedSemaphorePermit,
-    ) -> Result<(), FeishuError> {
-        let outcome = InboundWorkOutcome::Interrupted;
-        if let Err(error) = identity.finish(runtime, &outcome).await {
-            self.pending.push((
-                ReplyOwner {
-                    thread_id,
-                    identity: identity.clone(),
-                    cancellation,
-                    _permit: permit,
-                },
-                PendingReplyFinish { identity, outcome },
-            ));
-            return Err(error);
-        }
-        Ok(())
+    ) -> impl Future<Output = Result<(), FeishuError>> + Send + 'a {
+        // Register synchronously, even if the returned future is never polled.
+        // Cancellation of a ledger wait must not release this claim's owner.
+        self.pending.push((
+            ReplyOwner {
+                thread_id,
+                identity: identity.clone(),
+                cancellation,
+                _permit: permit,
+            },
+            PendingReplyFinish {
+                identity,
+                outcome: InboundWorkOutcome::Interrupted,
+            },
+        ));
+        self.retry_finishes(runtime, None)
     }
 
     /// Caller holds the same reply mutex used by archive sealing and shutdown.

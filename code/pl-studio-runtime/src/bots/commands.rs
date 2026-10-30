@@ -1,5 +1,6 @@
 //! 会话查询、发送与入站执行。扫码注册由 `registration` owner 持有。
 use super::SendAuthority;
+use super::archive::ReplyIdentity;
 use super::config::BotConfigFile;
 use super::connect::{ClaimedSend, replay_send, send_text};
 use super::inbound::{ChatKind, InboundDecision, InboundHost};
@@ -15,6 +16,10 @@ use crate::studio::new_id;
 use pl_protocol::studio::*;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
+
+#[cfg(test)]
+#[path = "archive_tests.rs"]
+pub(super) mod archive_tests;
 
 /// 创建调用链中“创建身份”文本的 job 持有副本峰值。
 ///
@@ -1066,25 +1071,7 @@ impl BotRuntime {
                 }
             }
         }
-        {
-            let mut replies = self.inner.replies.lock().await;
-            while let Some(joined) = replies.join_next().await {
-                if joined.is_err() {
-                    // 取出当刻写入 owner 事实：之后等待其他句柄或关闭被取消都不会丢。
-                    self.inner.reply_fault.store(true, Ordering::SeqCst);
-                }
-            }
-            drop(replies);
-            // 排空完成后无额外 await 地消费一次；已直接返回 Err 视为上报一次。
-            if self.inner.reply_fault.swap(false, Ordering::SeqCst) {
-                return Err(FeishuError::new(
-                    FeishuErrorKind::Unavailable,
-                    "bot reply join failed: task(s) terminated abnormally",
-                    true,
-                    None,
-                ));
-            }
-        }
+        self.drain_replies().await?;
         self.close_operations().await?;
         self.close_connection_watches().await?;
         let records = self.inner.bots.lock().await;
@@ -1480,7 +1467,10 @@ impl BotRuntime {
                     // 不克隆整份配置，也不跨 DB await 持有 config guard。
                     let (app_id, workspace_id) = {
                         let current = managed.config.lock().await;
-                        (current.feishu().app_id.clone(), current.workspace_id.clone())
+                        (
+                            current.feishu().app_id.clone(),
+                            current.workspace_id.clone(),
+                        )
                     };
                     // app/project 会与工作行 INSERT 的 SQL 参数同时存活：按 2 份计。
                     budget.reserve_more(super::occupancy::counted_text_bytes([
@@ -1622,6 +1612,51 @@ impl BotRuntime {
         }
         let worker_id = new_id("botwork");
         let managed = self.managed(&inbound.bot_id).await?;
+        // Reap before acquiring budget: a finished task still owns its permit
+        // until the registration owner observes its join and ledger ACK.
+        let mut replies = self.inner.replies.lock().await;
+        replies.reap();
+        replies.retry_finishes(self, None).await?;
+        if self.inner.sealed.load(Ordering::SeqCst) != 0 {
+            return Err(FeishuError::new(
+                FeishuErrorKind::Unavailable,
+                "bot runtime is sealed",
+                true,
+                None,
+            ));
+        }
+        let binding = managed
+            .store
+            .binding_for_chat(&inbound.chat_id, &inbound.bot_id, &inbound.workspace_id)
+            .await?;
+        // Never route a failed/attention read as an absent binding. A bound
+        // Thread is authoritative; only a proven creation may use creation_id.
+        let registered_thread_id = match binding.status.as_str() {
+            "bound" => binding
+                .thread_id
+                .ok_or_else(super::storage::binding_needs_recovery)?,
+            "creating"
+                if binding.thread_id.is_none()
+                    && binding.creation_id == inbound.creation_id
+                    && binding.revision == inbound.binding_revision
+                    && !inbound.creation_id.is_empty() =>
+            {
+                inbound.creation_id.clone()
+            }
+            "absent"
+                if binding.thread_id.is_none()
+                    && binding.revision == inbound.binding_revision
+                    && inbound.binding_revision == 0
+                    && !inbound.creation_id.is_empty() =>
+            {
+                inbound.creation_id.clone()
+            }
+            _ => return Err(super::storage::binding_needs_recovery()),
+        };
+        // Admission and registration share archive's mutex. Reject before
+        // claiming, so a rejected dispatch creates no new finisher obligation.
+        self.ensure_reply_admission(&inbound.workspace_id, &registered_thread_id)
+            .await?;
         let Ok(permit) = self.inner.reply_slots.clone().try_acquire_owned() else {
             return Err(FeishuError::new(
                 FeishuErrorKind::Unavailable,
@@ -1671,71 +1706,38 @@ impl BotRuntime {
             InboundClaim::Claimed => {}
         }
         let runtime = self.clone();
-        let cancel = self.inner.reply_cancel.clone();
-        // 交接给回复 owner 的两份材料：派发按值移动、收束用 finisher。不再克隆第三份，
-        // 使峰值与冻结预算表一致。
-        let finisher = inbound.clone();
-        let mut replies = self.inner.replies.lock().await;
-        // Registration and shutdown's final join share this boundary. An enqueue
-        // that waited for its claim cannot register after shutdown drained owners.
-        if self.inner.sealed.load(Ordering::SeqCst) != 0 {
-            drop(replies);
-            managed
-                .store
-                .finish_inbound_work(
-                    &inbound.bot_id,
-                    &inbound.chat_id,
-                    &inbound.message_id,
-                    &worker_id,
-                    super::storage::WorkFinish::Interrupted,
-                )
+        let cancel = self.inner.reply_cancel.child_token();
+        let identity = ReplyIdentity::new(&inbound, &worker_id);
+        let admission = if self.inner.sealed.load(Ordering::SeqCst) != 0 {
+            Err(FeishuError::new(
+                FeishuErrorKind::Unavailable,
+                "bot runtime is sealed",
+                true,
+                None,
+            ))
+        } else {
+            self.ensure_reply_admission(&inbound.workspace_id, &registered_thread_id)
+                .await
+        };
+        if let Err(error) = admission {
+            replies
+                .finish_unstarted(self, registered_thread_id, identity, cancel, permit)
                 .await?;
-            return Ok(());
+            return Err(error);
         }
-        replies.spawn(async move {
-            let outcome = runtime.dispatch_prompt(inbound, &worker_id, cancel).await;
-            if let Ok(managed) = runtime.managed(&finisher.bot_id).await {
-                let finish = match &outcome {
-                    super::InboundWorkOutcome::Completed => {
-                        Some(super::storage::WorkFinish::Completed)
-                    }
-                    super::InboundWorkOutcome::Interrupted => {
-                        Some(super::storage::WorkFinish::Interrupted)
-                    }
-                    super::InboundWorkOutcome::Recoverable { diagnostic } => {
-                        Some(super::storage::WorkFinish::Retryable(diagnostic.as_str()))
-                    }
-                    super::InboundWorkOutcome::NeedsAttention { diagnostic } => Some(
-                        super::storage::WorkFinish::NeedsAttention(diagnostic.as_str()),
-                    ),
-                    // 失租：后继持有者已接管，本持有者的收束被账本拒绝，不能假 Completed。
-                    super::InboundWorkOutcome::LostClaim => None,
-                };
-                if let Some(finish) = finish
-                    && !matches!(
-                        managed
-                            .store
-                            .finish_inbound_work(
-                                &finisher.bot_id,
-                                &finisher.chat_id,
-                                &finisher.message_id,
-                                &worker_id,
-                                finish,
-                            )
-                            .await,
-                        Ok(super::storage::MarkOutcome::Applied)
-                    )
-                {
-                    tracing::warn!(
-                        bot_id = %finisher.bot_id,
-                        message_id = %finisher.message_id,
-                        "inbound work finish lost its claim fence"
-                    );
-                }
-            }
-            drop(permit);
-            outcome
-        });
+        let dispatch_thread_id = registered_thread_id.clone();
+        replies.spawn(
+            registered_thread_id,
+            identity.clone(),
+            cancel.clone(),
+            permit,
+            async move {
+                let outcome = runtime
+                    .dispatch_prompt(inbound, &worker_id, &dispatch_thread_id, cancel)
+                    .await;
+                runtime.finish_reply(identity, outcome).await
+            },
+        );
         Ok(())
     }
 
