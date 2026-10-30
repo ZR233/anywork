@@ -73,8 +73,8 @@ impl StudioRuntime {
     ) -> Result<()> {
         for lease in self.agent_facility.worktrees.snapshot() {
             // Only resources that need manual handling enter the cleanup entry: a healthy
-            // `active` (or in-creation `prepared`) lease owned by a registered Thread is
-            // never reported, so a stale card can never target a live workspace.
+            // A healthy confirmed binding is not an incident. In-creation leases remain
+            // protected separately; failed or unresolved Prepared/Preserved facts stay visible.
             if let Some(issue) = self.worktree_recovery_issue(&lease).await {
                 recovery_issues.push(issue);
             }
@@ -197,8 +197,9 @@ impl StudioRuntime {
             };
         }
         let facts = self.worktree_issue_facts(lease).await;
-        if lease.state != WorktreeLeaseState::Preserved
-            && matches!(facts.owner, Ok(WorktreeOwnerFacts { live: true, .. }))
+        if lease.state == WorktreeLeaseState::Active
+            && self.agent_facility.worktrees.is_durable(lease)
+            && matches!(facts.owner, Ok(WorktreeOwnerFacts { retained: true, .. }))
             && facts.inspection() == StudioWorktreeInspection::Available
         {
             return None;
@@ -269,8 +270,8 @@ impl StudioRuntime {
             Ok(owner) if !owner.exists => {
                 message.push_str("; no published Thread remains for this lease")
             }
-            Ok(owner) if owner.live => {
-                message.push_str("; an active Thread still owns this workspace")
+            Ok(owner) if owner.retained => {
+                message.push_str("; a Thread retains ownership of this workspace")
             }
             Ok(_) => {}
             Err(error) => {
@@ -278,18 +279,21 @@ impl StudioRuntime {
                 message.push_str(&super::shutdown::redacted_chain(error));
             }
         }
-        let can_cleanup = matches!(&facts.owner, Ok(WorktreeOwnerFacts { live: false, .. }))
-            && preview.is_some_and(|preview| {
-                preview.changed_files.is_empty() && preview.ignored_files.is_empty()
+        let can_cleanup = matches!(
+            &facts.owner,
+            Ok(WorktreeOwnerFacts {
+                retained: false,
+                ..
             })
-            && !matches!(
-                lease.state,
-                WorktreeLeaseState::Cleaned | WorktreeLeaseState::CleanupRequested
-            )
-            && !self
-                .agent_facility
-                .worktrees
-                .is_creating(&lease.owner_thread_id);
+        ) && preview.is_some_and(|preview| {
+            preview.changed_files.is_empty() && preview.ignored_files.is_empty()
+        }) && !matches!(
+            lease.state,
+            WorktreeLeaseState::Cleaned | WorktreeLeaseState::CleanupRequested
+        ) && !self
+            .agent_facility
+            .worktrees
+            .is_creating(&lease.owner_thread_id);
         StudioRecoveryIssue {
             id: worktree_issue_id(&lease.owner_thread_id),
             scope: StudioRecoveryIssueScope::Thread,
@@ -352,7 +356,7 @@ impl StudioRuntime {
         lease: &WorktreeLease,
         facts: &WorktreeIssueFacts,
     ) -> bool {
-        facts.owner.as_ref().is_ok_and(|owner| owner.live)
+        facts.owner.as_ref().is_ok_and(|owner| owner.retained)
             && !self
                 .store
                 .catalog()
@@ -401,15 +405,15 @@ impl StudioRuntime {
             lease.revision
         );
         // Server-side precondition: a stale or forged card must never delete a workspace a
-        // live Thread still owns. The lease state cannot grant that: a `preserved` site may be a
-        // directory a running child is using, so only a site whose owner Thread is no longer live is
+        // retained Thread still owns. The lease state cannot grant that: a `preserved` site may
+        // still have an owner, so only a site without retained ownership is
         // eligible for explicit cleanup.
         anyhow::ensure!(
             !self
                 .worktree_owner_facts(&lease.owner_thread_id)
                 .await?
-                .live,
-            "worktree lease is still owned by a live Thread"
+                .retained,
+            "worktree lease still has retained Thread ownership"
         );
         let owner = self.find_owned_thread(&lease.owner_thread_id).await?;
         if let Some(owner) = &owner {
@@ -495,14 +499,14 @@ impl StudioRuntime {
         .await
     }
 
-    /// Hot facts precede write-behind rows; query failure cannot prove the owner inactive.
+    /// Hot facts precede write-behind rows; query failure cannot disprove retained ownership.
     async fn worktree_owner_facts(&self, thread_id: &str) -> Result<WorktreeOwnerFacts> {
         // A retained execution/shutdown owner is stronger evidence than a missing or archived
         // directory row. Never infer inactivity while an in-process incarnation still exists.
         if self.threads.observed_thread(thread_id).is_some() {
             return Ok(WorktreeOwnerFacts {
                 exists: true,
-                live: true,
+                retained: true,
             });
         }
         if let Some(thread) = self
@@ -512,13 +516,13 @@ impl StudioRuntime {
         {
             return Ok(WorktreeOwnerFacts {
                 exists: true,
-                live: !thread.archived,
+                retained: !thread.archived,
             });
         }
         let record = self.store.read_thread_association(thread_id).await?;
         Ok(WorktreeOwnerFacts {
             exists: record.is_some(),
-            live: record
+            retained: record
                 .is_some_and(|record| record.visibility == crate::studio::ThreadVisibility::Active),
         })
     }
@@ -703,7 +707,7 @@ struct WorktreeIssueFacts {
 
 struct WorktreeOwnerFacts {
     exists: bool,
-    live: bool,
+    retained: bool,
 }
 
 impl WorktreeIssueFacts {

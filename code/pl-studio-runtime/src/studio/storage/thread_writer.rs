@@ -2461,6 +2461,7 @@ pub(crate) mod storage_fault_tests {
         let factory = StudioThreadFactory::new(StudioThreadServices {
             store: store.clone(),
             worktrees: worktrees.clone(),
+            recovery: crate::studio::StudioRecoveryRegistry::new(),
             product_events: events.clone(),
             config_runtime: config.clone(),
             mcp_runtime: pl_tool::mcp::McpRuntime::new(pl_tool::mcp::McpConnector::default())

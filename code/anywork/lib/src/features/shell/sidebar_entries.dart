@@ -268,19 +268,9 @@ class _ThreadTile extends ConsumerWidget {
             ),
           ),
         ),
-      if (issue != null)
-        statusSlot(
-          Tooltip(
-            message: context.recoveryIssueLabel(issue),
-            child: Icon(
-              Icons.error_outline,
-              size: 18,
-              color: context.colors.error,
-            ),
-          ),
-        )
-      else if (thread.status != ThreadStatusView.idle)
+      if (thread.status != ThreadStatusView.idle)
         statusSlot(_ThreadStatusBadge(status: thread.status)),
+      if (issue != null) statusSlot(RecoveryIssueIndicator(issue: issue)),
     ];
     final statusArea = Row(
       mainAxisSize: MainAxisSize.min,
