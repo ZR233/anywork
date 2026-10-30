@@ -21,6 +21,8 @@ const HISTORY_SCHEMA_VERSION: i64 = 10;
 mod checkpoint;
 pub(crate) use checkpoint::SessionAccounting;
 #[cfg(test)]
+mod future_size_tests;
+#[cfg(test)]
 #[path = "history/legacy_usage.rs"]
 pub(super) mod legacy_usage;
 mod parent_report;

@@ -38,7 +38,7 @@ impl HistoryStore {
             None
         };
         tx.commit().await?;
-        Ok(result)
+        Ok(result.map(|(checkpoint, turn)| (*checkpoint, turn)))
     }
 
     /// Reads one consistent checkpoint/context/history generation without creating a database.
@@ -49,7 +49,7 @@ impl HistoryStore {
         let tx = connection.db.begin().await?;
         let result = read(&tx, &self.state.thread_id).await?;
         tx.commit().await?;
-        Ok(result)
+        Ok(result.map(|checkpoint| *checkpoint))
     }
 
     /// Advances the same Migrator after the v2 TOML import boundary has finished.
@@ -75,23 +75,26 @@ impl HistoryStore {
         &self,
         migrate: impl FnOnce(&mut pl_core::thread::ThreadSnapshot) -> Result<()>,
     ) -> Result<ThreadCheckpoint> {
-        let original = self
-            .prepare_model_access()
-            .await?
-            .context("recovery checkpoint is absent")?;
-        let mut migrated = original.clone();
-        migrate(&mut migrated.state).map_err(|error| {
-            crate::studio::startup::migration_error(
-                "history",
-                super::schema::EXECUTION_IDENTITY,
-                error,
-            )
-        })?;
+        let candidate = {
+            let original = self
+                .prepare_model_access()
+                .await?
+                .context("recovery checkpoint is absent")?;
+            let mut migrated = original.clone();
+            migrate(&mut migrated.state).map_err(|error| {
+                crate::studio::startup::migration_error(
+                    "history",
+                    super::schema::EXECUTION_IDENTITY,
+                    error,
+                )
+            })?;
+            std::sync::Arc::new((original, migrated))
+        };
         super::schema::prepare_with_bot_root(
             &self.writer().await?.db,
             &self.state.thread_id,
             super::schema::Preparation::ExecutionIdentity,
-            Some((original, migrated)),
+            Some(candidate),
             crate::studio::startup::storage_layout::bot_roots::for_history(
                 &self.state.path,
                 &self.state.thread_id,
@@ -291,13 +294,16 @@ pub(super) async fn write_representation(
     original: &ThreadCheckpoint,
     migrated: &ThreadCheckpoint,
 ) -> Result<()> {
-    let mut unchanged = migrated.clone();
-    unchanged.state.extensions = original.state.extensions.clone();
-    unchanged.state.extension_sequence = original.state.extension_sequence;
-    ensure!(
-        serde_json::to_vec(&unchanged)? == serde_json::to_vec(original)?,
-        "representation migration changed checkpoint business state"
-    );
+    {
+        // The validation clone is synchronous scratch, not state needed during the SQL writes.
+        let mut unchanged = migrated.clone();
+        unchanged.state.extensions = original.state.extensions.clone();
+        unchanged.state.extension_sequence = original.state.extension_sequence;
+        ensure!(
+            serde_json::to_vec(&unchanged)? == serde_json::to_vec(original)?,
+            "representation migration changed checkpoint business state"
+        );
+    }
     if migrated.state.extensions == original.state.extensions
         && migrated.state.extension_sequence == original.state.extension_sequence
     {
@@ -474,10 +480,12 @@ pub(super) async fn write(
     Ok(())
 }
 
+// Migration steps and transaction owners keep the decoded state across awaits. Share this
+// heap-owned read boundary; only the outer HistoryStore methods unwrap after committing.
 pub(super) async fn read(
     tx: &impl ConnectionTrait,
     thread_id: &str,
-) -> Result<Option<ThreadCheckpoint>> {
+) -> Result<Option<Box<ThreadCheckpoint>>> {
     read_with(tx, thread_id, ThreadCheckpoint::SCHEMA_VERSION, |payload| {
         Ok(serde_json::from_str(payload)?)
     })
@@ -499,7 +507,7 @@ pub(super) async fn migrate_envelope(tx: &impl ConnectionTrait, thread_id: &str)
         if header.schema_version == ThreadCheckpoint::SCHEMA_VERSION {
             return Ok(serde_json::from_str(payload)?);
         }
-        let current = ThreadCheckpoint::decode_legacy(payload)?;
+        let current = Box::new(ThreadCheckpoint::decode_legacy(payload)?);
         if header.schema_version >= 4 {
             // These envelopes differ only in their usage layout. Preserve all other original
             // fields and opaque producer bytes; no re-aggregation or execution replay occurs.
@@ -544,8 +552,8 @@ async fn read_with(
     tx: &impl ConnectionTrait,
     thread_id: &str,
     expected_schema: u32,
-    decode: impl FnOnce(&str) -> Result<ThreadCheckpoint>,
-) -> Result<Option<ThreadCheckpoint>> {
+    decode: impl FnOnce(&str) -> Result<Box<ThreadCheckpoint>>,
+) -> Result<Option<Box<ThreadCheckpoint>>> {
     let Some(row) = tx.query_one_raw(statement(
         "SELECT revision,context_revision,context_count,payload,payload_hash FROM session_checkpoint WHERE id=1", vec![],
     )).await? else { return Ok(None) };

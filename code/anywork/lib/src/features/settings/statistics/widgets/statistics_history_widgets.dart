@@ -6,7 +6,6 @@ import '../../../../app/theme/studio_tokens.dart';
 import '../../../../l10n/studio_l10n.dart';
 import '../../../../shared/studio_driver_keys.dart';
 import '../../settings_common.dart';
-import '../../../status/usage_diagnostic_labels.dart';
 import '../state/statistics_filter_options.dart';
 import 'statistics_formatters.dart';
 
@@ -179,31 +178,20 @@ class StatisticsWideHistoryRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
+    return _WideCells(
       children: [
-        _WideCells(
-          children: [
-            Text(formatStatisticsCompletedAt(context, sample.completedAt)),
-            _ModelIdentity(sample: sample),
-            Text(formatStatisticsReasoningEffort(context, sample.effort)),
-            Text(
-              sample.completionTokens == null
-                  ? context.l10n.usageUnknown
-                  : formatTokenCount(sample.completionTokens),
-            ),
-            Text(formatStatisticsSampleMillis(context, sample.ttftMillis)),
-            Text(formatStatisticsSampleMillis(context, sample.decodeMillis)),
-            Text(
-              formatStatisticsSampleMillis(context, sample.totalResponseMillis),
-            ),
-            Text(formatStatisticsSampleSpeed(context, sample.tokensPerSecond)),
-          ],
+        Text(formatStatisticsCompletedAt(context, sample.completedAt)),
+        _ModelIdentity(sample: sample),
+        Text(formatStatisticsReasoningEffort(context, sample.effort)),
+        Text(
+          sample.completionTokens == null
+              ? context.l10n.usageUnknown
+              : formatTokenCount(sample.completionTokens),
         ),
-        Padding(
-          padding: const EdgeInsets.fromLTRB(12, 0, 12, 10),
-          child: StatisticsSampleDiagnostics(sample: sample),
-        ),
+        Text(formatStatisticsSampleMillis(context, sample.ttftMillis)),
+        Text(formatStatisticsSampleMillis(context, sample.decodeMillis)),
+        Text(formatStatisticsSampleMillis(context, sample.totalResponseMillis)),
+        Text(formatStatisticsSampleSpeed(context, sample.tokensPerSecond)),
       ],
     );
   }
@@ -273,8 +261,6 @@ class StatisticsCompactHistoryCard extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 12),
-          StatisticsSampleDiagnostics(sample: sample),
-          const SizedBox(height: 12),
           Wrap(
             spacing: 16,
             runSpacing: 8,
@@ -313,57 +299,6 @@ class StatisticsCompactHistoryCard extends StatelessWidget {
           const Divider(height: 24),
         ],
       ),
-    );
-  }
-}
-
-/// The call identity is copied verbatim, including unknown historical identities.
-/// No alias, timestamp or row position is used to invent a call ID.
-class StatisticsSampleDiagnostics extends StatelessWidget {
-  const StatisticsSampleDiagnostics({required this.sample, super.key});
-
-  final StatisticsSample sample;
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Wrap(
-          spacing: 16,
-          runSpacing: 4,
-          children: [
-            Text(
-              '${context.l10n.usagePurpose}: '
-              '${sample.purpose ?? context.l10n.usageUnknown}',
-            ),
-            Tooltip(
-              message: context.l10n.usageFirstOutputNote,
-              child: SelectableText(
-                '${context.l10n.usageFirstOutput}: '
-                '${firstOutputSourceLabel(context, sample.firstOutputSource)}',
-              ),
-            ),
-            Text(usageReportStatusLabel(context, sample.usageStatus)),
-            if (sample.ttftAvailability != MetricAvailability.available)
-              Text(
-                'TTFT: '
-                '${metricAvailabilityLabel(context, sample.ttftAvailability)}',
-              ),
-            if (sample.throughputAvailability != MetricAvailability.available)
-              Text(
-                '${context.l10n.statisticsSpeed}: '
-                '${metricAvailabilityLabel(context, sample.throughputAvailability)}',
-              ),
-          ],
-        ),
-        SelectableText(
-          '${context.l10n.usageThreadId}: ${sample.threadId}\n'
-          '${context.l10n.usageCallId}: ${sample.callId}',
-          style: Theme.of(context).textTheme.bodySmall,
-        ),
-      ],
     );
   }
 }
