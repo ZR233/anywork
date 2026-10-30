@@ -49,7 +49,7 @@ async fn observe_state(artifacts: &std::path::Path) -> Result<()> {
         ..StudioRuntimeOptions::desktop()
     })
     .await?;
-    let path = home.join("v2/settings.toml");
+    let path = pl_studio_runtime::StudioPaths::resolve(Some(home))?.settings_file();
     let before = std::fs::read(&path)?;
     let original = std::fs::metadata(&path)?.permissions();
     let mut readonly = original.clone();
