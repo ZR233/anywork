@@ -46,7 +46,7 @@ async fn preflight(db: &DatabaseConnection) -> anyhow::Result<()> {
             (1..=BOT_STATE_SCHEMA_VERSION).contains(&version),
             "unsupported bot state schema {version}; existing data preserved"
         );
-        if version == 6 {
+        if version == BOT_STATE_SCHEMA_VERSION {
             for table in [
                 "inbound_identities",
                 "inbound_work",
@@ -60,6 +60,13 @@ async fn preflight(db: &DatabaseConnection) -> anyhow::Result<()> {
                 anyhow::ensure!(
                     manager.has_table(table).await?,
                     "current bot ledger table {table} is missing; existing data preserved"
+                );
+            }
+            for table in ["inbound_work", "thread_bindings"] {
+                anyhow::ensure!(
+                    manager.has_column(table, "workspace_id").await?
+                        && !manager.has_column(table, "project_id").await?,
+                    "current bot ledger ownership columns are invalid; existing data preserved"
                 );
             }
         }
@@ -104,13 +111,61 @@ async fn preflight(db: &DatabaseConnection) -> anyhow::Result<()> {
 struct Migrator;
 impl MigratorTrait for Migrator {
     fn migrations() -> Vec<Box<dyn MigrationTrait>> {
-        vec![Box::new(LedgerSchema)]
+        vec![Box::new(LedgerSchema), Box::new(WorkspaceOwnership)]
     }
 }
 struct LedgerSchema;
 impl MigrationName for LedgerSchema {
     fn name(&self) -> &str {
         "m20261026_000001_bot_ledger_schema"
+    }
+}
+
+/// The published v6 ledger remains a migration input, never a runtime fallback.
+struct WorkspaceOwnership;
+
+impl MigrationName for WorkspaceOwnership {
+    fn name(&self) -> &str {
+        "m20261030_000002_bot_workspace_ownership"
+    }
+}
+
+#[sea_orm_migration::async_trait::async_trait]
+impl MigrationTrait for WorkspaceOwnership {
+    fn use_transaction(&self) -> Option<bool> {
+        Some(true)
+    }
+
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        let db = manager.get_connection();
+        let row = db
+            .query_one_raw(statement(
+                "SELECT schema_version FROM bot_meta WHERE id=1",
+                vec![],
+            ))
+            .await?
+            .ok_or_else(|| DbErr::Migration("missing bot ledger version".into()))?;
+        if row.try_get::<i64>("", "schema_version")? != 6 {
+            return Err(DbErr::Migration(
+                "workspace ownership requires the published v6 ledger".into(),
+            ));
+        }
+        for table in ["inbound_work", "thread_bindings"] {
+            if !manager.has_column(table, "project_id").await?
+                || manager.has_column(table, "workspace_id").await?
+            {
+                return Err(DbErr::Migration(
+                    "invalid source bot ownership columns; source preserved".into(),
+                ));
+            }
+            db.execute_unprepared(&format!(
+                "ALTER TABLE {table} RENAME COLUMN project_id TO workspace_id"
+            ))
+            .await?;
+        }
+        db.execute_unprepared("UPDATE bot_meta SET schema_version=7 WHERE id=1")
+            .await?;
+        Ok(())
     }
 }
 #[sea_orm_migration::async_trait::async_trait]

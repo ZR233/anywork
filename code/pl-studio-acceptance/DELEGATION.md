@@ -671,7 +671,7 @@ busy/changed/closed 均先获得真实 idle target 交付，再创建冻结 Revi
 ### 正常 shutdown 与 reopen
 
 first 完成后，Driver 保存正常 root 导航身份到隔离环境 `review-feedback-baseline.json`，另将
-三个异常 root 的真实 snapshot projectId/rootId、原提交/独立异常完整模型可见字节与身份、
+三个异常 root 的真实 snapshot workspaceId/rootId、原提交/独立异常完整模型可见字节与身份、
 正常链证据及全场 child 计数写入 `review-feedback-first-evidence.json`，并在本阶段输出目录
 保留同名副本。写失败直接失败，不以 fixture 内存缓存替代落盘；这些文件不写产品状态。
 脚本返回前不 shutdown；

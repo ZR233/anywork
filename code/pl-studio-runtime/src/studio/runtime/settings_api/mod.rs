@@ -108,7 +108,6 @@ impl StudioRuntime {
                 | SettingsFieldUpdate::SkillsAutoLearn { .. }
                 | SettingsFieldUpdate::SkillsSystemEnabled { .. }
                 | SettingsFieldUpdate::SkillsProjectDir { .. }
-                | SettingsFieldUpdate::SkillsUserDir { .. }
                 | SettingsFieldUpdate::SkillsExternalDirs { .. }
                 | SettingsFieldUpdate::SkillsDisabled { .. }
                 | SettingsFieldUpdate::SkillsAutoLearnMinToolCalls { .. }
@@ -176,7 +175,6 @@ impl StudioRuntime {
                     SettingsFieldUpdate::SkillsProjectDir { value } => {
                         config.skills.project_dir = value
                     }
-                    SettingsFieldUpdate::SkillsUserDir { value } => config.skills.user_dir = value,
                     SettingsFieldUpdate::SkillsExternalDirs { value } => {
                         config.skills.external_dirs = normalized_string_list(value);
                     }
@@ -223,7 +221,7 @@ impl StudioRuntime {
                                 "at most 64 pinned projects are supported".to_string(),
                             ));
                         }
-                        config.ui.pinned_workspace_ids = normalized_string_list(value);
+                        config.ui.pinned_project_ids = normalized_string_list(value);
                     }
                     SettingsFieldUpdate::WebSearchMode { value } => {
                         config.web_search.mode = parse_web_search_mode(&value)?;

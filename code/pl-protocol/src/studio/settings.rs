@@ -329,7 +329,6 @@ pub struct StudioSkillsSettings {
     pub auto_learn: bool,
     pub system_enabled: bool,
     pub project_dir: String,
-    pub user_dir: String,
     pub external_dirs: Vec<String>,
     pub disabled: Vec<String>,
     pub auto_learn_min_tool_calls: u32,
@@ -364,7 +363,7 @@ pub struct StudioGeneralSettings {
     #[serde(default)]
     pub pinned_thread_ids: Vec<String>,
     #[serde(default)]
-    pub pinned_workspace_ids: Vec<String>,
+    pub pinned_project_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]

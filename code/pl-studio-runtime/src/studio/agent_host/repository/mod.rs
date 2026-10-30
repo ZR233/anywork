@@ -1,6 +1,4 @@
 //! Studio product directory persistence, separate from Thread journal storage.
-mod conversion;
-pub(super) mod labels;
 mod write_behind;
 pub(in crate::studio) use write_behind::ThreadWriteBehindWriter;
 

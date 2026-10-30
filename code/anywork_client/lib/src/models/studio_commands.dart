@@ -116,11 +116,6 @@ class SkillsProjectDirCommand extends SettingsFieldCommand {
   final String value;
 }
 
-class SkillsUserDirCommand extends SettingsFieldCommand {
-  const SkillsUserDirCommand(this.value);
-  final String value;
-}
-
 class SkillsExternalDirsCommand extends SettingsFieldCommand {
   const SkillsExternalDirsCommand(this.value);
   final List<String> value;

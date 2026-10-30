@@ -116,7 +116,7 @@ async fn main() -> anyhow::Result<()> {
 
 async fn observe_configured_provider(root: &Path) -> anyhow::Result<()> {
     let project = root.join(".agents/skills");
-    let user = root.join("user");
+    let user = root.join("home/.agents/skills");
     let system = root.join("system");
     for source in [&project, &user, &system] {
         prepare_source(source)?;
@@ -129,10 +129,7 @@ async fn observe_configured_provider(root: &Path) -> anyhow::Result<()> {
     )?;
     let registry = SkillRegistry::new();
     let _registration = registry.register(Arc::new(FileSystemSkillProvider::new()))?;
-    let mut config = SkillsConfig {
-        user_dir: user.to_string_lossy().into_owned(),
-        ..SkillsConfig::default()
-    };
+    let config = SkillsConfig::default();
     let catalog = registry
         .discover(SkillProviderRequest {
             config: config.clone(),
@@ -144,7 +141,6 @@ async fn observe_configured_provider(root: &Path) -> anyhow::Result<()> {
     let view = ThreadSkillTool::new(catalog.discovery_sources(), ThreadSkillKind::View);
     write_skill(&user, "new-user")?;
     write_skill(&system, "new-system")?;
-    config.user_dir = root.join("other-user").to_string_lossy().into_owned();
     write_skill(&root.join("other-user"), "not-in-fixed-config")?;
     let listed = invoke(&list, "configured-paths-stay-fixed", json!({})).await?;
     ensure!(skill_names(&listed)? == ["configured", "new-system", "new-user"]);

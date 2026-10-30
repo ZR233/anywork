@@ -150,6 +150,7 @@ impl BotRuntime {
         &self,
         inbound: FrozenInbound,
         worker_id: &str,
+        registered_thread_id: &str,
         cancel: CancellationToken,
     ) -> InboundWorkOutcome {
         // 整个 dispatch（含初始绑定解析、观察打开、屏障、翻页、submit、发送等全部
@@ -166,7 +167,8 @@ impl BotRuntime {
         let heartbeat_worker = worker_id.to_string();
         // Keep the reply state out of this select's stack frame. Pinning does not
         // create another task, so heartbeat loss still drops the same owned work.
-        let reply = Box::pin(self.run_reply(inbound, worker_id, cancel.clone()));
+        let reply =
+            Box::pin(self.run_reply(inbound, worker_id, registered_thread_id, cancel.clone()));
         tokio::select! {
         outcome = reply => outcome,
         // heartbeat 只会因失租完成；cancel 后它保持挂起，不误报 runtime 停止。
@@ -180,6 +182,7 @@ impl BotRuntime {
         &self,
         inbound: FrozenInbound,
         worker_id: &str,
+        registered_thread_id: &str,
         cancel: CancellationToken,
     ) -> InboundWorkOutcome {
         let run = ReplyRun {
@@ -217,13 +220,19 @@ impl BotRuntime {
             return attention("frozen inbound app or project no longer matches bot config");
         }
         // 冻结路由：入站受理时的 App/project/creation/binding 归属不因新配置改派。
-        let thread_id = match self
-            .resolve_bound_thread(&managed, &runtime, &inbound, inbound.binding_revision)
-            .await
-        {
+        let resolved = tokio::select! {
+            _ = cancel.cancelled() => return InboundWorkOutcome::Interrupted,
+            resolved = self.resolve_bound_thread(
+                &managed, &runtime, &inbound, inbound.binding_revision
+            ) => resolved,
+        };
+        let thread_id = match resolved {
             Ok(thread_id) => thread_id,
             Err(outcome) => return outcome,
         };
+        if thread_id != registered_thread_id {
+            return attention("resolved bot Thread differs from registered reply owner");
+        }
         let mut run = run;
         run.thread_id = thread_id;
         // A format upgrade must never reinterpret a historical text-send intent as
@@ -481,17 +490,21 @@ impl BotRuntime {
         run: &ReplyRun,
         cancel: &CancellationToken,
     ) -> Step {
-        let drafts = match self
-            .prepare_inbound_attachments(
+        // Media and draft admission can wait for lifecycle_lock too. They are
+        // owned by this reply (not spawned); cancellation drops that wait,
+        // whereas durable platform send intents below still drain to ACK.
+        let prepared = tokio::select! {
+            _ = cancel.cancelled() => return Step::Done(InboundWorkOutcome::Interrupted),
+            prepared = self.prepare_inbound_attachments(
                 runtime,
                 &run.bot_id,
                 &run.thread_id,
                 &run.message_id,
                 &run.attachments,
                 cancel,
-            )
-            .await
-        {
+            ) => prepared,
+        };
+        let drafts = match prepared {
             Ok(drafts) => drafts,
             Err(error) => {
                 if cancel.is_cancelled() {
@@ -511,17 +524,21 @@ impl BotRuntime {
             }
             return Step::Done(InboundWorkOutcome::Interrupted);
         }
-        let result = runtime
-            .submit_queued_prompt(crate::studio::StudioSubmitPromptRequest {
-                thread_id: run.thread_id.clone(),
-                input: pl_protocol::studio::StudioPromptInput {
-                    input_id: run.original_input.clone(),
-                    text: run.text.clone(),
-                    attachment_draft_ids: drafts.clone(),
-                },
-                options: crate::studio::StudioSubmitPromptOptions::default(),
-            })
-            .await;
+        let request = crate::studio::StudioSubmitPromptRequest {
+            thread_id: run.thread_id.clone(),
+            input: pl_protocol::studio::StudioPromptInput {
+                input_id: run.original_input.clone(),
+                text: run.text.clone(),
+                attachment_draft_ids: drafts.clone(),
+            },
+            options: crate::studio::StudioSubmitPromptOptions::default(),
+        };
+        // Keep the stable input identity if admission was interrupted; a later
+        // recovery reads canonical acceptance rather than assuming no effect.
+        let result = tokio::select! {
+            _ = cancel.cancelled() => None,
+            result = runtime.submit_queued_prompt(request) => Some(result),
+        };
         for draft in drafts {
             if let Err(error) = runtime.remove_attachment_draft(draft).await {
                 tracing::warn!(%error, "failed to release bot attachment draft");
@@ -529,8 +546,11 @@ impl BotRuntime {
         }
         match result {
             // 受理后首个 effect 落库前身份仍可能 Absent；等待唤醒后重建，不连续重提。
-            Ok(_) => Step::Wait,
-            Err(error) => Step::Done(recoverable(format!("bot prompt submit failed: {error:#}"))),
+            Some(Ok(_)) => Step::Wait,
+            Some(Err(error)) => {
+                Step::Done(recoverable(format!("bot prompt submit failed: {error:#}")))
+            }
+            None => Step::Done(InboundWorkOutcome::Interrupted),
         }
     }
 
@@ -881,5 +901,76 @@ fn observed_step((step, failure): (Step, Option<FinalError>), cancel: &Cancellat
     match failure {
         Some(error) => Step::Done(content_failure(error)),
         None => step,
+    }
+}
+
+#[cfg(test)]
+mod archive_cancellation_tests {
+    use super::*;
+    use crate::bots::commands::archive_tests::Fixture;
+    use crate::bots::inbound::InboundAttachment;
+
+    #[tokio::test]
+    async fn media_setup_and_prompt_admission_exit_the_owned_reply_on_cancel() -> anyhow::Result<()>
+    {
+        let fixture = Fixture::new().await?;
+        let inbound = fixture.inbound("cancel-admission", true).await?;
+        let managed = fixture.bots.managed(&inbound.bot_id).await?;
+        for media in [false, true] {
+            let mut run = ReplyRun {
+                bot_id: inbound.bot_id.clone(),
+                chat_id: inbound.chat_id.clone(),
+                message_id: inbound.message_id.clone(),
+                text: inbound.text.clone(),
+                attachments: Vec::new(),
+                worker_id: "fixture-worker".into(),
+                thread_id: inbound.creation_id.clone(),
+                original_input: bot_input_id(
+                    &inbound.bot_id,
+                    &inbound.chat_id,
+                    &inbound.message_id,
+                ),
+                watch_input: String::new(),
+                hinted: BTreeSet::new(),
+                card: None,
+                next_observation: tokio::time::Instant::now(),
+            };
+            if media {
+                run.attachments.push(InboundAttachment::Image {
+                    key: "isolated-media-key".into(),
+                });
+            }
+            // With media, hold its config lookup before token/network work;
+            // without media, the real queued-submit waits on lifecycle_lock.
+            let lifecycle = fixture.host.lifecycle_lock().lock().await;
+            let config = if media {
+                Some(managed.config.lock().await)
+            } else {
+                None
+            };
+            let cancel = fixture.bots.inner.reply_cancel.child_token();
+            let action = fixture
+                .bots
+                .submit_original(&fixture.host.runtime, &run, &cancel);
+            tokio::pin!(action);
+            assert!(futures::poll!(&mut action).is_pending());
+            cancel.cancel();
+            assert!(matches!(
+                tokio::time::timeout(Duration::from_secs(5), action).await?,
+                Step::Done(InboundWorkOutcome::Interrupted)
+            ));
+            assert!(!fixture.bots.inner.reply_cancel.is_cancelled());
+            drop(config);
+            drop(lifecycle);
+            assert_eq!(
+                fixture
+                    .host
+                    .runtime
+                    .bot_input_fact(&run.thread_id, &run.original_input,)
+                    .await?,
+                BotInputRead::Absent,
+            );
+        }
+        fixture.shutdown().await
     }
 }

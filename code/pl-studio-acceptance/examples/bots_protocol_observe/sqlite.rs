@@ -337,7 +337,7 @@ fn collect_history_databases(dir: &Path, depth: usize, found: &mut Vec<PathBuf>)
 }
 
 fn bot_state_db(home: &Path, bot_id: &str) -> PathBuf {
-    home.join("v2")
+    home.join("data")
         .join("bots")
         .join(bot_id)
         .join("state.sqlite")

@@ -7,9 +7,9 @@ use std::path::Path;
 
 mod schema;
 
-use schema::{BotConfigV1, BotConfigV2, BotConfigV3};
+use schema::{BotConfigV1, BotConfigV2, BotConfigV3, BotConfigV4};
 
-pub const BOT_CONFIG_SCHEMA_VERSION: u32 = 3;
+pub const BOT_CONFIG_SCHEMA_VERSION: u32 = 4;
 pub(super) const BOT_CONFIG_ENTITY: &str = "bot_config";
 pub(super) const BOT_CONFIG_VERSION_KEY: &str = "schema_version";
 
@@ -136,7 +136,7 @@ fn persist_config_bytes(path: &Path, contents: &str) -> Result<(), FeishuError> 
 fn finish_loaded(
     path: &Path,
     source_version: u32,
-    document: BotConfigV3,
+    document: BotConfigV4,
 ) -> Result<BotConfigFile, FeishuError> {
     let target = schema::current_version().map_err(map_schema_error)?;
     let mut config = BotConfigFile::try_from(document).map_err(|error| {
@@ -260,7 +260,7 @@ pub(super) fn parse_config_at(path: &Path, text: &str) -> Result<BotConfigFile, 
 }
 
 fn encode_current_config(config: &BotConfigFile) -> Result<String, FeishuError> {
-    crate::toml_schema::encode(&BotConfigV3::from(config), BOT_CONFIG_VERSION_KEY)
+    crate::toml_schema::encode(&BotConfigV4::from(config), BOT_CONFIG_VERSION_KEY)
         .map_err(map_schema_error)
 }
 
@@ -271,6 +271,7 @@ fn encode_historical_config(config: &BotConfigFile) -> Result<String, FeishuErro
             1,
         ),
         2 => encode_historical_toml(&BotConfigV2::from_file(config), 2),
+        3 => encode_historical_toml(&BotConfigV3::from(config), 3),
         BOT_CONFIG_SCHEMA_VERSION => encode_current_config(config),
         version => Err(FeishuError::new(
             FeishuErrorKind::Protocol,
@@ -288,8 +289,9 @@ pub(super) fn encode_config_snapshot(
         1 => serde_json::to_value(BotConfigV1::from_file(config).map_err(map_schema_error)?)
             .map_err(map_schema_error)?,
         2 => serde_json::to_value(BotConfigV2::from_file(config)).map_err(map_schema_error)?,
+        3 => serde_json::to_value(BotConfigV3::from(config)).map_err(map_schema_error)?,
         BOT_CONFIG_SCHEMA_VERSION => {
-            serde_json::to_value(BotConfigV3::from(config)).map_err(map_schema_error)?
+            serde_json::to_value(BotConfigV4::from(config)).map_err(map_schema_error)?
         }
         version => {
             return Err(FeishuError::new(
@@ -343,7 +345,7 @@ pub fn load_config(path: &Path) -> Result<BotConfigFile, FeishuError> {
     parse_config_at(path, &text)
 }
 
-/// Normal file save: current V3 only. Historical schema is not rewritten here.
+/// Normal file save uses only the current DTO; historical candidates are recovery-only.
 pub fn save_config(path: &Path, config: &BotConfigFile) -> Result<(), FeishuError> {
     persist_config_bytes(path, &encode_current_config(config)?)
 }
@@ -358,9 +360,12 @@ pub(super) fn save_recognized_config(
 }
 
 #[cfg(test)]
-pub(super) fn assert_current_v3_document(persisted: &str, app_id: &str) {
+pub(super) fn assert_current_document(persisted: &str, app_id: &str) {
     let table: toml::Table = toml::from_str(persisted).expect("current bot config TOML");
-    assert_eq!(table[BOT_CONFIG_VERSION_KEY].as_integer(), Some(3));
+    assert_eq!(
+        table[BOT_CONFIG_VERSION_KEY].as_integer(),
+        Some(i64::from(BOT_CONFIG_SCHEMA_VERSION))
+    );
     assert!(table.get("app_id").is_none());
     assert!(table.get("trusted_open_ids").is_none());
     assert!(table.get("trusted_chat_ids").is_none());
@@ -383,7 +388,7 @@ mod migration_tests {
 schema_version = 1
 id = "bot-migrate-1"
 name = "原机器人"
-workspace_id = "business-project"
+project_id = "business-project"
 app_id = "cli_original"
 platform = "feishuChina"
 enabled = true
@@ -399,7 +404,7 @@ updated_at = 200
 schema_version = 2
 id = "bot-migrate-1"
 name = "原机器人"
-workspace_id = "business-project"
+project_id = "business-project"
 app_id = "cli_original"
 platform = "feishuChina"
 enabled = true
@@ -500,9 +505,12 @@ updated_at = 200
         assert!(config.selected_ref.is_none());
     }
 
-    fn assert_current_v3_toml(persisted: &str, app_id: &str) {
+    fn assert_current_toml(persisted: &str, app_id: &str) {
         let table: toml::Table = toml::from_str(persisted).unwrap();
-        assert_eq!(table[BOT_CONFIG_VERSION_KEY].as_integer(), Some(3));
+        assert_eq!(
+            table[BOT_CONFIG_VERSION_KEY].as_integer(),
+            Some(i64::from(BOT_CONFIG_SCHEMA_VERSION))
+        );
         assert!(table.get("app_id").is_none());
         assert!(table.get("trusted_open_ids").is_none());
         assert!(table.get("trusted_chat_ids").is_none());
@@ -538,7 +546,7 @@ updated_at = 200
     const V1_DTO: &str = r#"
 id = "bot-migrate-1"
 name = "原机器人"
-workspace_id = "business-project"
+project_id = "business-project"
 app_id = "cli_original"
 platform = "feishuChina"
 enabled = true
@@ -602,7 +610,7 @@ updated_at = 200
 
     #[test]
     fn legacy_platform_config_round_trips_with_identity_and_authorization_intact() {
-        let loaded = crate::toml_schema::load::<BotConfigV1, BotConfigV3>(
+        let loaded = crate::toml_schema::load::<BotConfigV1, BotConfigV4>(
             Path::new("config.toml"),
             V2_FIXTURE,
             schema::migrator().unwrap(),
@@ -627,7 +635,7 @@ updated_at = 200
             "schema_version": 2,
             "id": "bot-migrate-1",
             "name": "原机器人",
-            "workspace_id": "business-project",
+            "project_id": "business-project",
             "platform": "feishuChina",
             "platform_config": {
                 "app_id": "cli_original",
@@ -653,9 +661,9 @@ updated_at = 200
         let path = temp.path().join("config.toml");
         save_config(&path, &current).unwrap();
         let persisted = std::fs::read_to_string(&path).unwrap();
-        assert!(persisted.contains("schema_version = 3"));
-        assert_current_v3_toml(&persisted, "cli_original");
-        let reloaded = crate::toml_schema::load::<BotConfigV1, BotConfigV3>(
+        assert!(persisted.contains("schema_version = 4"));
+        assert_current_toml(&persisted, "cli_original");
+        let reloaded = crate::toml_schema::load::<BotConfigV1, BotConfigV4>(
             &path,
             &persisted,
             schema::migrator().unwrap(),
@@ -664,11 +672,43 @@ updated_at = 200
         )
         .unwrap();
         assert!(!reloaded.migrated);
-        assert_eq!(reloaded.source_version, 3);
+        assert_eq!(reloaded.source_version, BOT_CONFIG_SCHEMA_VERSION);
         assert_eq!(load_config(&path).unwrap(), current);
         assert_eq!(current.id, "bot-migrate-1");
         assert_eq!(current.workspace_id, "business-project");
         assert_eq!(current.config_revision, 9);
+    }
+
+    #[test]
+    fn v3_workspace_ownership_preserves_credentials_and_rejects_old_current_keys() {
+        let mut original = parse_config(V2_FIXTURE).unwrap();
+        original.schema_version = 3;
+        original.selected_ref = Some(BotCredentialRef {
+            kind: crate::config::BotCredentialRefKind::System,
+            version: "credential-original".into(),
+        });
+        original.model_route = Some(pl_protocol::studio::BotModelRoute {
+            account_id: "account-original".into(),
+            model_id: "model-original".into(),
+            effort: Some("high".into()),
+        });
+        let source = encode_historical_config(&original).unwrap();
+        assert!(source.contains("project_id = \"business-project\""));
+        let loaded = schema::load_document(Path::new("config.toml"), &source).unwrap();
+        assert!(loaded.migrated);
+        assert_eq!(loaded.source_version, 3);
+        let migrated = finish_loaded(Path::new("config.toml"), 3, loaded.document).unwrap();
+        assert_eq!(migrated, original, "only storage vocabulary changes");
+        let current = encode_current_config(&migrated).unwrap();
+        assert!(current.contains("workspace_id = \"business-project\""));
+        assert!(!current.contains("project_id"));
+        assert_current_toml(&current, "cli_original");
+        let reread = parse_config(&current).unwrap();
+        let mut expected = original;
+        expected.schema_version = BOT_CONFIG_SCHEMA_VERSION;
+        assert_eq!(reread, expected);
+        let invalid_current = current.replace("workspace_id =", "project_id =");
+        assert!(parse_config(&invalid_current).is_err());
     }
 
     #[test]
@@ -680,7 +720,7 @@ updated_at = 200
         save_config(&path, &config).unwrap();
         let before = std::fs::read(&path).unwrap();
         let loaded = load_config(&path).unwrap();
-        assert_eq!(loaded.schema_version, 3);
+        assert_eq!(loaded.schema_version, BOT_CONFIG_SCHEMA_VERSION);
         assert_eq!(loaded, config);
         assert_eq!(std::fs::read(&path).unwrap(), before);
     }
@@ -694,10 +734,10 @@ updated_at = 200
             config
         })
         .unwrap();
-        encoded = encoded.replace("schema_version = 3", "schema_version = 4");
+        encoded = encoded.replace("schema_version = 4", "schema_version = 5");
         let error = parse_config(&encoded).unwrap_err();
         assert_eq!(error.kind(), FeishuErrorKind::Protocol);
-        let wrapped = crate::toml_schema::load::<BotConfigV1, BotConfigV3>(
+        let wrapped = crate::toml_schema::load::<BotConfigV1, BotConfigV4>(
             Path::new("config.toml"),
             &encoded,
             schema::migrator().unwrap(),
@@ -725,7 +765,7 @@ updated_at = 200
 schema_version = 2
 id = "bot-migrate-1"
 name = "原机器人"
-workspace_id = "business-project"
+project_id = "business-project"
 app_id = "cli_flat"
 platform = "feishuChina"
 platform_config = { app_id = "cli_nested", trusted_open_ids = [], trusted_chat_ids = [] }
@@ -742,7 +782,7 @@ updated_at = 200
             "schema_version": 3,
             "id": "bot-migrate-1",
             "name": "原机器人",
-            "workspace_id": "business-project",
+            "project_id": "business-project",
             "platform": "feishuChina",
             "platform_config": {
                 "app_id": "cli_nested",

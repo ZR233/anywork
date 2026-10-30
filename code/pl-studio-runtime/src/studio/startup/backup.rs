@@ -5,7 +5,28 @@ use serde::{Deserialize, Serialize};
 
 use super::StudioStartupRecovery;
 
-const MEMBERS: [&str; 4] = ["config.toml", "agents", "v2", "studio/v2"];
+const V2_MEMBERS: [&str; 4] = ["config.toml", "agents", "v2", "studio/v2"];
+const CURRENT_MEMBERS: [&str; 4] = ["config.toml", "agents", "data", "storage-migration.toml"];
+// An unpublished attempt may straddle the v2→current upgrade of an older recovery record.
+const ATTEMPT_MEMBERS: [&str; 6] = [
+    "config.toml",
+    "agents",
+    "v2",
+    "studio/v2",
+    "data",
+    "storage-migration.toml",
+];
+fn legacy_members_version() -> u32 {
+    1
+}
+fn member_names(version: u32) -> Result<&'static [&'static str]> {
+    match version {
+        1 => Ok(&V2_MEMBERS),
+        2 => Ok(&CURRENT_MEMBERS),
+        3 => Ok(&ATTEMPT_MEMBERS),
+        _ => anyhow::bail!("unknown recovery member layout"),
+    }
+}
 const JOURNAL: &str = "startup-recovery.toml";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -27,6 +48,8 @@ enum MoveState {
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ArchivePass {
+    #[serde(default = "legacy_members_version")]
+    member_version: u32,
     directory: String,
     members: Vec<MoveState>,
     directories: Vec<bool>,
@@ -60,10 +83,10 @@ impl StartupBackup {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(error) => return Err(error.into()),
         };
-        let record: Record = toml::from_str(&content)
+        let mut record: Record = toml::from_str(&content)
             .context("invalid startup recovery journal; preserving recovery state")?;
         ensure!(
-            record.version == 1 && valid_id(&record.id),
+            matches!(record.version, 1 | 2) && valid_id(&record.id),
             "unsupported startup recovery journal"
         );
         validate_pass(&record.original)?;
@@ -78,6 +101,7 @@ impl StartupBackup {
             std::fs::remove_file(path)?;
             return Ok(None);
         }
+        record.version = 2;
         let mut backup = Self {
             home: home.to_owned(),
             record,
@@ -92,8 +116,11 @@ impl StartupBackup {
         // A completed backup can be followed by an interrupted, unpublished default attempt.
         // Preserve that attempt separately; never treat its bytes as the original installation.
         if backup.record.interrupted.is_none() {
-            backup.record.interrupted =
-                Some(inventory(home, crate::studio::ids::new_id("interrupted"))?);
+            backup.record.interrupted = Some(inventory(
+                home,
+                crate::studio::ids::new_id("interrupted"),
+                3,
+            )?);
             backup.persist()?;
         }
         backup.move_interrupted()?;
@@ -107,12 +134,12 @@ impl StartupBackup {
             "startup recovery journal already exists"
         );
         let record = Record {
-            version: 1,
+            version: 2,
             id: crate::studio::ids::new_id("recovery"),
             reason,
             created_at: crate::studio::unix_seconds(),
             phase: Phase::Moving,
-            original: inventory(home, "original".into())?,
+            original: inventory(home, "original".into(), 2)?,
             interrupted: None,
         };
         let mut backup = Self {
@@ -173,7 +200,7 @@ impl StartupBackup {
         if self.record.phase != Phase::Moving {
             return Ok(());
         }
-        for index in 0..MEMBERS.len() {
+        for index in 0..member_names(self.record.original.member_version)?.len() {
             move_member(&self.home, &self.root(), &mut self.record.original, index)?;
             self.persist()?;
         }
@@ -183,7 +210,12 @@ impl StartupBackup {
 
     fn move_interrupted(&mut self) -> Result<()> {
         let root = self.root();
-        for index in 0..MEMBERS.len() {
+        for index in 0..self
+            .record
+            .interrupted
+            .as_ref()
+            .map_or(0, |pass| pass.members.len())
+        {
             if let Some(pass) = &mut self.record.interrupted {
                 move_member(&self.home, &root, pass, index)?;
             }
@@ -194,7 +226,10 @@ impl StartupBackup {
     }
 
     fn verify_original(&self) -> Result<()> {
-        for (index, member) in MEMBERS.iter().enumerate() {
+        for (index, member) in member_names(self.record.original.member_version)?
+            .iter()
+            .enumerate()
+        {
             let target = self.root().join("original").join(member);
             check_ancestors(&self.home, &target)?;
             let meta = metadata(&target)?;
@@ -213,10 +248,10 @@ impl StartupBackup {
     }
 }
 
-fn inventory(home: &Path, directory: String) -> Result<ArchivePass> {
+fn inventory(home: &Path, directory: String, member_version: u32) -> Result<ArchivePass> {
     let mut members = Vec::new();
     let mut directories = Vec::new();
-    for member in MEMBERS {
+    for member in member_names(member_version)? {
         let path = home.join(member);
         check_ancestors(home, &path)?;
         let meta = metadata(&path)?;
@@ -228,6 +263,7 @@ fn inventory(home: &Path, directory: String) -> Result<ArchivePass> {
         });
     }
     Ok(ArchivePass {
+        member_version,
         directory,
         members,
         directories,
@@ -236,7 +272,8 @@ fn inventory(home: &Path, directory: String) -> Result<ArchivePass> {
 
 fn validate_pass(pass: &ArchivePass) -> Result<()> {
     ensure!(
-        pass.members.len() == MEMBERS.len() && pass.directories.len() == MEMBERS.len(),
+        pass.members.len() == member_names(pass.member_version)?.len()
+            && pass.directories.len() == member_names(pass.member_version)?.len(),
         "invalid backup member count"
     );
     ensure!(
@@ -283,8 +320,10 @@ fn move_member(home: &Path, root: &Path, pass: &mut ArchivePass, index: usize) -
     if pass.members[index] == MoveState::Absent {
         return Ok(());
     }
-    let source = home.join(MEMBERS[index]);
-    let target = root.join(&pass.directory).join(MEMBERS[index]);
+    let source = home.join(member_names(pass.member_version)?[index]);
+    let target = root
+        .join(&pass.directory)
+        .join(member_names(pass.member_version)?[index]);
     check_ancestors(home, &source)?;
     check_ancestors(home, &target)?;
     let source_exists = metadata(&source)?.is_some();
@@ -388,7 +427,7 @@ mod migration_fault_tests {
                 reason: "safe reason".into(),
                 created_at: crate::studio::unix_seconds(),
                 phase: Phase::Moving,
-                original: inventory(home, "original".into())?,
+                original: inventory(home, "original".into(), 1)?,
                 interrupted: None,
             },
         };

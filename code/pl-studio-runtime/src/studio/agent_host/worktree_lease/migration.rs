@@ -42,12 +42,45 @@ impl LegacyLease {
             owner_kind: self.owner_kind,
             owner_thread_id: self.owner_thread_id,
             root_thread_id: self.root_thread_id,
-            project_id: self.project_id,
+            workspace_id: self.project_id,
             ssh_alias: self.ssh_alias,
             repository_root: self.repository_root,
             path: self.path,
             base_commit: self.base_commit,
         })
+    }
+}
+
+/// The latest released v2 lease, independently frozen from the current runtime record.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct LeaseV4 {
+    revision: u64,
+    state: WorktreeLeaseState,
+    owner_kind: WorktreeLeaseOwnerKind,
+    owner_thread_id: String,
+    root_thread_id: String,
+    project_id: String,
+    ssh_alias: Option<String>,
+    repository_root: String,
+    path: String,
+    base_commit: String,
+}
+
+impl From<LeaseV4> for WorktreeLease {
+    fn from(old: LeaseV4) -> Self {
+        Self {
+            revision: old.revision,
+            state: old.state,
+            owner_kind: old.owner_kind,
+            owner_thread_id: old.owner_thread_id,
+            root_thread_id: old.root_thread_id,
+            workspace_id: old.project_id,
+            ssh_alias: old.ssh_alias,
+            repository_root: old.repository_root,
+            path: old.path,
+            base_commit: old.base_commit,
+        }
     }
 }
 
@@ -61,7 +94,7 @@ pub(super) async fn load(db: &DatabaseConnection) -> Result<Vec<WorktreeLease>> 
         .await?;
     let mut leases = Vec::with_capacity(rows.len());
     for mut row in rows {
-        if matches!(row.schema_version, 2 | 3) {
+        if matches!(row.schema_version, 2..=4) {
             ensure!(
                 content_hash(row.payload_json.as_bytes()) == row.payload_hash,
                 "worktree lease {} hash mismatch before migration",
@@ -69,13 +102,20 @@ pub(super) async fn load(db: &DatabaseConnection) -> Result<Vec<WorktreeLease>> 
             );
             let payload: serde_json::Value = serde_json::from_str(&row.payload_json)
                 .context("decode historical worktree lease")?;
-            ensure!(
-                row.schema_version == 2 || payload.get("restoreAuthorizedAt").is_none(),
-                "worktree lease contains a retired schema 2 field"
-            );
-            let legacy: LegacyLease = serde_json::from_value(payload)
-                .context("decode historical worktree lease fields")?;
-            let lease = legacy.upgrade()?;
+            let lease = if row.schema_version == 4 {
+                WorktreeLease::from(
+                    serde_json::from_value::<LeaseV4>(payload)
+                        .context("decode frozen schema 4 worktree lease")?,
+                )
+            } else {
+                ensure!(
+                    row.schema_version == 2 || payload.get("restoreAuthorizedAt").is_none(),
+                    "worktree lease contains a retired schema 2 field"
+                );
+                let legacy: LegacyLease = serde_json::from_value(payload)
+                    .context("decode historical worktree lease fields")?;
+                legacy.upgrade()?
+            };
             row.payload_json = serde_json::to_string(&lease)?;
             row.payload_hash = content_hash(row.payload_json.as_bytes());
             row.schema_version = WorktreeLease::SCHEMA_VERSION;
@@ -178,16 +218,92 @@ mod tests {
                 .as_object_mut()
                 .context("lease object")?
                 .remove("branch");
+            let owner = old_payload
+                .as_object_mut()
+                .context("old lease")?
+                .remove("projectId")
+                .context("old owner")?;
+            old_payload["workspaceId"] = owner;
             assert_eq!(
                 serde_json::from_str::<serde_json::Value>(&new.payload_json)?,
                 old_payload
             );
             assert_eq!(new.revision, old.revision);
             assert_eq!(new.updated_at, old.updated_at);
-            assert_eq!(new.schema_version, 4);
+            assert_eq!(new.schema_version, 5);
             assert_eq!(new.payload_hash, content_hash(new.payload_json.as_bytes()));
         }
         assert_eq!(load(&db).await?, leases, "upgrade is idempotent");
+        store.close().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn latest_v2_schema_four_owners_upgrade_without_losing_states_or_revisions() -> Result<()>
+    {
+        let store = crate::studio::StudioStore::open_memory().await?;
+        let db = store.database();
+        for state in [
+            "prepared",
+            "active",
+            "preserved",
+            "cleanupRequested",
+            "cleaned",
+        ] {
+            insert(db, state, state, false).await?;
+            let row = studio_object::Entity::find_by_id((
+                "agent".to_owned(),
+                state.to_owned(),
+                "worktreeLease".to_owned(),
+            ))
+            .one(db)
+            .await?
+            .context("old schema 4 row")?;
+            let mut payload: serde_json::Value = serde_json::from_str(&row.payload_json)?;
+            let object = payload.as_object_mut().context("old payload")?;
+            object.remove("branch");
+            object.remove("restoreAuthorizedAt");
+            assert_eq!(object["projectId"], "project");
+            assert!(!object.contains_key("workspaceId"));
+            let payload = payload.to_string();
+            let mut active = row.into_active_model();
+            active.schema_version = Set(4);
+            active.payload_hash = Set(content_hash(payload.as_bytes()));
+            active.payload_json = Set(payload);
+            active.update(db).await?;
+        }
+        let before = studio_object::Entity::find().all(db).await?;
+        let leases = load(db).await?;
+        assert_eq!(leases.len(), 5);
+        for original in before {
+            let migrated = studio_object::Entity::find_by_id((
+                original.owner_kind.clone(),
+                original.owner_id.clone(),
+                original.object_kind.clone(),
+            ))
+            .one(db)
+            .await?
+            .context("upgraded owner")?;
+            let mut expected: serde_json::Value = serde_json::from_str(&original.payload_json)?;
+            let owner = expected
+                .as_object_mut()
+                .context("old object")?
+                .remove("projectId")
+                .context("frozen owner")?;
+            expected["workspaceId"] = owner;
+            assert_eq!(
+                serde_json::from_str::<serde_json::Value>(&migrated.payload_json)?,
+                expected
+            );
+            assert_eq!(migrated.schema_version, 5);
+            assert_eq!(migrated.revision, original.revision);
+            assert_eq!(migrated.updated_at, original.updated_at);
+            assert_eq!(
+                migrated.payload_hash,
+                content_hash(migrated.payload_json.as_bytes())
+            );
+        }
+        assert_eq!(load(db).await?, leases);
         store.close().await?;
         Ok(())
     }

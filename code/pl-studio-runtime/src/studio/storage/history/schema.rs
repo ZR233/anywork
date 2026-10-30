@@ -9,6 +9,7 @@ use sea_orm_migration::{DbErr, MigrationName, MigrationTrait, MigratorTraitSelf,
 
 struct Migrator {
     thread_id: String,
+    bot_root: Option<crate::studio::startup::storage_layout::bot_roots::BotRootMove>,
     execution_identity: Option<(
         pl_core::thread::ThreadCheckpoint,
         pl_core::thread::ThreadCheckpoint,
@@ -50,6 +51,10 @@ impl MigratorTraitSelf for Migrator {
             Box::new(WorkspaceReceipt {
                 thread_id: self.thread_id.clone(),
             }),
+            Box::new(BotRootRelocation {
+                thread_id: self.thread_id.clone(),
+                mapping: self.bot_root.clone(),
+            }),
             Box::new(ExecutionIdentity {
                 thread_id: self.thread_id.clone(),
                 candidate: self.execution_identity.clone(),
@@ -69,6 +74,7 @@ const MODEL_ACCESS: &str = "m20261026_000007_history_model_access";
 // Ordered between model-access and execution identity: cold close needs representation maintenance
 // without requiring (or activating) a Mode/model/tool execution owner.
 const WORKSPACE_RECEIPT: &str = "m20261026_000007a_history_workspace_receipt";
+const BOT_ROOT: &str = "m20261026_000007b_history_bot_root_relocation";
 pub(super) const EXECUTION_IDENTITY: &str = "m20261026_000008_history_execution_identity";
 const RETIRE_ORDINALS: &str = "m20261027_000001_history_retire_ordinals";
 const PRODUCER_PAYLOADS: &str = "m20261027_000002_history_producer_payloads";
@@ -79,7 +85,7 @@ const PROJECT_KIND: &str = "m20261027_000004_history_project_kind";
 fn is_lifecycle_migration(name: &str) -> bool {
     matches!(
         name,
-        PROJECT_KIND | MODEL_ACCESS | WORKSPACE_RECEIPT | EXECUTION_IDENTITY
+        PROJECT_KIND | MODEL_ACCESS | WORKSPACE_RECEIPT | BOT_ROOT | EXECUTION_IDENTITY
     )
 }
 
@@ -92,12 +98,26 @@ pub(super) async fn prepare(
         pl_core::thread::ThreadCheckpoint,
     )>,
 ) -> Result<()> {
+    prepare_with_bot_root(db, thread_id, phase, execution_identity, None).await
+}
+
+pub(super) async fn prepare_with_bot_root(
+    db: &DatabaseConnection,
+    thread_id: &str,
+    phase: Preparation,
+    execution_identity: Option<(
+        pl_core::thread::ThreadCheckpoint,
+        pl_core::thread::ThreadCheckpoint,
+    )>,
+    bot_root: Option<crate::studio::startup::storage_layout::bot_roots::BotRootMove>,
+) -> Result<()> {
     preflight(db, thread_id)
         .await
         .map_err(|error| crate::studio::startup::migration_error("history", "preflight", error))?;
     let migrator = Migrator {
         thread_id: thread_id.to_owned(),
         execution_identity,
+        bot_root,
     };
     let pending = migrator.get_pending_migrations_read_only(db).await?;
     let steps = match phase {
@@ -107,8 +127,8 @@ pub(super) async fn prepare(
             .count(),
         Preparation::ModelAccess => pending
             .iter()
-            .position(|step| step.name() == WORKSPACE_RECEIPT)
-            .map_or(0, |index| index + 1),
+            .take_while(|step| step.name() != EXECUTION_IDENTITY)
+            .count(),
         Preparation::ExecutionIdentity => pending.len(),
     };
     if let Err(error) = migrator.up(db, Some(u32::try_from(steps)?)).await {
@@ -151,6 +171,7 @@ async fn preflight(db: &DatabaseConnection, thread_id: &str) -> Result<()> {
     let migrator = Migrator {
         thread_id: thread_id.to_owned(),
         execution_identity: None,
+        bot_root: None,
     };
     let pending = migrator.get_pending_migrations_read_only(db).await?;
     let meta = db
@@ -262,6 +283,7 @@ pub(super) async fn validate_current(db: &impl ConnectionTrait, thread_id: &str)
     let migrator = Migrator {
         thread_id: thread_id.to_owned(),
         execution_identity: None,
+        bot_root: None,
     };
     ensure!(
         migrator
@@ -766,6 +788,40 @@ impl MigrationTrait for ExecutionIdentity {
             ));
         }
         checkpoint::write_representation(db, original, migrated)
+            .await
+            .map_err(conversion)
+    }
+}
+
+struct BotRootRelocation {
+    thread_id: String,
+    mapping: Option<crate::studio::startup::storage_layout::bot_roots::BotRootMove>,
+}
+impl MigrationName for BotRootRelocation {
+    fn name(&self) -> &str {
+        BOT_ROOT
+    }
+}
+#[sea_orm_migration::async_trait::async_trait]
+impl MigrationTrait for BotRootRelocation {
+    fn use_transaction(&self) -> Option<bool> {
+        Some(true)
+    }
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        let Some(mapping) = &self.mapping else {
+            return Ok(());
+        };
+        let db = manager.get_connection();
+        let Some(original) = checkpoint::read(db, &self.thread_id)
+            .await
+            .map_err(conversion)?
+        else {
+            return Ok(());
+        };
+        let mut migrated = original.clone();
+        crate::studio::producer_migration::relocate_bot_checkpoint(&mut migrated, mapping)
+            .map_err(conversion)?;
+        checkpoint::write_representation(db, &original, &migrated)
             .await
             .map_err(conversion)
     }

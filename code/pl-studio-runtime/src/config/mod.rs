@@ -72,12 +72,11 @@ pub use runtime::{
 };
 pub use store::{ConfigPaths, ConfigStore};
 
-pub const STUDIO_CONFIG_SCHEMA_VERSION: u32 = 27;
+pub const STUDIO_CONFIG_SCHEMA_VERSION: u32 = 28;
 pub const STUDIO_CONFIG_DIR_NAME: &str = ".anywork";
 pub const STUDIO_CONFIG_FILE_NAME: &str = "config.toml";
 
 const DEFAULT_ACCOUNT_ID: &str = "deepseek";
-const STUDIO_USER_SKILLS_DIR: &str = "~/.anywork/skills";
 /// Historical root route identity; unlike Agent declarations it is not a child Profile.
 pub(crate) const ROOT_AGENT_ROUTE_KEY: &str = "planner";
 
@@ -124,7 +123,7 @@ pub struct StudioUiConfig {
     #[serde(default)]
     pub pinned_thread_ids: Vec<String>,
     #[serde(default)]
-    pub pinned_workspace_ids: Vec<String>,
+    pub pinned_project_ids: Vec<String>,
 }
 
 impl Default for StudioUiConfig {
@@ -134,7 +133,7 @@ impl Default for StudioUiConfig {
             compact_timeline: false,
             sidebar_width: None,
             pinned_thread_ids: Vec::new(),
-            pinned_workspace_ids: Vec::new(),
+            pinned_project_ids: Vec::new(),
         }
     }
 }
@@ -211,11 +210,6 @@ impl StudioConfig {
             model_id: definition.suggested_model,
             effort: definition.suggested_effort.map(ReasoningEffort::new),
         };
-        let skills = SkillsConfig {
-            user_dir: STUDIO_USER_SKILLS_DIR.to_string(),
-            ..SkillsConfig::default()
-        };
-
         Ok(Self {
             schema_version: STUDIO_CONFIG_SCHEMA_VERSION,
             delegation: pl_protocol::DelegationSettings::default(),
@@ -232,7 +226,7 @@ impl StudioConfig {
             deepseek_web_search: DeepSeekWebSearchConfig::default(),
             runtime: RuntimeConfig::default(),
             instructions: InstructionsConfig::default(),
-            skills,
+            skills: SkillsConfig::default(),
             mcp: StudioMcpConfig::default(),
             lsp: StudioLspConfig::default(),
             ui: StudioUiConfig::default(),

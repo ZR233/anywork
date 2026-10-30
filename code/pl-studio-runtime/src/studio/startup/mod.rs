@@ -15,3 +15,4 @@ pub struct StudioStartupRecovery {
     pub reason: String,
     pub created_at: i64,
 }
+pub(in crate::studio) mod storage_layout;

@@ -138,7 +138,6 @@ pub(crate) fn write_model_config(home: &Path, model_base_url: &str) -> Result<()
         route.model_id = "fixture-model".into();
         route.effort = None;
     }
-    config.skills.user_dir = home.join("skills").to_string_lossy().into_owned();
     config.validate()?;
     fs::write(home.join("config.toml"), toml::to_string_pretty(&config)?)
         .with_context(|| format!("failed to write isolated config under {}", home.display()))

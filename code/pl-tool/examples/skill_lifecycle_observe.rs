@@ -298,11 +298,9 @@ async fn observe_static_root_isolated(root: &Path) -> anyhow::Result<()> {
 fn observe_static_root(root: &Path) -> anyhow::Result<()> {
     use pl_tool::skill::SkillCatalog;
 
-    let user_source = root.join("user-source");
-    let config = SkillsConfig {
-        user_dir: user_source.to_string_lossy().into_owned(),
-        ..SkillsConfig::default()
-    };
+    let user_source = root.join("home/.agents/skills");
+    fs::create_dir_all(user_source.parent().unwrap())?;
+    let config = SkillsConfig::default();
     std::os::unix::fs::symlink(root.join("missing-target"), &user_source)?;
     let linked = SkillCatalog::discover(root, &config, None);
     println!("static-catalog-dangling-source outcome={linked:?}");

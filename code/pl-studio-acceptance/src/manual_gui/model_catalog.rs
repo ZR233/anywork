@@ -191,7 +191,7 @@ pub(super) fn write_runbook(
     control: &ModelCatalogControl,
     fixture_base_url: &str,
 ) -> Result<()> {
-    let cache_dir = home.join("v2/model-catalogs");
+    let cache_dir = home.join("data/model-catalogs");
     let config = home.join("config.toml");
     let runbook = format!(
         r#"# 在线目录发现人工验收 Runbook
@@ -460,14 +460,14 @@ pub(super) fn wait_for_online_cache(
 }
 
 fn read_openai_cache(home: &Path) -> Result<(PathBuf, Value)> {
-    let root = home.join("v2/model-catalogs");
+    let root = home.join("data/model-catalogs");
     let mut matching = Vec::new();
     collect_openai_caches(&root, &mut matching)?;
     matching
         .into_iter()
         .max_by_key(|(modified, _, _)| *modified)
         .map(|(_, path, cache)| (path, cache))
-        .context("no catalog-openai model.json under v2/model-catalogs")
+        .context("no catalog-openai model.json under data/model-catalogs")
 }
 
 fn collect_openai_caches(

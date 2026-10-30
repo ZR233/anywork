@@ -89,7 +89,6 @@ pub(crate) fn prepare(home: &Path, base_url: &str) -> Result<()> {
     }
     config.runtime.openai_compaction_mode = pl_model::completion::OpenAiCompactionMode::Local;
     config.skills.enabled = false;
-    config.skills.user_dir = home.join("skills").to_string_lossy().into_owned();
     config.instructions.developer =
         "Synthetic shared developer context: AGENT_GLOBAL_SOURCE.".into();
     config.validate()?;
@@ -113,7 +112,6 @@ pub(crate) fn prepare(home: &Path, base_url: &str) -> Result<()> {
         &user(true, "Withdrawn-model synthetic role.", UNAVAILABLE_MODEL)?,
         &config,
     )?;
-    fs::create_dir_all(home.join("skills"))?;
     read(home)?
         .validate()
         .context("round-trip isolated Agent configuration")?;

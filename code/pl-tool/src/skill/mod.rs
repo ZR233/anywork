@@ -36,16 +36,6 @@ pub const USAGE_FILE_NAME: &str = ".usage.json";
 const MAX_SKILL_SCAN_DEPTH: usize = 5;
 const ALLOWED_SUPPORT_DIRS: &[&str] = &["references", "templates", "scripts", "assets"];
 
-/// Resolves the configured read-only user Skills directory, including `~` expansion.
-///
-/// # Errors
-///
-/// Returns an error when a home-relative path is configured and the host home
-/// directory cannot be resolved.
-pub fn resolve_user_skills_dir(config: &SkillsConfig) -> Result<PathBuf> {
-    util::expand_home(&config.user_dir)
-}
-
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum SkillSourceKind {
@@ -191,11 +181,6 @@ pub fn validate_skills_config(config: &SkillsConfig) -> Result<()> {
     if util::safe_relative_path(&config.project_dir).is_err() {
         return Err(PureError::ConfigError(
             "skills.project_dir must be a relative path inside the workspace".to_string(),
-        ));
-    }
-    if config.user_dir.trim().is_empty() {
-        return Err(PureError::ConfigError(
-            "skills.user_dir must not be empty".to_string(),
         ));
     }
     for disabled in &config.disabled {
