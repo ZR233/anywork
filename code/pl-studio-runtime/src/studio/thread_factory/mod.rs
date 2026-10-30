@@ -9,6 +9,8 @@ pub(crate) mod recovery;
 mod restore_child;
 mod worktree_close;
 pub(crate) use execution_admission::ExecutionWorkspaceCheck;
+#[cfg(test)]
+mod review_archive_tests;
 mod root_resources;
 mod session_files;
 mod thread_seed;

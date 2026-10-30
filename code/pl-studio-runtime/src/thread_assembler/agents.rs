@@ -18,6 +18,10 @@ use std::sync::{Arc, Weak};
 #[derive(Debug)]
 struct AgentHost(Weak<Registry>);
 
+#[cfg(test)]
+#[path = "agents_archive_tests.rs"]
+pub(crate) mod archive_tests;
+
 #[derive(Debug, thiserror::Error)]
 enum ControlError {
     #[error("agent coordinator is closed")]

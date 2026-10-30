@@ -8,6 +8,8 @@ mod agent_operations;
 pub(crate) mod agent_review;
 mod agent_services;
 mod agents;
+#[cfg(test)]
+pub(crate) use agents::archive_tests::spec as archive_test_spec;
 mod delegation_models;
 pub(crate) mod observation;
 pub(crate) mod review_delivery;
