@@ -795,6 +795,7 @@ impl IntoDomain<MainV28> for MainV28 {
     }
 }
 
+#[cfg(test)]
 impl MainV27 {
     pub(crate) fn from_config(config: &super::super::StudioConfig) -> Result<Self> {
         let mut value = toml::Value::try_from(config)?;

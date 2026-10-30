@@ -2710,9 +2710,12 @@ fn run_timeline_history_scenario(
                     .context("timeline-history restart ran without the live identity")?;
                 ensure!(
                     restore.get("evidenceConsistent") == Some(&serde_json::Value::Bool(true))
-                        && restore.get("workspaceIdMatches") == Some(&serde_json::Value::Bool(true))
+                        && restore.get("workspaceIdMatches")
+                            == Some(&serde_json::Value::Bool(true))
                         && restore.get("threadIdMatches") == Some(&serde_json::Value::Bool(true))
-                        && restore.get("workspaceId").and_then(serde_json::Value::as_str)
+                        && restore
+                            .get("workspaceId")
+                            .and_then(serde_json::Value::as_str)
                             == Some(target.workspace_id.as_str())
                         && restore
                             .get("projectPath")
@@ -2901,7 +2904,9 @@ fn run_timeline_history_scenario(
                 restore.get("evidenceConsistent") == Some(&serde_json::Value::Bool(true))
                     && restore.get("workspaceIdMatches") == Some(&serde_json::Value::Bool(true))
                     && restore.get("threadIdMatches") == Some(&serde_json::Value::Bool(true))
-                    && restore.get("workspaceId").and_then(serde_json::Value::as_str)
+                    && restore
+                        .get("workspaceId")
+                        .and_then(serde_json::Value::as_str)
                         == Some(target.workspace_id.as_str())
                     && restore
                         .get("projectPath")
@@ -3394,7 +3399,7 @@ fn write_config_with_profile(
     profile: ModelTransportProfile,
     ordinary_gui: bool,
 ) -> Result<()> {
-    let mut config = fixture_config(home, ready, profile)?;
+    let mut config = fixture_config(ready, profile)?;
     if ordinary_gui {
         let route = config.mode_model_route(&ThreadModeId::simple())?.clone();
         config
@@ -3421,7 +3426,7 @@ fn write_config_with_mcp_server(
     command: &Path,
     args: &[String],
 ) -> Result<()> {
-    let mut config = fixture_config(home, ready, ModelTransportProfile::responses_http())?;
+    let mut config = fixture_config(ready, ModelTransportProfile::responses_http())?;
     config.runtime.active_mcp_servers.push(server_id.to_owned());
     config.mcp.servers.insert(
         server_id.to_owned(),
@@ -3485,7 +3490,7 @@ fn write_config_with_lsp_server(
     ready: &FixtureReady,
     spec: &LspServerSpec<'_>,
 ) -> Result<()> {
-    let config = fixture_config(home, ready, ModelTransportProfile::responses_http())?;
+    let config = fixture_config(ready, ModelTransportProfile::responses_http())?;
     // Round-trip through a `toml::Table` so the injected entry is identical to
     // what `persist_config` / the runtime would read back from `config.toml`.
     let mut table: toml::Table = toml::from_str(&toml::to_string(&config)?)
@@ -3597,11 +3602,7 @@ fn build_fixture_executable(workspace: &Path) -> Result<PathBuf> {
 
 /// Builds the isolated acceptance config without persisting it, so every writer
 /// shares one model/account/route fact source.
-fn fixture_config(
-    home: &Path,
-    ready: &FixtureReady,
-    profile: ModelTransportProfile,
-) -> Result<StudioConfig> {
+fn fixture_config(ready: &FixtureReady, profile: ModelTransportProfile) -> Result<StudioConfig> {
     let mut config = StudioConfig::default_config()?;
     let mut model = ModelInfo::compatible("fixture-model");
     model.capabilities.interleaved = Some(pl_model::model::ReasoningInterleaved {
