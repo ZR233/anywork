@@ -899,13 +899,18 @@ fn copy_tree_sync(home: &Path, source: &Path, target: &Path) -> Result<()> {
                 target.display()
             );
         } else {
-            std::fs::create_dir_all(target.parent().context("copy target has no parent")?)?;
-            let mut temporary = tempfile::NamedTempFile::new_in(
-                target.parent().context("copy target has no parent")?,
-            )?;
+            let parent = target.parent().context("copy target has no parent")?;
+            std::fs::create_dir_all(parent)?;
+            // tempfile passes paths directly to Win32 when persisting, unlike std's file APIs.
+            // Canonicalize the checked, existing parent so both paths use extended-length syntax
+            // on Windows. Keep this native spelling local; storage identities remain unchanged.
+            let parent = std::fs::canonicalize(parent)?;
+            let destination =
+                parent.join(target.file_name().context("copy target has no filename")?);
+            let mut temporary = tempfile::NamedTempFile::new_in(&parent)?;
             std::io::copy(&mut std::fs::File::open(source)?, &mut temporary)?;
             temporary.as_file().sync_all()?;
-            temporary.persist_noclobber(target)?;
+            temporary.persist_noclobber(&destination)?;
             ensure!(
                 file_digest(source)? == file_digest(target)?,
                 "migration copy changed bytes"

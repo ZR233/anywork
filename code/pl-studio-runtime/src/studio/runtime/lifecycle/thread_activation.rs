@@ -9,21 +9,9 @@ impl StudioRuntime {
         &self,
         id: &str,
     ) -> Result<pl_core::thread::ThreadHandle> {
-        {
-            // The preflight snapshot is not recovery state: release it before nesting ancestry
-            // activation and cold-child reconciliation into this future.
-            let record = self.read_protocol_thread(id).await?;
-            self.store.ensure_agent_execution_allowed(id).await?;
-            self.check_thread_read_access(&record)?;
-            let live = self
-                .threads
-                .observed_thread(id)
-                .map(|thread| thread.snapshot());
-            self.verify_thread_execution_preparation(&record, live.as_ref())
-                .await?;
-            self.check_thread_execution_access(&record)?;
-            self.store.ensure_agent_execution_allowed(id).await?;
-        }
+        // Keep the preflight snapshot and its platform-dependent IO state out of ancestry
+        // activation's inline future, while retaining this caller's cancellation ownership.
+        Box::pin(self.verify_activation_preflight(id)).await?;
         // This operation already borrows the runtime. Retain only the residency owner, not
         // another full StudioRuntime clone, across activation/recovery awaits.
         let _activation_pin = self.residency.pin_many([id.to_owned()]);
@@ -105,6 +93,21 @@ impl StudioRuntime {
         self.threads
             .thread(id)
             .context("Thread activation did not publish its owner")
+    }
+
+    async fn verify_activation_preflight(&self, id: &str) -> Result<()> {
+        let record = self.read_protocol_thread(id).await?;
+        self.store.ensure_agent_execution_allowed(id).await?;
+        self.check_thread_read_access(&record)?;
+        let live = self
+            .threads
+            .observed_thread(id)
+            .map(|thread| thread.snapshot());
+        self.verify_thread_execution_preparation(&record, live.as_ref())
+            .await?;
+        self.check_thread_execution_access(&record)?;
+        self.store.ensure_agent_execution_allowed(id).await?;
+        Ok(())
     }
 }
 

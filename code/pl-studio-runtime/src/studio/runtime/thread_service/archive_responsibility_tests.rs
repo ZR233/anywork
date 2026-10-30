@@ -278,12 +278,19 @@ async fn archive_first_scope_write_failure_recovers_exited_private_owner_and_ori
             b"keep worktree"
         );
         let worktrees = tokio::process::Command::new("git")
-            .args(["worktree", "list", "--porcelain"])
+            .args(["worktree", "list", "--porcelain", "-z"])
             .current_dir(&workspace)
             .output()
             .await?;
         assert!(worktrees.status.success());
-        assert!(String::from_utf8(worktrees.stdout)?.contains(checkout.to_str().unwrap()));
+        let expected = dunce::canonicalize(&checkout)?;
+        let mut registered = false;
+        for field in String::from_utf8(worktrees.stdout)?.split('\0') {
+            if let Some(path) = field.strip_prefix("worktree ") {
+                registered |= dunce::canonicalize(path)? == expected;
+            }
+        }
+        assert!(registered, "the preserved checkout must remain registered");
         runtime.shutdown_runtime().await?;
     }
     Ok(())

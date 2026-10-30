@@ -308,7 +308,15 @@ fn retain_input(
     };
     ensure_no_links(root)?;
     prepare_resource_directory(root)?;
-    let mut temporary = tempfile::NamedTempFile::new_in(root).map_err(store_error)?;
+    // tempfile's Win32 publication does not add extended-length syntax itself. Keep the
+    // native spelling inside this IO boundary; resource identities and error paths stay original.
+    #[cfg(windows)]
+    let native_root = std::fs::canonicalize(root).map_err(store_error)?;
+    #[cfg(windows)]
+    let native_root = native_root.as_path();
+    #[cfg(not(windows))]
+    let native_root = root;
+    let mut temporary = tempfile::NamedTempFile::new_in(native_root).map_err(store_error)?;
     #[cfg(test)]
     retention_test::wait_if_registered(root);
     let mut digest = Sha256::new();
@@ -352,7 +360,13 @@ fn retain_input(
     )?;
     temporary.as_file().sync_all().map_err(store_error)?;
     let destination = resource_path(root, &reference)?;
-    match temporary.persist_noclobber(&destination) {
+    #[cfg(windows)]
+    let native_destination = resource_path(native_root, &reference)?;
+    #[cfg(windows)]
+    let native_destination = native_destination.as_path();
+    #[cfg(not(windows))]
+    let native_destination = destination.as_path();
+    match temporary.persist_noclobber(native_destination) {
         Ok(_) => {}
         Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => {
             // Preserve a conflicting object for diagnosis. Never overwrite historical bytes.

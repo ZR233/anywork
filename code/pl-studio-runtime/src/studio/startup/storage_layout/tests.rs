@@ -736,6 +736,35 @@ async fn interrupted_build_resumes_verified_copies_and_current_missing_authority
     let journal = decode_journal(&tokio::fs::read_to_string(temp.path().join(JOURNAL)).await?)?;
     assert_eq!(journal.phase, Phase::Building);
     let original = backup_root(&paths, &journal).join(session.strip_prefix(temp.path())?);
+    let checkpoint = staging(&paths, &journal)
+        .session_paths(OWNER, THREAD)?
+        .root()
+        .join("blobs/checkpoint/saved");
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        assert!(checkpoint.as_os_str().encode_wide().count() > 260);
+    }
+    // The missing attachment interrupts the build only after deep owned copies are published.
+    // Reuse requires identical bytes, and a conflicting copy must never reclaim that target.
+    let saved = tokio::fs::read(original.join("blobs/checkpoint/saved")).await?;
+    assert_eq!(tokio::fs::read(&checkpoint).await?, saved);
+    copy_tree(
+        paths.home(),
+        &original.join("blobs/checkpoint/saved"),
+        &checkpoint,
+    )
+    .await?;
+    let error = copy_tree(
+        paths.home(),
+        &original.join("attachments.toml"),
+        &checkpoint,
+    )
+    .await
+    .expect_err("conflicting copy must preserve the already published checkpoint");
+    assert!(format!("{error:#}").contains("conflicting migration copy"));
+    assert_eq!(tokio::fs::read(&checkpoint).await?, saved);
+    assert!(!paths.layout_file().exists());
     tokio::fs::write(original.join("blobs").join(&hash), BODY).await?;
     prepare(&paths).await?;
     let marker = tokio::fs::read(paths.layout_file()).await?;
