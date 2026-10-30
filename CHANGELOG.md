@@ -5,6 +5,24 @@ anywork release notes are generated from Conventional Commits by Release Please.
 以下已发布记录保留当时的名称与行为，不作为当前工程规范；当前架构演进规则见
 [AGENTS.md](AGENTS.md)，数据迁移契约及实现缺口见[存储设计](design/17-studio-storage.md)。
 
+## [6.35.0](https://github.com/ZR233/anywork/compare/v6.34.0...v6.35.0) (2026-10-30)
+
+
+### Features
+
+* **studio:** 支持手动选择界面语言 ([#229](https://github.com/ZR233/anywork/issues/229)) ([385db8b](https://github.com/ZR233/anywork/commit/385db8b94612fca9f0cfab769ba33f34e67cf8d0))
+* **studio:** 支持非项目新会话与文档目录工作区 ([#226](https://github.com/ZR233/anywork/issues/226)) ([fba61fb](https://github.com/ZR233/anywork/commit/fba61fb69e065e077c4563f4b72bc0f534953a70))
+
+
+### Bug Fixes
+
+* **studio:** 统一时间线 Markdown 展示与自动换行 ([#223](https://github.com/ZR233/anywork/issues/223)) ([395a9d6](https://github.com/ZR233/anywork/commit/395a9d60b9ab3b943493429aee8276c823eb585a))
+
+
+### Refactoring
+
+* **studio:** 统一 TOML 文件级版本迁移 ([#225](https://github.com/ZR233/anywork/issues/225)) ([bff9f78](https://github.com/ZR233/anywork/commit/bff9f78f7c32d31e19311781b8d89bf0a7bcfd9d))
+
 ## [6.34.0](https://github.com/ZR233/anywork/compare/v6.33.0...v6.34.0) (2026-10-29)
 
 
