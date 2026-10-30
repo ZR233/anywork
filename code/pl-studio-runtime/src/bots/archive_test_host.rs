@@ -77,6 +77,7 @@ impl BotArchiveTestHost {
                 scope: ArchiveScope::Thread(thread_id.into()),
                 revision: 1,
                 members: Vec::new(),
+                private_members: Vec::new(),
                 phase: ArchivePhase::Sealed,
             })
             .await
