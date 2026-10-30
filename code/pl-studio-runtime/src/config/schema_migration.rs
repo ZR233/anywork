@@ -1854,9 +1854,12 @@ catalog = "deepseek"
             .load_for_startup()
             .expect("schema 26 startup migration");
         assert_main_fields_preserved(&loaded);
-        assert_eq!(loaded.schema_version, 27);
+        assert_eq!(
+            loaded.schema_version,
+            crate::config::STUDIO_CONFIG_SCHEMA_VERSION
+        );
         let mut expected: toml::Value = toml::from_str(&original).unwrap();
-        expected["schema_version"] = 27.into();
+        expected["schema_version"] = i64::from(crate::config::STUDIO_CONFIG_SCHEMA_VERSION).into();
         let account = expected["models"]["accounts"]["deepseek"]
             .as_table_mut()
             .unwrap();

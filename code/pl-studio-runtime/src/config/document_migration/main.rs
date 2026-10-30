@@ -1137,6 +1137,10 @@ enabled = false
         let old_routes = config.mode_model_routes.clone();
 
         let mut old = toml::Value::try_from(MainV27::from_config(&config).unwrap()).unwrap();
+        old.as_table_mut()
+            .unwrap()
+            .entry("skills")
+            .or_insert_with(|| toml::Value::Table(toml::Table::new()));
         old["skills"]["user_dir"] = "~/.anywork/skills".into();
         let old: MainV27 = old.try_into().unwrap();
         let loaded = load_main(Path::new("v27.toml"), &old.encode().unwrap()).unwrap();
@@ -1145,7 +1149,15 @@ enabled = false
         let current = loaded.document.encode().unwrap();
         assert!(!current.contains("user_dir"));
         let mut invalid_current: toml::Value = toml::from_str(&current).unwrap();
-        invalid_current["skills"]["user_dir"] = "/custom/skills".into();
+        invalid_current
+            .as_table_mut()
+            .unwrap()
+            .entry("skills")
+            .or_insert_with(|| toml::Value::Table(toml::Table::new()));
+        invalid_current["skills"]
+            .as_table_mut()
+            .unwrap()
+            .insert("user_dir".into(), "/custom/skills".into());
         assert!(
             load_current_main(
                 Path::new("v28.toml"),
