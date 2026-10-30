@@ -1137,7 +1137,7 @@ enabled = false
 
         let mut old = toml::Value::try_from(MainV27::from_config(&config).unwrap()).unwrap();
         old["skills"]["user_dir"] = "~/.anywork/skills".into();
-        let old = MainV27::try_from(old).unwrap();
+        let old: MainV27 = old.try_into().unwrap();
         let loaded = load_main(Path::new("v27.toml"), &old.encode().unwrap()).unwrap();
 
         assert_eq!(loaded.source_version, 27);
