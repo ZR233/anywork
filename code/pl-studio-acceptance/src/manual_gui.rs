@@ -3897,7 +3897,7 @@ fn seed_startup_fault(home: &Path, fault: &str) -> Result<()> {
         "config" => fs::write(home.join("config.toml"), b"schema_version = invalid"),
         "database" => fs::write(home.join("data/studio.sqlite"), b"invalid database"),
         "log" => fs::write(home.join("data/calls/logs/calls-0000020000-000001.jsonl"), b"invalid complete record\n"),
-        "cache" => fs::write(home.join("v2/settings.toml"), b"schemaVersion = 1\nrevision = 2\n[[entries]]\nkey = 'observed:providerUsage:v2'\nvalue = 'invalid JSON'\nupdatedAt = 1\n"),
+        "cache" => fs::write(home.join("data/settings.toml"), b"schemaVersion = 1\nrevision = 2\n[[entries]]\nkey = 'observed:providerUsage:v2'\nvalue = 'invalid JSON'\nupdatedAt = 1\n"),
         _ => bail!("unknown startup fault"),
     }?;
     Ok(())
