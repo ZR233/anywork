@@ -54,11 +54,16 @@ impl HistoryStore {
 
     /// Advances the same Migrator after the v2 TOML import boundary has finished.
     pub(crate) async fn prepare_model_access(&self) -> Result<Option<ThreadCheckpoint>> {
-        super::schema::prepare(
+        super::schema::prepare_with_bot_root(
             &self.writer().await?.db,
             &self.state.thread_id,
             super::schema::Preparation::ModelAccess,
             None,
+            crate::studio::startup::storage_layout::bot_roots::for_history(
+                &self.state.path,
+                &self.state.thread_id,
+            )
+            .await?,
         )
         .await?;
         self.checkpoint().await
@@ -82,11 +87,16 @@ impl HistoryStore {
                 error,
             )
         })?;
-        super::schema::prepare(
+        super::schema::prepare_with_bot_root(
             &self.writer().await?.db,
             &self.state.thread_id,
             super::schema::Preparation::ExecutionIdentity,
             Some((original, migrated)),
+            crate::studio::startup::storage_layout::bot_roots::for_history(
+                &self.state.path,
+                &self.state.thread_id,
+            )
+            .await?,
         )
         .await?;
         self.checkpoint()
@@ -104,6 +114,14 @@ impl HistoryStore {
         // Normalize at this import boundary as well, using exactly the SQLite conversion rules.
         let mut normalized = checkpoint.clone();
         crate::studio::producer_migration::checkpoint(&mut normalized)?;
+        if let Some(mapping) = crate::studio::startup::storage_layout::bot_roots::for_history(
+            &self.state.path,
+            &self.state.thread_id,
+        )
+        .await?
+        {
+            crate::studio::producer_migration::relocate_bot_checkpoint(&mut normalized, &mapping)?;
+        }
         let checkpoint = &normalized;
         ensure!(
             checkpoint.thread_id == self.state.thread_id,

@@ -304,6 +304,7 @@ fn retain_input(
         path: root.to_owned(),
         source: source_error,
     };
+    ensure_no_links(root)?;
     std::fs::create_dir_all(root).map_err(store_error)?;
     let mut temporary = tempfile::NamedTempFile::new_in(root).map_err(store_error)?;
     let mut digest = Sha256::new();
@@ -387,7 +388,35 @@ fn resource_path(
     {
         return Err(ResourceStoreError::Identity);
     }
-    Ok(root.join(hash))
+    let path = root.join(hash);
+    ensure_no_links(&path)?;
+    Ok(path)
+}
+
+/// Reliable resources never traverse a link, including an already existing object with valid bytes.
+fn ensure_no_links(path: &Path) -> Result<(), ResourceStoreError> {
+    for entry in path.ancestors() {
+        if entry.as_os_str().is_empty() {
+            continue;
+        }
+        match std::fs::symlink_metadata(entry) {
+            Ok(meta) if pl_tool::workspace::path_safety::is_link_or_reparse(&meta) => {
+                return Err(ResourceStoreError::Io {
+                    path: entry.to_owned(),
+                    source: std::io::Error::other("reliable resource path crosses a link"),
+                });
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(source) => {
+                return Err(ResourceStoreError::Io {
+                    path: entry.to_owned(),
+                    source,
+                });
+            }
+        }
+    }
+    Ok(())
 }
 
 fn verify_file(path: &Path, reference: &ResourceReference) -> Result<(), ResourceStoreError> {

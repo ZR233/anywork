@@ -3,7 +3,7 @@ use anyhow::{Result, ensure};
 use sea_orm::{ConnectionTrait, DatabaseBackend, DatabaseConnection, DbErr, Statement};
 use sea_orm_migration::{MigrationName, MigrationTrait, MigratorTrait, SchemaManager};
 
-pub(in crate::studio) const STUDIO_DATABASE_SCHEMA_VERSION: i64 = 26;
+pub(in crate::studio) const STUDIO_DATABASE_SCHEMA_VERSION: i64 = 27;
 
 pub(super) async fn preflight(db: &DatabaseConnection) -> Result<()> {
     let version = version(db).await?;
@@ -17,7 +17,7 @@ pub(super) async fn preflight(db: &DatabaseConnection) -> Result<()> {
         );
     } else {
         ensure!(
-            (22..=26).contains(&version),
+            (22..=27).contains(&version),
             crate::studio::startup::migration_error(
                 "Studio product",
                 "preflight",
@@ -91,7 +91,30 @@ impl MigratorTrait for Migrator {
             Box::new(Delegation),
             Box::new(ExplicitClose),
             Box::new(AgentCloseBinding),
+            Box::new(RemoveDirectoryMirrors),
         ]
+    }
+}
+
+struct RemoveDirectoryMirrors;
+impl MigrationName for RemoveDirectoryMirrors {
+    fn name(&self) -> &str {
+        "m20261028_000006_remove_directory_mirrors"
+    }
+}
+#[sea_orm_migration::async_trait::async_trait]
+impl MigrationTrait for RemoveDirectoryMirrors {
+    fn use_transaction(&self) -> Option<bool> {
+        Some(true)
+    }
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        super::agent_close::upgrade_bindings(manager.get_connection())
+            .await
+            .map_err(|error| DbErr::Migration(format!("{error:#}")))?;
+        manager.get_connection().execute_unprepared(
+            "DROP TABLE threads; DROP TABLE projects; DROP TABLE app_settings; PRAGMA user_version=27"
+        ).await?;
+        Ok(())
     }
 }
 

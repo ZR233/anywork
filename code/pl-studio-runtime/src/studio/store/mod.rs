@@ -8,7 +8,6 @@ use crate::studio::storage::{calls::CallsStore, state::StateStore};
 
 pub(crate) mod agent_close;
 pub(crate) mod agent_evaluations;
-mod agent_framework;
 pub(crate) mod attachment;
 pub(in crate::studio) mod catalog;
 pub(in crate::studio) mod directory;
@@ -100,7 +99,8 @@ impl StudioStore {
         thread_id: &str,
     ) -> anyhow::Result<pl_core::chat::Session> {
         let session = self.registered_session_paths(thread_id)?;
-        self.chat_session_for(session.workspace_id(), thread_id).await
+        self.chat_session_for(session.workspace_id(), thread_id)
+            .await
     }
 
     pub(crate) async fn chat_session_for(
@@ -143,18 +143,6 @@ impl StudioStore {
         &self.attachment_lock
     }
 
-    pub(crate) fn thread_storage_dir(&self, thread_id: &str) -> anyhow::Result<PathBuf> {
-        Ok(self
-            .registered_session_paths(thread_id)?
-            .root()
-            .to_path_buf())
-    }
-
-    /// 新附件与迁移附件共用的每会话 blob 根（content-addressed）。
-    pub(crate) fn thread_blobs_dir(&self, thread_id: &str) -> anyhow::Result<PathBuf> {
-        Ok(self.registered_session_paths(thread_id)?.blobs_dir())
-    }
-
     /// Temporary attachment-draft root derived from the canonical Studio layout.
     pub(crate) fn attachment_drafts_dir(&self) -> PathBuf {
         self.paths.attachment_drafts_dir()
@@ -172,7 +160,7 @@ impl StudioStore {
 
     /// 每会话资源（工具持久化媒体等）根目录；与附件 blob 根同属一个会话目录。
     pub(crate) fn session_resources_dir(&self, thread_id: &str) -> anyhow::Result<PathBuf> {
-        Ok(self.thread_storage_dir(thread_id)?.join("thread-resources"))
+        Ok(self.registered_session_paths(thread_id)?.resources_dir())
     }
 
     pub(crate) fn session_resources_dir_for(
@@ -188,7 +176,7 @@ impl StudioStore {
         workspace_id: &str,
         thread_id: &str,
     ) -> anyhow::Result<PathBuf> {
-        Ok(self.session_paths(workspace_id, thread_id)?.scratch_dir())
+        Ok(self.session_paths(workspace_id, thread_id)?.temp_dir())
     }
 }
 

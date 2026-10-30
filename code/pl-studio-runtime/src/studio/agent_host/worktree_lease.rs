@@ -5,6 +5,7 @@ use crate::studio::StudioStore;
 use crate::studio::store::object::PersistedStudioObject;
 mod identity;
 mod usage;
+pub(in crate::studio) use identity::migrate_bot_identities;
 pub(in crate::studio) use identity::resolve_physical_workspace;
 pub(crate) use identity::{WorkspaceEndpoint, WorkspaceIdentity};
 pub use usage::WorkspaceUsageLease;
@@ -124,7 +125,7 @@ impl PersistedStudioObject for WorktreeLease {
 
     const OWNER_KIND: &'static str = "agent";
     const OBJECT_KIND: &'static str = "worktreeLease";
-    const SCHEMA_VERSION: i64 = 4;
+    const SCHEMA_VERSION: i64 = 5;
 
     fn revision(&self) -> u64 {
         self.revision
