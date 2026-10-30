@@ -14607,8 +14607,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 16)
-      throw Exception('unexpected arr length: expect 16 but see ${arr.length}');
+    if (arr.length != 14)
+      throw Exception('unexpected arr length: expect 14 but see ${arr.length}');
     return BridgeThreadPersistenceSnapshot(
       threadId: dco_decode_String(arr[0]),
       faultGeneration: dco_decode_u_64(arr[1]),
@@ -14618,14 +14618,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       stateDurableRevision: dco_decode_opt_box_autoadd_u_64(arr[5]),
       historyAdmittedSequence: dco_decode_opt_box_autoadd_u_64(arr[6]),
       historyDurableSequence: dco_decode_opt_box_autoadd_u_64(arr[7]),
-      callsAdmittedSequence: dco_decode_opt_box_autoadd_u_64(arr[8]),
-      callsDurableSequence: dco_decode_opt_box_autoadd_u_64(arr[9]),
-      pendingOperations: dco_decode_u_64(arr[10]),
-      pendingBytes: dco_decode_u_64(arr[11]),
-      oldestPendingAgeMillis: dco_decode_opt_box_autoadd_u_64(arr[12]),
-      inFlightBytes: dco_decode_u_64(arr[13]),
-      lastError: dco_decode_opt_String(arr[14]),
-      pressurePaused: dco_decode_bool(arr[15]),
+      pendingOperations: dco_decode_u_64(arr[8]),
+      pendingBytes: dco_decode_u_64(arr[9]),
+      oldestPendingAgeMillis: dco_decode_opt_box_autoadd_u_64(arr[10]),
+      inFlightBytes: dco_decode_u_64(arr[11]),
+      lastError: dco_decode_opt_String(arr[12]),
+      pressurePaused: dco_decode_bool(arr[13]),
     );
   }
 
@@ -28207,12 +28205,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_historyDurableSequence = sse_decode_opt_box_autoadd_u_64(
       deserializer,
     );
-    var var_callsAdmittedSequence = sse_decode_opt_box_autoadd_u_64(
-      deserializer,
-    );
-    var var_callsDurableSequence = sse_decode_opt_box_autoadd_u_64(
-      deserializer,
-    );
     var var_pendingOperations = sse_decode_u_64(deserializer);
     var var_pendingBytes = sse_decode_u_64(deserializer);
     var var_oldestPendingAgeMillis = sse_decode_opt_box_autoadd_u_64(
@@ -28230,8 +28222,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       stateDurableRevision: var_stateDurableRevision,
       historyAdmittedSequence: var_historyAdmittedSequence,
       historyDurableSequence: var_historyDurableSequence,
-      callsAdmittedSequence: var_callsAdmittedSequence,
-      callsDurableSequence: var_callsDurableSequence,
       pendingOperations: var_pendingOperations,
       pendingBytes: var_pendingBytes,
       oldestPendingAgeMillis: var_oldestPendingAgeMillis,
@@ -41714,8 +41704,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_opt_box_autoadd_u_64(self.stateDurableRevision, serializer);
     sse_encode_opt_box_autoadd_u_64(self.historyAdmittedSequence, serializer);
     sse_encode_opt_box_autoadd_u_64(self.historyDurableSequence, serializer);
-    sse_encode_opt_box_autoadd_u_64(self.callsAdmittedSequence, serializer);
-    sse_encode_opt_box_autoadd_u_64(self.callsDurableSequence, serializer);
     sse_encode_u_64(self.pendingOperations, serializer);
     sse_encode_u_64(self.pendingBytes, serializer);
     sse_encode_opt_box_autoadd_u_64(self.oldestPendingAgeMillis, serializer);

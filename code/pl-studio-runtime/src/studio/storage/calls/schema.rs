@@ -97,7 +97,7 @@ pub(super) async fn initialize(db: &DatabaseConnection, root_dir: &Path) -> Resu
 }
 async fn preflight(db: &DatabaseConnection) -> Result<()> {
     let manager = SchemaManager::new(db);
-    if manager.has_table("calls_meta").await? {
+    let version = if manager.has_table("calls_meta").await? {
         let version = format_version(db).await?;
         ensure!(
             (1..=CALLS_SCHEMA_VERSION).contains(&version),
@@ -105,7 +105,11 @@ async fn preflight(db: &DatabaseConnection) -> Result<()> {
         );
         if version >= 7 {
             for table in [
-                "call_watermarks",
+                if version >= 9 {
+                    "legacy_call_fences"
+                } else {
+                    "call_watermarks"
+                },
                 "call_log_index",
                 "call_usage_summary",
                 "performance_samples",
@@ -115,7 +119,22 @@ async fn preflight(db: &DatabaseConnection) -> Result<()> {
                     "current calls table {table} is missing; existing data preserved"
                 );
             }
+            if version >= 9 {
+                ensure!(
+                    !manager.has_table("call_watermarks").await?,
+                    "retired calls table call_watermarks is present; existing data preserved"
+                );
+                ensure!(
+                    table_columns(db, "legacy_call_fences").await?
+                        == ["thread_id", "admitted_write_seq", "durable_write_seq"]
+                            .into_iter()
+                            .map(str::to_owned)
+                            .collect(),
+                    "legacy calls fence shape is invalid; existing data preserved"
+                );
+            }
         }
+        Some(version)
     } else {
         ensure!(db.query_one_raw(statement("SELECT 1 FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name<>'seaql_migrations' LIMIT 1", vec![])).await?.is_none(), "unversioned nonempty calls database; existing data preserved");
         ensure!(
@@ -127,7 +146,8 @@ async fn preflight(db: &DatabaseConnection) -> Result<()> {
             .is_empty(),
             "calls schema is missing; existing data preserved"
         );
-    }
+        None
+    };
     for row in db
         .query_all_raw(statement("PRAGMA quick_check", vec![]))
         .await?
@@ -144,8 +164,13 @@ async fn preflight(db: &DatabaseConnection) -> Result<()> {
     .await?;
     if pending.is_empty() {
         ensure!(
-            format_version(db).await? == CALLS_SCHEMA_VERSION,
+            version == Some(CALLS_SCHEMA_VERSION),
             "calls format conflicts with completed migrations; existing data preserved"
+        );
+    } else {
+        ensure!(
+            version != Some(9),
+            "calls format conflicts with pending migrations; existing data preserved"
         );
     }
     Ok(())
@@ -179,6 +204,7 @@ impl MigratorTraitSelf for Migrator {
             Box::new(FinalizeLegacy),
             Box::new(ThroughputEpoch),
             Box::new(MaterialProvenance),
+            Box::new(LegacyCallFences),
         ]
     }
 }
@@ -366,6 +392,28 @@ impl MigrationTrait for MaterialProvenance {
             "CREATE INDEX IF NOT EXISTS call_usage_summary_by_thread ON call_usage_summary(thread_id,revision DESC);
              UPDATE calls_meta SET schema_version=8 WHERE id=1;"
         ).await?;
+        Ok(())
+    }
+}
+
+struct LegacyCallFences;
+impl MigrationName for LegacyCallFences {
+    fn name(&self) -> &str {
+        "m20261026_000007_calls_legacy_fences"
+    }
+}
+#[sea_orm_migration::async_trait::async_trait]
+impl MigrationTrait for LegacyCallFences {
+    fn use_transaction(&self) -> Option<bool> {
+        Some(true)
+    }
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        let db = manager.get_connection();
+        db.execute_unprepared(
+            "ALTER TABLE call_watermarks RENAME TO legacy_call_fences;
+             UPDATE calls_meta SET schema_version=9 WHERE id=1;",
+        )
+        .await?;
         Ok(())
     }
 }
@@ -922,6 +970,18 @@ pub(super) async fn seed_version_for_test(
     .await?;
     options.sqlx_logging(false);
     let db = Database::connect(options).await?;
+    if schema_version == 8 {
+        // Build the published schema through its real migrations, including bookkeeping.
+        // This keeps current auxiliary payloads out of the historical v7 conversion.
+        Migrator {
+            log_dir: path.parent().unwrap().join(CALL_LOG_DIR_NAME),
+        }
+        .up(&db, Some(6))
+        .await?;
+        db.execute_unprepared(seed_sql).await?;
+        db.close().await?;
+        return Ok(());
+    }
     db.execute_unprepared(
         "CREATE TABLE calls_meta (
             id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -1187,6 +1247,296 @@ async fn convert_legacy_tools(db: &DatabaseConnection, log: &mut CallLog) -> Res
 #[cfg(test)]
 mod storage_fault_tests {
     use super::*;
+
+    async fn connect_fixture(path: &Path) -> Result<DatabaseConnection> {
+        Ok(Database::connect(
+            crate::studio::paths::sqlite_file_options(
+                path,
+                crate::studio::paths::SqliteFileMode::ReadWrite,
+                |options| options,
+            )
+            .await?,
+        )
+        .await?)
+    }
+
+    async fn schema_eight_fixture(path: &Path, populated: bool) -> Result<DatabaseConnection> {
+        seed_version_for_test(path, 8, "").await?;
+        let db = connect_fixture(path).await?;
+        assert_eq!(format_version(&db).await?, 8);
+        if populated {
+            db.execute_unprepared(
+                "INSERT INTO call_watermarks VALUES('legacy',11,7),('other',0,0);
+                 INSERT INTO call_usage_summary
+                     (root_thread_id,thread_id,purpose,cost_currency,amount,revision)
+                 VALUES('root','legacy','','USD',4.5,0);",
+            )
+            .await?;
+            let usage = pl_core::thread::UsageSummary {
+                totals: pl_core::usage::UsageTotals {
+                    inference_count: 3,
+                    completion_tokens: 25,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            db.execute_raw(statement(
+                "INSERT INTO legacy_auxiliary_usage VALUES('legacy',?)",
+                vec![serde_json::to_string(&usage)?.into()],
+            ))
+            .await?;
+            let mut log = CallLog::prepare(path.parent().unwrap().join(CALL_LOG_DIR_NAME)).await?;
+            let tx = db.begin().await?;
+            let billing = PreparedRecord::new(CallLogRecord {
+                version: event::CALL_LOG_RECORD_VERSION,
+                kind: "billing".into(),
+                thread_id: "current".into(),
+                call_id: "call".into(),
+                status: "committed".into(),
+                recorded_at: crate::studio::unix_seconds(),
+                account_id: Some("account".into()),
+                model_id: Some("model".into()),
+                usage: Some(event::CallUsageRecord {
+                    output_tokens: Some(25),
+                    ..Default::default()
+                }),
+                usage_status: Some(pl_core::usage::UsageStatus::Partial),
+                timing: Some(event::CallTimingRecord {
+                    response_millis: Some(100),
+                    ..Default::default()
+                }),
+                throughput_epoch: event::THROUGHPUT_EPOCH,
+                ..Default::default()
+            })?;
+            apply_billing(&mut log, &tx, &billing).await?;
+            apply_attempt(
+                &tx,
+                &mut log,
+                &PreparedRecord::new(CallLogRecord {
+                    version: event::CALL_LOG_RECORD_VERSION,
+                    kind: "attempt".into(),
+                    thread_id: "current".into(),
+                    call_id: "call".into(),
+                    revision: 3,
+                    recorded_at: crate::studio::unix_seconds(),
+                    ..Default::default()
+                })?,
+            )
+            .await?;
+            let projection = PreparedSummary::new(SessionUsageProjection {
+                root_thread_id: "root".into(),
+                thread_id: "current".into(),
+                revision: 9,
+                has_unpriced_usage: false,
+                purpose_costs: vec![PurposeUsageProjection {
+                    purpose: Some("review".into()),
+                    estimated_costs: vec![RuntimeCostAmount {
+                        currency: "USD".into(),
+                        amount: 2.0,
+                    }],
+                }],
+            })?;
+            summary::replace(
+                &tx,
+                &projection,
+                &projection.hash,
+                #[cfg(feature = "benchmarks")]
+                Some(&log.observation),
+            )
+            .await?;
+            log.sync_pending().await?;
+            tx.commit().await?;
+            log.close();
+        }
+        Ok(db)
+    }
+
+    // Compare every stored column, including hashes, locators, raw sample provenance,
+    // legacy payloads and both fence values. The fence table's name alone changes.
+    async fn material_snapshot(
+        db: &DatabaseConnection,
+    ) -> Result<BTreeMap<String, Vec<Vec<String>>>> {
+        let mut snapshot = BTreeMap::new();
+        let fences = if table_exists(db, "legacy_call_fences").await? {
+            "legacy_call_fences"
+        } else {
+            "call_watermarks"
+        };
+        for table in [
+            fences,
+            "call_log_index",
+            "performance_samples",
+            "call_usage_summary",
+            "legacy_auxiliary_usage",
+        ] {
+            let columns = table_columns(db, table).await?;
+            let selection = columns
+                .iter()
+                .map(|column| format!("quote(\"{column}\")"))
+                .collect::<Vec<_>>()
+                .join(",");
+            let mut rows = Vec::new();
+            for row in db
+                .query_all_raw(statement(
+                    &format!("SELECT {selection} FROM {table} ORDER BY rowid"),
+                    vec![],
+                ))
+                .await?
+            {
+                rows.push(
+                    (0..columns.len())
+                        .map(|index| row.try_get_by_index::<String>(index))
+                        .collect::<std::result::Result<Vec<_>, _>>()?,
+                );
+            }
+            snapshot.insert(
+                if table == fences { "fences" } else { table }.to_owned(),
+                rows,
+            );
+        }
+        Ok(snapshot)
+    }
+
+    async fn log_snapshot(root: &Path) -> Result<BTreeMap<String, Vec<u8>>> {
+        let mut snapshot = BTreeMap::new();
+        let log_dir = root.join(CALL_LOG_DIR_NAME);
+        if tokio::fs::try_exists(&log_dir).await? {
+            let mut entries = tokio::fs::read_dir(log_dir).await?;
+            while let Some(entry) = entries.next_entry().await? {
+                snapshot.insert(
+                    entry.file_name().into_string().unwrap(),
+                    tokio::fs::read(entry.path()).await?,
+                );
+            }
+        }
+        Ok(snapshot)
+    }
+
+    #[tokio::test]
+    async fn schema_eight_fences_and_materials_survive_retirement_and_reopen() -> Result<()> {
+        for populated in [false, true] {
+            let temp = tempfile::tempdir()?;
+            let path = temp.path().join("calls.sqlite");
+            let db = schema_eight_fixture(&path, populated).await?;
+            let before = material_snapshot(&db).await?;
+            let logs = log_snapshot(temp.path()).await?;
+            initialize(&db, temp.path()).await?;
+            preflight(&db).await?;
+            assert_eq!(format_version(&db).await?, 9);
+            assert!(!table_exists(&db, "call_watermarks").await?);
+            assert!(table_exists(&db, "legacy_call_fences").await?);
+            assert_eq!(material_snapshot(&db).await?, before);
+            assert_eq!(log_snapshot(temp.path()).await?, logs);
+            assert_eq!(
+                Migrator {
+                    log_dir: PathBuf::new()
+                }
+                .get_applied_migrations_read_only(&db)
+                .await?
+                .len(),
+                7,
+            );
+            db.close().await?;
+            let store = CallsStore::prepare(&path).await?;
+            assert_eq!(material_snapshot(&store.writer.db).await?, before);
+            assert_eq!(log_snapshot(temp.path()).await?, logs);
+            assert_eq!(store.admitted_ticket(), 0);
+            assert_eq!(store.processed_ticket(), 0);
+            if populated {
+                let costs = store.legacy_session_costs("legacy", 7).await?;
+                assert_eq!(costs.len(), 1);
+                assert_eq!(costs[0].estimated_costs[0].amount, 4.5);
+                assert!(store.legacy_session_costs("legacy", 6).await.is_err());
+                assert_eq!(
+                    store
+                        .legacy_auxiliary_usage("legacy")
+                        .await?
+                        .totals
+                        .completion_tokens,
+                    25,
+                );
+                assert_eq!(store.recent_performance_samples(100).await?.len(), 1);
+            }
+            assert!(store.legacy_session_costs("absent", 0).await?.is_empty());
+            store.close().await?;
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn fence_retirement_failure_rolls_back_table_version_and_bookkeeping() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let path = temp.path().join("calls.sqlite");
+        let db = schema_eight_fixture(&path, true).await?;
+        let before = material_snapshot(&db).await?;
+        let logs = log_snapshot(temp.path()).await?;
+        db.execute_unprepared(
+            "CREATE TRIGGER reject_retirement BEFORE UPDATE OF schema_version ON calls_meta
+             WHEN NEW.schema_version=9 BEGIN
+                 SELECT RAISE(ABORT,'injected fence retirement failure');
+             END;",
+        )
+        .await?;
+        let error = initialize(&db, temp.path()).await.unwrap_err();
+        assert!(format!("{error:#}").contains("injected fence retirement failure"));
+        assert_eq!(format_version(&db).await?, 8);
+        assert!(table_exists(&db, "call_watermarks").await?);
+        assert!(!table_exists(&db, "legacy_call_fences").await?);
+        assert_eq!(material_snapshot(&db).await?, before);
+        assert_eq!(log_snapshot(temp.path()).await?, logs);
+        assert_eq!(
+            Migrator {
+                log_dir: PathBuf::new()
+            }
+            .get_applied_migrations_read_only(&db)
+            .await?
+            .len(),
+            6,
+        );
+        db.close().await?;
+        inspect_existing(&path).await?;
+        let db = connect_fixture(&path).await?;
+        preflight(&db).await?;
+        db.execute_unprepared("DROP TRIGGER reject_retirement")
+            .await?;
+        initialize(&db, temp.path()).await?;
+        assert_eq!(format_version(&db).await?, 9);
+        assert_eq!(material_snapshot(&db).await?, before);
+        assert_eq!(log_snapshot(temp.path()).await?, logs);
+        db.close().await?;
+        let store = CallsStore::prepare(&path).await?;
+        assert_eq!(
+            store.legacy_session_costs("legacy", 7).await?[0].estimated_costs[0].amount,
+            4.5
+        );
+        store.close().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn schema_nine_with_missing_retirement_bookkeeping_is_rejected_before_conversion()
+    -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let path = temp.path().join("calls.sqlite");
+        let db = schema_eight_fixture(&path, true).await?;
+        initialize(&db, temp.path()).await?;
+        let before = material_snapshot(&db).await?;
+        let logs = log_snapshot(temp.path()).await?;
+        db.execute_raw(statement(
+            "DELETE FROM seaql_migrations WHERE version=?",
+            vec![LegacyCallFences.name().into()],
+        ))
+        .await?;
+        db.close().await?;
+        assert!(CallsStore::prepare(&path).await.is_err());
+        let db = connect_fixture(&path).await?;
+        assert_eq!(format_version(&db).await?, 9);
+        assert!(!table_exists(&db, "call_watermarks").await?);
+        assert_eq!(material_snapshot(&db).await?, before);
+        assert_eq!(log_snapshot(temp.path()).await?, logs);
+        db.close().await?;
+        Ok(())
+    }
 
     #[test]
     fn legacy_billing_timing_is_adapted_only_at_the_retired_blob_boundary() -> Result<()> {

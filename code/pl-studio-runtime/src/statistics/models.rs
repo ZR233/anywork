@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use serde::{Deserialize, Serialize};
 
 /// Global performance projection retained for the existing HTTP product API.
@@ -14,8 +16,10 @@ pub struct StudioModelPerformanceSnapshot {
     pub statistics_gap: bool,
     #[serde(default)]
     pub read_failed: bool,
-    pub summaries: Vec<StudioModelPerformanceSummary>,
-    pub history: Vec<StudioModelPerformanceSample>,
+    /// Frozen by the owner and shared with product events and feed read scopes.
+    /// Serde still encodes the inner array; pointer identity is process-local only.
+    pub summaries: Arc<Vec<StudioModelPerformanceSummary>>,
+    pub history: Arc<Vec<StudioModelPerformanceSample>>,
 }
 
 /// One `(account_id, model_id)` aggregate; effort is a group-local breakdown.

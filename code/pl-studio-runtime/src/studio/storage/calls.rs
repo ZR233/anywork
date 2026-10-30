@@ -17,6 +17,7 @@
 //! 进日志，全部成功后才前移版本并删除旧结构；schema 5 修复遗留样本外键。性能样本只由当前统计口径
 //! （`calls_meta.throughput_epoch`）的记录建立，旧口径样本在口径切换时一次性丢弃，且不会从仍保留的
 //! 旧日志回填。未来版本显式失败并保留原字节，不触碰用户 home 下的旧数据根。
+//! schema 9 将全 effect 水位保全为仅供显式旧 checkpoint 迁移使用的 fence，生产写入只处理实际记录。
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -52,7 +53,7 @@ pub(crate) use summary::{PurposeUsageProjection, SessionUsageProjection};
 use event::CallLogRecord;
 use log::{CallLog, LOG_CLEANUP_INTERVAL};
 
-pub(crate) const CALLS_SCHEMA_VERSION: i64 = 8;
+pub(crate) const CALLS_SCHEMA_VERSION: i64 = 9;
 /// `calls` 目录下日志段所在子目录名。
 const CALL_LOG_DIR_NAME: &str = "logs";
 /// 一天对应的秒数；日志轮转/保留期以 UTC 自然日为准。
@@ -61,7 +62,7 @@ pub(super) const SECONDS_PER_DAY: i64 = 86_400;
 const MAX_BATCH_MUTATIONS: usize = 64;
 /// 单批最多聚合的字节预算。
 const MAX_BATCH_BYTES: usize = 4 * 1024 * 1024;
-/// 队列条目数软上限；达到后受理方等待 writer 腾出空间。
+/// 队列条目数上限；达到后拒绝新的统计事实。
 const MAX_QUEUE_MUTATIONS: usize = 4_096;
 /// 队列保留字节软上限。
 const MAX_QUEUE_BYTES: usize = 64 * 1024 * 1024;
@@ -193,17 +194,6 @@ pub(crate) struct CallsMaterialProgress {
     pub(crate) last_error: Option<String>,
 }
 
-/// Directed absolute progress for one Thread. `materialized_sequence` is the latest successful
-/// effect, not a claim that a rejected earlier effect was saved; `statistics_gap` retains that fact.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) struct CallsThreadProgress {
-    pub(crate) processed_sequence: u64,
-    pub(crate) materialized_sequence: u64,
-    pub(crate) statistics_gap: bool,
-    pub(crate) retrying: bool,
-    pub(crate) last_error: Option<String>,
-}
-
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct StatisticsReadRequest {
     pub(crate) costs: bool,
@@ -219,12 +209,8 @@ pub(crate) struct CallsStatisticsRead {
 
 /// 受理一次调用写入的轻量工作单元。
 enum CallMutation {
-    /// 一次 effect：可能携带一条轻量 attempt 记录；无论是否携带都要推进该 Thread 的 durable 水位。
-    Effect {
-        thread_id: String,
-        sequence: i64,
-        records: Vec<PreparedRecord>,
-    },
+    /// 从 effect 提取的实际 attempt/delivery 记录，不携带全 effect 水位。
+    Records(Vec<PreparedRecord>),
     Billing(Box<PreparedRecord>),
     Summary(PreparedSummary),
 }
@@ -233,13 +219,13 @@ impl CallMutation {
     /// 估算条目保留字节，用于队列与批次的压力预算；只序列化轻量记录。
     fn estimated_bytes(&self) -> usize {
         match self {
-            Self::Effect { records, .. } => {
+            Self::Records(records) => {
                 128 + records
                     .iter()
-                    .map(|record| record.line.len() + 1)
+                    .map(PreparedRecord::retained_bytes)
                     .sum::<usize>()
             }
-            Self::Billing(record) => record.line.len() + 1,
+            Self::Billing(record) => record.retained_bytes(),
             Self::Summary(projection) => projection.bytes,
         }
     }
@@ -274,6 +260,8 @@ struct PreparedRecord {
     line: String,
     hash: String,
     truncated: bool,
+    /// Bound to `record` after final truncation selection; never decoded from JSONL.
+    throughput_valid: bool,
 }
 
 impl std::ops::Deref for PreparedRecord {
@@ -284,7 +272,28 @@ impl std::ops::Deref for PreparedRecord {
 }
 
 impl PreparedRecord {
-    fn new(mut record: CallLogRecord) -> Result<Self> {
+    fn new(record: CallLogRecord) -> Result<Self> {
+        Self::with_usage_analysis(record, pl_model::model::usage::analyze)
+    }
+
+    fn with_usage_analysis(
+        mut record: CallLogRecord,
+        analyze: impl FnOnce(&pl_protocol::UsageReport) -> pl_core::usage::UsageAnalysis,
+    ) -> Result<Self> {
+        let analysis = if record.version == event::CALL_LOG_RECORD_VERSION
+            && matches!(
+                record.kind.as_str(),
+                event::CALL_LOG_KIND_BILLING | event::CALL_LOG_KIND_MIGRATED
+            )
+            && record.usage_status != Some(pl_core::usage::UsageStatus::LegacyUnknown)
+            && let Some(usage) = &record.usage
+        {
+            let analysis = analyze(&usage.report());
+            record.usage_status = Some(analysis.status);
+            Some(analysis)
+        } else {
+            None
+        };
         let mut line = serde_json::to_string(&record)?;
         if line.len() >= event::CALL_LOG_RECORD_MAX_BYTES {
             record = record.truncated_fallback();
@@ -294,6 +303,11 @@ impl PreparedRecord {
             line.len() < event::CALL_LOG_RECORD_MAX_BYTES,
             "call identity exceeds log record budget"
         );
+        // Derive the pair only after selecting the final fact. Fallback keeps the explanatory
+        // status but has neither the raw numerator nor timing, so it cannot inherit a valid pair.
+        let throughput_valid = analysis
+            .as_ref()
+            .is_some_and(|analysis| record.throughput_sample_with_analysis(analysis).is_some());
         let hash = pl_core::context::content_hash(line.as_bytes());
         let truncated = record.truncated;
         Ok(Self {
@@ -301,7 +315,12 @@ impl PreparedRecord {
             line,
             hash,
             truncated,
+            throughput_valid,
         })
+    }
+
+    fn retained_bytes(&self) -> usize {
+        self.line.len() + 1 + std::mem::size_of::<bool>()
     }
 }
 
@@ -423,9 +442,8 @@ struct CallsWriter {
     work_notify: Notify,
     retry_notify: Notify,
     admitted_ticket: AtomicU64,
-    durable_ticket: watch::Sender<u64>,
+    processed_ticket: watch::Sender<u64>,
     materials: watch::Sender<CallsMaterialProgress>,
-    threads: Mutex<BTreeMap<String, Arc<ThreadProgressSubscription>>>,
     /// Encoded bytes of the batch currently being written; a read-only pressure observation.
     in_flight_bytes: AtomicU64,
     stopping: AtomicBool,
@@ -433,24 +451,6 @@ struct CallsWriter {
     statistics_gap: AtomicBool,
     #[cfg(test)]
     panic_next_mutation: AtomicBool,
-    #[cfg(test)]
-    subscribe_gate: Mutex<Option<Arc<SubscribeGate>>>,
-}
-
-struct ThreadProgressSubscription {
-    sender: watch::Sender<CallsThreadProgress>,
-    /// Tokio hands a cancelled/failed initialization to another waiter. Presence in
-    /// the map alone proves nothing; only a completed SQL merge initializes this cell.
-    initialized: tokio::sync::OnceCell<()>,
-}
-
-#[cfg(test)]
-#[derive(Default)]
-struct SubscribeGate {
-    registered: Notify,
-    loaded: Notify,
-    resume: Notify,
-    paused_once: AtomicBool,
 }
 
 /// 全局调用库句柄；clone 共享同一条队列、日志与后台 writer。
@@ -468,17 +468,19 @@ enum CallsOpenPolicy {
 
 impl CallsStore {
     pub(crate) fn metrics(&self) -> super::coordinator::CallsQueueMetrics {
+        let queue = queue_pressure(&self.writer);
         super::coordinator::CallsQueueMetrics {
-            admitted_sequence: self.admitted_ticket(),
-            durable_sequence: self.durable_ticket(),
-            pending_operations: u64::try_from(self.pending_count()).unwrap_or(u64::MAX),
-            pending_bytes: u64::try_from(self.pending_bytes()).unwrap_or(u64::MAX),
+            admitted_ticket: self.admitted_ticket(),
+            processed_ticket: self.processed_ticket(),
+            pending_operations: u64::try_from(queue.mutations).unwrap_or(u64::MAX),
+            pending_bytes: u64::try_from(queue.bytes).unwrap_or(u64::MAX),
             in_flight_bytes: u64::try_from(self.in_flight_bytes()).unwrap_or(u64::MAX),
-            oldest_pending_age_millis: self
-                .oldest_pending_age()
-                .map(|age| u64::try_from(age.as_millis()).unwrap_or(u64::MAX)),
+            oldest_pending_age_millis: queue
+                .oldest_accepted_at
+                .map(|accepted| u64::try_from(accepted.elapsed().as_millis()).unwrap_or(u64::MAX)),
             last_error: self.last_error(),
-            pressure_paused: self.pressure_paused(),
+            pressure_paused: queue.mutations >= MAX_QUEUE_MUTATIONS
+                || queue.bytes >= MAX_QUEUE_BYTES,
             statistics_gap: self.statistics_gap(),
         }
     }
@@ -574,7 +576,7 @@ impl CallsStore {
             startup_error = Some(error.to_string());
             tracing::warn!(error = %error, "调用库启动清理失败，稍后重试");
         }
-        let (durable_ticket, _) = watch::channel(0u64);
+        let (processed_ticket, _) = watch::channel(0u64);
         let writer = Arc::new(CallsWriter {
             db,
             #[cfg(feature = "benchmarks")]
@@ -584,22 +586,19 @@ impl CallsStore {
             work_notify: Notify::new(),
             retry_notify: Notify::new(),
             admitted_ticket: AtomicU64::new(0),
-            durable_ticket,
+            processed_ticket,
             materials: watch::channel(CallsMaterialProgress {
                 statistics_gap: false,
                 last_error: startup_error.clone(),
                 ..Default::default()
             })
             .0,
-            threads: Mutex::new(BTreeMap::new()),
             in_flight_bytes: AtomicU64::new(0),
             stopping: AtomicBool::new(false),
             statistics_gap: AtomicBool::new(false),
             last_error: Mutex::new(startup_error),
             #[cfg(test)]
             panic_next_mutation: AtomicBool::new(false),
-            #[cfg(test)]
-            subscribe_gate: Mutex::new(None),
         });
         Ok(Self {
             writer,
@@ -692,15 +691,6 @@ impl CallsStore {
         self.writer.admitted_ticket.load(Ordering::Acquire)
     }
 
-    /// 当前尚未落库的 mutation 数；关机进度与压力观测使用。
-    pub(crate) fn pending_count(&self) -> usize {
-        self.writer
-            .queue
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .len()
-    }
-
     /// 最近一次调用写入错误（瞬时重试与显式拒绝都会记录，直到一次成功写入清除）。
     pub(crate) fn last_error(&self) -> Option<String> {
         self.writer
@@ -715,127 +705,18 @@ impl CallsStore {
         usize::try_from(self.writer.in_flight_bytes.load(Ordering::Acquire)).unwrap_or(usize::MAX)
     }
 
-    /// 调用库是否因队列压力停止接受新的计费/调用事实。
-    ///
-    /// 门槛与 `admit_billing` 的拒绝条件一致，因此这是"下一步受理会不会被拒绝"的真实观测，
-    /// 不是占位值。
-    pub(crate) fn pressure_paused(&self) -> bool {
-        let queue = self
-            .writer
-            .queue
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        queue.len() >= MAX_QUEUE_MUTATIONS || queue_bytes(&queue) >= MAX_QUEUE_BYTES
-    }
-
-    /// 当前已落库的最高 ticket，作为调用库 durable sequence 的观测值。
-    pub(crate) fn durable_ticket(&self) -> u64 {
-        *self.writer.durable_ticket.borrow()
+    /// 当前已处理的最高 ticket；提交或显式拒绝均会推进，不证明成功物化。
+    pub(crate) fn processed_ticket(&self) -> u64 {
+        *self.writer.processed_ticket.borrow()
     }
 
     #[cfg(any(test, feature = "benchmarks"))]
-    pub(crate) fn subscribe_durable_ticket(&self) -> watch::Receiver<u64> {
-        self.writer.durable_ticket.subscribe()
+    pub(crate) fn subscribe_processed_ticket(&self) -> watch::Receiver<u64> {
+        self.writer.processed_ticket.subscribe()
     }
 
     pub(crate) fn subscribe_materials(&self) -> watch::Receiver<CallsMaterialProgress> {
         self.writer.materials.subscribe()
-    }
-
-    pub(crate) async fn subscribe_thread_progress(
-        &self,
-        thread_id: &str,
-    ) -> Result<watch::Receiver<CallsThreadProgress>> {
-        let (subscription, receiver) = {
-            let mut threads = self
-                .writer
-                .threads
-                .lock()
-                .unwrap_or_else(|error| error.into_inner());
-            threads.retain(|_, subscription| subscription.sender.receiver_count() > 0);
-            if let Some(subscription) = threads.get(thread_id) {
-                (subscription.clone(), subscription.sender.subscribe())
-            } else {
-                let (sender, receiver) = watch::channel(CallsThreadProgress::default());
-                let subscription = Arc::new(ThreadProgressSubscription {
-                    sender,
-                    initialized: tokio::sync::OnceCell::new(),
-                });
-                threads.insert(thread_id.to_owned(), subscription.clone());
-                (subscription, receiver)
-            }
-        };
-        #[cfg(test)]
-        let gate = self.writer.subscribe_gate.lock().unwrap().clone();
-        #[cfg(test)]
-        if let Some(gate) = &gate {
-            gate.registered.notify_one();
-        }
-        subscription
-            .initialized
-            .get_or_try_init(|| async {
-                // Registered before SQL: a writer can publish while this read is in flight.
-                // Merge maxima instead of replacing a possibly newer writer observation.
-                let sequence = self.durable_effect_sequence(thread_id).await?;
-                #[cfg(test)]
-                if let Some(gate) = gate
-                    && !gate.paused_once.swap(true, Ordering::AcqRel)
-                {
-                    gate.loaded.notify_one();
-                    gate.resume.notified().await;
-                }
-                subscription.sender.send_if_modified(|progress| {
-                    let previous = progress.clone();
-                    progress.processed_sequence = progress.processed_sequence.max(sequence);
-                    progress.materialized_sequence = progress.materialized_sequence.max(sequence);
-                    *progress != previous
-                });
-                Ok::<(), anyhow::Error>(())
-            })
-            .await?;
-        Ok(receiver)
-    }
-
-    /// Reads the committed effect watermark for one Thread, independently of global queue tickets.
-    pub(crate) async fn durable_effect_sequence(&self, thread_id: &str) -> Result<u64> {
-        #[cfg(feature = "benchmarks")]
-        self.writer
-            .observation
-            .increment(observation::Metric::WatermarkReadSql);
-        let row = self
-            .writer
-            .db
-            .query_one_raw(statement(
-                "SELECT durable_write_seq FROM call_watermarks WHERE thread_id=?",
-                vec![thread_id.into()],
-            ))
-            .await?;
-        row.map(|row| {
-            let value: i64 = row.try_get("", "durable_write_seq")?;
-            u64::try_from(value).map_err(Into::into)
-        })
-        .transpose()
-        .map(|value| value.unwrap_or(0))
-    }
-
-    /// 排队 mutation 的编码字节数合计，作为调用库 pending bytes 的观测值。
-    pub(crate) fn pending_bytes(&self) -> usize {
-        let queue = self
-            .writer
-            .queue
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        queue_bytes(&queue)
-    }
-
-    /// 最老排队 mutation 的等待时长；无排队时为 `None`。
-    pub(crate) fn oldest_pending_age(&self) -> Option<std::time::Duration> {
-        let queue = self
-            .writer
-            .queue
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        queue.front().map(|entry| entry.accepted_at.elapsed())
     }
 
     /// Best-effort call statistics. Full task identities and deliveries belong to history.sqlite.
@@ -843,22 +724,7 @@ impl CallsStore {
     ///
     /// 这里只从 effect 提取轻量调用记录，绝不 clone/encode 整个 [`ThreadEffectBatch`]，
     /// 也不把 context / tools 带进队列。
-    pub(crate) fn try_admit_effect(&self, effect: &ThreadEffectBatch) -> bool {
-        if self.writer.stopping.load(Ordering::Acquire) {
-            record_statistics_gap(
-                &self.writer,
-                "call statistics writer is stopping".to_owned(),
-            );
-            publish_thread(
-                &self.writer,
-                &effect.thread_id,
-                effect.sequence,
-                false,
-                false,
-                Some("call statistics writer is stopping".to_owned()),
-            );
-            return false;
-        }
+    pub(crate) fn record_effect(&self, effect: &ThreadEffectBatch) {
         let sequence = i64::try_from(effect.sequence).unwrap_or(i64::MAX);
         let mut records: Vec<_> = effect
             .attempt
@@ -881,6 +747,16 @@ impl CallsStore {
                 delivery,
             )
         }));
+        if records.is_empty() {
+            return;
+        }
+        if self.writer.stopping.load(Ordering::Acquire) {
+            record_statistics_gap(
+                &self.writer,
+                "call statistics writer is stopping".to_owned(),
+            );
+            return;
+        }
         let records = match records
             .into_iter()
             .map(PreparedRecord::new)
@@ -889,15 +765,7 @@ impl CallsStore {
             Ok(records) => records,
             Err(error) => {
                 record_statistics_gap(&self.writer, error.to_string());
-                publish_thread(
-                    &self.writer,
-                    &effect.thread_id,
-                    effect.sequence,
-                    false,
-                    false,
-                    Some(error.to_string()),
-                );
-                return false;
+                return;
             }
         };
         #[cfg(feature = "benchmarks")]
@@ -906,11 +774,7 @@ impl CallsStore {
                 .observation
                 .increment(observation::Metric::LogRecordEncode);
         }
-        let mutation = CallMutation::Effect {
-            thread_id: effect.thread_id.clone(),
-            sequence,
-            records,
-        };
+        let mutation = CallMutation::Records(records);
         let bytes = mutation.estimated_bytes();
         let admitted = {
             let mut queue = self
@@ -944,16 +808,7 @@ impl CallsStore {
                 &self.writer,
                 "call statistics queue is full; statistics gap".to_owned(),
             );
-            publish_thread(
-                &self.writer,
-                &effect.thread_id,
-                effect.sequence,
-                false,
-                false,
-                Some("call statistics queue is full".to_owned()),
-            );
         }
-        admitted
     }
 
     /// 同步受理一次计费观察并把其 ticket 交回调用方。
@@ -1072,11 +927,21 @@ impl CallsStore {
         thread_id: &str,
         fence: u64,
     ) -> Result<Vec<PurposeUsageProjection>> {
-        let watermark = self.durable_effect_sequence(thread_id).await?;
-        ensure!(
-            watermark <= fence,
-            "legacy call watermark is ahead of checkpoint"
-        );
+        if let Some(row) = self
+            .writer
+            .db
+            .query_one_raw(statement(
+                "SELECT durable_write_seq FROM legacy_call_fences WHERE thread_id=?",
+                vec![thread_id.into()],
+            ))
+            .await?
+        {
+            let durable = u64::try_from(row.try_get::<i64>("", "durable_write_seq")?)?;
+            ensure!(
+                durable <= fence,
+                "legacy call watermark is ahead of checkpoint"
+            );
+        }
         let rows = self.writer.db.query_all_raw(statement("SELECT purpose,cost_currency,amount FROM call_usage_summary WHERE thread_id=? AND revision=0 AND cost_currency<>''", vec![thread_id.into()])).await?;
         let mut purposes =
             std::collections::BTreeMap::<Option<String>, Vec<RuntimeCostAmount>>::new();
@@ -1247,7 +1112,7 @@ async fn run_writer(shared: Arc<CallsWriter>) {
                     let ticket = pending[completed - 1].ticket;
                     pending.drain(..completed);
                     // No receipt may outrun the commit of the outer transaction.
-                    advance_durable(&shared, ticket);
+                    advance_processed(&shared, ticket);
                 }
                 deferred
             }
@@ -1261,44 +1126,10 @@ async fn run_writer(shared: Arc<CallsWriter>) {
         record_last_error(&shared, failure.message.clone());
         if !failure.retryable || shared.stopping.load(Ordering::Acquire) {
             fail_mutation(&shared, &failure.message);
-            for entry in &pending {
-                if let CallMutation::Effect {
-                    thread_id,
-                    sequence,
-                    ..
-                } = &entry.mutation
-                {
-                    publish_thread(
-                        &shared,
-                        thread_id,
-                        *sequence as u64,
-                        false,
-                        false,
-                        Some(failure.message.clone()),
-                    );
-                }
-            }
             if let Some(last) = pending.back() {
-                advance_durable(&shared, last.ticket);
+                advance_processed(&shared, last.ticket);
             }
             continue;
-        }
-        for entry in &pending {
-            if let CallMutation::Effect {
-                thread_id,
-                sequence,
-                ..
-            } = &entry.mutation
-            {
-                publish_thread(
-                    &shared,
-                    thread_id,
-                    *sequence as u64,
-                    false,
-                    true,
-                    Some(failure.message.clone()),
-                );
-            }
         }
         requeue(&shared, pending);
         retries = retries.saturating_add(1);
@@ -1339,48 +1170,6 @@ async fn maintenance(db: &DatabaseConnection, log: &mut CallLog) -> Result<()> {
     Ok(())
 }
 
-/// Merge only contiguous empty effects for one Thread. Every other mutation
-/// terminates the run because its savepoint can split the committed prefix.
-fn empty_effect_runs(pending: &VecDeque<QueuedCallMutation>) -> Vec<Option<(usize, i64)>> {
-    let mut runs = vec![None; pending.len()];
-    let mut index = 0;
-    while index < pending.len() {
-        let CallMutation::Effect {
-            thread_id,
-            sequence,
-            records,
-        } = &pending[index].mutation
-        else {
-            index += 1;
-            continue;
-        };
-        if !records.is_empty() {
-            index += 1;
-            continue;
-        }
-        let first = index;
-        let mut highest = *sequence;
-        index += 1;
-        while let Some(entry) = pending.get(index) {
-            match &entry.mutation {
-                CallMutation::Effect {
-                    thread_id: next_thread,
-                    sequence,
-                    records,
-                } if next_thread == thread_id && records.is_empty() => {
-                    highest = highest.max(*sequence);
-                    index += 1;
-                }
-                _ => break,
-            }
-        }
-        // No fallible mutation exists inside this run after its first savepoint.
-        // Never carry a later empty effect across another run or mutation boundary.
-        runs[first..index].fill(Some((first, highest)));
-    }
-    runs
-}
-
 /// One disk commit per bounded batch. Each mutation uses a savepoint, so a bad statistics fact
 /// cannot poison the remaining valid facts; a transient failure leaves that suffix queued.
 async fn apply_batch(
@@ -1399,11 +1188,9 @@ async fn apply_batch(
     let mut failures = Vec::new();
     let mut deferred = None;
     let mut changes = MaterialChanges::default();
-    let mut outcomes = Vec::new();
     let mut summaries = BTreeMap::<&str, (usize, usize)>::new();
     let mut summary_identities = BTreeMap::<(&str, u64), &str>::new();
     let mut summary_conflicts = BTreeSet::new();
-    let empty_effects = empty_effect_runs(pending);
     for (index, entry) in pending.iter().enumerate() {
         if let CallMutation::Summary(summary) = &entry.mutation {
             if let Some(hash) =
@@ -1448,26 +1235,6 @@ async fn apply_batch(
                     }
                 }
             }
-            CallMutation::Effect {
-                thread_id, records, ..
-            } if records.is_empty() => {
-                let (first, sequence) =
-                    empty_effects[index].expect("empty effect belongs to a run");
-                if first != index {
-                    Ok(MaterialChanges::default())
-                } else {
-                    apply_mutation(
-                        &mut log,
-                        &tx,
-                        &CallMutation::Effect {
-                            thread_id: thread_id.clone(),
-                            sequence,
-                            records: Vec::new(),
-                        },
-                    )
-                    .await
-                }
-            }
             _ => apply_mutation(&mut log, &tx, &entry.mutation).await,
         };
         match result {
@@ -1475,14 +1242,12 @@ async fn apply_batch(
                 changes.performance |= change.performance;
                 changes.costs |= change.costs;
                 changes.status |= change.status;
-                outcomes.push(None);
             }
             Err(failure) if failure.retryable => {
                 deferred = Some(failure);
                 break;
             }
             Err(failure) => {
-                outcomes.push(Some(failure.message.clone()));
                 failures.push(failure.message);
             }
         }
@@ -1505,33 +1270,6 @@ async fn apply_batch(
     shared
         .observation
         .increment(observation::Metric::BatchCommit);
-    for (index, entry) in pending.iter().take(completed).enumerate() {
-        if let CallMutation::Effect {
-            thread_id,
-            sequence,
-            ..
-        } = &entry.mutation
-        {
-            let error = if let Some((first, _)) = empty_effects[index] {
-                outcomes[first].clone()
-            } else {
-                outcomes[index].clone()
-            };
-            let material_sequence = if let Some((_, highest)) = empty_effects[index] {
-                highest
-            } else {
-                *sequence
-            };
-            publish_thread(
-                shared,
-                thread_id,
-                material_sequence as u64,
-                error.is_none(),
-                false,
-                error,
-            );
-        }
-    }
     shared.materials.send_if_modified(|progress| {
         if changes.performance {
             progress.versions.performance += 1;
@@ -1589,11 +1327,11 @@ fn requeue(shared: &CallsWriter, entries: VecDeque<QueuedCallMutation>) {
     }
 }
 
-/// 一次受理得到结论（提交或显式拒绝）后推进耐久 ticket 水位。
-fn advance_durable(shared: &CallsWriter, ticket: u64) {
-    let current = *shared.durable_ticket.borrow();
+/// 一次受理得到结论（提交或显式拒绝）后推进处理 ticket，不表示成功物化。
+fn advance_processed(shared: &CallsWriter, ticket: u64) {
+    let current = *shared.processed_ticket.borrow();
     if ticket > current {
-        shared.durable_ticket.send_replace(ticket);
+        shared.processed_ticket.send_replace(ticket);
     }
     shared.materials.send_if_modified(|progress| {
         if ticket <= progress.processed_ticket {
@@ -1602,49 +1340,6 @@ fn advance_durable(shared: &CallsWriter, ticket: u64) {
         progress.processed_ticket = ticket;
         true
     });
-}
-
-fn publish_thread(
-    shared: &CallsWriter,
-    thread_id: &str,
-    sequence: u64,
-    succeeded: bool,
-    retrying: bool,
-    error: Option<String>,
-) {
-    let sender = {
-        let mut threads = shared
-            .threads
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        if threads
-            .get(thread_id)
-            .is_some_and(|subscription| subscription.sender.receiver_count() == 0)
-        {
-            threads.remove(thread_id);
-            return;
-        }
-        threads
-            .get(thread_id)
-            .map(|subscription| subscription.sender.clone())
-    };
-    if let Some(sender) = sender {
-        sender.send_if_modified(|progress| {
-            let previous = progress.clone();
-            if !retrying {
-                progress.processed_sequence = progress.processed_sequence.max(sequence);
-            }
-            if succeeded {
-                progress.materialized_sequence = progress.materialized_sequence.max(sequence);
-            }
-            if error.is_some() && !retrying {
-                progress.statistics_gap = true;
-            }
-            progress.retrying = retrying;
-            progress.last_error = error;
-            *progress != previous
-        });
-    }
 }
 
 fn publish_status(shared: &CallsWriter) {
@@ -1722,16 +1417,19 @@ async fn apply_mutation(
         .await
         .map_err(|error| classify_failure(error.into()))?;
     let result = match mutation {
-        CallMutation::Effect {
-            thread_id,
-            sequence,
-            records,
-        } => apply_effect(log, &tx, thread_id, *sequence, records)
-            .await
-            .map(|()| MaterialChanges {
+        CallMutation::Records(records) => {
+            let mut result = Ok(());
+            for record in records {
+                if let Err(error) = apply_attempt(&tx, log, record).await {
+                    result = Err(error);
+                    break;
+                }
+            }
+            result.map(|()| MaterialChanges {
                 status: true,
                 ..Default::default()
-            }),
+            })
+        }
         CallMutation::Billing(record) => {
             apply_billing(log, &tx, record)
                 .await
@@ -1777,48 +1475,6 @@ fn classify_failure(error: anyhow::Error) -> BatchFailure {
         retryable: is_retryable_write(&message),
         message,
     }
-}
-
-/// 把一次 effect 的调用事实写入调用库；调用开始与终态更新共享同一调用身份。
-async fn apply_effect(
-    log: &mut CallLog,
-    db: &DatabaseTransaction,
-    thread_id: &str,
-    sequence: i64,
-    records: &[PreparedRecord],
-) -> Result<()> {
-    let tx = db;
-    #[cfg(feature = "benchmarks")]
-    log.observation
-        .increment(observation::Metric::WatermarkReadSql);
-    let current = tx
-        .query_one_raw(statement(
-            "SELECT durable_write_seq FROM call_watermarks WHERE thread_id=?",
-            vec![thread_id.into()],
-        ))
-        .await?
-        .map(|row| row.try_get::<i64>("", "durable_write_seq"))
-        .transpose()?
-        .unwrap_or(0);
-    for record in records {
-        apply_attempt(tx, log, record).await?;
-    }
-    if sequence <= current {
-        return Ok(());
-    }
-    #[cfg(feature = "benchmarks")]
-    log.observation
-        .increment(observation::Metric::WatermarkWriteSql);
-    tx.execute_raw(statement(
-        "INSERT INTO call_watermarks(thread_id,admitted_write_seq,durable_write_seq)
-         VALUES(?,?,?)
-         ON CONFLICT(thread_id) DO UPDATE SET
-            admitted_write_seq=MAX(excluded.admitted_write_seq,call_watermarks.admitted_write_seq),
-            durable_write_seq=MAX(excluded.durable_write_seq,call_watermarks.durable_write_seq)",
-        vec![thread_id.into(), sequence.into(), sequence.into()],
-    ))
-    .await?;
-    Ok(())
 }
 
 /// attempt 记录按 revision 单调：更旧的修订不覆盖已索引的更新。
@@ -1882,7 +1538,7 @@ async fn apply_billing(
     let now = crate::studio::unix_seconds();
     append_record(db, log, record, now).await?;
     if record.status == CallStatus::Committed.as_str()
-        && let Some(sample) = performance::sample_from_record(record)
+        && let Some(sample) = performance::sample_from_prepared(record)
     {
         #[cfg(feature = "benchmarks")]
         log.observation
@@ -2077,6 +1733,136 @@ mod storage_fault_tests {
             .collect()
     }
 
+    #[test]
+    fn prepared_billing_binds_one_analysis_to_jsonl_and_sql() -> Result<()> {
+        use pl_core::usage::UsageStatus;
+
+        let CallMutation::Billing(base) = billing("thread")? else {
+            unreachable!()
+        };
+        let mut invalid_cache = base.record.clone();
+        invalid_cache.usage.as_mut().unwrap().input_tokens = Some(1);
+        invalid_cache.usage.as_mut().unwrap().cache_read_tokens = Some(2);
+        let mut invalid_total = base.record.clone();
+        invalid_total.usage.as_mut().unwrap().input_tokens = Some(1);
+        invalid_total.usage.as_mut().unwrap().total_tokens = Some(99);
+        let mut unknown = base.record.clone();
+        unknown.usage = Some(event::CallUsageRecord::default());
+        let mut zero = base.record.clone();
+        zero.usage.as_mut().unwrap().output_tokens = Some(0);
+        let mut reported_zero = zero.clone();
+        reported_zero.usage.as_mut().unwrap().input_tokens = Some(0);
+        reported_zero.usage.as_mut().unwrap().cache_read_tokens = Some(0);
+        reported_zero.usage.as_mut().unwrap().total_tokens = Some(0);
+        let mut forged_invalid = base.record.clone();
+        forged_invalid.usage_status = Some(UsageStatus::Invalid);
+        let mut rejected = base.record.clone();
+        rejected.status = CallStatus::Rejected.as_str().into();
+        let mut inconsistent_timing = base.record.clone();
+        inconsistent_timing.timing.as_mut().unwrap().ttft_millis = Some(1);
+        let mut missing_timing = base.record.clone();
+        missing_timing.timing = None;
+        for (record, status, valid) in [
+            (base.record.clone(), UsageStatus::Partial, true),
+            (forged_invalid, UsageStatus::Partial, true),
+            (invalid_cache, UsageStatus::Invalid, false),
+            (invalid_total, UsageStatus::Invalid, false),
+            (unknown, UsageStatus::Missing, false),
+            (zero, UsageStatus::Partial, false),
+            (reported_zero, UsageStatus::Reported, false),
+            (rejected, UsageStatus::Partial, false),
+            (inconsistent_timing, UsageStatus::Partial, false),
+            (missing_timing, UsageStatus::Partial, false),
+        ] {
+            let analyses = std::cell::Cell::new(0);
+            let prepared = PreparedRecord::with_usage_analysis(record, |report| {
+                analyses.set(analyses.get() + 1);
+                pl_model::model::usage::analyze(report)
+            })?;
+            let sample = performance::sample_from_prepared(&prepared).unwrap();
+            assert_eq!(analyses.get(), 1);
+            assert_eq!(prepared.usage_status, Some(status));
+            assert_eq!(sample.usage_status, status);
+            assert_eq!(sample.throughput_valid, valid);
+            let decoded = event::decode_record(&prepared.line)?;
+            assert_eq!(decoded.usage_status, Some(status));
+            assert_eq!(decoded.usage, prepared.usage);
+            assert_eq!(decoded.throughput_sample().is_some(), valid);
+            assert_eq!(
+                prepared.hash,
+                pl_core::context::content_hash(prepared.line.as_bytes())
+            );
+            assert_eq!(
+                prepared.retained_bytes(),
+                prepared.line.len() + 1 + std::mem::size_of::<bool>()
+            );
+        }
+        let mut legacy = base.record.clone();
+        legacy.usage_status = Some(UsageStatus::LegacyUnknown);
+        let mut absent = base.record;
+        absent.usage = None;
+        absent.usage_status = None;
+        for record in [legacy, absent] {
+            let expected_status = record.usage_status;
+            let prepared = PreparedRecord::with_usage_analysis(record, |_| {
+                panic!("absent or legacy raw usage cannot supply a current analysis")
+            })?;
+            let sample = performance::sample_from_prepared(&prepared).unwrap();
+            assert_eq!(prepared.usage_status, expected_status);
+            assert!(!sample.throughput_valid);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn truncated_billing_drops_the_original_bound_throughput_fact() -> Result<()> {
+        let CallMutation::Billing(base) = billing("thread")? else {
+            unreachable!()
+        };
+        let mut record = base.record;
+        record.retention = Some(CallRetention::Internal.as_str().into());
+        record.diagnostic = Some("x".repeat(event::CALL_LOG_RECORD_MAX_BYTES));
+        let analyses = std::cell::Cell::new(0);
+        let prepared = PreparedRecord::with_usage_analysis(record, |report| {
+            analyses.set(analyses.get() + 1);
+            pl_model::model::usage::analyze(report)
+        })?;
+        assert_eq!(analyses.get(), 1);
+        assert!(prepared.truncated);
+        assert!(prepared.usage.is_none());
+        assert!(prepared.timing.is_none());
+        assert_eq!(
+            prepared.usage_status,
+            Some(pl_core::usage::UsageStatus::Partial),
+            "fallback keeps the explanatory status without claiming retained raw counters"
+        );
+        assert_eq!(
+            prepared.retention.as_deref(),
+            Some(CallRetention::Internal.as_str())
+        );
+        let sample = performance::sample_from_prepared(&prepared).unwrap();
+        assert!(!sample.throughput_valid);
+        assert_eq!(sample.output_tokens, None);
+        let decoded = event::decode_record(&prepared.line)?;
+        assert!(
+            !performance::sample_from_record(&decoded)
+                .unwrap()
+                .throughput_valid
+        );
+        assert_eq!(serde_json::to_string(&decoded)?, prepared.line);
+        assert!(prepared.line.len() < event::CALL_LOG_RECORD_MAX_BYTES);
+        assert_eq!(
+            prepared.hash,
+            pl_core::context::content_hash(prepared.line.as_bytes())
+        );
+        let bytes = prepared.retained_bytes();
+        assert_eq!(
+            CallMutation::Billing(Box::new(prepared)).estimated_bytes(),
+            bytes
+        );
+        Ok(())
+    }
+
     #[tokio::test]
     async fn queued_and_durable_billing_use_the_same_complete_identity_hash() -> Result<()> {
         let temp = tempfile::tempdir()?;
@@ -2102,8 +1888,9 @@ mod storage_fault_tests {
             )?,
             ticket
         );
-        let bytes = store.pending_bytes();
-        assert_eq!(store.pending_count(), 1);
+        let queued = store.metrics();
+        let bytes = queued.pending_bytes;
+        assert_eq!(queued.pending_operations, 1);
         let variants = [
             ("other-root", CallStatus::Committed, CallRetention::Turn),
             ("root", CallStatus::Rejected, CallRetention::Turn),
@@ -2117,9 +1904,9 @@ mod storage_fault_tests {
             );
         }
         let drained = drain_batch(&store.writer);
-        assert_eq!(store.pending_bytes(), 0);
+        assert_eq!(store.metrics().pending_bytes, 0);
         requeue(&store.writer, drained.into());
-        assert_eq!(store.pending_bytes(), bytes);
+        assert_eq!(store.metrics().pending_bytes, bytes);
         let pending = drain_batch(&store.writer).into();
         let (_, failures, _) = apply_batch(&store.writer, &pending).await?;
         assert!(failures.is_empty());
@@ -2197,7 +1984,7 @@ mod storage_fault_tests {
         );
         assert_eq!(store.subscribe_materials().borrow().versions.performance, 1);
         assert_eq!(
-            store.durable_ticket(),
+            store.processed_ticket(),
             0,
             "the batch never confirms receipts itself"
         );
@@ -2223,7 +2010,7 @@ mod storage_fault_tests {
         assert!(apply_batch(&store.writer, &pending).await.is_err());
         assert!(store.recent_performance_samples(100).await?.is_empty());
         assert!(!materials.has_changed()?);
-        assert_eq!(store.durable_ticket(), 0);
+        assert_eq!(store.processed_ticket(), 0);
         let (completed, failures, deferred) = apply_batch(&store.writer, &pending).await?;
         assert_eq!(completed, 1);
         assert!(failures.is_empty());
@@ -2258,7 +2045,7 @@ mod storage_fault_tests {
         );
         assert!(store.recent_performance_samples(100).await?.is_empty());
         assert!(!materials.has_changed()?);
-        assert_eq!(store.durable_ticket(), 0);
+        assert_eq!(store.processed_ticket(), 0);
         store
             .writer
             .db
@@ -2302,326 +2089,6 @@ mod storage_fault_tests {
         Ok(())
     }
 
-    #[tokio::test]
-    async fn directed_progress_coalesces_empty_effects_without_discarding_records() -> Result<()> {
-        let temp = tempfile::tempdir()?;
-        let store = CallsStore::prepare(&temp.path().join("calls.sqlite")).await?;
-        store
-            .writer
-            .db
-            .execute_unprepared(
-                "CREATE TABLE watermark_probe(sequence INTEGER NOT NULL);
-             CREATE TRIGGER probe_insert AFTER INSERT ON call_watermarks BEGIN
-                 INSERT INTO watermark_probe VALUES(NEW.durable_write_seq);
-             END;
-             CREATE TRIGGER probe_update AFTER UPDATE ON call_watermarks BEGIN
-                 INSERT INTO watermark_probe VALUES(NEW.durable_write_seq);
-             END;",
-            )
-            .await?;
-        let alpha = store.subscribe_thread_progress("alpha").await?;
-        let beta = store.subscribe_thread_progress("beta").await?;
-        let record = PreparedRecord::new(CallLogRecord {
-            version: event::CALL_LOG_RECORD_VERSION,
-            thread_id: "alpha".into(),
-            call_id: "real-record".into(),
-            kind: "attempt".into(),
-            revision: 3,
-            recorded_at: crate::studio::unix_seconds(),
-            ..Default::default()
-        })?;
-        let pending = batch(vec![
-            CallMutation::Effect {
-                thread_id: "alpha".into(),
-                sequence: 1,
-                records: vec![],
-            },
-            CallMutation::Effect {
-                thread_id: "alpha".into(),
-                sequence: 2,
-                records: vec![],
-            },
-            CallMutation::Effect {
-                thread_id: "alpha".into(),
-                sequence: 3,
-                records: vec![record],
-            },
-            CallMutation::Effect {
-                thread_id: "alpha".into(),
-                sequence: 4,
-                records: vec![],
-            },
-            CallMutation::Effect {
-                thread_id: "alpha".into(),
-                sequence: 5,
-                records: vec![],
-            },
-        ]);
-        apply_batch(&store.writer, &pending).await?;
-        assert_eq!(alpha.borrow().materialized_sequence, 5);
-        assert_eq!(alpha.borrow().processed_sequence, 5);
-        assert!(
-            !beta.has_changed()?,
-            "unrelated Threads are not woken by a global ticket"
-        );
-        assert_eq!(store.durable_effect_sequence("alpha").await?, 5);
-        let writes = store
-            .writer
-            .db
-            .query_all_raw(statement(
-                "SELECT sequence FROM watermark_probe ORDER BY rowid",
-                vec![],
-            ))
-            .await?
-            .iter()
-            .map(|row| row.try_get::<i64>("", "sequence"))
-            .collect::<std::result::Result<Vec<_>, _>>()?;
-        assert_eq!(
-            writes,
-            [2, 3, 5],
-            "each contiguous empty run still uses one watermark write"
-        );
-        assert_eq!(
-            store
-                .writer
-                .db
-                .query_all_raw(statement("SELECT * FROM call_log_index", vec![]))
-                .await?
-                .len(),
-            1
-        );
-        drop(alpha);
-        drop(beta);
-        let fresh = store.subscribe_thread_progress("fresh").await?;
-        assert_eq!(
-            store.writer.threads.lock().unwrap().len(),
-            1,
-            "inactive subscriptions are reclaimed"
-        );
-        drop(fresh);
-        store.close().await?;
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn empty_effect_runs_do_not_confirm_past_retrying_record_savepoint() -> Result<()> {
-        let temp = tempfile::tempdir()?;
-        let path = temp.path().join("calls.sqlite");
-        let store = CallsStore::prepare(&path).await?;
-        // Keep the real records mutation retrying inside its savepoint until the
-        // test has inspected the committed prefix. This is the same SQL gate used
-        // by the busy-recovery regressions, not an alternate writer or saver.
-        store
-            .writer
-            .db
-            .execute_unprepared(
-                "CREATE TABLE busy_gate(enabled INTEGER NOT NULL);
-             INSERT INTO busy_gate VALUES(1);
-             CREATE TRIGGER busy_record BEFORE INSERT ON call_log_index
-             WHEN NEW.thread_id='alpha' AND NEW.call_id='real-record'
-                 AND (SELECT enabled FROM busy_gate)=1 BEGIN
-                 SELECT RAISE(FAIL,'database is busy');
-             END;",
-            )
-            .await?;
-        let mut materials = store.subscribe_materials();
-        let mut alpha = store.subscribe_thread_progress("alpha").await?;
-        for sequence in 1..=3 {
-            assert!(store.try_admit_effect(&ThreadEffectBatch {
-                thread_id: "alpha".into(),
-                sequence,
-                committed_at: crate::studio::unix_seconds(),
-                attempt: (sequence == 2).then(|| AttemptUpdate {
-                    request_metadata: None,
-                    usage_binding: None,
-                    tool_projection: None,
-                    turn_id: "turn".into(),
-                    attempt_id: "real-record".into(),
-                    retry_of: None,
-                    input_revision: 2,
-                    tools: Default::default(),
-                    outcome: AttemptOutcome::Running,
-                    input_estimate: None,
-                }),
-                ..Default::default()
-            }));
-        }
-        assert_eq!(
-            store.pending_count(),
-            3,
-            "all three effects enter the same drained batch"
-        );
-        store.start().await;
-        tokio::time::timeout(Duration::from_secs(2), async {
-            loop {
-                if alpha.borrow_and_update().retrying {
-                    return Ok::<_, anyhow::Error>(());
-                }
-                alpha.changed().await?;
-            }
-        })
-        .await??;
-        assert_eq!(
-            store.durable_effect_sequence("alpha").await?,
-            1,
-            "the SQL prefix must not contain the later empty effect's sequence 3"
-        );
-        assert_eq!(alpha.borrow().materialized_sequence, 1);
-        assert_eq!(
-            alpha.borrow().processed_sequence,
-            1,
-            "the retrying suffix has not been processed or rejected"
-        );
-        assert_eq!(materials.borrow().processed_ticket, 1);
-        assert!(!alpha.borrow().statistics_gap);
-        assert!(!materials.borrow().statistics_gap);
-        assert!(
-            alpha
-                .borrow()
-                .last_error
-                .as_deref()
-                .unwrap()
-                .contains("database is busy")
-        );
-        assert!(
-            store
-                .writer
-                .db
-                .query_all_raw(statement(
-                    "SELECT * FROM call_log_index WHERE thread_id='alpha'",
-                    vec![],
-                ))
-                .await?
-                .is_empty(),
-            "the failed records savepoint has no partial locator"
-        );
-
-        store
-            .writer
-            .db
-            .execute_unprepared("UPDATE busy_gate SET enabled=0")
-            .await?;
-        store.writer.retry_notify.notify_one();
-        wait_material_ticket(&mut materials, 3).await?;
-        assert_eq!(store.durable_effect_sequence("alpha").await?, 3);
-        assert_eq!(alpha.borrow().materialized_sequence, 3);
-        assert_eq!(alpha.borrow().processed_sequence, 3);
-        assert!(!alpha.borrow().retrying);
-        assert!(!alpha.borrow().statistics_gap);
-        assert!(!materials.borrow().statistics_gap);
-        assert!(alpha.borrow().last_error.is_none());
-        let records = store
-            .writer
-            .db
-            .query_all_raw(statement(
-                "SELECT call_id,revision FROM call_log_index WHERE thread_id='alpha'",
-                vec![],
-            ))
-            .await?;
-        assert_eq!(
-            records.len(),
-            1,
-            "the successful retry materializes the real call once"
-        );
-        assert_eq!(records[0].try_get::<String>("", "call_id")?, "real-record");
-        assert_eq!(records[0].try_get::<i64>("", "revision")?, 2);
-        store.close().await?;
-
-        let reopened = CallsStore::open(&path).await?;
-        let restored = reopened.subscribe_thread_progress("alpha").await?;
-        assert_eq!(reopened.durable_effect_sequence("alpha").await?, 3);
-        assert_eq!(restored.borrow().materialized_sequence, 3);
-        assert_eq!(restored.borrow().processed_sequence, 3);
-        assert_eq!(
-            reopened
-                .writer
-                .db
-                .query_all_raw(statement(
-                    "SELECT call_id FROM call_log_index WHERE thread_id='alpha'",
-                    vec![],
-                ))
-                .await?
-                .len(),
-            1,
-            "complete orphan lines never duplicate the logical call on reopen"
-        );
-        reopened.close().await?;
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn initial_thread_sql_cannot_overwrite_concurrent_committed_progress() -> Result<()> {
-        let temp = tempfile::tempdir()?;
-        let store = CallsStore::prepare(&temp.path().join("calls.sqlite")).await?;
-        let gate = Arc::new(SubscribeGate::default());
-        *store.writer.subscribe_gate.lock().unwrap() = Some(gate.clone());
-        let subscriber = store.clone();
-        let subscription =
-            tokio::spawn(async move { subscriber.subscribe_thread_progress("thread").await });
-        tokio::time::timeout(Duration::from_secs(2), gate.loaded.notified()).await?;
-        let pending = batch(vec![CallMutation::Effect {
-            thread_id: "thread".into(),
-            sequence: 7,
-            records: vec![],
-        }]);
-        apply_batch(&store.writer, &pending).await?;
-        gate.resume.notify_one();
-        let progress = tokio::time::timeout(Duration::from_secs(2), subscription).await???;
-        assert_eq!(progress.borrow().materialized_sequence, 7);
-        assert_eq!(progress.borrow().processed_sequence, 7);
-        store.close().await?;
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn cancelled_initial_subscriber_hands_sql_initialization_to_waiting_subscriber()
-    -> Result<()> {
-        let temp = tempfile::tempdir()?;
-        let store = CallsStore::prepare(&temp.path().join("calls.sqlite")).await?;
-        store
-            .writer
-            .db
-            .execute_unprepared(
-                "INSERT INTO call_watermarks(thread_id,admitted_write_seq,durable_write_seq)
-             VALUES('thread',7,7)",
-            )
-            .await?;
-        let gate = Arc::new(SubscribeGate::default());
-        *store.writer.subscribe_gate.lock().unwrap() = Some(gate.clone());
-        let first_store = store.clone();
-        let first =
-            tokio::spawn(async move { first_store.subscribe_thread_progress("thread").await });
-        tokio::time::timeout(Duration::from_secs(2), gate.loaded.notified()).await?;
-        // Consume A's registration signal before B is allowed to register.
-        tokio::time::timeout(Duration::from_secs(2), gate.registered.notified()).await?;
-        let second_store = store.clone();
-        let second =
-            tokio::spawn(async move { second_store.subscribe_thread_progress("thread").await });
-        tokio::time::timeout(Duration::from_secs(2), gate.registered.notified()).await?;
-        let initialized = {
-            let threads = store.writer.threads.lock().unwrap();
-            threads.get("thread").unwrap().initialized.initialized()
-        };
-        assert!(
-            !initialized,
-            "A still owns incomplete initialization; B must not return zero"
-        );
-        first.abort();
-        assert!(first.await.unwrap_err().is_cancelled());
-        let progress = tokio::time::timeout(Duration::from_secs(2), second).await???;
-        assert_eq!(progress.borrow().materialized_sequence, 7);
-        assert_eq!(progress.borrow().processed_sequence, 7);
-        let subsequent = store.subscribe_thread_progress("thread").await?;
-        assert_eq!(subsequent.borrow().materialized_sequence, 7);
-        assert_eq!(
-            store.admitted_ticket(),
-            0,
-            "no writer work rescues the subscribers"
-        );
-        store.close().await?;
-        Ok(())
-    }
-
     async fn wait_material_ticket(
         progress: &mut watch::Receiver<CallsMaterialProgress>,
         ticket: u64,
@@ -2637,6 +2104,226 @@ mod storage_fault_tests {
         .await?
     }
 
+    fn attempt_effect(thread: &str, call: &str, sequence: u64) -> ThreadEffectBatch {
+        ThreadEffectBatch {
+            thread_id: thread.into(),
+            sequence,
+            committed_at: crate::studio::unix_seconds(),
+            attempt: Some(AttemptUpdate {
+                request_metadata: None,
+                usage_binding: None,
+                tool_projection: None,
+                turn_id: "turn".into(),
+                attempt_id: call.into(),
+                retry_of: None,
+                input_revision: sequence,
+                tools: Default::default(),
+                outcome: AttemptOutcome::Running,
+                input_estimate: None,
+            }),
+            ..Default::default()
+        }
+    }
+
+    fn assert_empty_effect_unchanged(store: &CallsStore) -> Result<()> {
+        let materials = store.subscribe_materials();
+        let progress = materials.borrow().clone();
+        let admitted = store.admitted_ticket();
+        let processed = store.processed_ticket();
+        let pressure = queue_pressure(&store.writer);
+        let error = store.last_error();
+        for sequence in [0, 1, u64::MAX] {
+            store.record_effect(&ThreadEffectBatch {
+                thread_id: "empty".into(),
+                sequence,
+                ..Default::default()
+            });
+        }
+        assert_eq!(store.admitted_ticket(), admitted);
+        assert_eq!(store.processed_ticket(), processed);
+        let after = queue_pressure(&store.writer);
+        assert_eq!(after.mutations, pressure.mutations);
+        assert_eq!(after.bytes, pressure.bytes);
+        assert_eq!(after.oldest_accepted_at, pressure.oldest_accepted_at);
+        assert_eq!(*materials.borrow(), progress);
+        assert!(!materials.has_changed()?);
+        assert_eq!(store.last_error(), error);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn empty_material_is_noop_while_healthy_full_or_stopping() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let store = CallsStore::prepare(&temp.path().join("calls.sqlite")).await?;
+        assert_empty_effect_unchanged(&store)?;
+        assert_eq!(store.admitted_ticket(), 0);
+        assert_eq!(store.metrics().pending_operations, 0);
+        for index in 0..MAX_QUEUE_MUTATIONS {
+            store.record_effect(&attempt_effect("thread", &format!("call-{index}"), 1));
+        }
+        assert_eq!(
+            store.metrics().pending_operations,
+            MAX_QUEUE_MUTATIONS as u64
+        );
+        assert_empty_effect_unchanged(&store)?;
+        assert!(!store.statistics_gap());
+        store.record_effect(&attempt_effect("thread", "overflow", 1));
+        assert!(store.statistics_gap());
+        assert_eq!(store.admitted_ticket(), MAX_QUEUE_MUTATIONS as u64);
+        assert_empty_effect_unchanged(&store)?;
+        store.stop_best_effort();
+        assert_empty_effect_unchanged(&store)?;
+        store.record_effect(&attempt_effect("thread", "stopped", 1));
+        assert!(store.last_error().unwrap().contains("stopping"));
+        assert_empty_effect_unchanged(&store)?;
+        store.close().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn attempt_and_delivery_revisions_are_idempotent_without_effect_fences() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let store = CallsStore::prepare(&temp.path().join("calls.sqlite")).await?;
+        store
+            .writer
+            .db
+            .execute_unprepared(
+                "INSERT INTO legacy_call_fences VALUES('thread',99,98);
+             CREATE TRIGGER forbid_fence_insert BEFORE INSERT ON legacy_call_fences
+             BEGIN SELECT RAISE(ABORT,'production fence insert'); END;
+             CREATE TRIGGER forbid_fence_update BEFORE UPDATE ON legacy_call_fences
+             BEGIN SELECT RAISE(ABORT,'production fence update'); END;",
+            )
+            .await?;
+        let mut effect = attempt_effect("thread", "shared-id", 1);
+        effect.deliveries = vec![pl_core::thread::ToolDelivery {
+            target: Default::default(),
+            call_id: "shared-id".into(),
+            tool_id: "tool".into(),
+            output: pl_core::tool::ToolOutput::new(
+                pl_core::context::OpaquePayload::text("result"),
+                vec![],
+            ),
+            delivered_context: vec![],
+            outcome: pl_core::thread::ToolOutcome::Succeeded,
+        }]
+        .into();
+        for sequence in [1, 1, 3, 2, 3] {
+            effect.sequence = sequence;
+            store.record_effect(&effect);
+        }
+        let pending = drain_batch(&store.writer).into();
+        let (completed, failures, deferred) = apply_batch(&store.writer, &pending).await?;
+        assert_eq!(completed, 5);
+        assert!(failures.is_empty());
+        assert!(deferred.is_none());
+        let rows = store
+            .writer
+            .db
+            .query_all_raw(statement(
+                "SELECT kind,revision FROM call_log_index ORDER BY kind",
+                vec![],
+            ))
+            .await?;
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].try_get::<String>("", "kind")?, "attempt");
+        assert_eq!(rows[1].try_get::<String>("", "kind")?, "tool");
+        for row in rows {
+            assert_eq!(row.try_get::<i64>("", "revision")?, 3);
+        }
+        let fence = store.writer.db.query_one_raw(statement(
+            "SELECT admitted_write_seq,durable_write_seq FROM legacy_call_fences WHERE thread_id='thread'",
+            vec![],
+        )).await?.unwrap();
+        assert_eq!(fence.try_get::<i64>("", "admitted_write_seq")?, 99);
+        assert_eq!(fence.try_get::<i64>("", "durable_write_seq")?, 98);
+        let mut entries = tokio::fs::read_dir(temp.path().join("logs")).await?;
+        let mut lines = 0;
+        while let Some(entry) = entries.next_entry().await? {
+            lines += tokio::fs::read_to_string(entry.path())
+                .await?
+                .lines()
+                .count();
+        }
+        assert_eq!(lines, 4, "duplicates and older revisions append no JSONL");
+        store.close().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn records_retry_keeps_committed_prefix_and_recovers_without_duplicates() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let path = temp.path().join("calls.sqlite");
+        let store = CallsStore::prepare(&path).await?;
+        store
+            .writer
+            .db
+            .execute_unprepared(
+                "CREATE TABLE busy_gate(enabled INTEGER NOT NULL);
+             INSERT INTO busy_gate VALUES(1);
+             CREATE TRIGGER busy_record BEFORE INSERT ON call_log_index
+             WHEN NEW.call_id='retry' AND (SELECT enabled FROM busy_gate)=1 BEGIN
+                 SELECT RAISE(FAIL,'database is busy');
+             END;",
+            )
+            .await?;
+        for (index, call) in ["first", "retry", "last"].into_iter().enumerate() {
+            store.record_effect(&attempt_effect("thread", call, index as u64 + 1));
+        }
+        let mut materials = store.subscribe_materials();
+        store.start().await;
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let progress = materials.borrow_and_update().clone();
+                if progress
+                    .last_error
+                    .as_deref()
+                    .is_some_and(|error| error.contains("database is busy"))
+                {
+                    break;
+                }
+                materials.changed().await?;
+            }
+            Ok::<_, anyhow::Error>(())
+        })
+        .await??;
+        assert_eq!(materials.borrow().processed_ticket, 1);
+        assert_eq!(materials.borrow().versions.status, 2); // one committed prefix, one error
+        assert!(!materials.borrow().statistics_gap);
+        let rows = store
+            .writer
+            .db
+            .query_all_raw(statement(
+                "SELECT call_id FROM call_log_index ORDER BY call_id",
+                vec![],
+            ))
+            .await?;
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].try_get::<String>("", "call_id")?, "first");
+        store
+            .writer
+            .db
+            .execute_unprepared("UPDATE busy_gate SET enabled=0")
+            .await?;
+        store.writer.retry_notify.notify_one();
+        wait_material_ticket(&mut materials, 3).await?;
+        assert!(!store.statistics_gap());
+        assert!(store.last_error().is_none());
+        store.close().await?;
+        let reopened = CallsStore::open(&path).await?;
+        assert_eq!(
+            reopened
+                .writer
+                .db
+                .query_all_raw(statement("SELECT call_id FROM call_log_index", vec![],))
+                .await?
+                .len(),
+            3
+        );
+        reopened.close().await?;
+        Ok(())
+    }
+
     async fn assert_busy_recovery_preserves_gap(prior_rejection: bool) -> Result<()> {
         let temp = tempfile::tempdir()?;
         let store = CallsStore::prepare(&temp.path().join("calls.sqlite")).await?;
@@ -2646,55 +2333,43 @@ mod storage_fault_tests {
             .execute_unprepared(
                 "CREATE TABLE busy_gate(enabled INTEGER NOT NULL);
              INSERT INTO busy_gate VALUES(1);
-             CREATE TRIGGER busy_effect BEFORE INSERT ON call_watermarks
-             WHEN NEW.durable_write_seq=2 AND (SELECT enabled FROM busy_gate)=1 BEGIN
+             CREATE TRIGGER busy_effect BEFORE INSERT ON call_log_index
+             WHEN NEW.call_id='retry' AND (SELECT enabled FROM busy_gate)=1 BEGIN
                 SELECT RAISE(FAIL,'database is busy');
              END;
-             CREATE TRIGGER rejected_effect BEFORE INSERT ON call_watermarks
-             WHEN NEW.durable_write_seq=1 BEGIN
+             CREATE TRIGGER rejected_effect BEFORE INSERT ON call_log_index
+             WHEN NEW.call_id='rejected' BEGIN
                 SELECT RAISE(FAIL,'injected rejected fact');
              END;",
             )
             .await?;
         let mut materials = store.subscribe_materials();
-        let mut thread = store.subscribe_thread_progress("thread").await?;
         store.start().await;
         if prior_rejection {
-            assert!(store.try_admit_effect(&ThreadEffectBatch {
-                thread_id: "thread".into(),
-                sequence: 1,
-                ..Default::default()
-            }));
+            store.record_effect(&attempt_effect("thread", "rejected", 1));
             wait_material_ticket(&mut materials, store.admitted_ticket()).await?;
             assert!(materials.borrow().statistics_gap);
-            assert!(thread.borrow().statistics_gap);
-            assert_eq!(thread.borrow().materialized_sequence, 0);
+            assert_eq!(materials.borrow().versions.performance, 0);
+            assert_eq!(materials.borrow().versions.costs, 0);
+            assert_empty_effect_unchanged(&store)?;
         }
-        assert!(store.try_admit_effect(&ThreadEffectBatch {
-            thread_id: "thread".into(),
-            sequence: 2,
-            ..Default::default()
-        }));
+        store.record_effect(&attempt_effect("thread", "retry", 2));
         let ticket = store.admitted_ticket();
         tokio::time::timeout(Duration::from_secs(2), async {
             loop {
-                if thread.borrow_and_update().retrying {
+                if materials
+                    .borrow_and_update()
+                    .last_error
+                    .as_deref()
+                    .is_some_and(|error| error.contains("database is busy"))
+                {
                     return Ok::<_, anyhow::Error>(());
                 }
-                thread.changed().await?;
+                materials.changed().await?;
             }
         })
         .await??;
-        assert_eq!(thread.borrow().statistics_gap, prior_rejection);
         assert_eq!(materials.borrow().statistics_gap, prior_rejection);
-        assert!(
-            thread
-                .borrow()
-                .last_error
-                .as_deref()
-                .unwrap()
-                .contains("database is busy")
-        );
         assert!(
             materials
                 .borrow()
@@ -2710,12 +2385,8 @@ mod storage_fault_tests {
             .await?;
         store.writer.retry_notify.notify_one();
         wait_material_ticket(&mut materials, ticket).await?;
-        assert_eq!(store.durable_effect_sequence("thread").await?, 2);
-        assert_eq!(thread.borrow().materialized_sequence, 2);
-        assert!(!thread.borrow().retrying);
-        assert!(thread.borrow().last_error.is_none());
+        assert_eq!(store.processed_ticket(), ticket);
         assert!(materials.borrow().last_error.is_none());
-        assert_eq!(thread.borrow().statistics_gap, prior_rejection);
         assert_eq!(materials.borrow().statistics_gap, prior_rejection);
         assert_eq!(store.statistics_gap(), prior_rejection);
         store.close().await?;
@@ -2834,48 +2505,42 @@ mod storage_fault_tests {
     async fn batch_savepoint_failure_preserves_other_calls_and_commits_before_receipts()
     -> Result<()> {
         let temp = tempfile::tempdir()?;
-        let store = CallsStore::open(&temp.path().join("calls.sqlite")).await?;
+        let path = temp.path().join("calls.sqlite");
+        let store = CallsStore::prepare(&path).await?;
         store
             .writer
             .db
             .execute_unprepared(
                 "CREATE TABLE failure_probe(thread_id TEXT NOT NULL);
-                 CREATE TRIGGER reject_one BEFORE INSERT ON call_watermarks
+                 CREATE TRIGGER reject_one BEFORE INSERT ON call_log_index
                  WHEN NEW.thread_id='rejected' BEGIN
                    INSERT INTO failure_probe VALUES(NEW.thread_id);
                    SELECT RAISE(FAIL,'injected invalid call');
                  END;",
             )
             .await?;
-        let pending: VecDeque<QueuedCallMutation> = ["first", "rejected", "last"]
-            .into_iter()
-            .enumerate()
-            .map(|(index, thread)| {
-                let mutation = CallMutation::Effect {
-                    thread_id: thread.to_owned(),
-                    sequence: 1,
-                    records: Vec::new(),
-                };
-                QueuedCallMutation {
-                    ticket: index as u64 + 1,
-                    accepted_at: tokio::time::Instant::now(),
-                    bytes: mutation.estimated_bytes(),
-                    mutation,
-                }
-            })
-            .collect();
+        for thread in ["first", "rejected", "last"] {
+            store.record_effect(&attempt_effect(thread, "call", 1));
+        }
+        let pending = drain_batch(&store.writer).into();
         let (completed, failures, deferred) = apply_batch(&store.writer, &pending).await?;
         assert_eq!(completed, 3);
         assert_eq!(failures.len(), 1);
         assert!(failures[0].contains("injected invalid call"));
         assert!(deferred.is_none());
         // An independent connection observes both committed facts before a receipt is advanced.
-        let reopened = CallsStore::open(&temp.path().join("calls.sqlite")).await?;
-        let rows = reopened
-            .writer
-            .db
+        let reader = Database::connect(
+            crate::studio::paths::sqlite_file_options(
+                &path,
+                crate::studio::paths::SqliteFileMode::ReadOnly,
+                |options| options,
+            )
+            .await?,
+        )
+        .await?;
+        let rows = reader
             .query_all_raw(statement(
-                "SELECT thread_id FROM call_watermarks ORDER BY thread_id",
+                "SELECT thread_id FROM call_log_index ORDER BY thread_id",
                 vec![],
             ))
             .await?;
@@ -2885,15 +2550,13 @@ mod storage_fault_tests {
             .collect::<std::result::Result<Vec<_>, _>>()?;
         assert_eq!(ids, ["first", "last"]);
         // RAISE(FAIL) preserves earlier trigger writes unless the mutation's savepoint rolls back.
-        let failed_writes = reopened
-            .writer
-            .db
+        let failed_writes = reader
             .query_all_raw(statement("SELECT thread_id FROM failure_probe", vec![]))
             .await?;
         assert!(failed_writes.is_empty());
-        assert_eq!(*store.writer.durable_ticket.borrow(), 0);
-        store.stop_best_effort();
-        reopened.stop_best_effort();
+        assert_eq!(*store.writer.processed_ticket.borrow(), 0);
+        store.close().await?;
+        reader.close().await?;
         Ok(())
     }
 }

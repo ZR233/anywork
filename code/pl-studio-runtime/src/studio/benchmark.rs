@@ -90,9 +90,10 @@ pub fn cases() -> Vec<Case> {
     }
     for active_threads in [1, 32] {
         cases.push(Case {
-            name: format!("effects/no_billing_change/active_{active_threads}/working_1"),
+            name: format!("effects/reliable_history_no_call_material/active_{active_threads}/working_1"),
             input: json!({"activeThreads": active_threads, "workingThreads": 1,
-                "effects": EFFECTS_PER_OPERATION}),
+                "effects": EFFECTS_PER_OPERATION,
+                "completion": "reliable history/checkpoint commit and flush ACK; no calls obligation"}),
             workload: Workload::Effects { active_threads },
         });
     }
@@ -373,7 +374,7 @@ impl PreparedCase {
                     elapsed,
                     samples,
                     json!({"records": count,
-                    "durableTicket": self.calls().durable_ticket(), "rotation": rotate}),
+                    "processedTicket": self.calls().processed_ticket(), "rotation": rotate}),
                 )
             }
             Workload::Effects { active_threads } => {
@@ -385,13 +386,21 @@ impl PreparedCase {
                 for _ in 0..EFFECTS_PER_OPERATION {
                     let elapsed = writer.empty_effect().await?;
                     total += elapsed;
-                    samples.push(OperationSample::new("reliable_empty_effect", 1, elapsed));
+                    samples.push(OperationSample::new(
+                        "reliable_history_no_call_material",
+                        1,
+                        elapsed,
+                    ));
                 }
+                let sequence = writer.verify_reliable().await?;
                 (
                     total,
                     samples,
                     json!({"effects": EFFECTS_PER_OPERATION,
-                    "activeThreads": active_threads, "workingThreads": 1}),
+                    "activeThreads": active_threads, "workingThreads": 1,
+                    "historySequence": sequence, "checkpointFence": sequence,
+                    "callsAdmittedTicket": writer.calls().admitted_ticket(),
+                    "callsProcessedTicket": writer.calls().processed_ticket()}),
                 )
             }
             Workload::Costs { roots } => {
@@ -465,15 +474,15 @@ impl Drop for PreparedCase {
 }
 
 pub(crate) async fn wait_calls(calls: &CallsStore, target: u64) -> Result<()> {
-    let mut durable = calls.subscribe_durable_ticket();
+    let mut processed = calls.subscribe_processed_ticket();
     tokio::time::timeout(Duration::from_secs(30), async {
-        while *durable.borrow_and_update() < target {
-            durable.changed().await?;
+        while *processed.borrow_and_update() < target {
+            processed.changed().await?;
         }
         Ok::<_, anyhow::Error>(())
     })
     .await
-    .context("benchmark calls durability deadline exceeded")??;
+    .context("benchmark calls processing deadline exceeded")??;
     ensure!(
         !calls.statistics_gap() && calls.last_error().is_none(),
         "benchmark calls writer rejected/lost work: {:?}",

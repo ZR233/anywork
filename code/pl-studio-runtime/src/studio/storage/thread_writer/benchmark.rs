@@ -15,7 +15,6 @@ struct ActiveThread {
 pub(crate) struct WriterFixture {
     store: StudioStore,
     threads: Vec<ActiveThread>,
-    expected_watermarks: std::collections::BTreeMap<String, u64>,
 }
 
 impl WriterFixture {
@@ -28,7 +27,6 @@ impl WriterFixture {
         let mut fixture = Self {
             store,
             threads: Vec::new(),
-            expected_watermarks: std::collections::BTreeMap::new(),
         };
         let setup = async {
             let project_root = root.join("project");
@@ -57,7 +55,6 @@ impl WriterFixture {
             delta.thread_upserts = threads.clone();
             fixture.store.persist_directory_summaries(&delta).await?;
             for thread in threads {
-                fixture.expected_watermarks.insert(thread.id.clone(), 0);
                 let sink = ThreadStorageSink::new(fixture.store.clone(), thread, None).await?;
                 fixture.threads.push(ActiveThread {
                     sink,
@@ -65,15 +62,6 @@ impl WriterFixture {
                     sequence: 0,
                 });
             }
-            fixture
-                .store
-                .calls()
-                .observation()
-                .wait_observers(
-                    &fixture.expected_watermarks,
-                    fixture.store.calls().admitted_ticket(),
-                )
-                .await?;
             Ok::<_, anyhow::Error>(())
         }
         .await;
@@ -88,9 +76,9 @@ impl WriterFixture {
         self.store.calls()
     }
 
-    /// Admission -> real live projection -> history/checkpoint commit -> calls durability ->
-    /// the affected Thread's actual directed progress observation. Idle Threads remain initialized
-    /// and their absolute progress is checked, but they owe no work for another Thread's mutation.
+    /// Admission -> real live projection -> history/checkpoint commit and reliable flush ACK.
+    /// Material-free effects owe no calls work. This boundary deliberately differs from the retired
+    /// empty-call-watermark benchmark, which also waited for a second database and its observers.
     pub(crate) async fn empty_effect(&mut self) -> Result<Duration> {
         let (working, idle_threads) = self.threads.split_at_mut(1);
         let active = &mut working[0];
@@ -134,29 +122,45 @@ impl WriterFixture {
         );
         tokio::time::timeout(Duration::from_secs(30), active.sink.flush(&id, sequence)).await??;
         active.sequence = sequence;
-        self.expected_watermarks.insert(id.clone(), sequence);
+        let elapsed = started.elapsed();
         let calls = self.store.calls();
-        let target = calls.admitted_ticket();
-        crate::studio::benchmark::wait_calls(calls, target).await?;
-        calls
-            .observation()
-            .wait_observers(
-                &std::collections::BTreeMap::from([(id.clone(), sequence)]),
-                target,
-            )
-            .await?;
+        ensure!(
+            calls.admitted_ticket() == 0 && calls.processed_ticket() == 0,
+            "a material-free effect created a calls obligation"
+        );
         for idle in idle_threads {
             ensure!(
-                lock_progress(&idle.sink.0).calls_durable == 0,
+                lock_progress(&idle.sink.0).durable == 0,
                 "an idle benchmark Thread acquired another Thread's progress"
             );
         }
-        let elapsed = started.elapsed();
         ensure!(
-            lock_progress(&active.sink.0).calls_durable == sequence,
-            "benchmark effect did not advance its durable calls watermark"
+            lock_progress(&active.sink.0).durable == sequence,
+            "benchmark effect did not advance its reliable history watermark"
         );
         Ok(elapsed)
+    }
+
+    /// Read back the authoritative reliable facts outside the per-effect latency samples.
+    pub(crate) async fn verify_reliable(&self) -> Result<u64> {
+        let active = &self.threads[0];
+        let history = self.store.history(&active.sink.0.thread.id).await?;
+        let checkpoint = history
+            .checkpoint()
+            .await?
+            .context("benchmark checkpoint")?;
+        ensure!(
+            history.watermark().await? == active.sequence
+                && checkpoint.history_fence == active.sequence
+                && checkpoint.state.commit_sequence == active.sequence
+                && checkpoint.state.usage_summary
+                    == UsageSummary {
+                        applied_sequence: active.sequence,
+                        ..Default::default()
+                    },
+            "reliable history/checkpoint/accounting verification failed"
+        );
+        Ok(active.sequence)
     }
 
     pub(crate) async fn close(self) -> Result<()> {

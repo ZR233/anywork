@@ -611,7 +611,7 @@ async fn known_configuration_migration_and_cold_sessions_survive_initialization(
     };
     let calls = CallsStore::open(&paths.calls_database()).await?;
     calls.start().await;
-    let mut durable = calls.subscribe_durable_ticket();
+    let mut processed = calls.subscribe_processed_ticket();
     calls.replace_session_usage(SessionUsageProjection {
         root_thread_id: "cold".into(),
         thread_id: "cold".into(),
@@ -626,7 +626,7 @@ async fn known_configuration_migration_and_cold_sessions_survive_initialization(
     drop(
         tokio::time::timeout(
             Duration::from_secs(5),
-            durable.wait_for(|&watermark| watermark >= ticket),
+            processed.wait_for(|&watermark| watermark >= ticket),
         )
         .await??,
     );

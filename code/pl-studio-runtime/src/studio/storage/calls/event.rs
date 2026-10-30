@@ -37,6 +37,19 @@ pub(super) struct CallUsageRecord {
     pub(super) total_tokens: Option<u64>,
 }
 
+impl CallUsageRecord {
+    pub(super) fn report(&self) -> pl_protocol::UsageReport {
+        pl_protocol::UsageReport {
+            input_tokens: self.input_tokens,
+            output_tokens: self.output_tokens,
+            cache_read_tokens: self.cache_read_tokens,
+            cache_write_tokens: self.cache_write_tokens,
+            reasoning_tokens: self.reasoning_tokens,
+            total_tokens: self.total_tokens,
+        }
+    }
+}
+
 /// 当前统计口径的标识；旧记录没有该字段，解码后为 0，不会被当作当前口径样本。
 ///
 /// 口径从 decode 分母切换到含首字等待的总响应分母时递增一次。原始调用日志保留可读，
@@ -162,23 +175,38 @@ impl CallLogRecord {
     /// Speed is a derived, paired fact. Raw counters and timings remain in the log even when this
     /// validation rejects them for performance statistics.
     pub(super) fn throughput_sample(&self) -> Option<(u64, pl_protocol::InferenceTiming)> {
+        if self.version != CALL_LOG_RECORD_VERSION
+            || !self.is_current_throughput_epoch()
+            || self.status != CallStatus::Committed.as_str()
+            || self.usage_status == Some(pl_core::usage::UsageStatus::LegacyUnknown)
+        {
+            return None;
+        }
+        let analysis = pl_model::model::usage::analyze(&self.usage.as_ref()?.report());
+        self.throughput_sample_with_analysis(&analysis)
+    }
+
+    /// Product timing stays here; usage validity comes only from core analysis, never from the
+    /// serialized status alone. Recovery also rejects a raw/status pair that disagrees.
+    pub(super) fn throughput_sample_with_analysis(
+        &self,
+        analysis: &pl_core::usage::UsageAnalysis,
+    ) -> Option<(u64, pl_protocol::InferenceTiming)> {
         if self.status != CallStatus::Committed.as_str() || !self.is_current_throughput_epoch() {
             return None;
         }
         let usage = self.usage.as_ref()?;
-        let report = pl_protocol::UsageReport {
-            input_tokens: usage.input_tokens,
-            output_tokens: usage.output_tokens,
-            cache_read_tokens: usage.cache_read_tokens,
-            cache_write_tokens: usage.cache_write_tokens,
-            reasoning_tokens: usage.reasoning_tokens,
-            total_tokens: usage.total_tokens,
-        };
         let timing = self.timing?.protocol_timing();
-        if self.usage_status? == pl_core::usage::UsageStatus::LegacyUnknown {
+        if self.version != CALL_LOG_RECORD_VERSION
+            || self.usage_status != Some(analysis.status)
+            || analysis.status == pl_core::usage::UsageStatus::Invalid
+            || !timing.has_throughput_sample()
+        {
             return None;
         }
-        pl_model::model::usage::throughput_output_tokens(timing, &report)
+        usage
+            .output_tokens
+            .filter(|tokens| *tokens > 0)
             .map(|output_tokens| (output_tokens, timing))
     }
 
@@ -448,7 +476,8 @@ pub(super) fn billing_record(
             reasoning_tokens: usage.reasoning_tokens,
             total_tokens: usage.total_tokens,
         }),
-        usage_status: Some(pl_model::model::usage::analyze(usage).status),
+        // PreparedRecord binds the core analysis to the encoded record and SQL validity.
+        usage_status: None,
         cost,
         has_unpriced_usage: billing.accounting.has_unpriced_usage(),
         timing,

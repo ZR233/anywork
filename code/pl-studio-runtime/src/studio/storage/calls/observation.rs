@@ -1,7 +1,7 @@
 //! Explicit benchmark observations. Each CallsStore owns one instance; no process-wide counters.
 //!
 //! Relaxed atomics only count completed/attempted operations, never synchronize business state.
-//! Snapshots are taken after the case's durable barriers; concurrent snapshots are diagnostic only.
+//! Snapshots follow the case's processing/material barriers; concurrent snapshots are diagnostic only.
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -23,9 +23,6 @@ metrics! {
     JsonlSync => "jsonl_sync_data",
     RecentIndexSql => "sql_recent_index_read",
     RecentRead => "recent_performance_read",
-    WatermarkReadSql => "sql_thread_watermark_read",
-    ObserverWatermarkReadSql => "sql_observer_watermark_read",
-    WatermarkWriteSql => "sql_thread_watermark_write",
     BillingIdentitySql => "sql_billing_identity_read",
     LogIndexWriteSql => "sql_log_index_write",
     SummaryReadSql => "sql_summary_read",
@@ -43,7 +40,6 @@ metrics! {
     LogRecordEncode => "log_record_encode",
     ReceiptExtraction => "receipt_extraction",
     MaterializedRefresh => "materialized_refresh",
-    ObserverRefresh => "observer_refresh",
     ReadLockAcquire => "log_read_lock_acquire",
     ReadLockWaitNanos => "log_read_lock_wait_ns",
     WriteLockAcquire => "log_write_lock_acquire",
@@ -77,11 +73,6 @@ impl ObservationSnapshot {
     }
 }
 
-struct ObserverResult {
-    ticket: u64,
-    sequence: Result<u64, String>,
-}
-
 pub(crate) struct Observation {
     counters: [AtomicU64; Metric::Count as usize],
     queue_mutations: AtomicU64,
@@ -89,7 +80,6 @@ pub(crate) struct Observation {
     queue_age_max_nanos: AtomicU64,
     /// Observation only: a real recent read entered. It does not require a particular read backend.
     read_epochs: tokio::sync::watch::Sender<u64>,
-    observer_tickets: tokio::sync::watch::Sender<BTreeMap<String, ObserverResult>>,
 }
 
 impl Default for Observation {
@@ -100,7 +90,6 @@ impl Default for Observation {
             queue_bytes: AtomicU64::new(0),
             queue_age_max_nanos: AtomicU64::new(0),
             read_epochs: tokio::sync::watch::channel(0).0,
-            observer_tickets: tokio::sync::watch::channel(BTreeMap::new()).0,
         }
     }
 }
@@ -130,56 +119,6 @@ impl Observation {
 
     pub(crate) fn subscribe_reads(&self) -> tokio::sync::watch::Receiver<u64> {
         self.read_epochs.subscribe()
-    }
-
-    pub(crate) fn observer_refreshed(
-        &self,
-        thread_id: &str,
-        ticket: u64,
-        sequence: Result<u64, String>,
-    ) {
-        self.increment(Metric::ObserverRefresh);
-        self.observer_tickets.send_modify(|tickets| {
-            tickets.insert(thread_id.to_owned(), ObserverResult { ticket, sequence });
-        });
-    }
-
-    pub(crate) async fn wait_observers(
-        &self,
-        expected_sequences: &BTreeMap<String, u64>,
-        target: u64,
-    ) -> anyhow::Result<()> {
-        let mut tickets = self.observer_tickets.subscribe();
-        tokio::time::timeout(Duration::from_secs(30), async {
-            loop {
-                let complete = {
-                    let observed = tickets.borrow_and_update();
-                    let mut complete = true;
-                    for (id, expected) in expected_sequences {
-                        match observed.get(id) {
-                            Some(result) => {
-                                let sequence = result.sequence.as_ref().map_err(|error| {
-                                    anyhow::anyhow!(
-                                        "benchmark observer {id} watermark query failed: {error}"
-                                    )
-                                })?;
-                                complete &= result.ticket >= target && sequence >= expected;
-                            }
-                            None => complete = false,
-                        }
-                    }
-                    complete
-                };
-                if complete {
-                    return Ok(());
-                }
-                tickets.changed().await?;
-            }
-        })
-        .await
-        .map_err(|_| {
-            anyhow::anyhow!("benchmark observers did not settle at calls ticket {target}")
-        })?
     }
 
     pub(crate) fn queue(&self, mutations: usize, bytes: usize) {

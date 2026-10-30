@@ -217,7 +217,7 @@ mod tests {
         let connection = store.writer().await?;
         let db = &connection.db;
         let old = legacy_checkpoint()?;
-        checkpoint::write(db, &old, None).await?;
+        checkpoint::write(db, &old, None, None).await?;
         db.execute_unprepared("INSERT INTO session_costs VALUES('null','CNY',8.25);
             DELETE FROM seaql_migrations WHERE version='m20261027_000002_history_producer_payloads';").await?;
         // Unknown envelope extensions and exact numeric tokens survive known-field replacement.

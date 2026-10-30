@@ -497,7 +497,12 @@ impl HistoryStore {
         ensure!(write_seq > 0, "history write sequence must be positive");
         let write_seq = integer(write_seq)?;
         let tx = begin_write(&self.writer().await?.db).await?;
-        let current = applied_write_seq(&tx).await?;
+        let (current, prior_context) = if checkpoint.is_some() {
+            let head = checkpoint::read_commit_head(&tx).await?;
+            (head.applied_write_seq, head.context)
+        } else {
+            (applied_write_seq(&tx).await?, None)
+        };
         if write_seq <= current {
             if let Some((checkpoint, _)) = checkpoint {
                 checkpoint::verify_committed(&tx, checkpoint, current).await?;
@@ -623,7 +628,13 @@ impl HistoryStore {
             .await?;
         }
         if let Some((checkpoint, effect)) = checkpoint {
-            checkpoint::write(&tx, checkpoint, effect.context.as_ref()).await?;
+            checkpoint::write(
+                &tx,
+                checkpoint,
+                effect.context.as_ref(),
+                prior_context.as_ref(),
+            )
+            .await?;
             if let Some(accounting) = &accounting {
                 checkpoint::fold_costs(&tx, accounting.facts).await?;
             }

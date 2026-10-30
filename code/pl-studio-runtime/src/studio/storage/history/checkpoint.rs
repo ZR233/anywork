@@ -200,7 +200,8 @@ impl HistoryStore {
                     add_cost(&tx, None, &currency, amount).await?;
                 }
             }
-            write(&tx, &checkpoint, None).await?;
+            // read() proved that no checkpoint exists while this write transaction is held.
+            write(&tx, &checkpoint, None, None).await?;
             tx.execute_unprepared("UPDATE session_checkpoint SET legacy_cleanup=1 WHERE id=1")
                 .await?;
         }
@@ -339,10 +340,45 @@ pub(super) async fn write_representation(
     Ok(())
 }
 
+/// The transaction's singleton headers, shared by ordered history and context persistence.
+pub(super) struct CommitHead {
+    pub(super) applied_write_seq: i64,
+    pub(super) context: Option<ContextHead>,
+}
+
+pub(super) struct ContextHead {
+    revision: i64,
+    count: i64,
+}
+
+pub(super) async fn read_commit_head(db: &impl ConnectionTrait) -> Result<CommitHead> {
+    let row = db
+        .query_one_raw(statement(
+            "SELECT h.applied_write_seq,c.id AS checkpoint_id,c.context_revision,c.context_count
+             FROM history_meta h LEFT JOIN session_checkpoint c ON c.id=1 WHERE h.id=1",
+            vec![],
+        ))
+        .await?
+        .context("history metadata is missing")?;
+    let context = if row.try_get::<Option<i64>>("", "checkpoint_id")?.is_some() {
+        Some(ContextHead {
+            revision: row.try_get("", "context_revision")?,
+            count: row.try_get("", "context_count")?,
+        })
+    } else {
+        None
+    };
+    Ok(CommitHead {
+        applied_write_seq: row.try_get("", "applied_write_seq")?,
+        context,
+    })
+}
+
 pub(super) async fn write(
     tx: &impl ConnectionTrait,
     checkpoint: &ThreadCheckpoint,
     change: Option<&ContextChange>,
+    prior: Option<&ContextHead>,
 ) -> Result<()> {
     ensure!(
         checkpoint.is_materialized(),
@@ -353,18 +389,8 @@ pub(super) async fn write(
             && checkpoint.history_fence <= checkpoint.state_revision,
         "checkpoint revision is inconsistent"
     );
-    let prior = tx
-        .query_one_raw(statement(
-            "SELECT revision,context_revision,context_count FROM session_checkpoint WHERE id=1",
-            vec![],
-        ))
-        .await?;
     let records = &checkpoint.state.context.records;
-    let previous_count = prior
-        .as_ref()
-        .map(|row| row.try_get::<i64>("", "context_count"))
-        .transpose()?;
-    let append = match (prior.as_ref(), change) {
+    let append = match (prior, change) {
         (
             Some(row),
             Some(ContextChange::Append {
@@ -376,7 +402,7 @@ pub(super) async fn write(
                 *revision == checkpoint.state.context.revision,
                 "context append revision mismatch"
             );
-            let count = usize::try_from(row.try_get::<i64>("", "context_count")?)?;
+            let count = usize::try_from(row.count)?;
             ensure!(
                 count.checked_add(added.len()) == Some(records.len())
                     && records[count..] == **added,
@@ -386,9 +412,8 @@ pub(super) async fn write(
         }
         (Some(row), None) => {
             ensure!(
-                row.try_get::<i64>("", "context_revision")?
-                    == integer(checkpoint.state.context.revision)?
-                    && previous_count == Some(integer(records.len())?),
+                row.revision == integer(checkpoint.state.context.revision)?
+                    && row.count == integer(records.len())?,
                 "context changed without a mutation"
             );
             Some((records.len(), &[][..]))

@@ -69,6 +69,8 @@ pub(crate) struct ModelPerformanceOwner {
 /// 当前已发布的展示投影；查询路径只 clone，不推进。
 struct PublishedProjection {
     material_versions: Option<CallsMaterialVersions>,
+    /// Failed requested categories are cleared only by adopting those actually read materials.
+    failed_reads: StatisticsReadRequest,
     global: StudioModelPerformanceSnapshot,
     /// 费用发布水位独立于全局统计；跨缓存淘汰仍给每个 root 单调的展示版本。
     scoped_revision: u64,
@@ -82,6 +84,12 @@ struct PerformanceProjection {
     performance: Option<PerformanceMaterial>,
     session_costs: Option<Vec<StudioSessionCostSnapshot>>,
     versions: CallsMaterialVersions,
+}
+
+#[derive(Debug)]
+struct ProjectionReadFailure {
+    request: StatisticsReadRequest,
+    error: PureError,
 }
 
 struct PerformanceMaterial {
@@ -118,12 +126,12 @@ impl ScopedCostEntry {
         pending: bool,
         gap: bool,
         read_failed: bool,
-        cost: &Option<StudioSessionCostSnapshot>,
+        cost: Option<&StudioSessionCostSnapshot>,
     ) -> bool {
         self.statistics_pending != pending
             || self.statistics_gap != gap
             || self.read_failed != read_failed
-            || &self.cost != cost
+            || self.cost.as_ref() != cost
     }
 
     fn state(&self, root_thread_id: &str) -> StudioSessionCostsState {
@@ -253,6 +261,8 @@ impl ModelPerformanceOwner {
         product_events: ProductEventBus,
         owner_epoch: String,
     ) -> Self {
+        let global = StudioModelPerformanceSnapshot::default();
+        let statistics = StatisticsPublisher::new(owner_epoch, &global);
         Self {
             state: Arc::new(Mutex::new(ModelPerformanceState::default())),
             store,
@@ -267,12 +277,16 @@ impl ModelPerformanceOwner {
             project_lock: Arc::new(tokio::sync::Mutex::new(())),
             published: Arc::new(tokio::sync::Mutex::new(PublishedProjection {
                 material_versions: None,
-                global: StudioModelPerformanceSnapshot::default(),
+                failed_reads: StatisticsReadRequest {
+                    costs: false,
+                    performance: false,
+                },
+                global,
                 scoped_revision: 0,
                 scoped_updated_at: 0,
                 scoped: BTreeMap::new(),
             })),
-            statistics: StatisticsPublisher::new(owner_epoch),
+            statistics,
         }
     }
 
@@ -375,32 +389,46 @@ impl ModelPerformanceOwner {
         &self,
         projection: PerformanceProjection,
         flags: (bool, bool),
-    ) -> (StudioModelPerformanceSnapshot, Vec<StudioSessionCostsState>) {
+    ) -> (
+        Option<StudioModelPerformanceSnapshot>,
+        Vec<StudioSessionCostsState>,
+    ) {
         let mut events = Vec::new();
         let mut published = self.published.lock().await;
+        if projection.performance.is_some() {
+            published.failed_reads.performance = false;
+        }
+        if projection.session_costs.is_some() {
+            published.failed_reads.costs = false;
+        }
+        let read_failed = published.failed_reads.performance || published.failed_reads.costs;
         let flags_changed = (
             published.global.statistics_pending,
             published.global.statistics_gap,
             published.global.read_failed,
-        ) != (flags.0, flags.1, false);
-        let performance_changed = projection.performance.is_some();
+        ) != (flags.0, flags.1, read_failed);
+        let mut performance_changed = false;
         if let Some(material) = projection.performance {
-            published.global.summaries = material.summaries;
-            published.global.history = material.history;
+            if published.global.summaries.as_ref() != &material.summaries {
+                published.global.summaries = Arc::new(material.summaries);
+                performance_changed = true;
+            }
+            if published.global.history.as_ref() != &material.history {
+                published.global.history = Arc::new(material.history);
+                performance_changed = true;
+            }
         }
+        let global_changed =
+            published.material_versions.is_none() || performance_changed || flags_changed;
         let scoped_revision = published.scoped_revision.saturating_add(1);
-        published.global.revision = published.global.revision.saturating_add(1);
-        published.global.updated_at = unix_seconds();
-        published.global.statistics_pending = flags.0;
-        published.global.statistics_gap = flags.1;
-        published.global.read_failed = false;
-        published.material_versions = Some(projection.versions);
-        if performance_changed {
-            self.statistics.publish(&published.global);
-        } else {
-            self.statistics
-                .publish_status(published.global.revision, flags.0, flags.1, false);
+        if global_changed {
+            published.global.revision = published.global.revision.saturating_add(1);
+            published.global.updated_at = unix_seconds();
+            published.global.statistics_pending = flags.0;
+            published.global.statistics_gap = flags.1;
+            published.global.read_failed = read_failed;
         }
+        published.material_versions = Some(projection.versions);
         if let Some(fresh) = projection.session_costs {
             let mut seen = std::collections::BTreeSet::new();
             for cost in fresh {
@@ -415,39 +443,39 @@ impl ModelPerformanceOwner {
                             updated_at: 0,
                             statistics_pending: flags.0,
                             statistics_gap: flags.1,
-                            read_failed: false,
+                            read_failed,
                             cost: None,
                         });
-                if entry.differs(flags.0, flags.1, false, &Some(cost.clone())) {
+                if entry.differs(flags.0, flags.1, read_failed, Some(&cost)) {
                     entry.revision = scoped_revision;
                     entry.updated_at = unix_seconds();
                     entry.statistics_pending = flags.0;
                     entry.statistics_gap = flags.1;
-                    entry.read_failed = false;
+                    entry.read_failed = read_failed;
                     entry.cost = Some(cost);
                     events.push(entry.state(&root));
                 }
             }
             for (root, entry) in &mut published.scoped {
-                if !seen.contains(root) && entry.differs(flags.0, flags.1, false, &None) {
+                if !seen.contains(root) && entry.differs(flags.0, flags.1, read_failed, None) {
                     entry.cost = None;
                     entry.revision = scoped_revision;
                     entry.updated_at = unix_seconds();
                     entry.statistics_pending = flags.0;
                     entry.statistics_gap = flags.1;
-                    entry.read_failed = false;
+                    entry.read_failed = read_failed;
                     events.push(entry.state(root));
                 }
             }
             evict_cleared(&mut published.scoped);
         } else if flags_changed {
             for (root, entry) in &mut published.scoped {
-                if entry.differs(flags.0, flags.1, false, &entry.cost.clone()) {
+                if entry.differs(flags.0, flags.1, read_failed, entry.cost.as_ref()) {
                     entry.revision = scoped_revision;
                     entry.updated_at = unix_seconds();
                     entry.statistics_pending = flags.0;
                     entry.statistics_gap = flags.1;
-                    entry.read_failed = false;
+                    entry.read_failed = read_failed;
                     events.push(entry.state(root));
                 }
             }
@@ -456,7 +484,12 @@ impl ModelPerformanceOwner {
             published.scoped_revision = scoped_revision;
             published.scoped_updated_at = unix_seconds();
         }
-        (published.global.clone(), events)
+        let global = global_changed.then(|| published.global.clone());
+        drop(published);
+        if let Some(snapshot) = &global {
+            self.statistics.publish(snapshot);
+        }
+        (global, events)
     }
 
     /// 读失败时在同一次 `published` 锁内原子标记全局与各 root：保留最后可用数据，
@@ -465,28 +498,32 @@ impl ModelPerformanceOwner {
         &self,
         pending: bool,
         gap: bool,
-    ) -> (StudioModelPerformanceSnapshot, Vec<StudioSessionCostsState>) {
+        request: StatisticsReadRequest,
+    ) -> (
+        Option<StudioModelPerformanceSnapshot>,
+        Vec<StudioSessionCostsState>,
+    ) {
         let mut events = Vec::new();
         let global = {
             let mut published = self.published.lock().await;
+            published.failed_reads.performance |= request.performance;
+            published.failed_reads.costs |= request.costs;
             let flags_changed = (
                 published.global.statistics_pending,
                 published.global.statistics_gap,
                 published.global.read_failed,
             ) != (pending, gap, true);
+            if !flags_changed {
+                return (None, events);
+            }
             let scoped_revision = published.scoped_revision.saturating_add(1);
             published.global.revision = published.global.revision.saturating_add(1);
+            published.global.updated_at = unix_seconds();
             published.global.statistics_pending = pending;
             published.global.statistics_gap = gap;
             published.global.read_failed = true;
-            self.statistics.publish_status(
-                published.global.revision,
-                published.global.statistics_pending,
-                published.global.statistics_gap,
-                published.global.read_failed,
-            );
             for (root, entry) in published.scoped.iter_mut() {
-                if entry.differs(pending, gap, true, &entry.cost.clone()) {
+                if entry.differs(pending, gap, true, entry.cost.as_ref()) {
                     entry.revision = scoped_revision;
                     entry.updated_at = unix_seconds();
                     entry.statistics_pending = pending;
@@ -501,13 +538,14 @@ impl ModelPerformanceOwner {
             }
             published.global.clone()
         };
-        (global, events)
+        self.statistics.publish(&global);
+        (Some(global), events)
     }
 
     fn statistics_flags(&self) -> (bool, bool) {
         let calls = self.store.calls();
         (
-            calls.admitted_ticket() > calls.durable_ticket(),
+            calls.admitted_ticket() > calls.processed_ticket(),
             calls.statistics_gap(),
         )
     }
@@ -631,7 +669,7 @@ impl ModelPerformanceOwner {
         &self,
         force_costs: bool,
         force_performance: bool,
-    ) -> Result<PerformanceProjection, PureError> {
+    ) -> Result<PerformanceProjection, ProjectionReadFailure> {
         let calls = self.store.calls();
         let versions = calls.subscribe_materials().borrow().versions;
         let previous = self.published.lock().await.material_versions;
@@ -652,7 +690,13 @@ impl ModelPerformanceOwner {
             .calls()
             .observation()
             .increment(crate::studio::storage::calls::observation::Metric::MaterializedRefresh);
-        let read = calls.read_statistics(request).await.map_err(memory_error)?;
+        let read = calls
+            .read_statistics(request)
+            .await
+            .map_err(|error| ProjectionReadFailure {
+                request,
+                error: memory_error(error),
+            })?;
         let performance = match (read.history, read.summary) {
             (Some(history), Some(summary)) => Some(PerformanceMaterial {
                 summaries: summary_snapshots(&summary),
@@ -660,9 +704,10 @@ impl ModelPerformanceOwner {
             }),
             (None, None) => None,
             _ => {
-                return Err(PureError::MemoryError(
-                    "incomplete statistics material read".into(),
-                ));
+                return Err(ProjectionReadFailure {
+                    request,
+                    error: PureError::MemoryError("incomplete statistics material read".into()),
+                });
             }
         };
         let session_costs = read.costs.map(|costs| {
@@ -802,16 +847,20 @@ impl ModelPerformanceOwner {
             Ok(projection) => {
                 let flags = self.statistics_flags();
                 let (global, scoped_events) = self.commit_projection(projection, flags).await;
-                let _ = self.product_events.emit_model_performance_state(global);
+                if let Some(global) = global {
+                    let _ = self.product_events.emit_model_performance_state(global);
+                }
                 for state in scoped_events {
                     self.product_events.emit_session_costs(state);
                 }
             }
-            Err(error) => {
+            Err(ProjectionReadFailure { error, request }) => {
                 tracing::warn!(error = %error, "model performance projection read failed");
                 let (pending, gap) = self.statistics_flags();
-                let (global, scoped_events) = self.commit_read_failure(pending, gap).await;
-                let _ = self.product_events.emit_model_performance_state(global);
+                let (global, scoped_events) = self.commit_read_failure(pending, gap, request).await;
+                if let Some(global) = global {
+                    let _ = self.product_events.emit_model_performance_state(global);
+                }
                 for state in scoped_events {
                     self.product_events.emit_session_costs(state);
                 }
@@ -869,38 +918,32 @@ fn purpose_cost_snapshot(rollup: &PurposeCostRollup) -> crate::StudioPurposeCost
 /// 把 (account_id, model_id, effort) 的数据库分组折叠为唯一顶层 (account, model) 汇总。
 ///
 /// 同一账号模型在不同推理强度下的样本先在该组内累加得到顶层指标，再以
-/// `effort_breakdowns` 提供二级细分；显示名取组内最新的非空展示值，不参与身份。
+/// `effort_breakdowns` 提供二级细分。调用库已按 account/model/effort 排序，沿相邻身份
+/// 折叠即可；显示名保留该有序输入中首个非空值（SQL 已在 effort 内取 MAX），不参与身份。
 fn summary_snapshots(rows: &[PerformanceSummaryRow]) -> Vec<StudioModelPerformanceSummary> {
-    let mut groups: Vec<(String, String, StudioModelPerformanceSummary)> = Vec::new();
+    let mut groups: Vec<StudioModelPerformanceSummary> = Vec::new();
     for row in rows {
-        let existing = groups
-            .iter()
-            .position(|(account, model, _)| account == &row.account_id && model == &row.model_id);
-        let index = match existing {
-            Some(index) => index,
-            None => {
-                groups.push((
-                    row.account_id.clone(),
-                    row.model_id.clone(),
-                    StudioModelPerformanceSummary {
-                        account_id: row.account_id.clone(),
-                        account_display_name: row.account_display_name.clone(),
-                        model_id: row.model_id.clone(),
-                        sample_count: 0,
-                        completion_tokens: 0,
-                        total_ttft_millis: 0,
-                        ttft_sample_count: 0,
-                        total_response_millis: 0,
-                        tokens_per_second: 0.0,
-                        average_ttft_millis: None,
-                        average_response_millis: 0.0,
-                        effort_breakdowns: Vec::new(),
-                    },
-                ));
-                groups.len() - 1
-            }
-        };
-        let summary = &mut groups[index].2;
+        if groups.last().is_none_or(|summary| {
+            summary.account_id != row.account_id || summary.model_id != row.model_id
+        }) {
+            groups.push(StudioModelPerformanceSummary {
+                account_id: row.account_id.clone(),
+                account_display_name: row.account_display_name.clone(),
+                model_id: row.model_id.clone(),
+                sample_count: 0,
+                completion_tokens: 0,
+                total_ttft_millis: 0,
+                ttft_sample_count: 0,
+                total_response_millis: 0,
+                tokens_per_second: 0.0,
+                average_ttft_millis: None,
+                average_response_millis: 0.0,
+                effort_breakdowns: Vec::new(),
+            });
+        }
+        let summary = groups
+            .last_mut()
+            .expect("group created for the current row");
         if summary.account_display_name.is_empty() && !row.account_display_name.is_empty() {
             summary.account_display_name = row.account_display_name.clone();
         }
@@ -933,7 +976,7 @@ fn summary_snapshots(rows: &[PerformanceSummaryRow]) -> Vec<StudioModelPerforman
     }
     groups
         .into_iter()
-        .map(|(_, _, mut summary)| {
+        .map(|mut summary| {
             let samples = summary.sample_count as f64;
             summary.tokens_per_second =
                 throughput(summary.completion_tokens, summary.total_response_millis);
@@ -1058,5 +1101,253 @@ fn call_retention(retention: BillingRetention) -> CallRetention {
     match retention {
         BillingRetention::Turn => CallRetention::Turn,
         BillingRetention::Internal => CallRetention::Internal,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::studio::agent_host::ThreadWriteBehindWriter;
+
+    fn summary_row(account: &str, model: &str, effort: Option<&str>) -> PerformanceSummaryRow {
+        PerformanceSummaryRow {
+            account_id: account.into(),
+            account_display_name: "Shared label".into(),
+            model_id: model.into(),
+            effort: effort.map(str::to_owned),
+            sample_count: 1,
+            completion_tokens: 20,
+            total_ttft_millis: 0,
+            ttft_sample_count: 1,
+            total_response_millis: 100,
+        }
+    }
+
+    #[test]
+    fn sorted_summary_groups_preserve_identity_order_and_weighted_metrics() {
+        let mut unknown_effort = summary_row("account-a", "model-a", None);
+        unknown_effort.account_display_name.clear();
+        let mut high = summary_row("account-a", "model-a", Some("high"));
+        high.completion_tokens = 4;
+        high.total_response_millis = 900;
+        high.ttft_sample_count = 0;
+        let rows = [
+            unknown_effort,
+            high,
+            summary_row("account-a", "model-b", Some("low")),
+            summary_row("account-b", "model-a", None),
+        ];
+        let summaries = summary_snapshots(&rows);
+        assert_eq!(
+            summaries
+                .iter()
+                .map(|row| (row.account_id.as_str(), row.model_id.as_str()))
+                .collect::<Vec<_>>(),
+            [
+                ("account-a", "model-a"),
+                ("account-a", "model-b"),
+                ("account-b", "model-a")
+            ]
+        );
+        let first = &summaries[0];
+        assert_eq!(first.account_display_name, "Shared label");
+        assert_eq!(first.sample_count, 2);
+        assert_eq!(first.completion_tokens, 24);
+        assert_eq!(first.tokens_per_second, 24.0);
+        assert_eq!(first.average_response_millis, 500.0);
+        assert_eq!(first.ttft_sample_count, 1);
+        assert_eq!(first.average_ttft_millis, Some(0.0));
+        assert_eq!(
+            first
+                .effort_breakdowns
+                .iter()
+                .map(|row| row.effort.as_deref())
+                .collect::<Vec<_>>(),
+            [None, Some("high")]
+        );
+        assert_eq!(first.effort_breakdowns[1].average_ttft_millis, None);
+        assert!(summary_snapshots(&[]).is_empty());
+    }
+
+    #[tokio::test]
+    async fn owner_shares_frozen_material_and_only_publishes_visible_changes() -> anyhow::Result<()>
+    {
+        let temp = tempfile::tempdir()?;
+        let store = StudioStore::open(temp.path().join("studio/v2/studio.sqlite")).await?;
+        let writer = ThreadWriteBehindWriter::new(store.clone());
+        let events = ProductEventBus::new(store.clone(), writer.clone());
+        let owner = ModelPerformanceOwner::new(store.clone(), events, "shared-material".into());
+        let summaries = summary_snapshots(&[summary_row("account", "model", None)]);
+        let projection = || PerformanceProjection {
+            performance: Some(PerformanceMaterial {
+                summaries: summaries.clone(),
+                history: Vec::new(),
+            }),
+            session_costs: None,
+            versions: CallsMaterialVersions::default(),
+        };
+        let (initial, scoped) = owner.commit_projection(projection(), (false, false)).await;
+        let initial = initial.expect("first projection must publish");
+        assert!(scoped.is_empty());
+        let feed = owner.subscribe_statistics();
+        let first = feed.next().await?.expect("first publication");
+        let scope = feed.open_scope(&first.owner_epoch, &first.feed_id, first.delivery_sequence)?;
+        feed.acknowledge(first.delivery_sequence)?;
+
+        let (unchanged, scoped) = owner.commit_projection(projection(), (false, false)).await;
+        assert!(unchanged.is_none());
+        assert!(scoped.is_empty());
+        assert_eq!(owner.snapshot().await, initial);
+
+        let mut costs = projection();
+        costs.performance = None;
+        costs.versions.costs = 1;
+        costs.session_costs = Some(vec![StudioSessionCostSnapshot {
+            root_thread_id: "root".into(),
+            purpose_costs: Vec::new(),
+            estimated_costs: Vec::new(),
+            has_unpriced_usage: true,
+        }]);
+        let (global, scoped) = owner.commit_projection(costs, (false, false)).await;
+        assert!(
+            global.is_none(),
+            "cost-only changes do not republish global history"
+        );
+        assert_eq!(scoped.len(), 1);
+        assert!(scoped[0].cost.is_some());
+
+        let (pending, _) = owner.commit_projection(projection(), (true, false)).await;
+        let pending = pending.expect("pending flag changes are public");
+        assert!(Arc::ptr_eq(&initial.summaries, &pending.summaries));
+        assert!(Arc::ptr_eq(&initial.history, &pending.history));
+        let next = feed.next().await?.expect("status publication");
+        assert_eq!(next.summaries_revision, first.summaries_revision);
+        assert_eq!(next.history_revision, first.history_revision);
+        assert!(next.publication_revision > first.publication_revision);
+        feed.acknowledge(next.delivery_sequence)?;
+
+        let failed_request = StatisticsReadRequest {
+            performance: true,
+            costs: true,
+        };
+        let (failed, _) = owner.commit_read_failure(true, true, failed_request).await;
+        let failed = failed.expect("failure must publish");
+        assert!(failed.read_failed);
+        assert!(Arc::ptr_eq(&initial.summaries, &failed.summaries));
+        let (duplicate_failure, scoped) =
+            owner.commit_read_failure(true, true, failed_request).await;
+        assert!(duplicate_failure.is_none());
+        assert!(scoped.is_empty());
+        let failed_header = feed.next().await?.expect("failure publication");
+        feed.acknowledge(failed_header.delivery_sequence)?;
+        let (partial, _) = owner.commit_projection(projection(), (false, true)).await;
+        assert!(
+            partial.expect("pending changed").read_failed,
+            "performance success must not clear the cost-read failure"
+        );
+        let costs_read = owner
+            .read_projection(true, false)
+            .await
+            .expect("actual cost read succeeds");
+        assert!(costs_read.performance.is_none());
+        let (recovered, scoped) = owner.commit_projection(costs_read, (false, true)).await;
+        let recovered = recovered.expect("actual read recovery must publish");
+        assert!(!recovered.read_failed);
+        assert!(
+            recovered.statistics_gap,
+            "recovery does not clear a real gap"
+        );
+
+        assert_eq!(scoped.len(), 1);
+        assert!(
+            scoped[0].cost.is_none(),
+            "directory removal must publish a clear"
+        );
+
+        let mut candidate = initial.clone();
+        Arc::make_mut(&mut candidate.summaries).clear();
+        assert_eq!(owner.snapshot().await.summaries.len(), 1);
+        assert_eq!(scope.read_summaries(0, 128)?.items.len(), 1);
+        let encoded = serde_json::to_value(&recovered)?;
+        assert!(encoded["summaries"].is_array());
+        assert!(encoded["history"].is_array());
+        assert_eq!(
+            serde_json::from_value::<StudioModelPerformanceSnapshot>(encoded)?,
+            recovered
+        );
+        scope.close().await?;
+        feed.close().await?;
+        owner.close().await?;
+        writer.shutdown().await?;
+        store.close().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn forced_equal_read_does_not_emit_another_http_event() -> anyhow::Result<()> {
+        let temp = tempfile::tempdir()?;
+        let store = StudioStore::open(temp.path().join("studio/v2/studio.sqlite")).await?;
+        let writer = ThreadWriteBehindWriter::new(store.clone());
+        let events = ProductEventBus::new(store.clone(), writer.clone());
+        let mut receiver = events.subscribe_topic(&crate::StudioProductTopic::ModelPerformance);
+        let owner = ModelPerformanceOwner::new(store.clone(), events, "http-no-change".into());
+        owner.initialize_projection().await;
+        let crate::StudioProductEventKind::ModelPerformanceStateChanged(initial) =
+            receiver.try_recv()?.kind
+        else {
+            panic!("expected global model-performance event");
+        };
+        assert!(Arc::ptr_eq(
+            &initial.summaries,
+            &owner.snapshot().await.summaries
+        ));
+        owner.initialize_projection().await; // still forces the real SQLite read
+        assert!(matches!(
+            receiver.try_recv(),
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+        ));
+        assert_eq!(owner.snapshot().await.revision, initial.revision);
+        owner.close().await?;
+        writer.shutdown().await?;
+        store.close().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn no_read_wakeup_preserves_a_real_same_version_read_failure() -> anyhow::Result<()> {
+        let temp = tempfile::tempdir()?;
+        let store = StudioStore::open(temp.path().join("studio/v2/studio.sqlite")).await?;
+        let writer = ThreadWriteBehindWriter::new(store.clone());
+        let events = ProductEventBus::new(store.clone(), writer.clone());
+        let owner = ModelPerformanceOwner::new(store.clone(), events, "read-failure".into());
+        // Use the production forced-read path without starting the background observer.
+        owner.publish_locked_projection(true, true).await;
+        let initial = owner.snapshot().await;
+        assert!(!initial.read_failed);
+        store.calls().close().await?;
+        owner.publish_locked_projection(true, true).await;
+        let failed = owner.snapshot().await;
+        assert!(failed.read_failed);
+        assert!(Arc::ptr_eq(&initial.history, &failed.history));
+
+        // The DB is still actually closed. A status-only wake uses the no-SQL path and may
+        // publish pending, but cannot assert that a material read recovered.
+        let cached = owner
+            .read_projection(false, false)
+            .await
+            .expect("unchanged material must not query the closed DB");
+        assert!(cached.performance.is_none());
+        assert!(cached.session_costs.is_none());
+        let (pending, _) = owner.commit_projection(cached, (true, false)).await;
+        let pending = pending.expect("pending status changes");
+        assert!(pending.statistics_pending);
+        assert!(pending.read_failed);
+        assert!(Arc::ptr_eq(&failed.history, &pending.history));
+        owner.publish_locked_projection(false, false).await;
+        assert!(owner.snapshot().await.read_failed);
+        owner.close().await?;
+        writer.shutdown().await?;
+        store.close().await?;
+        Ok(())
     }
 }

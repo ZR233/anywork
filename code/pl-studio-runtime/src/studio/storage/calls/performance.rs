@@ -30,6 +30,18 @@ pub(super) struct PerformanceSample {
 
 /// 从轻量日志记录构造性能样本；旧统计口径的记录只保留为原始调用日志。
 pub(super) fn sample_from_record(record: &CallLogRecord) -> Option<PerformanceSample> {
+    sample_with_validity(record, record.throughput_sample().is_some())
+}
+
+/// Live writes consume a bound preparation fact, not a deserialized UsageStatus as proof.
+pub(super) fn sample_from_prepared(record: &PreparedRecord) -> Option<PerformanceSample> {
+    sample_with_validity(record, record.throughput_valid)
+}
+
+fn sample_with_validity(
+    record: &CallLogRecord,
+    throughput_valid: bool,
+) -> Option<PerformanceSample> {
     if !record.is_current_throughput_epoch() {
         return None;
     }
@@ -45,7 +57,7 @@ pub(super) fn sample_from_record(record: &CallLogRecord) -> Option<PerformanceSa
         first_output_source: timing.map_or(pl_protocol::FirstOutputSource::Unobserved, |timing| {
             timing.first_output_source
         }),
-        throughput_valid: record.throughput_sample().is_some(),
+        throughput_valid,
         completed_at: record.recorded_at,
         account_id: record.account_id.clone(),
         account_display_name: record.account_display_name.clone(),
@@ -445,6 +457,7 @@ INSERT INTO performance_samples VALUES
     #[test]
     fn only_current_epoch_records_enter_the_performance_projection() {
         let mut record = CallLogRecord {
+            version: event::CALL_LOG_RECORD_VERSION,
             status: "committed".to_owned(),
             usage_status: Some(pl_core::usage::UsageStatus::Partial),
             usage: Some(event::CallUsageRecord {
@@ -494,6 +507,7 @@ INSERT INTO performance_samples VALUES
     #[test]
     fn invalid_cache_report_is_visible_but_not_a_throughput_pair() {
         let record = CallLogRecord {
+            version: event::CALL_LOG_RECORD_VERSION,
             status: "committed".into(),
             throughput_epoch: event::THROUGHPUT_EPOCH,
             usage_status: Some(pl_core::usage::UsageStatus::Invalid),
@@ -525,6 +539,46 @@ INSERT INTO performance_samples VALUES
             "an unknown numerator is not an explicit zero"
         );
         assert!(!sample.throughput_valid);
+    }
+
+    #[test]
+    fn restored_samples_validate_raw_status_pairs_and_version_boundaries() {
+        use pl_core::usage::UsageStatus;
+
+        let mut record = CallLogRecord {
+            version: event::CALL_LOG_RECORD_VERSION,
+            status: "committed".into(),
+            throughput_epoch: event::THROUGHPUT_EPOCH,
+            usage_status: Some(UsageStatus::Reported),
+            usage: Some(event::CallUsageRecord {
+                input_tokens: Some(10),
+                output_tokens: Some(20),
+                cache_read_tokens: Some(0),
+                ..Default::default()
+            }),
+            timing: Some(event::CallTimingRecord {
+                response_millis: Some(100),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert!(sample_from_record(&record).unwrap().throughput_valid);
+        for status in [
+            UsageStatus::Invalid,
+            UsageStatus::LegacyUnknown,
+            UsageStatus::Partial,
+        ] {
+            record.usage_status = Some(status);
+            assert!(!sample_from_record(&record).unwrap().throughput_valid);
+        }
+        record.usage_status = Some(UsageStatus::Reported);
+        record.usage.as_mut().unwrap().cache_read_tokens = Some(11);
+        assert!(!sample_from_record(&record).unwrap().throughput_valid);
+        record.usage.as_mut().unwrap().cache_read_tokens = Some(0);
+        record.version += 1;
+        assert!(!sample_from_record(&record).unwrap().throughput_valid);
+        record.version = event::CALL_LOG_RECORD_VERSION - 1;
+        assert!(!sample_from_record(&record).unwrap().throughput_valid);
     }
 
     #[tokio::test]

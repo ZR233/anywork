@@ -15452,8 +15452,6 @@ impl SseDecode for crate::api::studio::types::response::BridgeThreadPersistenceS
         let mut var_stateDurableRevision = <Option<u64>>::sse_decode(deserializer);
         let mut var_historyAdmittedSequence = <Option<u64>>::sse_decode(deserializer);
         let mut var_historyDurableSequence = <Option<u64>>::sse_decode(deserializer);
-        let mut var_callsAdmittedSequence = <Option<u64>>::sse_decode(deserializer);
-        let mut var_callsDurableSequence = <Option<u64>>::sse_decode(deserializer);
         let mut var_pendingOperations = <u64>::sse_decode(deserializer);
         let mut var_pendingBytes = <u64>::sse_decode(deserializer);
         let mut var_oldestPendingAgeMillis = <Option<u64>>::sse_decode(deserializer);
@@ -15469,8 +15467,6 @@ impl SseDecode for crate::api::studio::types::response::BridgeThreadPersistenceS
             state_durable_revision: var_stateDurableRevision,
             history_admitted_sequence: var_historyAdmittedSequence,
             history_durable_sequence: var_historyDurableSequence,
-            calls_admitted_sequence: var_callsAdmittedSequence,
-            calls_durable_sequence: var_callsDurableSequence,
             pending_operations: var_pendingOperations,
             pending_bytes: var_pendingBytes,
             oldest_pending_age_millis: var_oldestPendingAgeMillis,
@@ -32014,8 +32010,6 @@ impl flutter_rust_bridge::IntoDart
             self.state_durable_revision.into_into_dart().into_dart(),
             self.history_admitted_sequence.into_into_dart().into_dart(),
             self.history_durable_sequence.into_into_dart().into_dart(),
-            self.calls_admitted_sequence.into_into_dart().into_dart(),
-            self.calls_durable_sequence.into_into_dart().into_dart(),
             self.pending_operations.into_into_dart().into_dart(),
             self.pending_bytes.into_into_dart().into_dart(),
             self.oldest_pending_age_millis.into_into_dart().into_dart(),
@@ -43197,8 +43191,6 @@ impl SseEncode for crate::api::studio::types::response::BridgeThreadPersistenceS
         <Option<u64>>::sse_encode(self.state_durable_revision, serializer);
         <Option<u64>>::sse_encode(self.history_admitted_sequence, serializer);
         <Option<u64>>::sse_encode(self.history_durable_sequence, serializer);
-        <Option<u64>>::sse_encode(self.calls_admitted_sequence, serializer);
-        <Option<u64>>::sse_encode(self.calls_durable_sequence, serializer);
         <u64>::sse_encode(self.pending_operations, serializer);
         <u64>::sse_encode(self.pending_bytes, serializer);
         <Option<u64>>::sse_encode(self.oldest_pending_age_millis, serializer);

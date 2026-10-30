@@ -26,6 +26,42 @@ const BLOCKING_THREADS: usize = 4;
 const NOISE_THRESHOLD: f64 = 0.05;
 const CONFIDENCE_LEVEL: f64 = 0.95;
 
+#[derive(Clone, Copy)]
+struct RunProfile {
+    name: &'static str,
+    warmup: Duration,
+    measurement: Duration,
+    samples: usize,
+    distribution_operations: usize,
+}
+
+impl RunProfile {
+    fn read() -> Result<Self> {
+        let name = match std::env::var("PL_STATISTICS_BENCH_PROFILE") {
+            Ok(name) => name,
+            Err(std::env::VarError::NotPresent) => "standard".to_owned(),
+            Err(error) => return Err(error).context("read statistics benchmark profile"),
+        };
+        match name.as_str() {
+            "standard" => Ok(Self {
+                name: "standard",
+                warmup: Duration::from_secs(WARMUP_SECONDS),
+                measurement: Duration::from_secs(MEASUREMENT_SECONDS),
+                samples: CRITERION_SAMPLES,
+                distribution_operations: DISTRIBUTION_OPERATIONS,
+            }),
+            "diagnostic" => Ok(Self {
+                name: "diagnostic",
+                warmup: Duration::from_millis(250),
+                measurement: Duration::from_millis(500),
+                samples: 10,
+                distribution_operations: 4,
+            }),
+            _ => bail!("unknown statistics benchmark profile: {name}"),
+        }
+    }
+}
+
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct RunMetadata {
@@ -132,7 +168,12 @@ fn measure_one(
     }
 }
 
-fn execute(runtime: &Runtime, scratch: &Path, artifacts: &mut Artifacts) -> Result<()> {
+fn execute(
+    runtime: &Runtime,
+    scratch: &Path,
+    artifacts: &mut Artifacts,
+    profile: RunProfile,
+) -> Result<()> {
     ensure!(
         !std::env::args().any(|arg| arg == "--test"
             || arg == "--profile-time"
@@ -143,9 +184,9 @@ fn execute(runtime: &Runtime, scratch: &Path, artifacts: &mut Artifacts) -> Resu
     // settings are applied last, so CLI cannot silently change the comparison contract.
     let mut criterion = Criterion::default()
         .configure_from_args()
-        .warm_up_time(Duration::from_secs(WARMUP_SECONDS))
-        .measurement_time(Duration::from_secs(MEASUREMENT_SECONDS))
-        .sample_size(CRITERION_SAMPLES)
+        .warm_up_time(profile.warmup)
+        .measurement_time(profile.measurement)
+        .sample_size(profile.samples)
         .nresamples(BOOTSTRAP_RESAMPLES)
         .noise_threshold(NOISE_THRESHOLD)
         .confidence_level(CONFIDENCE_LEVEL);
@@ -192,7 +233,7 @@ fn execute(runtime: &Runtime, scratch: &Path, artifacts: &mut Artifacts) -> Resu
             // Separate fixed-size pass after Criterion warmup/measurement. Every raw duration is
             // an actual operation; no Criterion per-batch mean enters the p50/p95 calculation.
             let mut durations = BTreeMap::<(String, usize), Vec<u64>>::new();
-            for index in 0..DISTRIBUTION_OPERATIONS {
+            for index in 0..profile.distribution_operations {
                 let result = measure_one(runtime, &case, &mut reusable, scratch)?;
                 for sample in &result.samples {
                     durations
@@ -241,6 +282,7 @@ fn execute(runtime: &Runtime, scratch: &Path, artifacts: &mut Artifacts) -> Resu
 }
 
 fn run() -> Result<()> {
+    let profile = RunProfile::read()?;
     let scratch = required_directory("PL_STATISTICS_BENCH_SCRATCH_ROOT")?;
     let artifact_root = required_directory("PL_STATISTICS_BENCH_ARTIFACTS_DIR")?;
     let metadata = RunMetadata::read()?;
@@ -261,9 +303,11 @@ fn run() -> Result<()> {
         "seed": SEED, "tokioWorkerThreads": TOKIO_WORKER_THREADS, "blockingThreads": BLOCKING_THREADS,
         "os": std::env::consts::OS, "architecture": std::env::consts::ARCH,
         "availableParallelism": std::thread::available_parallelism()?.get(),
-        "warmupSeconds": WARMUP_SECONDS, "measurementSeconds": MEASUREMENT_SECONDS,
-        "criterionSampleSize": CRITERION_SAMPLES, "bootstrapResamples": BOOTSTRAP_RESAMPLES,
-        "distributionOperations": DISTRIBUTION_OPERATIONS,
+        "profile": profile.name,
+        "warmupSeconds": profile.warmup.as_secs_f64(),
+        "measurementSeconds": profile.measurement.as_secs_f64(),
+        "criterionSampleSize": profile.samples, "bootstrapResamples": BOOTSTRAP_RESAMPLES,
+        "distributionOperations": profile.distribution_operations,
         "noiseThreshold": NOISE_THRESHOLD, "confidenceLevel": CONFIDENCE_LEVEL,
         "sqlite": {"journal": "WAL", "synchronous": "FULL", "callsConnections": 2},
         "jsonlDurability": "production durability policy, not overridden; actual flush/sync counts recorded",
@@ -276,7 +320,7 @@ fn run() -> Result<()> {
     artifacts.flush()?;
     eprintln!("statistics raw samples: {}", artifacts.path.display());
     let outcome = catch_unwind(AssertUnwindSafe(|| {
-        execute(&runtime, run.path(), &mut artifacts)
+        execute(&runtime, run.path(), &mut artifacts, profile)
     }));
     // No fixture directory can be deleted while a panic-abandoned task is still running.
     drop(runtime);

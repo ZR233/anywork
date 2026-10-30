@@ -3873,7 +3873,7 @@ fn finish_shared_history_drive<T>(drive: Result<T>, cleanup: Result<()>) -> Resu
 }
 
 /// All Studio-owned database families reject unknown future formats and migration names before
-/// a writer changes the SQLite file. This also covers takeover of a current pre-framework file.
+/// a writer changes the SQLite file. This also covers takeover of a pre-framework file.
 #[tokio::test]
 async fn studio_databases_adopt_current_files_and_refuse_future_writes() -> Result<()> {
     use crate::studio::{StudioStore, paths::StudioPaths, storage::calls::CallsStore};
@@ -3905,6 +3905,15 @@ async fn studio_databases_adopt_current_files_and_refuse_future_writes() -> Resu
                 }
                 if generation == 0 {
                     let db = raw_database(&path).await?;
+                    if family == "calls" {
+                        // v9 exists only with migration bookkeeping. Model the published v8
+                        // pre-framework shape instead of treating lost v9 bookkeeping as legacy.
+                        db.execute_unprepared(
+                            "ALTER TABLE legacy_call_fences RENAME TO call_watermarks;
+                             UPDATE calls_meta SET schema_version=8 WHERE id=1;",
+                        )
+                        .await?;
+                    }
                     db.execute_unprepared("DROP TABLE seaql_migrations").await?;
                     db.close().await?;
                 }
