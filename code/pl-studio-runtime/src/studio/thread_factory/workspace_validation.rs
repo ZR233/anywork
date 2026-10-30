@@ -6,7 +6,7 @@ use crate::{
         WorktreeHandle, WorktreeManager,
     },
     studio::{
-        WorkspaceRecord, ThreadRecord,
+        ThreadRecord, WorkspaceRecord,
         agent_host::worktree_lease::{
             WorkspaceEndpoint, WorkspaceIdentity, WorkspaceUsageLease, WorktreeLease,
             WorktreeLeaseState,
@@ -112,6 +112,9 @@ impl std::fmt::Debug for VerifiedLocalResume {
 }
 
 impl VerifiedLocalResume {
+    pub(super) async fn confirm_admission(&self) -> Result<(), ReviewWorkspaceError> {
+        self.check.confirm().await
+    }
     pub(super) fn identity(&self) -> WorkspaceIdentity {
         self.identity.clone()
     }
@@ -196,6 +199,13 @@ impl ReviewWorkspaceCheck {
         &self.target
     }
     pub(crate) async fn confirm(&self) -> Result<(), ReviewWorkspaceError> {
+        let target = self.factory.thread_record(&self.target).await?;
+        self.factory
+            .services
+            .store
+            .ensure_archive_execution_allowed(&target.workspace_id, Some(&self.target))
+            .await
+            .map_err(|error| super::errors::resource_error("review archive admission", error))?;
         self.recheck()?;
         if let Some(binding) = &self.binding {
             super::tool_bindings::ensure_frozen_ssh_profile(
@@ -361,6 +371,13 @@ impl StudioThreadFactory {
         };
         check.recheck()?;
         let target = self.thread_record(id).await?;
+        self.services
+            .store
+            .ensure_archive_execution_allowed(&target.workspace_id, Some(id))
+            .await
+            .map_err(|error| {
+                super::errors::resource_error("review target archive admission", error)
+            })?;
         self.services
             .store
             .ensure_agent_execution_allowed(id)

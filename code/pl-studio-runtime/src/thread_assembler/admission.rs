@@ -19,6 +19,9 @@ impl AgentServices {
         self.store.ensure_agent_execution_allowed(id).await?;
         let snapshot = thread.snapshot();
         let record = self.record(id).await?;
+        self.store
+            .ensure_archive_execution_allowed(&record.workspace_id, Some(id))
+            .await?;
         self.recovery.ensure_thread_read_access(&record)?;
         let resources = match workspace {
             WorkspaceAdmission::Explicit => {
@@ -103,6 +106,9 @@ impl AgentServices {
         if let WorkspaceAdmission::VerifiedReview(proof) = workspace {
             proof.confirm().await?;
         }
+        self.store
+            .ensure_archive_execution_allowed(&record.workspace_id, Some(id))
+            .await?;
         Ok(())
     }
 }

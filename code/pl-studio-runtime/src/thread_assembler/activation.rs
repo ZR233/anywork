@@ -229,9 +229,20 @@ impl StudioThreadAssembler {
                 })
                 .catch_unwind()
                 .await;
-                let outcome = operation.unwrap_or(Err(ThreadAssemblyError::ActivationPanicked));
-                publication.send_replace(Some(outcome.map_err(Arc::new)));
+                let panicked = operation.is_err();
+                let mut outcome = operation.unwrap_or(Err(ThreadAssemblyError::ActivationPanicked));
                 drop(reservation);
+                if !panicked
+                    && outcome.is_err()
+                    && let Err(cleanup) = owner.settle_failed_activation(&identity.id).await
+                {
+                    outcome = Err(ThreadAssemblyError::Cleanup {
+                        id: identity.id.clone(),
+                        setup: Box::new(outcome.err().unwrap()),
+                        cleanup: Box::new(cleanup),
+                    });
+                }
+                publication.send_replace(Some(outcome.map_err(Arc::new)));
             });
             return await_result(result).await;
         }

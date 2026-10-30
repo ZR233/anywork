@@ -19,11 +19,30 @@ pub(crate) struct AgentOperationSeal {
 pub(crate) struct ArchiveScopeSeal {
     admission: AgentOperationSeal,
     members: Vec<(usize, String)>,
+    identities: Vec<(String, Option<String>, String)>,
+    private_ids: Vec<String>,
 }
 
 impl ArchiveScopeSeal {
     pub(crate) fn thread_ids(&self) -> Vec<String> {
         self.members.iter().map(|(_, id)| id.clone()).collect()
+    }
+    pub(crate) fn preparation_identities(
+        &self,
+        workspace_id: &str,
+    ) -> Vec<crate::studio::store::thread_preparation::PreparationIdentity> {
+        self.identities
+            .iter()
+            .filter(|(id, _, _)| self.private_ids.contains(id))
+            .map(|(thread_id, parent_id, root_id)| {
+                crate::studio::store::thread_preparation::PreparationIdentity {
+                    thread_id: thread_id.clone(),
+                    workspace_id: workspace_id.into(),
+                    parent_id: parent_id.clone(),
+                    root_id: root_id.clone(),
+                }
+            })
+            .collect()
     }
 }
 
@@ -116,6 +135,46 @@ impl StudioThreadAssembler {
                 }
             }
             let ids = depths.keys().cloned().collect::<Vec<_>>();
+            let private_ids = ids
+                .iter()
+                .filter(|id| {
+                    state.creating.contains_key(*id)
+                        || state.preparing_children.contains_key(*id)
+                        || state.unpublished_children.contains_key(*id)
+                })
+                .cloned()
+                .collect();
+            let mut identities = Vec::new();
+            for id in &ids {
+                let mut root = id;
+                while !roots.contains(root) {
+                    root = parents
+                        .get(root)
+                        .and_then(Option::as_ref)
+                        .ok_or_else(|| ThreadAssemblyError::Identity(id.clone()))?;
+                }
+                identities.push((id.clone(), parents.get(id).cloned().flatten(), root.clone()));
+            }
+            for id in &ids {
+                if let Some(pending) = state.unpublished_children.get(id)
+                    && *pending
+                        .retirement
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        == Some(WorkspaceRelease::Cleanup)
+                {
+                    return Err(ThreadAssemblyError::Preparing(id.clone()));
+                }
+            }
+            for id in &ids {
+                if let Some(pending) = state.unpublished_children.get(id) {
+                    *pending
+                        .retirement
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                        Some(WorkspaceRelease::Preserve);
+                }
+            }
             let cancellation = state
                 .creating
                 .iter()
@@ -138,6 +197,8 @@ impl StudioThreadAssembler {
                 ArchiveScopeSeal {
                     admission: seal(&self.0, &mut state, ids),
                     members,
+                    identities,
+                    private_ids,
                 },
                 cancellation,
             )

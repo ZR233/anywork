@@ -103,6 +103,19 @@ impl StudioThreadFactory {
         root: &Path,
     ) -> Result<WorkspaceIdentity> {
         let identity = self.resolve_workspace_identity(project, root).await?;
+        let owner = self.services.worktrees.usage_owner(usage)?;
+        if self
+            .services
+            .store
+            .thread_preparation(&owner)
+            .await?
+            .is_some()
+        {
+            self.services
+                .store
+                .bind_thread_preparation(&owner, &identity)
+                .await?;
+        }
         self.services
             .worktrees
             .assign_workspace(usage, identity.clone())?;

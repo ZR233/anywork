@@ -15,6 +15,230 @@ fn options(home: &Path) -> StudioRuntimeOptions {
 }
 
 #[tokio::test]
+async fn archive_private_preparation_failed_retirement_survives_restart_and_preserves_delivery()
+-> Result<()> {
+    use crate::studio::{
+        agent_host::worktree_lease::{WorkspaceEndpoint, WorkspaceIdentity},
+        storage_fault_test_support::close_factory,
+        store::{
+            thread_archive::{ArchivePhase, ArchiveScope},
+            thread_preparation::{PreparationBinding, PreparationIdentity},
+        },
+    };
+    use sea_orm::ConnectionTrait;
+    let temp = tempfile::tempdir()?;
+    let home = temp.path().join("home");
+    let _endpoint = configure(&home)?;
+    let repository = temp.path().join("repository");
+    let checkout = temp.path().join("private-worktree");
+    tokio::fs::create_dir_all(&repository).await?;
+    for args in [
+        vec!["init", "--quiet"],
+        vec![
+            "-c",
+            "user.name=fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "commit",
+            "--quiet",
+            "--allow-empty",
+            "-m",
+            "fixture",
+        ],
+        vec![
+            "worktree",
+            "add",
+            "--quiet",
+            "--detach",
+            checkout.to_str().unwrap(),
+            "HEAD",
+        ],
+    ] {
+        let output = tokio::process::Command::new("git")
+            .args(args)
+            .current_dir(&repository)
+            .output()
+            .await?;
+        ensure!(
+            output.status.success(),
+            "isolated Git fixture: {:?}",
+            output
+        );
+    }
+    let runtime = StudioRuntime::initialize(options(&home)).await?;
+    let workspace = runtime.open_project(&repository).await?;
+    let root = runtime
+        .create_thread_with_id("private-root", &workspace.id, "root")
+        .await?;
+    runtime.ensure_thread_owner(&root.id).await?.flush().await?;
+    let identity = PreparationIdentity {
+        thread_id: "unpublished-physical-child".into(),
+        workspace_id: workspace.id.clone(),
+        parent_id: Some(root.id.clone()),
+        root_id: root.id.clone(),
+    };
+    let binding = WorkspaceIdentity::canonical(
+        WorkspaceEndpoint::Local,
+        dunce::canonicalize(&checkout)?
+            .to_string_lossy()
+            .into_owned(),
+    )?;
+    runtime
+        .store
+        .begin_thread_preparation(identity.clone())
+        .await?;
+    runtime
+        .store
+        .bind_thread_preparation(&identity.thread_id, &binding)
+        .await?;
+    let physical = close_factory(&runtime.store)?;
+    let owner = physical
+        .unpublished_workspace(&identity.thread_id, &checkout)
+        .await?;
+    let files = pl_tool::workspace::SessionFiles::new(&identity.thread_id);
+    let session = checkout.join(files.root());
+    for directory in ["artifacts", ".venv", "scratch/.venv"] {
+        tokio::fs::create_dir_all(session.join(directory)).await?;
+        tokio::fs::write(session.join(directory).join("keep"), directory).await?;
+    }
+    tokio::fs::write(checkout.join("business"), b"keep worktree").await?;
+    // This completed physical preparer never attached storage. Its return is the real stop ACK;
+    // retirement is deliberately left pending, and the canonical child has never been published.
+    drop(owner);
+    runtime
+        .store
+        .confirm_preparation_stop(&identity.thread_id)
+        .await?;
+    runtime
+        .freeze_thread_archive(
+            ArchiveScope::Thread(root.id.clone()),
+            std::slice::from_ref(&root),
+            std::slice::from_ref(&identity),
+        )
+        .await?;
+    runtime
+        .store
+        .database()
+        .execute_unprepared(
+            "CREATE TRIGGER fail_private_retirement BEFORE UPDATE ON studio_objects
+         WHEN NEW.object_kind = 'threadPreparation'
+          AND NEW.owner_id = 'unpublished-physical-child'
+          AND json_extract(NEW.payload_json, '$.retired') = 1
+         BEGIN SELECT RAISE(ABORT, 'injected private retirement ACK failure'); END",
+        )
+        .await?;
+    assert!(
+        runtime
+            .archive_thread("private-first".into(), root.id.clone())
+            .await
+            .is_err()
+    );
+    let pending = runtime
+        .store
+        .thread_archive(&ArchiveScope::Thread(root.id.clone()))
+        .await?
+        .unwrap();
+    assert_eq!(pending.phase, ArchivePhase::Sealed);
+    assert_eq!(pending.private_members.len(), 1);
+    assert_eq!(pending.private_members[0].identity, identity);
+    assert_eq!(
+        pending.private_members[0].binding,
+        PreparationBinding::Bound {
+            identity: binding.clone()
+        }
+    );
+    assert!(
+        !runtime
+            .store
+            .thread_preparation(&identity.thread_id)
+            .await?
+            .unwrap()
+            .retired
+    );
+    assert!(
+        runtime
+            .store
+            .read_thread(&identity.thread_id)
+            .await?
+            .is_none()
+    );
+    assert!(session.join("scratch/prepared").is_file());
+    assert!(
+        session.join("artifacts/keep").is_file(),
+        "real factory must not dispose the root"
+    );
+    runtime.shutdown_runtime().await?;
+    physical.shutdown().await?;
+    drop(physical);
+    drop(runtime);
+
+    let runtime = StudioRuntime::initialize(options(&home)).await?;
+    assert!(
+        runtime
+            .threads
+            .observed_thread(&identity.thread_id)
+            .is_none()
+    );
+    assert!(
+        runtime
+            .store
+            .read_thread(&identity.thread_id)
+            .await?
+            .is_none()
+    );
+    assert!(runtime.ensure_thread_owner(&root.id).await.is_err());
+    // A missing registry/catalog child must not turn the original failed retirement into success.
+    assert!(
+        runtime
+            .archive_thread("private-still-failing".into(), root.id.clone())
+            .await
+            .is_err()
+    );
+    assert!(session.join("scratch/prepared").is_file());
+    runtime
+        .store
+        .database()
+        .execute_unprepared("DROP TRIGGER fail_private_retirement")
+        .await?;
+    runtime
+        .archive_thread("private-retry".into(), root.id.clone())
+        .await?
+        .context("archive")?;
+    let finished = runtime
+        .store
+        .thread_archive(&ArchiveScope::Thread(root.id))
+        .await?
+        .unwrap();
+    assert_eq!(finished.phase, ArchivePhase::Published);
+    assert_eq!(finished.private_members.len(), 1);
+    assert!(finished.private_members[0].retired);
+    assert!(
+        finished.private_members[0].execution_cleaned && finished.private_members[0].host_cleaned
+    );
+    assert!(!checkout.join(files.temp()).exists());
+    assert!(!session.join("scratch/prepared").exists());
+    for directory in ["artifacts", ".venv", "scratch/.venv"] {
+        assert_eq!(
+            tokio::fs::read(session.join(directory).join("keep")).await?,
+            directory.as_bytes()
+        );
+    }
+    assert_eq!(
+        tokio::fs::read(checkout.join("business")).await?,
+        b"keep worktree"
+    );
+    let output = tokio::process::Command::new("git")
+        .args(["worktree", "list", "--porcelain"])
+        .current_dir(&repository)
+        .output()
+        .await?;
+    assert!(output.status.success());
+    assert!(String::from_utf8(output.stdout)?.contains(checkout.to_str().unwrap()));
+    runtime.shutdown_runtime().await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn archive_temp_removes_only_bound_disposable_directories_and_restores_lazily() -> Result<()>
 {
     use pl_tool::workspace::SessionFiles;

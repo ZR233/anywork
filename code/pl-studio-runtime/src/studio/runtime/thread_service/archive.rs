@@ -8,7 +8,10 @@ use super::super::StudioRuntime;
 use crate::studio::{
     ThreadRecord,
     agent_host::worktree_lease::{WorkspaceEndpoint, WorkspaceIdentity},
-    store::thread_archive::{ArchiveMember, ArchivePhase, ArchiveScope, ThreadArchiveOperation},
+    store::thread_archive::{
+        ArchiveMember, ArchivePhase, ArchiveScope, PrivateArchiveMember, ThreadArchiveOperation,
+    },
+    store::thread_preparation::{PreparationBinding, PreparationIdentity, PreparationSave},
 };
 
 impl StudioRuntime {
@@ -16,18 +19,8 @@ impl StudioRuntime {
         &self,
         scope: ArchiveScope,
         threads: &[ThreadRecord],
+        admitted: &[PreparationIdentity],
     ) -> Result<ThreadArchiveOperation> {
-        for thread in threads {
-            ensure!(
-                self.bots.runtime_released()
-                    || self
-                        .bots
-                        .config_for_thread(&thread.root_thread_id)
-                        .await?
-                        .is_none(),
-                "archive cannot confirm bot input materialization has stopped and joined"
-            );
-        }
         let previous = self.store.thread_archive(&scope).await?;
         if let Some(operation) = &previous
             && operation.phase != ArchivePhase::Published
@@ -45,11 +38,8 @@ impl StudioRuntime {
                 expected.is_subset(&actual),
                 "archive scope changed while cleanup was pending"
             );
-            if actual == expected {
-                return Ok(operation.clone());
-            }
             ensure!(
-                operation.phase == ArchivePhase::Sealed,
+                actual == expected || operation.phase == ArchivePhase::Sealed,
                 "archive gained a member after durable save confirmation"
             );
         }
@@ -57,9 +47,10 @@ impl StudioRuntime {
             if pending.phase != ArchivePhase::Published && pending.scope != scope {
                 ensure!(
                     !pending
-                        .members
+                        .thread_ids()
                         .iter()
-                        .any(|member| threads.iter().any(|thread| thread.id == member.thread_id)),
+                        .any(|id| threads.iter().any(|thread| thread.id == *id)
+                            || admitted.iter().any(|member| member.thread_id == *id)),
                     "overlapping archive operation must be retried first"
                 );
             }
@@ -69,8 +60,33 @@ impl StudioRuntime {
             .filter(|operation| operation.phase != ArchivePhase::Published)
             .map(|operation| operation.members.clone())
             .unwrap_or_default();
+        for identity in admitted {
+            self.store
+                .begin_thread_preparation(identity.clone())
+                .await?;
+        }
         for thread in threads {
-            if members.iter().any(|member| member.thread_id == thread.id) {
+            let preparation = self.store.thread_preparation(&thread.id).await?;
+            if preparation.as_ref().is_some_and(|record| {
+                !record.published && record.binding == PreparationBinding::Unbound
+            }) {
+                continue;
+            }
+            if let Some(member) = members.iter().find(|member| member.thread_id == thread.id) {
+                ensure!(
+                    member.workspace_id == thread.workspace_id
+                        && member.parent_id == thread.parent_thread_id
+                        && member.root_id == thread.root_thread_id,
+                    "archive canonical member changed identity"
+                );
+                if let Some(PreparationBinding::Bound { identity }) =
+                    preparation.map(|record| record.binding)
+                {
+                    ensure!(
+                        identity == member.execution,
+                        "archive canonical member rebound during preparation"
+                    );
+                }
                 continue;
             }
             let execution = match self.store.workspace_identity(&thread.id).await? {
@@ -106,6 +122,8 @@ impl StudioRuntime {
             members.push(ArchiveMember {
                 thread_id: thread.id.clone(),
                 workspace_id: thread.workspace_id.clone(),
+                parent_id: thread.parent_thread_id.clone(),
+                root_id: thread.root_thread_id.clone(),
                 host_session: session.root().to_owned(),
                 host_temp: session.temp_dir(),
                 execution,
@@ -113,6 +131,98 @@ impl StudioRuntime {
                 execution_cleaned: false,
             });
         }
+        let mut private_members = previous
+            .as_ref()
+            .filter(|operation| operation.phase != ArchivePhase::Published)
+            .map(|operation| operation.private_members.clone())
+            .unwrap_or_default();
+        let mut private_identities = private_members
+            .iter()
+            .map(|member| member.identity.clone())
+            .collect::<Vec<_>>();
+        for identity in admitted {
+            if !members
+                .iter()
+                .any(|member| member.thread_id == identity.thread_id)
+                && !private_identities
+                    .iter()
+                    .any(|previous| previous.thread_id == identity.thread_id)
+            {
+                // A live captured admission cannot start physical preparation before this same
+                // typed original-owner record commits. This is not absence-based recovery.
+                self.store
+                    .begin_thread_preparation(identity.clone())
+                    .await?;
+                private_identities.push(identity.clone());
+            }
+        }
+        for identity in private_identities {
+            let record = self
+                .store
+                .thread_preparation(&identity.thread_id)
+                .await?
+                .context("archive lost its original private preparation responsibility")?;
+            ensure!(
+                record.identity == identity,
+                "private archive identity changed"
+            );
+            if let Some(public) = members
+                .iter()
+                .find(|member| member.thread_id == identity.thread_id)
+            {
+                ensure!(
+                    public.workspace_id == identity.workspace_id
+                        && public.parent_id == identity.parent_id
+                        && public.root_id == identity.root_id,
+                    "published private member changed identity"
+                );
+                if let PreparationBinding::Bound { identity: original } = &record.binding {
+                    ensure!(
+                        *original == public.execution,
+                        "private member rebound during publication"
+                    );
+                }
+                private_members.retain(|member| member.identity.thread_id != identity.thread_id);
+                continue;
+            }
+            if let Some(member) = private_members
+                .iter_mut()
+                .find(|member| member.identity.thread_id == identity.thread_id)
+            {
+                if let PreparationBinding::Bound { identity: original } = &member.binding {
+                    ensure!(
+                        record.binding
+                            == PreparationBinding::Bound {
+                                identity: original.clone()
+                            },
+                        "private archive original binding changed"
+                    );
+                }
+                member.binding = record.binding;
+                member.stopped = record.stopped;
+                member.save = record.save;
+                member.retired = record.retired;
+            } else {
+                let session = self
+                    .store
+                    .session_paths(&identity.workspace_id, &identity.thread_id)?;
+                private_members.push(PrivateArchiveMember {
+                    identity,
+                    host_session: session.root().to_owned(),
+                    host_temp: session.temp_dir(),
+                    binding: record.binding,
+                    stopped: record.stopped,
+                    save: record.save,
+                    retired: record.retired,
+                    host_cleaned: false,
+                    execution_cleaned: false,
+                });
+            }
+        }
+        let phase = previous
+            .as_ref()
+            .filter(|operation| operation.phase != ArchivePhase::Published)
+            .map_or(ArchivePhase::Sealed, |operation| operation.phase);
         let revision = previous.map_or(Ok(1), |previous| {
             previous
                 .revision
@@ -123,7 +233,8 @@ impl StudioRuntime {
             scope,
             revision,
             members,
-            phase: ArchivePhase::Sealed,
+            private_members,
+            phase,
         };
         self.store.save_thread_archive(&operation).await?;
         Ok(operation)
@@ -133,8 +244,56 @@ impl StudioRuntime {
         &self,
         operation: &mut ThreadArchiveOperation,
     ) -> Result<()> {
+        ensure!(
+            operation.private_members.iter().all(|member| member.stopped
+                && member.retired
+                && member.save != PreparationSave::Required),
+            "private archive members still have pending stop/save/resource responsibility"
+        );
         if operation.phase == ArchivePhase::Sealed {
             operation.phase = ArchivePhase::Saved;
+            operation.changed()?;
+            self.store.save_thread_archive(operation).await?;
+        }
+        Ok(())
+    }
+
+    pub(super) async fn retire_private_archive_members(
+        &self,
+        operation: &mut ThreadArchiveOperation,
+    ) -> Result<()> {
+        for index in 0..operation.private_members.len() {
+            let member = operation.private_members[index].clone();
+            let record = self
+                .store
+                .thread_preparation(&member.identity.thread_id)
+                .await?
+                .context("private archive responsibility is missing")?;
+            ensure!(
+                record.identity == member.identity && record.binding == member.binding,
+                "private archive original binding changed"
+            );
+            ensure!(
+                record.stopped && record.save != PreparationSave::Required,
+                "private preparation has not acknowledged its original producers/checkpoint; responsibility retained"
+            );
+            if !record.retired {
+                self.thread_factory
+                    .retire_archive_preparation(&record)
+                    .await?;
+            }
+            let confirmed = self
+                .store
+                .thread_preparation(&member.identity.thread_id)
+                .await?
+                .context("private retirement ACK disappeared")?;
+            ensure!(
+                confirmed.retired && confirmed.stopped,
+                "private resource retirement remains pending"
+            );
+            operation.private_members[index].stopped = confirmed.stopped;
+            operation.private_members[index].save = confirmed.save;
+            operation.private_members[index].retired = confirmed.retired;
             operation.changed()?;
             self.store.save_thread_archive(operation).await?;
         }
@@ -193,6 +352,48 @@ impl StudioRuntime {
                 self.store.save_thread_archive(operation).await?;
             }
         }
+        for index in 0..operation.private_members.len() {
+            let member = operation.private_members[index].clone();
+            ensure!(
+                member.stopped && member.retired && member.save != PreparationSave::Required,
+                "private producer/save ACK is pending"
+            );
+            if !member.execution_cleaned {
+                if let PreparationBinding::Bound { identity } = &member.binding {
+                    clean_execution_temp(
+                        &self.ssh_manager,
+                        &ArchiveMember {
+                            thread_id: member.identity.thread_id.clone(),
+                            workspace_id: member.identity.workspace_id.clone(),
+                            parent_id: member.identity.parent_id.clone(),
+                            root_id: member.identity.root_id.clone(),
+                            host_session: member.host_session.clone(),
+                            host_temp: member.host_temp.clone(),
+                            execution: identity.clone(),
+                            host_cleaned: member.host_cleaned,
+                            execution_cleaned: false,
+                        },
+                    )
+                    .await?;
+                }
+                operation.private_members[index].execution_cleaned = true;
+                operation.changed()?;
+                self.store.save_thread_archive(operation).await?;
+            }
+            if !member.host_cleaned {
+                let current = self
+                    .store
+                    .session_paths(&member.identity.workspace_id, &member.identity.thread_id)?;
+                ensure!(
+                    current.root() == member.host_session && current.temp_dir() == member.host_temp,
+                    "private host binding changed"
+                );
+                clean_host_temp(&member.host_session, &member.host_temp).await?;
+                operation.private_members[index].host_cleaned = true;
+                operation.changed()?;
+                self.store.save_thread_archive(operation).await?;
+            }
+        }
         operation.phase = ArchivePhase::Cleaned;
         operation.changed()?;
         self.store.save_thread_archive(operation).await
@@ -206,6 +407,23 @@ impl StudioRuntime {
         operation.changed()?;
         self.store.save_thread_archive(operation).await
     }
+}
+
+async fn clean_host_temp(session: &Path, temp: &Path) -> Result<()> {
+    let anchor = session
+        .ancestors()
+        .last()
+        .context("archive host path has no root")?;
+    path_safety::validate_path_for_write_async(anchor, session).await?;
+    match tokio::fs::symlink_metadata(temp).await {
+        Ok(_) => {
+            path_safety::validate_existing_path_async(session, temp).await?;
+            path_safety::remove_dir_all_no_follow_async(session, temp).await?;
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    Ok(())
 }
 
 async fn clean_execution_temp(
@@ -274,6 +492,8 @@ mod ssh_tests {
         let member = ArchiveMember {
             thread_id: "ssh-thread".into(),
             workspace_id: "workspace".into(),
+            parent_id: None,
+            root_id: "ssh-thread".into(),
             host_temp: host_session.join("temp"),
             host_session,
             execution: WorkspaceIdentity::canonical(
