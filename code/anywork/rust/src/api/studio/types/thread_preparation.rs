@@ -7,7 +7,7 @@ use super::{
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BridgeStartNewThreadRequest {
-    pub project_id: String,
+    pub workspace_id: String,
     pub input: BridgeStudioPromptInput,
     pub mode: String,
     pub account_id: String,
@@ -32,7 +32,7 @@ pub enum BridgeThreadPreparationStage {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct BridgeThreadPreparationProgress {
-    pub project_id: String,
+    pub workspace_id: String,
     pub input_id: String,
     pub stage: BridgeThreadPreparationStage,
     pub workspace_path: Option<String>,
@@ -51,7 +51,7 @@ impl From<pl_protocol::studio::ThreadPreparationProgress> for BridgeThreadPrepar
     fn from(progress: pl_protocol::studio::ThreadPreparationProgress) -> Self {
         use pl_protocol::studio::ThreadPreparationStage;
         Self {
-            project_id: progress.project_id,
+            workspace_id: progress.workspace_id,
             input_id: progress.input_id,
             stage: match progress.stage {
                 ThreadPreparationStage::CheckingProject => {

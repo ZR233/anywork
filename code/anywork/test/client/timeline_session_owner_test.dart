@@ -124,7 +124,7 @@ void main() {
     );
     final owner = TimelineSessionOwner(client: client);
     addTearDown(owner.close);
-    client.selection.selectThread(threadId: 'thread', projectId: 'project');
+    client.selection.selectThread(threadId: 'thread', workspaceId: 'project');
     client.conversations.setVisibleThread('thread');
     owner.select('thread');
     await _until(() => transport.connections.isNotEmpty);
@@ -2518,7 +2518,7 @@ void main() {
     );
     await owner.source.waitFor((state) => state!.isPreparingLive);
 
-    client.selection.selectThread(threadId: 'other', projectId: 'project');
+    client.selection.selectThread(threadId: 'other', workspaceId: 'project');
     owner.select(null);
     client.conversations.setVisibleThread('other');
     owner.select('other');
@@ -2564,7 +2564,7 @@ void main() {
     await ready.owner.source.waitFor((state) => state!.isPreparingLive);
     ready.client.selection.selectThread(
       threadId: 'other',
-      projectId: 'project',
+      workspaceId: 'project',
     );
     ready.owner.select(null);
     ready.client.conversations.setVisibleThread('other');
@@ -2651,7 +2651,7 @@ Future<void> _until(bool Function() predicate) async {
 
 StudioThread _thread([String id = 'thread']) => StudioThread(
   id: id,
-  projectId: 'project',
+  workspaceId: 'project',
   title: 'Thread $id',
   mode: ThreadModeId.simple,
   delegationMode: DelegationMode.profile,

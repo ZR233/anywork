@@ -353,9 +353,9 @@ async fn owner_binding_body(
         "the project switch must be an applied command with its own operation id"
     );
     ensure!(
-        switched_bot.project_id == project_q && switched_bot.config_revision == revision + 1,
+        switched_bot.workspace_id == project_q && switched_bot.config_revision == revision + 1,
         "the switch reply must show project Q at the next config revision, got project={} cfgrev={}",
-        switched_bot.project_id,
+        switched_bot.workspace_id,
         switched_bot.config_revision
     );
     let revision_q = switched_bot.config_revision;
@@ -393,7 +393,7 @@ async fn owner_binding_body(
     assert_stale_creation_left_nothing(session, &bot_id, &baseline_threads).await?;
     let after_stale = session.bot(&bot_id).await?;
     ensure!(
-        after_stale.project_id == project_q && after_stale.config_revision == revision_q,
+        after_stale.workspace_id == project_q && after_stale.config_revision == revision_q,
         "the project switch must survive the stale rejection"
     );
     // The project must stay mutable: one more legitimate save commits at the
@@ -416,11 +416,11 @@ async fn owner_binding_body(
     );
     ensure!(
         renamed_bot.name == "observe-bot-q"
-            && renamed_bot.project_id == project_q
+            && renamed_bot.workspace_id == project_q
             && renamed_bot.config_revision == revision_q + 1,
         "the rename reply must show the requested name on Q at the next revision, got name={} project={} cfgrev={}",
         renamed_bot.name,
-        renamed_bot.project_id,
+        renamed_bot.workspace_id,
         renamed_bot.config_revision
     );
     let revision_current = renamed_bot.config_revision;
@@ -435,7 +435,7 @@ async fn owner_binding_body(
     ensure!(
         before_first.can_change_project
             && before_first.config_revision == revision_current
-            && before_first.project_id == project_q,
+            && before_first.workspace_id == project_q,
         "the bot must still be movable on Q before the first creation"
     );
     assert_no_occupancy_facts(session, &bot_id, "before first creation").await?;
@@ -485,7 +485,7 @@ async fn owner_binding_body(
     ensure!(
         first.binding.state == BotConversationThreadState::Bound
             && first.binding.bot_id == bot_id
-            && first.binding.project_id == project_q
+            && first.binding.workspace_id == project_q
             && first.binding.chat_id == CHAT_ID
             && first.binding.revision == 1,
         "applied first binding must be Bound on Q with revision 1, got {:?} rev={}",
@@ -509,7 +509,7 @@ async fn owner_binding_body(
             |bot| {
                 !bot.can_change_project
                     && bot.config_revision == revision_current
-                    && bot.project_id == project_q
+                    && bot.workspace_id == project_q
             },
             "first occupancy publication",
         )
@@ -540,7 +540,7 @@ async fn owner_binding_body(
         .find(|fact| fact.id == thread_id)
         .with_context(|| format!("created Thread {thread_id} missing from the public directory"))?;
     ensure!(
-        created.project_id == project_q,
+        created.workspace_id == project_q,
         "the created Thread must belong to project Q"
     );
     let mut baseline_plus_created = baseline_threads.clone();
@@ -605,11 +605,11 @@ async fn owner_binding_body(
     );
     ensure!(
         renamed_bot.name == "observe-bot-q-occupied"
-            && renamed_bot.project_id == project_q
+            && renamed_bot.workspace_id == project_q
             && renamed_bot.config_revision == revision_current + 1,
         "the rename reply must show the requested name on Q at the next revision, got name={} project={} cfgrev={}",
         renamed_bot.name,
-        renamed_bot.project_id,
+        renamed_bot.workspace_id,
         renamed_bot.config_revision
     );
     let revision_after_rename = renamed_bot.config_revision;
@@ -704,7 +704,7 @@ async fn save_disabled_bot(session: &Session, deadline: &Deadline) -> Result<(St
             bot_id: None,
             expected_config_revision: 0,
             name: "observe-bot".into(),
-            project_id: project.id.clone(),
+            workspace_id: project.id.clone(),
             app_id: DEFAULT_APP_ID.into(),
             secret: BotSecretUpdate::Replace {
                 value: DEFAULT_APP_SECRET.into(),
@@ -749,7 +749,7 @@ async fn save_owned(
     bot_id: &str,
     expected_config_revision: u64,
     name: &str,
-    project_id: &str,
+    workspace_id: &str,
 ) -> Result<BotsCommandReply> {
     deadline.checkpoint(&format!("the {operation_id} save"))?;
     session
@@ -760,7 +760,7 @@ async fn save_owned(
             bot_id: Some(bot_id.to_owned()),
             expected_config_revision,
             name: name.into(),
-            project_id: project_id.to_owned(),
+            workspace_id: workspace_id.to_owned(),
             app_id: DEFAULT_APP_ID.into(),
             secret: BotSecretUpdate::Preserve,
             enabled: false,
@@ -864,7 +864,7 @@ fn describe_creation_outcome(outcome: &Result<CreationOutcome>) -> String {
 fn ensure_retry_reused(
     reply: &BotConversationThreadReply,
     bot_id: &str,
-    project_id: &str,
+    workspace_id: &str,
     thread_id: &str,
     phase: &str,
 ) -> Result<()> {
@@ -882,7 +882,7 @@ fn ensure_retry_reused(
         reply.binding.state == BotConversationThreadState::Bound
             && reply.binding.bot_id == bot_id
             && reply.binding.chat_id == CHAT_ID
-            && reply.binding.project_id == project_id
+            && reply.binding.workspace_id == workspace_id
             && reply.binding.thread_id.as_deref() == Some(thread_id)
             && reply.binding.revision == 1,
         "{phase}: the replayed binding must keep the original bot/chat/project, Thread and revision"
@@ -954,7 +954,7 @@ async fn assert_stale_creation_left_nothing(
     let threads = list_thread_facts(session).await?;
     let added: Vec<String> = threads
         .difference(baseline_threads)
-        .map(|fact| format!("{}@{}", fact.id, fact.project_id))
+        .map(|fact| format!("{}@{}", fact.id, fact.workspace_id))
         .collect();
     ensure!(
         bindings.is_empty() && operations.is_empty() && added.is_empty(),
@@ -1042,7 +1042,7 @@ async fn assert_canonical_binding(
     session: &Session,
     bot_id: &str,
     thread_id: &str,
-    project_id: &str,
+    workspace_id: &str,
 ) -> Result<()> {
     let page = session
         .http()?
@@ -1064,9 +1064,9 @@ async fn assert_canonical_binding(
     ensure!(
         binding.state == BotConversationThreadState::Bound
             && binding.thread_id.as_deref() == Some(thread_id)
-            && binding.project_id == project_id
+            && binding.workspace_id == workspace_id
             && binding.revision == 1,
-        "the canonical conversation binding must stay Bound on {project_id} with revision 1"
+        "the canonical conversation binding must stay Bound on {workspace_id} with revision 1"
     );
     Ok(())
 }
@@ -1074,7 +1074,7 @@ async fn assert_canonical_binding(
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct ThreadFact {
     id: String,
-    project_id: String,
+    workspace_id: String,
 }
 
 /// Public thread directory snapshot: id + owning project for every Thread.
@@ -1094,7 +1094,7 @@ async fn list_thread_facts(session: &Session) -> Result<BTreeSet<ThreadFact>> {
         for thread in &data.threads {
             facts.insert(ThreadFact {
                 id: thread.id.clone(),
-                project_id: thread.project_id.clone(),
+                workspace_id: thread.workspace_id.clone(),
             });
         }
         ensure!(

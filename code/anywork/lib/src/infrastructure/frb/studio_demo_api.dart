@@ -992,7 +992,7 @@ class DemoStudioTransport extends StudioTransport
         .where(
           (thread) =>
               thread.id == _selectedThreadId &&
-              thread.projectId == selectedProjectId,
+              thread.workspaceId == selectedProjectId,
         )
         .firstOrNull
         ?.id;
@@ -1280,7 +1280,7 @@ class DemoStudioTransport extends StudioTransport
     final alternateMode = _threadModes['thread-alt'] ?? ThreadModeId.simple;
     final root = StudioThread(
       id: 'thread-main',
-      projectId: project.id,
+      workspaceId: project.id,
       title: 'Flutter + FRB 重构',
       mode: rootMode,
       delegationMode: DelegationMode.profile,
@@ -1294,7 +1294,7 @@ class DemoStudioTransport extends StudioTransport
     );
     final reviewer = StudioThread(
       id: 'thread-reviewer',
-      projectId: project.id,
+      workspaceId: project.id,
       title: 'Driver reviewer',
       mode: reviewerMode,
       delegationMode: DelegationMode.profile,
@@ -1310,7 +1310,7 @@ class DemoStudioTransport extends StudioTransport
     );
     final alternate = StudioThread(
       id: 'thread-alt',
-      projectId: project.id,
+      workspaceId: project.id,
       title: 'Riverpod selector audit',
       mode: alternateMode,
       delegationMode: DelegationMode.profile,
@@ -1371,7 +1371,7 @@ class DemoStudioTransport extends StudioTransport
 
   /// Driver 模式的历史会话填充：保证触底分页有足够数据。
   void _ensurePageFillThreads(
-    String projectId,
+    String workspaceId,
     String projectPath,
     DateTime now,
   ) {
@@ -1382,7 +1382,7 @@ class DemoStudioTransport extends StudioTransport
       final updated = now.subtract(Duration(minutes: 30 + index * 17));
       final thread = StudioThread(
         id: 'thread-page-$index',
-        projectId: projectId,
+        workspaceId: workspaceId,
         title: '历史会话 ${index + 1}',
         mode: ThreadModeId.simple,
         delegationMode: DelegationMode.profile,
@@ -1416,7 +1416,9 @@ class DemoStudioTransport extends StudioTransport
                 (thread) => !_archivedThreadIds.contains(thread.id),
               ),
             ]
-            .where((thread) => !_archivedProjectIds.contains(thread.projectId))
+            .where(
+              (thread) => !_archivedProjectIds.contains(thread.workspaceId),
+            )
             .toList()
           ..sort(StudioThread.compareDirectoryOrder);
     return threads;
@@ -2068,11 +2070,11 @@ class DemoStudioTransport extends StudioTransport
   }
 
   @override
-  Future<StudioProject> renameProject(String projectId, String name) async {
+  Future<StudioProject> renameProject(String workspaceId, String name) async {
     final project = _demoProjectDirectory().values.firstWhere(
-      (project) => project.id == projectId,
+      (project) => project.id == workspaceId,
     );
-    _projectNames[projectId] = name;
+    _projectNames[workspaceId] = name;
     _projectDirectoryRevision++;
     _publishProductPayload(
       ProjectDirectoryChangedPayload(_demoProjectDirectory()),
@@ -2232,18 +2234,18 @@ class DemoStudioTransport extends StudioTransport
   }
 
   @override
-  Future<void> activateProject(String projectId) async {
+  Future<void> activateProject(String workspaceId) async {
     if (!_demoProjectDirectory().values.any(
-      (project) => project.id == projectId,
+      (project) => project.id == workspaceId,
     )) {
-      throw StateError('unknown demo project $projectId');
+      throw StateError('unknown demo project $workspaceId');
     }
-    _selectedProjectId = projectId;
+    _selectedProjectId = workspaceId;
   }
 
   @override
   Stream<NewThreadStartEvent> startNewThread(
-    String projectId,
+    String workspaceId,
     StudioPromptInput input,
     ThreadModeId mode, {
     required ModeModelRouteView route,
@@ -2254,10 +2256,10 @@ class DemoStudioTransport extends StudioTransport
     try {
       final projects = _demoProjectDirectory().values;
       final project = projects
-          .where((candidate) => candidate.id == projectId)
+          .where((candidate) => candidate.id == workspaceId)
           .firstOrNull;
       if (project == null) {
-        throw StateError('unknown demo project $projectId');
+        throw StateError('unknown demo project $workspaceId');
       }
       if (input.text.trim().isEmpty && input.attachmentDraftIds.isEmpty) {
         throw ArgumentError.value(input.text, 'text', 'empty');
@@ -2280,7 +2282,7 @@ class DemoStudioTransport extends StudioTransport
       }
       yield NewThreadStartProgress(
         ThreadPreparationProgress(
-          projectId: projectId,
+          workspaceId: workspaceId,
           inputId: input.inputId,
           stage: ThreadPreparationStage.checkingProject,
         ),
@@ -2289,18 +2291,18 @@ class DemoStudioTransport extends StudioTransport
       final provisionalTitle = _demoProvisionalThreadTitle(input.text);
       final threadId = 'thread-created-${++_threadSequence}';
       final projectPath = projects
-          .firstWhere((project) => project.id == projectId)
+          .firstWhere((project) => project.id == workspaceId)
           .path;
       yield NewThreadStartProgress(
         ThreadPreparationProgress(
-          projectId: projectId,
+          workspaceId: workspaceId,
           inputId: input.inputId,
           stage: ThreadPreparationStage.preparingWorkspace,
         ),
       );
       final thread = StudioThread(
         id: threadId,
-        projectId: projectId,
+        workspaceId: workspaceId,
         title: provisionalTitle,
         mode: mode,
         delegationMode: delegationMode,
@@ -2315,7 +2317,7 @@ class DemoStudioTransport extends StudioTransport
       );
       yield NewThreadStartProgress(
         ThreadPreparationProgress(
-          projectId: projectId,
+          workspaceId: workspaceId,
           inputId: input.inputId,
           stage: ThreadPreparationStage.initializingSession,
           workspacePath: thread.workspacePath,
@@ -2339,7 +2341,7 @@ class DemoStudioTransport extends StudioTransport
       );
       yield NewThreadStartProgress(
         ThreadPreparationProgress(
-          projectId: projectId,
+          workspaceId: workspaceId,
           inputId: input.inputId,
           stage: ThreadPreparationStage.submittingPrompt,
           workspacePath: thread.workspacePath,
@@ -2651,7 +2653,6 @@ class DemoStudioTransport extends StudioTransport
       s.skills.autoLearn,
       s.skills.systemEnabled,
       s.skills.projectDir,
-      s.skills.userDir,
       s.skills.externalDirs,
       s.skills.disabled,
       s.skills.autoLearnMinToolCalls,
@@ -2858,11 +2859,12 @@ class DemoStudioTransport extends StudioTransport
   }
 
   @override
-  Future<void> archiveProject(String projectId) async {
-    if (projectId == 'project-local' && _archivedProjectIds.add(projectId)) {
+  Future<void> archiveProject(String workspaceId) async {
+    if (workspaceId == 'project-local' &&
+        _archivedProjectIds.add(workspaceId)) {
       _projectDirectoryRevision += 1;
       final removed = _workspaces.values
-          .where((workspace) => workspace.thread.projectId == projectId)
+          .where((workspace) => workspace.thread.workspaceId == workspaceId)
           .map((workspace) => workspace.thread.id)
           .toList();
       _threadDirectoryRevision += 1;
@@ -2953,8 +2955,6 @@ class DemoStudioTransport extends StudioTransport
         _skills = _skills.copyWith(systemEnabled: value);
       case SkillsProjectDirCommand(:final value):
         _skills = _skills.copyWith(projectDir: value);
-      case SkillsUserDirCommand(:final value):
-        _skills = _skills.copyWith(userDir: value);
       case SkillsExternalDirsCommand(:final value):
         _skills = _skills.copyWith(externalDirs: value);
       case SkillsDisabledCommand(:final value):
@@ -3785,8 +3785,8 @@ class DemoStudioTransport extends StudioTransport
       RecoveryTopic() => RecoveryBaseline(_demoRecoveryState()),
       McpTopic() => McpBaseline(_demoMcpState()),
       LspTopic() => LspBaseline(_demoLspState()),
-      SkillsTopic(:final projectId) => SkillsBaseline(
-        _demoSkillsState(projectId, _skillsRevision),
+      SkillsTopic(:final workspaceId) => SkillsBaseline(
+        _demoSkillsState(workspaceId, _skillsRevision),
       ),
       ThreadModeCatalogTopic() => ThreadModeCatalogBaseline(
         _demoThreadModeCatalog(),
@@ -5163,27 +5163,27 @@ class DemoStudioTransport extends StudioTransport
       _demoSettingsState();
 
   @override
-  Future<SkillsStateSnapshot> readSkillsState(String projectId) async {
-    return _archivedProjectIds.contains(projectId)
-        ? _demoSkillsState(projectId, 0, skills: const [])
-        : _demoSkillsState(projectId, _skillsRevision);
+  Future<SkillsStateSnapshot> readSkillsState(String workspaceId) async {
+    return _archivedProjectIds.contains(workspaceId)
+        ? _demoSkillsState(workspaceId, 0, skills: const [])
+        : _demoSkillsState(workspaceId, _skillsRevision);
   }
 
   @override
-  Future<SkillsStateSnapshot> discoverSkills(String projectId) async {
+  Future<SkillsStateSnapshot> discoverSkills(String workspaceId) async {
     _skillsRevision += 1;
-    final state = await readSkillsState(projectId);
+    final state = await readSkillsState(workspaceId);
     _publishProductPayload(SkillsStateChangedPayload(state));
     return state;
   }
 
   @override
   Future<SkillSearchResultView> searchSkills(
-    String projectId,
+    String workspaceId,
     String query, {
     int limit = 50,
   }) async {
-    final snapshot = await readSkillsState(projectId);
+    final snapshot = await readSkillsState(workspaceId);
     final normalizedQuery = query.trim().toLowerCase();
     final allMatches = snapshot.summaries
         .where(
@@ -5193,7 +5193,7 @@ class DemoStudioTransport extends StudioTransport
         )
         .toList();
     return SkillSearchResultView(
-      projectId: projectId,
+      workspaceId: workspaceId,
       catalogRevision: snapshot.catalogRevision,
       matches: allMatches.take(limit).toList(),
       truncated: allMatches.length > limit,
@@ -5219,14 +5219,14 @@ class DemoStudioTransport extends StudioTransport
   Future<LspStateSnapshot> readLspState() async => _demoLspState();
 
   @override
-  Future<LspStateSnapshot> probeLspServer(String projectId) async {
+  Future<LspStateSnapshot> probeLspServer(String workspaceId) async {
     _lspRevision += 1;
     return _lspWriteResult();
   }
 
   @override
   Future<LspStateSnapshot> repairLspServer(
-    String projectId,
+    String workspaceId,
     String serverId,
   ) async {
     _lspRevision += 1;
@@ -5235,7 +5235,7 @@ class DemoStudioTransport extends StudioTransport
 
   @override
   Future<LspStateSnapshot> resetLspServer(
-    String projectId,
+    String workspaceId,
     String serverId,
   ) async {
     _lspRevision += 1;
@@ -5243,7 +5243,7 @@ class DemoStudioTransport extends StudioTransport
   }
 
   @override
-  Future<LspStateSnapshot> resetLspWorkspace(String projectId) async {
+  Future<LspStateSnapshot> resetLspWorkspace(String workspaceId) async {
     _lspRevision += 1;
     return _lspWriteResult();
   }
@@ -5327,7 +5327,7 @@ class DemoStudioTransport extends StudioTransport
       BotSnapshot(
         id: id,
         name: request.name,
-        projectId: request.projectId,
+        workspaceId: request.workspaceId,
         appId: request.appId,
         platform: BotPlatform.feishuChina,
         enabled: request.enabled,
@@ -5355,7 +5355,7 @@ class DemoStudioTransport extends StudioTransport
     _registration = BotRegistrationAttempt(
       attemptId: attemptId,
       name: request.name,
-      projectId: request.projectId,
+      workspaceId: request.workspaceId,
       status: BotRegistrationWaiting(
         attemptId: attemptId,
         verificationUrl: 'https://accounts.feishu.cn/demo-registration',
@@ -5383,7 +5383,7 @@ class DemoStudioTransport extends StudioTransport
       _registration = BotRegistrationAttempt(
         attemptId: current.attemptId,
         name: current.name,
-        projectId: current.projectId,
+        workspaceId: current.workspaceId,
         status: BotRegistrationCancelled(attemptId: current.attemptId),
         completedBotId: current.completedBotId,
       );
@@ -5414,7 +5414,7 @@ class DemoStudioTransport extends StudioTransport
       BotSnapshot(
         id: existing.id,
         name: existing.name,
-        projectId: existing.projectId,
+        workspaceId: existing.workspaceId,
         appId: existing.appId,
         platform: existing.platform,
         enabled: request.enabled,
@@ -5455,7 +5455,7 @@ class DemoStudioTransport extends StudioTransport
       BotSnapshot(
         id: existing.id,
         name: existing.name,
-        projectId: existing.projectId,
+        workspaceId: existing.workspaceId,
         appId: existing.appId,
         platform: existing.platform,
         enabled: existing.enabled,
@@ -5510,7 +5510,7 @@ class DemoStudioTransport extends StudioTransport
       BotSnapshot(
         id: existing.id,
         name: existing.name,
-        projectId: existing.projectId,
+        workspaceId: existing.workspaceId,
         appId: existing.appId,
         platform: existing.platform,
         enabled: existing.enabled,
@@ -5566,7 +5566,7 @@ class DemoStudioTransport extends StudioTransport
       BotSnapshot(
         id: existing.id,
         name: existing.name,
-        projectId: existing.projectId,
+        workspaceId: existing.workspaceId,
         appId: existing.appId,
         platform: existing.platform,
         enabled: existing.enabled,
@@ -5644,7 +5644,7 @@ class DemoStudioTransport extends StudioTransport
     final binding = BotConversationThreadBinding(
       botId: request.botId,
       chatId: request.chatId,
-      projectId: _findBot(request.botId)?.projectId ?? '',
+      workspaceId: _findBot(request.botId)?.workspaceId ?? '',
       threadId: existing?.threadId ?? 'thread-bot-${request.chatId}',
       revision: (existing?.revision ?? 0) + 1,
       state: BotConversationThreadState.bound,
@@ -6537,7 +6537,7 @@ ObservedResource<T> _demoInitialResource<T>() =>
     UninitializedObservedResource(updatedAt: 0);
 
 SkillsStateSnapshot _demoSkillsState(
-  String projectId,
+  String workspaceId,
   int revision, {
   List<String> skills = const [
     'flutter-ui-polish',
@@ -6546,7 +6546,7 @@ SkillsStateSnapshot _demoSkillsState(
   ],
 }) {
   return SkillsStateSnapshot.fromState(
-    projectId: projectId,
+    workspaceId: workspaceId,
     state: _demoReadyResource(
       revision,
       SkillsStateData(

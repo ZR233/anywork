@@ -23,6 +23,15 @@ enum AdmissionMode {
     Queued,
 }
 
+fn ensure_submission_not_cancelled(
+    cancel: Option<&tokio_util::sync::CancellationToken>,
+) -> Result<()> {
+    if cancel.is_some_and(tokio_util::sync::CancellationToken::is_cancelled) {
+        return Err(pl_core::thread::ThreadError::Cancelled.into());
+    }
+    Ok(())
+}
+
 impl StudioRuntime {
     /// Atomically starts or interrupts and continues the canonical Thread.
     pub async fn submit_prompt_command(
@@ -45,7 +54,7 @@ impl StudioRuntime {
         &self,
         request: StudioSubmitPromptRequest,
     ) -> Result<StudioSubmitPromptResponse> {
-        self.submit_owned_prompt(request, AdmissionMode::InterruptAndContinue)
+        self.submit_owned_prompt(request, AdmissionMode::InterruptAndContinue, None)
             .await
     }
 
@@ -57,8 +66,9 @@ impl StudioRuntime {
     pub(crate) async fn submit_queued_prompt(
         &self,
         request: StudioSubmitPromptRequest,
+        cancel: &tokio_util::sync::CancellationToken,
     ) -> Result<StudioSubmitPromptResponse> {
-        self.submit_owned_prompt(request, AdmissionMode::Queued)
+        self.submit_owned_prompt(request, AdmissionMode::Queued, Some(cancel))
             .await
     }
 
@@ -66,16 +76,26 @@ impl StudioRuntime {
         &self,
         request: StudioSubmitPromptRequest,
         mode: AdmissionMode,
+        cancel: Option<&tokio_util::sync::CancellationToken>,
     ) -> Result<StudioSubmitPromptResponse> {
         validate_prompt_content(&request.input)?;
         // Serialize turn registration with the shared shutdown admission fence.
-        let _lifecycle_guard = self.lifecycle_lock.lock().await;
+        // Cancellation may stop admission, never abandon a started resource operation.
+        let _lifecycle_guard = match cancel {
+            Some(cancel) => tokio::select! {
+                biased;
+                _ = cancel.cancelled() => return Err(pl_core::thread::ThreadError::Cancelled.into()),
+                guard = self.lifecycle_lock.lock() => guard,
+            },
+            None => self.lifecycle_lock.lock().await,
+        };
+        ensure_submission_not_cancelled(cancel)?;
         let thread_record = self.read_owned_thread(&request.thread_id).await?;
         // The user-facing submission stops here for a child target: the trusted association proves
         // the parent, so this runs before the owner is activated, before attachment drafts resolve
         // and before any route or prompt work. Only the parent agent schedules child work.
         ensure_user_root_target(&thread_record, UserThreadAction::Submit)?;
-        self.submit_owned_prompt_with_admission(request, thread_record, mode)
+        self.submit_owned_prompt_with_admission(request, thread_record, mode, cancel)
             .await
     }
 
@@ -88,6 +108,7 @@ impl StudioRuntime {
             request,
             thread_record,
             AdmissionMode::InterruptAndContinue,
+            None,
         )
         .await
     }
@@ -97,6 +118,7 @@ impl StudioRuntime {
         request: StudioSubmitPromptRequest,
         thread_record: ThreadRecord,
         mode: AdmissionMode,
+        cancel: Option<&tokio_util::sync::CancellationToken>,
     ) -> Result<StudioSubmitPromptResponse> {
         let StudioSubmitPromptRequest {
             thread_id,
@@ -212,6 +234,7 @@ impl StudioRuntime {
         let (route, config) = binding?;
         self.attachment_drafts
             .validate_for_model(&route.model, &drafts)?;
+        ensure_submission_not_cancelled(cancel)?;
         let attachments = self
             .store
             .promote_attachment_drafts(&thread_id, &drafts)
@@ -292,6 +315,10 @@ impl StudioRuntime {
         // The only semantic difference between the product admissions. `input_and_run` lets the
         // actor own the queued input and consume it after the current Turn, while
         // `input_and_continue` replaces the running Turn.
+        // Resource preparation has reached its real terminal result. A cancelled
+        // producer may stop here without abandoning I/O or starting a new input.
+        // Once the actor request below starts, its acceptance is always awaited.
+        ensure_submission_not_cancelled(cancel)?;
         let accepted = match mode {
             AdmissionMode::InterruptAndContinue => {
                 thread

@@ -10,7 +10,7 @@ use pl_provider_fixture::delegation::{OTHER_MODEL, SHARED_MODEL};
 use pl_studio_runtime::config::UserAgentProfile;
 
 pub(super) fn write(home: &Path, ready: &FixtureReady) -> Result<()> {
-    let mut config = fixture_config(home, ready, ModelTransportProfile::responses_http())?;
+    let mut config = fixture_config(ready, ModelTransportProfile::responses_http())?;
     let environment_id = home
         .parent()
         .and_then(Path::file_name)

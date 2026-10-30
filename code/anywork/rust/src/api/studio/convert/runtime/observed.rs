@@ -210,7 +210,7 @@ pub(crate) fn bridge_lsp_state(state: ObservedResource<StudioLspHealth>) -> Brid
 
 pub(crate) fn bridge_skills_state(state: StudioSkillsStateSnapshot) -> BridgeSkillsStateSnapshot {
     BridgeSkillsStateSnapshot {
-        project_id: state.project_id,
+        workspace_id: state.workspace_id,
         state: concrete_observed!(
             state.state,
             |data| BridgeSkillsStateData {
@@ -229,7 +229,7 @@ pub(crate) fn bridge_skill_search_result(
     result: pl_studio_runtime::SkillSearchResult,
 ) -> BridgeSkillSearchResult {
     BridgeSkillSearchResult {
-        project_id: result.project_id,
+        workspace_id: result.workspace_id,
         catalog_revision: result.catalog_revision,
         matches: result
             .matches

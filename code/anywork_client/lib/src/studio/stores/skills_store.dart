@@ -4,12 +4,12 @@ import 'domain_sync.dart';
 import 'canonical_clock.dart';
 
 class SkillsStore extends ReadModel<CanonicalClockState<SkillsStateSnapshot>> {
-  SkillsStore(this.projectId)
+  SkillsStore(this.workspaceId)
     : super(CanonicalClockState<SkillsStateSnapshot>());
-  final String projectId;
+  final String workspaceId;
 
   void apply(SkillsStateSnapshot next) {
-    if (next.projectId != projectId) return;
+    if (next.workspaceId != workspaceId) return;
     state = state.applyRevision(next, next.revision);
   }
 

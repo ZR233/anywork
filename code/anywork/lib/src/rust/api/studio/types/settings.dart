@@ -1295,7 +1295,6 @@ class BridgeSkillsSettingsDto {
   final bool autoLearn;
   final bool systemEnabled;
   final String projectDir;
-  final String userDir;
   final List<String> externalDirs;
   final List<String> disabled;
   final int autoLearnMinToolCalls;
@@ -1305,7 +1304,6 @@ class BridgeSkillsSettingsDto {
     required this.autoLearn,
     required this.systemEnabled,
     required this.projectDir,
-    required this.userDir,
     required this.externalDirs,
     required this.disabled,
     required this.autoLearnMinToolCalls,
@@ -1317,7 +1315,6 @@ class BridgeSkillsSettingsDto {
       autoLearn.hashCode ^
       systemEnabled.hashCode ^
       projectDir.hashCode ^
-      userDir.hashCode ^
       externalDirs.hashCode ^
       disabled.hashCode ^
       autoLearnMinToolCalls.hashCode;
@@ -1331,7 +1328,6 @@ class BridgeSkillsSettingsDto {
           autoLearn == other.autoLearn &&
           systemEnabled == other.systemEnabled &&
           projectDir == other.projectDir &&
-          userDir == other.userDir &&
           externalDirs == other.externalDirs &&
           disabled == other.disabled &&
           autoLearnMinToolCalls == other.autoLearnMinToolCalls;
@@ -1506,10 +1502,10 @@ sealed class LspScopeInput with _$LspScopeInput {
   const LspScopeInput._();
 
   const factory LspScopeInput.server({
-    required String projectId,
+    required String workspaceId,
     required String serverId,
   }) = LspScopeInput_Server;
-  const factory LspScopeInput.workspace({required String projectId}) =
+  const factory LspScopeInput.workspace({required String workspaceId}) =
       LspScopeInput_Workspace;
   const factory LspScopeInput.all() = LspScopeInput_All;
 }
@@ -1564,8 +1560,6 @@ sealed class SettingsFieldInput with _$SettingsFieldInput {
       SettingsFieldInput_SkillsSystemEnabled;
   const factory SettingsFieldInput.skillsProjectDir({required String value}) =
       SettingsFieldInput_SkillsProjectDir;
-  const factory SettingsFieldInput.skillsUserDir({required String value}) =
-      SettingsFieldInput_SkillsUserDir;
   const factory SettingsFieldInput.skillsExternalDirs({
     required List<String> value,
   }) = SettingsFieldInput_SkillsExternalDirs;

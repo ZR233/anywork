@@ -3,7 +3,6 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use pl_tool::skill::SkillsConfig;
 use pl_tool::workspace::path_safety::{
     metadata_if_real, remove_dir_all_no_follow, validate_existing_path,
 };
@@ -12,8 +11,6 @@ use serde::{Deserialize, Serialize};
 
 const BUNDLE_FINGERPRINT: &str =
     include_str!(concat!(env!("OUT_DIR"), "/system_skills_fingerprint"));
-
-const LEGACY_SYSTEM_MARKER_FILE_NAME: &str = ".pl-system-skills.marker";
 
 #[derive(Embed)]
 #[folder = "assets/skills/"]
@@ -26,7 +23,7 @@ struct BundledAsset {
     contents: Vec<u8>,
 }
 
-pub(super) fn refresh_system_skills(system_dir: &Path, config: &SkillsConfig) -> Result<()> {
+pub(super) fn refresh_system_skills(system_dir: &Path) -> Result<()> {
     prepare_skills_parent(system_dir)?;
     if cache_matches(system_dir)? {
         tracing::info!(cache_hit = true, "system Skills prepared");
@@ -36,9 +33,6 @@ pub(super) fn refresh_system_skills(system_dir: &Path, config: &SkillsConfig) ->
     let assets = validated_bundled_assets()?;
     replace_system_skills_dir(system_dir, &assets)?;
     write_cache_manifest(system_dir)?;
-    if let Err(error) = clean_legacy_system_skills(system_dir, config) {
-        tracing::warn!(%error, "failed to clean legacy system Skills cache");
-    }
     Ok(())
 }
 
@@ -309,48 +303,4 @@ fn write_assets(staging_dir: &Path, assets: &[BundledAsset]) -> Result<()> {
             .with_context(|| format!("failed to write bundled Skill asset '{}'", path.display()))?;
     }
     Ok(())
-}
-
-fn clean_legacy_system_skills(system_dir: &Path, config: &SkillsConfig) -> Result<()> {
-    let user_dir = pl_tool::skill::resolve_user_skills_dir(config)?;
-    let legacy_dir = user_dir.join(".system");
-    if same_existing_path(&legacy_dir, system_dir) || !has_legacy_marker(&legacy_dir)? {
-        return Ok(());
-    }
-    remove_dir_all_no_follow(&user_dir, &legacy_dir).with_context(|| {
-        format!(
-            "failed to remove legacy system Skills cache '{}'",
-            legacy_dir.display()
-        )
-    })
-}
-
-fn same_existing_path(left: &Path, right: &Path) -> bool {
-    if left == right {
-        return true;
-    }
-    match (fs::canonicalize(left), fs::canonicalize(right)) {
-        (Ok(left), Ok(right)) => left == right,
-        _ => false,
-    }
-}
-
-fn has_legacy_marker(legacy_dir: &Path) -> Result<bool> {
-    let marker = legacy_dir.join(LEGACY_SYSTEM_MARKER_FILE_NAME);
-    let Some(metadata) = metadata_if_real(&marker)
-        .with_context(|| format!("failed to inspect legacy marker '{}'", marker.display()))?
-    else {
-        return Ok(false);
-    };
-    if !metadata.is_file() {
-        return Ok(false);
-    }
-    let value = fs::read_to_string(&marker)
-        .with_context(|| format!("failed to read legacy marker '{}'", marker.display()))?;
-    let value = value.trim();
-    Ok(
-        !value.is_empty()
-            && value.len() <= 16
-            && value.bytes().all(|byte| byte.is_ascii_hexdigit()),
-    )
 }

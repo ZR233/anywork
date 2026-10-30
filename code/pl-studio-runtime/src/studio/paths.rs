@@ -6,7 +6,6 @@ use sha2::{Digest, Sha256};
 use crate::config::STUDIO_CONFIG_DIR_NAME;
 
 const STUDIO_DIR_NAME: &str = "studio";
-const SESSION_LAYOUT_VERSION: &str = "v2";
 const DATABASE_FILE_NAME: &str = "studio.sqlite";
 const SKILLS_DIR_NAME: &str = "skills";
 const SYSTEM_SKILLS_DIR_NAME: &str = ".system";
@@ -15,7 +14,7 @@ const CALLS_FILE_NAME: &str = "calls.sqlite";
 const SETTINGS_FILE_NAME: &str = "settings.toml";
 const WORKSPACES_FILE_NAME: &str = "workspaces.toml";
 const CATALOG_FILE_NAME: &str = "catalog.toml";
-const PROJECTS_DIR_NAME: &str = "projects";
+const WORKSPACES_DIR_NAME: &str = "workspaces";
 const SESSIONS_DIR_NAME: &str = "sessions";
 const BOTS_DIR_NAME: &str = "bots";
 const CALLS_DIR_NAME: &str = "calls";
@@ -23,13 +22,12 @@ const MIGRATIONS_DIR_NAME: &str = "migrations";
 const ATTACHMENT_DRAFTS_DIR_NAME: &str = "attachment-drafts";
 const HISTORY_FILE_NAME: &str = "history.sqlite";
 const ATTACHMENTS_FILE_NAME: &str = "attachments.toml";
-const BLOBS_DIR_NAME: &str = "blobs";
-const RESOURCES_DIR_NAME: &str = "thread-resources";
-const SCRATCH_DIR_NAME: &str = "scratch";
+const RESOURCES_DIR_NAME: &str = "resources";
+const SCRATCH_DIR_NAME: &str = "temp";
 const ACP_PROBE_DIR_NAME: &str = "acp-probe";
 /// 官方 ACP server 安装根目录名；与数据根同级隔离，不进入用户项目。
 const ACP_SERVERS_DIR_NAME: &str = "acp-servers";
-const PROJECT_MANIFEST_FILE_NAME: &str = "project.toml";
+const WORKSPACE_MANIFEST_FILE_NAME: &str = "workspace.toml";
 const SESSION_MANIFEST_FILE_NAME: &str = "session.toml";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -47,14 +45,83 @@ impl StudioPaths {
                 None => user_home_dir()?.join(STUDIO_CONFIG_DIR_NAME),
             },
         };
-        Ok(Self {
-            data_dir: home.join(STUDIO_DIR_NAME).join(SESSION_LAYOUT_VERSION),
-            home,
-        })
+        Ok(Self::from_home(home))
     }
 
+    pub(crate) fn from_home(home: PathBuf) -> Self {
+        Self {
+            data_dir: home.join("data"),
+            home,
+        }
+    }
     pub fn home(&self) -> &Path {
         &self.home
+    }
+
+    pub fn data_dir(&self) -> &Path {
+        &self.data_dir
+    }
+
+    pub fn layout_file(&self) -> PathBuf {
+        self.data_dir.join("layout.toml")
+    }
+
+    pub fn model_catalogs_dir(&self) -> PathBuf {
+        self.data_dir.join("model-catalogs")
+    }
+
+    /// Recognize only the current canonical session shape when a history migration needs its
+    /// layout journal. Arbitrary test/import files have no implicit Studio home.
+    pub(crate) fn from_session_database(database: &Path, thread_id: &str) -> Result<Option<Self>> {
+        if database
+            .file_name()
+            .is_none_or(|name| name != HISTORY_FILE_NAME)
+        {
+            return Ok(None);
+        }
+        let Some(session) = database.parent() else {
+            return Ok(None);
+        };
+        let thread_key = storage_key(thread_id, "Thread")?;
+        if session
+            .file_name()
+            .is_none_or(|key| key != thread_key.as_str())
+        {
+            return Ok(None);
+        }
+        let Some(sessions) = session.parent().filter(|path| {
+            path.file_name()
+                .is_some_and(|name| name == SESSIONS_DIR_NAME)
+        }) else {
+            return Ok(None);
+        };
+        let Some(workspace) = sessions.parent() else {
+            return Ok(None);
+        };
+        let Some(key) = workspace.file_name().and_then(|key| key.to_str()) else {
+            return Ok(None);
+        };
+        if key.len() != 64
+            || !key
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            return Ok(None);
+        }
+        let Some(workspaces) = workspace.parent().filter(|path| {
+            path.file_name()
+                .is_some_and(|name| name == WORKSPACES_DIR_NAME)
+        }) else {
+            return Ok(None);
+        };
+        let Some(data) = workspaces
+            .parent()
+            .filter(|path| path.file_name().is_some_and(|name| name == "data"))
+        else {
+            return Ok(None);
+        };
+        let home = data.parent().context("session data root has no home")?;
+        Ok(Some(Self::from_home(home.to_owned())))
     }
 
     pub fn database(&self) -> PathBuf {
@@ -81,17 +148,17 @@ impl StudioPaths {
 impl StudioPaths {
     /// Product and UI settings store.
     pub fn settings_file(&self) -> PathBuf {
-        self.versioned_home().join(SETTINGS_FILE_NAME)
+        self.data_dir.join(SETTINGS_FILE_NAME)
     }
 
     /// Project/Workspace definitions and stable references.
     pub fn workspaces_file(&self) -> PathBuf {
-        self.versioned_home().join(WORKSPACES_FILE_NAME)
+        self.data_dir.join(WORKSPACES_FILE_NAME)
     }
 
     /// Lightweight Thread directory summaries consumed by the first screen.
     pub fn catalog_file(&self) -> PathBuf {
-        self.versioned_home().join(CATALOG_FILE_NAME)
+        self.data_dir.join(CATALOG_FILE_NAME)
     }
 
     /// Config runtime path view for the same product home.
@@ -102,9 +169,9 @@ impl StudioPaths {
         crate::config::ConfigPaths::from_config_dir(self.home.clone())
     }
 
-    /// Independent robot management root under the v2 data home.
+    /// Independent robot management root under the current data home.
     pub fn bots_dir(&self) -> PathBuf {
-        self.versioned_home().join(BOTS_DIR_NAME)
+        self.data_dir.join(BOTS_DIR_NAME)
     }
 
     /// Stable on-disk directory for one robot.
@@ -112,22 +179,14 @@ impl StudioPaths {
         self.bots_dir().join(bot_id)
     }
 
-    /// Canonical project roots: `v2/projects/<project-key>/`.
-    pub fn projects_dir(&self) -> PathBuf {
-        self.versioned_home().join(PROJECTS_DIR_NAME)
-    }
-
-    /// Pre-layout-migration session root: `v2/sessions/<thread-key>/`.
-    ///
-    /// Normal reads never create this directory. Migration consumes it and leaves unknown
-    /// orphans in place.
-    pub fn legacy_sessions_dir(&self) -> PathBuf {
-        self.versioned_home().join(SESSIONS_DIR_NAME)
+    /// Canonical Workspace roots: `data/workspaces/<workspace-key>/`.
+    pub fn workspaces_dir(&self) -> PathBuf {
+        self.data_dir.join(WORKSPACES_DIR_NAME)
     }
 
     /// Global per-call record directory (`calls.sqlite` plus blob references).
     pub fn calls_dir(&self) -> PathBuf {
-        self.versioned_home().join(CALLS_DIR_NAME)
+        self.data_dir.join(CALLS_DIR_NAME)
     }
 
     /// Global, disposable call statistics database.
@@ -137,13 +196,13 @@ impl StudioPaths {
 
     /// Version-local migration state and consistent backups.
     pub fn migrations_dir(&self) -> PathBuf {
-        self.versioned_home().join(MIGRATIONS_DIR_NAME)
+        self.data_dir.join(MIGRATIONS_DIR_NAME)
     }
 
     /// Temporary attachment-draft root. Persistent attachments live under the owning Thread's
-    /// `blobs` directory; this root is never an attachment catalog or content-addressed store.
+    /// `resources` directory; this root is never an attachment catalog or content-addressed store.
     pub fn attachment_drafts_dir(&self) -> PathBuf {
-        self.data_dir.join(ATTACHMENT_DRAFTS_DIR_NAME)
+        self.data_dir.join("temp").join(ATTACHMENT_DRAFTS_DIR_NAME)
     }
 
     /// ACP 认证探测工作区根：产品数据根下按接入稳定 key 隔离，不使用用户项目目录。
@@ -151,7 +210,7 @@ impl StudioPaths {
     /// 目录只作为外部 Agent 的空 `cwd`；它不承载凭据、会话历史或供应商状态，删除它不撤销
     /// 官方程序的登录（见 design/17、design/28）。
     pub fn acp_probe_root(&self) -> PathBuf {
-        self.data_dir.join(ACP_PROBE_DIR_NAME)
+        self.data_dir.join("temp").join(ACP_PROBE_DIR_NAME)
     }
 
     /// 一条接入专属的空探测目录；key 只由稳定接入 ID 派生。
@@ -163,78 +222,66 @@ impl StudioPaths {
 
     /// 官方 ACP server 安装根：`<Studio home>/studio/acp-servers`。
     ///
-    /// 与会话版本数据根（`studio/v2`）、空探测 cwd、更新安装器缓存和会话 scratch 隔离；下载、
+    /// 与当前产品数据根（`data/`）、空探测 cwd、更新安装器缓存和会话 temp 隔离；下载、
     /// 私有 staging、锁与已发布安装都在该根下按 provider/target/安装身份分层。它不绑定账号，
     /// 删除账号不删除资产（见 design/17、design/28 §28.5–28.7）。
     pub fn acp_servers_root(&self) -> PathBuf {
         self.home.join(STUDIO_DIR_NAME).join(ACP_SERVERS_DIR_NAME)
     }
 
-    /// Stable on-disk directory for one Project.
-    pub fn project_dir(&self, project_id: &str) -> Result<PathBuf> {
+    /// Stable on-disk directory for one Workspace, including Standalone.
+    pub fn workspace_dir(&self, workspace_id: &str) -> Result<PathBuf> {
         Ok(self
-            .projects_dir()
-            .join(storage_key(project_id, "Project")?))
+            .workspaces_dir()
+            .join(storage_key(workspace_id, "Workspace")?))
     }
 
-    /// Versioned project identity manifest.
-    pub fn project_manifest(&self, project_id: &str) -> Result<PathBuf> {
+    /// Versioned Workspace identity manifest.
+    pub fn workspace_manifest(&self, workspace_id: &str) -> Result<PathBuf> {
         Ok(self
-            .project_dir(project_id)?
-            .join(PROJECT_MANIFEST_FILE_NAME))
+            .workspace_dir(workspace_id)?
+            .join(WORKSPACE_MANIFEST_FILE_NAME))
     }
 
-    /// Typed session paths from an explicit Project and Thread identity.
+    /// Typed session paths from an explicit Workspace and Thread identity.
     ///
     /// Unknown Threads must not be resolved by guessing a default Project. Callers that already
     /// hold both identities (child prepare, writer, tests) use this entry; registered Threads go
     /// through [`StudioStore::registered_session_paths`](crate::studio::store::StudioStore::registered_session_paths).
-    pub fn session_paths(&self, project_id: &str, thread_id: &str) -> Result<SessionPaths> {
-        SessionPaths::bind(self, project_id, thread_id)
-    }
-
-    /// Legacy flat session directory for one Thread key. Used by layout migration tests.
-    #[cfg(test)]
-    pub fn legacy_thread_dir(&self, thread_id: &str) -> Result<PathBuf> {
-        Ok(self
-            .legacy_sessions_dir()
-            .join(storage_key(thread_id, "Thread")?))
-    }
-
-    fn versioned_home(&self) -> PathBuf {
-        self.home.join(SESSION_LAYOUT_VERSION)
+    pub fn session_paths(&self, workspace_id: &str, thread_id: &str) -> Result<SessionPaths> {
+        SessionPaths::bind(self, workspace_id, thread_id)
     }
 }
 
-/// Bound host paths for one Project + Thread pair.
+/// Bound host paths for one Workspace + Thread pair.
 ///
 /// The layout is
-/// `v2/projects/<sha256(project_id)>/sessions/<sha256(thread_id)>/`.
+/// `data/workspaces/<sha256(workspace_id)>/sessions/<sha256(thread_id)>/`.
 /// Keys are stable identity digests, never path, alias, or display name.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionPaths {
-    project_id: String,
+    workspace_id: String,
     thread_id: String,
     root: PathBuf,
 }
 
 impl SessionPaths {
-    fn bind(paths: &StudioPaths, project_id: &str, thread_id: &str) -> Result<Self> {
-        let project_key = storage_key(project_id, "Project")?;
+    fn bind(paths: &StudioPaths, workspace_id: &str, thread_id: &str) -> Result<Self> {
+        let workspace_key = storage_key(workspace_id, "Workspace")?;
         let thread_key = storage_key(thread_id, "Thread")?;
         Ok(Self {
-            project_id: project_id.to_owned(),
+            workspace_id: workspace_id.to_owned(),
             thread_id: thread_id.to_owned(),
             root: paths
-                .projects_dir()
-                .join(project_key)
+                .workspaces_dir()
+                .join(workspace_key)
                 .join(SESSIONS_DIR_NAME)
                 .join(thread_key),
         })
     }
 
-    pub fn project_id(&self) -> &str {
-        &self.project_id
+    pub fn workspace_id(&self) -> &str {
+        &self.workspace_id
     }
 
     pub fn thread_id(&self) -> &str {
@@ -253,16 +300,12 @@ impl SessionPaths {
         self.root.join(ATTACHMENTS_FILE_NAME)
     }
 
-    pub fn blobs_dir(&self) -> PathBuf {
-        self.root.join(BLOBS_DIR_NAME)
-    }
-
     pub fn resources_dir(&self) -> PathBuf {
         self.root.join(RESOURCES_DIR_NAME)
     }
 
     /// Host-owned transfer scratch. Execution scratch lives in the workspace, not here.
-    pub fn scratch_dir(&self) -> PathBuf {
+    pub fn temp_dir(&self) -> PathBuf {
         self.root.join(SCRATCH_DIR_NAME)
     }
 
@@ -275,12 +318,6 @@ impl SessionPaths {
 pub fn storage_key(id: &str, kind: &str) -> Result<String> {
     ensure!(!id.is_empty(), "{kind} identity must not be empty");
     Ok(hex::encode(Sha256::digest(id.as_bytes())))
-}
-
-/// Stable on-disk key for a Thread session directory.
-#[cfg(test)]
-pub fn thread_storage_key(thread_id: &str) -> Result<String> {
-    storage_key(thread_id, "Thread")
 }
 
 pub fn default_db_path() -> Result<PathBuf> {

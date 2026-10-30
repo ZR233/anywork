@@ -25,7 +25,7 @@ pub(super) struct SkillActivityScenario<'a> {
     pub interrupt: &'a mpsc::Receiver<()>,
 }
 
-/// The synthetic skills seeded into the isolated `[skills].user_dir`.
+/// The synthetic skills seeded into the isolated standard user skills directory.
 ///
 /// Only the short skill carries a support file: reading it must stay an ordinary
 /// successful tool row instead of a second activation.
@@ -44,7 +44,7 @@ const SEEDED_SKILLS: [SeededSkill; 2] = [
     },
 ];
 
-/// One synthetic skill written into the isolated `[skills].user_dir`.
+/// One synthetic skill written into the isolated standard user skills directory.
 ///
 /// Only one of them carries a support file, because reading it must stay an
 /// ordinary successful tool row instead of a second activation.
@@ -76,22 +76,21 @@ pub(super) fn run(context: &SkillActivityScenario<'_>, mut fixture: OwnedProcess
     // discovery walks every Skill root with a git-aware walker, and the
     // evidence directory sits in the repository's ignored `target/` tree, where
     // such a root is skipped without a warning. The seeds therefore own a
-    // temporary root under the system temp directory and the isolated config
-    // points `[skills].user_dir` at it. The guard lives in this scope, so the
+    // temporary root under the system temp directory and the isolated process
+    // home points at it. The guard lives in this scope, so the
     // seeds outlive both GUI lifecycles and are released only after every owned
     // process has been reaped.
     let seeds = tempfile::Builder::new()
         .prefix("skill-activity-skills-")
         .tempdir()
         .context("failed to create the synthetic skill seed directory")?;
-    let skills_dir = seeds.path().join("skills");
+    let skills_dir = home.join(".agents/skills");
     // Project discovery must not inherit the evidence directory's ignored
     // `target/` ancestor either. This same guard owns both synthetic roots and
     // outlives both GUI lifecycles; only product file tools mutate project Skills.
     let project = seeds.path().join("project");
     let journey = (|| -> Result<()> {
         seed_skills(&skills_dir)?;
-        point_user_skills_dir(home, &skills_dir)?;
         verify_seeded_skills(home, &skills_dir)?;
         fs::create_dir(&project)?;
         ensure!(
@@ -325,27 +324,25 @@ fn verify_dynamic_mutations(project: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Proves the isolated home really points production discovery at the seeded
-/// Skills before any GUI process starts.
-///
-/// The check reads the persisted `config.toml` instead of re-deriving the value
-/// from the in-memory config, so a lane that silently drops `[skills]` fails
-/// here with its own message rather than as an unexplained failing `skill_view`.
+/// Proves production discovery uses the standard user skills path and the
+/// persisted config no longer selects a private user directory.
 fn verify_seeded_skills(home: &Path, skills_dir: &Path) -> Result<()> {
     let file = home.join("config.toml");
     let document: toml::Value = toml::from_str(
         &fs::read_to_string(&file)
             .with_context(|| format!("failed to read isolated config: {}", file.display()))?,
     )?;
-    let expected = skills_dir.to_string_lossy().into_owned();
     let user_dir = document
         .get("skills")
         .and_then(|skills| skills.get("user_dir"))
-        .and_then(toml::Value::as_str)
-        .context("the isolated config has no `[skills].user_dir`")?;
+        .and_then(toml::Value::as_str);
     ensure!(
-        user_dir == expected,
-        "the isolated config discovers Skills from `{user_dir}` instead of `{expected}`"
+        user_dir.is_none(),
+        "the isolated config still contains retired `[skills].user_dir`"
+    );
+    ensure!(
+        skills_dir == home.join(".agents/skills"),
+        "synthetic user skills are not in the standard isolated home directory"
     );
     for skill in SEEDED_SKILLS {
         let document = skills_dir.join(skill.name).join("SKILL.md");
@@ -356,20 +353,6 @@ fn verify_seeded_skills(home: &Path, skills_dir: &Path) -> Result<()> {
         );
     }
     Ok(())
-}
-
-/// Points the isolated config's `[skills].user_dir` at the seeded Skill root.
-///
-/// Only that one field changes: every other user-visible setting written by the
-/// shared fixture config stays untouched.
-fn point_user_skills_dir(home: &Path, skills_dir: &Path) -> Result<()> {
-    let file = home.join("config.toml");
-    let text = fs::read_to_string(&file)
-        .with_context(|| format!("failed to read isolated config: {}", file.display()))?;
-    let mut config: StudioConfig = toml::from_str(&text)
-        .with_context(|| format!("failed to parse isolated config: {}", file.display()))?;
-    config.skills.user_dir = skills_dir.to_string_lossy().into_owned();
-    persist_config(home, &config)
 }
 
 /// Applies the automatic compaction threshold to the already written isolated

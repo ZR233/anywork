@@ -31,7 +31,7 @@ void main() {
       final fixture = await _fixture();
       final client = fixture.graph.client;
       client.selection.restoreStartup(
-        projectId: fixture.root.projectId,
+        workspaceId: fixture.root.workspaceId,
         threadId: fixture.child.id,
         needsOpen: true,
       );
@@ -48,7 +48,7 @@ void main() {
     final client = fixture.graph.client;
     final wrongProject = StudioThread(
       id: fixture.child.id,
-      projectId: 'foreign-project',
+      workspaceId: 'foreign-project',
       title: fixture.child.title,
       mode: fixture.child.mode,
       delegationMode: fixture.child.delegationMode,
@@ -115,13 +115,13 @@ void main() {
         switch (invalidation) {
           case 'same-root-selection':
             client.selection.restoreStartup(
-              projectId: fixture.root.projectId,
+              workspaceId: fixture.root.workspaceId,
               threadId: 'cold-sibling',
               needsOpen: true,
             );
           case 'root':
             client.selection.restoreStartup(
-              projectId: fixture.other.projectId,
+              workspaceId: fixture.other.workspaceId,
               threadId: fixture.other.id,
               needsOpen: true,
             );
@@ -197,7 +197,7 @@ void main() {
       final commands = client.directoryCommands;
       final next = _outcome(switch (action) {
         'root' => commands.selectThread(fixture.other.id),
-        'project' => commands.selectProject(fixture.root.projectId),
+        'project' => commands.selectProject(fixture.root.workspaceId),
         'project-failure' => commands.selectProject('foreign-project'),
         'new-session' => commands.beginNewThread(),
         'startup-open' => commands.openSelectedThread(),
@@ -257,7 +257,7 @@ void main() {
         return activation.future;
       };
       final draftNavigation = _outcome(
-        client.directoryCommands.beginNewThread(projectId: 'foreign-project'),
+        client.directoryCommands.beginNewThread(workspaceId: 'foreign-project'),
       );
       addTearDown(() async {
         if (!activation.isCompleted) activation.complete();
@@ -270,7 +270,7 @@ void main() {
       await newer;
       fixture.graph.setConversationPageVisible(true);
       await client.conversations.session(fixture.other.id).content.ready;
-      expect(client.selection.state.selectedProjectId, fixture.other.projectId);
+      expect(client.selection.state.selectedProjectId, fixture.other.workspaceId);
       expect(client.selection.state.selectedThreadId, fixture.other.id);
       expect(
         client.conversations.sessionStates.map((state) => state.threadId),
@@ -303,7 +303,7 @@ void main() {
     );
     await oldEntered.future;
     final created = client.threadCommands.submitNewThread(
-      projectId: fixture.root.projectId,
+      workspaceId: fixture.root.workspaceId,
       input: const StudioPromptInput(
         inputId: 'create-input',
         text: 'A new root',
@@ -765,7 +765,7 @@ Future<_ColdFixture> _fixture() async {
       revision: 1,
       values: [
         StudioProject(
-          id: root.projectId,
+          id: root.workspaceId,
           name: 'Saved project',
           path: root.workspacePath,
         ),
@@ -784,7 +784,7 @@ Future<_ColdFixture> _fixture() async {
     ThreadDirectoryWindow(threads: [root, other], revision: 7),
   );
   graph.client.selection.restoreStartup(
-    projectId: root.projectId,
+    workspaceId: root.workspaceId,
     threadId: root.id,
     needsOpen: true,
   );
@@ -842,12 +842,12 @@ final class _ColdSelectionTransport extends RecordingDemoTransport {
   }
 
   @override
-  Future<void> activateProject(String projectId) =>
-      onActivate?.call(projectId) ?? super.activateProject(projectId);
+  Future<void> activateProject(String workspaceId) =>
+      onActivate?.call(workspaceId) ?? super.activateProject(workspaceId);
 
   @override
   Stream<NewThreadStartEvent> startNewThread(
-    String projectId,
+    String workspaceId,
     StudioPromptInput input,
     ThreadModeId mode, {
     required ModeModelRouteView route,

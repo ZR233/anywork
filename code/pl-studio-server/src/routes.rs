@@ -145,7 +145,7 @@ fn query_rejection(rejection: QueryRejection) -> ApiError {
     ApiError(StudioError::invalid_argument("invalid query parameters"))
 }
 
-/// typed 产品 topic 的查询参数；`projectId`/`rootThreadId` 只服务带作用域 topic。
+/// typed 产品 topic 的查询参数；`workspaceId`/`rootThreadId` 只服务带作用域 topic。
 ///
 /// 字段按 camelCase 反序列化并与 OpenAPI 文档一致；未知查询参数直接 400，
 /// 不允许以 snake_case 或多余身份静默扩大输入。
@@ -153,7 +153,7 @@ fn query_rejection(rejection: QueryRejection) -> ApiError {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct ProductTopicQuery {
     pub(crate) topic: String,
-    pub(crate) project_id: Option<String>,
+    pub(crate) workspace_id: Option<String>,
     pub(crate) root_thread_id: Option<String>,
 }
 
@@ -178,7 +178,7 @@ pub(crate) fn parse_product_topic(
         "skills" => StudioProductTopic::Skills {
             // scope 身份原样保留（不 trim），与 runtime / FRB 保持同一身份；`validate()` 只用
             // trim 判定 blank，不做归一化，也不扩大允许的输入。
-            project_id: query.project_id.clone().unwrap_or_default(),
+            workspace_id: query.workspace_id.clone().unwrap_or_default(),
         },
         "threadModeCatalog" => StudioProductTopic::ThreadModeCatalog,
         "accountUsage" => StudioProductTopic::AccountUsage,
@@ -199,7 +199,7 @@ pub(crate) fn parse_product_topic(
     };
     match (
         &topic,
-        query.project_id.is_some(),
+        query.workspace_id.is_some(),
         query.root_thread_id.is_some(),
     ) {
         (StudioProductTopic::Skills { .. }, true, false) => {}
@@ -339,7 +339,7 @@ async fn read_state(State(state): State<AppState>) -> Result<impl IntoResponse, 
     operation_id = "studio.readProductBaseline",
     params(
         ("topic" = String, Query, description = "typed 产品 topic（camelCase 标签）"),
-        ("projectId" = Option<String>, Query, description = "Skills topic 的项目作用域"),
+        ("workspaceId" = Option<String>, Query, description = "Skills topic 的项目作用域"),
         ("rootThreadId" = Option<String>, Query, description = "SessionCosts topic 的根会话作用域")
     ),
     responses(StudioApiErrors, (status = 200, description = "Canonical topic baseline"))
@@ -385,43 +385,43 @@ async fn prepare_standalone_workspace(
     ))
 }
 
-#[utoipa::path(post, path = "/api/v1/projects/{project_id}/activation", operation_id = "project.activate", params(("project_id" = String, Path)), responses(StudioApiErrors, (status = 204)))]
+#[utoipa::path(post, path = "/api/v1/projects/{workspace_id}/activation", operation_id = "project.activate", params(("workspace_id" = String, Path)), responses(StudioApiErrors, (status = 204)))]
 async fn activate_project(
     State(state): State<AppState>,
-    Path(project_id): Path<String>,
+    Path(workspace_id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
     state
         .runtime
-        .activate_project(&project_id)
+        .activate_project(&workspace_id)
         .await
         .map_err(ApiError::from)?;
     Ok(StatusCode::NO_CONTENT)
 }
 
-#[utoipa::path(delete, path = "/api/v1/projects/{project_id}", operation_id = "project.archive", params(("project_id" = String, Path)), responses(StudioApiErrors, (status = 200)))]
+#[utoipa::path(delete, path = "/api/v1/projects/{workspace_id}", operation_id = "project.archive", params(("workspace_id" = String, Path)), responses(StudioApiErrors, (status = 200)))]
 async fn archive_project(
     State(state): State<AppState>,
-    Path(project_id): Path<String>,
+    Path(workspace_id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
     let project = state
         .runtime
-        .archive_project(&project_id)
+        .archive_project(&workspace_id)
         .await
         .map_err(ApiError::from)?
         .ok_or_else(|| ApiError(StudioError::not_found("Project")))?;
     Ok(Json(project))
 }
 
-#[utoipa::path(put, path = "/api/v1/projects/{project_id}/name", operation_id = "project.rename", params(("project_id" = String, Path)), request_body = pl_protocol::studio::RenameProjectRequest, responses(StudioApiErrors, (status = 200)))]
+#[utoipa::path(put, path = "/api/v1/projects/{workspace_id}/name", operation_id = "project.rename", params(("workspace_id" = String, Path)), request_body = pl_protocol::studio::RenameProjectRequest, responses(StudioApiErrors, (status = 200)))]
 async fn rename_project(
     State(state): State<AppState>,
-    Path(project_id): Path<String>,
+    Path(workspace_id): Path<String>,
     ApiJson(request): ApiJson<pl_protocol::studio::RenameProjectRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     Ok(Json(
         state
             .runtime
-            .rename_project(&project_id, &request.name)
+            .rename_project(&workspace_id, &request.name)
             .await
             .map_err(ApiError::from)?,
     ))
@@ -470,16 +470,16 @@ async fn restore_thread(
     ))
 }
 
-#[utoipa::path(post, path = "/api/v1/projects/{project_id}/threads", operation_id = "thread.create", params(("project_id" = String, Path)), request_body = CreateThreadRequest, responses(StudioApiErrors, (status = 200)))]
+#[utoipa::path(post, path = "/api/v1/projects/{workspace_id}/threads", operation_id = "thread.create", params(("workspace_id" = String, Path)), request_body = CreateThreadRequest, responses(StudioApiErrors, (status = 200)))]
 async fn create_thread(
     State(state): State<AppState>,
-    Path(project_id): Path<String>,
+    Path(workspace_id): Path<String>,
     ApiJson(request): ApiJson<CreateThreadRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     Ok(Json(
         state
             .runtime
-            .create_thread_command(project_id, request, None)
+            .create_thread_command(workspace_id, request, None)
             .await
             .map_err(ApiError::from)?,
     ))
@@ -1395,22 +1395,22 @@ async fn read_persistence_queue(
     Ok(Json(state.runtime.persistence_queue_snapshot()))
 }
 
-#[utoipa::path(get, path = "/api/v1/runtime/projects/{project_id}/skills", operation_id = "skills.read", params(("project_id" = String, Path)), responses(StudioApiErrors, (status = 200, body = crate::skills_schema::SkillsStateSnapshotSchema)))]
+#[utoipa::path(get, path = "/api/v1/runtime/projects/{workspace_id}/skills", operation_id = "skills.read", params(("workspace_id" = String, Path)), responses(StudioApiErrors, (status = 200, body = crate::skills_schema::SkillsStateSnapshotSchema)))]
 async fn read_skills(
     State(state): State<AppState>,
-    Path(project_id): Path<String>,
+    Path(workspace_id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
-    Ok(Json(state.runtime.read_skills_state(&project_id).await))
+    Ok(Json(state.runtime.read_skills_state(&workspace_id).await))
 }
 
-#[utoipa::path(post, path = "/api/v1/runtime/projects/{project_id}/skills/discover", operation_id = "skills.discover", params(("project_id" = String, Path)), responses(StudioApiErrors, (status = 200, body = crate::skills_schema::SkillsStateSnapshotSchema)))]
+#[utoipa::path(post, path = "/api/v1/runtime/projects/{workspace_id}/skills/discover", operation_id = "skills.discover", params(("workspace_id" = String, Path)), responses(StudioApiErrors, (status = 200, body = crate::skills_schema::SkillsStateSnapshotSchema)))]
 async fn discover_skills(
     State(state): State<AppState>,
-    Path(project_id): Path<String>,
+    Path(workspace_id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
     let snapshot = state
         .runtime
-        .discover_skills(&project_id)
+        .discover_skills(&workspace_id)
         .await
         .map_err(ApiError::from)?;
     Ok(Json(pl_studio_runtime::StudioSkillsStateSnapshot::from(
@@ -1418,16 +1418,16 @@ async fn discover_skills(
     )))
 }
 
-#[utoipa::path(post, path = "/api/v1/runtime/projects/{project_id}/skills/search", operation_id = "skills.search", params(("project_id" = String, Path)), request_body = SearchSkillsRequest, responses(StudioApiErrors, (status = 200, body = crate::skills_schema::SkillSearchResultSchema)))]
+#[utoipa::path(post, path = "/api/v1/runtime/projects/{workspace_id}/skills/search", operation_id = "skills.search", params(("workspace_id" = String, Path)), request_body = SearchSkillsRequest, responses(StudioApiErrors, (status = 200, body = crate::skills_schema::SkillSearchResultSchema)))]
 async fn search_skills(
     State(state): State<AppState>,
-    Path(project_id): Path<String>,
+    Path(workspace_id): Path<String>,
     ApiJson(request): ApiJson<SearchSkillsRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     Ok(Json(
         state
             .runtime
-            .search_skills(&project_id, &request.query, request.limit.unwrap_or(50))
+            .search_skills(&workspace_id, &request.query, request.limit.unwrap_or(50))
             .await
             .map_err(ApiError::from)?,
     ))
@@ -1468,27 +1468,27 @@ async fn read_lsp(State(state): State<AppState>) -> Result<impl IntoResponse, Ap
     Ok(Json(state.runtime.read_lsp_state().await))
 }
 
-#[utoipa::path(post, path = "/api/v1/runtime/projects/{project_id}/lsp/probe", operation_id = "lsp.probe", params(("project_id" = String, Path)), responses(StudioApiErrors, (status = 200)))]
+#[utoipa::path(post, path = "/api/v1/runtime/projects/{workspace_id}/lsp/probe", operation_id = "lsp.probe", params(("workspace_id" = String, Path)), responses(StudioApiErrors, (status = 200)))]
 async fn probe_lsp(
     State(state): State<AppState>,
-    Path(project_id): Path<String>,
+    Path(workspace_id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
     state
         .runtime
-        .probe_lsp_server(&project_id)
+        .probe_lsp_server(&workspace_id)
         .await
         .map_err(ApiError::from)?;
     Ok(Json(state.runtime.read_lsp_state().await))
 }
 
-#[utoipa::path(post, path = "/api/v1/runtime/projects/{project_id}/lsp/{server_id}/repair", operation_id = "lsp.repair", params(("project_id" = String, Path), ("server_id" = String, Path)), responses(StudioApiErrors, (status = 200)))]
+#[utoipa::path(post, path = "/api/v1/runtime/projects/{workspace_id}/lsp/{server_id}/repair", operation_id = "lsp.repair", params(("workspace_id" = String, Path), ("server_id" = String, Path)), responses(StudioApiErrors, (status = 200)))]
 async fn repair_lsp(
     State(state): State<AppState>,
-    Path((project_id, server_id)): Path<(String, String)>,
+    Path((workspace_id, server_id)): Path<(String, String)>,
 ) -> Result<impl IntoResponse, ApiError> {
     state
         .runtime
-        .repair_lsp_server(&project_id, &server_id)
+        .repair_lsp_server(&workspace_id, &server_id)
         .await
         .map_err(ApiError::from)?;
     Ok(Json(state.runtime.read_lsp_state().await))

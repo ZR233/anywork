@@ -126,7 +126,6 @@ class SkillsSettingsView {
     this.autoLearn = true,
     this.systemEnabled = true,
     this.projectDir = '.agents/skills',
-    this.userDir = '~/.anywork/skills',
     this.externalDirs = const [],
     this.disabled = const [],
     this.autoLearnMinToolCalls = 5,
@@ -136,7 +135,6 @@ class SkillsSettingsView {
   final bool autoLearn;
   final bool systemEnabled;
   final String projectDir;
-  final String userDir;
   final List<String> externalDirs;
   final List<String> disabled;
   final int autoLearnMinToolCalls;
@@ -146,7 +144,6 @@ class SkillsSettingsView {
     bool? autoLearn,
     bool? systemEnabled,
     String? projectDir,
-    String? userDir,
     List<String>? externalDirs,
     List<String>? disabled,
     int? autoLearnMinToolCalls,
@@ -156,7 +153,6 @@ class SkillsSettingsView {
       autoLearn: autoLearn ?? this.autoLearn,
       systemEnabled: systemEnabled ?? this.systemEnabled,
       projectDir: projectDir ?? this.projectDir,
-      userDir: userDir ?? this.userDir,
       externalDirs: externalDirs ?? this.externalDirs,
       disabled: disabled ?? this.disabled,
       autoLearnMinToolCalls:

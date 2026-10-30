@@ -1,7 +1,7 @@
 //! Resolve outside the canonical admission mutex; no business workspace preparation precedes it.
 use super::{StudioThreadFactory, errors::resource_error};
 use crate::studio::{
-    ProjectRecord,
+    WorkspaceRecord,
     agent_host::worktree_lease::{
         WorkspaceEndpoint, WorkspaceIdentity, WorkspaceUsageLease, WorktreeLease,
     },
@@ -15,27 +15,60 @@ impl StudioThreadFactory {
         &self,
         verified: &WorktreeLease,
         usage: &WorkspaceUsageLease,
+        preparation: &crate::thread_assembler::WorkspacePreparationOwner,
     ) -> Result<()> {
+        self.services
+            .store
+            .ensure_archive_execution_allowed(
+                &verified.workspace_id,
+                Some(&verified.owner_thread_id),
+            )
+            .await?;
+        self.services
+            .store
+            .ensure_agent_execution_allowed(&verified.owner_thread_id)
+            .await?;
+        let write = preparation.with_binding_admission(&verified.owner_thread_id, || {
+            self.services
+                .worktrees
+                .prepare_verified_binding(verified, usage)
+        })?;
         let confirmed = self
             .services
             .worktrees
-            .confirm_verified_binding(verified, usage)
+            .confirm_prepared_binding(write)
             .await?;
-        self.services.recovery.confirm_worktree(
-            verified,
-            &confirmed,
-            || {
-                self.services
-                    .worktrees
-                    .get(&confirmed.owner_thread_id)
-                    .as_ref()
-                    == Some(&confirmed)
-            },
-            |state| {
-                self.services.product_events.emit_recovery_state(state);
-            },
-        );
-        Ok(())
+        // The lease ACK is independent from archive/close admission. A durable seal may
+        // have arrived while the writer was saving this binding; it must win before
+        // Recovery retirement or handing the prepared owner back for publication.
+        self.services
+            .store
+            .ensure_archive_execution_allowed(
+                &verified.workspace_id,
+                Some(&verified.owner_thread_id),
+            )
+            .await?;
+        self.services
+            .store
+            .ensure_agent_execution_allowed(&verified.owner_thread_id)
+            .await?;
+        preparation.with_binding_admission(&verified.owner_thread_id, || {
+            self.services.recovery.confirm_worktree(
+                verified,
+                &confirmed,
+                || {
+                    self.services
+                        .worktrees
+                        .get(&confirmed.owner_thread_id)
+                        .as_ref()
+                        == Some(&confirmed)
+                },
+                |state| {
+                    self.services.product_events.emit_recovery_state(state);
+                },
+            );
+            Ok(())
+        })
     }
     /// Restore execution seals and only unfinished physical delete seals before preparation opens.
     pub(in crate::studio) async fn restore_workspace_admission(
@@ -81,7 +114,7 @@ impl StudioThreadFactory {
     pub(in crate::studio) async fn reserve_workspace_use(
         &self,
         id: &str,
-        project: &ProjectRecord,
+        project: &WorkspaceRecord,
     ) -> Result<WorkspaceUsageLease> {
         self.services
             .worktrees
@@ -92,7 +125,7 @@ impl StudioThreadFactory {
         &self,
         id: &str,
         root_id: &str,
-        project: &ProjectRecord,
+        project: &WorkspaceRecord,
     ) -> Result<WorkspaceUsageLease> {
         if self
             .services
@@ -111,7 +144,7 @@ impl StudioThreadFactory {
 
     pub(in crate::studio) async fn resolve_workspace_identity(
         &self,
-        project: &ProjectRecord,
+        project: &WorkspaceRecord,
         root: &Path,
     ) -> Result<WorkspaceIdentity> {
         crate::studio::agent_host::worktree_lease::resolve_physical_workspace(
@@ -125,10 +158,23 @@ impl StudioThreadFactory {
     pub(in crate::studio) async fn assign_workspace_use(
         &self,
         usage: &WorkspaceUsageLease,
-        project: &ProjectRecord,
+        project: &WorkspaceRecord,
         root: &Path,
     ) -> Result<WorkspaceIdentity> {
         let identity = self.resolve_workspace_identity(project, root).await?;
+        let owner = self.services.worktrees.usage_owner(usage)?;
+        if self
+            .services
+            .store
+            .thread_preparation(&owner)
+            .await?
+            .is_some()
+        {
+            self.services
+                .store
+                .bind_thread_preparation(&owner, &identity)
+                .await?;
+        }
         self.services
             .worktrees
             .assign_workspace(usage, identity.clone())?;

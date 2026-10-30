@@ -49,7 +49,7 @@ impl StudioRuntime {
                 category: StudioRecoveryIssueCategory::Storage,
                 impact: StudioRecoveryImpact::Advisory,
                 action: if residual_registration && record.error.is_none() { StudioRecoveryIssueAction::None } else { StudioRecoveryIssueAction::Retry },
-                project_id: Some(record.project_id),
+                workspace_id: Some(record.workspace_id),
                 thread_id: Some(record.agent_id),
                 message: record.error.map_or_else(
                     || {
@@ -151,7 +151,7 @@ impl StudioRuntime {
                     id: format!("unregistered-worktree:{}:{}", project.id, pl_core::context::content_hash(path.to_string_lossy().as_bytes())),
                     scope: StudioRecoveryIssueScope::Project, category: StudioRecoveryIssueCategory::Repository,
                     impact: StudioRecoveryImpact::Advisory,
-                    action: StudioRecoveryIssueAction::Retry, project_id: Some(project.id.clone()), thread_id: None,
+                    action: StudioRecoveryIssueAction::Retry, workspace_id: Some(project.id.clone()), thread_id: None,
                     message: format!("Unregistered worktree preserved at {}; ownership must be inspected before explicit cleanup", path.display()), worktree: None,
                 });
             }
@@ -304,7 +304,7 @@ impl StudioRuntime {
             } else {
                 StudioRecoveryIssueAction::Retry
             },
-            project_id: Some(lease.project_id.clone()),
+            workspace_id: Some(lease.workspace_id.clone()),
             // The issue belongs to the Thread that owns the workspace. A child's site must be resolvable
             // — and retirable — by that child alone; attributing it to the root made activation unable
             // to clear its own entry and let a root activation clear a different child's entry.
@@ -418,7 +418,7 @@ impl StudioRuntime {
         let owner = self.find_owned_thread(&lease.owner_thread_id).await?;
         if let Some(owner) = &owner {
             anyhow::ensure!(
-                lease.project_id == owner.project_id
+                lease.workspace_id == owner.workspace_id
                     && lease.root_thread_id == owner.root_thread_id,
                 WorktreeError::IdentityMismatch(
                     "owner: lease differs from the directory owner".into()
@@ -431,12 +431,12 @@ impl StudioRuntime {
             .project_snapshot()
             .await
             .into_iter()
-            .find(|project| project.id == lease.project_id)
+            .find(|project| project.id == lease.workspace_id)
         {
             Some(project) => project,
             None => self
                 .store
-                .read_project(&lease.project_id)
+                .read_project(&lease.workspace_id)
                 .await?
                 .ok_or_else(|| {
                     WorktreeError::IdentityMismatch("project: lease project is missing".into())
@@ -543,7 +543,7 @@ impl StudioRuntime {
             category: StudioRecoveryIssueCategory::Repository,
             impact: StudioRecoveryImpact::ExecutionBlocked,
             action: StudioRecoveryIssueAction::Retry,
-            project_id: Some(thread.project_id.clone()),
+            workspace_id: Some(thread.workspace_id.clone()),
             thread_id: Some(thread.id.clone()),
             message: String::new(),
             worktree: None,
@@ -635,7 +635,7 @@ impl StudioRuntime {
                 category: StudioRecoveryIssueCategory::Repository,
                 impact: StudioRecoveryImpact::ExecutionBlocked,
                 action: StudioRecoveryIssueAction::Retry,
-                project_id: Some(project.id),
+                workspace_id: Some(project.id),
                 thread_id: None,
                 message: format!("Project workspace is unavailable: {error}"),
                 worktree: None,

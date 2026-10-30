@@ -38,7 +38,7 @@ pub(crate) struct AgentCloseRecord {
     pub agent_id: String,
     pub parent_id: String,
     pub root_id: String,
-    pub project_id: String,
+    pub workspace_id: String,
     pub revision: u64,
     pub force: bool,
     pub worktree: Option<OwnedWorktreeBinding>,
@@ -70,7 +70,7 @@ impl PersistedStudioObject for AgentCloseRecord {
     type PersistenceDto = Self;
     const OWNER_KIND: &'static str = "thread";
     const OBJECT_KIND: &'static str = "agentClose";
-    const SCHEMA_VERSION: i64 = 2;
+    const SCHEMA_VERSION: i64 = 3;
 
     fn revision(&self) -> u64 {
         self.revision
@@ -93,7 +93,7 @@ impl PersistedStudioObject for AgentCloseRecord {
                 lease.owner_kind == WorktreeLeaseOwnerKind::Child
                     && lease.owner_thread_id == owner
                     && lease.root_thread_id == self.root_id
-                    && lease.project_id == self.project_id
+                    && lease.workspace_id == self.workspace_id
                     && binding.identity.matches_root(&lease.path),
                 "agent close worktree ownership mismatch"
             );
@@ -153,6 +153,76 @@ impl PersistedStudioObject for AgentCloseRecord {
         );
         Ok(())
     }
+}
+
+pub(in crate::studio) async fn migrate_bot_roots(
+    db: &sea_orm::DatabaseConnection,
+    mappings: &mut [crate::studio::startup::storage_layout::bot_roots::BotRootMove],
+) -> Result<()> {
+    use crate::studio::entity::studio_object;
+    use sea_orm::{ActiveModelTrait, ActiveValue::Set, IntoActiveModel};
+    let tx = db.begin().await?;
+    for mapping in mappings {
+        let evidence = mapping.clone();
+        for (thread, proof) in &mapping.threads {
+            if !proof.proven_local_root || evidence.blocked.contains_key(thread) {
+                continue;
+            }
+            let Some(row) = studio_object::Entity::find_by_id((
+                AgentCloseRecord::OWNER_KIND.to_owned(),
+                thread.clone(),
+                AgentCloseRecord::OBJECT_KIND.to_owned(),
+            ))
+            .one(&tx)
+            .await?
+            else {
+                continue;
+            };
+            let mut record = decode_object::<AgentCloseRecord>(row.clone())?;
+            ensure!(
+                record.workspace_id == evidence.workspace_id,
+                "bot close Workspace ownership mismatch"
+            );
+            let relocation = (|| -> Result<()> {
+                if let Some(binding) = &mut record.worktree {
+                    ensure!(
+                        binding.identity.endpoint == WorkspaceEndpoint::Local
+                            && binding.lease.ssh_alias.is_none(),
+                        "bot close binding is not local; original facts preserved"
+                    );
+                    evidence.exact_path(&mut binding.identity.root)?;
+                    evidence.exact_path(&mut binding.lease.repository_root)?;
+                    evidence.exact_path(&mut binding.lease.path)?;
+                }
+                if let Some(grant) = &mut record.git {
+                    ensure!(
+                        grant.delivery.endpoint == WorkspaceEndpoint::Local,
+                        "bot close grant is not local; original facts preserved"
+                    );
+                    evidence.exact_path(&mut grant.delivery.root)?;
+                    // A worktree/common-dir grant cannot be safely inferred from a path prefix.
+                    ensure!(
+                        grant.expected_common_dir == evidence.old_root
+                            || grant.expected_common_dir == evidence.new_root,
+                        "bot close common-dir grant is not an exact managed root; original authorization preserved"
+                    );
+                    evidence.exact_path(&mut grant.expected_common_dir)?;
+                }
+                Ok(())
+            })();
+            if let Err(error) = relocation {
+                mapping.blocked.insert(thread.clone(), format!("bot close execution binding cannot be safely relocated; original authorization preserved: {error}"));
+                continue;
+            }
+            let payload = serde_json::to_string(&record)?;
+            let mut active = row.into_active_model();
+            active.payload_json = Set(payload.clone());
+            active.payload_hash = Set(pl_core::context::content_hash(payload.as_bytes()));
+            active.update(&tx).await?;
+        }
+    }
+    tx.commit().await?;
+    Ok(())
 }
 
 impl StudioStore {

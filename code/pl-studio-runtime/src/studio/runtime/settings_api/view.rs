@@ -163,7 +163,6 @@ fn settings_view(
             auto_learn: config.skills.auto_learn,
             system_enabled: config.skills.system.enabled,
             project_dir: config.skills.project_dir.clone(),
-            user_dir: config.skills.user_dir.clone(),
             external_dirs: config.skills.external_dirs.clone(),
             disabled: config.skills.disabled.clone(),
             auto_learn_min_tool_calls: config.skills.auto_learn_min_tool_calls,

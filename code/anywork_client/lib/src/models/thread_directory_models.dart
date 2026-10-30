@@ -54,7 +54,7 @@ bool isRetiredAgentRole(String role) => role.trim() == 'planner';
 class StudioThread {
   const StudioThread({
     required this.id,
-    required this.projectId,
+    required this.workspaceId,
     required this.title,
     required this.mode,
     required this.delegationMode,
@@ -74,7 +74,7 @@ class StudioThread {
   });
 
   final String id;
-  final String projectId;
+  final String workspaceId;
   final String title;
   final ThreadModeId mode;
   final DelegationMode delegationMode;
@@ -140,7 +140,7 @@ class StudioThread {
   }) {
     return StudioThread(
       id: id,
-      projectId: projectId,
+      workspaceId: workspaceId,
       title: title ?? this.title,
       mode: mode ?? this.mode,
       delegationMode: delegationMode,
@@ -362,12 +362,12 @@ enum DirectoryFilter { all, running, attention }
 
 class DirectoryQuery {
   const DirectoryQuery({
-    this.projectId,
+    this.workspaceId,
     this.search,
     this.archived = false,
     this.filter = DirectoryFilter.all,
   });
-  final String? projectId;
+  final String? workspaceId;
   final String? search;
   final bool archived;
   final DirectoryFilter filter;
@@ -375,7 +375,7 @@ class DirectoryQuery {
   bool matches(StudioThread thread, List<StudioProject> projects) {
     if (!thread.isRoot ||
         thread.archived != archived ||
-        (projectId != null && thread.projectId != projectId)) {
+        (workspaceId != null && thread.workspaceId != workspaceId)) {
       return false;
     }
     if (filter == DirectoryFilter.running &&
@@ -389,7 +389,9 @@ class DirectoryQuery {
       return false;
     }
     final term = search?.trim().toLowerCase() ?? '';
-    final project = projects.where((p) => p.id == thread.projectId).firstOrNull;
+    final project = projects
+        .where((p) => p.id == thread.workspaceId)
+        .firstOrNull;
     return term.isEmpty ||
         thread.title.toLowerCase().contains(term) ||
         (project != null &&

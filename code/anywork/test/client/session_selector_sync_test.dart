@@ -318,7 +318,7 @@ void main() {
       // This is fixture setup, not a widget action. Retire the project topics
       // on the same real queue on which bootstrap opened them.
       graph.client.selection.restoreStartup(
-        projectId: null,
+        workspaceId: null,
         threadId: null,
         needsOpen: false,
       );
@@ -481,7 +481,7 @@ void main() {
   });
 
   testWidgets('打开项目后原生输入框与工作区选择都更新新会话草稿', (tester) async {
-    final projectId = container.read(selectionStoreProvider).selectedProjectId!;
+    final workspaceId = container.read(selectionStoreProvider).selectedProjectId!;
 
     await tester.pumpWidget(harness(const StartPageComposerDockConnector()));
     await tester.pumpAndSettle();
@@ -492,7 +492,7 @@ void main() {
     await tester.enterText(input, '新会话正文');
     await tester.pumpAndSettle();
     expect(
-      container.read(startSessionControllerProvider).forProject(projectId).text,
+      container.read(startSessionControllerProvider).forProject(workspaceId).text,
       '新会话正文',
     );
 
@@ -517,14 +517,14 @@ void main() {
     expect(
       container
           .read(startSessionControllerProvider)
-          .forProject(projectId)
+          .forProject(workspaceId)
           .workspaceMode,
       ThreadWorkspaceMode.worktree,
     );
   });
 
   testWidgets('起始页Recovery诊断完整可滚动且附件错误不被遮蔽', (tester) async {
-    final projectId = container.read(selectionStoreProvider).selectedProjectId!;
+    final workspaceId = container.read(selectionStoreProvider).selectedProjectId!;
     final current = graph.client.recovery.state.value;
     final detail = List.filled(12, '项目工作区需要检查').join('，');
     graph.client.recovery.apply(
@@ -537,7 +537,7 @@ void main() {
             category: RecoveryIssueCategory.repository,
             impact: RecoveryIssueImpact.executionBlocked,
             availableActions: const [],
-            projectId: projectId,
+            workspaceId: workspaceId,
             detail: detail,
           ),
         ],
@@ -551,7 +551,7 @@ void main() {
       find.byKey(StudioDriverKeys.composerBlocker),
     );
     expect(blocker.data, contains('恢复问题 start-project-recovery'));
-    expect(blocker.data, contains('项目 $projectId'));
+    expect(blocker.data, contains('项目 $workspaceId'));
     expect(blocker.data, contains('执行受阻，仍可读取安全的历史'));
     expect(blocker.data, contains(detail));
     expect(blocker.data, contains('可用恢复操作：当前无可用操作'));
@@ -571,7 +571,7 @@ void main() {
     expect(scrollPosition.pixels, greaterThan(0));
 
     graph.client.drafts.attachments.reportNewThreadFailure(
-      projectId,
+      workspaceId,
       StateError('Clipboard image could not be read during recovery'),
     );
     await tester.pump();
@@ -980,16 +980,16 @@ class _ModeSelectorHost extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final page = ref.watch(startPageComposerViewModelProvider).requireValue;
-    final projectId = page.project?.id;
+    final workspaceId = page.project?.id;
     return SessionModeSelector(
       mode: page.mode,
       onSelected: (mode) {
-        if (projectId == null) return;
+        if (workspaceId == null) return;
         ref
             .read(anyworkClientProvider)
             .drafts
             .startDraft
-            .setMode(projectId, mode);
+            .setMode(workspaceId, mode);
       },
     );
   }

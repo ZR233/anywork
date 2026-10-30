@@ -22,7 +22,7 @@ BotSnapshot _botSnapshotFromFrb(frb_bots_types.BridgeBotSnapshot value) {
     lastActivityAt: value.lastActivityAt,
     id: value.id,
     name: value.name,
-    projectId: value.projectId,
+    workspaceId: value.workspaceId,
     appId: value.appId,
     platform: BotPlatform.feishuChina,
     enabled: value.enabled,
@@ -157,7 +157,7 @@ BotRegistrationAttempt _registrationAttemptFromFrb(
   return BotRegistrationAttempt(
     attemptId: value.attemptId,
     name: value.name,
-    projectId: value.projectId,
+    workspaceId: value.workspaceId,
     status: _registrationStatusFromFrb(value.status),
     completedBotId: value.completedBotId,
   );
@@ -249,7 +249,7 @@ frb_bots_types.BridgeSaveBotRequest _saveBotToFrb(SaveBotRequest request) {
     botId: request.botId,
     expectedConfigRevision: BigInt.from(request.expectedConfigRevision),
     name: request.name,
-    projectId: request.projectId,
+    workspaceId: request.workspaceId,
     appId: request.appId,
     secret: _secretUpdateToFrb(request.secret),
     enabled: request.enabled,
@@ -316,7 +316,7 @@ BotConversationThreadBinding _threadBindingFromFrb(
   return BotConversationThreadBinding(
     botId: value.botId,
     chatId: value.chatId,
-    projectId: value.projectId,
+    workspaceId: value.workspaceId,
     threadId: value.threadId,
     revision: value.revision.toInt(),
     state: switch (value.state) {

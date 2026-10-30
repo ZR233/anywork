@@ -1,6 +1,8 @@
 //! Persistent resource bytes, independent of tool payload formats and session SQL schemas.
 
 mod remote;
+#[cfg(test)]
+pub(crate) mod retention_test;
 pub use remote::RemoteCommandOutputArchive;
 use std::{
     fs::File,
@@ -304,8 +306,19 @@ fn retain_input(
         path: root.to_owned(),
         source: source_error,
     };
-    std::fs::create_dir_all(root).map_err(store_error)?;
-    let mut temporary = tempfile::NamedTempFile::new_in(root).map_err(store_error)?;
+    ensure_no_links(root)?;
+    prepare_resource_directory(root)?;
+    // tempfile's Win32 publication does not add extended-length syntax itself. Keep the
+    // native spelling inside this IO boundary; resource identities and error paths stay original.
+    #[cfg(windows)]
+    let native_root = std::fs::canonicalize(root).map_err(store_error)?;
+    #[cfg(windows)]
+    let native_root = native_root.as_path();
+    #[cfg(not(windows))]
+    let native_root = root;
+    let mut temporary = tempfile::NamedTempFile::new_in(native_root).map_err(store_error)?;
+    #[cfg(test)]
+    retention_test::wait_if_registered(root);
     let mut digest = Sha256::new();
     let mut length = 0_u64;
     let mut buffer = [0_u8; 64 * 1024];
@@ -347,7 +360,13 @@ fn retain_input(
     )?;
     temporary.as_file().sync_all().map_err(store_error)?;
     let destination = resource_path(root, &reference)?;
-    match temporary.persist_noclobber(&destination) {
+    #[cfg(windows)]
+    let native_destination = resource_path(native_root, &reference)?;
+    #[cfg(windows)]
+    let native_destination = native_destination.as_path();
+    #[cfg(not(windows))]
+    let native_destination = destination.as_path();
+    match temporary.persist_noclobber(native_destination) {
         Ok(_) => {}
         Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => {
             // Preserve a conflicting object for diagnosis. Never overwrite historical bytes.
@@ -361,15 +380,97 @@ fn retain_input(
         }
     }
     #[cfg(unix)]
-    for directory in std::fs::canonicalize(root)
-        .map_err(store_error)?
-        .ancestors()
-    {
-        File::open(directory)
-            .and_then(|directory| directory.sync_all())
-            .map_err(store_error)?;
-    }
+    sync_resource_directory(root)?;
     Ok(reference)
+}
+
+/// Publish each newly created directory entry before creating its children. A retry or concurrent
+/// creator may find the last directory before its parent sync finished, so confirm that entry too.
+/// Existing ancestors beyond this boundary belong to their creator, not every retained object.
+fn prepare_resource_directory(root: &Path) -> Result<(), ResourceStoreError> {
+    let mut missing = Vec::new();
+    #[cfg(unix)]
+    let mut existing = Path::new(".");
+    for directory in root.ancestors().filter(|path| !path.as_os_str().is_empty()) {
+        match std::fs::symlink_metadata(directory) {
+            Ok(metadata) if metadata.is_dir() => {
+                #[cfg(unix)]
+                {
+                    existing = directory;
+                }
+                break;
+            }
+            Ok(_) => {
+                return Err(ResourceStoreError::Io {
+                    path: directory.to_owned(),
+                    source: std::io::Error::new(
+                        std::io::ErrorKind::NotADirectory,
+                        "resource directory ancestor is not a directory",
+                    ),
+                });
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => missing.push(directory),
+            Err(source) => {
+                return Err(ResourceStoreError::Io {
+                    path: directory.to_owned(),
+                    source,
+                });
+            }
+        }
+    }
+    #[cfg(unix)]
+    sync_resource_directory_parent(existing)?;
+    for directory in missing.into_iter().rev() {
+        match std::fs::create_dir(directory) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                ensure_no_links(directory)?;
+                let metadata = std::fs::symlink_metadata(directory).map_err(|source| {
+                    ResourceStoreError::Io {
+                        path: directory.to_owned(),
+                        source,
+                    }
+                })?;
+                if !metadata.is_dir() {
+                    return Err(ResourceStoreError::Io {
+                        path: directory.to_owned(),
+                        source: error,
+                    });
+                }
+            }
+            Err(source) => {
+                return Err(ResourceStoreError::Io {
+                    path: directory.to_owned(),
+                    source,
+                });
+            }
+        }
+        #[cfg(unix)]
+        sync_resource_directory_parent(directory)?;
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn sync_resource_directory_parent(directory: &Path) -> Result<(), ResourceStoreError> {
+    if let Some(parent) = directory.parent() {
+        sync_resource_directory(if parent.as_os_str().is_empty() {
+            Path::new(".")
+        } else {
+            parent
+        })?;
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn sync_resource_directory(directory: &Path) -> Result<(), ResourceStoreError> {
+    File::open(directory)
+        .and_then(|handle| handle.sync_all())
+        .map_err(|source| ResourceStoreError::Io {
+            path: directory.to_owned(),
+            source,
+        })
 }
 
 fn resource_path(
@@ -387,7 +488,35 @@ fn resource_path(
     {
         return Err(ResourceStoreError::Identity);
     }
-    Ok(root.join(hash))
+    let path = root.join(hash);
+    ensure_no_links(&path)?;
+    Ok(path)
+}
+
+/// Reliable resources never traverse a link, including an already existing object with valid bytes.
+fn ensure_no_links(path: &Path) -> Result<(), ResourceStoreError> {
+    for entry in path.ancestors() {
+        if entry.as_os_str().is_empty() {
+            continue;
+        }
+        match std::fs::symlink_metadata(entry) {
+            Ok(meta) if pl_tool::workspace::path_safety::is_link_or_reparse(&meta) => {
+                return Err(ResourceStoreError::Io {
+                    path: entry.to_owned(),
+                    source: std::io::Error::other("reliable resource path crosses a link"),
+                });
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(source) => {
+                return Err(ResourceStoreError::Io {
+                    path: entry.to_owned(),
+                    source,
+                });
+            }
+        }
+    }
+    Ok(())
 }
 
 fn verify_file(path: &Path, reference: &ResourceReference) -> Result<(), ResourceStoreError> {
@@ -442,6 +571,43 @@ fn verify_file(path: &Path, reference: &ResourceReference) -> Result<(), Resourc
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn new_resource_directories_retry_without_overwriting_and_share_concurrent_bytes()
+    -> anyhow::Result<()> {
+        let directory = tempfile::tempdir()?;
+        let parent = directory.path().join("session");
+        let root = parent.join("nested/resources");
+        let store = FileResourceStore::new(root.clone());
+        let bytes: Arc<[u8]> = Arc::from(b"one durable resource".as_slice());
+        std::fs::write(&parent, b"preserve this conflicting file")?;
+        assert!(matches!(
+            store.retain_bytes(bytes.clone(), "text/plain").await,
+            Err(ResourceStoreError::Io { .. })
+        ));
+        assert_eq!(
+            std::fs::read(&parent)?,
+            b"preserve this conflicting file",
+            "directory preparation must not remove an existing source"
+        );
+        std::fs::remove_file(&parent)?;
+        let other = FileResourceStore::new(root.clone());
+        let (first, second) = tokio::join!(
+            store.retain_bytes(bytes.clone(), "text/plain"),
+            other.retain_bytes(bytes.clone(), "text/plain"),
+        );
+        let reference = first?;
+        assert_eq!(reference, second?);
+        assert_eq!(
+            store
+                .read(reference, CancellationToken::new())
+                .await?
+                .as_ref(),
+            bytes.as_ref()
+        );
+        assert_eq!(std::fs::read_dir(root)?.count(), 1);
+        Ok(())
+    }
 
     /// The command-archive ceiling is a typed refusal on the command path only, not a new generic limit.
     #[tokio::test]

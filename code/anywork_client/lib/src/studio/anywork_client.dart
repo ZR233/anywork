@@ -270,7 +270,7 @@ class AnyworkClient {
       ),
   ]);
 
-  SkillsStore? existingSkills(String projectId) => _skills[projectId];
+  SkillsStore? existingSkills(String workspaceId) => _skills[workspaceId];
   SessionCostsStore? existingSessionCosts(String rootThreadId) =>
       _sessionCosts[rootThreadId];
   Iterable<SkillsStore> get ownedSkills => List.unmodifiable(_skills.values);
@@ -279,9 +279,9 @@ class AnyworkClient {
   List<ProductTopic> get applicationTopics =>
       _applicationTopics?.topics ?? const [];
 
-  SkillsStore skills(String projectId) => _skills.putIfAbsent(
-    projectId,
-    () => _mirror('skills:$projectId', () => SkillsStore(projectId)),
+  SkillsStore skills(String workspaceId) => _skills.putIfAbsent(
+    workspaceId,
+    () => _mirror('skills:$workspaceId', () => SkillsStore(workspaceId)),
   );
   SessionCostsStore sessionCosts(String rootThreadId) =>
       _sessionCosts.putIfAbsent(
@@ -317,7 +317,8 @@ class AnyworkClient {
     final selected = selection.state;
     final selectedRoot = findThread(selected.selectedThreadId ?? '')
         ?.effectiveRootThreadId;
-    if (topic is SkillsTopic && topic.projectId == selected.selectedProjectId ||
+    if (topic is SkillsTopic &&
+            topic.workspaceId == selected.selectedProjectId ||
         topic is SessionCostsTopic && topic.rootThreadId == selectedRoot) {
       // Admission may have failed before a topic owner existed. Retry logical
       // demand here rather than asking an observer to create that owner.
@@ -452,7 +453,7 @@ class AnyworkClient {
     if (selection.state.selectedProjectId == null &&
         selection.state.selectedThreadId == null) {
       selection.restoreStartup(
-        projectId: snapshot.selectedProjectId,
+        workspaceId: snapshot.selectedProjectId,
         threadId: snapshot.selectedThreadId,
         needsOpen: snapshot.selectedThreadId != null,
       );
@@ -471,7 +472,7 @@ class AnyworkClient {
 
   void _selectionChanged(SelectionStoreState next) {
     if (_closed) return;
-    final projectId = next.selectedProjectId;
+    final workspaceId = next.selectedProjectId;
     final rootId = AgentDirectoryQueries.rootThreadId(
       threadId: next.selectedThreadId,
       agents: project.state.agents?.values ?? const [],
@@ -480,7 +481,7 @@ class AnyworkClient {
         ...threadDirectory.state.overlayThreads,
       ],
     );
-    final topicKey = '$projectId/$rootId';
+    final topicKey = '$workspaceId/$rootId';
     if (_selectionTopicKey != topicKey) {
       final previous = _selectionTopics;
       _selectionTopics = null;
@@ -501,7 +502,7 @@ class AnyworkClient {
       }
       try {
         _selectionTopics = channels.acquireTopics([
-          if (projectId != null) SkillsTopic(projectId: projectId),
+          if (workspaceId != null) SkillsTopic(workspaceId: workspaceId),
           if (rootId != null) SessionCostsTopic(rootThreadId: rootId),
         ]);
         _selectionTopicKey = topicKey;
@@ -539,10 +540,10 @@ class AnyworkClient {
     }
     final selected = selection.state.selectedThreadId;
     if (selected == null || !removed.contains(selected)) return;
-    final projectId = selection.state.selectedProjectId;
+    final workspaceId = selection.state.selectedProjectId;
     selection.replaceRemovedThread(
       threadDirectory.state.window.threads
-          .where((thread) => thread.isRoot && thread.projectId == projectId)
+          .where((thread) => thread.isRoot && thread.workspaceId == workspaceId)
           .firstOrNull
           ?.id,
     );

@@ -89,12 +89,74 @@ fn current_main(paths: &ConfigPaths) -> Result<(StudioConfig, Option<String>)> {
         }
         Err(error) => return Err(error.into()),
     };
-    let (config, source, _) = main_document(paths.config_file(), &bytes)?;
+    let (config, source, migrated) = main_document(paths.config_file(), &bytes)?;
     ensure!(
-        (27..=STUDIO_CONFIG_SCHEMA_VERSION).contains(&source),
+        !migrated && source == STUDIO_CONFIG_SCHEMA_VERSION,
         "pending Profile operation requires its current main snapshot"
     );
     Ok((config, Some(digest(&bytes))))
+}
+
+fn ensure_main_absent(paths: &ConfigPaths) -> Result<()> {
+    match fs::read(paths.config_file()) {
+        Ok(_) => Err(anyhow::anyhow!(
+            "main config appeared during Profile-only migration"
+        )),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            match fs::symlink_metadata(paths.config_file()) {
+                Err(metadata) if metadata.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(metadata) => Err(metadata.into()),
+                Ok(_) => Err(error.into()),
+            }
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn verify_profile_main_guard(paths: &ConfigPaths, expected_hash: Option<&str>) -> Result<()> {
+    if let Some(expected_hash) = expected_hash {
+        let bytes = fs::read(paths.config_file())?;
+        ensure!(
+            digest(&bytes) == expected_hash,
+            "unchanged main snapshot conflicts with journal"
+        );
+        return Ok(());
+    }
+    ensure_main_absent(paths)
+}
+
+/// Decodes a main snapshot guarded by a Profile-only resource journal.
+///
+/// This continuation boundary may admit historical schemas only after the journal's
+/// unchanged-main hash has been checked against the exact on-disk bytes.
+/// Ordinary current-main reads continue to require the current schema.
+fn unchanged_profile_main(
+    paths: &ConfigPaths,
+    expected_hash: Option<&str>,
+) -> Result<StudioConfig> {
+    let Some(expected_hash) = expected_hash else {
+        ensure_main_absent(paths)?;
+        return Ok(StudioConfig::default_config()?);
+    };
+    let bytes = fs::read(paths.config_file())?;
+    ensure!(
+        digest(&bytes) == expected_hash,
+        "unchanged main snapshot conflicts with journal"
+    );
+    let (config, source, migrated) = main_document(paths.config_file(), &bytes)?;
+    if source == crate::config::STUDIO_CONFIG_SCHEMA_VERSION && !migrated {
+        let (current, hash) = current_main(paths)?;
+        ensure!(
+            hash.as_deref() == Some(expected_hash),
+            "unchanged main snapshot conflicts with journal"
+        );
+        return Ok(current);
+    }
+    ensure!(
+        (27..STUDIO_CONFIG_SCHEMA_VERSION).contains(&source) && migrated,
+        "unchanged main snapshot is not an admitted Profile-journal version"
+    );
+    Ok(config)
 }
 
 fn validate_profile(
@@ -170,7 +232,7 @@ pub(super) fn prepare(
         let (config, source, migrated) = main_document(paths.config_file(), original)?;
         if migrated {
             let candidate =
-                crate::config::document_migration::MainV28::from_config(&config)?.encode()?;
+                crate::config::document_migration::MainV29::from_config(&config)?.encode()?;
             let plan = ResourcePlan {
                 relative_path: STUDIO_CONFIG_FILE_NAME.into(),
                 original: original.to_vec(),
@@ -379,19 +441,19 @@ fn commit(
             Some(source) == journal.resources[index].source_version,
             "main source version conflicts with journal"
         );
-        let (config, target, _) = main_document(path, &plan.candidate)?;
+        let (config, target, migrated) = main_document(path, &plan.candidate)?;
         ensure!(
-            target == journal.resources[index].target_version,
+            target == journal.resources[index].target_version
+                && migrated == (target != STUDIO_CONFIG_SCHEMA_VERSION),
             "invalid main candidate version"
         );
         (config, None)
     } else {
-        let (config, hash) = current_main(paths)?;
-        ensure!(
-            hash == journal.unchanged_main_hash,
-            "unchanged main snapshot conflicts with journal"
-        );
-        (config, hash)
+        let hash = journal.unchanged_main_hash.as_deref();
+        (
+            unchanged_profile_main(paths, hash)?,
+            hash.map(str::to_owned),
+        )
     };
     for (entry, plan) in journal.resources.iter().zip(&verified) {
         if entry.document == DocumentFamily::Profile {
@@ -427,7 +489,13 @@ fn commit(
                 "resource changed during pending commit"
             );
             if hash != entry.candidate_hash {
+                if main.is_none() {
+                    verify_profile_main_guard(paths, main_guard.as_deref())?;
+                }
                 write(&path, &plan.candidate)?;
+                if main.is_none() {
+                    verify_profile_main_guard(paths, main_guard.as_deref())?;
+                }
             }
             entry.replaced = true;
             // A write may have succeeded before its acknowledgement failed; recovery uses bytes.
@@ -446,11 +514,7 @@ fn commit(
         );
     }
     if main.is_none() {
-        let (_, final_hash) = current_main(paths)?;
-        ensure!(
-            final_hash == main_guard,
-            "main snapshot changed before migration confirmation"
-        );
+        verify_profile_main_guard(paths, main_guard.as_deref())?;
     }
     // Cleanup is after final confirmation; its failure does not invalidate committed bytes.
     if let Err(error) = fs::remove_dir_all(&directory) {
@@ -493,8 +557,342 @@ workspace_mode = "directory"
         (directory, store)
     }
 
+    fn remove_post_27_authentication(main: &mut toml::Value) {
+        if let Some(accounts) = main
+            .get_mut("models")
+            .and_then(|models| models.get_mut("accounts"))
+            .and_then(toml::Value::as_table_mut)
+        {
+            for (_, account) in accounts.iter_mut() {
+                let account = account.as_table_mut().unwrap();
+                account.remove("authentication");
+                account.remove("chatgpt_account");
+            }
+        }
+    }
+
+    fn write_profile_only_journal(
+        store: &ConfigStore,
+        main_schema: Option<u32>,
+    ) -> (Option<Vec<u8>>, Vec<u8>, Vec<u8>, Vec<u8>) {
+        let paths = store.paths();
+        let main_bytes = if let Some(schema) = main_schema {
+            let mut main: toml::Value =
+                toml::from_str(&fs::read_to_string(paths.config_file()).unwrap()).unwrap();
+            main["schema_version"] = schema.into();
+            if schema < 28 {
+                remove_post_27_authentication(&mut main);
+            }
+            let bytes = toml::to_string(&main).unwrap().into_bytes();
+            fs::write(paths.config_file(), &bytes).unwrap();
+            Some(bytes)
+        } else {
+            fs::remove_file(paths.config_file()).unwrap();
+            None
+        };
+
+        let profile_path = paths.agents_dir().join("saved.toml");
+        let profile_original = IMPORT.as_bytes().to_vec();
+        let profile_document = load_profile(
+            &profile_path,
+            std::str::from_utf8(&profile_original).unwrap(),
+        )
+        .unwrap();
+        let profile_candidate = profile_document.document.encode().unwrap().into_bytes();
+        fs::write(&profile_path, &profile_original).unwrap();
+
+        let plan = ResourcePlan {
+            relative_path: "agents/saved.toml".into(),
+            original: profile_original.clone(),
+            candidate: profile_candidate.clone(),
+        };
+        let directory = operation_dir(paths);
+        write_protected(&directory, ORIGINAL_DIR_NAME, &plan, &plan.original).unwrap();
+        write_protected(&directory, CANDIDATE_DIR_NAME, &plan, &plan.candidate).unwrap();
+        let journal = Journal {
+            version: VERSION,
+            operation_id: format!("schema-{}-profile-only", main_schema.unwrap_or_default()),
+            phase: MigrationPhase::Prepared,
+            unchanged_main_hash: main_bytes.as_deref().map(digest),
+            resources: vec![resource(&plan, DocumentFamily::Profile, None, 1)],
+        };
+        write_journal(&directory, &journal).unwrap();
+        let journal_bytes = fs::read(directory.join(JOURNAL_FILE_NAME)).unwrap();
+        (
+            main_bytes,
+            profile_original,
+            profile_candidate,
+            journal_bytes,
+        )
+    }
+
     #[test]
-    fn main_27_imports_later_profile_without_replacing_main_and_resumes_after_lost_ack() {
+    fn historical_profile_only_journal_resumes_then_upgrades_main_to_current() {
+        for schema in [27, 28] {
+            let (_directory, store) = fixture();
+            let paths = store.paths();
+            let (Some(main_before), _profile_original, profile_candidate, _journal_bytes) =
+                write_profile_only_journal(&store, Some(schema))
+            else {
+                unreachable!("schema-27 fixture must include a main document");
+            };
+
+            let loaded = store.load_for_startup().unwrap();
+
+            assert_eq!(
+                loaded.schema_version,
+                crate::config::STUDIO_CONFIG_SCHEMA_VERSION
+            );
+            assert_eq!(
+                toml::from_str::<toml::Value>(&fs::read_to_string(paths.config_file()).unwrap())
+                    .unwrap()["schema_version"],
+                crate::config::STUDIO_CONFIG_SCHEMA_VERSION.into()
+            );
+            assert_ne!(fs::read(paths.config_file()).unwrap(), main_before);
+            assert_eq!(
+                fs::read(paths.agents_dir().join("saved.toml")).unwrap(),
+                profile_candidate
+            );
+            assert!(!operation_dir(paths).exists());
+            assert_eq!(store.load_for_startup().unwrap(), loaded);
+            assert!(!operation_dir(paths).exists());
+        }
+    }
+
+    #[test]
+    fn schema27_profile_only_journal_preserves_resources_on_external_main_edit() {
+        let (_directory, store) = fixture();
+        let paths = store.paths();
+        let (_main_before, profile_original, profile_candidate, journal_before) =
+            write_profile_only_journal(&store, Some(27));
+        let external_main = {
+            let mut bytes = fs::read(paths.config_file()).unwrap();
+            bytes.extend_from_slice(b"\n# concurrent external edit\n");
+            bytes
+        };
+        fs::write(paths.config_file(), &external_main).unwrap();
+
+        assert!(store.load_for_startup().is_err());
+
+        assert_eq!(fs::read(paths.config_file()).unwrap(), external_main);
+        assert_eq!(
+            fs::read(paths.agents_dir().join("saved.toml")).unwrap(),
+            profile_original
+        );
+        let directory = operation_dir(paths);
+        assert_eq!(
+            fs::read(directory.join(JOURNAL_FILE_NAME)).unwrap(),
+            journal_before
+        );
+        assert_eq!(
+            fs::read(directory.join(CANDIDATE_DIR_NAME).join("agents/saved.toml")).unwrap(),
+            profile_candidate
+        );
+        assert_eq!(
+            fs::read(directory.join(ORIGINAL_DIR_NAME).join("agents/saved.toml")).unwrap(),
+            profile_original
+        );
+    }
+
+    #[test]
+    fn missing_main_profile_only_journal_resumes_without_creating_main() {
+        let (_directory, store) = fixture();
+        let paths = store.paths();
+        let (main_before, profile_original, profile_candidate, _journal_before) =
+            write_profile_only_journal(&store, None);
+        assert!(main_before.is_none());
+        assert!(!paths.config_file().exists());
+
+        let loaded = store.load_for_startup().unwrap();
+
+        assert_eq!(
+            loaded.schema_version,
+            crate::config::STUDIO_CONFIG_SCHEMA_VERSION
+        );
+        assert_eq!(
+            fs::read(paths.agents_dir().join("saved.toml")).unwrap(),
+            profile_candidate
+        );
+        assert_ne!(
+            fs::read(paths.agents_dir().join("saved.toml")).unwrap(),
+            profile_original
+        );
+        assert!(!paths.config_file().exists());
+        assert!(!operation_dir(paths).exists());
+        assert_eq!(store.load_for_startup().unwrap(), loaded);
+        assert!(!paths.config_file().exists());
+        assert!(!operation_dir(paths).exists());
+    }
+
+    #[test]
+    fn missing_main_profile_only_journal_rejects_main_created_during_recovery() {
+        let (_directory, store) = fixture();
+        let paths = store.paths();
+        let (_, profile_original, profile_candidate, journal_before) =
+            write_profile_only_journal(&store, None);
+        let appeared_main = toml::to_string(&StudioConfig::default_config().unwrap())
+            .unwrap()
+            .into_bytes();
+        fs::write(paths.config_file(), &appeared_main).unwrap();
+
+        assert!(store.load_for_startup().is_err());
+
+        assert_eq!(fs::read(paths.config_file()).unwrap(), appeared_main);
+        assert_eq!(
+            fs::read(paths.agents_dir().join("saved.toml")).unwrap(),
+            profile_original
+        );
+        let directory = operation_dir(paths);
+        assert_eq!(
+            fs::read(directory.join(JOURNAL_FILE_NAME)).unwrap(),
+            journal_before
+        );
+        assert_eq!(
+            fs::read(directory.join(CANDIDATE_DIR_NAME).join("agents/saved.toml")).unwrap(),
+            profile_candidate
+        );
+        assert_eq!(
+            fs::read(directory.join(ORIGINAL_DIR_NAME).join("agents/saved.toml")).unwrap(),
+            profile_original
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn missing_main_profile_only_journal_rejects_dangling_main_link() {
+        use std::os::unix::fs::symlink;
+
+        let (_directory, store) = fixture();
+        let paths = store.paths();
+        let (_, profile_original, profile_candidate, journal_before) =
+            write_profile_only_journal(&store, None);
+        symlink("missing-main-target", paths.config_file()).unwrap();
+
+        assert!(store.load_for_startup().is_err());
+
+        assert!(
+            fs::symlink_metadata(paths.config_file())
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(
+            fs::read(paths.agents_dir().join("saved.toml")).unwrap(),
+            profile_original
+        );
+        let directory = operation_dir(paths);
+        assert_eq!(
+            fs::read(directory.join(JOURNAL_FILE_NAME)).unwrap(),
+            journal_before
+        );
+        assert_eq!(
+            fs::read(directory.join(CANDIDATE_DIR_NAME).join("agents/saved.toml")).unwrap(),
+            profile_candidate
+        );
+        assert_eq!(
+            fs::read(directory.join(ORIGINAL_DIR_NAME).join("agents/saved.toml")).unwrap(),
+            profile_original
+        );
+    }
+
+    #[test]
+    fn recorded_schema_27_resource_candidate_is_committed_byte_for_byte() {
+        let (_directory, store) = fixture();
+        let paths = store.paths();
+        let mut current = toml::Value::try_from(StudioConfig::default_config().unwrap()).unwrap();
+        remove_post_27_authentication(&mut current);
+        let mut original = current.clone();
+        original["schema_version"] = 26.into();
+        let original = toml::to_string(&original).unwrap().into_bytes();
+        current["schema_version"] = 27.into();
+        current
+            .as_table_mut()
+            .unwrap()
+            .entry("skills")
+            .or_insert_with(|| toml::Value::Table(toml::Table::new()));
+        current["skills"]
+            .as_table_mut()
+            .unwrap()
+            .insert("user_dir".into(), "~/.anywork/skills".into());
+        let candidate = toml::to_string(&current).unwrap().into_bytes();
+        fs::write(paths.config_file(), &original).unwrap();
+
+        let plan = ResourcePlan {
+            relative_path: STUDIO_CONFIG_FILE_NAME.into(),
+            original,
+            candidate,
+        };
+        let resource = resource(&plan, DocumentFamily::Main, Some(26), 27);
+        let directory = operation_dir(paths);
+        write_protected(&directory, ORIGINAL_DIR_NAME, &plan, &plan.original).unwrap();
+        write_protected(&directory, CANDIDATE_DIR_NAME, &plan, &plan.candidate).unwrap();
+        let journal = Journal {
+            version: VERSION,
+            operation_id: "historical-26-to-27".into(),
+            phase: MigrationPhase::Prepared,
+            unchanged_main_hash: None,
+            resources: vec![resource],
+        };
+        write_journal(&directory, &journal).unwrap();
+        let journal_bytes = fs::read(directory.join(JOURNAL_FILE_NAME)).unwrap();
+
+        let recovered = resume(paths, &MemoryCredentialStore::default(), &journal_bytes).unwrap();
+
+        assert_eq!(
+            recovered.schema_version,
+            crate::config::STUDIO_CONFIG_SCHEMA_VERSION
+        );
+        assert_eq!(fs::read(paths.config_file()).unwrap(), plan.candidate);
+        assert_eq!(digest(&plan.candidate), journal.resources[0].candidate_hash);
+        assert!(!directory.exists());
+    }
+
+    #[test]
+    fn recorded_schema_28_candidate_is_committed_before_next_migration() {
+        let (_directory, store) = fixture();
+        let paths = store.paths();
+        let mut candidate = toml::Value::try_from(StudioConfig::default_config().unwrap()).unwrap();
+        candidate["schema_version"] = 28.into();
+        candidate
+            .as_table_mut()
+            .unwrap()
+            .entry("skills")
+            .or_insert_with(|| toml::Value::Table(toml::Table::new()));
+        candidate["skills"]
+            .as_table_mut()
+            .unwrap()
+            .insert("user_dir".into(), "~/.anywork/skills".into());
+        let mut original = candidate.clone();
+        original["schema_version"] = 27.into();
+        remove_post_27_authentication(&mut original);
+        let plan = ResourcePlan {
+            relative_path: STUDIO_CONFIG_FILE_NAME.into(),
+            original: toml::to_string(&original).unwrap().into_bytes(),
+            candidate: toml::to_string(&candidate).unwrap().into_bytes(),
+        };
+        fs::write(paths.config_file(), &plan.original).unwrap();
+        let directory = operation_dir(paths);
+        write_protected(&directory, ORIGINAL_DIR_NAME, &plan, &plan.original).unwrap();
+        write_protected(&directory, CANDIDATE_DIR_NAME, &plan, &plan.candidate).unwrap();
+        let journal = Journal {
+            version: VERSION,
+            operation_id: "historical-27-to-28".into(),
+            phase: MigrationPhase::Prepared,
+            unchanged_main_hash: None,
+            resources: vec![resource(&plan, DocumentFamily::Main, Some(27), 28)],
+        };
+        write_journal(&directory, &journal).unwrap();
+        let journal_bytes = fs::read(directory.join(JOURNAL_FILE_NAME)).unwrap();
+        resume(paths, &MemoryCredentialStore::default(), &journal_bytes).unwrap();
+        assert_eq!(fs::read(paths.config_file()).unwrap(), plan.candidate);
+        let loaded = store.load_for_startup().unwrap();
+        assert_eq!(loaded.schema_version, STUDIO_CONFIG_SCHEMA_VERSION);
+        assert_eq!(store.load_for_startup().unwrap(), loaded);
+        assert!(!directory.exists());
+    }
+
+    #[test]
+    fn current_main_imports_later_profile_without_replacing_main_and_resumes_after_lost_ack() {
         let (_directory, store) = fixture();
         let paths = store.paths();
         let profile_path = paths.agents_dir().join("saved.toml");

@@ -1,4 +1,4 @@
-//! Frozen bot config wire types and the V1→V2→V3 typed chain.
+//! Frozen bot config wire types and the V1→V2→V3→V4 typed chain.
 //!
 //! Nested platform, model-route and credential-ref shapes stay local to this
 //! module. Pure `MigratesTo` steps only move frozen types; mapping into the
@@ -21,7 +21,7 @@ use crate::config::{BotCredentialRef, BotCredentialRefKind};
 use crate::toml_schema;
 
 pub(super) fn current_version() -> Result<u32> {
-    toml_schema::integer_version(BotConfigV3::VERSION)
+    toml_schema::integer_version(BotConfigV4::VERSION)
         .map_err(|error| toml_schema::chain_error(BOT_CONFIG_ENTITY, error))
 }
 
@@ -38,7 +38,8 @@ pub(super) fn migrator() -> Result<&'static Migrator> {
                 .from::<BotConfigV1>()
                 .step::<BotConfigV2>()
                 .step::<BotConfigV3>()
-                .into::<BotConfigV3>(),
+                .step::<BotConfigV4>()
+                .into::<BotConfigV4>(),
         )
         .map_err(|error| toml_schema::chain_error(BOT_CONFIG_ENTITY, error))?;
     Ok(MIGRATOR.get_or_init(|| migrator))
@@ -56,7 +57,7 @@ fn has_legacy_platform_fields(table: &serde_json::Map<String, serde_json::Value>
 pub(super) fn load_document(
     path: &Path,
     content: &str,
-) -> Result<toml_schema::LoadedDocument<BotConfigV3>> {
+) -> Result<toml_schema::LoadedDocument<BotConfigV4>> {
     let target = current_version()?;
     let table = toml_schema::parse(path, content, BOT_CONFIG_ENTITY, target)?;
     let value = serde_json::to_value(table).map_err(|error| {
@@ -68,7 +69,7 @@ pub(super) fn load_document(
 pub(super) fn load_snapshot(
     path: &Path,
     mut value: serde_json::Value,
-) -> Result<toml_schema::LoadedDocument<BotConfigV3>> {
+) -> Result<toml_schema::LoadedDocument<BotConfigV4>> {
     let target = current_version()?;
     let source = value
         .get(BOT_CONFIG_VERSION_KEY)
@@ -109,7 +110,7 @@ pub(super) fn load_snapshot(
     .map_err(|error| {
         toml_schema::migration_error(path, BOT_CONFIG_ENTITY, source, target, "prepare", error)
     })?;
-    toml_schema::load_json::<BotConfigV1, BotConfigV3>(
+    toml_schema::load_json::<BotConfigV1, BotConfigV4>(
         path,
         prepared,
         migrator()?,
@@ -263,6 +264,27 @@ pub(super) struct BotConfigV3 {
     updated_at: i64,
 }
 
+/// Current ownership vocabulary. Historical DTOs above keep their published keys.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Versioned)]
+#[versioned(version = "4.0.0")]
+#[serde(deny_unknown_fields)]
+pub(super) struct BotConfigV4 {
+    id: String,
+    name: String,
+    workspace_id: String,
+    #[serde(flatten)]
+    platform: FrozenBotPlatformConfig,
+    enabled: bool,
+    tools_enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    model_route: Option<FrozenBotModelRoute>,
+    config_revision: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    selected_ref: Option<FrozenBotCredentialRef>,
+    created_at: i64,
+    updated_at: i64,
+}
+
 impl MigratesTo<BotConfigV2> for BotConfigV1 {
     fn migrate(self) -> BotConfigV2 {
         BotConfigV2 {
@@ -306,8 +328,26 @@ impl MigratesTo<BotConfigV3> for BotConfigV2 {
     }
 }
 
-impl IntoDomain<BotConfigV3> for BotConfigV3 {
-    fn into_domain(self) -> BotConfigV3 {
+impl MigratesTo<BotConfigV4> for BotConfigV3 {
+    fn migrate(self) -> BotConfigV4 {
+        BotConfigV4 {
+            id: self.id,
+            name: self.name,
+            workspace_id: self.project_id,
+            platform: self.platform,
+            enabled: self.enabled,
+            tools_enabled: self.tools_enabled,
+            model_route: self.model_route,
+            config_revision: self.config_revision,
+            selected_ref: self.selected_ref,
+            created_at: self.created_at,
+            updated_at: self.updated_at,
+        }
+    }
+}
+
+impl IntoDomain<BotConfigV4> for BotConfigV4 {
+    fn into_domain(self) -> BotConfigV4 {
         self
     }
 }
@@ -435,15 +475,15 @@ impl From<&BotPlatformConfig> for FrozenBotPlatformConfig {
     }
 }
 
-impl TryFrom<BotConfigV3> for BotConfigFile {
+impl TryFrom<BotConfigV4> for BotConfigFile {
     type Error = anyhow::Error;
 
-    fn try_from(document: BotConfigV3) -> Result<Self> {
+    fn try_from(document: BotConfigV4) -> Result<Self> {
         Ok(Self {
             schema_version: BOT_CONFIG_SCHEMA_VERSION,
             id: document.id,
             name: document.name,
-            project_id: document.project_id,
+            workspace_id: document.workspace_id,
             platform: document.platform.into(),
             enabled: document.enabled,
             tools_enabled: document.tools_enabled,
@@ -461,7 +501,25 @@ impl From<&BotConfigFile> for BotConfigV3 {
         Self {
             id: config.id.clone(),
             name: config.name.clone(),
-            project_id: config.project_id.clone(),
+            project_id: config.workspace_id.clone(),
+            platform: FrozenBotPlatformConfig::from(&config.platform),
+            enabled: config.enabled,
+            tools_enabled: config.tools_enabled,
+            model_route: config.model_route.clone().map(Into::into),
+            config_revision: config.config_revision,
+            selected_ref: config.selected_ref.clone().map(Into::into),
+            created_at: config.created_at,
+            updated_at: config.updated_at,
+        }
+    }
+}
+
+impl From<&BotConfigFile> for BotConfigV4 {
+    fn from(config: &BotConfigFile) -> Self {
+        Self {
+            id: config.id.clone(),
+            name: config.name.clone(),
+            workspace_id: config.workspace_id.clone(),
             platform: FrozenBotPlatformConfig::from(&config.platform),
             enabled: config.enabled,
             tools_enabled: config.tools_enabled,
@@ -484,7 +542,7 @@ impl BotConfigV1 {
         Ok(Self {
             id: config.id.clone(),
             name: config.name.clone(),
-            project_id: config.project_id.clone(),
+            project_id: config.workspace_id.clone(),
             platform: FrozenBotPlatform::FeishuChina,
             enabled: config.enabled,
             tools_enabled: config.tools_enabled,
@@ -505,7 +563,7 @@ impl BotConfigV2 {
         Self {
             id: config.id.clone(),
             name: config.name.clone(),
-            project_id: config.project_id.clone(),
+            project_id: config.workspace_id.clone(),
             platform: FrozenBotPlatform::FeishuChina,
             enabled: config.enabled,
             tools_enabled: config.tools_enabled,

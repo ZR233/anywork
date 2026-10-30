@@ -74,7 +74,7 @@ void main() {
       final saved = await client.botsCommands.saveBot(
         expectedConfigRevision: 0,
         name: 'Feishu China',
-        projectId: 'project-local',
+        workspaceId: 'project-local',
         appId: 'cli_demo',
         secret: BotSecretReplace('memory-only'),
       );
@@ -83,7 +83,7 @@ void main() {
       expect(jsonEncode(saved.toString()), isNot(contains('memory-only')));
       final started = await client.botsCommands.startRegistration(
         name: 'Feishu China',
-        projectId: 'project-local',
+        workspaceId: 'project-local',
       );
       expect(started.registration?.status, isA<BotRegistrationWaiting>());
       expect(
@@ -118,7 +118,7 @@ void main() {
       await client.bootstrap();
       await client.botsCommands.startRegistration(
         name: 'Scan bot',
-        projectId: 'project-local',
+        workspaceId: 'project-local',
       );
       final timeline = graph.timeline;
       bindStudioDriver(

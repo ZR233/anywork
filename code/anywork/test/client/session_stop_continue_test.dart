@@ -29,7 +29,7 @@ void main() {
     // Demo's root session; bootstrap only loads the directory and settings.
     const threadId = 'thread-main';
     client.selection.selectThread(
-      projectId: client.selection.state.selectedProjectId!,
+      workspaceId: client.selection.state.selectedProjectId!,
       threadId: threadId,
     );
     client.conversations.setVisibleThread(threadId);
@@ -122,7 +122,7 @@ void main() {
     await client.bootstrap();
     const threadId = 'thread-main';
     client.selection.selectThread(
-      projectId: client.selection.state.selectedProjectId!,
+      workspaceId: client.selection.state.selectedProjectId!,
       threadId: threadId,
     );
     client.conversations.setVisibleThread(threadId);
@@ -188,7 +188,7 @@ void main() {
     await client.bootstrap();
     const threadId = 'thread-main';
     client.selection.selectThread(
-      projectId: client.selection.state.selectedProjectId!,
+      workspaceId: client.selection.state.selectedProjectId!,
       threadId: threadId,
     );
     client.conversations.setVisibleThread(threadId);
@@ -249,7 +249,7 @@ void main() {
     await client.bootstrap();
     const threadId = 'thread-main';
     client.selection.selectThread(
-      projectId: client.selection.state.selectedProjectId!,
+      workspaceId: client.selection.state.selectedProjectId!,
       threadId: threadId,
     );
     client.conversations.setVisibleThread(threadId);

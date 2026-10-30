@@ -5,8 +5,9 @@ use std::path::Path;
 use anyhow::{Context, Result, bail, ensure};
 use pl_protocol::studio::WorkspaceKind;
 
-use crate::studio::records::{ProjectRecord, ThreadRecord, ThreadVisibility};
+use crate::studio::records::{ThreadRecord, ThreadVisibility, WorkspaceRecord};
 use crate::studio::store::directory::{DirectoryDelta, ProjectDirectoryRecord, ProjectRemoval};
+use crate::studio::store::thread_archive::{ArchivePhase, ArchiveScope};
 
 use super::super::StudioRuntime;
 use super::super::thread_title::ThreadTitleCancellationCause;
@@ -16,7 +17,7 @@ use super::super::thread_title::ThreadTitleCancellationCause;
 mod standalone_tests;
 
 impl StudioRuntime {
-    pub async fn open_project(&self, path: impl AsRef<Path>) -> Result<ProjectRecord> {
+    pub async fn open_project(&self, path: impl AsRef<Path>) -> Result<WorkspaceRecord> {
         let canonical = dunce::canonicalize(path.as_ref())?;
         anyhow::ensure!(canonical.is_dir(), "workspace path is not a directory");
         let path = canonical.as_path();
@@ -58,7 +59,7 @@ impl StudioRuntime {
                     last_opened_at: Some(now),
                     closed: false,
                 };
-                let public = ProjectRecord {
+                let public = WorkspaceRecord {
                     id: existing.id.clone(),
                     kind: existing.kind,
                     name,
@@ -81,7 +82,7 @@ impl StudioRuntime {
                     last_opened_at: Some(now),
                     closed: false,
                 };
-                let public = ProjectRecord {
+                let public = WorkspaceRecord {
                     id,
                     kind: WorkspaceKind::Project,
                     name,
@@ -113,7 +114,7 @@ impl StudioRuntime {
     async fn prepare_standalone_workspace_at(
         &self,
         root: Option<std::path::PathBuf>,
-    ) -> Result<ProjectRecord> {
+    ) -> Result<WorkspaceRecord> {
         let runtime = self.clone();
         self.run_thread_lifecycle_operation(async move {
             runtime.prepare_standalone_workspace_owned(root).await
@@ -126,7 +127,7 @@ impl StudioRuntime {
     async fn prepare_standalone_workspace_owned(
         &self,
         root: Option<std::path::PathBuf>,
-    ) -> Result<ProjectRecord> {
+    ) -> Result<WorkspaceRecord> {
         let published = self
             .agent_facility
             .product_events
@@ -212,7 +213,7 @@ impl StudioRuntime {
             "the standalone directory already belongs to a user project"
         );
         let now = crate::studio::unix_seconds();
-        let project = ProjectRecord {
+        let project = WorkspaceRecord {
             id: crate::studio::ids::new_id("project"),
             kind: WorkspaceKind::Standalone,
             name: "anywork".into(),
@@ -238,7 +239,7 @@ impl StudioRuntime {
     }
 
     /// Renames the project label without changing its filesystem identity.
-    pub async fn rename_project(&self, id: &str, name: &str) -> Result<ProjectRecord> {
+    pub async fn rename_project(&self, id: &str, name: &str) -> Result<WorkspaceRecord> {
         let _guard = self.lifecycle_lock.lock().await;
         let name = name.trim();
         anyhow::ensure!(
@@ -277,21 +278,21 @@ impl StudioRuntime {
         Ok(project)
     }
 
-    pub async fn list_projects(&self) -> Result<Vec<ProjectRecord>> {
+    pub async fn list_projects(&self) -> Result<Vec<WorkspaceRecord>> {
         Ok(self.agent_facility.product_events.project_snapshot().await)
     }
 
-    pub async fn archive_project(&self, project_id: &str) -> Result<Option<ProjectRecord>> {
+    pub async fn archive_project(&self, workspace_id: &str) -> Result<Option<WorkspaceRecord>> {
         let runtime = self.clone();
-        let project_id = project_id.to_owned();
+        let workspace_id = workspace_id.to_owned();
         self.run_thread_lifecycle_operation(async move {
-            runtime.archive_project_owned(&project_id).await
+            runtime.archive_project_owned(&workspace_id).await
         })
         .await
     }
 
     /// The retained archive worker owns lifecycle admission throughout this operation.
-    async fn archive_project_owned(&self, project_id: &str) -> Result<Option<ProjectRecord>> {
+    async fn archive_project_owned(&self, workspace_id: &str) -> Result<Option<WorkspaceRecord>> {
         ensure!(
             !self
                 .agent_facility
@@ -299,33 +300,38 @@ impl StudioRuntime {
                 .project_snapshot()
                 .await
                 .iter()
-                .any(
-                    |project| project.id == project_id && project.kind == WorkspaceKind::Standalone
-                ),
+                .any(|project| project.id == workspace_id
+                    && project.kind == WorkspaceKind::Standalone),
             "the standalone workspace cannot be archived"
         );
-        let threads = self.load_project_archive_scope(project_id).await?;
+        let threads = self.load_project_archive_scope(workspace_id).await?;
+        let has_pending_archive = self
+            .store
+            .thread_archive(&ArchiveScope::Workspace(workspace_id.into()))
+            .await?
+            .is_some_and(|operation| operation.phase != ArchivePhase::Published);
         let Some(project) = self
             .agent_facility
             .product_events
             .project_snapshot()
             .await
             .into_iter()
-            .find(|project| project.id == project_id)
+            .find(|project| project.id == workspace_id)
             .or_else(|| {
                 // workspaces.toml is written before catalog.toml. If the latter failed (including
                 // across restart), the canonical closed Project must still allow finishing its
                 // active catalog rows; absence from the open-project projection is not completion.
-                threads
-                    .iter()
-                    .any(|thread| thread.visibility == ThreadVisibility::Active)
-                    .then(|| {
-                        self.store
-                            .workspaces()
-                            .get(project_id)
-                            .map(|entry| entry.project())
-                    })
-                    .flatten()
+                (has_pending_archive
+                    || threads
+                        .iter()
+                        .any(|thread| thread.visibility == ThreadVisibility::Active))
+                .then(|| {
+                    self.store
+                        .workspaces()
+                        .get(workspace_id)
+                        .map(|entry| entry.project())
+                })
+                .flatten()
             })
         else {
             return Ok(None);
@@ -336,13 +342,51 @@ impl StudioRuntime {
             .map(|thread| thread.id.clone())
             .collect::<Vec<_>>();
         roots.sort();
-        let mut root_operations = Vec::new();
-        for root in &roots {
-            root_operations.push(self.threads.agent_operation(root).await);
+        // Project archives still reject active work; they do not interrupt an active Turn.
+        for thread in &threads {
+            if thread.visibility == ThreadVisibility::Active
+                && self.thread_is_busy(&thread.id).await?
+            {
+                bail!("project has an active turn");
+            }
         }
-        // A spawn admitted before these permits may just have published another child. Re-read
-        // the directory only after root preparation is ordered, then seal children in stable order.
-        let threads = self.load_project_archive_scope(project_id).await?;
+        let scope = self.threads.seal_archive_scope(&roots)?;
+        let admitted = scope.preparation_identities(workspace_id);
+        let mut admitted_ids = scope.thread_ids();
+        admitted_ids.extend(threads.iter().map(|thread| thread.id.clone()));
+        admitted_ids.sort();
+        admitted_ids.dedup();
+        let _pins = self.residency.pin_many(admitted_ids.iter().cloned());
+        let frozen = self
+            .freeze_thread_archive(
+                ArchiveScope::Workspace(workspace_id.into()),
+                &threads,
+                &admitted,
+            )
+            .await?;
+        admitted_ids.extend(frozen.thread_ids());
+        scope.cancel_preparations();
+        admitted_ids.sort();
+        admitted_ids.dedup();
+        let _bot_archive = self.bots.quiesce_archive_threads(&admitted_ids).await?;
+        for id in &admitted_ids {
+            self.title_tasks
+                .cancel(id, ThreadTitleCancellationCause::ProjectArchive)
+                .await;
+        }
+        tokio::time::timeout(
+            self.archive_settle_timeout(),
+            self.threads.drain_archive_preparations(&scope),
+        )
+        .await
+        .context("project archive preparations did not join")??;
+        let threads = self.load_project_archive_scope(workspace_id).await?;
+        ensure!(
+            threads
+                .iter()
+                .all(|thread| admitted_ids.contains(&thread.id)),
+            "project archive member has no frozen preparation responsibility"
+        );
         let thread_ids = threads
             .iter()
             .map(|thread| thread.id.clone())
@@ -351,18 +395,6 @@ impl StudioRuntime {
             .iter()
             .filter(|thread| thread.visibility == ThreadVisibility::Active)
             .collect::<Vec<_>>();
-        let _pins = self.residency.pin_many(thread_ids.iter().cloned());
-        let child_ids = threads
-            .iter()
-            .filter(|thread| thread.parent_thread_id.is_some())
-            .map(|thread| thread.id.clone())
-            .collect::<Vec<_>>();
-        let _child_seals = self.threads.seal_agent_operations(&child_ids).await;
-        let _root_seals = roots
-            .iter()
-            .map(|root| self.threads.seal_agent_operation(root))
-            .collect::<Vec<_>>();
-        drop(root_operations);
         for thread in &active_threads {
             match self.thread_is_busy(&thread.id).await {
                 Ok(false) => {}
@@ -374,41 +406,58 @@ impl StudioRuntime {
                 }
             }
         }
-        self.retire_archived_thread_tree(&thread_ids).await?;
+        let mut archive = self
+            .freeze_thread_archive(
+                ArchiveScope::Workspace(workspace_id.into()),
+                &threads,
+                &admitted,
+            )
+            .await?;
+        for thread_id in &thread_ids {
+            self.title_tasks
+                .cancel(thread_id, ThreadTitleCancellationCause::ProjectArchive)
+                .await;
+        }
+        if archive.phase == ArchivePhase::Sealed {
+            self.retire_archived_thread_tree(&thread_ids).await?;
+            self.retire_private_archive_members(&mut archive).await?;
+        }
+        // Reuse Saved/Cleaned ACKs without creating a new cold writer or rebuilding cleaned temp.
+        self.archive_save_confirmed(&mut archive).await?;
+        self.clean_archive_temps(&mut archive).await?;
         self.agent_facility
             .product_events
             .commit_directory(DirectoryDelta {
                 project_removals: vec![ProjectRemoval {
-                    project_id: project.id.clone(),
+                    workspace_id: project.id.clone(),
                     thread_ids: thread_ids.clone(),
                     closed_at: crate::studio::unix_seconds(),
                 }],
                 ..Default::default()
             })
             .await?;
+        self.archive_published(&mut archive).await?;
         for thread_id in &thread_ids {
-            self.title_tasks
-                .cancel(thread_id, ThreadTitleCancellationCause::ProjectArchive)
-                .await;
             self.model_performance.remove_session(thread_id).await?;
         }
         Ok(Some(project))
     }
 
-    pub(super) fn ensure_project_thread_admission_open(&self, project_id: &str) -> Result<()> {
-        self.recovery.ensure_project_execution_access(project_id)?;
+    pub(super) fn ensure_project_thread_admission_open(&self, workspace_id: &str) -> Result<()> {
+        self.recovery
+            .ensure_project_execution_access(workspace_id)?;
         anyhow::ensure!(
             self.store
                 .workspaces()
-                .get(project_id)
+                .get(workspace_id)
                 .is_some_and(|entry| !entry.closed),
             "selected Project is closed or its archive needs to be retried"
         );
         Ok(())
     }
 
-    async fn load_project_archive_scope(&self, project_id: &str) -> Result<Vec<ThreadRecord>> {
-        let threads = self.store.list_threads_for_project(project_id).await?;
+    async fn load_project_archive_scope(&self, workspace_id: &str) -> Result<Vec<ThreadRecord>> {
+        let threads = self.store.list_threads_for_project(workspace_id).await?;
         let entries = threads
             .iter()
             .filter(|thread| thread.visibility == ThreadVisibility::Active)

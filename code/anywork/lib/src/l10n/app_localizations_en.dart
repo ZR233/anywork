@@ -5842,13 +5842,13 @@ class AppLocalizationsEn extends AppLocalizations {
   String get recoveryOwnerApplication => 'Application';
 
   @override
-  String recoveryOwnerProject(String projectId) {
-    return 'Project $projectId';
+  String recoveryOwnerProject(String workspaceId) {
+    return 'Project $workspaceId';
   }
 
   @override
-  String recoveryOwnerThread(String threadId, String projectId) {
-    return 'Session $threadId · project $projectId';
+  String recoveryOwnerThread(String threadId, String workspaceId) {
+    return 'Session $threadId · workspace $workspaceId';
   }
 
   @override

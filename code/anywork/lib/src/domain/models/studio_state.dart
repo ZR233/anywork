@@ -179,37 +179,37 @@ class StudioState {
   ComposerThreadState get composer => selectedWorkspaceUi.composer;
 
   ComposerThreadState get newThreadComposer {
-    final projectId = selectedProjectId;
-    return projectId == null
+    final workspaceId = selectedProjectId;
+    return workspaceId == null
         ? const ComposerThreadState.idle()
-        : newThreadComposerByProject[projectId] ??
+        : newThreadComposerByProject[workspaceId] ??
               const ComposerThreadState.idle();
   }
 
   ComposerTargetDiagnostic? composerDiagnostic(
-    String? projectId,
+    String? workspaceId,
     String? threadId,
   ) {
-    if (projectId == null) return null;
+    if (workspaceId == null) return null;
     return composerDiagnosticsByTarget[attachmentTargetKey(
-      projectId,
+      workspaceId,
       threadId,
     )];
   }
 
   ThreadModeId get newThreadMode {
-    final projectId = selectedProjectId;
-    return projectId == null
+    final workspaceId = selectedProjectId;
+    return workspaceId == null
         ? ThreadModeId.simple
-        : newThreadModeByProject[projectId] ?? ThreadModeId.simple;
+        : newThreadModeByProject[workspaceId] ?? ThreadModeId.simple;
   }
 
   /// 当前项目的会话工作区模式草稿；默认 `local`。
   ThreadWorkspaceMode get newThreadWorkspaceMode {
-    final projectId = selectedProjectId;
-    return projectId == null
+    final workspaceId = selectedProjectId;
+    return workspaceId == null
         ? ThreadWorkspaceMode.local
-        : newThreadWorkspaceModeByProject[projectId] ??
+        : newThreadWorkspaceModeByProject[workspaceId] ??
               ThreadWorkspaceMode.local;
   }
 

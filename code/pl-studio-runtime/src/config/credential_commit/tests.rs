@@ -387,6 +387,119 @@ fn prepared_recovery_rolls_back_both_resources_and_rejects_external_conflicts() 
     assert_eq!(current(&fixture).registration_id, "R0");
 }
 
+#[tokio::test]
+async fn legacy_prepared_transaction_recovers_after_layout_and_before_schema_migration() {
+    let fixture = fixture_with_owner_root(true);
+    let (changes, next) = change(&fixture, "R1");
+    let bytes = super::super::store::serialize_persisted_config(&next).unwrap();
+    let mut journal = fixture.a.stage(&changes, bytes.as_bytes()).unwrap();
+    let old_version = |bytes: &[u8]| {
+        let mut value: toml::Value = toml::from_str(std::str::from_utf8(bytes).unwrap()).unwrap();
+        value["schema_version"] = 28.into();
+        toml::to_string(&value).unwrap().into_bytes()
+    };
+    let directory = fixture.a.transaction_dir(&journal);
+    let original = old_version(&fs::read(directory.join("original.toml")).unwrap());
+    let candidate = old_version(bytes.as_bytes());
+    atomic(&directory.join("original.toml"), &original).unwrap();
+    atomic(&directory.join("candidate.toml"), &candidate).unwrap();
+    journal.original_hash = Some(digest(&original));
+    journal.candidate_hash = digest(&candidate);
+    fixture.a.prepare(&journal).unwrap();
+    journal.phase = Phase::Prepared;
+    fixture.a.write_journal(&journal).unwrap();
+    fixture
+        .a
+        .write_account(ID, changes[0].new.as_deref(), true)
+        .unwrap();
+    atomic(fixture.a.paths().config_file(), &candidate).unwrap();
+    let home = fixture.a.paths().config_dir();
+    fs::create_dir_all(home.join("v2")).unwrap();
+    fs::rename(
+        fixture.a.transaction_root(),
+        home.join("v2/credential-transactions"),
+    )
+    .unwrap();
+    fs::remove_dir(home.join("data")).unwrap();
+    assert!(fixture.a.load_for_startup().is_err());
+    assert_eq!(
+        fs::read(fixture.a.paths().config_file()).unwrap(),
+        candidate
+    );
+    assert!(home.join("v2/credential-transactions").exists());
+    let paths = crate::studio::StudioPaths::from_home(home.to_owned());
+    crate::studio::startup::storage_layout::prepare(&paths)
+        .await
+        .unwrap();
+    assert_eq!(
+        fs::read(fixture.a.transaction_dir(&journal).join("original.toml")).unwrap(),
+        original
+    );
+    let loaded = fixture.a.load_for_startup().unwrap();
+    assert_eq!(
+        loaded.schema_version,
+        crate::config::STUDIO_CONFIG_SCHEMA_VERSION
+    );
+    assert_eq!(current(&fixture).registration_id, "R0");
+    assert!(!fixture.a.pending_path(ID).unwrap().exists());
+    assert!(!fixture.a.transaction_dir(&journal).exists());
+    let persisted = fs::read(fixture.a.paths().config_file()).unwrap();
+    let reopened = fixture.a.load_for_startup().unwrap();
+    assert_eq!(
+        fs::read(fixture.a.paths().config_file()).unwrap(),
+        persisted
+    );
+    let account = &reopened.models.accounts[&AccountId::new(ID).unwrap()];
+    assert_eq!(
+        account.chatgpt_account,
+        loaded.models.accounts[&AccountId::new(ID).unwrap()].chatgpt_account
+    );
+    assert_eq!(
+        account
+            .chatgpt_credentials
+            .as_ref()
+            .unwrap()
+            .registration_id,
+        "R0"
+    );
+}
+
+#[test]
+fn broken_credential_recovery_cannot_trigger_startup_reset() {
+    let fixture = fixture();
+    let before = fs::read(fixture.a.paths().config_file()).unwrap();
+    let directory = fixture
+        .a
+        .transaction_root()
+        .join(uuid::Uuid::new_v4().to_string());
+    fs::create_dir_all(&directory).unwrap();
+    fs::write(directory.join("journal.json"), b"invalid transaction").unwrap();
+    let error = fixture.a.load_for_startup().unwrap_err();
+    let error = crate::studio::startup::input_error(error);
+    let startup = crate::studio::startup::StudioStartupError::input("prepare_configuration", error);
+    assert_eq!(
+        startup.kind,
+        crate::studio::startup::StudioStartupErrorKind::Migration
+    );
+    assert_eq!(fs::read(fixture.a.paths().config_file()).unwrap(), before);
+    assert!(directory.exists());
+}
+
+#[test]
+fn direct_configuration_load_rejects_unfinished_layout_before_writing() {
+    let fixture = fixture_with_owner_root(true);
+    let home = fixture.a.paths().config_dir();
+    let before = fs::read(fixture.a.paths().config_file()).unwrap();
+    let journal = b"schemaVersion = 1\noperationId = 'layout-interrupted'\nphase = 'building'\ncopied = []\nbotRoots = []\n[[roots]]\nsource = 'v2'\npresent = true\nmoved = true\n[[roots]]\nsource = 'studio/v2'\npresent = false\nmoved = false\n[[roots]]\nsource = 'skills'\npresent = false\nmoved = false\n";
+    fs::write(home.join("storage-migration.toml"), journal).unwrap();
+    assert!(fixture.a.load_for_startup().is_err());
+    assert_eq!(fs::read(fixture.a.paths().config_file()).unwrap(), before);
+    assert_eq!(
+        fs::read(home.join("storage-migration.toml")).unwrap(),
+        journal
+    );
+}
+
 #[test]
 fn terminal_cleanup_after_marker_release_never_replays_over_r2() {
     for terminal in [Phase::Committed, Phase::RolledBack] {

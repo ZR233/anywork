@@ -32,7 +32,7 @@ sealed class BridgeNewThreadStartEvent with _$BridgeNewThreadStartEvent {
 }
 
 class BridgeStartNewThreadRequest {
-  final String projectId;
+  final String workspaceId;
   final BridgeStudioPromptInput input;
   final String mode;
   final String accountId;
@@ -43,7 +43,7 @@ class BridgeStartNewThreadRequest {
   final BridgeDelegationPreference delegationPreference;
 
   const BridgeStartNewThreadRequest({
-    required this.projectId,
+    required this.workspaceId,
     required this.input,
     required this.mode,
     required this.accountId,
@@ -56,7 +56,7 @@ class BridgeStartNewThreadRequest {
 
   @override
   int get hashCode =>
-      projectId.hashCode ^
+      workspaceId.hashCode ^
       input.hashCode ^
       mode.hashCode ^
       accountId.hashCode ^
@@ -71,7 +71,7 @@ class BridgeStartNewThreadRequest {
       identical(this, other) ||
       other is BridgeStartNewThreadRequest &&
           runtimeType == other.runtimeType &&
-          projectId == other.projectId &&
+          workspaceId == other.workspaceId &&
           input == other.input &&
           mode == other.mode &&
           accountId == other.accountId &&
@@ -83,14 +83,14 @@ class BridgeStartNewThreadRequest {
 }
 
 class BridgeThreadPreparationProgress {
-  final String projectId;
+  final String workspaceId;
   final String inputId;
   final BridgeThreadPreparationStage stage;
   final String? workspacePath;
   final String? branch;
 
   const BridgeThreadPreparationProgress({
-    required this.projectId,
+    required this.workspaceId,
     required this.inputId,
     required this.stage,
     this.workspacePath,
@@ -99,7 +99,7 @@ class BridgeThreadPreparationProgress {
 
   @override
   int get hashCode =>
-      projectId.hashCode ^
+      workspaceId.hashCode ^
       inputId.hashCode ^
       stage.hashCode ^
       workspacePath.hashCode ^
@@ -110,7 +110,7 @@ class BridgeThreadPreparationProgress {
       identical(this, other) ||
       other is BridgeThreadPreparationProgress &&
           runtimeType == other.runtimeType &&
-          projectId == other.projectId &&
+          workspaceId == other.workspaceId &&
           inputId == other.inputId &&
           stage == other.stage &&
           workspacePath == other.workspacePath &&

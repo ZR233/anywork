@@ -22,16 +22,16 @@ Future<BridgeMcpStateSnapshot> resetMcp({required McpResetInput input}) =>
 Future<BridgeLspStateSnapshot> readLspState() =>
     RustLib.instance.api.crateApiStudioHandlersExternalStateReadLspState();
 
-Future<BridgeLspStateSnapshot> probeLspServer({required String projectId}) =>
+Future<BridgeLspStateSnapshot> probeLspServer({required String workspaceId}) =>
     RustLib.instance.api.crateApiStudioHandlersExternalStateProbeLspServer(
-      projectId: projectId,
+      workspaceId: workspaceId,
     );
 
 Future<BridgeLspStateSnapshot> repairLspServer({
-  required String projectId,
+  required String workspaceId,
   required String serverId,
 }) => RustLib.instance.api.crateApiStudioHandlersExternalStateRepairLspServer(
-  projectId: projectId,
+  workspaceId: workspaceId,
   serverId: serverId,
 );
 

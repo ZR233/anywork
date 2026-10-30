@@ -358,7 +358,7 @@ final class HeaderViewProvider
   }
 }
 
-String _$headerViewHash() => r'a9aa9bfd421dbab70fc84c4b0ff4730b9a31c2e6';
+String _$headerViewHash() => r'937e9473191389b3cc86b241eaa035c9d6bd5cf2';
 
 /// 目的地会话的输入区事实。草稿仍由 interaction 域覆盖；这里只提供 canonical 会话。
 ///

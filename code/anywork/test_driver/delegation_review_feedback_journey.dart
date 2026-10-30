@@ -226,12 +226,12 @@ class _Journey {
     await waitFor((snapshot) {
       final delegation = snapshot['delegation'];
       final navigation = snapshot['navigation'] as Map?;
-      final projectId = navigation?['selectedProjectId'];
+      final workspaceId = navigation?['selectedProjectId'];
       if (navigation?['newThreadMode'] != 'mode.simple') return false;
       if (delegation is! Map || delegation['drafts'] is! List) return false;
       return (delegation['drafts'] as List).whereType<Map>().any(
         (draft) =>
-            draft['projectId'] == projectId &&
+            draft['workspaceId'] == workspaceId &&
             draft['effectiveMode'] == 'automatic' &&
             draft['effectivePreference'] == 'balanced',
       );
@@ -399,7 +399,7 @@ class _Journey {
       'changed',
       'closed',
     ]) {
-      await tap('project-new-session-${opened.projectId}');
+      await tap('project-new-session-${opened.workspaceId}');
       await configureDraft();
       final snapshot = await submit(
         '[[delegation:review-feedback:$caseName]]',
@@ -413,7 +413,7 @@ class _Journey {
         )?['receipt'];
         final caseFirst = caseReceipt is Map ? caseReceipt['first'] : null;
         if (!identity.consistent ||
-            identity.projectId != opened.projectId ||
+            identity.workspaceId != opened.workspaceId ||
             caseFirst is! Map ||
             caseFirst['root'] != identity.threadId ||
             caseFirst['case'] != caseName ||
@@ -445,7 +445,7 @@ class _Journey {
     await saveJson('review-feedback-first-evidence', persisted);
     // Leave the real original root visible for the harness-owned manual capture.
     final original = ColdStartIdentity(
-      projectId: opened.projectId!,
+      workspaceId: opened.workspaceId!,
       threadId: root,
     );
     await restoreColdStartTarget(
@@ -511,7 +511,7 @@ class _Journey {
     ColdStartIdentity identity,
   ) async {
     final key = target is ByValueKey ? target.keyValue : null;
-    final projectRow = 'project-row-${identity.projectId}';
+    final projectRow = 'project-row-${identity.workspaceId}';
     final threadRow = 'thread-row-${identity.threadId}';
     if (key != projectRow && key != threadRow) {
       // The explicit open-selected-Thread entry is outside the sidebar tree.

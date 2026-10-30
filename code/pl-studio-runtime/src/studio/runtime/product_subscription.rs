@@ -126,8 +126,8 @@ impl StudioRuntime {
             StudioProductTopic::Lsp => {
                 StudioProductBaselineState::Lsp(Box::new(self.read_lsp_state().await))
             }
-            StudioProductTopic::Skills { project_id } => StudioProductBaselineState::Skills(
-                Box::new(self.read_skills_state(project_id).await),
+            StudioProductTopic::Skills { workspace_id } => StudioProductBaselineState::Skills(
+                Box::new(self.read_skills_state(workspace_id).await),
             ),
             StudioProductTopic::ThreadModeCatalog => StudioProductBaselineState::ThreadModeCatalog(
                 Box::new(self.read_thread_mode_catalog()),

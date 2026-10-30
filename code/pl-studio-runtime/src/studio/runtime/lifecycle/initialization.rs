@@ -110,6 +110,16 @@ impl StudioRuntime {
         }
         loop {
             check_cancelled(&cancellation)?;
+            crate::studio::startup::storage_layout::prepare(&resolved.paths)
+                .await
+                .map_err(|error| {
+                    StudioStartupError::new(
+                        "prepare_layout",
+                        StudioStartupErrorKind::Migration,
+                        error,
+                    )
+                })?;
+
             match Self::prepare_attempt(&resolved, &observer, &cancellation).await {
                 Ok(mut runtime) => {
                     if let Err(error) = check_cancelled(&cancellation) {
@@ -183,7 +193,14 @@ impl StudioRuntime {
                 let _timing = crate::startup_timing::Stage::new("prepare_storage");
                 StudioStore::prepare_database(&resolved.paths.database())
                     .await
-                    .map_err(|error| StudioStartupError::input("prepare_storage", error))
+                    .map_err(|error| {
+                        let mut error = StudioStartupError::input("prepare_storage", error);
+                        if error.kind == StudioStartupErrorKind::PersistentData {
+                            // Storage facts are never reset as a new installation.
+                            error.kind = StudioStartupErrorKind::Migration;
+                        }
+                        error
+                    })
             },
             async {
                 let _timing = crate::startup_timing::Stage::new("prepare_configuration");
@@ -239,10 +256,6 @@ impl StudioRuntime {
         observer: &Observer,
         cancellation: &CancellationToken,
     ) -> Result<(), StudioStartupError> {
-        let settings = self
-            .config_runtime
-            .read()
-            .map_err(|error| internal("read_configuration", error))?;
         self.runtime_state
             .apply(crate::studio::StudioRuntimeCommand::BeginInitialize {
                 expected_revision: self.runtime_state.snapshot().revision,
@@ -265,10 +278,7 @@ impl StudioRuntime {
                 crate::studio::agent_host::worktree_lease::load_leases(&self.store)
             ),
             timed_step("prepare_remote_configuration", self.hydrate_ssh_servers()),
-            timed_step(
-                "prepare_system_skills",
-                self.skills.refresh_system_skills(&settings.config.skills)
-            )
+            timed_step("prepare_system_skills", self.skills.refresh_system_skills())
         );
         let mut failures = Vec::new();
         for (step, result) in [

@@ -174,7 +174,7 @@ HeaderView headerView(Ref ref) {
     threads: threads,
   );
   final root = threadById(threads, rootId);
-  final projectId = root?.projectId ?? selection.selectedProjectId;
+  final workspaceId = root?.workspaceId ?? selection.selectedProjectId;
   final workspaceThreads = root == null
       ? const <StudioThread>[]
       : threadsForRoot(threads, root);
@@ -190,7 +190,7 @@ HeaderView headerView(Ref ref) {
     selectedRootThread: root,
     selectedProject: projectById(
       projects.projects?.values ?? const [],
-      projectId,
+      workspaceId,
     ),
     selectedProjectId: selection.selectedProjectId,
     workspaceThreads: workspaceThreads,

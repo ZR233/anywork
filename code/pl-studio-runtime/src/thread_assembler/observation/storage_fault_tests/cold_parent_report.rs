@@ -189,7 +189,7 @@ async fn cold_parent_close_recovery_releases_receiver_and_preserves_original_ack
         let inject_failure = !matches!(path, RecoveryPath::Uninterrupted);
         let mut active = None;
         let temp = tempfile::tempdir()?;
-        let store = StudioStore::open(temp.path().join("studio/v2/studio.sqlite")).await?;
+        let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
         let parent = Fixture::protocol("parent", None);
         let child = Fixture::protocol("child", Some("parent"));
         // These original storage owners are fully stopped before the new coordinator exists.
@@ -483,7 +483,7 @@ async fn prove_report_and_reactivate(fixture: &Fixture, saved: &SavedClose) -> R
 #[tokio::test]
 async fn detached_receiver_writer_retry_joins_only_the_original_binding() -> Result<()> {
     let temp = tempfile::tempdir()?;
-    let store = StudioStore::open(temp.path().join("studio/v2/studio.sqlite")).await?;
+    let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
     let resources = close_factory(&store)?;
     let saved = save_pending_close(&store, &resources.factory).await?;
     let fixture = Fixture::new(store.clone())?;
@@ -546,7 +546,7 @@ async fn detached_receiver_writer_retry_joins_only_the_original_binding() -> Res
 #[tokio::test]
 async fn cancelled_activation_resumes_the_one_already_effective_attach() -> Result<()> {
     let temp = tempfile::tempdir()?;
-    let store = StudioStore::open(temp.path().join("studio/v2/studio.sqlite")).await?;
+    let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
     let resources = close_factory(&store)?;
     let saved = save_pending_close(&store, &resources.factory).await?;
     let fixture = Fixture::new(store.clone())?;

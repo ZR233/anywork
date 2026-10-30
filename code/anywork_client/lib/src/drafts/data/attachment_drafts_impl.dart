@@ -60,7 +60,7 @@ final class AttachmentDraftsImpl extends ReadModel<AttachmentDraftBoard>
     required String threadId,
     required ComposerDraftBinding binding,
     required List<AttachmentDraftSource> sources,
-    required String? projectId,
+    required String? workspaceId,
   }) {
     if (_admissionsSealed) return Future<void>.value();
     return _track(
@@ -69,7 +69,7 @@ final class AttachmentDraftsImpl extends ReadModel<AttachmentDraftBoard>
         context: AttachmentAdmissionContext.existingThread(threadId),
         sources: sources,
         binding: binding,
-        projectId: projectId,
+        workspaceId: workspaceId,
         threadId: threadId,
         targetCurrent: () => _threadTargetCurrent(threadId),
       ),
@@ -80,14 +80,14 @@ final class AttachmentDraftsImpl extends ReadModel<AttachmentDraftBoard>
     required String threadId,
     required String draftId,
     required ComposerDraftBinding binding,
-    required String? projectId,
+    required String? workspaceId,
   }) {
     return _track(
       () => _remove(
         targetKey: attachmentLaneKeyForThread(threadId),
         draftId: draftId,
         binding: binding,
-        projectId: projectId,
+        workspaceId: workspaceId,
         threadId: threadId,
       ),
     );
@@ -97,7 +97,7 @@ final class AttachmentDraftsImpl extends ReadModel<AttachmentDraftBoard>
     required String threadId,
     required Uint8List pngBytes,
     required ComposerDraftBinding binding,
-    required String? projectId,
+    required String? workspaceId,
   }) {
     if (_admissionsSealed) return Future<void>.value();
     return _track(
@@ -106,16 +106,16 @@ final class AttachmentDraftsImpl extends ReadModel<AttachmentDraftBoard>
         pngBytes: pngBytes,
         context: AttachmentAdmissionContext.existingThread(threadId),
         binding: binding,
-        projectId: projectId,
+        workspaceId: workspaceId,
         threadId: threadId,
         targetCurrent: () => _threadTargetCurrent(threadId),
       ),
     );
   }
 
-  void seedNewThreadIfEmpty(String projectId, ComposerThreadState incoming) {
+  void seedNewThreadIfEmpty(String workspaceId, ComposerThreadState incoming) {
     if (_closed || _admissionsSealed) return;
-    final current = state.newThread(projectId);
+    final current = state.newThread(workspaceId);
     if (current.attachments.isNotEmpty ||
         current.cleanupFailureDraftIds.isNotEmpty ||
         current.error != null) {
@@ -138,83 +138,83 @@ final class AttachmentDraftsImpl extends ReadModel<AttachmentDraftBoard>
     }
     try {
       _ownership.adopt(
-        'start:$projectId',
+        'start:$workspaceId',
         seeded.attachments.map((item) => item.id),
       );
-      _putNewThread(projectId, seeded);
+      _putNewThread(workspaceId, seeded);
     } catch (error) {
-      reportNewThreadFailure(projectId, error);
+      reportNewThreadFailure(workspaceId, error);
     }
   }
 
   Future<void> admitNewThread({
-    required String projectId,
+    required String workspaceId,
     required ThreadModeId mode,
     required List<AttachmentDraftSource> sources,
   }) {
     if (_closed || _admissionsSealed) return Future<void>.value();
-    final context = _newThreadContext(projectId, mode);
+    final context = _newThreadContext(workspaceId, mode);
     if (context == null) return Future<void>.value();
     return _track(
       () => _admit(
-        targetKey: attachmentLaneKeyForNewThread(projectId),
+        targetKey: attachmentLaneKeyForNewThread(workspaceId),
         context: context,
         sources: sources,
-        binding: _newThreadBinding(projectId),
-        projectId: projectId,
+        binding: _newThreadBinding(workspaceId),
+        workspaceId: workspaceId,
         threadId: null,
-        targetCurrent: () => _newThreadCurrent(projectId),
+        targetCurrent: () => _newThreadCurrent(workspaceId),
       ),
     );
   }
 
-  Future<void> removeNewThreadDraft(String projectId, String draftId) {
+  Future<void> removeNewThreadDraft(String workspaceId, String draftId) {
     return _track(
       () => _remove(
-        targetKey: attachmentLaneKeyForNewThread(projectId),
+        targetKey: attachmentLaneKeyForNewThread(workspaceId),
         draftId: draftId,
-        binding: _newThreadBinding(projectId),
-        projectId: projectId,
+        binding: _newThreadBinding(workspaceId),
+        workspaceId: workspaceId,
         threadId: null,
       ),
     );
   }
 
   Future<void> addNewThreadRemote({
-    required String projectId,
+    required String workspaceId,
     required ThreadModeId mode,
     required String url,
   }) {
     return admitNewThread(
-      projectId: projectId,
+      workspaceId: workspaceId,
       mode: mode,
       sources: [AttachmentDraftSource.remoteUrl(url.trim())],
     );
   }
 
   Future<void> addNewThreadClipboard({
-    required String projectId,
+    required String workspaceId,
     required ThreadModeId mode,
     required Uint8List pngBytes,
   }) {
     if (_closed || _admissionsSealed) return Future<void>.value();
-    final context = _newThreadContext(projectId, mode);
+    final context = _newThreadContext(workspaceId, mode);
     if (context == null) return Future<void>.value();
     return _track(
       () => _addClipboard(
-        targetKey: attachmentLaneKeyForNewThread(projectId),
+        targetKey: attachmentLaneKeyForNewThread(workspaceId),
         pngBytes: pngBytes,
         context: context,
-        binding: _newThreadBinding(projectId),
-        projectId: projectId,
+        binding: _newThreadBinding(workspaceId),
+        workspaceId: workspaceId,
         threadId: null,
-        targetCurrent: () => _newThreadCurrent(projectId),
+        targetCurrent: () => _newThreadCurrent(workspaceId),
       ),
     );
   }
 
   AttachmentAdmissionContext? _newThreadContext(
-    String projectId,
+    String workspaceId,
     ThreadModeId mode,
   ) {
     try {
@@ -222,13 +222,13 @@ final class AttachmentDraftsImpl extends ReadModel<AttachmentDraftBoard>
         _dependencies.startDraft.resolveRoute(mode),
       );
     } catch (error) {
-      reportNewThreadFailure(projectId, error);
+      reportNewThreadFailure(workspaceId, error);
       return null;
     }
   }
 
-  void reportNewThreadFailure(String projectId, Object error) {
-    final binding = _newThreadBinding(projectId);
+  void reportNewThreadFailure(String workspaceId, Object error) {
+    final binding = _newThreadBinding(workspaceId);
     if (!binding.mounted()) return;
     final current = binding.read();
     binding.write(current.reportFailure(error));
@@ -239,7 +239,7 @@ final class AttachmentDraftsImpl extends ReadModel<AttachmentDraftBoard>
     required AttachmentAdmissionContext context,
     required List<AttachmentDraftSource> sources,
     required ComposerDraftBinding binding,
-    required String? projectId,
+    required String? workspaceId,
     required String? threadId,
     required bool Function() targetCurrent,
   }) async {
@@ -305,7 +305,7 @@ final class AttachmentDraftsImpl extends ReadModel<AttachmentDraftBoard>
           !targetCurrent()) {
         await _cleanupOrphans(
           drafts.map((draft) => draft.id),
-          projectId: projectId,
+          workspaceId: workspaceId,
           threadId: threadId,
         );
         return null;
@@ -314,7 +314,7 @@ final class AttachmentDraftsImpl extends ReadModel<AttachmentDraftBoard>
       if (binding.generation() != generation) {
         await _cleanupOrphans(
           drafts.map((draft) => draft.id),
-          projectId: projectId,
+          workspaceId: workspaceId,
           threadId: threadId,
         );
         return null;
@@ -324,7 +324,7 @@ final class AttachmentDraftsImpl extends ReadModel<AttachmentDraftBoard>
       } catch (error) {
         await _cleanupOrphans(
           drafts.map((draft) => draft.id),
-          projectId: projectId,
+          workspaceId: workspaceId,
           threadId: threadId,
         );
         if (binding.mounted())
@@ -345,7 +345,7 @@ final class AttachmentDraftsImpl extends ReadModel<AttachmentDraftBoard>
           _readPreview(
             draft,
             binding: binding,
-            projectId: projectId,
+            workspaceId: workspaceId,
             threadId: threadId,
             targetKey: targetKey,
             targetCurrent: targetCurrent,
@@ -358,7 +358,7 @@ final class AttachmentDraftsImpl extends ReadModel<AttachmentDraftBoard>
   Future<void> _readPreview(
     AttachmentDraftView draft, {
     required ComposerDraftBinding binding,
-    required String? projectId,
+    required String? workspaceId,
     required String? threadId,
     required String targetKey,
     required bool Function() targetCurrent,
@@ -418,7 +418,7 @@ final class AttachmentDraftsImpl extends ReadModel<AttachmentDraftBoard>
     required String targetKey,
     required String draftId,
     required ComposerDraftBinding binding,
-    required String? projectId,
+    required String? workspaceId,
     required String? threadId,
   }) {
     return _lane(targetKey).enqueue(() async {
@@ -445,7 +445,7 @@ final class AttachmentDraftsImpl extends ReadModel<AttachmentDraftBoard>
         }
       } catch (error) {
         _unresolvedCleanup[draftId] = _CleanupFailure(
-          projectId,
+          workspaceId,
           threadId,
           error,
           binding: binding,
@@ -456,7 +456,7 @@ final class AttachmentDraftsImpl extends ReadModel<AttachmentDraftBoard>
           );
         }
         _record(
-          projectId: projectId,
+          workspaceId: workspaceId,
           threadId: threadId,
           message: 'Attachment removal failed for draft ID: $draftId: $error',
           cleanupFailureDraftIds: [draftId],
@@ -470,7 +470,7 @@ final class AttachmentDraftsImpl extends ReadModel<AttachmentDraftBoard>
     required Uint8List pngBytes,
     required AttachmentAdmissionContext context,
     required ComposerDraftBinding binding,
-    required String? projectId,
+    required String? workspaceId,
     required String? threadId,
     required bool Function() targetCurrent,
   }) async {
@@ -512,7 +512,7 @@ final class AttachmentDraftsImpl extends ReadModel<AttachmentDraftBoard>
         context: context,
         sources: [AttachmentDraftSource.localFile(path)],
         binding: binding,
-        projectId: projectId,
+        workspaceId: workspaceId,
         threadId: threadId,
         targetCurrent: targetCurrent,
       );
@@ -560,7 +560,7 @@ final class AttachmentDraftsImpl extends ReadModel<AttachmentDraftBoard>
 
   Future<void> _cleanupOrphans(
     Iterable<String> draftIds, {
-    required String? projectId,
+    required String? workspaceId,
     required String? threadId,
   }) async {
     final candidates = draftIds.toSet();
@@ -588,7 +588,7 @@ final class AttachmentDraftsImpl extends ReadModel<AttachmentDraftBoard>
         failures[draftId] =
             lastError ?? StateError('Attachment draft cleanup failed.');
         _unresolvedCleanup[draftId] = _CleanupFailure(
-          projectId,
+          workspaceId,
           threadId,
           failures[draftId]!,
         );
@@ -600,34 +600,34 @@ final class AttachmentDraftsImpl extends ReadModel<AttachmentDraftBoard>
     if (failures.isEmpty) return;
     final ids = failures.keys.toList()..sort();
     _record(
-      projectId: projectId,
+      workspaceId: workspaceId,
       threadId: threadId,
       message: 'Attachment cleanup failed for draft IDs: ${ids.join(', ')}',
       cleanupFailureDraftIds: ids,
     );
     for (final entry in failures.entries) {
       log(
-        'attachment cleanup failed projectId=$projectId threadId=$threadId draftId=${entry.key}',
+        'attachment cleanup failed workspaceId=$workspaceId threadId=$threadId draftId=${entry.key}',
         error: entry.value,
       );
     }
   }
 
   void _record({
-    required String? projectId,
+    required String? workspaceId,
     required String? threadId,
     required String message,
     Iterable<String> cleanupFailureDraftIds = const [],
   }) {
-    if (projectId == null) return;
-    final key = attachmentTargetKey(projectId, threadId);
+    if (workspaceId == null) return;
+    final key = attachmentTargetKey(workspaceId, threadId);
     final previous = state.diagnostics[key];
     final ids = {
       ...?previous?.cleanupFailureDraftIds,
       ...cleanupFailureDraftIds,
     }.toList()..sort();
     final diagnostic = ComposerTargetDiagnostic(
-      projectId: projectId,
+      workspaceId: workspaceId,
       threadId: threadId,
       message: message,
       cleanupFailureDraftIds: ids,
@@ -638,36 +638,36 @@ final class AttachmentDraftsImpl extends ReadModel<AttachmentDraftBoard>
     );
   }
 
-  ComposerDraftBinding _newThreadBinding(String projectId) {
+  ComposerDraftBinding _newThreadBinding(String workspaceId) {
     return ComposerDraftBinding(
-      read: () => state.newThread(projectId),
-      write: (next) => _putNewThread(projectId, next),
+      read: () => state.newThread(workspaceId),
+      write: (next) => _putNewThread(workspaceId, next),
       mounted: () => !_closed,
-      draftId: 'start:$projectId',
-      generation: () => _newThreadGenerations[projectId] ?? 0,
+      draftId: 'start:$workspaceId',
+      generation: () => _newThreadGenerations[workspaceId] ?? 0,
     );
   }
 
-  void _putNewThread(String projectId, ComposerThreadState next) {
+  void _putNewThread(String workspaceId, ComposerThreadState next) {
     if (_closed) return;
-    if (state.newThread(projectId) == next &&
-        state.newThreadDrafts.containsKey(projectId)) {
+    if (state.newThread(workspaceId) == next &&
+        state.newThreadDrafts.containsKey(workspaceId)) {
       return;
     }
-    final previous = state.newThread(projectId);
+    final previous = state.newThread(workspaceId);
     if (!_sameAttachmentIds(previous.attachments, next.attachments)) {
-      _newThreadRevisions[projectId] =
-          (_newThreadRevisions[projectId] ?? 0) + 1;
+      _newThreadRevisions[workspaceId] =
+          (_newThreadRevisions[workspaceId] ?? 0) + 1;
     }
     state = state.copyWith(
-      newThreadDrafts: {...state.newThreadDrafts, projectId: next},
+      newThreadDrafts: {...state.newThreadDrafts, workspaceId: next},
     );
   }
 
-  void _clearNewThread(String projectId) {
-    if (!state.newThreadDrafts.containsKey(projectId)) return;
+  void _clearNewThread(String workspaceId) {
+    if (!state.newThreadDrafts.containsKey(workspaceId)) return;
     state = state.copyWith(
-      newThreadDrafts: {...state.newThreadDrafts}..remove(projectId),
+      newThreadDrafts: {...state.newThreadDrafts}..remove(workspaceId),
     );
   }
 
@@ -704,17 +704,17 @@ final class AttachmentDraftsImpl extends ReadModel<AttachmentDraftBoard>
         ?.thread;
   }
 
-  bool _newThreadCurrent(String projectId) {
+  bool _newThreadCurrent(String workspaceId) {
     final projects = _dependencies.project.value.projects?.values ?? const [];
-    return projects.any((project) => project.id == projectId);
+    return projects.any((project) => project.id == workspaceId);
   }
 
-  ComposerDraftBinding newThreadBinding(String projectId) =>
-      _newThreadBinding(projectId);
+  ComposerDraftBinding newThreadBinding(String workspaceId) =>
+      _newThreadBinding(workspaceId);
 
-  DraftStamp newThreadStamp(String projectId) => DraftStamp(
-    draftId: 'start:$projectId',
-    revision: _newThreadRevisions[projectId] ?? 0,
+  DraftStamp newThreadStamp(String workspaceId) => DraftStamp(
+    draftId: 'start:$workspaceId',
+    revision: _newThreadRevisions[workspaceId] ?? 0,
   );
 
   void retainFrozen({
@@ -735,7 +735,7 @@ final class AttachmentDraftsImpl extends ReadModel<AttachmentDraftBoard>
     required OperationId operationId,
     required bool accepted,
     required bool clearCurrent,
-    required String? projectId,
+    required String? workspaceId,
     required String? threadId,
   }) async {
     final frozen = _submissions.remove(operationId);
@@ -745,29 +745,37 @@ final class AttachmentDraftsImpl extends ReadModel<AttachmentDraftBoard>
     // Session resources were promoted before acceptance. Staging remains
     // immutable and reusable while any logical draft still owns the same ID.
     if (released.isNotEmpty) {
-      await _cleanupOrphans(released, projectId: projectId, threadId: threadId);
+      await _cleanupOrphans(
+        released,
+        workspaceId: workspaceId,
+        threadId: threadId,
+      );
     }
   }
 
   Future<void> discard({
     required ComposerDraftBinding binding,
-    required String? projectId,
+    required String? workspaceId,
     required String? threadId,
   }) async {
     final released = _ownership.discardDraft(binding.draftId);
     binding.write(const ComposerThreadState.idle());
-    await _cleanupOrphans(released, projectId: projectId, threadId: threadId);
+    await _cleanupOrphans(
+      released,
+      workspaceId: workspaceId,
+      threadId: threadId,
+    );
   }
 
-  Future<void> discardProject(String projectId) async {
-    _newThreadGenerations[projectId] =
-        (_newThreadGenerations[projectId] ?? 0) + 1;
+  Future<void> discardProject(String workspaceId) async {
+    _newThreadGenerations[workspaceId] =
+        (_newThreadGenerations[workspaceId] ?? 0) + 1;
     await discard(
-      binding: _newThreadBinding(projectId),
-      projectId: projectId,
+      binding: _newThreadBinding(workspaceId),
+      workspaceId: workspaceId,
       threadId: null,
     );
-    _clearNewThread(projectId);
+    _clearNewThread(workspaceId);
   }
 
   List<String> get unresolvedAttachmentIds =>
@@ -810,11 +818,11 @@ final class AttachmentDraftsImpl extends ReadModel<AttachmentDraftBoard>
       if (binding != null && !_closed) {
         await _remove(
           targetKey: failure.threadId == null
-              ? attachmentLaneKeyForNewThread(failure.projectId!)
+              ? attachmentLaneKeyForNewThread(failure.workspaceId!)
               : attachmentLaneKeyForThread(failure.threadId!),
           draftId: entry.key,
           binding: binding,
-          projectId: failure.projectId,
+          workspaceId: failure.workspaceId,
           threadId: failure.threadId,
         );
       } else {
@@ -835,7 +843,7 @@ final class AttachmentDraftsImpl extends ReadModel<AttachmentDraftBoard>
         }
         await _cleanupOrphans(
           [entry.key],
-          projectId: failure.projectId,
+          workspaceId: failure.workspaceId,
           threadId: failure.threadId,
         );
       }
@@ -901,12 +909,12 @@ final class _StagingCleanupFailure {
 
 final class _CleanupFailure {
   const _CleanupFailure(
-    this.projectId,
+    this.workspaceId,
     this.threadId,
     this.error, {
     this.binding,
   });
-  final String? projectId;
+  final String? workspaceId;
   final String? threadId;
   final Object error;
   final ComposerDraftBinding? binding;

@@ -4,6 +4,7 @@ mod backup;
 mod error;
 
 pub(super) use backup::StartupBackup;
+pub(crate) use backup::validate_credential_recovery;
 pub use error::{StudioStartupError, StudioStartupErrorKind};
 pub(crate) use error::{cleanup_error, data_error, input_error, migration_error};
 
@@ -15,3 +16,4 @@ pub struct StudioStartupRecovery {
     pub reason: String,
     pub created_at: i64,
 }
+pub(crate) mod storage_layout;

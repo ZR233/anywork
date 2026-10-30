@@ -13,22 +13,22 @@ abstract interface class DraftAttachmentOperations
     required String threadId,
     required ComposerDraftBinding binding,
     required List<AttachmentDraftSource> sources,
-    required String? projectId,
+    required String? workspaceId,
   });
   Future<void> removeThreadDraft({
     required String threadId,
     required String draftId,
     required ComposerDraftBinding binding,
-    required String? projectId,
+    required String? workspaceId,
   });
   Future<void> addThreadClipboard({
     required String threadId,
     required Uint8List pngBytes,
     required ComposerDraftBinding binding,
-    required String? projectId,
+    required String? workspaceId,
   });
-  ComposerDraftBinding newThreadBinding(String projectId);
-  DraftStamp newThreadStamp(String projectId);
+  ComposerDraftBinding newThreadBinding(String workspaceId);
+  DraftStamp newThreadStamp(String workspaceId);
   void retainFrozen({
     required OperationId operationId,
     required ComposerDraftBinding binding,
@@ -38,12 +38,12 @@ abstract interface class DraftAttachmentOperations
     required OperationId operationId,
     required bool accepted,
     required bool clearCurrent,
-    required String? projectId,
+    required String? workspaceId,
     required String? threadId,
   });
   Future<void> discard({
     required ComposerDraftBinding binding,
-    required String? projectId,
+    required String? workspaceId,
     required String? threadId,
   });
 }
@@ -67,4 +67,4 @@ class ComposerDraftBinding {
 
 String attachmentLaneKeyForThread(String threadId) => 'thread:$threadId';
 
-String attachmentLaneKeyForNewThread(String projectId) => 'new:$projectId';
+String attachmentLaneKeyForNewThread(String workspaceId) => 'new:$workspaceId';

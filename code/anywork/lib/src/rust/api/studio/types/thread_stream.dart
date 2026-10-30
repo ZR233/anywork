@@ -363,7 +363,7 @@ class BridgeRuntimeCostAmount {
 
 class BridgeThread {
   final String id;
-  final String projectId;
+  final String workspaceId;
   final String title;
 
   /// 完整 Thread Mode ID，例如 `mode.simple` 或 `mode.release`。
@@ -391,7 +391,7 @@ class BridgeThread {
 
   const BridgeThread({
     required this.id,
-    required this.projectId,
+    required this.workspaceId,
     required this.title,
     required this.mode,
     required this.delegationMode,
@@ -413,7 +413,7 @@ class BridgeThread {
   @override
   int get hashCode =>
       id.hashCode ^
-      projectId.hashCode ^
+      workspaceId.hashCode ^
       title.hashCode ^
       mode.hashCode ^
       delegationMode.hashCode ^
@@ -437,7 +437,7 @@ class BridgeThread {
       other is BridgeThread &&
           runtimeType == other.runtimeType &&
           id == other.id &&
-          projectId == other.projectId &&
+          workspaceId == other.workspaceId &&
           title == other.title &&
           mode == other.mode &&
           delegationMode == other.delegationMode &&

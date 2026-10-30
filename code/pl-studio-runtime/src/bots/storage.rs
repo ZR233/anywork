@@ -13,7 +13,7 @@ use std::time::Duration;
 pub(super) mod card;
 mod schema;
 
-const BOT_STATE_SCHEMA_VERSION: i64 = 6;
+const BOT_STATE_SCHEMA_VERSION: i64 = 7;
 const PAIRING_LIMIT: i64 = 32;
 const PAIRING_TTL_SECONDS: i64 = 7 * 24 * 60 * 60;
 const INBOUND_CLAIM_TTL_SECONDS: i64 = 60;
@@ -104,7 +104,7 @@ pub struct FrozenInbound {
     pub open_id: String,
     pub chat_kind: String,
     pub app_id: String,
-    pub project_id: String,
+    pub workspace_id: String,
     pub creation_id: String,
     pub binding_revision: u64,
     /// 当前 watch 的 canonical 输入身份；空串表示原 bot 输入。
@@ -173,7 +173,7 @@ pub struct PairingRow {
 #[derive(Debug, Clone)]
 pub struct BindingProjection {
     pub chat_id: String,
-    pub project_id: String,
+    pub workspace_id: String,
     /// 当前行记录的创建身份；缺失行为空串。用于证明部分现场是否属于本次请求。
     pub creation_id: String,
     pub thread_id: Option<String>,
@@ -245,7 +245,7 @@ impl BotStateStore {
         if let Some(row) = existing {
             let work = tx
                 .query_one_raw(statement(
-                    "SELECT identity, bot_id, chat_id, message_id, content_hash, status, text, open_id, chat_kind, app_id, project_id, creation_id, binding_revision, attachments, watch_input FROM inbound_work WHERE identity=?",
+                    "SELECT identity, bot_id, chat_id, message_id, content_hash, status, text, open_id, chat_kind, app_id, workspace_id, creation_id, binding_revision, attachments, watch_input FROM inbound_work WHERE identity=?",
                     vec![identity.clone().into()],
                 ))
                 .await
@@ -310,7 +310,7 @@ impl BotStateStore {
                 open_id: strict_text(&work, "open_id")?,
                 chat_kind: strict_text(&work, "chat_kind")?,
                 app_id: strict_text(&work, "app_id")?,
-                project_id: strict_text(&work, "project_id")?,
+                workspace_id: strict_text(&work, "workspace_id")?,
                 creation_id: strict_text(&work, "creation_id")?,
                 binding_revision: strict_watermark(&work, "binding_revision")?,
                 watch_input: strict_text(&work, "watch_input")?,
@@ -357,7 +357,7 @@ impl BotStateStore {
         .await
         .map_err(storage)?;
         tx.execute_raw(statement(
-            "INSERT INTO inbound_work(identity, bot_id, chat_id, message_id, content_hash, text, open_id, chat_kind, app_id, project_id, creation_id, binding_revision, attachments, status, diagnostic, claimed_by, claimed_at, updated_at)
+            "INSERT INTO inbound_work(identity, bot_id, chat_id, message_id, content_hash, text, open_id, chat_kind, app_id, workspace_id, creation_id, binding_revision, attachments, status, diagnostic, claimed_by, claimed_at, updated_at)
              VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             vec![
                 identity.into(),
@@ -369,7 +369,7 @@ impl BotStateStore {
                 inbound.open_id.clone().into(),
                 inbound.chat_kind.clone().into(),
                 inbound.app_id.clone().into(),
-                inbound.project_id.clone().into(),
+                inbound.workspace_id.clone().into(),
                 inbound.creation_id.clone().into(),
                 i64::try_from(inbound.binding_revision)
                     .map_err(|_| work_needs_recovery())?
@@ -743,7 +743,7 @@ impl BotStateStore {
         let db = self.db().await?;
         let rows = db
             .query_all_raw(statement(
-                "SELECT identity, bot_id, chat_id, message_id, content_hash, text, open_id, chat_kind, app_id, project_id, creation_id, binding_revision, attachments, watch_input
+                "SELECT identity, bot_id, chat_id, message_id, content_hash, text, open_id, chat_kind, app_id, workspace_id, creation_id, binding_revision, attachments, watch_input
                  FROM inbound_work
                  WHERE bot_id=? AND (
                    (status IN ('pending','failed') AND next_attempt_at<=?)
@@ -782,7 +782,7 @@ impl BotStateStore {
                     chat_kind: stored_text(&row, "chat_kind")?,
                     // 绑定/路由/fencing 判据只接受持久值；空串（如尚无续接输入）是合法值。
                     app_id: strict_text(&row, "app_id")?,
-                    project_id: strict_text(&row, "project_id")?,
+                    workspace_id: strict_text(&row, "workspace_id")?,
                     creation_id: strict_text(&row, "creation_id")?,
                     binding_revision: strict_watermark(&row, "binding_revision")?,
                     watch_input: strict_text(&row, "watch_input")?,
@@ -806,13 +806,13 @@ impl BotStateStore {
         &self,
         chat_id: &str,
         creation_id: &str,
-        project_id: &str,
+        workspace_id: &str,
     ) -> Result<ThreadBindingClaim, FeishuError> {
         let db = self.db().await?;
         let tx = db.begin().await.map_err(storage)?;
         let row = match tx
             .query_one_raw(statement(
-                "SELECT chat_id, thread_id, status, creation_id, project_id, revision, generation, diagnostic FROM thread_bindings WHERE chat_id=?",
+                "SELECT chat_id, thread_id, status, creation_id, workspace_id, revision, generation, diagnostic FROM thread_bindings WHERE chat_id=?",
                 vec![chat_id.to_string().into()],
             ))
             .await
@@ -822,14 +822,14 @@ impl BotStateStore {
             None => {
             // 真正 NoRow：首次受理在此写入新行，随后才提交。
         tx.execute_raw(statement(
-            "INSERT INTO thread_bindings(chat_id, thread_id, status, creation_id, project_id, revision, generation, diagnostic, created_at, updated_at)
+            "INSERT INTO thread_bindings(chat_id, thread_id, status, creation_id, workspace_id, revision, generation, diagnostic, created_at, updated_at)
              VALUES(?,?,?,?,?,?,?,?,?,?)",
             vec![
                 chat_id.to_string().into(),
                 "".to_string().into(),
                 "creating".to_string().into(),
                 creation_id.to_string().into(),
-                project_id.to_string().into(),
+                workspace_id.to_string().into(),
                 1i64.into(),
                 1i64.into(),
                 "".to_string().into(),
@@ -853,7 +853,7 @@ impl BotStateStore {
         let status = strict_text(&row, "status")?;
         let thread_id = strict_text(&row, "thread_id")?;
         let stored_creation = strict_text(&row, "creation_id")?;
-        let stored_project = strict_text(&row, "project_id")?;
+        let stored_project = strict_text(&row, "workspace_id")?;
         let diagnostic = strict_text(&row, "diagnostic")?;
         // 水位同样严格解码：坏行不能继续被当成可用绑定。
         let _revision = strict_watermark(&row, "revision")?;
@@ -867,7 +867,7 @@ impl BotStateStore {
         if needs_proof
             && (stored_creation.is_empty()
                 || stored_project.is_empty()
-                || stored_project != project_id)
+                || stored_project != workspace_id)
         {
             return Err(binding_needs_recovery());
         }
@@ -899,13 +899,13 @@ impl BotStateStore {
         chat_id: &str,
         thread_id: &str,
         creation_id: &str,
-        project_id: &str,
+        workspace_id: &str,
     ) -> Result<String, FeishuError> {
         let db = self.db().await?;
         let tx = db.begin().await.map_err(storage)?;
         let existing = tx
             .query_one_raw(statement(
-                "SELECT thread_id, status, creation_id, project_id, revision, generation FROM thread_bindings WHERE chat_id=?",
+                "SELECT thread_id, status, creation_id, workspace_id, revision, generation FROM thread_bindings WHERE chat_id=?",
                 vec![chat_id.to_string().into()],
             ))
             .await
@@ -915,7 +915,7 @@ impl BotStateStore {
             let status = strict_text(&row, "status")?;
             let bound = strict_text(&row, "thread_id")?;
             let stored_creation = strict_text(&row, "creation_id")?;
-            let stored_project = strict_text(&row, "project_id")?;
+            let stored_project = strict_text(&row, "workspace_id")?;
             // 水位只接受无损解码：缺列或损坏不得回退到 1 覆盖既有水位。
             let revision = strict_watermark(&row, "revision")?;
             let generation = strict_watermark(&row, "generation")?;
@@ -947,7 +947,7 @@ impl BotStateStore {
                     None,
                 ));
             }
-            if stored_project.is_empty() || stored_project != project_id {
+            if stored_project.is_empty() || stored_project != workspace_id {
                 // 项目归属未知或不一致：不覆盖成当前项目，也不把 Thread 迁到另一项目。
                 tx.commit().await.map_err(storage)?;
                 return Err(binding_needs_recovery());
@@ -957,13 +957,13 @@ impl BotStateStore {
             (1u64, 1u64)
         };
         tx.execute_raw(statement(
-            "INSERT INTO thread_bindings(chat_id, thread_id, status, creation_id, project_id, revision, generation, diagnostic, created_at, updated_at)
+            "INSERT INTO thread_bindings(chat_id, thread_id, status, creation_id, workspace_id, revision, generation, diagnostic, created_at, updated_at)
              VALUES(?,?,?,?,?,?,?,?,?,?)
              ON CONFLICT(chat_id) DO UPDATE SET
                thread_id=excluded.thread_id,
                status='bound',
                creation_id=excluded.creation_id,
-               project_id=excluded.project_id,
+               workspace_id=excluded.workspace_id,
                diagnostic='',
                updated_at=excluded.updated_at",
             vec![
@@ -971,7 +971,7 @@ impl BotStateStore {
                 thread_id.to_string().into(),
                 "bound".to_string().into(),
                 creation_id.to_string().into(),
-                project_id.to_string().into(),
+                workspace_id.to_string().into(),
                 i64::try_from(revision)
                     .map_err(|_| corrupt_binding())?
                     .into(),
@@ -1012,12 +1012,12 @@ impl BotStateStore {
         &self,
         chat_id: &str,
         bot_id: &str,
-        project_id: &str,
+        workspace_id: &str,
     ) -> Result<BindingProjection, FeishuError> {
         let db = self.db().await?;
         let row = db
             .query_one_raw(statement(
-                "SELECT chat_id, thread_id, status, revision, generation, project_id, creation_id, diagnostic FROM thread_bindings WHERE chat_id=?",
+                "SELECT chat_id, thread_id, status, revision, generation, workspace_id, creation_id, diagnostic FROM thread_bindings WHERE chat_id=?",
                 vec![chat_id.to_string().into()],
             ))
             .await
@@ -1031,7 +1031,7 @@ impl BotStateStore {
                     return Err(corrupt_binding());
                 }
                 let stored_status: String = strict_text(&row, "status")?;
-                let stored_project: String = strict_text(&row, "project_id")?;
+                let stored_project: String = strict_text(&row, "workspace_id")?;
                 let stored_creation: String = strict_text(&row, "creation_id")?;
                 let thread_id = empty_to_none(strict_text(&row, "thread_id")?)
                     .filter(|value| value != "pending");
@@ -1045,7 +1045,7 @@ impl BotStateStore {
                     "bound" | "creating" => {
                         if stored_creation.is_empty()
                             || stored_project.is_empty()
-                            || stored_project != project_id
+                            || stored_project != workspace_id
                         {
                             return Err(binding_needs_recovery());
                         }
@@ -1060,7 +1060,7 @@ impl BotStateStore {
                 }
                 BindingProjection {
                     chat_id: stored_chat,
-                    project_id: stored_project,
+                    workspace_id: stored_project,
                     // 创建身份与绑定水位是归属判据：损坏必须显式失败，不能默认化。
                     creation_id: stored_creation,
                     thread_id,
@@ -1071,7 +1071,7 @@ impl BotStateStore {
             }
             None => BindingProjection {
                 chat_id: chat_id.to_string(),
-                project_id: project_id.to_string(),
+                workspace_id: workspace_id.to_string(),
                 creation_id: String::new(),
                 thread_id: None,
                 revision: 0,
@@ -1091,7 +1091,7 @@ impl BotStateStore {
         &self,
         chat_id: &str,
         expected_revision: u64,
-        project_id: &str,
+        workspace_id: &str,
         operation: &BindingOperation,
     ) -> Result<(), FeishuError> {
         let db = self.db().await?;
@@ -1121,13 +1121,13 @@ impl BotStateStore {
             .checked_add(1)
             .ok_or_else(corrupt_binding)?;
         tx.execute_raw(statement(
-            "INSERT INTO thread_bindings(chat_id, thread_id, status, creation_id, project_id, revision, generation, diagnostic, created_at, updated_at)
+            "INSERT INTO thread_bindings(chat_id, thread_id, status, creation_id, workspace_id, revision, generation, diagnostic, created_at, updated_at)
              VALUES(?,?,?,?,?,?,?,?,?,?)
              ON CONFLICT(chat_id) DO UPDATE SET
                thread_id='',
                status='creating',
                creation_id=excluded.creation_id,
-               project_id=excluded.project_id,
+               workspace_id=excluded.workspace_id,
                revision=excluded.revision,
                generation=excluded.generation,
                diagnostic='',
@@ -1137,7 +1137,7 @@ impl BotStateStore {
                 "".to_string().into(),
                 "creating".to_string().into(),
                 operation.creation_id.clone().into(),
-                project_id.to_string().into(),
+                workspace_id.to_string().into(),
                 i64::try_from(next_revision)
                     .map_err(|_| corrupt_binding())?
                     .into(),
@@ -1165,14 +1165,14 @@ impl BotStateStore {
         &self,
         chat_id: &str,
         expected_revision: u64,
-        project_id: &str,
+        workspace_id: &str,
         operation: &BindingOperation,
     ) -> Result<(), FeishuError> {
         let db = self.db().await?;
         let tx = db.begin().await.map_err(storage)?;
         let row = tx
             .query_one_raw(statement(
-                "SELECT status, thread_id, creation_id, project_id, revision FROM thread_bindings WHERE chat_id=?",
+                "SELECT status, thread_id, creation_id, workspace_id, revision FROM thread_bindings WHERE chat_id=?",
                 vec![chat_id.to_string().into()],
             ))
             .await
@@ -1184,12 +1184,12 @@ impl BotStateStore {
         let status = strict_text(&row, "status")?;
         let thread_id = strict_text(&row, "thread_id")?;
         let creation_id = strict_text(&row, "creation_id")?;
-        let stored_project = strict_text(&row, "project_id")?;
+        let stored_project = strict_text(&row, "workspace_id")?;
         let revision = strict_watermark(&row, "revision")?;
         let claimed = status == "creating"
             && thread_id.is_empty()
             && creation_id == operation.creation_id
-            && stored_project == project_id
+            && stored_project == workspace_id
             && revision
                 == expected_revision
                     .checked_add(1)
@@ -2035,6 +2035,45 @@ mod tests {
         probe
             .execute_unprepared("DROP TRIGGER reject_ledger_migration")
             .await?;
+        probe
+            .execute_unprepared(
+                "CREATE TRIGGER reject_workspace_migration BEFORE UPDATE ON bot_meta
+             WHEN NEW.schema_version=7
+             BEGIN SELECT RAISE(ABORT,'injected ownership migration failure'); END",
+            )
+            .await?;
+        probe.close().await?;
+
+        let failed_ownership = BotStateStore::new(path.clone());
+        assert!(
+            failed_ownership
+                .list_due_inbound("legacy")
+                .await
+                .expect_err("ownership migration must roll back")
+                .to_string()
+                .contains("injected ownership migration failure")
+        );
+        let probe = Database::connect(
+            sqlite_file_options(&path, SqliteFileMode::ReadWrite, |options| options).await?,
+        )
+        .await?;
+        let manager = sea_orm_migration::SchemaManager::new(&probe);
+        for table in ["inbound_work", "thread_bindings"] {
+            assert!(manager.has_column(table, "project_id").await?);
+            assert!(!manager.has_column(table, "workspace_id").await?);
+        }
+        let version: i64 = probe
+            .query_one_raw(statement(
+                "SELECT schema_version FROM bot_meta WHERE id=1",
+                vec![],
+            ))
+            .await?
+            .unwrap()
+            .try_get("", "schema_version")?;
+        assert_eq!(version, 6, "only the prior official migration committed");
+        probe
+            .execute_unprepared("DROP TRIGGER reject_workspace_migration")
+            .await?;
         probe.close().await?;
 
         let store = BotStateStore::new(path.clone());
@@ -2073,6 +2112,16 @@ mod tests {
             .unwrap()
             .try_get("", "schema_version")?;
         assert_eq!(version, BOT_STATE_SCHEMA_VERSION);
+        for table in ["inbound_work", "thread_bindings"] {
+            let row = db
+                .query_one_raw(statement(
+                    &format!("SELECT workspace_id FROM {table} LIMIT 1"),
+                    vec![],
+                ))
+                .await?
+                .unwrap();
+            assert_eq!(row.try_get::<String>("", "workspace_id")?, "project");
+        }
 
         // 过期旧身份不得自认续权：迁移前 crash 的 worker 的租约已过期，
         // renew/finish 都被有效 lease 条件拒绝，行不被旧持有者改写。
@@ -2430,6 +2479,12 @@ mod tests {
             let directory = tempfile::tempdir()?;
             let path = directory.path().join("ledger.sqlite");
             let original = open_bot_state(&path).await?;
+            original.execute_unprepared(
+                "INSERT INTO inbound_work(identity,workspace_id,text,status,diagnostic,updated_at)
+                 VALUES('current-inbound','current-workspace','preserved input','replied','preserved diagnostic',42);
+                 INSERT INTO thread_bindings(chat_id,thread_id,workspace_id,created_at)
+                 VALUES('current-chat','current-thread','current-workspace',42)",
+            ).await?;
             original
                 .execute_unprepared("DROP TABLE seaql_migrations")
                 .await?;
@@ -2441,6 +2496,45 @@ mod tests {
                     .await?
                     .is_some()
             );
+            let inbound = adopted
+                .query_one_raw(statement(
+                    "SELECT workspace_id,text,diagnostic FROM inbound_work WHERE identity='current-inbound'",
+                    vec![],
+                ))
+                .await?
+                .expect("current inbound survived migration record adoption");
+            assert_eq!(
+                inbound.try_get::<String>("", "workspace_id")?,
+                "current-workspace"
+            );
+            assert_eq!(inbound.try_get::<String>("", "text")?, "preserved input");
+            assert_eq!(
+                inbound.try_get::<String>("", "diagnostic")?,
+                "preserved diagnostic"
+            );
+            let binding = adopted
+                .query_one_raw(statement(
+                    "SELECT workspace_id,thread_id FROM thread_bindings WHERE chat_id='current-chat'",
+                    vec![],
+                ))
+                .await?
+                .expect("current binding survived migration record adoption");
+            assert_eq!(
+                binding.try_get::<String>("", "workspace_id")?,
+                "current-workspace"
+            );
+            assert_eq!(
+                binding.try_get::<String>("", "thread_id")?,
+                "current-thread"
+            );
+            for table in ["inbound_work", "thread_bindings"] {
+                assert!(
+                    !sea_orm_migration::SchemaManager::new(&adopted)
+                        .has_column(table, "project_id")
+                        .await?,
+                    "current adoption must not recreate retired ownership columns"
+                );
+            }
             if fault == "format" {
                 adopted
                     .execute_unprepared("UPDATE bot_meta SET schema_version=999")

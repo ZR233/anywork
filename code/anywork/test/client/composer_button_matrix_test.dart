@@ -1462,7 +1462,7 @@ void main() {
 
   testWidgets('root Recovery诊断完整滚动展示且不遮挡后续异类错误', (tester) async {
     final composer = await _composer(tester);
-    final projectId = composer.workspace.thread.projectId;
+    final workspaceId = composer.workspace.thread.workspaceId;
     final current = composer.graph.client.recovery.state.value;
     final issue = StudioRecoveryIssue(
       id: 'root-recovery-diagnostic',
@@ -1470,7 +1470,7 @@ void main() {
       category: RecoveryIssueCategory.repository,
       impact: RecoveryIssueImpact.executionBlocked,
       availableActions: const [RecoveryIssueAction.retry],
-      projectId: projectId,
+      workspaceId: workspaceId,
       threadId: _threadId,
       detail: List.filled(12, 'The root worktree needs attention').join(' '),
     );
@@ -1552,14 +1552,14 @@ void main() {
   testWidgets('同一 Recovery 事实跨来源只渲一次，独特诊断与普通文案不去重', (tester) async {
     final composer = await _composer(tester);
     await _pump(tester, composer);
-    final projectId = composer.workspace.thread.projectId;
+    final workspaceId = composer.workspace.thread.workspaceId;
     final issue = StudioRecoveryIssue(
       id: 'shared-recovery-diagnostic',
       scope: RecoveryIssueScope.thread,
       category: RecoveryIssueCategory.repository,
       impact: RecoveryIssueImpact.executionBlocked,
       availableActions: const [RecoveryIssueAction.retry],
-      projectId: projectId,
+      workspaceId: workspaceId,
       threadId: _threadId,
       detail: 'The shared worktree diagnostic',
     );
@@ -1569,7 +1569,7 @@ void main() {
       category: RecoveryIssueCategory.storage,
       impact: RecoveryIssueImpact.executionBlocked,
       availableActions: const [],
-      projectId: projectId,
+      workspaceId: workspaceId,
       threadId: _threadId,
       detail: 'A distinct storage diagnostic sharing the id',
     );

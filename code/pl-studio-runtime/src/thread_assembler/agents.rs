@@ -18,6 +18,10 @@ use std::sync::{Arc, Weak};
 #[derive(Debug)]
 struct AgentHost(Weak<Registry>);
 
+#[cfg(test)]
+#[path = "agents_archive_tests.rs"]
+pub(crate) mod archive_tests;
+
 #[derive(Debug, thiserror::Error)]
 enum ControlError {
     #[error("agent coordinator is closed")]
@@ -178,6 +182,27 @@ async fn cleanup_spawn_failure(
 }
 
 impl AgentHost {
+    async fn ensure_archive_execution_admission(
+        owner: &StudioThreadAssembler,
+        id: &str,
+    ) -> Result<(), ToolError> {
+        let services = { owner.0.state().agent_services.clone() };
+        if let Some(services) = services {
+            let record = services
+                .store
+                .read_thread(id)
+                .await
+                .map_err(|error| ToolError::new(super::agent_services::ServiceError(error)))?
+                .ok_or_else(|| ToolError::new(ControlError::Missing(id.to_owned())))?;
+            services
+                .store
+                .ensure_archive_execution_allowed(&record.workspace_id, Some(id))
+                .await
+                .map_err(|error| ToolError::new(super::agent_services::ServiceError(error)))?;
+        }
+        Ok(())
+    }
+
     async fn spawn_owned(
         &self,
         owner: StudioThreadAssembler,
@@ -188,7 +213,26 @@ impl AgentHost {
         owner
             .ensure_agent_admission_open(&context.thread_id)
             .map_err(ToolError::new)?;
+        Self::ensure_archive_execution_admission(&owner, &context.thread_id).await?;
         let (factory, reservation) = owner.reserve_child(&context).map_err(ToolError::new)?;
+        if let Some(services) = { owner.0.state().agent_services.clone() } {
+            let parent = services
+                .record(&context.thread_id)
+                .await
+                .map_err(|error| ToolError::new(super::agent_services::ServiceError(error)))?;
+            services
+                .store
+                .begin_thread_preparation(
+                    crate::studio::store::thread_preparation::PreparationIdentity {
+                        thread_id: reservation.id.clone(),
+                        workspace_id: parent.workspace_id,
+                        parent_id: Some(context.thread_id.clone()),
+                        root_id: parent.root_thread_id,
+                    },
+                )
+                .await
+                .map_err(|error| ToolError::new(super::agent_services::ServiceError(error)))?;
+        }
         if request.review_target_agent_id.as_deref() == Some(context.thread_id.as_str()) {
             return Err(ToolError::new(ThreadAssemblyError::ReviewTargetInvalid(
                 context.thread_id.clone(),
@@ -360,9 +404,20 @@ impl AgentHost {
             )
             .await);
         }
-        let _operation = owner.agent_operation(&id).await;
+        let operation = owner.agent_operation(&id).await;
         if let Err(error) = owner.publish_child_resources(&id) {
+            // Retained disposal acquires this same identity's permit. Never join it while
+            // holding the publication permit (the caller also owns the root spawn permit).
+            drop(operation);
             return Err(cleanup_spawn_failure(&owner, &id, error).await);
+        }
+        let _operation = operation;
+        if let Some(services) = { owner.0.state().agent_services.clone() } {
+            services
+                .store
+                .publish_preparation(&id)
+                .await
+                .map_err(|error| ToolError::new(super::agent_services::ServiceError(error)))?;
         }
         let message = pl_core::thread::inbox::ThreadMessage {
             kind: pl_core::context::AgentMessageKind::Task,
@@ -458,6 +513,8 @@ impl AgentControlHost for AgentHost {
 
     async fn send(&self, caller: &str, message: AgentMessage) -> Result<ToolOutput, ToolError> {
         let owner = self.owner()?;
+        Self::ensure_archive_execution_admission(&owner, caller).await?;
+        Self::ensure_archive_execution_admission(&owner, &message.target).await?;
         let services = owner.0.state().agent_services.clone();
         if let Some(services) = &services {
             services

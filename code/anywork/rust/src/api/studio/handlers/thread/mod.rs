@@ -31,7 +31,7 @@ pub async fn start_new_thread(
     sink: StreamSink<BridgeNewThreadStartEvent>,
 ) -> Result<(), BridgeError> {
     let BridgeStartNewThreadRequest {
-        project_id,
+        workspace_id,
         input,
         mode,
         account_id,
@@ -60,7 +60,7 @@ pub async fn start_new_thread(
         let response = bridge
             .studio
             .create_thread_command(
-                project_id,
+                workspace_id,
                 pl_protocol::studio::CreateThreadRequest {
                     title: None,
                     input: input.into(),

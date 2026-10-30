@@ -26,7 +26,7 @@ pub enum BridgeProductTopic {
     Recovery,
     Mcp,
     Lsp,
-    Skills { project_id: String },
+    Skills { workspace_id: String },
     ThreadModeCatalog,
     AccountUsage,
     AcpAuth,
@@ -44,8 +44,8 @@ impl BridgeProductTopic {
     pub fn validate_scope(&self) -> Result<(), BridgeError> {
         let invalid = |message: &str| BridgeError::invalid_argument(message);
         match self {
-            Self::Skills { project_id } if project_id.trim().is_empty() => {
-                Err(invalid("Skills topic requires a non-empty projectId"))
+            Self::Skills { workspace_id } if workspace_id.trim().is_empty() => {
+                Err(invalid("Skills topic requires a non-empty workspaceId"))
             }
             Self::SessionCosts { root_thread_id } if root_thread_id.trim().is_empty() => Err(
                 invalid("SessionCosts topic requires a non-empty rootThreadId"),
@@ -65,7 +65,7 @@ impl BridgeProductTopic {
             Self::Recovery => StudioProductTopic::Recovery,
             Self::Mcp => StudioProductTopic::Mcp,
             Self::Lsp => StudioProductTopic::Lsp,
-            Self::Skills { project_id } => StudioProductTopic::Skills { project_id },
+            Self::Skills { workspace_id } => StudioProductTopic::Skills { workspace_id },
             Self::ThreadModeCatalog => StudioProductTopic::ThreadModeCatalog,
             Self::AccountUsage => StudioProductTopic::AccountUsage,
             Self::AcpAuth => StudioProductTopic::AcpAuth,

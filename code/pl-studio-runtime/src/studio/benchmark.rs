@@ -209,7 +209,7 @@ struct PublicationFixture {
 
 impl PublicationFixture {
     async fn open(root: &Path) -> Result<Self> {
-        let store = StudioStore::open(root.join("studio/v2/studio.sqlite")).await?;
+        let store = StudioStore::open(root.join("data/studio.sqlite")).await?;
         let events =
             ProductEventBus::new(store.clone(), ThreadWriteBehindWriter::new(store.clone()));
         let owner =

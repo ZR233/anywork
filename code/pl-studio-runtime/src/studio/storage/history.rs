@@ -29,6 +29,7 @@ mod parent_report;
 mod producer;
 mod review_delivery;
 mod schema;
+pub(crate) use schema::validate_layout_source;
 /// 单页返回的总 payload 字节预算；达到预算即停止装入更多条目。
 const PAGE_BYTE_BUDGET: usize = 2 * 1024 * 1024;
 /// 单条预览预算必须小于整页预算，否则一条预览都无法落入一页。
@@ -360,48 +361,50 @@ impl HistoryStore {
         {
             return Ok(None);
         }
+        // First-connect migration state belongs only to this branch. Do not carry it through
+        // every current-history read/recovery poll frame, even when the writer is already open.
         let writer = self
             .state
             .writer
-            // Only cold initialization allocates: keep the migrator's state out of every
-            // writer/reader/activation caller without spawning or changing cancellation.
-            .get_or_try_init(|| {
-                Box::pin(async {
-                    schema::inspect_existing(&self.state.path, &self.state.thread_id).await?;
-                    let parent = self
-                        .state
-                        .path
-                        .parent()
-                        .context("history database path has no parent directory")?;
-                    if matches!(mode, crate::studio::paths::SqliteFileMode::Create) {
-                        tokio::fs::create_dir_all(parent).await?;
-                    }
-                    let db = connect(&self.state.path, mode).await?;
-                    #[cfg(test)]
-                    if let Some((entered, release)) = self.state.init_gate.lock().await.take() {
-                        let _ = entered.send(());
-                        let _ = release.await;
-                    }
-                    let (database_id, schema_version) =
-                        match schema::initialize(&db, &self.state.thread_id).await {
-                            Ok(identity) => identity,
-                            Err(error) => {
-                                if let Err(cleanup) = db.close().await {
-                                    return Err(crate::studio::startup::cleanup_error(cleanup)
-                                        .context(error));
-                                }
-                                return Err(error);
-                            }
-                        };
-                    Ok::<HistoryConnection, anyhow::Error>(HistoryConnection {
-                        db,
-                        database_id,
-                        schema_version,
-                    })
-                })
-            })
+            .get_or_try_init(|| Box::pin(self.clone().initialize_writer(mode)))
             .await?;
         Ok(Some(writer))
+    }
+
+    async fn initialize_writer(
+        self,
+        mode: crate::studio::paths::SqliteFileMode,
+    ) -> Result<HistoryConnection> {
+        schema::inspect_existing(&self.state.path, &self.state.thread_id).await?;
+        let parent = self
+            .state
+            .path
+            .parent()
+            .context("history database path has no parent directory")?;
+        if matches!(mode, crate::studio::paths::SqliteFileMode::Create) {
+            tokio::fs::create_dir_all(parent).await?;
+        }
+        let db = connect(&self.state.path, mode).await?;
+        #[cfg(test)]
+        if let Some((entered, release)) = self.state.init_gate.lock().await.take() {
+            let _ = entered.send(());
+            let _ = release.await;
+        }
+        let (database_id, schema_version) =
+            match schema::initialize(&db, &self.state.thread_id).await {
+                Ok(identity) => identity,
+                Err(error) => {
+                    if let Err(cleanup) = db.close().await {
+                        return Err(crate::studio::startup::cleanup_error(cleanup).context(error));
+                    }
+                    return Err(error);
+                }
+            };
+        Ok(HistoryConnection {
+            db,
+            database_id,
+            schema_version,
+        })
     }
 
     /// Atomically applies one immutable writer batch and advances its fixed waterline.

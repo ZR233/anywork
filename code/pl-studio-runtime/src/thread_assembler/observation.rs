@@ -123,12 +123,28 @@ impl StudioThreadAssembler {
         Ok(())
     }
     pub(super) fn publish_observation(&self, id: &str, thread: &ThreadHandle) {
-        let observer = self.0.state().observation.clone();
+        let observer = {
+            let mut state = self.0.state();
+            if let Some(super::CloseStorage::Execution {
+                observation_installed,
+                ..
+            }) = state
+                .entries
+                .get_mut(id)
+                .and_then(|entry| entry.close_storage.as_mut())
+            {
+                *observation_installed = true;
+            }
+            state.observation.clone()
+        };
         if let Some(observer) = observer {
             (observer.0)(id.to_owned(), thread.clone());
         }
     }
     pub(super) async fn drain_observation(&self, id: &str) -> Result<(), ThreadAssemblyError> {
+        if self.execution_observation_was_not_installed(id) {
+            return Ok(());
+        }
         let observer = self.0.state().observation.clone();
         if let Some(observer) = observer {
             let result = (observer.1)(id.to_owned()).await;
@@ -143,6 +159,9 @@ impl StudioThreadAssembler {
         &self,
         id: &str,
     ) -> Result<(), ThreadAssemblyError> {
+        if self.execution_observation_was_not_installed(id) {
+            return Ok(());
+        }
         let observer = self
             .0
             .state()
@@ -150,6 +169,20 @@ impl StudioThreadAssembler {
             .clone()
             .ok_or(ThreadAssemblyError::Closed)?;
         (observer.4)(id.to_owned()).await
+    }
+
+    fn execution_observation_was_not_installed(&self, id: &str) -> bool {
+        let state = self.0.state();
+        matches!(
+            state
+                .entries
+                .get(id)
+                .and_then(|entry| entry.close_storage.as_ref()),
+            Some(super::CloseStorage::Execution {
+                observation_installed: false,
+                ..
+            })
+        )
     }
 
     /// Bind close completion to each actual terminal effect's original report ID and the
@@ -421,6 +454,7 @@ impl StudioThreadAssembler {
 
 #[cfg(test)]
 mod storage_fault_tests {
+    mod archive_scope;
     mod cold_parent_report;
 
     use super::*;
@@ -556,6 +590,7 @@ mod storage_fault_tests {
             &self,
             _: &str,
             _: Option<&WorkspaceUsageLease>,
+            _: WorkspaceRelease,
         ) -> Result<(), ThreadAssemblyError> {
             Ok(())
         }
@@ -663,7 +698,7 @@ mod storage_fault_tests {
 
         fn protocol(id: &str, parent: Option<&str>) -> pl_protocol::Thread {
             let mut thread = pl_protocol::Thread::placeholder(id);
-            thread.project_id = "project-test".into();
+            thread.workspace_id = "project-test".into();
             thread.agent_path = id.into();
             thread.parent_thread_id = parent.map(str::to_owned);
             thread.root_thread_id = parent.unwrap_or(id).into();
@@ -753,15 +788,21 @@ mod storage_fault_tests {
                 &self,
                 id: &str,
                 usage: Option<&WorkspaceUsageLease>,
+                disposition: WorkspaceRelease,
             ) -> Result<(), ThreadAssemblyError> {
                 self.entered.send_replace(true);
                 let _permit = self.release.acquire().await.map_err(storage_error)?;
-                super::super::StudioChildResources::discard_unpublished(&self.factory, id, usage)
-                    .await
+                super::super::StudioChildResources::discard_unpublished(
+                    &self.factory,
+                    id,
+                    usage,
+                    disposition,
+                )
+                .await
             }
         }
         let temp = tempfile::tempdir()?;
-        let store = StudioStore::open(temp.path().join("studio/v2/studio.sqlite")).await?;
+        let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
         let resources = crate::studio::storage_fault_test_support::close_factory(&store)?;
         let root = temp.path().join("shared-root");
         tokio::fs::create_dir_all(&root).await?;
@@ -774,6 +815,7 @@ mod storage_fault_tests {
         owner.0.state().unpublished_children.insert(
             "unpublished-directory".into(),
             super::super::child_resources::UnpublishedChild {
+                retirement: Default::default(),
                 workspace: preparation,
                 disposal: Default::default(),
                 parent: "parent".into(),
@@ -832,7 +874,7 @@ mod storage_fault_tests {
     async fn rejected_close_checkpoint_keeps_cleanup_request_retryable_without_early_cleanup()
     -> Result<()> {
         let temp = tempfile::tempdir()?;
-        let store = StudioStore::open(temp.path().join("studio/v2/studio.sqlite")).await?;
+        let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
         let fixture = Fixture::new(store.clone())?;
         fixture.add("parent", None).await?;
         let child = fixture.add("child", Some("parent")).await?;
@@ -910,7 +952,7 @@ mod storage_fault_tests {
     async fn global_seal_skips_report_without_ack_and_retry_proves_the_original_terminal_id()
     -> Result<()> {
         let temp = tempfile::tempdir()?;
-        let store = StudioStore::open(temp.path().join("studio/v2/studio.sqlite")).await?;
+        let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
         let resources = crate::studio::storage_fault_test_support::close_factory(&store)?;
         let fixture = Fixture::new(store.clone())?;
         resources.install(&fixture.owner)?;

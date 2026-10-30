@@ -1762,7 +1762,7 @@ async fn run(
                 category: crate::studio::StudioRecoveryIssueCategory::ToolCatalog,
                 impact: crate::studio::StudioRecoveryImpact::Advisory,
                 action: crate::studio::StudioRecoveryIssueAction::Retry,
-                project_id: None,
+                workspace_id: None,
                 thread_id: Some(worker.id.clone()),
                 worktree: None,
                 message: current
@@ -2334,7 +2334,7 @@ mod storage_fault_tests {
     async fn register_test_thread(store: &StudioStore, thread: &pl_protocol::Thread) -> Result<()> {
         let mut delta = crate::studio::store::directory::DirectoryDelta::upsert_project(
             crate::studio::store::directory::ProjectDirectoryRecord {
-                id: thread.project_id.clone(),
+                id: thread.workspace_id.clone(),
                 kind: pl_protocol::studio::WorkspaceKind::Project,
                 name: "Test".into(),
                 path: "/tmp/project-test".into(),
@@ -2351,7 +2351,7 @@ mod storage_fault_tests {
 
     fn bound_thread(thread_id: &str) -> pl_protocol::Thread {
         let mut thread = pl_protocol::Thread::placeholder(thread_id);
-        thread.project_id = "project-test".into();
+        thread.workspace_id = "project-test".into();
         thread.agent_path = thread_id.to_owned();
         thread.root_thread_id = thread_id.to_owned();
         thread
@@ -2642,7 +2642,7 @@ mod storage_fault_tests {
         use sea_orm::ConnectionTrait;
         for review in [false, true] {
             let temp = tempfile::tempdir()?;
-            let store = StudioStore::open(temp.path().join("studio/v2/studio.sqlite")).await?;
+            let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
             let (resources, observations, mut worker, sink) =
                 terminal_projection_fixture(&store, review).await?;
             let db = sea_orm::Database::connect(
@@ -2740,7 +2740,7 @@ mod storage_fault_tests {
     async fn terminal_projection_capacity_release_automatically_resumes_without_first_send()
     -> Result<()> {
         let temp = tempfile::tempdir()?;
-        let store = StudioStore::open(temp.path().join("studio/v2/studio.sqlite")).await?;
+        let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
         let (resources, observations, mut worker, sink) =
             terminal_projection_fixture(&store, true).await?;
         // Another Thread has accepted operation output, not a review-retention guard. The public
@@ -2843,7 +2843,7 @@ mod storage_fault_tests {
         use pl_core::context::{ContextContent, ContextRecord, ContextSource};
         use pl_core::thread::journal::ContextChange;
         let temp = tempfile::tempdir()?;
-        let store = StudioStore::open(temp.path().join("studio/v2/studio.sqlite")).await?;
+        let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
         let (resources, observations, mut worker, sink) =
             terminal_projection_fixture(&store, true).await?;
         let source = worker.services.threads.clone();
@@ -3010,7 +3010,7 @@ mod storage_fault_tests {
     -> Result<()> {
         use sea_orm::ConnectionTrait;
         let temp = tempfile::tempdir()?;
-        let store = StudioStore::open(temp.path().join("studio/v2/studio.sqlite")).await?;
+        let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
         let (resources, observations, mut worker, sink) =
             terminal_projection_fixture(&store, true).await?;
         let db = sea_orm::Database::connect(
@@ -3093,7 +3093,7 @@ mod storage_fault_tests {
     #[tokio::test]
     async fn observation_join_retains_wait_ownership_and_worker_failure() -> Result<()> {
         let temp = tempfile::tempdir()?;
-        let store = StudioStore::open(temp.path().join("studio/v2/studio.sqlite")).await?;
+        let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
         let thread = bound_thread("observation-stop-ack");
         register_test_thread(&store, &thread).await?;
         let sink = ThreadStorageSink::new(store.clone(), thread.clone(), None).await?;
@@ -3202,7 +3202,7 @@ mod storage_fault_tests {
     async fn a_refused_or_behind_batch_keeps_retention_and_never_publishes_realtime() -> Result<()>
     {
         let temp = tempfile::tempdir()?;
-        let store = StudioStore::open(temp.path().join("studio/v2/studio.sqlite")).await?;
+        let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
         let thread = bound_thread("pending-handoff-manual");
         register_test_thread(&store, &thread).await?;
         let sink = ThreadStorageSink::new(store.clone(), thread.clone(), None).await?;
@@ -3310,7 +3310,7 @@ mod storage_fault_tests {
     /// A registered child of a real parent thread, as the directory and the report path require.
     fn child_thread(child_id: &str, parent_id: &str) -> pl_protocol::Thread {
         let mut thread = pl_protocol::Thread::placeholder(child_id);
-        thread.project_id = "project-test".into();
+        thread.workspace_id = "project-test".into();
         thread.agent_path = child_id.to_owned();
         thread.root_thread_id = parent_id.to_owned();
         thread.parent_thread_id = Some(parent_id.to_owned());
@@ -3330,7 +3330,7 @@ mod storage_fault_tests {
 
     async fn observation_fixture() -> Result<ObservationFixture> {
         let temp = tempfile::tempdir()?;
-        let store = StudioStore::open(temp.path().join("studio/v2/studio.sqlite")).await?;
+        let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
         let writer = crate::studio::agent_host::ThreadWriteBehindWriter::new(store.clone());
         let events = ProductEventBus::new(store.clone(), writer.clone());
         let config = crate::config::ConfigRuntime::initialize(crate::config::ConfigStore::new(
@@ -3964,7 +3964,7 @@ mod storage_fault_tests {
         use pl_core::thread::interactions::{InteractionResponse, InteractionState};
 
         let temp = tempfile::tempdir()?;
-        let store = StudioStore::open(temp.path().join("studio/v2/studio.sqlite")).await?;
+        let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
         let thread = bound_thread("qa-restart");
         register_test_thread(&store, &thread).await?;
         let sink = ThreadStorageSink::new(store.clone(), thread.clone(), None).await?;
@@ -4102,7 +4102,7 @@ mod storage_fault_tests {
         };
 
         let temp = tempfile::tempdir()?;
-        let store = StudioStore::open(temp.path().join("studio/v2/studio.sqlite")).await?;
+        let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
         let thread = bound_thread("compaction-save");
         register_test_thread(&store, &thread).await?;
         let sink = ThreadStorageSink::new(store.clone(), thread.clone(), None).await?;
@@ -4185,7 +4185,7 @@ mod storage_fault_tests {
 
     async fn recovery_projection(delayed_admission: bool) -> Result<()> {
         let temp = tempfile::tempdir()?;
-        let store = StudioStore::open(temp.path().join("studio/v2/studio.sqlite")).await?;
+        let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
         let thread = bound_thread("recovered-hidden-input");
         register_test_thread(&store, &thread).await?;
         let sink = ThreadStorageSink::new(store.clone(), thread.clone(), None).await?;

@@ -10,7 +10,7 @@ use sea_orm::{
 use super::schema::{STUDIO_DATABASE_SCHEMA_VERSION, migrate};
 use crate::studio::catalog::CatalogStore;
 use crate::studio::paths::{SqliteFileMode, StudioPaths, default_db_path, sqlite_file_options};
-use crate::studio::records::ProjectRecord;
+use crate::studio::records::WorkspaceRecord;
 use crate::studio::store::settings::SettingsStore;
 use crate::studio::store::workspaces::WorkspaceStore;
 use crate::studio::store::{StudioDatabaseError, StudioStore};
@@ -80,7 +80,44 @@ impl StudioStore {
     }
 
     pub(crate) async fn prepare_database(path: &Path) -> Result<Self> {
+        Self::prepare_database_inner(path, None).await
+    }
+
+    /// Only an unpublished layout operation can supply original-source classification instead of
+    /// rediscovering its own half-created target as a pre-existing installation.
+    pub(in crate::studio) async fn prepare_layout_database(
+        database: crate::studio::startup::storage_layout::PreparedLayoutDatabase,
+    ) -> Result<Self> {
+        let installation = if database.has_v2_authority() {
+            InstallationState::Existing
+        } else {
+            InstallationState::Fresh
+        };
+        Self::prepare_database_inner(database.path(), Some(installation)).await
+    }
+
+    async fn prepare_database_inner(
+        path: &Path,
+        source_installation: Option<InstallationState>,
+    ) -> Result<Self> {
         let path = resolve_configured_database_path(path).await?;
+        let paths = StudioPaths::resolve(Some(studio_home_from_database(&path)?))?;
+        // Inspect installation facts before any SQLite owner can create or migrate a file.
+        let installation = match source_installation {
+            Some(installation) => installation,
+            None => detect_installation(&paths).await?,
+        };
+        if installation == InstallationState::Existing {
+            for (path, name) in [
+                (paths.catalog_file(), "catalog.toml"),
+                (paths.settings_file(), "settings.toml"),
+                (paths.workspaces_file(), "workspaces.toml"),
+                (paths.database(), "studio.sqlite"),
+                (paths.calls_database(), "calls/calls.sqlite"),
+            ] {
+                require_canonical_document(&path, name).await?;
+            }
+        }
         let database_exists = tokio::fs::try_exists(&path).await?;
         let family_exists = database_family_exists(&path).await?;
         if database_exists {
@@ -91,14 +128,6 @@ impl StudioStore {
             }
             .into());
         }
-        // The data root is resolved once; every session, call and attachment path comes from the
-        // canonical layout instead of being re-joined by each consumer.
-        let paths = StudioPaths::resolve(Some(studio_home_from_database(&path)?))?;
-        // Old-version publication state lives outside this version's data root and is never read.
-        // Decide the canonical-document contract before opening anything that creates state of its
-        // own: this classification must see the home as it was left by the previous run, and every
-        // store below (calls, database) materializes files on a fresh open.
-        let installation = detect_installation(&paths).await?;
         let db = connect_sqlite(
             sqlite_file_options(&path, SqliteFileMode::Create, |options| {
                 configure_sqlite(options, SqliteSynchronous::Full)
@@ -155,21 +184,6 @@ impl StudioStore {
             attachment_lock: Default::default(),
             paths,
         };
-        if let Err(error) = super::session_layout::migrate_flat_sessions(
-            &store.paths,
-            &store.catalog,
-            &store.workspaces,
-        )
-        .await
-        {
-            let close = store.close().await;
-            return Err(match close {
-                Ok(()) => error,
-                Err(close_error) => {
-                    crate::studio::startup::cleanup_error(close_error).context(error)
-                }
-            });
-        }
         Ok(store)
     }
 
@@ -180,7 +194,7 @@ impl StudioStore {
         Ok(())
     }
 
-    pub async fn list_projects(&self) -> Result<Vec<ProjectRecord>> {
+    pub async fn list_projects(&self) -> Result<Vec<WorkspaceRecord>> {
         let mut entries = self
             .workspaces()
             .entries()
@@ -214,41 +228,39 @@ impl StudioStore {
             }))
     }
 
-    pub async fn read_project(&self, project_id: &str) -> Result<Option<ProjectRecord>> {
+    pub async fn read_project(&self, workspace_id: &str) -> Result<Option<WorkspaceRecord>> {
         Ok(self
             .workspaces()
-            .get(project_id)
+            .get(workspace_id)
             .map(|entry| entry.project()))
     }
 }
 
 /// Derives the Studio home that owns a product database file.
 ///
-/// The canonical layout places the product database at `<home>/studio/v2/studio.sqlite`; a database
-/// configured directly in its own directory keeps that directory as the home. Both cases resolve
-/// the same relative layout for sessions, calls and attachments.
+/// The canonical layout places the product database at `<home>/data/studio.sqlite`. Explicit
+/// isolated database files used by embedding/tests retain their parent as home; retired product
+/// locations are rejected before SQLite is opened, never treated as runtime fallback roots.
 fn studio_home_from_database(database: &Path) -> Result<PathBuf> {
     let parent = database
         .parent()
         .context("Studio database path has no parent directory")?;
-    if parent.file_name().is_some_and(|name| name == "v2")
-        && parent
-            .parent()
-            .and_then(Path::file_name)
-            .is_some_and(|name| name == "studio")
-    {
-        return parent
-            .parent()
-            .and_then(Path::parent)
-            .map(Path::to_path_buf)
-            .context("Studio versioned data directory has no home");
-    }
-    if parent.file_name().is_some_and(|name| name == "studio") {
+    if parent.file_name().is_some_and(|name| name == "data") {
         return parent
             .parent()
             .map(Path::to_path_buf)
-            .context("Studio data directory has no parent");
+            .context("data root has no home");
     }
+    ensure!(
+        !parent
+            .file_name()
+            .is_some_and(|name| name == "v2" || name == "studio"),
+        super::SessionLayoutMigrationFailed {
+            source: anyhow::anyhow!(
+                "retired Studio database locations are not runtime fallback roots; use explicit v2 layout migration"
+            )
+        }
+    );
     Ok(parent.to_path_buf())
 }
 
@@ -263,17 +275,11 @@ pub(in crate::studio) struct ProjectRow {
 
 /// Classifies the resolved Studio home before any store-owned file is created.
 async fn detect_installation(paths: &StudioPaths) -> Result<InstallationState> {
-    for candidate in [
-        paths.projects_dir(),
-        paths.legacy_sessions_dir(),
-        paths.migrations_dir(),
-        paths.calls_database(),
-        paths.attachment_drafts_dir(),
-        paths.catalog_file(),
-        paths.settings_file(),
-        paths.workspaces_file(),
-    ] {
-        if tokio::fs::try_exists(&candidate).await? {
+    let mut entries = tokio::fs::read_dir(paths.data_dir()).await?;
+    while let Some(entry) = entries.next_entry().await? {
+        if !entry.file_type().await?.is_dir()
+            || !matches!(entry.file_name().to_str(), Some("model-catalogs" | "temp"))
+        {
             return Ok(InstallationState::Existing);
         }
     }
@@ -312,7 +318,7 @@ async fn load_canonical_documents(
     Ok((catalog, settings, workspaces))
 }
 
-fn validate_directory_references(
+pub(super) fn validate_directory_references(
     catalog: &CatalogStore,
     workspaces: &WorkspaceStore,
 ) -> Result<()> {
@@ -329,7 +335,7 @@ fn validate_directory_references(
         .collect::<BTreeSet<_>>();
     for entry in &entries {
         ensure!(
-            projects.contains(&entry.project_id),
+            projects.contains(&entry.workspace_id),
             "catalog references a missing project"
         );
         if let Some(parent_id) = &entry.parent_thread_id {
@@ -340,8 +346,8 @@ fn validate_directory_references(
                 .get(entry.root_thread_id.as_str())
                 .context("catalog references a missing root")?;
             ensure!(
-                parent.project_id == entry.project_id
-                    && root.project_id == entry.project_id
+                parent.workspace_id == entry.workspace_id
+                    && root.workspace_id == entry.workspace_id
                     && root.parent_thread_id.is_none()
                     && parent.root_thread_id == entry.root_thread_id,
                 "catalog parent/root references are inconsistent"
@@ -566,7 +572,9 @@ async fn resolve_configured_database_path(path: &Path) -> Result<PathBuf> {
         .parent()
         .context("configured Studio database path has no parent")?;
     tokio::fs::create_dir_all(parent).await?;
-    let parent = std::fs::canonicalize(parent)
+    // Keep StudioPaths in the same logical spelling as workspace identities. Native SQLite
+    // paths are derived separately at the IO boundary, not retained as a different home.
+    let parent = dunce::canonicalize(parent)
         .context("failed to resolve configured Studio database directory")?;
     let resolved = parent.join(file_name);
     if tokio::fs::try_exists(&resolved).await? {
@@ -619,6 +627,67 @@ mod major_version_storage_tests {
     use super::*;
 
     #[tokio::test]
+    async fn existing_installation_requires_both_databases_before_any_creation() -> Result<()> {
+        for missing_calls in [false, true] {
+            let temp = tempfile::tempdir()?;
+            let paths = StudioPaths::from_home(temp.path().to_owned());
+            let store = StudioStore::prepare_database(&paths.database()).await?;
+            store.close().await?;
+            let path = if missing_calls {
+                paths.calls_database()
+            } else {
+                paths.database()
+            };
+            for member in database_family_paths(&path) {
+                if member.exists() {
+                    tokio::fs::remove_file(member).await?;
+                }
+            }
+            let catalog = tokio::fs::read(paths.catalog_file()).await?;
+            for _ in 0..2 {
+                let error = StudioStore::prepare_database(&paths.database())
+                    .await
+                    .err()
+                    .context("missing database must not be recreated")?;
+                assert!(format!("{error:#}").contains("is missing on an existing installation"));
+                assert!(
+                    database_family_paths(&path)
+                        .iter()
+                        .all(|path| !path.exists())
+                );
+                assert_eq!(tokio::fs::read(paths.catalog_file()).await?, catalog);
+            }
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn retired_database_locations_are_rejected_before_open_or_rebuild() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let paths = StudioPaths::resolve(Some(temp.path().to_path_buf()))?;
+        for name in [
+            "studio/studio.sqlite",
+            "v2/studio.sqlite",
+            "studio/v2/studio.sqlite",
+        ] {
+            let source = temp.path().join(name);
+            tokio::fs::create_dir_all(source.parent().context("source parent")?).await?;
+            tokio::fs::write(&source, b"original retired bytes, not a SQLite fixture").await?;
+            let error = match StudioStore::open(&source).await {
+                Ok(_) => anyhow::bail!("retired product root was accepted"),
+                Err(error) => error,
+            };
+            assert!(format!("{error:#}").contains("retired Studio database locations"));
+            assert_eq!(
+                tokio::fs::read(&source).await?,
+                b"original retired bytes, not a SQLite fixture"
+            );
+            assert!(!paths.data_dir().exists());
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn old_sessions_are_never_imported_or_recreated() -> Result<()> {
         let temp = tempfile::tempdir()?;
         let paths = StudioPaths::resolve(Some(temp.path().to_path_buf()))?;
@@ -658,404 +727,125 @@ mod major_version_storage_tests {
     }
 }
 
-/// v2 内产品库结构升级：基线 v22/v23 的真实列布局，原地保全后校验 canonical 指纹。
 #[cfg(test)]
-mod v2_schema_upgrade_tests {
-    use super::super::directory::{DirectoryDelta, ProjectDirectoryRecord, apply_directory_delta};
+mod schema_upgrade_tests {
     use super::*;
-    use sea_orm::TransactionTrait;
 
     #[tokio::test]
-    async fn schema_24_catalog_3_closed_child_does_not_invent_close_intent() -> Result<()> {
-        use crate::studio::entity as entities;
-        use sea_orm::EntityTrait;
-        let temp = tempfile::tempdir()?;
-        let paths = StudioPaths::resolve(Some(temp.path().to_path_buf()))?;
-        let store = StudioStore::open(paths.database()).await?;
-        let mut delta = DirectoryDelta::upsert_project(ProjectDirectoryRecord {
-            id: "preserved-project".into(),
-            kind: pl_protocol::studio::WorkspaceKind::Project,
-            name: "Preserved".into(),
-            path: "/preserved".into(),
-            ssh_alias: None,
-            created_at: 1,
-            updated_at: 2,
-            last_opened_at: None,
-            closed: false,
-        });
-        let (_, root) = DirectoryDelta::register_root_thread(
-            "preserved-root".into(),
-            "preserved-project",
-            "Root",
-            pl_protocol::ThreadModeId::simple(),
-            pl_protocol::ThreadWorkspaceMode::Local,
-            "/preserved".into(),
-        );
-        let mut child = root.clone();
-        child.id = "preserved-child".into();
-        child.agent_path = child.id.clone();
-        child.parent_thread_id = Some(root.id.clone());
-        child.status = pl_protocol::ThreadStatus::Closed;
-        child.frozen_model = Some(pl_protocol::studio::NewThreadModelRoute {
-            account_id: "original-account".into(),
-            model_id: "original-model".into(),
-            effort: Some("high".into()),
-        });
-        delta.thread_upserts = vec![root, child.clone()];
-        let tx = store.database().begin().await?;
-        apply_directory_delta(&store, &tx, &delta).await?;
-        tx.commit().await?;
-        store
-            .database()
-            .execute_unprepared(
-                "ALTER TABLE threads DROP COLUMN explicitly_closed; DROP TABLE IF EXISTS seaql_migrations; PRAGMA user_version=24",
-            )
-            .await?;
-        store.close().await?;
-        drop(store);
-        let mut catalog: toml::Table =
-            toml::from_str(&tokio::fs::read_to_string(paths.catalog_file()).await?)?;
-        catalog["schemaVersion"] = 3.into();
-        for entry in catalog["entries"].as_array_mut().context("entries")? {
-            entry
-                .as_table_mut()
-                .context("entry")?
-                .remove("explicitlyClosed");
+    async fn v2_product_versions_drop_only_retired_mirrors_and_keep_independent_facts() -> Result<()>
+    {
+        for version in 22..=26 {
+            let db = connect_memory().await?;
+            db.execute_unprepared(include_str!("product_schema.sql"))
+                .await?;
+            db.execute_unprepared(include_str!("agent_evaluations.sql"))
+                .await?;
+            if version < 25 {
+                db.execute_unprepared("ALTER TABLE threads DROP COLUMN explicitly_closed")
+                    .await?;
+            }
+            if version < 24 {
+                db.execute_unprepared("ALTER TABLE threads DROP COLUMN delegation_mode; ALTER TABLE threads DROP COLUMN delegation_preference; ALTER TABLE threads DROP COLUMN frozen_model_json").await?;
+            }
+            if version < 23 {
+                db.execute_unprepared("ALTER TABLE threads DROP COLUMN last_user_message_at")
+                    .await?;
+            }
+            db.execute_unprepared(&format!("PRAGMA user_version={version}"))
+                .await?;
+            db.execute_unprepared("INSERT INTO studio_objects VALUES ('thread','kept-owner','unknownIndependentFact',7,99,'opaque bytes','original hash',123); INSERT INTO agent_evaluations (agent_id,parent_agent_id,account_id,model_id,profile_id,mode,preference,turn_id,revision,task_category,outcome,comment,created_at,updated_at) VALUES ('kept-agent','parent','account','model','profile','profile','balanced','turn',4,'unknown','notRated','kept comment',1,2)").await?;
+            if version < 24 {
+                // Evaluations were introduced in schema 24, not present in frozen 22/23.
+                db.execute_unprepared("DROP TABLE agent_evaluations")
+                    .await?;
+            }
+            for missing in [
+                "threads",
+                "projects",
+                "app_settings",
+                "studio_objects",
+                "agent_evaluations",
+            ] {
+                if missing == "agent_evaluations" && version < 24 {
+                    continue;
+                }
+                db.execute_unprepared("SAVEPOINT missing_product_table")
+                    .await?;
+                db.execute_unprepared(&format!("DROP TABLE {missing}"))
+                    .await?;
+                let before = schema_fingerprint(&db).await?;
+                let error = migrate(&db)
+                    .await
+                    .expect_err("incomplete v2 must fail before writes");
+                assert!(
+                    format!("{error:#}").contains(&format!(
+                        "required Studio product table {missing} is missing"
+                    )),
+                    "{error:#}"
+                );
+                assert_eq!(database_schema_version(&db).await?, version);
+                assert_eq!(schema_fingerprint(&db).await?, before);
+                assert!(
+                    db.query_one_raw(Statement::from_string(
+                        DatabaseBackend::Sqlite,
+                        "SELECT 1 FROM sqlite_schema WHERE name='seaql_migrations'",
+                    ))
+                    .await?
+                    .is_none(),
+                    "a rejected source must not be enrolled"
+                );
+                db.execute_unprepared(
+                    "ROLLBACK TO missing_product_table; RELEASE missing_product_table",
+                )
+                .await?;
+            }
+            migrate(&db).await?;
+            validate_database(&db).await?;
+            let row = db.query_one_raw(Statement::from_string(DatabaseBackend::Sqlite,"SELECT revision,schema_version,payload_json,payload_hash,updated_at FROM studio_objects WHERE owner_id='kept-owner'")).await?.context("retained product fact")?;
+            assert_eq!(row.try_get_by_index::<i64>(0)?, 7);
+            assert_eq!(row.try_get_by_index::<i64>(1)?, 99);
+            assert_eq!(row.try_get_by_index::<String>(2)?, "opaque bytes");
+            assert_eq!(row.try_get_by_index::<String>(3)?, "original hash");
+            assert_eq!(row.try_get_by_index::<i64>(4)?, 123);
+            let row = db
+                .query_one_raw(Statement::from_string(
+                    DatabaseBackend::Sqlite,
+                    "SELECT comment,revision FROM agent_evaluations WHERE agent_id='kept-agent'",
+                ))
+                .await?;
+            if version >= 24 {
+                let row = row.context("retained evaluation")?;
+                assert_eq!(row.try_get_by_index::<String>(0)?, "kept comment");
+                assert_eq!(row.try_get_by_index::<i64>(1)?, 4);
+            } else {
+                assert!(row.is_none());
+            }
+            for name in ["projects", "threads", "app_settings"] {
+                assert!(
+                    db.query_one_raw(Statement::from_sql_and_values(
+                        DatabaseBackend::Sqlite,
+                        "SELECT 1 FROM sqlite_schema WHERE name=?",
+                        [name.into()]
+                    ))
+                    .await?
+                    .is_none()
+                );
+            }
+            migrate(&db).await?;
+            // A current file retains its independent facts when only framework bookkeeping is
+            // lost. Adoption must not reset the marker or replay retired mirror deletion.
+            db.execute_unprepared("DROP TABLE seaql_migrations").await?;
+            migrate(&db).await?;
+            validate_database(&db).await?;
+            let row = db.query_one_raw(Statement::from_string(
+                DatabaseBackend::Sqlite,
+                "SELECT revision,payload_json,payload_hash FROM studio_objects WHERE owner_id='kept-owner'",
+            )).await?.context("adopted independent fact")?;
+            assert_eq!(row.try_get_by_index::<i64>(0)?, 7);
+            assert_eq!(row.try_get_by_index::<String>(1)?, "opaque bytes");
+            assert_eq!(row.try_get_by_index::<String>(2)?, "original hash");
+            db.close().await?;
         }
-        tokio::fs::write(paths.catalog_file(), toml::to_string(&catalog)?).await?;
-        let upgraded = StudioStore::open(paths.database()).await?;
-        assert_eq!(
-            database_schema_version(upgraded.database()).await?,
-            STUDIO_DATABASE_SCHEMA_VERSION
-        );
-        let saved = upgraded
-            .catalog()
-            .get(&child.id)
-            .context("retained child")?;
-        assert!(
-            !saved.explicitly_closed,
-            "old Closed must not imply parent close intent"
-        );
-        assert_eq!(saved.to_thread().status, pl_protocol::ThreadStatus::Idle);
-        assert_eq!(saved.frozen_model, child.frozen_model);
-        assert_eq!(saved.parent_thread_id, child.parent_thread_id);
-        let row = entities::thread::Entity::find_by_id(&child.id)
-            .one(upgraded.database())
-            .await?
-            .context("mirror")?;
-        assert_eq!(row.explicitly_closed, 0);
-        // Simulate a checkpoint-derived projection, then a delayed pre-close directory snapshot.
-        upgraded.catalog().project_explicit_close(&child.id).await?;
-        upgraded
-            .persist_directory_summaries(&DirectoryDelta {
-                thread_upserts: vec![child.clone()],
-                ..Default::default()
-            })
-            .await?;
-        let tx = upgraded.database().begin().await?;
-        apply_directory_delta(
-            &upgraded,
-            &tx,
-            &DirectoryDelta {
-                thread_upserts: vec![child.clone()],
-                ..Default::default()
-            },
-        )
-        .await?;
-        tx.commit().await?;
-        assert!(
-            upgraded
-                .catalog()
-                .get(&child.id)
-                .context("projected child")?
-                .explicitly_closed
-        );
-        assert_eq!(
-            entities::thread::Entity::find_by_id(&child.id)
-                .one(upgraded.database())
-                .await?
-                .context("projected mirror")?
-                .explicitly_closed,
-            1
-        );
-        upgraded.close().await?;
-        let reopened = StudioStore::open(paths.database()).await?;
-        assert!(
-            reopened
-                .catalog()
-                .get(&child.id)
-                .context("reopened child")?
-                .explicitly_closed
-        );
-        reopened.close().await?;
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn schema_23_catalog_2_upgrade_and_evaluation_write_failure_preserve_v2_facts()
-    -> Result<()> {
-        use pl_protocol::{
-            AgentEvaluation, AgentEvaluationOutcome, AgentTaskCategory, EvaluateAgentRequest,
-        };
-        let temp = tempfile::tempdir()?;
-        let paths = StudioPaths::resolve(Some(temp.path().to_path_buf()))?;
-        let store = StudioStore::open(paths.database()).await?;
-        let mut delta = DirectoryDelta::upsert_project(ProjectDirectoryRecord {
-            id: "kept-project".into(),
-            kind: pl_protocol::studio::WorkspaceKind::Project,
-            name: "既有工程".into(),
-            path: "/retained-project".into(),
-            ssh_alias: None,
-            created_at: 10,
-            updated_at: 20,
-            last_opened_at: Some(30),
-            closed: false,
-        });
-        let (thread_delta, old) = DirectoryDelta::register_root_thread(
-            "kept-thread".into(),
-            "kept-project",
-            "保留的历史",
-            pl_protocol::ThreadModeId::simple(),
-            pl_protocol::ThreadWorkspaceMode::Local,
-            "/retained-project".into(),
-        );
-        delta.thread_upserts = thread_delta.thread_upserts;
-        let tx = store.database().begin().await?;
-        apply_directory_delta(&store, &tx, &delta).await?;
-        tx.commit().await?;
-        // Exact HEAD 767771084f6c schema 23: these columns/table did not exist. No
-        // session/history/calls table is rebuilt, and the old directory is schema 2.
-        store
-            .database()
-            .execute_unprepared(
-                "ALTER TABLE threads DROP COLUMN delegation_mode;
-            ALTER TABLE threads DROP COLUMN delegation_preference;
-            ALTER TABLE threads DROP COLUMN frozen_model_json;
-            ALTER TABLE threads DROP COLUMN explicitly_closed;
-            DROP TABLE agent_evaluations;
-            DROP TABLE IF EXISTS seaql_migrations; PRAGMA user_version=23;",
-            )
-            .await?;
-        store.close().await?;
-        drop(store);
-        let mut catalog: toml::Table =
-            toml::from_str(&tokio::fs::read_to_string(paths.catalog_file()).await?)?;
-        catalog["schemaVersion"] = 2.into();
-        for entry in catalog["entries"]
-            .as_array_mut()
-            .context("catalog entries")?
-        {
-            let entry = entry.as_table_mut().context("catalog entry")?;
-            entry.remove("delegationMode");
-            entry.remove("delegationPreference");
-            entry.remove("frozenModel");
-            entry.remove("explicitlyClosed");
-        }
-        tokio::fs::write(paths.catalog_file(), toml::to_string(&catalog)?).await?;
-        let upgraded = StudioStore::open(paths.database()).await?;
-        assert_eq!(
-            database_schema_version(upgraded.database()).await?,
-            STUDIO_DATABASE_SCHEMA_VERSION
-        );
-        let kept: pl_protocol::Thread = upgraded
-            .read_thread("kept-thread")
-            .await?
-            .context("kept directory")?
-            .into();
-        assert_eq!(kept, old);
-        let durable_catalog: toml::Table =
-            toml::from_str(&tokio::fs::read_to_string(paths.catalog_file()).await?)?;
-        assert_eq!(durable_catalog["schemaVersion"].as_integer(), Some(4));
-
-        let request = EvaluateAgentRequest {
-            target: "kept-child".into(),
-            expected_turn_id: "final-1".into(),
-            expected_revision: 0,
-            task_category: AgentTaskCategory::Coding,
-            outcome: AgentEvaluationOutcome::Passed,
-            quality: Some(4),
-            instruction_following: Some(5),
-            comment: "真实事务保存证据".into(),
-        };
-        let candidate = AgentEvaluation {
-            agent_id: request.target.clone(),
-            parent_agent_id: "kept-thread".into(),
-            model: pl_protocol::studio::NewThreadModelRoute {
-                account_id: "kept-account".into(),
-                model_id: "kept-model".into(),
-                effort: Some("high".into()),
-            },
-            profile_id: "executor".into(),
-            mode: Default::default(),
-            preference: Default::default(),
-            turn_id: request.expected_turn_id.clone(),
-            revision: 0,
-            task_category: request.task_category,
-            outcome: request.outcome,
-            quality: request.quality,
-            instruction_following: request.instruction_following,
-            comment: request.comment.clone(),
-            created_at: 31,
-            updated_at: 31,
-        };
-        let first = upgraded
-            .write_agent_evaluation(&request, candidate.clone())
-            .await?;
-        upgraded
-            .database()
-            .execute_unprepared(
-                "CREATE TRIGGER evaluation_write_failure BEFORE UPDATE ON agent_evaluations
-            BEGIN SELECT RAISE(ABORT, 'injected evaluation persistence failure'); END;",
-            )
-            .await?;
-        let mut next = request.clone();
-        next.expected_turn_id = "final-2".into();
-        next.expected_revision = first.evaluation.revision;
-        let mut updated = candidate;
-        updated.turn_id = next.expected_turn_id.clone();
-        updated.updated_at = 32;
-        let error = upgraded
-            .write_agent_evaluation(&next, updated)
-            .await
-            .unwrap_err();
-        assert!(format!("{error:#}").contains("injected evaluation persistence failure"));
-        assert_eq!(
-            upgraded.read_agent_evaluation("kept-child").await?,
-            Some(first.evaluation.clone())
-        );
-        upgraded
-            .database()
-            .execute_unprepared("DROP TRIGGER evaluation_write_failure")
-            .await?;
-        upgraded.close().await?;
-        drop(upgraded);
-        let reopened = StudioStore::open(paths.database()).await?;
-        assert_eq!(
-            reopened.read_agent_evaluation("kept-child").await?,
-            Some(first.evaluation)
-        );
-        assert_eq!(
-            reopened
-                .read_thread("kept-thread")
-                .await?
-                .context("kept Thread")?
-                .title,
-            old.title
-        );
-        reopened.close().await?;
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn schema_22_to_25_preserves_threads_and_keeps_unknown_facts_null() -> Result<()> {
-        let temp = tempfile::tempdir()?;
-        let paths = StudioPaths::resolve(Some(temp.path().to_path_buf()))?;
-        let database = paths.database();
-        tokio::fs::create_dir_all(database.parent().expect("database parent")).await?;
-        let store = StudioStore::open(&database).await?;
-        let mut delta = DirectoryDelta::upsert_project(ProjectDirectoryRecord {
-            id: "project-1".into(),
-            kind: pl_protocol::studio::WorkspaceKind::Project,
-            name: "Project".into(),
-            path: "/tmp/project".into(),
-            ssh_alias: None,
-            created_at: 1,
-            updated_at: 1,
-            last_opened_at: None,
-            closed: false,
-        });
-        let (thread_delta, thread) = DirectoryDelta::register_root_thread(
-            "thread-old".into(),
-            "project-1",
-            "旧会话",
-            pl_protocol::ThreadModeId::simple(),
-            pl_protocol::ThreadWorkspaceMode::Local,
-            "/tmp/project".into(),
-        );
-        delta.thread_upserts = thread_delta.thread_upserts;
-        let tx = store.database().begin().await?;
-        apply_directory_delta(&store, &tx, &delta).await?;
-        tx.commit().await?;
-        // 把刚初始化的当前库降回上一版本：删除新列即得到与 v22 逐字一致的表结构。
-        store
-            .database()
-            .execute_unprepared(
-                "ALTER TABLE threads DROP COLUMN last_user_message_at;
-                ALTER TABLE threads DROP COLUMN delegation_mode;
-                ALTER TABLE threads DROP COLUMN delegation_preference;
-                ALTER TABLE threads DROP COLUMN frozen_model_json;
-                ALTER TABLE threads DROP COLUMN explicitly_closed;
-                DROP TABLE agent_evaluations;",
-            )
-            .await?;
-        store
-            .database()
-            .execute_unprepared("DROP TABLE IF EXISTS seaql_migrations; PRAGMA user_version=22")
-            .await?;
-        assert_eq!(
-            database_schema_version(store.database()).await?,
-            UPGRADEABLE_STUDIO_DATABASE_SCHEMA_VERSION
-        );
-        // Fail the delegation DDL after its ALTERs. Its entire step and completion record must
-        // roll back, while the preceding directory-field migration remains committed for retry.
-        store
-            .database()
-            .execute_unprepared("CREATE TABLE agent_evaluations(unrelated INTEGER)")
-            .await?;
-        store.close().await?;
-        let failure = match StudioStore::open(&database).await {
-            Ok(_) => anyhow::bail!("conflicting legacy DDL was accepted"),
-            Err(error) => error,
-        };
-        assert!(format!("{failure:#}").contains("m20261026_000003_product_delegation"));
-        let probe = connect_read_only_database(&database).await?;
-        assert_eq!(database_schema_version(&probe).await?, 23);
-        assert!(
-            !sea_orm_migration::SchemaManager::new(&probe)
-                .has_column("threads", "delegation_mode")
-                .await?
-        );
-        assert!(probe.query_one_raw(Statement::from_string(DatabaseBackend::Sqlite,
-            "SELECT version FROM seaql_migrations WHERE version='m20261026_000003_product_delegation'"))
-            .await?.is_none());
-        probe.close().await?;
-        let probe = connect_sqlite(
-            sqlite_file_options(&database, SqliteFileMode::ReadWrite, |options| options).await?,
-            1,
-        )
-        .await?;
-        probe
-            .execute_unprepared("DROP TABLE agent_evaluations")
-            .await?;
-        probe.close().await?;
-
-        // 重新打开：从已提交步骤接续原地升级，并校验 canonical 指纹与业务事实。
-        let upgraded = StudioStore::open(&database).await?;
-        assert_eq!(
-            database_schema_version(upgraded.database()).await?,
-            STUDIO_DATABASE_SCHEMA_VERSION
-        );
-        let record = upgraded
-            .read_thread("thread-old")
-            .await?
-            .expect("upgraded store kept the v22 thread row");
-        assert_eq!(record.id, thread.id);
-        assert_eq!(record.title, "旧会话");
-        // 旧目录缺失最近用户消息时间：迁移为缺失值，不以普通更新时间伪造。
-        assert_eq!(record.updated_at, thread.updated_at);
-        assert_eq!(record.last_user_message_at, None);
-        assert_eq!(
-            upgraded
-                .catalog()
-                .get("thread-old")
-                .map(|entry| entry.last_user_message_at),
-            Some(None),
-        );
-
-        // 升级幂等：再次打开不需要任何迁移步骤。
-        drop(upgraded);
-        let reopened = StudioStore::open(&database).await?;
-        assert!(reopened.read_thread("thread-old").await?.is_some());
         Ok(())
     }
 }

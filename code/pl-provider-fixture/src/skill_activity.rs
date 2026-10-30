@@ -30,7 +30,7 @@ pub const PROMPT_CANCEL: &str = "skill-activity-cancel-turn";
 /// Phase-two Turn admitted while the automatic threshold is one token.
 pub const PROMPT_REOPEN: &str = "skill-activity-reopen-turn";
 
-/// Short synthetic skill seeded in the isolated `[skills].user_dir`.
+/// Short synthetic skill seeded in the isolated standard user skills directory.
 pub const SKILL_SHORT: &str = "skill-activity-short";
 /// Long synthetic skill name that must stay readable in a narrow window.
 pub const SKILL_LONG: &str = "skill-activity-long-name-for-narrow-window-layout-review";

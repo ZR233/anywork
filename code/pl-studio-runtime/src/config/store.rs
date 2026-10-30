@@ -61,6 +61,10 @@ impl ConfigPaths {
         &self.config_file
     }
 
+    pub(crate) fn model_catalogs_dir(&self) -> PathBuf {
+        crate::studio::paths::StudioPaths::from_home(self.config_dir.clone()).model_catalogs_dir()
+    }
+
     /// 用户 Agent Profile 的独立 TOML 目录。
     pub fn agents_dir(&self) -> PathBuf {
         self.config_dir.join("agents")
@@ -179,7 +183,8 @@ impl ConfigStore {
     pub(crate) fn load_for_startup(
         &self,
     ) -> std::result::Result<StudioConfig, super::ConfigRuntimeError> {
-        self.recover_credentials()?;
+        self.recover_credentials()
+            .map_err(|error| super::ConfigRuntimeError::Migration(error.into()))?;
         // 中断的迁移必须先接续同一操作，不能先按当前结构解析后发布新旧混合状态。
         super::schema_migration::resume_for_startup(&self.paths, self.credentials.as_ref())
             .map_err(super::ConfigRuntimeError::Migration)?;
@@ -461,7 +466,7 @@ fn config_backup_path(config_path: &Path, kind: &str, stamp: u128, collision: u3
 pub(super) fn serialize_persisted_config(config: &StudioConfig) -> Result<String> {
     let mut persisted = config.clone();
     clear_inline_credentials(&mut persisted);
-    super::document_migration::MainV28::from_config(&persisted)
+    super::document_migration::MainV29::from_config(&persisted)
         .and_then(|document| document.encode())
         .map_err(|error| {
             PureError::ConfigError(format!("failed to serialize Studio config: {error}"))
@@ -550,7 +555,7 @@ mod tests {
             Some("migration-api-secret")
         );
         let saved = std::fs::read_to_string(store.paths.config_file()).unwrap();
-        assert!(saved.contains("schema_version = 28"));
+        assert!(saved.contains("schema_version = 29"));
         assert!(!saved.contains("migration-api-secret"));
         assert_eq!(store.load_for_startup().unwrap(), expected);
         assert!(

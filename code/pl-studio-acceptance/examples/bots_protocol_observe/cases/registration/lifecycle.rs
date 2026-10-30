@@ -32,7 +32,7 @@ pub(super) async fn run(session: &mut Session) -> Result<CaseResult> {
 
 async fn run_inner(session: &mut Session, deadline: Instant) -> Result<CaseResult> {
     let mut evidence = Vec::new();
-    let project_id = session
+    let workspace_id = session
         .http()?
         .open_project(&session.project.to_string_lossy())
         .await?
@@ -47,16 +47,16 @@ async fn run_inner(session: &mut Session, deadline: Instant) -> Result<CaseResul
         "fresh registration runtime must start empty"
     );
 
-    evidence.push(stage_reuse_and_replace(session, &mut watch, &project_id, deadline).await?);
-    evidence.push(stage_begin_hang_cancel(session, &mut watch, &project_id, deadline).await?);
-    evidence.push(stage_poll_hang_cancel(session, &mut watch, &project_id, deadline).await?);
-    evidence.push(stage_expire_inflight_poll(session, &mut watch, &project_id, deadline).await?);
-    evidence.push(stage_denied(session, &mut watch, &project_id, deadline).await?);
-    evidence.push(stage_remote_expired(session, &mut watch, &project_id, deadline).await?);
-    evidence.push(stage_slow_down(session, &mut watch, &project_id, deadline).await?);
-    evidence.push(stage_url_policy(session, &mut watch, &project_id, deadline).await?);
-    evidence.push(stage_lark_brand(session, &mut watch, &project_id, deadline).await?);
-    evidence.push(stage_success_with_user(session, &mut watch, &project_id, deadline).await?);
+    evidence.push(stage_reuse_and_replace(session, &mut watch, &workspace_id, deadline).await?);
+    evidence.push(stage_begin_hang_cancel(session, &mut watch, &workspace_id, deadline).await?);
+    evidence.push(stage_poll_hang_cancel(session, &mut watch, &workspace_id, deadline).await?);
+    evidence.push(stage_expire_inflight_poll(session, &mut watch, &workspace_id, deadline).await?);
+    evidence.push(stage_denied(session, &mut watch, &workspace_id, deadline).await?);
+    evidence.push(stage_remote_expired(session, &mut watch, &workspace_id, deadline).await?);
+    evidence.push(stage_slow_down(session, &mut watch, &workspace_id, deadline).await?);
+    evidence.push(stage_url_policy(session, &mut watch, &workspace_id, deadline).await?);
+    evidence.push(stage_lark_brand(session, &mut watch, &workspace_id, deadline).await?);
+    evidence.push(stage_success_with_user(session, &mut watch, &workspace_id, deadline).await?);
 
     drop(watch);
     Ok(report::CaseResult {
@@ -70,7 +70,7 @@ async fn run_inner(session: &mut Session, deadline: Instant) -> Result<CaseResul
 async fn stage_reuse_and_replace(
     session: &mut Session,
     watch: &mut BotsTopicWatch,
-    project_id: &str,
+    workspace_id: &str,
     deadline: Instant,
 ) -> Result<String> {
     let reuse_name = "observe-reg-reuse";
@@ -88,7 +88,7 @@ async fn stage_reuse_and_replace(
         session,
         reuse_op,
         reuse_name,
-        project_id,
+        workspace_id,
         remaining(deadline)?,
     )
     .await?;
@@ -113,7 +113,7 @@ async fn stage_reuse_and_replace(
         session,
         reuse_op,
         reuse_name,
-        project_id,
+        workspace_id,
         remaining(deadline)?,
     )
     .await?;
@@ -134,7 +134,7 @@ async fn stage_reuse_and_replace(
         session,
         reuse_op,
         "observe-reg-conflict",
-        project_id,
+        workspace_id,
         remaining(deadline)?,
     )
     .await?;
@@ -150,7 +150,7 @@ async fn stage_reuse_and_replace(
         session,
         "op-reg-replace",
         "observe-reg-replace",
-        project_id,
+        workspace_id,
         remaining(deadline)?,
     )
     .await?;
@@ -251,7 +251,7 @@ async fn stage_reuse_and_replace(
 async fn stage_begin_hang_cancel(
     session: &mut Session,
     watch: &mut BotsTopicWatch,
-    project_id: &str,
+    workspace_id: &str,
     deadline: Instant,
 ) -> Result<String> {
     let op = "op-reg-begin-hang";
@@ -268,7 +268,7 @@ async fn stage_begin_hang_cancel(
     let start_request = StartBotRegistrationRequest {
         operation_id: op.into(),
         name: "observe-reg-begin-hang".into(),
-        project_id: project_id.to_owned(),
+        workspace_id: workspace_id.to_owned(),
     };
     let start_fut = start_http.start_registration_result(&start_request);
     let control_fut = async {
@@ -347,7 +347,7 @@ async fn stage_begin_hang_cancel(
 async fn stage_poll_hang_cancel(
     session: &mut Session,
     watch: &mut BotsTopicWatch,
-    project_id: &str,
+    workspace_id: &str,
     deadline: Instant,
 ) -> Result<String> {
     session
@@ -359,7 +359,7 @@ async fn stage_poll_hang_cancel(
         session,
         "op-reg-poll-hang",
         "observe-reg-poll-hang",
-        project_id,
+        workspace_id,
         remaining(deadline)?,
     )
     .await?;
@@ -437,7 +437,7 @@ async fn stage_poll_hang_cancel(
 async fn stage_expire_inflight_poll(
     session: &mut Session,
     watch: &mut BotsTopicWatch,
-    project_id: &str,
+    workspace_id: &str,
     deadline: Instant,
 ) -> Result<String> {
     session
@@ -449,7 +449,7 @@ async fn stage_expire_inflight_poll(
         session,
         "op-reg-expire-inflight",
         "observe-reg-expire-inflight",
-        project_id,
+        workspace_id,
         remaining(deadline)?,
     )
     .await?;
@@ -502,14 +502,14 @@ async fn stage_expire_inflight_poll(
 async fn stage_denied(
     session: &mut Session,
     watch: &mut BotsTopicWatch,
-    project_id: &str,
+    workspace_id: &str,
     deadline: Instant,
 ) -> Result<String> {
     observe_terminal(
         session,
         watch,
         TerminalScript {
-            project_id,
+            workspace_id,
             operation_id: "op-reg-denied",
             name: "observe-reg-denied",
             script: RegistrationPollScript::Denied,
@@ -524,14 +524,14 @@ async fn stage_denied(
 async fn stage_remote_expired(
     session: &mut Session,
     watch: &mut BotsTopicWatch,
-    project_id: &str,
+    workspace_id: &str,
     deadline: Instant,
 ) -> Result<String> {
     observe_terminal(
         session,
         watch,
         TerminalScript {
-            project_id,
+            workspace_id,
             operation_id: "op-reg-remote-expired",
             name: "observe-reg-remote-expired",
             script: RegistrationPollScript::Expired,
@@ -544,7 +544,7 @@ async fn stage_remote_expired(
 }
 
 struct TerminalScript<'a> {
-    project_id: &'a str,
+    workspace_id: &'a str,
     operation_id: &'a str,
     name: &'a str,
     script: RegistrationPollScript,
@@ -571,7 +571,7 @@ async fn observe_terminal(
         session,
         script.operation_id,
         script.name,
-        script.project_id,
+        script.workspace_id,
         remaining(script.deadline)?,
     )
     .await?;
@@ -590,7 +590,7 @@ async fn observe_terminal(
 async fn stage_slow_down(
     session: &mut Session,
     watch: &mut BotsTopicWatch,
-    project_id: &str,
+    workspace_id: &str,
     deadline: Instant,
 ) -> Result<String> {
     session
@@ -609,7 +609,7 @@ async fn stage_slow_down(
         session,
         "op-reg-slowdown",
         "observe-reg-slowdown",
-        project_id,
+        workspace_id,
         remaining(deadline)?,
     )
     .await?;
@@ -703,7 +703,7 @@ async fn stage_slow_down(
 async fn stage_url_policy(
     session: &mut Session,
     watch: &mut BotsTopicWatch,
-    project_id: &str,
+    workspace_id: &str,
     deadline: Instant,
 ) -> Result<String> {
     let origin = session.control()?.origin().await;
@@ -722,7 +722,7 @@ async fn stage_url_policy(
         session,
         "op-reg-url-positive",
         "observe-reg-url-positive",
-        project_id,
+        workspace_id,
         remaining(deadline)?,
     )
     .await?;
@@ -785,7 +785,7 @@ async fn stage_url_policy(
             session,
             &op,
             &format!("observe-reg-url-neg-{index}"),
-            project_id,
+            workspace_id,
             remaining(deadline)?,
         )
         .await?;
@@ -827,7 +827,7 @@ async fn stage_url_policy(
 async fn stage_lark_brand(
     session: &mut Session,
     watch: &mut BotsTopicWatch,
-    project_id: &str,
+    workspace_id: &str,
     deadline: Instant,
 ) -> Result<String> {
     let mut attempts = Vec::new();
@@ -848,7 +848,7 @@ async fn stage_lark_brand(
             session,
             &format!("op-reg-lark-{index}"),
             &format!("observe-reg-lark-{index}"),
-            project_id,
+            workspace_id,
             remaining(deadline)?,
         )
         .await?;
@@ -871,7 +871,7 @@ async fn stage_lark_brand(
 async fn stage_success_with_user(
     session: &mut Session,
     watch: &mut BotsTopicWatch,
-    project_id: &str,
+    workspace_id: &str,
     deadline: Instant,
 ) -> Result<String> {
     session
@@ -892,7 +892,7 @@ async fn stage_success_with_user(
         session,
         "op-reg-success",
         "observe-reg-success",
-        project_id,
+        workspace_id,
         remaining(deadline)?,
     )
     .await?;
@@ -967,7 +967,7 @@ async fn stage_success_with_user(
         session,
         "op-reg-second",
         "observe-reg-second",
-        project_id,
+        workspace_id,
         remaining(deadline)?,
     )
     .await?;

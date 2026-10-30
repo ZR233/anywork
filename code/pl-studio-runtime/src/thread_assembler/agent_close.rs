@@ -296,6 +296,7 @@ impl AgentServices {
                 || !matches!(
                     entry.close_storage.as_ref(),
                     None | Some(CloseStorage::Attached(_))
+                        | Some(CloseStorage::Execution { joined: true, .. })
                 ))
         {
             return Err(ThreadAssemblyError::Unpublished(record.id.clone()));

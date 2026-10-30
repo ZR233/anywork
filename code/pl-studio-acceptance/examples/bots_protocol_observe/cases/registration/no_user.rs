@@ -28,7 +28,7 @@ pub(super) async fn run(session: &mut Session) -> Result<CaseResult> {
 }
 
 async fn run_inner(session: &mut Session, deadline: Instant) -> Result<CaseResult> {
-    let project_id = session
+    let workspace_id = session
         .http()?
         .open_project(&session.project.to_string_lossy())
         .await?
@@ -53,7 +53,7 @@ async fn run_inner(session: &mut Session, deadline: Instant) -> Result<CaseResul
         session,
         "op-reg-nouser",
         "observe-reg-nouser",
-        &project_id,
+        &workspace_id,
         remaining(deadline)?,
     )
     .await?;

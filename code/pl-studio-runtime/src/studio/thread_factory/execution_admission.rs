@@ -1,7 +1,7 @@
 //! Actual execution dependencies, shared by read-only audit and last-mile admission.
 use super::StudioThreadFactory;
 use crate::studio::{
-    ProjectRecord,
+    WorkspaceRecord,
     agent_host::{
         workspace_preparation,
         worktree_lease::{WorkspaceEndpoint, WorkspaceIdentity, WorktreeLeaseState},
@@ -18,7 +18,11 @@ pub(crate) enum ExecutionWorkspaceCheck {
 }
 
 impl StudioThreadFactory {
-    pub(crate) async fn verify_project_workspace(&self, project: &ProjectRecord) -> Result<()> {
+    pub(crate) async fn verify_project_workspace(&self, project: &WorkspaceRecord) -> Result<()> {
+        self.services
+            .store
+            .ensure_archive_execution_allowed(&project.id, None)
+            .await?;
         let identity = self
             .resolve_workspace_identity(project, Path::new(&project.path))
             .await
@@ -34,7 +38,13 @@ impl StudioThreadFactory {
         snapshot: Option<&pl_core::thread::ThreadSnapshot>,
         check: ExecutionWorkspaceCheck,
     ) -> Result<()> {
-        let associated = self.project_record(&thread.project_id).await?;
+        if check != ExecutionWorkspaceCheck::Audit {
+            self.services
+                .store
+                .ensure_archive_execution_allowed(&thread.workspace_id, Some(&thread.id))
+                .await?;
+        }
+        let associated = self.project_record(&thread.workspace_id).await?;
         let frozen = self.services.store.workspace_identity(&thread.id).await?;
         if let Some(bot) = self
             .services
@@ -43,7 +53,7 @@ impl StudioThreadFactory {
             .await?
         {
             ensure!(
-                bot.project_id == thread.project_id
+                bot.workspace_id == thread.workspace_id
                     && thread.workspace_mode == pl_protocol::ThreadWorkspaceMode::Local,
                 "bot execution directory association is incompatible"
             );
@@ -121,7 +131,7 @@ impl StudioThreadFactory {
             .flatten();
         let effective = snapshot
             .and_then(|snapshot| snapshot.extensions.get("studio.project"))
-            .map(|saved| -> Result<ProjectRecord> {
+            .map(|saved| -> Result<WorkspaceRecord> {
                 ensure!(
                     saved.payload.format() == "pl.studio.project" && saved.payload.version() == 1,
                     "unsupported execution project binding"
@@ -131,7 +141,7 @@ impl StudioThreadFactory {
             .transpose()?
             .unwrap_or(associated.clone());
         ensure!(
-            effective.id == thread.project_id
+            effective.id == thread.workspace_id
                 && effective.kind == associated.kind
                 && effective.path == associated.path
                 && effective.ssh_alias == associated.ssh_alias,
@@ -161,7 +171,7 @@ impl StudioThreadFactory {
             .find(|lease| {
                 actual.matches_root(&lease.path)
                     && lease.root_thread_id == thread.root_thread_id
-                    && lease.project_id == thread.project_id
+                    && lease.workspace_id == thread.workspace_id
             });
         if let Some(lease) = &lease {
             lease.validate_identity()?;
@@ -201,7 +211,7 @@ impl StudioThreadFactory {
 
     async fn verify_execution_identity(
         &self,
-        project: &ProjectRecord,
+        project: &WorkspaceRecord,
         identity: &WorkspaceIdentity,
     ) -> Result<()> {
         let current = self

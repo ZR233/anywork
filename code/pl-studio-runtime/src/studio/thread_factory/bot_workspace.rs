@@ -258,14 +258,14 @@ mod migration_tests {
         tokio::fs::create_dir_all(&business).await?;
         tokio::fs::write(business.join("business.txt"), b"not migration-owned").await?;
         let store =
-            crate::studio::StudioStore::open(temp.path().join("studio/v2/studio.sqlite")).await?;
+            crate::studio::StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
         let mut root = pl_protocol::Thread::placeholder("bot-root");
-        root.project_id = "bot-project".into();
+        root.workspace_id = "bot-project".into();
         root.root_thread_id = root.id.clone();
         root.workspace_path = business.to_string_lossy().into_owned();
         let mut delta = crate::studio::store::directory::DirectoryDelta::upsert_project(
             crate::studio::store::directory::ProjectDirectoryRecord {
-                id: root.project_id.clone(),
+                id: root.workspace_id.clone(),
                 kind: pl_protocol::studio::WorkspaceKind::Project,
                 name: "Original project".into(),
                 path: root.workspace_path.clone(),
@@ -292,7 +292,7 @@ mod migration_tests {
         factory
             .services
             .bots
-            .install_workspace_migration_fixture("botA1234", &root.id, &root.project_id)
+            .install_workspace_migration_fixture("botA1234", &root.id, &root.workspace_id)
             .await?;
         let bot = factory
             .services
@@ -370,7 +370,7 @@ mod migration_tests {
             b"retained original",
         )
         .await?;
-        let mut project = store.read_project(&root.project_id).await?.unwrap();
+        let mut project = store.read_project(&root.workspace_id).await?.unwrap();
         let execution = factory
             .reserve_thread_workspace_use(&root.id, &root.id, &project)
             .await?;
@@ -386,7 +386,7 @@ mod migration_tests {
             .unwrap();
         assert_eq!(canonical, dunce::canonicalize(&managed)?);
         assert_eq!(
-            tokio::fs::read(managed.join(files.root()).join("scratch/original")).await?,
+            tokio::fs::read(managed.join(files.scratch()).join("original")).await?,
             b"retained original"
         );
         assert!(fixture.workspace_is_busy(&root.id));
@@ -476,7 +476,7 @@ mod migration_tests {
             review_target: None,
         });
         let original_binding = store.workspace_identity(&other.id).await?;
-        let original_project = store.read_project(&root.project_id).await?;
+        let original_project = store.read_project(&root.workspace_id).await?;
         let rejected = StudioChildResources::prepare(factory, &request, &profile).await;
         assert!(
             matches!(&rejected, Err(ThreadAssemblyError::Workspace { .. })),
@@ -485,7 +485,7 @@ mod migration_tests {
         );
         assert_eq!(store.workspace_identity(&other.id).await?, original_binding);
         assert_eq!(
-            store.read_project(&root.project_id).await?,
+            store.read_project(&root.workspace_id).await?,
             original_project
         );
         assert!(factory.services.worktrees.snapshot().is_empty());
@@ -573,7 +573,7 @@ mod migration_tests {
         assert!(!tokio::fs::try_exists(managed.join(SessionFiles::new(&old.id).root())).await?);
 
         tokio::fs::rename(&business, temp.path().join("old-source-unmounted")).await?;
-        let mut project = store.read_project(&root.project_id).await?.unwrap();
+        let mut project = store.read_project(&root.workspace_id).await?.unwrap();
         let execution = factory
             .reserve_thread_workspace_use(&root.id, &root.id, &project)
             .await?;
@@ -591,7 +591,11 @@ mod migration_tests {
         );
         assert!(!tokio::fs::try_exists(&business).await?);
         assert_eq!(
-            tokio::fs::read(managed.join(files.root()).join("scratch/original")).await?,
+            tokio::fs::read(managed.join(files.scratch()).join("original"))
+                .await
+                .context(
+                    "read migrated temp after the original bot workspace source is unmounted"
+                )?,
             b"retained original"
         );
         drop(execution);

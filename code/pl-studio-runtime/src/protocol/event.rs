@@ -3,9 +3,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::statistics::StudioModelPerformanceSnapshot;
 use crate::{
-    AccountUsageStateSnapshot, PersistenceStateSnapshot, ProjectRecord, SkillsStateSnapshot,
+    AccountUsageStateSnapshot, PersistenceStateSnapshot, SkillsStateSnapshot,
     StudioAgentDirectoryEntry, StudioLspHealth, StudioMcpHealth, StudioRecoveryIssue,
-    StudioUpdateStateSnapshot,
+    StudioUpdateStateSnapshot, WorkspaceRecord,
 };
 
 /// Studio 产品级事件信封。
@@ -56,7 +56,7 @@ pub struct StudioProjectDirectoryState {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct StudioProjectDirectoryData {
-    pub projects: Vec<ProjectRecord>,
+    pub projects: Vec<WorkspaceRecord>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -225,7 +225,7 @@ pub struct StudioLspStateSnapshot {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct StudioSkillsStateSnapshot {
-    pub project_id: String,
+    pub workspace_id: String,
     pub state: ObservedResource<StudioSkillsStateData>,
 }
 
@@ -240,7 +240,7 @@ pub struct StudioSkillsStateData {
 impl From<SkillsStateSnapshot> for StudioSkillsStateSnapshot {
     fn from(value: SkillsStateSnapshot) -> Self {
         Self {
-            project_id: value.project_id,
+            workspace_id: value.workspace_id,
             state: value.state.map(|data| StudioSkillsStateData {
                 config_fingerprint: data.config_fingerprint,
                 catalog_revision: data.catalog_revision,

@@ -47,13 +47,13 @@ impl ProductEventBus {
         })
     }
 
-    pub(in crate::studio) async fn project_snapshot(&self) -> Vec<crate::ProjectRecord> {
+    pub(in crate::studio) async fn project_snapshot(&self) -> Vec<crate::WorkspaceRecord> {
         self.project_snapshot.lock().await.clone()
     }
 
     pub(super) async fn apply_project_delta(
         &self,
-        upserted: &[crate::ProjectRecord],
+        upserted: &[crate::WorkspaceRecord],
         removed: &[ProjectRemoval],
     ) -> Result<Option<StudioProductEventEnvelope>> {
         if upserted.is_empty() && removed.is_empty() {
@@ -68,7 +68,7 @@ impl ProductEventBus {
             }
         }
         for removal in removed {
-            projects.retain(|project| project.id != removal.project_id);
+            projects.retain(|project| project.id != removal.workspace_id);
         }
         projects.sort_by(|left, right| {
             right
@@ -87,7 +87,7 @@ impl ProductEventBus {
     /// 把调用方已经提交的 Project 事实直接应用到内存目录。
     pub async fn apply_project_entry(
         &self,
-        project: crate::ProjectRecord,
+        project: crate::WorkspaceRecord,
     ) -> Result<StudioProductEventEnvelope> {
         self.apply_project_delta(std::slice::from_ref(&project), &[])
             .await?
@@ -97,12 +97,12 @@ impl ProductEventBus {
     /// 从活动 Project 目录移除一个已归档或隔离的 Project。
     pub async fn remove_project_entry(
         &self,
-        project_id: &str,
+        workspace_id: &str,
     ) -> Result<StudioProductEventEnvelope> {
         self.apply_project_delta(
             &[],
             &[ProjectRemoval {
-                project_id: project_id.to_string(),
+                workspace_id: workspace_id.to_string(),
                 thread_ids: Vec::new(),
                 closed_at: unix_seconds(),
             }],

@@ -1173,7 +1173,7 @@ mod tests {
     async fn owner_shares_frozen_material_and_only_publishes_visible_changes() -> anyhow::Result<()>
     {
         let temp = tempfile::tempdir()?;
-        let store = StudioStore::open(temp.path().join("studio/v2/studio.sqlite")).await?;
+        let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
         let writer = ThreadWriteBehindWriter::new(store.clone());
         let events = ProductEventBus::new(store.clone(), writer.clone());
         let owner = ModelPerformanceOwner::new(store.clone(), events, "shared-material".into());
@@ -1286,7 +1286,7 @@ mod tests {
     #[tokio::test]
     async fn forced_equal_read_does_not_emit_another_http_event() -> anyhow::Result<()> {
         let temp = tempfile::tempdir()?;
-        let store = StudioStore::open(temp.path().join("studio/v2/studio.sqlite")).await?;
+        let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
         let writer = ThreadWriteBehindWriter::new(store.clone());
         let events = ProductEventBus::new(store.clone(), writer.clone());
         let mut receiver = events.subscribe_topic(&crate::StudioProductTopic::ModelPerformance);
@@ -1316,7 +1316,7 @@ mod tests {
     #[tokio::test]
     async fn no_read_wakeup_preserves_a_real_same_version_read_failure() -> anyhow::Result<()> {
         let temp = tempfile::tempdir()?;
-        let store = StudioStore::open(temp.path().join("studio/v2/studio.sqlite")).await?;
+        let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
         let writer = ThreadWriteBehindWriter::new(store.clone());
         let events = ProductEventBus::new(store.clone(), writer.clone());
         let owner = ModelPerformanceOwner::new(store.clone(), events, "read-failure".into());

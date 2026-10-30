@@ -61,7 +61,7 @@ void main() {
           ),
           selectionStoreProvider.overrideWithValue(
             SelectionStoreState(
-              selectedProjectId: root.projectId,
+              selectedProjectId: root.workspaceId,
               selectedThreadId: root.id,
               needsOpen: true,
             ),
@@ -79,7 +79,7 @@ void main() {
         category: RecoveryIssueCategory.repository,
         impact: RecoveryIssueImpact.executionBlocked,
         availableActions: const [RecoveryIssueAction.retry],
-        projectId: null,
+        workspaceId: null,
         threadId: 'child-of-root',
         detail: 'Preserved child remains reviewable',
       ),
@@ -97,7 +97,7 @@ void main() {
         category: RecoveryIssueCategory.toolCatalog,
         impact: RecoveryIssueImpact.advisory,
         availableActions: const [RecoveryIssueAction.retry],
-        projectId: null,
+        workspaceId: null,
         threadId: root.id,
         detail: 'Thread observation is being retried',
       ),
@@ -126,7 +126,7 @@ void main() {
       category: RecoveryIssueCategory.repository,
       impact: RecoveryIssueImpact.advisory,
       availableActions: const [],
-      projectId: root.projectId,
+      workspaceId: root.workspaceId,
       detail: 'Project reminder',
     );
     final rootAdvisory = StudioRecoveryIssue(
@@ -135,7 +135,7 @@ void main() {
       category: RecoveryIssueCategory.repository,
       impact: RecoveryIssueImpact.advisory,
       availableActions: const [],
-      projectId: root.projectId,
+      workspaceId: root.workspaceId,
       threadId: root.id,
       detail: 'Root reminder',
     );
@@ -145,7 +145,7 @@ void main() {
       rootAdvisory,
     ]);
     expect(
-      appWide.projectRecoveryIssues[root.projectId]?.id,
+      appWide.projectRecoveryIssues[root.workspaceId]?.id,
       applicationAccess.id,
     );
     expect(appWide.threadRecoveryIssues[root.id]?.id, applicationAccess.id);
@@ -164,7 +164,7 @@ void main() {
       category: RecoveryIssueCategory.repository,
       impact: RecoveryIssueImpact.executionBlocked,
       availableActions: const [],
-      projectId: root.projectId,
+      workspaceId: root.workspaceId,
       detail: 'Project execution is blocked',
     );
     final projectAdvisoryLater = StudioRecoveryIssue(
@@ -173,7 +173,7 @@ void main() {
       category: RecoveryIssueCategory.repository,
       impact: RecoveryIssueImpact.advisory,
       availableActions: const [],
-      projectId: root.projectId,
+      workspaceId: root.workspaceId,
       detail: 'Later project advisory',
     );
     final prioritized = readProductionView([
@@ -183,7 +183,7 @@ void main() {
       rootAdvisory,
     ]);
     expect(
-      prioritized.projectRecoveryIssues[root.projectId]?.id,
+      prioritized.projectRecoveryIssues[root.workspaceId]?.id,
       projectExecution.id,
     );
     expect(
@@ -198,7 +198,7 @@ void main() {
       category: RecoveryIssueCategory.repository,
       impact: RecoveryIssueImpact.executionBlocked,
       availableActions: const [RecoveryIssueAction.retry],
-      projectId: null,
+      workspaceId: null,
       threadId: root.id,
       detail: 'The actual Thread resource is unavailable',
     );
@@ -210,7 +210,7 @@ void main() {
     ]);
     expect(exact.threadRecoveryIssues[root.id]?.id, rootExecution.id);
     expect(
-      exact.projectRecoveryIssues[root.projectId]?.id,
+      exact.projectRecoveryIssues[root.workspaceId]?.id,
       projectExecution.id,
     );
 
@@ -221,7 +221,7 @@ void main() {
         category: RecoveryIssueCategory.storage,
         impact: RecoveryIssueImpact.accessBlocked,
         availableActions: const [],
-        projectId: '${root.projectId}-different',
+        workspaceId: '${root.workspaceId}-different',
         threadId: root.id,
         detail: 'A mismatched non-null project cannot grant a match',
       ),
@@ -248,7 +248,7 @@ void main() {
     final affected = client.threadDirectory.state.window.threads.firstWhere(
       (thread) =>
           thread.isRoot &&
-          thread.projectId == healthy.projectId &&
+          thread.workspaceId == healthy.workspaceId &&
           thread.id != healthy.id,
     );
     var revision = client.recovery.state.revision;
@@ -258,7 +258,7 @@ void main() {
       category: RecoveryIssueCategory.repository,
       impact: RecoveryIssueImpact.executionBlocked,
       availableActions: const [RecoveryIssueAction.retry],
-      projectId: healthy.projectId,
+      workspaceId: healthy.workspaceId,
       detail: 'The project preparation resource is unavailable',
     );
     final threadExecution = StudioRecoveryIssue(
@@ -267,7 +267,7 @@ void main() {
       category: RecoveryIssueCategory.repository,
       impact: RecoveryIssueImpact.executionBlocked,
       availableActions: const [],
-      projectId: null,
+      workspaceId: null,
       threadId: affected.id,
       detail: 'The existing Thread still depends on the unavailable resource',
     );
@@ -300,7 +300,7 @@ void main() {
               threadExecution.id,
             )
             .having(
-              (failure) => recoveryIssueFromFailure(failure)?.projectId,
+              (failure) => recoveryIssueFromFailure(failure)?.workspaceId,
               'optional project',
               isNull,
             )
@@ -319,7 +319,7 @@ void main() {
       category: RecoveryIssueCategory.storage,
       impact: RecoveryIssueImpact.accessBlocked,
       availableActions: const [RecoveryIssueAction.retry],
-      projectId: healthy.projectId,
+      workspaceId: healthy.workspaceId,
       detail: 'Only the Project access entry is unavailable',
     );
     final threadAccess = StudioRecoveryIssue(
@@ -328,7 +328,7 @@ void main() {
       category: RecoveryIssueCategory.storage,
       impact: RecoveryIssueImpact.accessBlocked,
       availableActions: const [],
-      projectId: healthy.projectId,
+      workspaceId: healthy.workspaceId,
       threadId: affected.id,
       detail: 'The affected Thread history is unreadable',
     );
@@ -342,7 +342,7 @@ void main() {
     await client.threadCommands.readChildInteractions(healthy.id);
     expect(transport.reads, [healthy.id, healthy.id]);
     await expectLater(
-      client.directoryCommands.selectProject(healthy.projectId),
+      client.directoryCommands.selectProject(healthy.workspaceId),
       throwsA(
         isA<StudioFailure>().having(
           (failure) => recoveryIssueFromFailure(failure)?.id,
@@ -469,7 +469,7 @@ void main() {
               category: RecoveryIssueCategory.repository,
               impact: RecoveryIssueImpact.advisory,
               availableActions: const [],
-              projectId: root.projectId,
+              workspaceId: root.workspaceId,
               threadId: root.id,
               detail: 'Repository observation is retrying',
             ),
@@ -636,9 +636,9 @@ final class _ScopedRecoveryTransport extends RecordingDemoTransport {
   }
 
   @override
-  Future<void> activateProject(String projectId) {
-    activations.add(projectId);
-    return super.activateProject(projectId);
+  Future<void> activateProject(String workspaceId) {
+    activations.add(workspaceId);
+    return super.activateProject(workspaceId);
   }
 }
 

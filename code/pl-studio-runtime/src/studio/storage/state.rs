@@ -156,102 +156,100 @@ impl StateStore {
             self.cleanup_legacy(history).await?;
             return Ok(Some(checkpoint));
         }
-        self.import_legacy(history).await
+        // Current SQLite recovery must not carry the legacy parser, accounting and import
+        // temporaries in every poll frame. Allocate that owned branch only when import is needed.
+        Box::pin(self.clone().import_legacy(history.clone())).await
     }
 
-    fn import_legacy<'a>(
-        &'a self,
-        history: &'a super::history::HistoryStore,
-    ) -> impl std::future::Future<Output = Result<Option<ThreadCheckpoint>>> + Send + 'a {
-        // Keep the large, one-time TOML/accounting import state out of ordinary SQLite recovery
-        // and its parent activation/subscription futures, including their debug poll stack frames.
-        Box::pin(async move {
-            let Some(mut checkpoint) = self.load_legacy().await? else {
-                ensure!(
-                    history.watermark().await? == 0,
-                    "history exists without a recovery checkpoint"
-                );
-                return Ok(None);
-            };
-            // Old compaction receipts used one extension key per request. History owns the old
-            // reductions and accounting is already cumulative; only the newest receipt is current.
-            let latest_compaction = checkpoint
-                .state
-                .extensions
-                .values()
-                .filter(|record| record.payload.format() == "pl.studio.compaction")
-                .max_by_key(|record| record.revision)
-                .cloned();
+    async fn import_legacy(
+        self,
+        history: super::history::HistoryStore,
+    ) -> Result<Option<ThreadCheckpoint>> {
+        let Some(mut checkpoint) = self.load_legacy().await? else {
+            ensure!(
+                history.watermark().await? == 0,
+                "history exists without a recovery checkpoint"
+            );
+            return Ok(None);
+        };
+        // Old compaction receipts used one extension key per request. History owns the old
+        // reductions and accounting is already cumulative; only the newest receipt is current.
+        let latest_compaction = checkpoint
+            .state
+            .extensions
+            .values()
+            .filter(|record| record.payload.format() == "pl.studio.compaction")
+            .max_by_key(|record| record.revision)
+            .cloned();
+        checkpoint
+            .state
+            .extensions
+            .retain(|_, record| record.payload.format() != "pl.studio.compaction");
+        if let Some(record) = latest_compaction {
             checkpoint
                 .state
                 .extensions
-                .retain(|_, record| record.payload.format() != "pl.studio.compaction");
-            if let Some(record) = latest_compaction {
-                checkpoint
-                    .state
-                    .extensions
-                    .insert(crate::compaction::LATEST_RECEIPT.into(), record);
+                .insert(crate::compaction::LATEST_RECEIPT.into(), record);
+        }
+        let legacy_costs = match &self.legacy_calls {
+            Some(calls) => {
+                calls
+                    .legacy_session_costs(&self.thread_id, checkpoint.history_fence)
+                    .await?
             }
-            let legacy_costs = match &self.legacy_calls {
-                Some(calls) => {
-                    calls
-                        .legacy_session_costs(&self.thread_id, checkpoint.history_fence)
-                        .await?
-                }
-                None => Vec::new(),
-            };
-            if let Some(calls) = &self.legacy_calls {
-                let auxiliary = calls.legacy_auxiliary_usage(&self.thread_id).await?;
-                let summary = &mut checkpoint.state.usage_summary;
-                for (target, value) in [
-                    (
-                        &mut summary.totals.inference_count,
-                        auxiliary.totals.inference_count,
-                    ),
-                    (
-                        &mut summary.totals.prompt_tokens,
-                        auxiliary.totals.prompt_tokens,
-                    ),
-                    (
-                        &mut summary.totals.completion_tokens,
-                        auxiliary.totals.completion_tokens,
-                    ),
-                    (
-                        &mut summary.totals.cached_prompt_tokens,
-                        auxiliary.totals.cached_prompt_tokens,
-                    ),
-                    (
-                        &mut summary.totals.cache_write_tokens,
-                        auxiliary.totals.cache_write_tokens,
-                    ),
-                    (
-                        &mut summary.totals.reasoning_tokens,
-                        auxiliary.totals.reasoning_tokens,
-                    ),
-                    (
-                        &mut summary.totals.total_tokens,
-                        auxiliary.totals.total_tokens,
-                    ),
-                ] {
-                    *target = target
-                        .checked_add(value)
-                        .context("legacy auxiliary accounting overflow")?;
-                }
-                summary.diagnostics.legacy_incomplete |= auxiliary.has_incomplete_usage();
-                summary.diagnostics.legacy_unknown = true;
-                summary.cache.incomplete |= auxiliary.cache.incomplete;
-                summary.pricing.incomplete |= auxiliary.pricing.incomplete;
+            None => Vec::new(),
+        };
+        if let Some(calls) = &self.legacy_calls {
+            let auxiliary = calls.legacy_auxiliary_usage(&self.thread_id).await?;
+            let summary = &mut checkpoint.state.usage_summary;
+            for (target, value) in [
+                (
+                    &mut summary.totals.inference_count,
+                    auxiliary.totals.inference_count,
+                ),
+                (
+                    &mut summary.totals.prompt_tokens,
+                    auxiliary.totals.prompt_tokens,
+                ),
+                (
+                    &mut summary.totals.completion_tokens,
+                    auxiliary.totals.completion_tokens,
+                ),
+                (
+                    &mut summary.totals.cached_prompt_tokens,
+                    auxiliary.totals.cached_prompt_tokens,
+                ),
+                (
+                    &mut summary.totals.cache_write_tokens,
+                    auxiliary.totals.cache_write_tokens,
+                ),
+                (
+                    &mut summary.totals.reasoning_tokens,
+                    auxiliary.totals.reasoning_tokens,
+                ),
+                (
+                    &mut summary.totals.total_tokens,
+                    auxiliary.totals.total_tokens,
+                ),
+            ] {
+                *target = target
+                    .checked_add(value)
+                    .context("legacy auxiliary accounting overflow")?;
             }
-            history
-                .import_checkpoint(&checkpoint, &legacy_costs)
-                .await?;
-            let restored = history
-                .checkpoint()
-                .await?
-                .context("imported checkpoint is absent")?;
-            self.cleanup_legacy(history).await?;
-            Ok(Some(restored))
-        })
+            summary.diagnostics.legacy_incomplete |= auxiliary.has_incomplete_usage();
+            summary.diagnostics.legacy_unknown = true;
+            summary.cache.incomplete |= auxiliary.cache.incomplete;
+            summary.pricing.incomplete |= auxiliary.pricing.incomplete;
+        }
+        history
+            .import_checkpoint(&checkpoint, &legacy_costs)
+            .await?;
+        let restored = history
+            .checkpoint()
+            .await?
+            .context("imported checkpoint is absent")?;
+        self.cleanup_legacy(&history).await?;
+        Ok(Some(restored))
     }
 
     async fn cleanup_legacy(&self, history: &super::history::HistoryStore) -> Result<()> {
@@ -279,7 +277,9 @@ impl StateStore {
         Ok(())
     }
 
-    async fn load_legacy(&self) -> Result<Option<ThreadCheckpoint>> {
+    /// Shared by explicit recovery and layout-migration evidence gathering only. Normal reads
+    /// remain SQLite-only; both migration entries verify versions, Thread identity and all bodies.
+    pub(in crate::studio) async fn load_legacy(&self) -> Result<Option<ThreadCheckpoint>> {
         let mut primary_error = None;
         for path in [self.path(), self.previous_path()] {
             let content = match tokio::fs::read_to_string(&path).await {

@@ -77,7 +77,7 @@ async fn recovery_ready(runtime: &pl_studio_runtime::StudioRuntime) -> Result<()
 
 async fn lease_fact(home: &Path, id: &str, preserve: bool) -> Result<serde_json::Value> {
     use sea_orm::{ConnectionTrait, Database, DbBackend, Statement};
-    let path = home.join("studio/v2/studio.sqlite");
+    let path = home.join("data/studio.sqlite");
     let db = Database::connect(format!("sqlite://{}?mode=rw", path.display())).await?;
     let row = db.query_one_raw(Statement::from_sql_and_values(
         DbBackend::Sqlite,
@@ -174,7 +174,7 @@ async fn rejected_initial_root_input_preserves_the_confirmed_original_binding() 
             .context("admitted initial attachment")?;
         std::fs::remove_file(
             env.home
-                .join("studio/v2/attachment-drafts")
+                .join("data/temp/attachment-drafts")
                 .join(&draft.draft_id),
         )?;
         let progress = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -758,7 +758,7 @@ async fn factory_missing_error_stays_typed_and_recovery_never_calls_missing_deta
             snapshot.schema_version == pl_protocol::THREAD_SCHEMA_VERSION
                 && snapshot.revision == history.checkpoint.state.commit_sequence
                 && snapshot.thread.id == root.thread.id
-                && snapshot.thread.project_id == env.project.id
+                && snapshot.thread.workspace_id == env.project.id
                 && snapshot.thread.root_thread_id == root.thread.root_thread_id
                 && snapshot.thread.workspace_mode == ThreadWorkspaceMode::Worktree
                 && snapshot.thread.workspace_path == root.thread.workspace_path,
@@ -835,7 +835,7 @@ async fn factory_missing_error_stays_typed_and_recovery_never_calls_missing_deta
                 && execution_issue.impact == StudioRecoveryImpact::ExecutionBlocked
                 && execution_issue.action == StudioRecoveryIssueAction::Retry
                 && execution_issue.thread_id.as_deref() == Some(root.thread.id.as_str())
-                && execution_issue.project_id.as_deref() == Some(env.project.id.as_str())
+                && execution_issue.workspace_id.as_deref() == Some(env.project.id.as_str())
                 && execution_issue.message.contains(&source.to_string()),
             "execution rejection has the wrong Recovery owner, impact or cause: {execution_issue:?}"
         );
@@ -874,7 +874,7 @@ async fn factory_missing_error_stays_typed_and_recovery_never_calls_missing_deta
                 && missing_issue.impact == StudioRecoveryImpact::ExecutionBlocked
                 && missing_issue.action == StudioRecoveryIssueAction::Retry
                 && missing_issue.thread_id.as_deref() == Some(root.thread.id.as_str())
-                && missing_issue.project_id.as_deref() == Some(env.project.id.as_str())
+                && missing_issue.workspace_id.as_deref() == Some(env.project.id.as_str())
                 && missing_issue.message.contains("stat")
                 && missing_issue.message.contains("not found"),
             "Recovery lost the original typed Missing owner or safe cause: {missing_issue:?}"

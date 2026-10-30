@@ -5,6 +5,7 @@ use crate::studio::StudioStore;
 use crate::studio::store::object::PersistedStudioObject;
 mod identity;
 mod usage;
+pub(in crate::studio) use identity::migrate_bot_identities;
 pub(in crate::studio) use identity::resolve_physical_workspace;
 pub(crate) use identity::{WorkspaceEndpoint, WorkspaceIdentity};
 pub use usage::WorkspaceUsageLease;
@@ -59,7 +60,7 @@ pub(in crate::studio) struct WorktreeLease {
     /// 归属 Thread id：`session` 为根会话自身，`child` 为子智能体 Thread。
     pub owner_thread_id: String,
     pub root_thread_id: String,
-    pub project_id: String,
+    pub workspace_id: String,
     pub ssh_alias: Option<String>,
     pub repository_root: String,
     pub path: String,
@@ -124,7 +125,7 @@ impl PersistedStudioObject for WorktreeLease {
 
     const OWNER_KIND: &'static str = "agent";
     const OBJECT_KIND: &'static str = "worktreeLease";
-    const SCHEMA_VERSION: i64 = 4;
+    const SCHEMA_VERSION: i64 = 5;
 
     fn revision(&self) -> u64 {
         self.revision
@@ -300,18 +301,23 @@ impl WorktreeLeaseOwner {
         let entries = &mut state.entries;
         if let Some(previous) = entries.get(&lease.owner_thread_id) {
             if previous.lease == lease {
-                return Ok(previous.ticket);
+                if previous.ticket != 0 {
+                    return Ok(previous.ticket);
+                }
+                // Hydration proves the old database fact, not an ACK from this writer.
+                // Re-admit that same value without changing its business revision.
+            } else {
+                anyhow::ensure!(
+                    lease.revision
+                        == previous
+                            .lease
+                            .revision
+                            .checked_add(1)
+                            .ok_or_else(|| anyhow::anyhow!("worktree lease revision exhausted"))?,
+                    "worktree lease revision conflict for {}",
+                    lease.owner_thread_id
+                );
             }
-            anyhow::ensure!(
-                lease.revision
-                    == previous
-                        .lease
-                        .revision
-                        .checked_add(1)
-                        .ok_or_else(|| anyhow::anyhow!("worktree lease revision exhausted"))?,
-                "worktree lease revision conflict for {}",
-                lease.owner_thread_id
-            );
         } else {
             anyhow::ensure!(
                 lease.state == WorktreeLeaseState::Prepared,

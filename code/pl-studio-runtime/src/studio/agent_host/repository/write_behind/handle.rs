@@ -381,7 +381,7 @@ mod storage_fault_tests {
             owner_kind: WorktreeLeaseOwnerKind::Child,
             owner_thread_id: id.into(),
             root_thread_id: "root".into(),
-            project_id: "project".into(),
+            workspace_id: "project".into(),
             ssh_alias: None,
             repository_root: repo.to_string_lossy().into_owned(),
             path: WorktreeManager::allocate_path(repo, "root", &ownership)
@@ -407,7 +407,7 @@ mod storage_fault_tests {
     #[tokio::test]
     async fn lease_ticket_admission_is_fifo_across_the_batch_boundary() -> Result<()> {
         let temp = tempfile::tempdir()?;
-        let store = StudioStore::open(temp.path().join("studio/v2/studio.sqlite")).await?;
+        let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
         store.database().execute_unprepared("CREATE TRIGGER reject_boundary_lease BEFORE INSERT ON studio_objects WHEN NEW.owner_id='boundary' BEGIN SELECT RAISE(ABORT,'controlled lease admission rejection'); END").await?;
         let writer = ThreadWriteBehindWriter::new(store.clone());
         for index in 0..super::super::queue::MAX_BATCH_COMMITS - 1 {
@@ -426,7 +426,7 @@ mod storage_fault_tests {
         waiting.recv_timeout(std::time::Duration::from_secs(5))?;
         let directory = DirectoryDelta {
             project_removals: vec![crate::studio::store::directory::ProjectRemoval {
-                project_id: "unused-project".into(),
+                workspace_id: "unused-project".into(),
                 thread_ids: vec![],
                 closed_at: 1,
             }],
@@ -610,7 +610,7 @@ mod storage_fault_tests {
     async fn verified_binding_confirmation_requires_exact_lease_and_execution_use() -> Result<()> {
         use crate::studio::agent_host::worktree_lease::{WorkspaceEndpoint, WorkspaceIdentity};
         let temp = tempfile::tempdir()?;
-        let store = StudioStore::open(temp.path().join("studio/v2/studio.sqlite")).await?;
+        let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
         let writer = ThreadWriteBehindWriter::new(store.clone());
         let owner = WorktreeLeaseOwner::new(writer.clone());
         let mut expected = lease(temp.path(), "verified-child");
@@ -719,7 +719,7 @@ mod storage_fault_tests {
     async fn verified_binding_and_active_reentry_wait_for_the_exact_ack() -> Result<()> {
         use crate::studio::agent_host::worktree_lease::{WorkspaceEndpoint, WorkspaceIdentity};
         let temp = tempfile::tempdir()?;
-        let store = StudioStore::open(temp.path().join("studio/v2/studio.sqlite")).await?;
+        let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
         let writer = ThreadWriteBehindWriter::new(store.clone());
         let owner = WorktreeLeaseOwner::new(writer.clone());
         let prepared = lease(temp.path(), "ack-child");
@@ -765,10 +765,163 @@ mod storage_fault_tests {
     }
 
     #[tokio::test]
+    async fn hydrated_active_binding_waits_for_the_current_writer_ack() -> Result<()> {
+        check_hydrated_active_binding(false).await
+    }
+
+    #[tokio::test]
+    async fn hydrated_active_binding_propagates_the_current_writer_failure() -> Result<()> {
+        check_hydrated_active_binding(true).await
+    }
+
+    async fn check_hydrated_active_binding(conflict: bool) -> Result<()> {
+        use crate::studio::agent_host::worktree_lease::{
+            WorkspaceEndpoint, WorkspaceIdentity, load_leases,
+        };
+        let temp = tempfile::tempdir()?;
+        let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
+        let mut active = lease(temp.path(), "hydrated-active");
+        active.transition(WorktreeLeaseState::Active);
+        // The old writer really saved this Active binding before the new owner hydrates it.
+        let old_writer = ThreadWriteBehindWriter::new(store.clone());
+        let old_owner = WorktreeLeaseOwner::new(old_writer.clone());
+        let mut prepared = active.clone();
+        prepared.state = WorktreeLeaseState::Prepared;
+        prepared.revision -= 1;
+        old_owner.record_durable(prepared).await?;
+        old_owner.record_durable(active.clone()).await?;
+        old_writer.shutdown().await?;
+
+        let writer = ThreadWriteBehindWriter::new(store.clone());
+        let owner = WorktreeLeaseOwner::new(writer.clone());
+        owner.restore(load_leases(&store).await?);
+        assert_eq!(owner.get(&active.owner_thread_id), Some(active.clone()));
+        assert_eq!(writer.admitted_ticket(), 0, "hydration must not enqueue");
+        let usage = owner.reserve_workspace(&active.owner_thread_id, WorkspaceEndpoint::Local)?;
+        owner.assign_workspace(
+            &usage,
+            WorkspaceIdentity::canonical(WorkspaceEndpoint::Local, active.path.clone())?,
+        )?;
+
+        let mut conflicting = active.clone();
+        if conflict {
+            use sea_orm::{ConnectionTrait, DbBackend, Statement};
+            conflicting.base_commit = "b".repeat(40);
+            // Inject a competing durable payload at the hydrated revision. The real
+            // current writer must report its conflict instead of acknowledging ticket 0.
+            let payload = serde_json::to_string(&conflicting)?;
+            let changed = store
+                .database()
+                .execute_raw(Statement::from_sql_and_values(
+                    DbBackend::Sqlite,
+                    "UPDATE studio_objects SET payload_json=?,payload_hash=? \
+                     WHERE owner_kind='agent' AND owner_id=? AND object_kind='worktreeLease'",
+                    [
+                        payload.clone().into(),
+                        pl_core::context::content_hash(payload.as_bytes()).into(),
+                        active.owner_thread_id.clone().into(),
+                    ],
+                ))
+                .await?;
+            assert_eq!(changed.rows_affected(), 1);
+        }
+        let (entered, waiting) = tokio::sync::oneshot::channel();
+        let (release, released) = tokio::sync::oneshot::channel();
+        *writer.shared.lease_ack_gate.lock().unwrap() = Some(LeaseAckGate {
+            state: WorktreeLeaseState::Active,
+            entered,
+            release: released,
+        });
+        let write = owner.prepare_verified_binding(&active, &usage)?;
+        let ticket = writer.admitted_ticket();
+        assert!(ticket > 0, "hydrated Active needs a current writer ticket");
+        assert!(!owner.is_durable(&active));
+        // Reentry reuses the admitted nonzero ticket, without revising or enqueueing again.
+        let reentry = owner.prepare_verified_binding(&active, &usage)?;
+        assert_eq!(writer.admitted_ticket(), ticket);
+        let mut confirming = Box::pin(owner.confirm_prepared_binding(write));
+        assert!(futures::poll!(&mut confirming).is_pending());
+        if conflict {
+            let failure = tokio::time::timeout(std::time::Duration::from_secs(5), confirming)
+                .await?
+                .unwrap_err();
+            assert!(failure.downcast_ref::<crate::PureError>().is_some());
+            assert!(
+                failure.to_string().contains("revision conflicts"),
+                "{failure:#}"
+            );
+            assert!(!owner.is_durable(&active));
+            assert_eq!(load_leases(&store).await?, vec![conflicting]);
+            assert!(writer.shutdown().await.is_err());
+        } else {
+            tokio::time::timeout(std::time::Duration::from_secs(5), waiting).await??;
+            assert!(futures::poll!(&mut confirming).is_pending());
+            assert!(!owner.is_durable(&active));
+            release.send(()).unwrap();
+            assert_eq!(confirming.await?, active);
+            assert_eq!(owner.confirm_prepared_binding(reentry).await?, active);
+            assert!(owner.is_durable(&active));
+            assert_eq!(load_leases(&store).await?, vec![active.clone()]);
+            writer.shutdown().await?;
+        }
+        assert_eq!(owner.get(&active.owner_thread_id), Some(active));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn verified_binding_rechecks_retirement_after_the_write_ack() -> Result<()> {
+        use crate::studio::agent_host::worktree_lease::{WorkspaceEndpoint, WorkspaceIdentity};
+        let temp = tempfile::tempdir()?;
+        let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
+        let writer = ThreadWriteBehindWriter::new(store.clone());
+        let owner = WorktreeLeaseOwner::new(writer.clone());
+        let prepared = lease(temp.path(), "sealed-during-ack");
+        owner.record_durable(prepared.clone()).await?;
+        let identity =
+            WorkspaceIdentity::canonical(WorkspaceEndpoint::Local, prepared.path.clone())?;
+        let usage = owner.reserve_workspace(&prepared.owner_thread_id, WorkspaceEndpoint::Local)?;
+        owner.assign_workspace(&usage, identity.clone())?;
+        let (entered, waiting) = tokio::sync::oneshot::channel();
+        let (release, released) = tokio::sync::oneshot::channel();
+        *writer.shared.lease_ack_gate.lock().unwrap() = Some(LeaseAckGate {
+            state: WorktreeLeaseState::Active,
+            entered,
+            release: released,
+        });
+        let confirming_owner = owner.clone();
+        let confirming = tokio::spawn(async move {
+            confirming_owner
+                .confirm_verified_binding(&prepared, &usage)
+                .await
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(5), waiting).await??;
+        let admitted = owner
+            .get("sealed-during-ack")
+            .context("admitted Active lease")?;
+        assert!(!owner.is_durable(&admitted));
+        owner.restore_workspace_seal(&admitted.owner_thread_id, identity.clone())?;
+        release.send(()).unwrap();
+        let failure = confirming.await?.unwrap_err();
+        assert!(
+            failure.to_string().contains("sealed for retirement"),
+            "{failure:#}"
+        );
+        // The ACK still belongs to its original write; rejecting execution must not
+        // erase the durable binding or remove the independent retirement seal.
+        assert!(owner.is_durable(&admitted));
+        assert_eq!(owner.get(&admitted.owner_thread_id), Some(admitted.clone()));
+        let late_usage =
+            owner.reserve_workspace(&admitted.owner_thread_id, WorkspaceEndpoint::Local)?;
+        assert!(owner.assign_workspace(&late_usage, identity).is_err());
+        writer.shutdown().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn verified_binding_propagates_the_writer_failure_without_acknowledging() -> Result<()> {
         use crate::studio::agent_host::worktree_lease::{WorkspaceEndpoint, WorkspaceIdentity};
         let temp = tempfile::tempdir()?;
-        let store = StudioStore::open(temp.path().join("studio/v2/studio.sqlite")).await?;
+        let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
         let writer = ThreadWriteBehindWriter::new(store.clone());
         let owner = WorktreeLeaseOwner::new(writer.clone());
         let prepared = lease(temp.path(), "conflicting-durable-binding");
@@ -813,7 +966,7 @@ mod storage_fault_tests {
     async fn failed_session_retention_follows_only_the_original_confirmed_binding() -> Result<()> {
         use crate::studio::agent_host::worktree_lease::{WorkspaceEndpoint, WorkspaceIdentity};
         let temp = tempfile::tempdir()?;
-        let store = StudioStore::open(temp.path().join("studio/v2/studio.sqlite")).await?;
+        let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
         let writer = ThreadWriteBehindWriter::new(store.clone());
         let owner = WorktreeLeaseOwner::new(writer.clone());
         let mut prepared = lease(temp.path(), "failed-root");
@@ -900,7 +1053,7 @@ mod storage_fault_tests {
         use crate::agent::worktree::WorktreeCleanupPolicy;
         use crate::studio::agent_host::workspace_preparation::cleanup_workspace;
         let temp = tempfile::tempdir()?;
-        let store = StudioStore::open(temp.path().join("studio/v2/studio.sqlite")).await?;
+        let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
         let writer = ThreadWriteBehindWriter::new(store.clone());
         let leases = WorktreeLeaseOwner::new(writer.clone());
         let unchanged = lease(temp.path(), "already-durable");

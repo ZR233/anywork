@@ -103,3 +103,30 @@ pub(crate) fn upgrade(state: &mut pl_core::thread::ThreadSnapshot) -> Result<()>
     super::from_payload(&record.payload)?;
     Ok(())
 }
+
+pub(crate) fn relocate_bot_root(
+    state: &mut pl_core::thread::ThreadSnapshot,
+    mapping: &crate::studio::startup::storage_layout::bot_roots::BotRootMove,
+) -> Result<()> {
+    upgrade(state)?;
+    let Some(record) = state.extensions.get_mut(super::EXTENSION) else {
+        return Ok(());
+    };
+    let mut assignment = super::from_payload(&record.payload)?;
+    ensure!(
+        matches!(
+            assignment.mode,
+            AgentWorkspaceMode::Directory | AgentWorkspaceMode::Unrestricted
+        ) && assignment.worktree.is_none(),
+        "bot assignment is not a local managed execution binding"
+    );
+    mapping.exact_path(&mut assignment.project_root)?;
+    mapping.exact_path(&mut assignment.root)?;
+    if let Some(paths) = &mut assignment.writable_paths {
+        for path in paths {
+            mapping.exact_path(path)?;
+        }
+    }
+    record.payload = super::to_payload(&assignment)?;
+    Ok(())
+}

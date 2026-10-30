@@ -3,7 +3,7 @@ use anyhow::{Result, ensure};
 use sea_orm::{ConnectionTrait, DatabaseBackend, DatabaseConnection, DbErr, Statement};
 use sea_orm_migration::{MigrationName, MigrationTrait, MigratorTrait, SchemaManager};
 
-pub(in crate::studio) const STUDIO_DATABASE_SCHEMA_VERSION: i64 = 26;
+pub(in crate::studio) const STUDIO_DATABASE_SCHEMA_VERSION: i64 = 27;
 
 pub(super) async fn preflight(db: &DatabaseConnection) -> Result<()> {
     let version = version(db).await?;
@@ -17,7 +17,7 @@ pub(super) async fn preflight(db: &DatabaseConnection) -> Result<()> {
         );
     } else {
         ensure!(
-            (22..=26).contains(&version),
+            (22..=27).contains(&version),
             crate::studio::startup::migration_error(
                 "Studio product",
                 "preflight",
@@ -27,6 +27,26 @@ pub(super) async fn preflight(db: &DatabaseConnection) -> Result<()> {
                 }
             )
         );
+        let manager = SchemaManager::new(db);
+        for table in [
+            "studio_objects",
+            "agent_evaluations",
+            "threads",
+            "projects",
+            "app_settings",
+        ] {
+            // The marker proves which tables this generation owns. Current format 27 has
+            // retired directory mirrors; v2 must still contain them before any migration writes.
+            if (table == "agent_evaluations" && version < 24)
+                || (matches!(table, "threads" | "projects" | "app_settings") && version >= 27)
+            {
+                continue;
+            }
+            ensure!(
+                manager.has_table(table).await?,
+                "required Studio product table {table} is missing; existing data preserved"
+            );
+        }
     }
     let pending = Migrator::get_pending_migrations_read_only(db)
         .await
@@ -91,7 +111,35 @@ impl MigratorTrait for Migrator {
             Box::new(Delegation),
             Box::new(ExplicitClose),
             Box::new(AgentCloseBinding),
+            Box::new(RemoveDirectoryMirrors),
         ]
+    }
+}
+
+struct RemoveDirectoryMirrors;
+impl MigrationName for RemoveDirectoryMirrors {
+    fn name(&self) -> &str {
+        "m20261028_000006_remove_directory_mirrors"
+    }
+}
+#[sea_orm_migration::async_trait::async_trait]
+impl MigrationTrait for RemoveDirectoryMirrors {
+    fn use_transaction(&self) -> Option<bool> {
+        Some(true)
+    }
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        if version(manager.get_connection()).await? >= STUDIO_DATABASE_SCHEMA_VERSION {
+            // The current schema was validated before opening the writer. SeaORM may be
+            // enrolling a current file whose migration records are absent, not upgrading v2.
+            return Ok(());
+        }
+        super::agent_close::upgrade_bindings(manager.get_connection())
+            .await
+            .map_err(|error| DbErr::Migration(format!("{error:#}")))?;
+        manager.get_connection().execute_unprepared(
+            "DROP TABLE threads; DROP TABLE projects; DROP TABLE app_settings; PRAGMA user_version=27"
+        ).await?;
+        Ok(())
     }
 }
 
@@ -197,6 +245,10 @@ impl MigrationTrait for AgentCloseBinding {
     }
     async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
         let db = manager.get_connection();
+        if version(db).await? >= 26 {
+            // Re-enrolling a current file must never downgrade its format marker.
+            return Ok(());
+        }
         super::agent_close::upgrade_bindings(db)
             .await
             .map_err(|error| DbErr::Migration(format!("{error:#}")))?;

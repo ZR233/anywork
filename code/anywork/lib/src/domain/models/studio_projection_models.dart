@@ -54,7 +54,7 @@ abstract class SidebarView with _$SidebarView {
     for (final project in projects) {
       final issue = recoveryIssuesForTarget(
         recoveryIssues,
-        projectId: project.id,
+        workspaceId: project.id,
       ).firstOrNull;
       if (issue != null) projectRecoveryIssues[project.id] = issue;
     }
@@ -62,7 +62,7 @@ abstract class SidebarView with _$SidebarView {
     for (final thread in rootThreads) {
       final issue = recoveryIssuesForTarget(
         recoveryIssues,
-        projectId: thread.projectId,
+        workspaceId: thread.workspaceId,
         threadId: thread.id,
       ).firstOrNull;
       if (issue != null) threadRecoveryIssues[thread.id] = issue;
@@ -114,10 +114,10 @@ abstract class HeaderView with _$HeaderView {
 
   factory HeaderView.fromState(StudioState state) {
     final root = state.selectedRootThread;
-    final projectId = root?.projectId ?? state.selectedProjectId;
+    final workspaceId = root?.workspaceId ?? state.selectedProjectId;
     StudioProject? selectedProject;
     for (final project in state.projects) {
-      if (project.id == projectId) {
+      if (project.id == workspaceId) {
         selectedProject = project;
         break;
       }

@@ -9,7 +9,7 @@ abstract interface class DraftSubmissionCommands {
     required int expectedModelRouteRevision,
   });
   Future<StartNewThreadResult?> submitNewThread({
-    required String projectId,
+    required String workspaceId,
     required StudioPromptInput input,
     required ThreadModeId mode,
     required ModeModelRouteView route,

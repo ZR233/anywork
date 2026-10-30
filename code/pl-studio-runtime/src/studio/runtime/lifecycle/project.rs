@@ -12,7 +12,7 @@ use super::super::{SkillSearchResult, SkillsStateSnapshot};
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ProjectActivationRecoveryBlock<'a> {
-    project_id: &'a str,
+    workspace_id: &'a str,
     issues: Vec<crate::StudioRecoveryIssue>,
 }
 
@@ -20,7 +20,7 @@ impl StudioRuntime {
     /// Prepares workspace services, including helper binding and executable LSP version probes.
     /// This is not a read-only navigation/history query; blocked projects remain available through
     /// the independent directory and history reads when their access is not blocked.
-    pub async fn activate_project(&self, project_id: &str) -> Result<()> {
+    pub async fn activate_project(&self, workspace_id: &str) -> Result<()> {
         let issues = self
             .recovery_issues()
             .into_iter()
@@ -28,7 +28,7 @@ impl StudioRuntime {
                 let applies = match issue.scope {
                     crate::StudioRecoveryIssueScope::Application => true,
                     crate::StudioRecoveryIssueScope::Project => {
-                        issue.project_id.as_deref() == Some(project_id)
+                        issue.workspace_id.as_deref() == Some(workspace_id)
                     }
                     crate::StudioRecoveryIssueScope::Thread => false,
                 };
@@ -47,12 +47,12 @@ impl StudioRuntime {
                 true,
             )
             .with_details(serde_json::to_value(ProjectActivationRecoveryBlock {
-                project_id,
+                workspace_id,
                 issues,
             })?)
             .into());
         }
-        let project = self.project_record(project_id).await?;
+        let project = self.project_record(workspace_id).await?;
         if let Some(server_id) = &project.ssh_alias {
             let host = self
                 .ssh_manager
@@ -79,7 +79,7 @@ impl StudioRuntime {
                 .await
                 .as_ref()
                 .is_some_and(|applied| {
-                    applied.project_id == project_id && applied.fingerprint == fingerprint
+                    applied.workspace_id == workspace_id && applied.fingerprint == fingerprint
                 })
             {
                 return Ok(());
@@ -102,7 +102,7 @@ impl StudioRuntime {
             let _ = self
                 .skills
                 .discover_remote(
-                    project_id,
+                    workspace_id,
                     &workspace_root,
                     &settings.config.skills,
                     tokio_util::sync::CancellationToken::new(),
@@ -110,7 +110,7 @@ impl StudioRuntime {
                 )
                 .await?;
             *self.activation.applied.write().await = Some(super::super::ProjectActivation {
-                project_id: project_id.to_string(),
+                workspace_id: workspace_id.to_string(),
                 fingerprint,
             });
             return Ok(());
@@ -141,7 +141,7 @@ impl StudioRuntime {
             .await
             .as_ref()
             .is_some_and(|applied| {
-                applied.project_id == project_id && applied.fingerprint == fingerprint
+                applied.workspace_id == workspace_id && applied.fingerprint == fingerprint
             })
         {
             return Ok(());
@@ -180,17 +180,17 @@ impl StudioRuntime {
         self.external_runtimes.lsp_state.ready(health, true).await?;
         let _ = self
             .skills
-            .discover(project_id, &workspace_root, &settings.config.skills)
+            .discover(workspace_id, &workspace_root, &settings.config.skills)
             .await?;
         *self.activation.applied.write().await = Some(super::super::ProjectActivation {
-            project_id: project_id.to_string(),
+            workspace_id: workspace_id.to_string(),
             fingerprint,
         });
         Ok(())
     }
 
-    pub async fn discover_skills(&self, project_id: &str) -> Result<SkillsStateSnapshot> {
-        let project = self.project_record(project_id).await?;
+    pub async fn discover_skills(&self, workspace_id: &str) -> Result<SkillsStateSnapshot> {
+        let project = self.project_record(workspace_id).await?;
         if let Some(server_id) = &project.ssh_alias {
             let host = self
                 .ssh_manager
@@ -201,7 +201,7 @@ impl StudioRuntime {
             return self
                 .skills
                 .discover_remote(
-                    project_id,
+                    workspace_id,
                     &workspace_root,
                     &settings.config.skills,
                     tokio_util::sync::CancellationToken::new(),
@@ -212,22 +212,22 @@ impl StudioRuntime {
         let workspace_root = resolve_workspace_root(Path::new(&project.path))?;
         let settings = self.config_runtime.read()?;
         self.skills
-            .discover(project_id, &workspace_root, &settings.config.skills)
+            .discover(workspace_id, &workspace_root, &settings.config.skills)
             .await
     }
 
     pub async fn search_skills(
         &self,
-        project_id: &str,
+        workspace_id: &str,
         query: &str,
         limit: usize,
     ) -> Result<SkillSearchResult> {
-        self.project_record(project_id).await?;
-        self.skills.search(project_id, query, limit).await
+        self.project_record(workspace_id).await?;
+        self.skills.search(workspace_id, query, limit).await
     }
 
-    pub async fn probe_lsp_server(&self, project_id: &str) -> Result<()> {
-        let workspace_root = self.project_workspace_root(project_id).await?;
+    pub async fn probe_lsp_server(&self, workspace_id: &str) -> Result<()> {
+        let workspace_root = self.project_workspace_root(workspace_id).await?;
         let _command = self.external_runtimes.lsp_state.command().await;
         self.external_runtimes
             .lsp_state
@@ -242,8 +242,8 @@ impl StudioRuntime {
         Ok(())
     }
 
-    pub async fn repair_lsp_server(&self, project_id: &str, server_id: &str) -> Result<()> {
-        let workspace_root = self.project_workspace_root(project_id).await?;
+    pub async fn repair_lsp_server(&self, workspace_id: &str, server_id: &str) -> Result<()> {
+        let workspace_root = self.project_workspace_root(workspace_id).await?;
         let _command = self.external_runtimes.lsp_state.command().await;
         self.external_runtimes
             .lsp_state
@@ -303,15 +303,15 @@ impl StudioRuntime {
     ) -> Result<()> {
         let scope = match request {
             pl_protocol::studio::LspResetRequest::Server {
-                project_id,
+                workspace_id,
                 server_id,
             } => pl_lsp::runtime::LspScope::Server {
-                workspace_root: self.project_workspace_root(&project_id).await?,
+                workspace_root: self.project_workspace_root(&workspace_id).await?,
                 server_id,
             },
-            pl_protocol::studio::LspResetRequest::Workspace { project_id } => {
+            pl_protocol::studio::LspResetRequest::Workspace { workspace_id } => {
                 pl_lsp::runtime::LspScope::Workspace {
-                    workspace_root: self.project_workspace_root(&project_id).await?,
+                    workspace_root: self.project_workspace_root(&workspace_id).await?,
                 }
             }
             pl_protocol::studio::LspResetRequest::All => pl_lsp::runtime::LspScope::All,
@@ -319,8 +319,8 @@ impl StudioRuntime {
         self.reset_lsp(scope).await
     }
 
-    async fn project_workspace_root(&self, project_id: &str) -> Result<std::path::PathBuf> {
-        let project = self.project_record(project_id).await?;
+    async fn project_workspace_root(&self, workspace_id: &str) -> Result<std::path::PathBuf> {
+        let project = self.project_record(workspace_id).await?;
         if project.ssh_alias.is_some() {
             Ok(std::path::PathBuf::from(project.path))
         } else {
@@ -328,13 +328,13 @@ impl StudioRuntime {
         }
     }
 
-    async fn project_record(&self, project_id: &str) -> Result<crate::ProjectRecord> {
+    async fn project_record(&self, workspace_id: &str) -> Result<crate::WorkspaceRecord> {
         self.agent_facility
             .product_events
             .project_snapshot()
             .await
             .into_iter()
-            .find(|project| project.id == project_id)
+            .find(|project| project.id == workspace_id)
             .context("selected project not found")
     }
 }

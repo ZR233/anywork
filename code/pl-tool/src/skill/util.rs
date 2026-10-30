@@ -63,15 +63,13 @@ pub(super) fn expand_home(path: &str) -> Result<PathBuf> {
 
 pub(super) fn user_home_dir() -> Result<PathBuf> {
     #[cfg(windows)]
-    const HOME_VARS: &[&str] = &["USERPROFILE", "HOME"];
+    const HOME_VAR: &str = "USERPROFILE";
     #[cfg(not(windows))]
-    const HOME_VARS: &[&str] = &["HOME", "USERPROFILE"];
+    const HOME_VAR: &str = "HOME";
 
-    HOME_VARS
-        .iter()
-        .filter_map(env::var_os)
+    env::var_os(HOME_VAR)
         .map(PathBuf::from)
-        .find(|path| !path.as_os_str().is_empty())
+        .filter(|path| !path.as_os_str().is_empty())
         .ok_or_else(|| PureError::ConfigError("could not resolve user home directory".to_string()))
 }
 
@@ -79,7 +77,7 @@ pub(super) fn agents_user_skills_dir() -> Result<PathBuf> {
     Ok(agents_user_skills_dir_from_home(&user_home_dir()?))
 }
 
-fn agents_user_skills_dir_from_home(home: &Path) -> PathBuf {
+pub(super) fn agents_user_skills_dir_from_home(home: &Path) -> PathBuf {
     home.join(".agents").join("skills")
 }
 
@@ -151,4 +149,19 @@ pub(super) fn validate_usage_write(project_dir: &Path, skill_dir: &Path) -> Resu
     validate_path_for_write(project_dir, &usage_path)
         .map_err(|error| PureError::ConfigError(error.to_string()))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn standard_user_skill_directory_is_derived_only_from_platform_home() {
+        let home = Path::new("/isolated-user");
+
+        assert_eq!(
+            agents_user_skills_dir_from_home(home),
+            home.join(".agents/skills")
+        );
+    }
 }

@@ -769,7 +769,7 @@ impl Observation<'_> {
                 bot_id: Some(id.into()),
                 expected_config_revision: bot.config_revision,
                 name: bot.name,
-                project_id: bot.project_id,
+                workspace_id: bot.workspace_id,
                 app_id: bot.app_id,
                 secret: BotSecretUpdate::Preserve,
                 enabled: bot.enabled,

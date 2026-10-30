@@ -409,28 +409,28 @@ pub async fn prepare_standalone_workspace()
     Ok(crate::api::studio::convert::runtime::bridge_project_directory(directory.state))
 }
 
-pub async fn activate_project(project_id: String) -> Result<(), BridgeError> {
+pub async fn activate_project(workspace_id: String) -> Result<(), BridgeError> {
     let bridge = active_bridge().await?;
-    bridge.studio.activate_project(&project_id).await?;
+    bridge.studio.activate_project(&workspace_id).await?;
     Ok(())
 }
 
-pub async fn archive_project(project_id: String) -> Result<Option<ProjectDto>, BridgeError> {
+pub async fn archive_project(workspace_id: String) -> Result<Option<ProjectDto>, BridgeError> {
     let bridge = active_bridge().await?;
     let archived = bridge
         .studio
-        .archive_project(&project_id)
+        .archive_project(&workspace_id)
         .await?
         .context("selected project not found")?;
     Ok(Some(archived.into()))
 }
 
 /// Changes a Project display name, preserving its path and connection.
-pub async fn rename_project(project_id: String, name: String) -> Result<ProjectDto, BridgeError> {
+pub async fn rename_project(workspace_id: String, name: String) -> Result<ProjectDto, BridgeError> {
     let bridge = super::super::bridge_runtime::active_bridge().await?;
     Ok(bridge
         .studio
-        .rename_project(&project_id, &name)
+        .rename_project(&workspace_id, &name)
         .await?
         .into())
 }

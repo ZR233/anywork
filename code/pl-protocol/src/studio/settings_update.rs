@@ -42,9 +42,6 @@ pub enum SettingsFieldUpdate {
     SkillsProjectDir {
         value: String,
     },
-    SkillsUserDir {
-        value: String,
-    },
     SkillsExternalDirs {
         value: Vec<String>,
     },

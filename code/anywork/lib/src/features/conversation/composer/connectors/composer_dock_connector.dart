@@ -116,18 +116,18 @@ class StartPageComposerDockConnector extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     // 只按项目重建正文状态；键击不重建外层，避免切项目时把上一个正文带过去。
-    final projectId = ref.watch(selectionStoreProvider).selectedProjectId;
+    final workspaceId = ref.watch(selectionStoreProvider).selectedProjectId;
     return _StartPageComposerBody(
-      key: ValueKey<String>(projectId ?? ''),
-      projectId: projectId,
+      key: ValueKey<String>(workspaceId ?? ''),
+      workspaceId: workspaceId,
     );
   }
 }
 
 class _StartPageComposerBody extends ConsumerStatefulWidget {
-  const _StartPageComposerBody({required this.projectId, super.key});
+  const _StartPageComposerBody({required this.workspaceId, super.key});
 
-  final String? projectId;
+  final String? workspaceId;
 
   @override
   ConsumerState<_StartPageComposerBody> createState() =>
@@ -141,10 +141,10 @@ class _StartPageComposerBodyState
   @override
   void initState() {
     super.initState();
-    final projectId = widget.projectId;
-    final text = projectId == null
+    final workspaceId = widget.workspaceId;
+    final text = workspaceId == null
         ? ''
-        : ref.read(startSessionControllerProvider).forProject(projectId).text;
+        : ref.read(startSessionControllerProvider).forProject(workspaceId).text;
     _draft = TextEditingController(text: text);
   }
 
@@ -169,7 +169,7 @@ class _StartPageComposerBodyState
       );
     }
     final projection = projectionAsync.requireValue;
-    final projectId = projection.project?.id;
+    final workspaceId = projection.project?.id;
     final mode = projection.mode;
     // 会话配置与能否提交是两件事：还没有项目或者暂不能提交时，用户仍然可以先选模式和模型，
     // 否则控件看似可点却毫无响应。只有配置未加载完成或提交正在进行时才锁定。
@@ -180,10 +180,10 @@ class _StartPageComposerBodyState
     final model = route == null
         ? null
         : modelForRoute(projection.accounts, route.accountId, route.modelId);
-    final composer = projectId == widget.projectId
+    final composer = workspaceId == widget.workspaceId
         ? projection.composer
         : const ComposerThreadState.idle();
-    final target = projectId == widget.projectId
+    final target = workspaceId == widget.workspaceId
         ? projection.targetDiagnostic
         : null;
     final additional = [
@@ -201,8 +201,8 @@ class _StartPageComposerBodyState
       children: [
         SessionModeSelector(
           mode: mode,
-          enabled: selectorsEnabled && projectId != null,
-          lockedHint: projectId == null
+          enabled: selectorsEnabled && workspaceId != null,
+          lockedHint: workspaceId == null
               ? context.l10n.statusModeNeedsProject
               : context.l10n.statusSelectorsNotReady,
           onSelected: _setMode,
@@ -227,7 +227,7 @@ class _StartPageComposerBodyState
     return StartPageComposerView(
       composer: composer,
       controller: _draft,
-      pasteTargetId: widget.projectId,
+      pasteTargetId: widget.workspaceId,
       targetDiagnostic: target,
       additionalDiagnostics: additional,
       enabled: projection.canEdit,
@@ -237,10 +237,10 @@ class _StartPageComposerBodyState
       submissionLocked: projection.submitting,
       inputCapabilities: model?.inputCapabilities ?? const [],
       selectorBar: selectorBar,
-      settingsMenu: projectId == null
+      settingsMenu: workspaceId == null
           ? null
           : SessionSettingsConnector(
-              projectId: projectId,
+              workspaceId: workspaceId,
               enabled: selectorsEnabled,
             ),
       onChanged: _updateDraft,
@@ -263,14 +263,16 @@ class _StartPageComposerBodyState
             _addLocal,
             _reportFailure,
             isCurrent: () =>
-                context.mounted && isCurrent() && widget.projectId == projectId,
+                context.mounted &&
+                isCurrent() &&
+                widget.workspaceId == workspaceId,
           ),
       onDropAttachments: (details, isCurrent) => _dropAttachmentsFromConnector(
         details,
         _addLocal,
         _reportFailure,
         isCurrent: () =>
-            context.mounted && isCurrent() && widget.projectId == projectId,
+            context.mounted && isCurrent() && widget.workspaceId == workspaceId,
       ),
       onAddLocal: _addLocal,
       onAddUrl: _addUrl,
@@ -279,31 +281,31 @@ class _StartPageComposerBodyState
   }
 
   void _updateDraft(String value) {
-    final projectId = widget.projectId;
-    if (projectId == null) return;
+    final workspaceId = widget.workspaceId;
+    if (workspaceId == null) return;
     ref
         .read(startPageComposerViewModelProvider.notifier)
-        .updateDraft(projectId, value);
+        .updateDraft(workspaceId, value);
   }
 
   void _setMode(ThreadModeId mode) {
-    final projectId = widget.projectId;
-    if (projectId == null) return;
+    final workspaceId = widget.workspaceId;
+    if (workspaceId == null) return;
     ref
         .read(startPageComposerViewModelProvider.notifier)
-        .setMode(projectId, mode);
+        .setMode(workspaceId, mode);
   }
 
   Future<void> _submit() async {
-    final projectId = widget.projectId;
-    if (projectId == null) return;
+    final workspaceId = widget.workspaceId;
+    if (workspaceId == null) return;
     final controller = ref.read(startPageComposerViewModelProvider.notifier);
-    controller.updateDraft(projectId, _draft.text);
-    final accepted = await controller.submitStart(projectId);
+    controller.updateDraft(workspaceId, _draft.text);
+    final accepted = await controller.submitStart(workspaceId);
     if (!mounted || !accepted) return;
     final latest = ref
         .read(startSessionControllerProvider)
-        .forProject(projectId)
+        .forProject(workspaceId)
         .text;
     if (_draft.text != latest) {
       _draft.value = TextEditingValue(
@@ -313,37 +315,40 @@ class _StartPageComposerBodyState
     }
   }
 
-  String? get _projectId => widget.projectId;
+  String? get _workspaceId => widget.workspaceId;
 
   ThreadModeId get _mode {
-    final projectId = widget.projectId;
-    if (projectId == null) return ThreadModeId.simple;
-    return ref.read(startSessionControllerProvider).forProject(projectId).mode;
+    final workspaceId = widget.workspaceId;
+    if (workspaceId == null) return ThreadModeId.simple;
+    return ref
+        .read(startSessionControllerProvider)
+        .forProject(workspaceId)
+        .mode;
   }
 
   Future<void> _pasteImage(Uint8List bytes) {
-    final projectId = _projectId;
-    if (projectId == null) return Future<void>.value();
+    final workspaceId = _workspaceId;
+    if (workspaceId == null) return Future<void>.value();
     return ref
         .read(startPageComposerViewModelProvider.notifier)
-        .pasteImage(projectId, _mode, bytes);
+        .pasteImage(workspaceId, _mode, bytes);
   }
 
   void _reportFailure(Object error) {
-    final projectId = _projectId;
-    if (projectId == null) return;
+    final workspaceId = _workspaceId;
+    if (workspaceId == null) return;
     ref
         .read(startPageComposerViewModelProvider.notifier)
-        .reportAttachmentFailure(projectId, error);
+        .reportAttachmentFailure(workspaceId, error);
   }
 
   Future<void> _addLocal(List<String> paths) {
-    final projectId = _projectId;
-    if (projectId == null || paths.isEmpty) return Future<void>.value();
+    final workspaceId = _workspaceId;
+    if (workspaceId == null || paths.isEmpty) return Future<void>.value();
     return ref
         .read(startPageComposerViewModelProvider.notifier)
         .admitAttachments(
-          projectId: projectId,
+          workspaceId: workspaceId,
           mode: _mode,
           sources: [
             for (final path in paths) AttachmentDraftSource.localFile(path),
@@ -352,19 +357,19 @@ class _StartPageComposerBodyState
   }
 
   Future<void> _addUrl(String url) {
-    final projectId = _projectId;
-    if (projectId == null) return Future<void>.value();
+    final workspaceId = _workspaceId;
+    if (workspaceId == null) return Future<void>.value();
     return ref
         .read(startPageComposerViewModelProvider.notifier)
-        .addRemoteAttachment(projectId, _mode, url);
+        .addRemoteAttachment(workspaceId, _mode, url);
   }
 
   Future<void> _removeAttachment(String draftId) {
-    final projectId = _projectId;
-    if (projectId == null) return Future<void>.value();
+    final workspaceId = _workspaceId;
+    if (workspaceId == null) return Future<void>.value();
     return ref
         .read(startPageComposerViewModelProvider.notifier)
-        .removeAttachment(projectId, draftId);
+        .removeAttachment(workspaceId, draftId);
   }
 }
 

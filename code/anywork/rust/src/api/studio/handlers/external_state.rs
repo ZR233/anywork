@@ -28,20 +28,20 @@ pub async fn read_lsp_state() -> Result<BridgeLspStateSnapshot, BridgeError> {
     Ok(bridge_lsp_state(state.state))
 }
 
-pub async fn probe_lsp_server(project_id: String) -> Result<BridgeLspStateSnapshot, BridgeError> {
+pub async fn probe_lsp_server(workspace_id: String) -> Result<BridgeLspStateSnapshot, BridgeError> {
     let bridge = active_bridge().await?;
-    bridge.studio.probe_lsp_server(&project_id).await?;
+    bridge.studio.probe_lsp_server(&workspace_id).await?;
     read_lsp_state().await
 }
 
 pub async fn repair_lsp_server(
-    project_id: String,
+    workspace_id: String,
     server_id: String,
 ) -> Result<BridgeLspStateSnapshot, BridgeError> {
     let bridge = active_bridge().await?;
     bridge
         .studio
-        .repair_lsp_server(&project_id, &server_id)
+        .repair_lsp_server(&workspace_id, &server_id)
         .await?;
     read_lsp_state().await
 }
@@ -50,14 +50,14 @@ pub async fn reset_lsp(input: LspScopeInput) -> Result<BridgeLspStateSnapshot, B
     let bridge = active_bridge().await?;
     let request = match input {
         LspScopeInput::Server {
-            project_id,
+            workspace_id,
             server_id,
         } => pl_protocol::studio::LspResetRequest::Server {
-            project_id,
+            workspace_id,
             server_id,
         },
-        LspScopeInput::Workspace { project_id } => {
-            pl_protocol::studio::LspResetRequest::Workspace { project_id }
+        LspScopeInput::Workspace { workspace_id } => {
+            pl_protocol::studio::LspResetRequest::Workspace { workspace_id }
         }
         LspScopeInput::All => pl_protocol::studio::LspResetRequest::All,
     };

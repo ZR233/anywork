@@ -99,16 +99,16 @@ final class LspTopic extends ProductTopic {
 }
 
 final class SkillsTopic extends ProductTopic {
-  const SkillsTopic({required this.projectId});
+  const SkillsTopic({required this.workspaceId});
 
-  final String projectId;
+  final String workspaceId;
 
   @override
   bool operator ==(Object other) =>
-      other is SkillsTopic && projectId == other.projectId;
+      other is SkillsTopic && workspaceId == other.workspaceId;
 
   @override
-  int get hashCode => Object.hash(0x0108, projectId);
+  int get hashCode => Object.hash(0x0108, workspaceId);
 }
 
 final class ThreadModeCatalogTopic extends ProductTopic {
@@ -454,7 +454,7 @@ sealed class ProductTopicEventPayload {
     McpStateChangedPayload() => const McpTopic(),
     LspStateChangedPayload() => const LspTopic(),
     SkillsStateChangedPayload(:final state) => SkillsTopic(
-      projectId: state.projectId,
+      workspaceId: state.workspaceId,
     ),
     ThreadModeCatalogChangedPayload() => const ThreadModeCatalogTopic(),
     AccountUsageStateChangedPayload() => const AccountUsageTopic(),

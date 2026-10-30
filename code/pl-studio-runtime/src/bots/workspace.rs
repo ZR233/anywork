@@ -30,12 +30,12 @@ impl BotRuntime {
         &self,
         bot_id: &str,
         root_id: &str,
-        project_id: &str,
+        workspace_id: &str,
     ) -> Result<(), FeishuError> {
         let mut config = BotConfigFile::new(
             bot_id.into(),
             "Workspace migration".into(),
-            project_id.into(),
+            workspace_id.into(),
             "cli_workspace_fixture".into(),
         )?;
         config.enabled = false;
@@ -44,10 +44,15 @@ impl BotRuntime {
         super::config::save_config(&dir.join("config.toml"), &config)?;
         let store = super::storage::BotStateStore::new(dir.join("state.sqlite"));
         store
-            .claim_thread_binding("workspace-chat", "workspace-creation", project_id)
+            .claim_thread_binding("workspace-chat", "workspace-creation", workspace_id)
             .await?;
         store
-            .bind_thread("workspace-chat", root_id, "workspace-creation", project_id)
+            .bind_thread(
+                "workspace-chat",
+                root_id,
+                "workspace-creation",
+                workspace_id,
+            )
             .await?;
         self.load().await
     }
@@ -148,7 +153,7 @@ impl BotRuntime {
         let target = root.join(files.root());
         let root_copy = root.clone();
         let owner = thread_id.to_owned();
-        tokio::task::spawn_blocking(move || {
+        let root = tokio::task::spawn_blocking(move || {
             migrate_owned_directory(
                 &source_container,
                 &source,
@@ -156,12 +161,19 @@ impl BotRuntime {
                 &target,
                 &owner,
             )?;
-            std::fs::create_dir_all(target.join("uploads"))?;
             dunce::canonicalize(root_copy)
         })
         .await
         .map_err(workspace_error)?
-        .map_err(workspace_error)
+        .map_err(workspace_error)?;
+        pl_tool::workspace::SessionTempBackend::Local(&root)
+            .migrate(&files)
+            .await
+            .map_err(workspace_error)?;
+        tokio::fs::create_dir_all(root.join(files.uploads()))
+            .await
+            .map_err(workspace_error)?;
+        Ok(root)
     }
 
     /// A newly dispatched identity has no old execution files to migrate or source to read.
@@ -172,12 +184,14 @@ impl BotRuntime {
     ) -> Result<std::path::PathBuf, FeishuError> {
         let root = self.workspace_root(config);
         let container = self.inner.paths.bot_dir(&config.id);
-        let target = root.join(pl_tool::workspace::SessionFiles::new(thread_id).root());
+        let files = pl_tool::workspace::SessionFiles::new(thread_id);
+        let target = root.join(files.root());
+        let uploads = root.join(files.uploads());
         let owner = thread_id.to_owned();
         tokio::task::spawn_blocking(move || -> std::io::Result<std::path::PathBuf> {
             pl_tool::workspace::path_safety::validate_path_for_write(&container, &target)
                 .map_err(std::io::Error::other)?;
-            std::fs::create_dir_all(target.join("uploads"))?;
+            std::fs::create_dir_all(uploads)?;
             let marker = target.join(".migration-complete");
             pl_tool::workspace::path_safety::validate_path_for_write(&container, &marker)
                 .map_err(std::io::Error::other)?;
@@ -269,10 +283,14 @@ fn copy_owned_directory(source: &std::path::Path, target: &std::path::Path) -> s
             copy_owned_directory(&entry.path(), &destination)?;
         } else if kind.is_file() && !destination.exists() {
             let mut original = std::fs::File::open(entry.path())?;
-            let mut pending = tempfile::NamedTempFile::new_in(target)?;
+            // tempfile publishes through Win32 directly; retain the existing parent's native
+            // spelling for both paths without changing the frozen workspace or final file name.
+            let native_target = std::fs::canonicalize(target)?;
+            let native_destination = native_target.join(entry.file_name());
+            let mut pending = tempfile::NamedTempFile::new_in(&native_target)?;
             std::io::copy(&mut original, pending.as_file_mut())?;
             pending.as_file().sync_all()?;
-            match pending.persist_noclobber(&destination) {
+            match pending.persist_noclobber(&native_destination) {
                 Ok(_) => {}
                 Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => {}
                 Err(error) => return Err(error.error),
@@ -337,7 +355,17 @@ mod migration_tests {
         let temp = tempfile::tempdir().unwrap();
         let business = temp.path().join("business");
         let source = business.join(".anywork/sessions/owned");
-        let target = temp.path().join("bot/workspace/.anywork/sessions/owned");
+        let target = temp
+            .path()
+            .join("bot/workspace")
+            .join("migration-path-component-".repeat(6))
+            .join("migration-path-component-".repeat(6))
+            .join(".anywork/sessions/owned");
+        #[cfg(windows)]
+        {
+            use std::os::windows::ffi::OsStrExt;
+            assert!(target.as_os_str().encode_wide().count() > 260);
+        }
         fs::create_dir_all(source.join("scratch")).unwrap();
         fs::create_dir_all(source.join(".venv")).unwrap();
         fs::write(business.join("business.txt"), "not bot-owned").unwrap();

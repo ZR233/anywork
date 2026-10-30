@@ -111,7 +111,6 @@ impl StudioRuntime {
                 | SettingsFieldUpdate::SkillsAutoLearn { .. }
                 | SettingsFieldUpdate::SkillsSystemEnabled { .. }
                 | SettingsFieldUpdate::SkillsProjectDir { .. }
-                | SettingsFieldUpdate::SkillsUserDir { .. }
                 | SettingsFieldUpdate::SkillsExternalDirs { .. }
                 | SettingsFieldUpdate::SkillsDisabled { .. }
                 | SettingsFieldUpdate::SkillsAutoLearnMinToolCalls { .. }
@@ -180,7 +179,6 @@ impl StudioRuntime {
                     SettingsFieldUpdate::SkillsProjectDir { value } => {
                         config.skills.project_dir = value
                     }
-                    SettingsFieldUpdate::SkillsUserDir { value } => config.skills.user_dir = value,
                     SettingsFieldUpdate::SkillsExternalDirs { value } => {
                         config.skills.external_dirs = normalized_string_list(value);
                     }

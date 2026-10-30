@@ -41,10 +41,10 @@ void watchSettingsScope(
   WidgetRef ref, {
   required bool visible,
   required BridgeSettingsScopeKind kind,
-  String? projectId,
+  String? workspaceId,
 }) {
   if (!visible) return;
-  for (final topic in bridgeSettingsScopeTopics(kind, projectId)) {
+  for (final topic in bridgeSettingsScopeTopics(kind, workspaceId)) {
     ref.watch(settingsTopicSyncProvider(topic));
   }
 }
@@ -65,8 +65,8 @@ final settingsTopicSyncProvider = Provider.autoDispose
         ),
         McpTopic() => ref.watch(mcpStoreProvider.select((state) => state.sync)),
         LspTopic() => ref.watch(lspStoreProvider.select((state) => state.sync)),
-        SkillsTopic(:final projectId) => ref.watch(
-          skillsStoreProvider(projectId).select((state) => state.sync),
+        SkillsTopic(:final workspaceId) => ref.watch(
+          skillsStoreProvider(workspaceId).select((state) => state.sync),
         ),
         ModelCatalogTopic() ||
         AccountUsageTopic() ||

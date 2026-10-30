@@ -477,7 +477,7 @@ struct TimelineHistoryScenario<'a> {
 /// 项目 id 与会话 id 是 canonical 身份，项目路径是同一数据根上的真实目录；三者
 /// 一起排除“同名不同库”或“选到第一个项目/会话”的误通过。
 struct PersistedTargetIdentity {
-    project_id: String,
+    workspace_id: String,
     project_path: String,
     thread_id: String,
 }
@@ -2637,11 +2637,11 @@ fn run_timeline_history_scenario(
                     "timeline-history live identity is not consistent across \
                      selection/workspace/project/timeline: {identity:?}"
                 );
-                let project_id = identity
-                    .get("projectId")
+                let workspace_id = identity
+                    .get("workspaceId")
                     .and_then(serde_json::Value::as_str)
                     .filter(|id| !id.is_empty())
-                    .context("timeline-history live identity has no projectId")?
+                    .context("timeline-history live identity has no workspaceId")?
                     .to_owned();
                 let thread_id = identity
                     .get("threadId")
@@ -2661,9 +2661,9 @@ fn run_timeline_history_scenario(
                 )?;
                 ensure!(
                     baseline
-                        .get("projectId")
+                        .get("workspaceId")
                         .and_then(serde_json::Value::as_str)
-                        == Some(project_id.as_str())
+                        == Some(workspace_id.as_str())
                         && baseline
                             .get("projectPath")
                             .and_then(serde_json::Value::as_str)
@@ -2674,7 +2674,7 @@ fn run_timeline_history_scenario(
                      {baseline:?}"
                 );
                 persisted_identity = Some(PersistedTargetIdentity {
-                    project_id,
+                    workspace_id,
                     project_path,
                     thread_id,
                 });
@@ -2710,10 +2710,13 @@ fn run_timeline_history_scenario(
                     .context("timeline-history restart ran without the live identity")?;
                 ensure!(
                     restore.get("evidenceConsistent") == Some(&serde_json::Value::Bool(true))
-                        && restore.get("projectIdMatches") == Some(&serde_json::Value::Bool(true))
+                        && restore.get("workspaceIdMatches")
+                            == Some(&serde_json::Value::Bool(true))
                         && restore.get("threadIdMatches") == Some(&serde_json::Value::Bool(true))
-                        && restore.get("projectId").and_then(serde_json::Value::as_str)
-                            == Some(target.project_id.as_str())
+                        && restore
+                            .get("workspaceId")
+                            .and_then(serde_json::Value::as_str)
+                            == Some(target.workspace_id.as_str())
                         && restore
                             .get("projectPath")
                             .and_then(serde_json::Value::as_str)
@@ -2759,7 +2762,7 @@ fn run_timeline_history_scenario(
                 .arg(&vm_url)
                 .arg(output)
                 .arg("--project-id")
-                .arg(&target.project_id)
+                .arg(&target.workspace_id)
                 .arg("--thread-id")
                 .arg(&target.thread_id)
                 .env("ANYWORK_HOME", home)
@@ -2899,10 +2902,12 @@ fn run_timeline_history_scenario(
                 .context("displacement collector recorded no cold-start restoration evidence")?;
             ensure!(
                 restore.get("evidenceConsistent") == Some(&serde_json::Value::Bool(true))
-                    && restore.get("projectIdMatches") == Some(&serde_json::Value::Bool(true))
+                    && restore.get("workspaceIdMatches") == Some(&serde_json::Value::Bool(true))
                     && restore.get("threadIdMatches") == Some(&serde_json::Value::Bool(true))
-                    && restore.get("projectId").and_then(serde_json::Value::as_str)
-                        == Some(target.project_id.as_str())
+                    && restore
+                        .get("workspaceId")
+                        .and_then(serde_json::Value::as_str)
+                        == Some(target.workspace_id.as_str())
                     && restore
                         .get("projectPath")
                         .and_then(serde_json::Value::as_str)
@@ -3340,10 +3345,9 @@ fn write_copy_fixture_config(home: &Path, ready: &FixtureReady) -> Result<()> {
     config.mcp.servers.clear();
     config.lsp.servers.clear();
     config.acp = Default::default();
-    config.skills.user_dir = home.join("skills").to_string_lossy().into_owned();
     // Bots have their own canonical documents. Disable them before runtime startup, including
     // each original identity, without deleting their ledger or touching its selected credential.
-    let bots = home.join("v2/bots");
+    let bots = home.join("data/bots");
     if bots.is_dir() {
         for entry in fs::read_dir(bots)? {
             let path = entry?.path().join("config.toml");
@@ -3395,7 +3399,7 @@ fn write_config_with_profile(
     profile: ModelTransportProfile,
     ordinary_gui: bool,
 ) -> Result<()> {
-    let mut config = fixture_config(home, ready, profile)?;
+    let mut config = fixture_config(ready, profile)?;
     if ordinary_gui {
         let route = config.mode_model_route(&ThreadModeId::simple())?.clone();
         config
@@ -3422,7 +3426,7 @@ fn write_config_with_mcp_server(
     command: &Path,
     args: &[String],
 ) -> Result<()> {
-    let mut config = fixture_config(home, ready, ModelTransportProfile::responses_http())?;
+    let mut config = fixture_config(ready, ModelTransportProfile::responses_http())?;
     config.runtime.active_mcp_servers.push(server_id.to_owned());
     config.mcp.servers.insert(
         server_id.to_owned(),
@@ -3486,7 +3490,7 @@ fn write_config_with_lsp_server(
     ready: &FixtureReady,
     spec: &LspServerSpec<'_>,
 ) -> Result<()> {
-    let config = fixture_config(home, ready, ModelTransportProfile::responses_http())?;
+    let config = fixture_config(ready, ModelTransportProfile::responses_http())?;
     // Round-trip through a `toml::Table` so the injected entry is identical to
     // what `persist_config` / the runtime would read back from `config.toml`.
     let mut table: toml::Table = toml::from_str(&toml::to_string(&config)?)
@@ -3598,11 +3602,7 @@ fn build_fixture_executable(workspace: &Path) -> Result<PathBuf> {
 
 /// Builds the isolated acceptance config without persisting it, so every writer
 /// shares one model/account/route fact source.
-fn fixture_config(
-    home: &Path,
-    ready: &FixtureReady,
-    profile: ModelTransportProfile,
-) -> Result<StudioConfig> {
+fn fixture_config(ready: &FixtureReady, profile: ModelTransportProfile) -> Result<StudioConfig> {
     let mut config = StudioConfig::default_config()?;
     let mut model = ModelInfo::compatible("fixture-model");
     model.capabilities.interleaved = Some(pl_model::model::ReasoningInterleaved {
@@ -3685,7 +3685,6 @@ fn fixture_config(
         route.model_id = "fixture-model".into();
         route.effort = None;
     }
-    config.skills.user_dir = home.join("skills").to_string_lossy().into_owned();
     Ok(config)
 }
 
@@ -3897,9 +3896,9 @@ fn seed_startup_fault(home: &Path, fault: &str) -> Result<()> {
     fs::write(home.join("sessions/old/retained"), b"old session")?;
     match fault {
         "config" => fs::write(home.join("config.toml"), b"schema_version = invalid"),
-        "database" => fs::write(home.join("studio/v2/studio.sqlite"), b"invalid database"),
-        "log" => fs::write(home.join("v2/calls/logs/calls-0000020000-000001.jsonl"), b"invalid complete record\n"),
-        "cache" => fs::write(home.join("v2/settings.toml"), b"schemaVersion = 1\nrevision = 2\n[[entries]]\nkey = 'observed:providerUsage:v2'\nvalue = 'invalid JSON'\nupdatedAt = 1\n"),
+        "database" => fs::write(home.join("data/studio.sqlite"), b"invalid database"),
+        "log" => fs::write(home.join("data/calls/logs/calls-0000020000-000001.jsonl"), b"invalid complete record\n"),
+        "cache" => fs::write(home.join("data/settings.toml"), b"schemaVersion = 1\nrevision = 2\n[[entries]]\nkey = 'observed:providerUsage:v2'\nvalue = 'invalid JSON'\nupdatedAt = 1\n"),
         _ => bail!("unknown startup fault"),
     }?;
     Ok(())
@@ -4097,7 +4096,7 @@ fn run_statistics_scenario(
                 interrupt,
                 Duration::from_secs(120),
             )?;
-            let calls_db = home.join("v2/calls/calls.sqlite");
+            let calls_db = home.join("data/calls/calls.sqlite");
             ensure!(
                 calls_db.is_file(),
                 "GUI did not initialize isolated calls.sqlite"
@@ -4545,7 +4544,7 @@ fn wait_for_statistics_driver(
 }
 
 fn statistics_db_counts(home: &Path) -> Result<StatisticsDbCounts> {
-    let database = home.join("v2/calls/calls.sqlite");
+    let database = home.join("data/calls/calls.sqlite");
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
@@ -6070,13 +6069,53 @@ fn plan_recovery_quiet_window(
     Ok(())
 }
 
+/// Isolate the GUI's user Skills home without changing Cargo or rustup's home.
+///
+/// Cargo is started before the GUI, so preserving its toolchain locations here
+/// keeps the build on the operator's existing installation while the GUI sees
+/// only synthetic user configuration and Skills.
+fn configure_isolated_gui_home(command: &mut Command, home: &Path) -> Result<()> {
+    let cargo_home = preserved_toolchain_home(std::env::var_os("CARGO_HOME"), ".cargo")?;
+    let rustup_home = preserved_toolchain_home(std::env::var_os("RUSTUP_HOME"), ".rustup")?;
+
+    command
+        .env("ANYWORK_HOME", home)
+        .env("HOME", home)
+        .env("USERPROFILE", home)
+        .env("CARGO_HOME", cargo_home)
+        .env("RUSTUP_HOME", rustup_home);
+    Ok(())
+}
+
+fn real_platform_user_home() -> Result<PathBuf> {
+    #[cfg(windows)]
+    let real_user_home = std::env::var_os("USERPROFILE");
+    #[cfg(not(windows))]
+    let real_user_home = std::env::var_os("HOME");
+
+    real_user_home
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from)
+        .context("could not resolve the real user home before isolating GUI HOME")
+}
+
+fn preserved_toolchain_home(
+    explicit: Option<std::ffi::OsString>,
+    relative: &str,
+) -> Result<std::ffi::OsString> {
+    match explicit.filter(|path| !path.is_empty()) {
+        Some(path) => Ok(path),
+        None => Ok(real_platform_user_home()?.join(relative).into_os_string()),
+    }
+}
+
 fn start_recovery_gui(workspace: &Path, home: &Path, log_path: &Path) -> Result<OwnedProcess> {
     let log = File::create(log_path)?;
     let mut command = Command::new("cargo");
+    configure_isolated_gui_home(&mut command, home)?;
     command
         .current_dir(workspace)
         .args(["xtask", "run-gui", "--driver"])
-        .env("ANYWORK_HOME", home)
         .stdout(Stdio::from(log.try_clone()?))
         .stderr(Stdio::from(log));
     OwnedProcess::start(&mut command, false)
@@ -6252,7 +6291,7 @@ struct HistoryLockTurnItems {
 /// is isolated to this run and holds exactly one Thread, so more than one
 /// candidate (or none) is reported instead of guessing which library to lock.
 fn history_lock_database(home: &Path) -> Result<std::path::PathBuf> {
-    let projects = home.join("v2/projects");
+    let projects = home.join("data/workspaces");
     let mut candidates = Vec::new();
     if projects.is_dir() {
         for project in fs::read_dir(&projects)? {
@@ -7015,6 +7054,27 @@ mod vm_service_url_tests {
             ))
             .as_deref(),
             Some("http://127.0.0.1:12346/auth-token=/")
+        );
+    }
+}
+
+#[cfg(test)]
+mod toolchain_home_tests {
+    use super::preserved_toolchain_home;
+    use std::ffi::OsString;
+
+    #[test]
+    fn explicit_toolchain_homes_are_preserved_and_defaults_use_real_home() {
+        assert_eq!(
+            preserved_toolchain_home(Some(OsString::from("/custom/cargo-home")), ".cargo").unwrap(),
+            OsString::from("/custom/cargo-home")
+        );
+        assert_eq!(
+            preserved_toolchain_home(Some(OsString::new()), ".rustup").unwrap(),
+            super::real_platform_user_home()
+                .unwrap()
+                .join(".rustup")
+                .into_os_string()
         );
     }
 }

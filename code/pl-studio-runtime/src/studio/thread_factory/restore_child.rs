@@ -28,6 +28,11 @@ impl StudioThreadFactory {
             .await
             .map_err(|error| resource_error("check child retirement intent", error))?;
         let thread = self.thread_record(id).await?;
+        self.services
+            .store
+            .ensure_archive_execution_allowed(&thread.workspace_id, Some(id))
+            .await
+            .map_err(|error| resource_error("restore child archive admission", error))?;
         if thread.parent_thread_id != request.identity.parent_id
             || thread.parent_thread_id.is_none()
         {
@@ -75,7 +80,7 @@ impl StudioThreadFactory {
         }
         let mut project = match &verified {
             Some(proof) => proof.project.clone(),
-            None => self.project_record(&thread.project_id).await?,
+            None => self.project_record(&thread.workspace_id).await?,
         };
         let workspace_usage = match &verified {
             Some(proof) => proof.usage(),
@@ -133,7 +138,7 @@ impl StudioThreadFactory {
         let history = self
             .services
             .store
-            .history_for(&thread.project_id, id)
+            .history_for(&thread.workspace_id, id)
             .await
             .map_err(|error| resource_error("open child instruction migration writer", error))?;
         let checkpoint = history
@@ -163,7 +168,7 @@ impl StudioThreadFactory {
         let saved_project = restored.extensions.get("studio.project").ok_or_else(|| {
             ThreadAssemblyError::Identity(format!("child {id} has no project binding"))
         })?;
-        let previous: crate::studio::ProjectRecord =
+        let previous: crate::studio::WorkspaceRecord =
             decode(&saved_project.payload, "pl.studio.project")?;
         if previous.id != project.id
             || previous.kind != project.kind
@@ -283,7 +288,7 @@ impl StudioThreadFactory {
         let resources = FileResourceStore::new(
             self.services
                 .store
-                .session_resources_dir_for(&thread.project_id, id)
+                .session_resources_dir_for(&thread.workspace_id, id)
                 .map_err(|error| {
                     resource_error("resolve restored child session resources", error)
                 })?,
@@ -377,6 +382,7 @@ impl StudioThreadFactory {
                 spec.workspace_usage
                     .as_ref()
                     .expect("child preparation use"),
+                &request.workspace_owner,
             )
             .await
             .map_err(|error| resource_error("confirm restored child worktree binding", error))?;
@@ -389,7 +395,7 @@ impl StudioThreadFactory {
         &self,
         receipt: &pl_protocol::AgentWorktreeSnapshot,
         thread: &crate::studio::ThreadRecord,
-        project: &crate::studio::ProjectRecord,
+        project: &crate::studio::WorkspaceRecord,
     ) -> Result<crate::studio::agent_host::worktree_lease::WorktreeLease, ThreadAssemblyError> {
         let child_id = &thread.id;
         let missing = |reason: &str| ThreadAssemblyError::Workspace {
@@ -447,7 +453,7 @@ impl StudioThreadFactory {
     /// claim, so every site check compares against the repository the user's project points at today.
     async fn restored_child_repository(
         &self,
-        project: &crate::studio::ProjectRecord,
+        project: &crate::studio::WorkspaceRecord,
     ) -> Result<(PathBuf, crate::agent::worktree::WorktreeManager), ThreadAssemblyError> {
         let project_root =
             crate::studio::agent_host::workspace_preparation::resolved_project_root(project)

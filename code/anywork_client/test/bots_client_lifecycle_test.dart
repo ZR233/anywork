@@ -30,7 +30,7 @@ final class _BotsTransport implements StudioTransport {
         BotSnapshot(
           id: request.botId ?? 'bot-1',
           name: request.name,
-          projectId: request.projectId,
+          workspaceId: request.workspaceId,
           appId: request.appId,
           platform: BotPlatform.feishuChina,
           enabled: request.enabled,
@@ -65,7 +65,7 @@ final class _BotsTransport implements StudioTransport {
       registration: BotRegistrationAttempt(
         attemptId: 'attempt-1',
         name: request.name,
-        projectId: request.projectId,
+        workspaceId: request.workspaceId,
         status: const BotRegistrationWaiting(
           attemptId: 'attempt-1',
           verificationUrl: 'https://accounts.feishu.cn/wait',
@@ -88,7 +88,7 @@ final class _BotsTransport implements StudioTransport {
       registration: BotRegistrationAttempt(
         attemptId: request.attemptId,
         name: snapshot.registration?.name ?? '',
-        projectId: snapshot.registration?.projectId ?? '',
+        workspaceId: snapshot.registration?.workspaceId ?? '',
         status: BotRegistrationCancelled(attemptId: request.attemptId),
       ),
     );
@@ -113,7 +113,7 @@ final class _BotsTransport implements StudioTransport {
         BotSnapshot(
           id: bot.id,
           name: bot.name,
-          projectId: bot.projectId,
+          workspaceId: bot.workspaceId,
           appId: bot.appId,
           platform: bot.platform,
           enabled: request.enabled,
@@ -224,7 +224,7 @@ final class _BotsTransport implements StudioTransport {
       binding: BotConversationThreadBinding(
         botId: request.botId,
         chatId: request.chatId,
-        projectId: 'project',
+        workspaceId: 'project',
         threadId: 'thread-1',
         revision: request.expectedBindingRevision + 1,
         state: BotConversationThreadState.bound,
@@ -299,7 +299,7 @@ void main() {
     final client = AnyworkClient(transport: transport, clientId: 'bots');
     addTearDown(() => client.close());
     client.botsCommands.updateSetupDraft(
-      const BotSetupDraft(name: 'Feishu', projectId: 'p1', appId: 'cli_1'),
+      const BotSetupDraft(name: 'Feishu', workspaceId: 'p1', appId: 'cli_1'),
     );
     client.botsCommands.holdSecret('app-secret-value');
     expect(
@@ -309,7 +309,7 @@ void main() {
     await client.botsCommands.saveBot(
       expectedConfigRevision: 0,
       name: 'Feishu',
-      projectId: 'p1',
+      workspaceId: 'p1',
       appId: 'cli_1',
       secret: client.botsCommands.consumeSecretUpdate(clear: false),
       modelRoute: const BotModelRoute(

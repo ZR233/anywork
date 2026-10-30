@@ -96,7 +96,7 @@ Future<void> main(List<String> args) async {
       final identity = readOpenedTimelineIdentity(completed);
       report['identity'] = identity.toJson();
       if (!identity.consistent ||
-          identity.projectId == null ||
+          identity.workspaceId == null ||
           identity.threadId == null ||
           identity.facts['projectPath'] == null) {
         throw StateError(
@@ -347,11 +347,11 @@ Future<void> _verifyCrossRestartBaseline(
   final latest = report['latestPage']! as Map<String, Object?>;
   final identity = report['identity']! as Map<String, Object?>;
   // 冷启动目标身份只能来自首轮真实 snapshot；缺失即验收失败，不写空值占位。
-  final projectId = identity['projectId'];
+  final workspaceId = identity['workspaceId'];
   final threadId = identity['threadId'];
   final projectPath = identity['projectPath'];
-  if (projectId is! String ||
-      projectId.isEmpty ||
+  if (workspaceId is! String ||
+      workspaceId.isEmpty ||
       threadId is! String ||
       threadId.isEmpty ||
       projectPath is! String ||
@@ -360,7 +360,7 @@ Future<void> _verifyCrossRestartBaseline(
   }
   final baseline = <String, Object?>{
     // 冷启动必须恢复同一持久化项目与会话；这是正常侧栏选择的唯一目标身份。
-    'projectId': projectId,
+    'workspaceId': workspaceId,
     'projectPath': projectPath,
     'threadId': threadId,
     'identity': identity,
@@ -417,14 +417,14 @@ Future<void> _compareWithFirstRun(
   // 打开后的真实身份必须就是首轮同一持久化项目与会话：值相等的 id，不是“某个
   // 项目/会话”。缺失与不符都直接失败。
   final identityMatches =
-      restore['projectId'] != null &&
-      restore['projectId'] == baseline['projectId'] &&
+      restore['workspaceId'] != null &&
+      restore['workspaceId'] == baseline['workspaceId'] &&
       restore['projectPath'] != null &&
       restore['projectPath'] == baseline['projectPath'] &&
       restore['threadId'] != null &&
       restore['threadId'] == baseline['threadId'] &&
       restore['evidenceConsistent'] == true &&
-      restore['projectIdMatches'] == true &&
+      restore['workspaceIdMatches'] == true &&
       restore['threadIdMatches'] == true;
   final latestMatches = _sameIds(
     ids(baseline['latestItemIds']),
@@ -469,10 +469,10 @@ Future<void> _compareWithFirstRun(
       );
   report['restartComparison'] = <String, Object?>{
     'identityMatches': identityMatches,
-    'baselineProjectId': baseline['projectId'],
+    'baselineProjectId': baseline['workspaceId'],
     'baselineProjectPath': baseline['projectPath'],
     'baselineThreadId': baseline['threadId'],
-    'coldStartProjectId': restore['projectId'],
+    'coldStartProjectId': restore['workspaceId'],
     'coldStartProjectPath': restore['projectPath'],
     'coldStartThreadId': restore['threadId'],
     'restoreMethod': restore['method'],

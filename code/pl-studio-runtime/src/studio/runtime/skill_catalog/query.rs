@@ -15,19 +15,19 @@ use super::{SkillCatalogRuntime, SkillSearchResult, SkillsStateSnapshot};
 
 impl SkillCatalogRuntime {
     /// 只读缓存；不存在时返回 authoritative empty，不访问文件系统。
-    pub async fn read(&self, project_id: &str) -> SkillsStateSnapshot {
+    pub async fn read(&self, workspace_id: &str) -> SkillsStateSnapshot {
         self.states
             .read()
             .await
-            .get(project_id)
+            .get(workspace_id)
             .cloned()
-            .unwrap_or_else(|| empty_snapshot(project_id))
+            .unwrap_or_else(|| empty_snapshot(workspace_id))
     }
 
     /// Searches the last published catalog without performing discovery.
     pub async fn search(
         &self,
-        project_id: &str,
+        workspace_id: &str,
         query: &str,
         limit: usize,
     ) -> Result<SkillSearchResult> {
@@ -39,7 +39,7 @@ impl SkillCatalogRuntime {
             (1..=50).contains(&limit),
             "skill search limit must be between 1 and 50"
         );
-        let snapshot = self.read(project_id).await;
+        let snapshot = self.read(workspace_id).await;
         let data = snapshot
             .state
             .value()
@@ -56,7 +56,7 @@ impl SkillCatalogRuntime {
         );
         let truncated = selection.truncated();
         Ok(SkillSearchResult {
-            project_id: project_id.to_string(),
+            workspace_id: workspace_id.to_string(),
             catalog_revision: data.catalog_revision,
             matches: selection
                 .matches

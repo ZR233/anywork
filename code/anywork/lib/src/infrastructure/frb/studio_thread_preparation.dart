@@ -6,7 +6,7 @@ NewThreadStartEvent _newThreadStartEventFromFrb(
   return event.when(
     progress: (progress) => NewThreadStartProgress(
       ThreadPreparationProgress(
-        projectId: progress.projectId,
+        workspaceId: progress.workspaceId,
         inputId: progress.inputId,
         stage: switch (progress.stage) {
           frb.BridgeThreadPreparationStage.checkingProject =>

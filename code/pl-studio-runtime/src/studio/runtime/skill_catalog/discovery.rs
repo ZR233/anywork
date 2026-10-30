@@ -26,12 +26,12 @@ impl SkillCatalogRuntime {
     /// 显式扫描并原子发布 Project catalog。
     pub async fn discover(
         &self,
-        project_id: &str,
+        workspace_id: &str,
         workspace_root: &Path,
         config: &SkillsConfig,
     ) -> Result<SkillsStateSnapshot> {
         self.discover_with_cancellation(
-            project_id,
+            workspace_id,
             workspace_root,
             config,
             tokio_util::sync::CancellationToken::new(),
@@ -45,14 +45,14 @@ impl SkillCatalogRuntime {
     /// Turn 使用同一套组合，保证设置页与 Turn 看到一致的技能目录。
     pub async fn discover_remote(
         &self,
-        project_id: &str,
+        workspace_id: &str,
         workspace_root: &Path,
         config: &SkillsConfig,
         cancellation: tokio_util::sync::CancellationToken,
         remote_backend: Arc<pl_tool::remote::RemoteWorkspaceFileBackend>,
     ) -> Result<SkillsStateSnapshot> {
         self.discover_from_source(
-            project_id,
+            workspace_id,
             workspace_root,
             config,
             cancellation,
@@ -64,13 +64,13 @@ impl SkillCatalogRuntime {
 
     pub async fn discover_with_cancellation(
         &self,
-        project_id: &str,
+        workspace_id: &str,
         workspace_root: &Path,
         config: &SkillsConfig,
         cancellation: tokio_util::sync::CancellationToken,
     ) -> Result<SkillsStateSnapshot> {
         self.discover_from_source(
-            project_id,
+            workspace_id,
             workspace_root,
             config,
             cancellation,
@@ -84,7 +84,7 @@ impl SkillCatalogRuntime {
     /// from any last-good catalog retained by the Settings state machine.
     pub(in crate::studio) async fn prepare_thread_catalog(
         &self,
-        project_id: &str,
+        workspace_id: &str,
         workspace_root: &Path,
         config: &SkillsConfig,
         cancellation: tokio_util::sync::CancellationToken,
@@ -92,7 +92,7 @@ impl SkillCatalogRuntime {
     ) -> Result<Option<(Arc<FrozenSkillCatalog>, SkillDiscoverySources)>> {
         let source = remote.map_or(DiscoverySource::Local, DiscoverySource::Remote);
         let (snapshot, sources) = self
-            .discover_from_source(project_id, workspace_root, config, cancellation, source)
+            .discover_from_source(workspace_id, workspace_root, config, cancellation, source)
             .await?;
         Ok(snapshot
             .catalog_for_turn()
@@ -101,7 +101,7 @@ impl SkillCatalogRuntime {
 
     async fn discover_from_source(
         &self,
-        project_id: &str,
+        workspace_id: &str,
         workspace_root: &Path,
         config: &SkillsConfig,
         cancellation: tokio_util::sync::CancellationToken,
@@ -113,11 +113,11 @@ impl SkillCatalogRuntime {
             command = self.command_lock.lock() => command,
         };
         let fingerprint = skills_fingerprint(config)?;
-        let previous = self.read(project_id).await;
+        let previous = self.read(workspace_id).await;
         let revision = previous.state.revision();
         let operation_id = format!("skills-discover-{}", revision.saturating_add(1));
         let running = SkillsStateSnapshot {
-            project_id: project_id.to_string(),
+            workspace_id: workspace_id.to_string(),
             state: previous
                 .state
                 .decide(ObservedResourceCommand::Begin {
@@ -129,7 +129,7 @@ impl SkillCatalogRuntime {
                 .map_err(|error| anyhow::anyhow!(error.to_string()))?
                 .next_state,
         };
-        self.publish(project_id, running.clone()).await;
+        self.publish(workspace_id, running.clone()).await;
 
         let workspace_root = workspace_root.to_path_buf();
         let config = config.clone();
@@ -175,7 +175,7 @@ impl SkillCatalogRuntime {
             Err(error) => {
                 let checked_at = unix_seconds();
                 let failed = SkillsStateSnapshot {
-                    project_id: project_id.to_string(),
+                    workspace_id: workspace_id.to_string(),
                     state: running
                         .state
                         .decide(ObservedResourceCommand::Fail {
@@ -190,7 +190,7 @@ impl SkillCatalogRuntime {
                         .map_err(|transition| anyhow::anyhow!(transition.to_string()))?
                         .next_state,
                 };
-                self.publish(project_id, failed).await;
+                self.publish(workspace_id, failed).await;
                 return Err(error);
             }
         };
@@ -198,7 +198,7 @@ impl SkillCatalogRuntime {
         let checked_at = unix_seconds();
         if !catalog.snapshot().complete {
             let failed = SkillsStateSnapshot {
-                project_id: project_id.to_string(),
+                workspace_id: workspace_id.to_string(),
                 state: running
                     .state
                     .decide(ObservedResourceCommand::Fail {
@@ -213,7 +213,7 @@ impl SkillCatalogRuntime {
                     .map_err(|transition| anyhow::anyhow!(transition.to_string()))?
                     .next_state,
             };
-            self.publish(project_id, failed.clone()).await;
+            self.publish(workspace_id, failed.clone()).await;
             return Ok((failed, sources));
         }
         let catalog_revision = previous.state.value().map_or(1, |data| {
@@ -224,7 +224,7 @@ impl SkillCatalogRuntime {
             }
         });
         let snapshot = SkillsStateSnapshot {
-            project_id: project_id.to_string(),
+            workspace_id: workspace_id.to_string(),
             state: running
                 .state
                 .decide(ObservedResourceCommand::Succeed {
@@ -240,7 +240,7 @@ impl SkillCatalogRuntime {
                 .map_err(|error| anyhow::anyhow!(error.to_string()))?
                 .next_state,
         };
-        self.publish(project_id, snapshot.clone()).await;
+        self.publish(workspace_id, snapshot.clone()).await;
         Ok((snapshot, sources))
     }
 
@@ -273,11 +273,11 @@ impl SkillCatalogRuntime {
         }
     }
 
-    async fn publish(&self, project_id: &str, snapshot: SkillsStateSnapshot) {
+    async fn publish(&self, workspace_id: &str, snapshot: SkillsStateSnapshot) {
         self.states
             .write()
             .await
-            .insert(project_id.to_string(), snapshot.clone());
+            .insert(workspace_id.to_string(), snapshot.clone());
         if let Some(events) = &self.events {
             events.emit_skills_state(snapshot);
         }

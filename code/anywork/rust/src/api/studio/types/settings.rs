@@ -77,11 +77,11 @@ pub enum McpResetInput {
 #[serde(rename_all = "camelCase", tag = "scope")]
 pub enum LspScopeInput {
     Server {
-        project_id: String,
+        workspace_id: String,
         server_id: String,
     },
     Workspace {
-        project_id: String,
+        workspace_id: String,
     },
     All,
 }
@@ -125,9 +125,6 @@ pub enum SettingsFieldInput {
         value: bool,
     },
     SkillsProjectDir {
-        value: String,
-    },
-    SkillsUserDir {
         value: String,
     },
     SkillsExternalDirs {
@@ -245,7 +242,6 @@ impl From<SettingsFieldInput> for pl_protocol::studio::SettingsFieldUpdate {
                 Update::SkillsSystemEnabled { value }
             }
             SettingsFieldInput::SkillsProjectDir { value } => Update::SkillsProjectDir { value },
-            SettingsFieldInput::SkillsUserDir { value } => Update::SkillsUserDir { value },
             SettingsFieldInput::SkillsExternalDirs { value } => {
                 Update::SkillsExternalDirs { value }
             }
@@ -610,7 +606,6 @@ pub struct BridgeSkillsSettingsDto {
     pub auto_learn: bool,
     pub system_enabled: bool,
     pub project_dir: String,
-    pub user_dir: String,
     pub external_dirs: Vec<String>,
     pub disabled: Vec<String>,
     pub auto_learn_min_tool_calls: u32,

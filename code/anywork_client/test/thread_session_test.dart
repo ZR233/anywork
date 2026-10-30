@@ -13,7 +13,7 @@ ThreadWorkspace _workspace({
 }) {
   final thread = StudioThread(
     id: 'thread',
-    projectId: 'project',
+    workspaceId: 'project',
     title: 'Thread',
     mode: ThreadModeId.simple,
     delegationMode: DelegationMode.profile,
@@ -369,7 +369,7 @@ void main() {
     );
     final changed = StudioThread(
       id: 'thread',
-      projectId: 'project',
+      workspaceId: 'project',
       title: 'Renamed',
       workspacePath: '/tmp/thread',
       mode: ThreadModeId.simple,
@@ -780,7 +780,7 @@ void main() {
       String? parentThreadId = 'root',
     }) => StudioThread(
       id: 'member',
-      projectId: 'project',
+      workspaceId: 'project',
       title: 'Member',
       mode: ThreadModeId.simple,
       delegationMode: DelegationMode.profile,

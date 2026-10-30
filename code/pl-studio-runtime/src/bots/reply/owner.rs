@@ -150,13 +150,14 @@ impl BotRuntime {
         &self,
         inbound: FrozenInbound,
         worker_id: &str,
+        registered_thread_id: &str,
         cancel: CancellationToken,
     ) -> InboundWorkOutcome {
         // 整个 dispatch（含初始绑定解析、观察打开、屏障、翻页、submit、发送等全部
         // 长 await）与 ≤20s 的认领续约在同一 JoinSet 任务内结构化并发：heartbeat
-        // 失租即返回 LostClaim 并丢弃主执行；所有副作用都带稳定身份的幂等受理或
-        // 发送账本事实，被丢弃的进行中请求由接管者按原操作核实，不等于未发生、
-        // 也不重放。cancel 由主执行自身收束为 Interrupted；heartbeat 在 cancel 后
+        // 失租先取消主执行，再等它排空已启动的文件 I/O 与可靠发送交接，最后返回
+        // LostClaim，不覆盖后继持有者的账本。所有副作用仍使用原稳定身份核实，
+        // 不把受理未知解释为未发生。cancel 由主执行自身收束；heartbeat 在 cancel 后
         // 挂起，不会把 runtime 停止误报成失租。
         let heartbeat_keys = (
             inbound.bot_id.clone(),
@@ -164,13 +165,21 @@ impl BotRuntime {
             inbound.message_id.clone(),
         );
         let heartbeat_worker = worker_id.to_string();
-        // Keep the reply state out of this select's stack frame. Pinning does not
-        // create another task, so heartbeat loss still drops the same owned work.
-        let reply = Box::pin(self.run_reply(inbound, worker_id, cancel.clone()));
+        // The same reply owns every started operation until its real completion,
+        // including on lease loss. No detached successor or cleanup task.
+        let reply_cancel = cancel.child_token();
+        let mut reply = Box::pin(self.run_reply(
+            inbound,
+            worker_id,
+            registered_thread_id,
+            reply_cancel.clone(),
+        ));
         tokio::select! {
-        outcome = reply => outcome,
+        outcome = &mut reply => outcome,
         // heartbeat 只会因失租完成；cancel 后它保持挂起，不误报 runtime 停止。
         _ = heartbeat_claims(self.clone(), heartbeat_keys, heartbeat_worker, cancel.clone()) => {
+                reply_cancel.cancel();
+                let _ = reply.await;
                 InboundWorkOutcome::LostClaim
             }
         }
@@ -180,6 +189,7 @@ impl BotRuntime {
         &self,
         inbound: FrozenInbound,
         worker_id: &str,
+        registered_thread_id: &str,
         cancel: CancellationToken,
     ) -> InboundWorkOutcome {
         let run = ReplyRun {
@@ -213,17 +223,23 @@ impl BotRuntime {
             Err(error) => return attention(format!("bot runtime lost before reply: {error}")),
         };
         let config = managed.config.lock().await.clone();
-        if config.project_id != inbound.project_id || config.feishu().app_id != inbound.app_id {
+        if config.workspace_id != inbound.workspace_id || config.feishu().app_id != inbound.app_id {
             return attention("frozen inbound app or project no longer matches bot config");
         }
         // 冻结路由：入站受理时的 App/project/creation/binding 归属不因新配置改派。
-        let thread_id = match self
-            .resolve_bound_thread(&managed, &runtime, &inbound, inbound.binding_revision)
-            .await
-        {
+        let resolved = tokio::select! {
+            _ = cancel.cancelled() => return InboundWorkOutcome::Interrupted,
+            resolved = self.resolve_bound_thread(
+                &managed, &runtime, &inbound, inbound.binding_revision
+            ) => resolved,
+        };
+        let thread_id = match resolved {
             Ok(thread_id) => thread_id,
             Err(outcome) => return outcome,
         };
+        if thread_id != registered_thread_id {
+            return attention("resolved bot Thread differs from registered reply owner");
+        }
         let mut run = run;
         run.thread_id = thread_id;
         // A format upgrade must never reinterpret a historical text-send intent as
@@ -481,7 +497,9 @@ impl BotRuntime {
         run: &ReplyRun,
         cancel: &CancellationToken,
     ) -> Step {
-        let drafts = match self
+        // Media preparation owns and drains started file work. Its admission
+        // boundary observes cancellation without dropping the whole operation.
+        let prepared = self
             .prepare_inbound_attachments(
                 runtime,
                 &run.bot_id,
@@ -490,8 +508,8 @@ impl BotRuntime {
                 &run.attachments,
                 cancel,
             )
-            .await
-        {
+            .await;
+        let drafts = match prepared {
             Ok(drafts) => drafts,
             Err(error) => {
                 if cancel.is_cancelled() {
@@ -511,17 +529,19 @@ impl BotRuntime {
             }
             return Step::Done(InboundWorkOutcome::Interrupted);
         }
-        let result = runtime
-            .submit_queued_prompt(crate::studio::StudioSubmitPromptRequest {
-                thread_id: run.thread_id.clone(),
-                input: pl_protocol::studio::StudioPromptInput {
-                    input_id: run.original_input.clone(),
-                    text: run.text.clone(),
-                    attachment_draft_ids: drafts.clone(),
-                },
-                options: crate::studio::StudioSubmitPromptOptions::default(),
-            })
-            .await;
+        let request = crate::studio::StudioSubmitPromptRequest {
+            thread_id: run.thread_id.clone(),
+            input: pl_protocol::studio::StudioPromptInput {
+                input_id: run.original_input.clone(),
+                text: run.text.clone(),
+                attachment_draft_ids: drafts.clone(),
+            },
+            options: crate::studio::StudioSubmitPromptOptions::default(),
+        };
+        // Only the runtime's admission wait may be cancelled. Once it starts
+        // retaining resources or submitting the stable input, keep this future
+        // and its drafts alive until their real result has been acknowledged.
+        let result = runtime.submit_queued_prompt(request, cancel).await;
         for draft in drafts {
             if let Err(error) = runtime.remove_attachment_draft(draft).await {
                 tracing::warn!(%error, "failed to release bot attachment draft");
@@ -530,6 +550,7 @@ impl BotRuntime {
         match result {
             // 受理后首个 effect 落库前身份仍可能 Absent；等待唤醒后重建，不连续重提。
             Ok(_) => Step::Wait,
+            Err(_) if cancel.is_cancelled() => Step::Done(InboundWorkOutcome::Interrupted),
             Err(error) => Step::Done(recoverable(format!("bot prompt submit failed: {error:#}"))),
         }
     }
@@ -725,14 +746,14 @@ impl BotRuntime {
         let FrozenInbound {
             bot_id,
             chat_id,
-            project_id,
+            workspace_id,
             creation_id,
             ..
         } = inbound;
         let config = managed.config.lock().await.clone();
         let claim = managed
             .store
-            .claim_thread_binding(chat_id, creation_id, project_id)
+            .claim_thread_binding(chat_id, creation_id, workspace_id)
             .await
             .map_err(|error| binding_failure("thread binding claim failed", error))?;
         let thread_id = match claim {
@@ -741,7 +762,7 @@ impl BotRuntime {
                 let created = runtime
                     .create_thread_with_id(
                         creation_id.clone(),
-                        project_id,
+                        workspace_id,
                         &format!("{} / {chat_id}", config.name),
                     )
                     .await
@@ -750,7 +771,7 @@ impl BotRuntime {
                     })?;
                 managed
                     .store
-                    .bind_thread(chat_id, &created.id, &creation_id, project_id)
+                    .bind_thread(chat_id, &created.id, &creation_id, workspace_id)
                     .await
                     .map_err(|error| binding_failure("thread binding persist failed", error))?
             }
@@ -760,7 +781,7 @@ impl BotRuntime {
         };
         let projection = managed
             .store
-            .binding_for_chat(chat_id, bot_id, project_id)
+            .binding_for_chat(chat_id, bot_id, workspace_id)
             .await
             .map_err(|error| binding_failure("thread binding read failed", error))?;
         if binding_revision != 0
@@ -773,7 +794,7 @@ impl BotRuntime {
             });
         }
         match runtime.find_owned_thread(&thread_id).await {
-            Ok(Some(existing)) if existing.project_id != config.project_id => {
+            Ok(Some(existing)) if existing.workspace_id != config.workspace_id => {
                 managed
                     .store
                     .mark_binding_attention(chat_id, "bound Thread belongs to another project")
@@ -881,5 +902,76 @@ fn observed_step((step, failure): (Step, Option<FinalError>), cancel: &Cancellat
     match failure {
         Some(error) => Step::Done(content_failure(error)),
         None => step,
+    }
+}
+
+#[cfg(test)]
+mod archive_cancellation_tests {
+    use super::*;
+    use crate::bots::commands::archive_tests::Fixture;
+    use crate::bots::inbound::InboundAttachment;
+
+    #[tokio::test]
+    async fn media_setup_and_prompt_admission_exit_the_owned_reply_on_cancel() -> anyhow::Result<()>
+    {
+        let fixture = Fixture::new().await?;
+        let inbound = fixture.inbound("cancel-admission", true).await?;
+        let managed = fixture.bots.managed(&inbound.bot_id).await?;
+        for media in [false, true] {
+            let mut run = ReplyRun {
+                bot_id: inbound.bot_id.clone(),
+                chat_id: inbound.chat_id.clone(),
+                message_id: inbound.message_id.clone(),
+                text: inbound.text.clone(),
+                attachments: Vec::new(),
+                worker_id: "fixture-worker".into(),
+                thread_id: inbound.creation_id.clone(),
+                original_input: bot_input_id(
+                    &inbound.bot_id,
+                    &inbound.chat_id,
+                    &inbound.message_id,
+                ),
+                watch_input: String::new(),
+                hinted: BTreeSet::new(),
+                card: None,
+                next_observation: tokio::time::Instant::now(),
+            };
+            if media {
+                run.attachments.push(InboundAttachment::Image {
+                    key: "isolated-media-key".into(),
+                });
+            }
+            // With media, hold its config lookup before token/network work;
+            // without media, the real queued-submit waits on lifecycle_lock.
+            let lifecycle = fixture.host.lifecycle_lock().lock().await;
+            let config = if media {
+                Some(managed.config.lock().await)
+            } else {
+                None
+            };
+            let cancel = fixture.bots.inner.reply_cancel.child_token();
+            let action = fixture
+                .bots
+                .submit_original(&fixture.host.runtime, &run, &cancel);
+            tokio::pin!(action);
+            assert!(futures::poll!(&mut action).is_pending());
+            cancel.cancel();
+            assert!(matches!(
+                tokio::time::timeout(Duration::from_secs(5), action).await?,
+                Step::Done(InboundWorkOutcome::Interrupted)
+            ));
+            assert!(!fixture.bots.inner.reply_cancel.is_cancelled());
+            drop(config);
+            drop(lifecycle);
+            assert_eq!(
+                fixture
+                    .host
+                    .runtime
+                    .bot_input_fact(&run.thread_id, &run.original_input,)
+                    .await?,
+                BotInputRead::Absent,
+            );
+        }
+        fixture.shutdown().await
     }
 }

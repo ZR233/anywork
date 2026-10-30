@@ -127,7 +127,7 @@ impl StudioRuntime {
                 if let Some(thread) = thread {
                     let project_matches = projects
                         .iter()
-                        .find(|project| project.id == thread.project_id)
+                        .find(|project| project.id == thread.workspace_id)
                         .is_some_and(|project| {
                             query.search.as_ref().is_some_and(|search| {
                                 format!("{} {}", project.name, project.path)
@@ -157,8 +157,8 @@ impl StudioRuntime {
     }
 
     /// Reads a Project Skills owner snapshot without scanning the filesystem.
-    pub async fn read_skills_state(&self, project_id: &str) -> StudioSkillsStateSnapshot {
-        self.skills.read(project_id).await.into()
+    pub async fn read_skills_state(&self, workspace_id: &str) -> StudioSkillsStateSnapshot {
+        self.skills.read(workspace_id).await.into()
     }
 
     /// Reads the current process-wide Thread Mode catalog.
