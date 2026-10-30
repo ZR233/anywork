@@ -33,7 +33,7 @@ flowchart LR
 | 当前选中项目、会话 | Client 本地选择意图 | 选择控制器（Selection controller） | 选择身份；旧异步命令结果不得覆盖较新的选择意图 |
 | 输入文本、参数、路由与附件引用 | Client 草稿（受理后可靠附件归 Rust） | 草稿所有者与附件所有权账本（ownership ledger） | `DraftStamp + OperationId`；所有权明确转移或显式放弃 |
 | 命令提交、待确认覆盖层（pending overlay）与未知结果 | Rust 变更所有者 / Client 操作所有者 | `MutationBoard` | `OperationId` 与目标资源戳；真实结果按操作独立记录 |
-| 已加载历史与阅读/跟随意图 | Flutter 呈现 owner | 原子引用、分页边界、连续完成 cursor、Flyer controller 与局部 UI | Thread + 呈现代次；真正释放才退役，回到最新不重建订阅 |
+| 已加载历史与阅读/跟随意图 | Flutter 呈现 owner | 原子引用、分页边界、连续完成 cursor、展示控制器与局部 UI | Thread + 呈现代次；真正释放才退役，回到最新不重建订阅 |
 | 光标、输入法组词（composing）、焦点、折叠态与滚动几何 | 组件 / 局部 UI 控制器 | 局部 UI 控制器 | `draftId` 或阅读代次；组件销毁（dispose）时释放 |
 
 同一权威资源仅设一个归约器（reducer）。命令响应若携带该资源的权威快照，直接进入同一个归约器；命令待确认状态与覆盖层不构成第二份权威状态。引导快照（bootstrap）仅负责启动初始化恢复，严禁在普通命令成功后通过重读聚合状态来掩盖缺帧。演示模式（demo）同样按领域发布带版本的基线与增量帧，不在组件层用本地默认列表补全缺失数据。
@@ -64,7 +64,7 @@ ACP 账号配置、ACP 认证观察（`acpAuth`，回执资源名 `acp-auth`）�
 
 只读观察 API 在同步阶段完成接收者登记并立即返回当前镜像值，检查当前镜像与注册谓词（predicate）之间严禁插入任何 `await` 间隙，确保读取快照与注册观察之间到达的更新绝不漏帧。当显示观察处于暂停状态（如页面被路由覆盖）时，每个观察者仅保留最新显示快照；而可靠有序事件流仍严格按序归约，不套用丢弃中间帧的策略。取消观察订阅仅移除当前观察者，绝不关闭跨路由的会话、内容连接、输入草稿或附件。
 
-`AppGraph` 通过逻辑需求（logical demand）管理底层资源生命周期：只有当前激活且实际展示的会话持有 GUI 消息订阅需求。进入设置页或离开会话页面时，由导航所有者释放该需求并收束旧订阅；切换设置标签不重复创建会话连接。返回会话时从新基线建立展示代次，不恢复旧正文流或像素位置。新会话和已有会话草稿、附件及已受理操作不因隐藏或组件销毁而清理；飞书与 HTTP 的独立订阅不受此 GUI 需求影响。
+GUI 展示需求统一按 §25.5 管理，会话与草稿资源的归属见 §25.15；飞书与 HTTP 的独立订阅不受 GUI 需求变化影响。
 
 对话框、菜单、抽屉等短暂浮层仍使用 Flutter 官方机制及其局部关闭，不成为第二套页面导航。主工作区内选择项目、会话或子智能体仍属于 SDK 的 canonical selection，不为统一页面路由另造 URL 业务镜像。机器人聊天直接以路由参数中的 threadId 观察工作区和草稿，不修改主工作区的选择。目标不在已加载的目录分页内时，身份取自该目标的 canonical 会话；不补造目录记录，也不借用其他选择。路由不执行 bootstrap、异步选择或维护激活／错误／重试状态；目标加载及失败使用会话领域与时间线已有呈现。不存在的目标不会借用其他会话。SDK 不持有设置页状态或页面导航控制器。Driver 分别报告主工作区选择、当前呈现目标（包含准入失败）与实际可见订阅；当前展示的 workspace、草稿、修订与正文必须使用同一会话身份，隐藏时仍可独立观察主工作区的后台执行。
 
@@ -139,7 +139,7 @@ Notifier 的响应式呈现仍只通过 `state` 观察；命令侧捕获已有�
 
 实际移除时同步封闭旧入口与迟到回调资格，资源清理不得在框架构建或销毁的禁止阶段同步发布 Provider 状态。必须发布的本地草稿变更在框架允许的阶段执行，并重新核对捕获的所有者、修订与本地等待状态；延后清理不能授权新草稿、延长旧导航资格或取消领域已准入操作。
 
-纯 View 继续通过类型化回调表达返回、编辑、取消和标签选择意图，由 Connector 绑定生成式目的地；业务保存结果仍按操作事实结算，不能用页面返回值冒充保存确认。删除确认、候选选择和未保存提示的模态结果是局部界面协议，不是第二套页面导航。可见性与展示需求只能从已提交路由单向派生，不能反向保存或修补路由选择。应用直接监听 Router 已提交的目的地，将 Studio 或携带明确 Thread ID 的机器人会话映射为同一 `AppGraph` 的展示需求；设置、工作模式、机器人详情与平台工具页撤销会话展示需求，返回后重新建立基线。
+纯 View 通过类型化回调表达导航意图，由 Connector 绑定生成式目的地；业务保存结果按操作事实结算，不能用页面返回值冒充保存确认。删除确认、候选选择和未保存提示的模态结果是局部界面协议，不是第二套页面导航。提交后的路由与展示需求映射见 §25.4–§25.5，不反向保存或修补路由选择。
 
 页面异步动作的后续界面副作用须同时复核官方来源路由仍为当前页面与捕获的业务所有者身份；仅有组件仍挂载不能授权旧删除、确认或保存完成后覆盖较新的导航。失去来源资格后不再发后续命令或跳转，已经准入的领域操作仍由原所有者保责。这种回调内的有限来源核验不保存目的地、页面历史或导航镜像，也不能用于重放失败动作。
 
@@ -159,13 +159,15 @@ requestClose 同步封准入、取消并唤醒等待，close 汇合自己拥有�
 
 SDK 各 Repository 是当前领域态唯一 Dart writer；FRB 只映射和转发，ViewModel 从不可变快照派生 UI 词汇，不二次归约 LiveDelta，不将 snapshot 拆为伪事件。execution、authoring、configuration、metrics、context 有各自版本，不能用指标全局版本触发历史、配置或输入区重建。
 
-完成历史不是 SDK 当前态缓存。完成页/事件由唯一 Flutter TimelinePresentationOwner 接纳，Message 与 Model 共享相同原子引用；SDK 仅保留有界未交付批次。分页 cursor、连续完成 cursor、当前请求 generation、在途/错误、分组与展开/滚动意图是必要呈现状态，不保留 coverage/page proof/字段修订/通用重排账本。两端分组与 Flyer 公共操作遵循 [26](./26-timeline-content.md)。
+完成历史不是 SDK 当前态缓存。完成页/事件由唯一 Flutter TimelinePresentationOwner 接纳，Message 与 Model 共享相同原子引用；SDK 仅保留有界未交付批次。分页 cursor、连续完成 cursor、当前请求 generation、在途/错误、分组与展开/滚动意图是必要呈现状态，不保留 coverage/page proof/字段修订/通用重排账本。两端分组与组件公开操作遵循 [26](./26-timeline-content.md)。
 
 问答、Plan 和媒体由 Rust typed 冻结载荷投影；View 不解析 raw JSON，不通过当前交互队列补历史。图片资源 owner 复用同一附件的在途/成功读取，按已加载原子引用计数，不因惰性卸载或折叠误释放；最后引用退出或呈现代次释放后回收。迟到读取只归原 scope，不填回新代次。大二进制不进 ViewState。
 
 ChatController、焦点、滚动、feed、任务、permit、附件和操作票据由创建它们的资源 owner 持有，不进入 Freezed 状态；普通不可变文本可共享引用。纯 View 仅接 props、typed callback 与 UI-only controller，Flutter 官方组件及成熟三方优先，不为领域适配再加无职责 Manager/Facade。
 
 轮次、目录与命令仍按各自权威版本收敛；updatedAt 不替代版本，线程身份不被会话快照反写。历史原子发布后无 revision/saved/lifecycle 合并，后续费用校准、消费绑定和任务状态由实时领域表达。
+
+继续操作的结果未知时，原操作身份、目标继续点和首次冻结的路由修订共同构成同一待确认意图。只读回查不受后续执行阻塞影响；明确查无此操作后，重新核对访问、关闭、执行与存储准入，只有允许时才以原身份和原输入发送，不重新分配身份或采纳后来点击传入的路由值。暂时阻塞不删除该待确认意图；下次显式尝试仍先回查。结果未定期间保留有界的规范状态观察及其关闭责任，既不能遗漏先于回执到达的事实，也不能把同步重入变成第二次回查或发送。
 
 ## 25.7 命令、观察屏障与变更看板（MutationBoard）
 
@@ -361,7 +363,7 @@ conversation 与 drafts 分别维护 SDK domain 不可变值/typed 端口和 dat
 
 五域 execution、authoring、configuration、metrics、context 是所有权和恢复边界，不要求五个 Session 或五条连接。共享 owner 可协调连接和提交，但不另存一份可写全量镜像。查询通过独立 scope，完成批次注入单个 presentation consumer；transport 和 ACK 只由 feed owner 管理，见 [07](./07-streaming.md)。
 
-生成式 AsyncNotifier/Freezed 保持 ViewModel→Connector→View，ViewState 使用 UI 词汇而不保存资源；Connector 绑定现有 owner 的只读投影，纯 View 不读业务 Provider/Repository/生成代码。TimelinePresentationOwner 持唯一已加载原子引用与 Flyer controller，仅执行 [26](./26-timeline-content.md) 的边界分组。状态栏读取 SDK 已提交当前态，不重复应用原始帧。
+生成式 AsyncNotifier/Freezed 保持 ViewModel→Connector→View，ViewState 使用 UI 词汇而不保存资源；Connector 绑定现有 owner 的只读投影，纯 View 不读业务 Provider/Repository/生成代码。TimelinePresentationOwner 持唯一已加载原子引用与展示控制器，仅执行 [26](./26-timeline-content.md) 的边界分组。状态栏读取 SDK 已提交当前态，不重复应用原始帧。
 
 导航所有者从已提交页面身份声明可见租约，设置页不因 selection 改变开启隐藏内容；草稿、已受理操作和后台执行不随页面销毁而终止。读取/关闭失败保留原责任，短暂 observer 重建不释放仍有 owner 的展示资源。
 
