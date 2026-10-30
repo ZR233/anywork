@@ -329,6 +329,11 @@ async fn archive_queued_submit_lost_claim_drains_retention_before_releasing_draf
         .join(hex::encode(Sha256::digest(inbound.message_id.as_bytes())))
         .join(hex::encode(Sha256::digest(b"local-resource-key")))
         .join("file-resource.txt");
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        assert!(destination.as_os_str().encode_wide().count() > 260);
+    }
     // Keep download unblocked; the separate root-keyed gate below is inside the
     // real queued-submit retention worker, after resource temp creation.
     let download = FileGate::new(destination.clone(), FileStage::Persist);

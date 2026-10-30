@@ -142,6 +142,10 @@ impl FeishuHttp {
             .parent()
             .ok_or_else(|| resource_io("resource parent missing"))?
             .to_owned();
+        let filename = destination
+            .file_name()
+            .ok_or_else(|| resource_io("resource filename missing"))?
+            .to_owned();
         if cancel.is_cancelled() {
             return Err(resource_cancelled());
         }
@@ -151,7 +155,7 @@ impl FeishuHttp {
         let setup_control = control.clone();
         #[cfg(test)]
         let setup_destination = destination.to_owned();
-        let temporary = tokio::task::spawn_blocking(move || {
+        let (temporary, native_destination) = tokio::task::spawn_blocking(move || {
             std::fs::create_dir_all(&parent)?;
             #[cfg(test)]
             let _operation = setup_control.as_ref().and_then(|control| {
@@ -159,7 +163,12 @@ impl FeishuHttp {
                     .gate
                     .enter(resource_tests::FileStage::Setup, &setup_destination)
             });
-            tempfile::NamedTempFile::new_in(parent)
+            // Keep native Win32 spelling inside the owned IO operation; callers and gates
+            // continue to identify this resource by the original logical destination.
+            let parent = std::fs::canonicalize(parent)?;
+            let native_destination = parent.join(filename);
+            let temporary = tempfile::NamedTempFile::new_in(parent)?;
+            Ok::<_, std::io::Error>((temporary, native_destination))
         })
         .await
         .map_err(resource_io)?
@@ -209,6 +218,7 @@ impl FeishuHttp {
         if cancel.is_cancelled() {
             return Err(resource_cancelled());
         }
+        #[cfg(test)]
         let destination = destination.to_owned();
         tokio::task::spawn_blocking(move || {
             #[cfg(test)]
@@ -217,7 +227,7 @@ impl FeishuHttp {
                     .gate
                     .enter(resource_tests::FileStage::Persist, &destination)
             });
-            temporary.persist(destination)
+            temporary.persist(native_destination)
         })
         .await
         .map_err(resource_io)?
