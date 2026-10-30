@@ -21,6 +21,8 @@ const HISTORY_SCHEMA_VERSION: i64 = 10;
 mod checkpoint;
 pub(crate) use checkpoint::SessionAccounting;
 #[cfg(test)]
+mod future_size_tests;
+#[cfg(test)]
 #[path = "history/legacy_usage.rs"]
 pub(super) mod legacy_usage;
 mod parent_report;
@@ -358,10 +360,13 @@ impl HistoryStore {
         {
             return Ok(None);
         }
-        let writer =
-            self.state
-                .writer
-                .get_or_try_init(|| async {
+        let writer = self
+            .state
+            .writer
+            // Only cold initialization allocates: keep the migrator's state out of every
+            // writer/reader/activation caller without spawning or changing cancellation.
+            .get_or_try_init(|| {
+                Box::pin(async {
                     schema::inspect_existing(&self.state.path, &self.state.thread_id).await?;
                     let parent = self
                         .state
@@ -394,7 +399,8 @@ impl HistoryStore {
                         schema_version,
                     })
                 })
-                .await?;
+            })
+            .await?;
         Ok(Some(writer))
     }
 

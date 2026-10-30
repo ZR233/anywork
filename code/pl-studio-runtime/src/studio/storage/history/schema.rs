@@ -9,10 +9,14 @@ use sea_orm_migration::{DbErr, MigrationName, MigrationTrait, MigratorTraitSelf,
 
 struct Migrator {
     thread_id: String,
-    execution_identity: Option<(
-        pl_core::thread::ThreadCheckpoint,
-        pl_core::thread::ThreadCheckpoint,
-    )>,
+    // Immutable recovery candidates are shared by the migrator's repeated pending-step queries.
+    // An inline pair also bloats content-only preparation, even when this option is None.
+    execution_identity: Option<
+        std::sync::Arc<(
+            pl_core::thread::ThreadCheckpoint,
+            pl_core::thread::ThreadCheckpoint,
+        )>,
+    >,
 }
 
 impl MigratorTraitSelf for Migrator {
@@ -91,10 +95,12 @@ pub(super) async fn prepare(
     db: &DatabaseConnection,
     thread_id: &str,
     phase: Preparation,
-    execution_identity: Option<(
-        pl_core::thread::ThreadCheckpoint,
-        pl_core::thread::ThreadCheckpoint,
-    )>,
+    execution_identity: Option<
+        std::sync::Arc<(
+            pl_core::thread::ThreadCheckpoint,
+            pl_core::thread::ThreadCheckpoint,
+        )>,
+    >,
 ) -> Result<()> {
     preflight(db, thread_id)
         .await
@@ -768,10 +774,12 @@ impl MigrationTrait for WorkspaceReceipt {
 
 struct ExecutionIdentity {
     thread_id: String,
-    candidate: Option<(
-        pl_core::thread::ThreadCheckpoint,
-        pl_core::thread::ThreadCheckpoint,
-    )>,
+    candidate: Option<
+        std::sync::Arc<(
+            pl_core::thread::ThreadCheckpoint,
+            pl_core::thread::ThreadCheckpoint,
+        )>,
+    >,
 }
 impl MigrationName for ExecutionIdentity {
     fn name(&self) -> &str {
@@ -784,7 +792,7 @@ impl MigrationTrait for ExecutionIdentity {
         Some(true)
     }
     async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
-        let (original, migrated) = self.candidate.as_ref().ok_or_else(|| {
+        let (original, migrated) = self.candidate.as_deref().ok_or_else(|| {
             DbErr::Migration("execution identity requires explicit recovery preparation".into())
         })?;
         let db = manager.get_connection();
