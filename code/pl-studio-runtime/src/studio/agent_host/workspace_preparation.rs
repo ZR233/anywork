@@ -46,6 +46,17 @@ pub(in crate::studio) async fn prepare_workspace(
     ssh_manager: &Arc<pl_tool::remote::SshManager>,
     request: WorkspacePreparation<'_>,
 ) -> Result<(AgentWorkspaceAssignmentSnapshot, Option<PreparedWorktree>)> {
+    request
+        .store
+        .begin_thread_preparation(
+            crate::studio::store::thread_preparation::PreparationIdentity {
+                thread_id: request.child_id.to_owned(),
+                workspace_id: request.project.id.clone(),
+                parent_id: Some(request.root_thread_id.to_owned()),
+                root_id: request.root_thread_id.to_owned(),
+            },
+        )
+        .await?;
     let project_root = request.project_root;
     let session_root = request.session_root;
     let child_id = request.child_id.to_owned();
@@ -171,6 +182,10 @@ pub(in crate::studio) async fn prepare_workspace(
             worktrees.assign_workspace(request.usage, identity.clone())?;
             request
                 .store
+                .bind_thread_preparation(&child_id, &identity)
+                .await?;
+            request
+                .store
                 .bind_workspace_identity(&child_id, &identity)
                 .await?;
             // 远端 lease 的仓库根与 worktree 路径必须记录为 POSIX：会话工作区根、workspace
@@ -242,6 +257,10 @@ pub(in crate::studio) async fn prepare_workspace(
         )
         .await?;
         worktrees.assign_workspace(request.usage, identity.clone())?;
+        request
+            .store
+            .bind_thread_preparation(&child_id, &identity)
+            .await?;
         request
             .store
             .bind_workspace_identity(&child_id, &identity)
@@ -394,6 +413,16 @@ where
     F: Fn(pl_protocol::studio::ThreadPreparationStage, Option<&str>, Option<&str>) + Send + Sync,
 {
     use pl_protocol::studio::ThreadPreparationStage;
+    store
+        .begin_thread_preparation(
+            crate::studio::store::thread_preparation::PreparationIdentity {
+                thread_id: thread_id.into(),
+                workspace_id: project.id.clone(),
+                parent_id: None,
+                root_id: thread_id.into(),
+            },
+        )
+        .await?;
     let usage = worktrees
         .reserve_project_workspace(thread_id, ssh_manager, project)
         .await?;
@@ -445,6 +474,7 @@ where
     };
     let identity = WorkspaceIdentity::canonical(endpoint, durable.path.clone())?;
     worktrees.assign_workspace(&usage, identity.clone())?;
+    store.bind_thread_preparation(thread_id, &identity).await?;
     store.bind_workspace_identity(thread_id, &identity).await?;
     prepare_repository_worktree_pool(
         ssh_manager,

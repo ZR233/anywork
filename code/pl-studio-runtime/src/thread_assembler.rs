@@ -437,6 +437,25 @@ impl StudioThreadAssembler {
             return Err(ThreadAssemblyError::ChildDepth);
         }
         spec.tools.append(&mut spec.agent_controls);
+        if spec.model_available {
+            let services = { self.0.state().agent_services.clone() };
+            if let Some(services) = services {
+                let record = services.record(&spec.id).await.map_err(|source| {
+                    ThreadAssemblyError::Resource {
+                        operation: "resolve model archive admission",
+                        source: source.into_boxed_dyn_error(),
+                    }
+                })?;
+                services
+                    .store
+                    .ensure_archive_execution_allowed(&record.workspace_id, Some(&spec.id))
+                    .await
+                    .map_err(|source| ThreadAssemblyError::Resource {
+                        operation: "model archive admission",
+                        source: source.into_boxed_dyn_error(),
+                    })?;
+            }
+        }
         // Model opening is still owned by the managed preparation, including the unpublished
         // use. If it fails, install a cleanup-only Thread so every allocated tool is closed/joined.
         // Successful restoration keeps core's normal model-at-resume contract for pending inputs.
@@ -457,6 +476,7 @@ impl StudioThreadAssembler {
                 None,
             )
         };
+        let is_root = spec.parent_id.is_none();
         self.0.state().entries.insert(
             spec.id.clone(),
             Entry {
@@ -500,7 +520,7 @@ impl StudioThreadAssembler {
                 return Err(error);
             }
             if let Some(store) = spec.cold_store {
-                thread.attach_storage(store).await?;
+                self.attach_execution_storage(&spec.id, store).await?;
             }
             if !spec.initial_extensions.is_empty() {
                 thread
@@ -555,7 +575,14 @@ impl StudioThreadAssembler {
             }
             match thread.close().await {
                 Ok(()) => {
-                    if let Err(cleanup) = self.drain_observation(&spec.id).await {
+                    let settled = async {
+                        self.drain_observation(&spec.id).await?;
+                        self.join_close_storage(&spec.id).await?;
+                        self.confirm_preparation_close(&spec.id, is_root).await?;
+                        Ok::<(), ThreadAssemblyError>(())
+                    }
+                    .await;
+                    if let Err(cleanup) = settled {
                         return Err(ThreadAssemblyError::Cleanup {
                             id: spec.id,
                             setup: Box::new(setup),
@@ -574,6 +601,29 @@ impl StudioThreadAssembler {
                 }
             }
             return Err(setup);
+        }
+        if is_root {
+            let services = { self.0.state().agent_services.clone() };
+            if let Some(services) = services
+                && services
+                    .store
+                    .thread_preparation(&spec.id)
+                    .await
+                    .map_err(|source| ThreadAssemblyError::Resource {
+                        operation: "read root preparation publication",
+                        source: source.into_boxed_dyn_error(),
+                    })?
+                    .is_some()
+            {
+                services
+                    .store
+                    .publish_preparation(&spec.id)
+                    .await
+                    .map_err(|source| ThreadAssemblyError::Resource {
+                        operation: "confirm root preparation publication",
+                        source: source.into_boxed_dyn_error(),
+                    })?;
+            }
         }
         Ok(thread)
     }
@@ -1008,12 +1058,15 @@ impl StudioThreadAssembler {
         }
         if self.close_storage_binding(id)?.is_some() {
             self.close_storage_core(id).await?;
-        } else if thread.snapshot().lifecycle != ThreadLifecycle::Closed {
-            let closed = thread.close().await;
-            if let Err(error) = closed
-                && thread.snapshot().lifecycle != ThreadLifecycle::Closed
-            {
-                return Err(error.into());
+        } else {
+            match thread.close().await {
+                Ok(()) => {}
+                Err(ThreadError::Closed)
+                    if thread.snapshot().lifecycle == ThreadLifecycle::Closed =>
+                {
+                    thread.flush().await?;
+                }
+                Err(error) => return Err(error.into()),
             }
         }
         if self.0.state().observation.is_some() {
@@ -1041,6 +1094,8 @@ impl StudioThreadAssembler {
         self.drain_observation(id).await?;
         self.join_close_storage(id).await?;
         self.close_published_resources(id, &incarnation).await?;
+        let retired = !self.0.state().unpublished_children.contains_key(id);
+        self.confirm_preparation_close(id, retired).await?;
         let removed = {
             let mut state = self.0.state();
             if state

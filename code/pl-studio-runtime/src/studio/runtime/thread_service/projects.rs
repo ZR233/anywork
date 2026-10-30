@@ -351,13 +351,23 @@ impl StudioRuntime {
             }
         }
         let scope = self.threads.seal_archive_scope(&roots)?;
+        let admitted = scope.preparation_identities(workspace_id);
         let mut admitted_ids = scope.thread_ids();
         admitted_ids.extend(threads.iter().map(|thread| thread.id.clone()));
         admitted_ids.sort();
         admitted_ids.dedup();
         let _pins = self.residency.pin_many(admitted_ids.iter().cloned());
-        self.freeze_thread_archive(ArchiveScope::Workspace(workspace_id.into()), &threads)
+        let frozen = self
+            .freeze_thread_archive(
+                ArchiveScope::Workspace(workspace_id.into()),
+                &threads,
+                &admitted,
+            )
             .await?;
+        admitted_ids.extend(frozen.thread_ids());
+        admitted_ids.sort();
+        admitted_ids.dedup();
+        let _bot_archive = self.bots.quiesce_archive_threads(&admitted_ids).await?;
         for id in &admitted_ids {
             self.title_tasks
                 .cancel(id, ThreadTitleCancellationCause::ProjectArchive)
@@ -396,7 +406,11 @@ impl StudioRuntime {
             }
         }
         let mut archive = self
-            .freeze_thread_archive(ArchiveScope::Workspace(workspace_id.into()), &threads)
+            .freeze_thread_archive(
+                ArchiveScope::Workspace(workspace_id.into()),
+                &threads,
+                &admitted,
+            )
             .await?;
         for thread_id in &thread_ids {
             self.title_tasks
@@ -404,6 +418,7 @@ impl StudioRuntime {
                 .await;
         }
         self.retire_archived_thread_tree(&thread_ids).await?;
+        self.retire_private_archive_members(&mut archive).await?;
         self.archive_save_confirmed(&mut archive).await?;
         self.clean_archive_temps(&mut archive).await?;
         self.agent_facility

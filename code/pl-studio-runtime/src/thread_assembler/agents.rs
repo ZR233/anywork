@@ -211,6 +211,24 @@ impl AgentHost {
             .map_err(ToolError::new)?;
         Self::ensure_archive_execution_admission(&owner, &context.thread_id).await?;
         let (factory, reservation) = owner.reserve_child(&context).map_err(ToolError::new)?;
+        if let Some(services) = { owner.0.state().agent_services.clone() } {
+            let parent = services
+                .record(&context.thread_id)
+                .await
+                .map_err(|error| ToolError::new(super::agent_services::ServiceError(error)))?;
+            services
+                .store
+                .begin_thread_preparation(
+                    crate::studio::store::thread_preparation::PreparationIdentity {
+                        thread_id: reservation.id.clone(),
+                        workspace_id: parent.workspace_id,
+                        parent_id: Some(context.thread_id.clone()),
+                        root_id: parent.root_thread_id,
+                    },
+                )
+                .await
+                .map_err(|error| ToolError::new(super::agent_services::ServiceError(error)))?;
+        }
         if request.review_target_agent_id.as_deref() == Some(context.thread_id.as_str()) {
             return Err(ToolError::new(ThreadAssemblyError::ReviewTargetInvalid(
                 context.thread_id.clone(),
@@ -382,9 +400,20 @@ impl AgentHost {
             )
             .await);
         }
-        let _operation = owner.agent_operation(&id).await;
+        let operation = owner.agent_operation(&id).await;
         if let Err(error) = owner.publish_child_resources(&id) {
+            // Retained disposal acquires this same identity's permit. Never join it while
+            // holding the publication permit (the caller also owns the root spawn permit).
+            drop(operation);
             return Err(cleanup_spawn_failure(&owner, &id, error).await);
+        }
+        let _operation = operation;
+        if let Some(services) = { owner.0.state().agent_services.clone() } {
+            services
+                .store
+                .publish_preparation(&id)
+                .await
+                .map_err(|error| ToolError::new(super::agent_services::ServiceError(error)))?;
         }
         let message = pl_core::thread::inbox::ThreadMessage {
             kind: pl_core::context::AgentMessageKind::Task,

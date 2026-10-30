@@ -53,6 +53,7 @@ pub trait StudioChildFactory: Send + Sync + std::fmt::Debug + 'static {
         &self,
         id: &str,
         usage: Option<&super::WorkspaceUsageLease>,
+        disposition: WorkspaceRelease,
     ) -> impl Future<Output = Result<(), ThreadAssemblyError>> + Send;
 }
 
@@ -85,6 +86,7 @@ pub trait StudioChildResources: Send + Sync + std::fmt::Debug + 'static {
         &self,
         id: &str,
         usage: Option<&super::WorkspaceUsageLease>,
+        disposition: WorkspaceRelease,
     ) -> impl Future<Output = Result<(), ThreadAssemblyError>> + Send;
 }
 
@@ -123,8 +125,9 @@ impl<R: StudioChildResources> StudioChildFactory for ConfiguredChildFactory<R> {
         &self,
         id: &str,
         usage: Option<&super::WorkspaceUsageLease>,
+        disposition: WorkspaceRelease,
     ) -> impl Future<Output = Result<(), ThreadAssemblyError>> + Send {
-        self.resources.discard_unpublished(id, usage)
+        self.resources.discard_unpublished(id, usage, disposition)
     }
 
     async fn prepare(
@@ -199,6 +202,7 @@ trait ErasedFactory: Send + Sync + std::fmt::Debug {
         &'a self,
         id: &'a str,
         usage: Option<&'a super::WorkspaceUsageLease>,
+        disposition: WorkspaceRelease,
     ) -> BoxFuture<'a, Result<(), ThreadAssemblyError>>;
     fn prepare(
         &self,
@@ -218,8 +222,14 @@ impl<T: StudioChildFactory> ErasedFactory for T {
         &'a self,
         id: &'a str,
         usage: Option<&'a super::WorkspaceUsageLease>,
+        disposition: WorkspaceRelease,
     ) -> BoxFuture<'a, Result<(), ThreadAssemblyError>> {
-        Box::pin(StudioChildFactory::discard_unpublished(self, id, usage))
+        Box::pin(StudioChildFactory::discard_unpublished(
+            self,
+            id,
+            usage,
+            disposition,
+        ))
     }
     fn prepare(
         &self,
@@ -244,8 +254,9 @@ impl ChildFactory {
         &self,
         id: &str,
         usage: Option<&super::WorkspaceUsageLease>,
+        disposition: WorkspaceRelease,
     ) -> Result<(), ThreadAssemblyError> {
-        self.0.discard_unpublished(id, usage).await
+        self.0.discard_unpublished(id, usage, disposition).await
     }
     pub(super) fn new(factory: impl StudioChildFactory) -> Self {
         Self(Arc::new(factory))
@@ -347,6 +358,7 @@ impl super::StudioThreadAssembler {
         state.unpublished_children.insert(
             id.clone(),
             UnpublishedChild {
+                retirement: Default::default(),
                 workspace: Default::default(),
                 disposal: Default::default(),
                 parent: context.thread_id.clone(),

@@ -84,6 +84,8 @@ type DisposalTask =
 
 #[derive(Debug, Clone)]
 pub(super) struct UnpublishedChild {
+    pub(super) retirement:
+        Arc<std::sync::Mutex<Option<pl_tool::collaboration::thread::WorkspaceRelease>>>,
     pub(super) workspace: WorkspacePreparationOwner,
     pub(super) parent: String,
     pub(super) factory: ChildFactory,
@@ -169,19 +171,72 @@ impl super::StudioThreadAssembler {
         // permit. close_thread consumes that permit and may release it while joining producers.
         let operation = self.agent_operation(id).await;
         self.close_thread(id, operation).await?;
+        let services = { self.0.state().agent_services.clone() };
+        if let Some(services) = &services
+            && services
+                .store
+                .thread_preparation(id)
+                .await
+                .map_err(retirement_error)?
+                .is_some()
+        {
+            services
+                .store
+                .confirm_preparation_stop(id)
+                .await
+                .map_err(retirement_error)?;
+        }
+        let disposition = {
+            let _state = self.0.state();
+            let mut retirement = pending
+                .retirement
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let disposition =
+                retirement.unwrap_or(pl_tool::collaboration::thread::WorkspaceRelease::Cleanup);
+            *retirement = Some(disposition);
+            disposition
+        };
         let usage = pending.workspace.take();
         if let Err(error) = pending
             .factory
-            .discard_unpublished(id, usage.as_ref())
+            .discard_unpublished(id, usage.as_ref(), disposition)
             .await
         {
             if let Some(usage) = &usage {
                 pending.workspace.retain(usage);
             }
+            if disposition == pl_tool::collaboration::thread::WorkspaceRelease::Cleanup {
+                *pending
+                    .retirement
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+            }
             return Err(error);
+        }
+        if let Some(services) = services
+            && services
+                .store
+                .thread_preparation(id)
+                .await
+                .map_err(retirement_error)?
+                .is_some()
+        {
+            services
+                .store
+                .confirm_preparation_retirement(id)
+                .await
+                .map_err(retirement_error)?;
         }
         let removed = { self.0.state().unpublished_children.remove(id) };
         drop(removed);
         Ok(())
+    }
+}
+
+fn retirement_error(source: anyhow::Error) -> ThreadAssemblyError {
+    ThreadAssemblyError::Resource {
+        operation: "confirm private preparation retirement",
+        source: source.into_boxed_dyn_error(),
     }
 }

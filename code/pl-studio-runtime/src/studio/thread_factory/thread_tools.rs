@@ -79,6 +79,10 @@ impl StudioThreadFactory {
             super::session_files::bind_thread_session_files(assembly.workspace, assembly.thread_id);
         if let Some(proof) = assembly.verified_local {
             proof
+                .confirm_admission()
+                .await
+                .map_err(|error| resource_error("restricted review archive admission", error))?;
+            proof
                 .check_inputs(
                     assembly.project,
                     assembly.assignment.ok_or_else(|| {
@@ -238,6 +242,22 @@ impl StudioThreadFactory {
             },
         }
         .map_err(Self::workspace_usage_error)?;
+        if self
+            .services
+            .store
+            .thread_preparation(thread_id)
+            .await
+            .map_err(|error| resource_error("read assembly binding owner", error))?
+            .is_some()
+        {
+            self.services
+                .store
+                .bind_thread_preparation(thread_id, &identity)
+                .await
+                .map_err(|error| {
+                    resource_error("fix assembly binding before session files", error)
+                })?;
+        }
         self.services
             .worktrees
             .assign_workspace(&workspace_usage, identity.clone())

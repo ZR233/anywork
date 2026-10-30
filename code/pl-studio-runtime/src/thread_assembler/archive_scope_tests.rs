@@ -102,6 +102,7 @@ impl StudioChildFactory for Disposal {
         &self,
         _: &str,
         _: Option<&crate::studio::WorkspaceUsageLease>,
+        _: pl_tool::collaboration::thread::WorkspaceRelease,
     ) -> Result<(), ThreadAssemblyError> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         if let Some((entered, release)) = &self.gate {
@@ -154,6 +155,7 @@ async fn archive_closure_keeps_unpublished_resources_until_the_real_disposal_ack
         state.unpublished_children.insert(
             "unpublished-grandchild".into(),
             UnpublishedChild {
+                retirement: Default::default(),
                 workspace: WorkspacePreparationOwner::default(),
                 parent: "creating-child".into(),
                 cleanup: Default::default(),
@@ -237,6 +239,7 @@ async fn archive_seal_racing_publication_cannot_release_the_unpublished_owner() 
         state.unpublished_children.insert(
             "child".into(),
             UnpublishedChild {
+                retirement: Default::default(),
                 workspace: Default::default(),
                 parent: "root".into(),
                 cleanup: Default::default(),
@@ -274,6 +277,7 @@ async fn cancelled_archive_waiter_rejoins_the_original_unpublished_disposal() {
     owner.0.state().unpublished_children.insert(
         "child".into(),
         UnpublishedChild {
+            retirement: Default::default(),
             workspace: Default::default(),
             parent: "root".into(),
             cleanup: Default::default(),

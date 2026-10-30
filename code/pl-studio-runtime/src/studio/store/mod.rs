@@ -21,6 +21,7 @@ pub(in crate::studio) mod session_layout;
 pub(in crate::studio) mod settings;
 mod thread;
 pub(in crate::studio) mod thread_archive;
+pub(crate) mod thread_preparation;
 pub(in crate::studio) mod workspaces;
 
 #[derive(Clone)]
@@ -100,7 +101,8 @@ impl StudioStore {
         thread_id: &str,
     ) -> anyhow::Result<pl_core::chat::Session> {
         let session = self.registered_session_paths(thread_id)?;
-        self.chat_session_for(session.workspace_id(), thread_id).await
+        self.chat_session_for(session.workspace_id(), thread_id)
+            .await
     }
 
     pub(crate) async fn chat_session_for(

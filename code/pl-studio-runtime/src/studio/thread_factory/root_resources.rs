@@ -112,6 +112,22 @@ impl StudioThreadFactory {
                 planned.to_string_lossy().into_owned(),
             )
             .map_err(Self::workspace_usage_error)?;
+            if self
+                .services
+                .store
+                .thread_preparation(thread_id)
+                .await
+                .map_err(|error| resource_error("read managed preparation owner", error))?
+                .is_some()
+            {
+                self.services
+                    .store
+                    .bind_thread_preparation(thread_id, &identity)
+                    .await
+                    .map_err(|error| {
+                        resource_error("fix managed execution binding before preparation", error)
+                    })?;
+            }
             if let Some(frozen) = self
                 .services
                 .store
@@ -199,6 +215,18 @@ impl StudioThreadFactory {
         } = request;
         let id = identity.id.as_str();
         let thread = self.thread_record(id).await?;
+        self.services
+            .store
+            .begin_thread_preparation(
+                crate::studio::store::thread_preparation::PreparationIdentity {
+                    thread_id: thread.id.clone(),
+                    workspace_id: thread.workspace_id.clone(),
+                    parent_id: None,
+                    root_id: thread.id.clone(),
+                },
+            )
+            .await
+            .map_err(|error| resource_error("record root assembly owner", error))?;
         if identity.parent_id.is_some() || thread.parent_thread_id.is_some() {
             return Err(ThreadAssemblyError::Identity(id.into()));
         }

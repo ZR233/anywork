@@ -420,6 +420,7 @@ impl StudioRuntime {
         let scope = self
             .threads
             .seal_archive_scope(std::slice::from_ref(&thread_id))?;
+        let admitted = scope.preparation_identities(&thread.workspace_id);
         let mut admitted_ids = scope.thread_ids();
         admitted_ids.extend(thread_tree.iter().map(|thread| thread.id.clone()));
         admitted_ids.sort();
@@ -434,8 +435,17 @@ impl StudioRuntime {
             })
             .or_else(|| root_index.is_none().then(|| roots.first()).flatten())
             .cloned();
-        self.freeze_thread_archive(ArchiveScope::Thread(thread_id.clone()), &thread_tree)
+        let frozen = self
+            .freeze_thread_archive(
+                ArchiveScope::Thread(thread_id.clone()),
+                &thread_tree,
+                &admitted,
+            )
             .await?;
+        admitted_ids.extend(frozen.thread_ids());
+        admitted_ids.sort();
+        admitted_ids.dedup();
+        let _bot_archive = self.bots.quiesce_archive_threads(&admitted_ids).await?;
         for id in &admitted_ids {
             self.title_tasks
                 .cancel(id, ThreadTitleCancellationCause::ThreadArchive)
@@ -463,7 +473,11 @@ impl StudioRuntime {
         // A preparation may have durably published just before the registry seal. Preserve its
         // original physical binding before any deletion; unpublished failures were joined above.
         let mut archive = self
-            .freeze_thread_archive(ArchiveScope::Thread(thread_id.clone()), &settled_tree)
+            .freeze_thread_archive(
+                ArchiveScope::Thread(thread_id.clone()),
+                &settled_tree,
+                &admitted,
+            )
             .await?;
         let removed_thread_ids = settled_tree
             .iter()
@@ -472,6 +486,7 @@ impl StudioRuntime {
         // 关闭与保存不得探测或清理物理工作树；目录归档只在整棵树关闭成功后发布。
         self.retire_archived_thread_tree(&removed_thread_ids)
             .await?;
+        self.retire_private_archive_members(&mut archive).await?;
         self.archive_save_confirmed(&mut archive).await?;
         self.clean_archive_temps(&mut archive).await?;
         let committed = self
@@ -630,6 +645,18 @@ impl StudioRuntime {
     }
 
     pub(super) async fn retire_archived_thread_tree(&self, thread_ids: &[String]) -> Result<()> {
+        for id in thread_ids {
+            if self.threads.observed_thread(id).is_none() {
+                if self.store.thread_preparation(id).await?.is_some_and(|record|
+                    !record.published && record.stopped && record.retired
+                        && record.save == crate::studio::store::thread_preparation::PreparationSave::Unattached)
+                {
+                    continue;
+                }
+                let record = self.read_protocol_thread(id).await?;
+                self.threads.ensure_archive_storage_owner(&record).await?;
+            }
+        }
         self.close_project_agent_trees(thread_ids).await?;
         for thread_id in thread_ids {
             self.residency.remove(thread_id).await;

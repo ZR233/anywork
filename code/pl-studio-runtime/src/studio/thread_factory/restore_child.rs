@@ -28,6 +28,11 @@ impl StudioThreadFactory {
             .await
             .map_err(|error| resource_error("check child retirement intent", error))?;
         let thread = self.thread_record(id).await?;
+        self.services
+            .store
+            .ensure_archive_execution_allowed(&thread.workspace_id, Some(id))
+            .await
+            .map_err(|error| resource_error("restore child archive admission", error))?;
         if thread.parent_thread_id != request.identity.parent_id
             || thread.parent_thread_id.is_none()
         {

@@ -26,6 +26,18 @@ impl StudioChildResources for StudioThreadFactory {
             .thread_snapshot(&request.caller)
             .map(ThreadRecord::from_directory_thread)
             .ok_or_else(|| ThreadAssemblyError::Identity(request.caller.clone()))?;
+        self.services
+            .store
+            .begin_thread_preparation(
+                crate::studio::store::thread_preparation::PreparationIdentity {
+                    thread_id: request.id.clone(),
+                    workspace_id: parent.workspace_id.clone(),
+                    parent_id: Some(parent.id.clone()),
+                    root_id: parent.root_thread_id.clone(),
+                },
+            )
+            .await
+            .map_err(|error| resource_error("record private assembly owner", error))?;
         let mut project = self
             .services
             .product_events
@@ -388,10 +400,15 @@ impl StudioChildResources for StudioThreadFactory {
         &self,
         id: &str,
         usage: Option<&crate::studio::WorkspaceUsageLease>,
+        disposition: pl_tool::collaboration::thread::WorkspaceRelease,
     ) -> Result<(), ThreadAssemblyError> {
-        self.discard_prepared_workspace(id, usage)
-            .await
-            .map_err(|error| resource_error("discard unpublished assigned resources", error))?;
+        if disposition == pl_tool::collaboration::thread::WorkspaceRelease::Preserve {
+            StudioChildResources::close_published(self, id, disposition).await?;
+        } else {
+            self.discard_prepared_workspace(id, usage)
+                .await
+                .map_err(|error| resource_error("discard unpublished assigned resources", error))?;
+        }
         if self.services.product_events.thread_snapshot(id).is_some() {
             self.services
                 .product_events
@@ -399,6 +416,46 @@ impl StudioChildResources for StudioThreadFactory {
                 .await
                 .map_err(|error| resource_error("record abandoned child", error))?;
         }
+        Ok(())
+    }
+}
+
+impl StudioThreadFactory {
+    pub(crate) async fn retire_archive_preparation(
+        &self,
+        record: &crate::studio::store::thread_preparation::ThreadPreparationRecord,
+    ) -> Result<(), ThreadAssemblyError> {
+        use crate::studio::store::thread_preparation::{PreparationBinding, PreparationSave};
+        if !record.stopped || record.save == PreparationSave::Required || record.published {
+            return Err(ThreadAssemblyError::Identity(
+                "private archive has no original stop/save ACK".into(),
+            ));
+        }
+        if let Some(lease) = self.services.worktrees.get(&record.identity.thread_id) {
+            match &record.binding {
+                PreparationBinding::Bound { identity } if identity.matches_root(&lease.path) => {}
+                _ => {
+                    return Err(ThreadAssemblyError::Identity(
+                        "private worktree binding is unconfirmed".into(),
+                    ));
+                }
+            }
+        }
+        StudioChildResources::discard_unpublished(
+            self,
+            &record.identity.thread_id,
+            None,
+            pl_tool::collaboration::thread::WorkspaceRelease::Preserve,
+        )
+        .await?;
+        self.services
+            .store
+            .confirm_preparation_retirement(&record.identity.thread_id)
+            .await
+            .map_err(|error| resource_error("confirm private archive resources", error))?;
+        self.services
+            .worktrees
+            .release_stopped_runtime_resources(&record.identity.thread_id);
         Ok(())
     }
 }

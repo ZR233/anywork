@@ -123,12 +123,28 @@ impl StudioThreadAssembler {
         Ok(())
     }
     pub(super) fn publish_observation(&self, id: &str, thread: &ThreadHandle) {
-        let observer = self.0.state().observation.clone();
+        let observer = {
+            let mut state = self.0.state();
+            if let Some(super::CloseStorage::Execution {
+                observation_installed,
+                ..
+            }) = state
+                .entries
+                .get_mut(id)
+                .and_then(|entry| entry.close_storage.as_mut())
+            {
+                *observation_installed = true;
+            }
+            state.observation.clone()
+        };
         if let Some(observer) = observer {
             (observer.0)(id.to_owned(), thread.clone());
         }
     }
     pub(super) async fn drain_observation(&self, id: &str) -> Result<(), ThreadAssemblyError> {
+        if self.execution_observation_was_not_installed(id) {
+            return Ok(());
+        }
         let observer = self.0.state().observation.clone();
         if let Some(observer) = observer {
             let result = (observer.1)(id.to_owned()).await;
@@ -143,6 +159,9 @@ impl StudioThreadAssembler {
         &self,
         id: &str,
     ) -> Result<(), ThreadAssemblyError> {
+        if self.execution_observation_was_not_installed(id) {
+            return Ok(());
+        }
         let observer = self
             .0
             .state()
@@ -150,6 +169,20 @@ impl StudioThreadAssembler {
             .clone()
             .ok_or(ThreadAssemblyError::Closed)?;
         (observer.4)(id.to_owned()).await
+    }
+
+    fn execution_observation_was_not_installed(&self, id: &str) -> bool {
+        let state = self.0.state();
+        matches!(
+            state
+                .entries
+                .get(id)
+                .and_then(|entry| entry.close_storage.as_ref()),
+            Some(super::CloseStorage::Execution {
+                observation_installed: false,
+                ..
+            })
+        )
     }
 
     /// Bind close completion to each actual terminal effect's original report ID and the
@@ -557,6 +590,7 @@ mod storage_fault_tests {
             &self,
             _: &str,
             _: Option<&WorkspaceUsageLease>,
+            _: WorkspaceRelease,
         ) -> Result<(), ThreadAssemblyError> {
             Ok(())
         }
@@ -754,11 +788,17 @@ mod storage_fault_tests {
                 &self,
                 id: &str,
                 usage: Option<&WorkspaceUsageLease>,
+                disposition: WorkspaceRelease,
             ) -> Result<(), ThreadAssemblyError> {
                 self.entered.send_replace(true);
                 let _permit = self.release.acquire().await.map_err(storage_error)?;
-                super::super::StudioChildResources::discard_unpublished(&self.factory, id, usage)
-                    .await
+                super::super::StudioChildResources::discard_unpublished(
+                    &self.factory,
+                    id,
+                    usage,
+                    disposition,
+                )
+                .await
             }
         }
         let temp = tempfile::tempdir()?;
@@ -775,6 +815,7 @@ mod storage_fault_tests {
         owner.0.state().unpublished_children.insert(
             "unpublished-directory".into(),
             super::super::child_resources::UnpublishedChild {
+                retirement: Default::default(),
                 workspace: preparation,
                 disposal: Default::default(),
                 parent: "parent".into(),
