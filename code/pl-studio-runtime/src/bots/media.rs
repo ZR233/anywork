@@ -28,8 +28,7 @@ impl BotRuntime {
             .paths
             .bot_dir(bot_id)
             .join("workspace")
-            .join(pl_tool::workspace::SessionFiles::new(thread_id).root())
-            .join("uploads")
+            .join(pl_tool::workspace::SessionFiles::new(thread_id).uploads())
             .join(hex::encode(Sha256::digest(message_id.as_bytes())));
         let mut sources = Vec::new();
         for attachment in attachments {

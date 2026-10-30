@@ -4,6 +4,7 @@ use anyhow::{Context, Result, bail};
 
 use crate::studio::records::ThreadRecord;
 use crate::studio::store::directory::DirectoryDelta;
+use crate::studio::store::thread_archive::{ArchivePhase, ArchiveScope};
 
 use super::super::StudioRuntime;
 use super::super::thread_title::{
@@ -420,18 +421,18 @@ impl StudioRuntime {
         let _pins = self
             .residency
             .pin_many(thread_tree.iter().map(|thread| thread.id.clone()));
-        let root_index = roots
-            .iter()
-            .position(|candidate| candidate.id == thread_id)
-            .context("selected root Thread not found")?;
-        let next_root = roots
-            .get(root_index + 1)
-            .or_else(|| root_index.checked_sub(1).and_then(|index| roots.get(index)))
+        let root_index = roots.iter().position(|candidate| candidate.id == thread_id);
+        let next_root = root_index
+            .and_then(|index| {
+                roots
+                    .get(index + 1)
+                    .or_else(|| index.checked_sub(1).and_then(|index| roots.get(index)))
+            })
+            .or_else(|| root_index.is_none().then(|| roots.first()).flatten())
             .cloned();
         let removed_thread_ids = thread_tree
             .iter()
             .map(|candidate| candidate.id.clone())
-            .chain(std::iter::once(thread.id.clone()))
             .collect::<Vec<_>>();
         let _child_seals = self
             .threads
@@ -445,25 +446,28 @@ impl StudioRuntime {
             .await;
         let _root_seal = self.threads.seal_agent_operation(&thread_id);
         drop(root_operation);
+        let mut archive = self
+            .freeze_thread_archive(ArchiveScope::Thread(thread_id.clone()), &thread_tree)
+            .await?;
+        for id in &removed_thread_ids {
+            self.title_tasks
+                .cancel(id, ThreadTitleCancellationCause::ThreadArchive)
+                .await;
+        }
         // 归档先结束整棵树的活动工作（design/01 §1.4）：中断当前 Turn、丢弃未消费输入，
         // 再有界等待收束；无法结束时返回类型化失败并保留会话现场。
         self.end_thread_tree_work(&removed_thread_ids).await?;
         // 关闭与保存不得探测或清理物理工作树；目录归档只在整棵树关闭成功后发布。
         self.retire_archived_thread_tree(&removed_thread_ids)
             .await?;
+        self.archive_save_confirmed(&mut archive).await?;
+        self.clean_archive_temps(&mut archive).await?;
         let committed = self
             .agent_facility
             .product_events
             .commit_directory(DirectoryDelta::archive_threads(removed_thread_ids.clone()))
             .await?;
-        for removed_thread_id in &removed_thread_ids {
-            self.title_tasks
-                .cancel(
-                    removed_thread_id,
-                    ThreadTitleCancellationCause::ThreadArchive,
-                )
-                .await;
-        }
+        self.archive_published(&mut archive).await?;
         self.model_performance.remove_session(&thread.id).await?;
         Ok(Some(ArchiveThreadCommandReply {
             result: StudioArchiveThreadResult {
@@ -484,6 +488,11 @@ impl StudioRuntime {
     /// Restores an archived root and its descendants without executing historical work.
     pub async fn restore_thread(&self, thread_id: String) -> Result<ThreadRecord> {
         let _guard = self.lifecycle_lock.lock().await;
+        if let Some(root) = self.store.read_thread(&thread_id).await? {
+            self.store
+                .ensure_archive_execution_allowed(&root.workspace_id, Some(&thread_id))
+                .await?;
+        }
         let root = self.read_protocol_thread(&thread_id).await?;
         anyhow::ensure!(
             root.parent_thread_id.is_none(),
@@ -491,7 +500,9 @@ impl StudioRuntime {
         );
         let projects = self.agent_facility.product_events.project_snapshot().await;
         anyhow::ensure!(
-            projects.iter().any(|project| project.id == root.workspace_id),
+            projects
+                .iter()
+                .any(|project| project.id == root.workspace_id),
             "open the original Project before restoring its Threads"
         );
         if !root.archived {
@@ -626,6 +637,17 @@ impl StudioRuntime {
             self.store.list_root_threads_for_archive(root_thread_id),
             self.store.list_threads_for_archive(root_thread_id),
         )?;
+        if tree.is_empty()
+            && self
+                .store
+                .thread_archive(&ArchiveScope::Thread(root_thread_id.to_owned()))
+                .await?
+                .is_some_and(|operation| operation.phase != ArchivePhase::Published)
+        {
+            // Directory publication may have committed before its operation ACK. Retry the
+            // frozen responsibility from cold catalog facts without activating execution.
+            tree = self.store.read_directory_tree(root_thread_id).await?;
+        }
         for hot in self
             .agent_facility
             .product_events

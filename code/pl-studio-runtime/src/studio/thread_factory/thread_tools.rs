@@ -263,9 +263,8 @@ impl StudioThreadFactory {
             .map_err(|error| resource_error("resolve Python workspace", error))?
             .is_some()
         {
-            let path = root
-                .join(pl_tool::workspace::SessionFiles::new(thread_id).root())
-                .join(".venv");
+            let path =
+                root.join(pl_tool::workspace::SessionFiles::new(thread_id).python_environment());
             std::collections::BTreeMap::from([(
                 "UV_PROJECT_ENVIRONMENT".into(),
                 path.to_string_lossy().into_owned(),

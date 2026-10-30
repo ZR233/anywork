@@ -25,8 +25,8 @@ pub const WORKTREES_POOL: &str = ".anywork/worktrees";
 
 /// Prepares one Thread's execution-side directories through an existing file backend.
 ///
-/// Creates the sessions pool ignore (when missing), then this Thread's `scratch`,
-/// `artifacts`, and `commands` directories. Existing ignore files keep their bytes.
+/// Creates the sessions pool ignore (when missing), then this Thread's `temp`,
+/// `artifacts`, and `temp/commands` directories. Existing ignore files keep their bytes.
 ///
 /// # Errors
 /// Returns backend I/O or workspace-escape errors from the underlying file backend.

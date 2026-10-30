@@ -47,7 +47,12 @@ impl BotRuntime {
             .claim_thread_binding("workspace-chat", "workspace-creation", workspace_id)
             .await?;
         store
-            .bind_thread("workspace-chat", root_id, "workspace-creation", workspace_id)
+            .bind_thread(
+                "workspace-chat",
+                root_id,
+                "workspace-creation",
+                workspace_id,
+            )
             .await?;
         self.load().await
     }
@@ -148,7 +153,7 @@ impl BotRuntime {
         let target = root.join(files.root());
         let root_copy = root.clone();
         let owner = thread_id.to_owned();
-        tokio::task::spawn_blocking(move || {
+        let root = tokio::task::spawn_blocking(move || {
             migrate_owned_directory(
                 &source_container,
                 &source,
@@ -156,12 +161,19 @@ impl BotRuntime {
                 &target,
                 &owner,
             )?;
-            std::fs::create_dir_all(target.join("uploads"))?;
             dunce::canonicalize(root_copy)
         })
         .await
         .map_err(workspace_error)?
-        .map_err(workspace_error)
+        .map_err(workspace_error)?;
+        pl_tool::workspace::SessionTempBackend::Local(&root)
+            .migrate(&files)
+            .await
+            .map_err(workspace_error)?;
+        tokio::fs::create_dir_all(root.join(files.uploads()))
+            .await
+            .map_err(workspace_error)?;
+        Ok(root)
     }
 
     /// A newly dispatched identity has no old execution files to migrate or source to read.
@@ -172,12 +184,14 @@ impl BotRuntime {
     ) -> Result<std::path::PathBuf, FeishuError> {
         let root = self.workspace_root(config);
         let container = self.inner.paths.bot_dir(&config.id);
-        let target = root.join(pl_tool::workspace::SessionFiles::new(thread_id).root());
+        let files = pl_tool::workspace::SessionFiles::new(thread_id);
+        let target = root.join(files.root());
+        let uploads = root.join(files.uploads());
         let owner = thread_id.to_owned();
         tokio::task::spawn_blocking(move || -> std::io::Result<std::path::PathBuf> {
             pl_tool::workspace::path_safety::validate_path_for_write(&container, &target)
                 .map_err(std::io::Error::other)?;
-            std::fs::create_dir_all(target.join("uploads"))?;
+            std::fs::create_dir_all(uploads)?;
             let marker = target.join(".migration-complete");
             pl_tool::workspace::path_safety::validate_path_for_write(&container, &marker)
                 .map_err(std::io::Error::other)?;

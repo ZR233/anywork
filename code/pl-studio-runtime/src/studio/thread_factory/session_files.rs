@@ -49,7 +49,7 @@ pub(super) fn bind_thread_session_files(
     .with_lsp_runtime(lsp)
 }
 
-/// Creates this Thread's scratch/artifacts/commands through the physical backend.
+/// Creates this Thread's temp/artifacts through the physical backend.
 ///
 /// ReadOnly workspaces keep the bound layout but do not create directories.
 /// Infrastructure preparation uses a confined backend so directory write policy
@@ -72,10 +72,20 @@ pub(super) async fn prepare_bound_session_files(
         return Ok(());
     }
     match remote {
-        Some(host) => pl_tool::workspace::prepare_session_files(&host.files, &files)
-            .await
-            .map_err(|error| resource_error("prepare remote Thread session files", error)),
+        Some(host) => {
+            pl_tool::workspace::SessionTempBackend::Ssh(&host.files)
+                .migrate(&files)
+                .await
+                .map_err(|error| resource_error("migrate remote Thread temp files", error))?;
+            pl_tool::workspace::prepare_session_files(&host.files, &files)
+                .await
+                .map_err(|error| resource_error("prepare remote Thread session files", error))
+        }
         None => {
+            pl_tool::workspace::SessionTempBackend::Local(workspace.root())
+                .migrate(&files)
+                .await
+                .map_err(|error| resource_error("migrate local Thread temp files", error))?;
             let backend = pl_tool::workspace_file::LocalWorkspaceFileBackend::new(
                 workspace.root().to_path_buf(),
                 false,
@@ -110,8 +120,8 @@ pub(super) fn session_files_fact(
         posix(files.scratch()),
         posix(files.artifacts()),
         posix(files.commands()),
-        posix(files.root().join("uploads")),
-        posix(files.root().join(".venv")),
+        posix(files.uploads()),
+        posix(files.python_environment()),
     );
     Some(pl_core::thread::RuntimeFact {
         source_id: "studio.session-files".into(),

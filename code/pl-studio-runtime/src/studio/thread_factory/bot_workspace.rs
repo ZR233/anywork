@@ -386,7 +386,7 @@ mod migration_tests {
             .unwrap();
         assert_eq!(canonical, dunce::canonicalize(&managed)?);
         assert_eq!(
-            tokio::fs::read(managed.join(files.root()).join("scratch/original")).await?,
+            tokio::fs::read(managed.join(files.scratch()).join("original")).await?,
             b"retained original"
         );
         assert!(fixture.workspace_is_busy(&root.id));
