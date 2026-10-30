@@ -100,6 +100,8 @@ AccountModelsFrame _models(
 
 final class _Handle implements AccountDomainObservation {
   Completer<AccountDomainFrame?>? _next;
+  AccountDomainFrame? baseline;
+  bool _baselineConsumed = false;
   bool closed = false;
   int closeCalls = 0;
   int closeFailures = 0;
@@ -110,6 +112,11 @@ final class _Handle implements AccountDomainObservation {
   Future<AccountDomainFrame?> next() {
     if (closed) return Future.value(null);
     if (_next != null) throw StateError('Concurrent next');
+    final frame = baseline;
+    if (!_baselineConsumed && frame != null) {
+      _baselineConsumed = true;
+      return Future.value(frame);
+    }
     if (!reading.isCompleted) reading.complete();
     return (_next = Completer<AccountDomainFrame?>()).future;
   }
@@ -153,6 +160,10 @@ final class _Port
   Future<SettingsCommandReply> Function(int, AutoCompactIntent, OperationId)?
   compact;
   Future<AccountUsageFrame> Function(NativeAccountIdentity)? usage;
+  Future<ChatGptLoginCommandReply> Function(String, String, String)?
+  startChatGptLoginReply;
+  Future<ChatGptLoginCommandReply> Function(String, String, String)?
+  cancelChatGptLoginReply;
   Future<AcpAuthCommandReply> Function(
     OperationId,
     String,
@@ -171,6 +182,8 @@ final class _Port
   )?
   installCancel;
   void Function()? onOpen;
+  Future<AccountDomainObservation> Function(AccountObservationTarget)?
+  openAccount;
   Future<DelegationModelDetail> Function(DelegationModelKey)? modelDetail;
 
   @override
@@ -178,6 +191,8 @@ final class _Port
     AccountObservationTarget target,
   ) async {
     opens.add(target);
+    final customOpen = openAccount;
+    if (customOpen != null) return customOpen(target);
     if (lateOpen case final pending?) return pending.future;
     // Each open owns a distinct native handle, including overlapping late opens
     // from retired generations. The map only exposes the latest test handle.
@@ -202,6 +217,22 @@ final class _Port
     PatchAccountCommand command, {
     required OperationId operationId,
   }) => patch!(revision, command, operationId);
+  @override
+  Future<ChatGptLoginCommandReply> startChatGptLogin({
+    required String loginId,
+    required String editorId,
+    required String accountId,
+  }) =>
+      startChatGptLoginReply?.call(loginId, editorId, accountId) ??
+      Future.error(UnsupportedError('ChatGPT login is unused in this test'));
+  @override
+  Future<ChatGptLoginCommandReply> cancelChatGptLogin({
+    required String loginId,
+    required String editorId,
+    required String accountId,
+  }) =>
+      cancelChatGptLoginReply?.call(loginId, editorId, accountId) ??
+      Future.error(UnsupportedError('ChatGPT login is unused in this test'));
   @override
   Future<SettingsCommandReply> setAccountModelAutoCompact(
     int revision,
@@ -2467,4 +2498,341 @@ void main() {
       );
     },
   );
+
+  test('ChatGPT login replies use the stamped account frame reducer', () async {
+    final fixture = _Fixture();
+    addTearDown(fixture.close);
+    const loginId = 'd572a788-4421-4bf4-85bc-5a5fc24f9501';
+    const editorId = 'editor-openai';
+    const accountId = 'account-openai';
+    final intent = fixture.resources.accounts.registerChatGptLogin(
+      loginId: loginId,
+      editorId: editorId,
+      accountId: accountId,
+    );
+    addTearDown(intent.release);
+    ChatGptLoginCommandReply reply(int revision, ChatGptLoginPhase phase) =>
+        ChatGptLoginCommandReply(
+          stamp: _stamp('chatgpt-login:$loginId', revision),
+          snapshot: ChatGptLoginSnapshot(
+            loginId: loginId,
+            editorId: editorId,
+            accountId: accountId,
+            revision: revision,
+            phase: phase,
+          ),
+        );
+    fixture.port.startChatGptLoginReply =
+        (receivedLogin, receivedEditor, receivedAccount) async {
+          expect(
+            (receivedLogin, receivedEditor, receivedAccount),
+            (loginId, editorId, accountId),
+          );
+          return reply(2, ChatGptLoginPhase.awaitingBrowser);
+        };
+    fixture.port.cancelChatGptLoginReply =
+        (receivedLogin, receivedEditor, receivedAccount) async {
+          expect(
+            (receivedLogin, receivedEditor, receivedAccount),
+            (loginId, editorId, accountId),
+          );
+          return reply(3, ChatGptLoginPhase.cancelled);
+        };
+    final started = await fixture.resources.accounts.startChatGptLogin(
+      loginId: loginId,
+      editorId: editorId,
+      accountId: accountId,
+    );
+    expect(started.phase, ChatGptLoginPhase.awaitingBrowser);
+    final startedResource = fixture.resources.accounts
+        .chatGptLogin(loginId)
+        .value;
+    expect(startedResource.stamp, _stamp('chatgpt-login:$loginId', 2));
+    expect(startedResource.value, same(started));
+    expect(fixture.port.opens, isEmpty);
+    expect(fixture.coordinator.stamp, _stamp('settings', 1));
+    final demand = fixture.resources.accounts.observeChatGptLogin(loginId);
+    addTearDown(demand.release);
+
+    final cancelled = await fixture.resources.accounts.cancelChatGptLogin(
+      loginId: loginId,
+      editorId: editorId,
+      accountId: accountId,
+    );
+    expect(cancelled.phase, ChatGptLoginPhase.cancelled);
+    expect(
+      fixture.resources.accounts.chatGptLogin(loginId).value.stamp,
+      _stamp('chatgpt-login:$loginId', 3),
+    );
+    fixture.resources.acceptFrame(
+      ChatGptLoginFrame(
+        _stamp('chatgpt-login:$loginId', 2),
+        ChatGptLoginSnapshot(
+          loginId: loginId,
+          editorId: editorId,
+          accountId: accountId,
+          revision: 2,
+          phase: ChatGptLoginPhase.awaitingBrowser,
+        ),
+      ),
+    );
+    expect(
+      fixture.resources.accounts.chatGptLogin(loginId).value.value?.phase,
+      ChatGptLoginPhase.cancelled,
+    );
+    expect(fixture.coordinator.stamp, _stamp('settings', 1));
+  });
+
+  test('ChatGPT login registers local intent, starts, then opens latest-state demand', () async {
+    final fixture = _Fixture();
+    addTearDown(fixture.close);
+    const loginId = 'd572a788-4421-4bf4-85bc-5a5fc24f9503';
+    const editorId = 'ordered-editor';
+    const accountId = 'ordered-account';
+    final localIntent = fixture.resources.accounts.registerChatGptLogin(
+      loginId: loginId,
+      editorId: editorId,
+      accountId: accountId,
+    );
+    addTearDown(localIntent.release);
+    final unknownBaseline = Completer<void>();
+    final openedAfterStart = Completer<void>();
+    var startAdmitted = false;
+    final snapshot = ChatGptLoginSnapshot(
+      loginId: loginId,
+      editorId: editorId,
+      accountId: accountId,
+      revision: 2,
+      phase: ChatGptLoginPhase.preparing,
+    );
+    final watch = fixture.resources.accounts.chatGptLogin(loginId).watch((
+      resource,
+    ) {
+      if (resource.failure != null && !unknownBaseline.isCompleted) {
+        unknownBaseline.complete();
+      }
+    });
+    addTearDown(watch.cancel);
+    fixture.port.openAccount = (target) async {
+      if (target case ChatGptLoginTarget()) {
+        if (!startAdmitted) {
+          throw StateError('unknown login operation');
+        }
+        final handle = _Handle()
+          ..baseline = ChatGptLoginFrame(
+            _stamp('chatgpt-login:$loginId', 2),
+            snapshot,
+          );
+        if (!openedAfterStart.isCompleted) openedAfterStart.complete();
+        return handle;
+      }
+      throw StateError('Unexpected account observation target');
+    };
+
+    // This deliberately reproduces the former ordering's initial owner error.
+    final prematureDemand = fixture.resources.accounts.observeChatGptLogin(
+      loginId,
+    );
+    await unknownBaseline.future;
+    await prematureDemand.release();
+    expect(
+      fixture.resources.accounts.chatGptLogin(loginId).value.failure,
+      isNotNull,
+    );
+
+    fixture.port.startChatGptLoginReply = (_, _, _) async {
+      startAdmitted = true;
+      return ChatGptLoginCommandReply(
+        stamp: _stamp('chatgpt-login:$loginId', 2),
+        snapshot: snapshot,
+      );
+    };
+    await fixture.resources.accounts.startChatGptLogin(
+      loginId: loginId,
+      editorId: editorId,
+      accountId: accountId,
+    );
+    expect(
+      fixture.resources.accounts.chatGptLogin(loginId).value.value?.phase,
+      ChatGptLoginPhase.preparing,
+    );
+    expect(
+      fixture.resources.accounts.chatGptLogin(loginId).value.failure,
+      isNull,
+    );
+
+    // Retrying only the domain demand reads the owner's retained baseline;
+    // it never resends start or fabricates a snapshot/stamp.
+    final demand = fixture.resources.accounts.observeChatGptLogin(loginId);
+    addTearDown(demand.release);
+    await openedAfterStart.future;
+    expect(fixture.port.opens.whereType<ChatGptLoginTarget>(), hasLength(2));
+    expect(
+      fixture.resources.accounts.chatGptLogin(loginId).value.value,
+      same(snapshot),
+    );
+  });
+
+  test('ChatGPT login rejects replies bound to a different editor', () async {
+    final fixture = _Fixture();
+    addTearDown(fixture.close);
+    const loginId = 'd572a788-4421-4bf4-85bc-5a5fc24f9502';
+    const editorId = 'editor-openai';
+    const accountId = 'account-openai';
+    final intent = fixture.resources.accounts.registerChatGptLogin(
+      loginId: loginId,
+      editorId: editorId,
+      accountId: accountId,
+    );
+    addTearDown(intent.release);
+    fixture.port.startChatGptLoginReply = (_, _, _) async =>
+        ChatGptLoginCommandReply(
+          stamp: _stamp('chatgpt-login:$loginId', 2),
+          snapshot: const ChatGptLoginSnapshot(
+            loginId: loginId,
+            editorId: 'another-editor',
+            accountId: accountId,
+            revision: 2,
+            phase: ChatGptLoginPhase.awaitingBrowser,
+          ),
+        );
+
+    await expectLater(
+      fixture.resources.accounts.startChatGptLogin(
+        loginId: loginId,
+        editorId: editorId,
+        accountId: accountId,
+      ),
+      throwsStateError,
+    );
+    expect(
+      fixture.resources.accounts.chatGptLogin(loginId).value.value,
+      isNull,
+    );
+  });
+
+  for (final resource in ['settings', 'chatgpt-login:another-login']) {
+    test('ChatGPT login rejects a reply stamped as $resource', () async {
+      final fixture = _Fixture();
+      addTearDown(fixture.close);
+      const loginId = 'd572a788-4421-4bf4-85bc-5a5fc24f9504';
+      const editorId = 'editor-openai';
+      const accountId = 'account-openai';
+      final intent = fixture.resources.accounts.registerChatGptLogin(
+        loginId: loginId,
+        editorId: editorId,
+        accountId: accountId,
+      );
+      addTearDown(intent.release);
+      fixture.port.startChatGptLoginReply = (_, _, _) async =>
+          ChatGptLoginCommandReply(
+            stamp: _stamp(resource, 2),
+            snapshot: const ChatGptLoginSnapshot(
+              loginId: loginId,
+              editorId: editorId,
+              accountId: accountId,
+              revision: 2,
+              phase: ChatGptLoginPhase.awaitingBrowser,
+            ),
+          );
+      await expectLater(
+        fixture.resources.accounts.startChatGptLogin(
+          loginId: loginId,
+          editorId: editorId,
+          accountId: accountId,
+        ),
+        throwsStateError,
+      );
+      expect(
+        fixture.resources.accounts.chatGptLogin(loginId).value.stamp,
+        isNull,
+      );
+      expect(fixture.coordinator.stamp, _stamp('settings', 1));
+    });
+  }
+
+  for (final cancelling in [false, true]) {
+    test(
+      'ChatGPT ${cancelling ? 'cancel' : 'start'} reply cannot rejoin a replaced owner lifecycle',
+      () async {
+        final fixture = _Fixture();
+        addTearDown(fixture.close);
+        const loginId = 'd572a788-4421-4bf4-85bc-5a5fc24f9505';
+        const editorId = 'editor-openai';
+        const accountId = 'account-openai';
+        final intent = fixture.resources.accounts.registerChatGptLogin(
+          loginId: loginId,
+          editorId: editorId,
+          accountId: accountId,
+        );
+        addTearDown(intent.release);
+        final pending = Completer<ChatGptLoginCommandReply>();
+        fixture.port.startChatGptLoginReply = (_, _, _) => pending.future;
+        fixture.port.cancelChatGptLoginReply = (_, _, _) => pending.future;
+        final command = cancelling
+            ? fixture.resources.accounts.cancelChatGptLogin
+            : fixture.resources.accounts.startChatGptLogin;
+        final result = command(
+          loginId: loginId,
+          editorId: editorId,
+          accountId: accountId,
+        );
+        final rejected = expectLater(result, throwsStateError);
+        fixture.resources.adoptOwnerEpoch('next');
+        fixture.resources.adoptOwnerEpoch('owner');
+        pending.complete(
+          ChatGptLoginCommandReply(
+            stamp: _stamp('chatgpt-login:$loginId', 99),
+            snapshot: ChatGptLoginSnapshot(
+              loginId: loginId,
+              editorId: editorId,
+              accountId: accountId,
+              revision: 99,
+              phase: cancelling
+                  ? ChatGptLoginPhase.cancelled
+                  : ChatGptLoginPhase.awaitingBrowser,
+            ),
+          ),
+        );
+        await rejected;
+        expect(
+          fixture.resources.accounts.chatGptLogin(loginId).value.value,
+          isNull,
+        );
+        fixture.resources.acceptFrame(
+          ChatGptLoginFrame(
+            _stamp('chatgpt-login:$loginId', 100, epoch: 'next'),
+            const ChatGptLoginSnapshot(
+              loginId: loginId,
+              editorId: editorId,
+              accountId: accountId,
+              revision: 100,
+              phase: ChatGptLoginPhase.succeeded,
+            ),
+          ),
+        );
+        expect(
+          fixture.resources.accounts.chatGptLogin(loginId).value.value,
+          isNull,
+        );
+        fixture.resources.acceptFrame(
+          ChatGptLoginFrame(
+            _stamp('chatgpt-login:$loginId', 1),
+            const ChatGptLoginSnapshot(
+              loginId: loginId,
+              editorId: editorId,
+              accountId: accountId,
+              revision: 1,
+              phase: ChatGptLoginPhase.preparing,
+            ),
+          ),
+        );
+        expect(
+          fixture.resources.accounts.chatGptLogin(loginId).value.value?.phase,
+          ChatGptLoginPhase.preparing,
+        );
+        expect(fixture.coordinator.stamp, isNull);
+      },
+    );
+  }
 }

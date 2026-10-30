@@ -95,11 +95,13 @@ class AccountNativeConnectionFields extends StatelessWidget {
     required this.value,
     required this.onChanged,
     this.billingControl,
+    this.hideApiCredentials = false,
     super.key,
   });
   final NativeAccountEditorPresentation value;
   final void Function(NativeAccountField field, String raw) onChanged;
   final Widget? billingControl;
+  final bool hideApiCredentials;
 
   @override
   Widget build(BuildContext context) {
@@ -131,44 +133,46 @@ class AccountNativeConnectionFields extends StatelessWidget {
                     onChanged: (raw) => onChanged(NativeAccountField.name, raw),
                   ),
                 ),
-                SizedBox(
-                  width: width,
-                  child: AccountRawTextField(
-                    key: ValueKey(
-                      AccountViewKeyValues.editorField(
-                        value.editorId,
-                        NativeAccountField.endpoint.name,
+                if (!hideApiCredentials)
+                  SizedBox(
+                    width: width,
+                    child: AccountRawTextField(
+                      key: ValueKey(
+                        AccountViewKeyValues.editorField(
+                          value.editorId,
+                          NativeAccountField.endpoint.name,
+                        ),
                       ),
+                      value: value.endpoint,
+                      enabled: !value.saving,
+                      label: l10n.settingsBaseUrl,
+                      keyboardType: TextInputType.url,
+                      onChanged: (raw) =>
+                          onChanged(NativeAccountField.endpoint, raw),
                     ),
-                    value: value.endpoint,
-                    enabled: !value.saving,
-                    label: l10n.settingsBaseUrl,
-                    keyboardType: TextInputType.url,
-                    onChanged: (raw) =>
-                        onChanged(NativeAccountField.endpoint, raw),
                   ),
-                ),
-                SizedBox(
-                  width: width,
-                  child: AccountRawTextField(
-                    key: ValueKey(
-                      AccountViewKeyValues.editorField(
-                        value.editorId,
-                        NativeAccountField.credential.name,
+                if (!hideApiCredentials)
+                  SizedBox(
+                    width: width,
+                    child: AccountRawTextField(
+                      key: ValueKey(
+                        AccountViewKeyValues.editorField(
+                          value.editorId,
+                          NativeAccountField.credential.name,
+                        ),
                       ),
+                      value: value.credential,
+                      enabled: !value.saving,
+                      label: value.hasStoredCredential
+                          ? l10n.settingsApiKeyKeepCurrent
+                          : value.credentialRequired
+                          ? l10n.settingsApiKey
+                          : l10n.settingsApiKeyOptional,
+                      obscure: true,
+                      onChanged: (raw) =>
+                          onChanged(NativeAccountField.credential, raw),
                     ),
-                    value: value.credential,
-                    enabled: !value.saving,
-                    label: value.hasStoredCredential
-                        ? l10n.settingsApiKeyKeepCurrent
-                        : value.credentialRequired
-                        ? l10n.settingsApiKey
-                        : l10n.settingsApiKeyOptional,
-                    obscure: true,
-                    onChanged: (raw) =>
-                        onChanged(NativeAccountField.credential, raw),
                   ),
-                ),
                 if (billingControl != null)
                   SizedBox(width: width, child: billingControl!),
               ],

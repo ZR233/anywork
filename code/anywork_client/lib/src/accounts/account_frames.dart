@@ -5,6 +5,7 @@ import '../models_domain/domain/model_directory.dart';
 import '../usage/domain/account_usage.dart';
 import 'domain/account_identity.dart';
 import 'domain/account_values.dart';
+import 'domain/account_authentication.dart';
 
 sealed class AccountObservationTarget {
   const AccountObservationTarget();
@@ -53,6 +54,13 @@ final class AcpInstallTarget extends AccountObservationTarget {
   const AcpInstallTarget();
   @override
   String get key => 'acp-install';
+}
+
+final class ChatGptLoginTarget extends AccountObservationTarget {
+  const ChatGptLoginTarget(this.loginId);
+  final String loginId;
+  @override
+  String get key => 'chatgpt-login:$loginId';
 }
 
 sealed class AccountDomainFrame {
@@ -111,4 +119,11 @@ final class AcpInstallFrame extends AccountDomainFrame {
   final AcpInstallSnapshotView snapshot;
   @override
   AccountObservationTarget get target => const AcpInstallTarget();
+}
+
+final class ChatGptLoginFrame extends AccountDomainFrame {
+  const ChatGptLoginFrame(super.stamp, this.snapshot);
+  final ChatGptLoginSnapshot snapshot;
+  @override
+  AccountObservationTarget get target => ChatGptLoginTarget(snapshot.loginId);
 }

@@ -44,6 +44,8 @@ import '../../rust/api/studio/types/thread_activity.dart' as frb_activity;
 import '../../rust/api/studio/types/mode_editor.dart' as frb_mode_types;
 import '../../rust/api/studio/handlers/bots.dart' as frb_bots;
 import '../../rust/api/studio/accounts/types.dart' as frb_accounts;
+import '../../rust/api/studio/accounts/chatgpt.dart' as frb_account_chatgpt;
+import '../../rust/api/studio/types/chatgpt_auth.dart' as frb_chatgpt;
 import '../../rust/api/studio/accounts/feed.dart' as frb_account_feed;
 import '../../rust/api/studio/accounts/commands.dart' as frb_account_commands;
 import '../../rust/api/studio/types/bots.dart' as frb_bots_types;

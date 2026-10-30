@@ -54,6 +54,20 @@ pub(super) fn project_request(
     account_id: &str,
     mut request: crate::completion::CompletionRequest,
 ) -> Result<crate::completion::CompletionRequest> {
+    if endpoint.chatgpt_session.is_some() {
+        super::openai::validate_chatgpt_request(&request)?;
+        if !endpoint.service_capabilities.web_search.hosted_responses
+            && request
+                .tools
+                .iter()
+                .any(|tool| matches!(tool, crate::completion::ToolSpec::WebSearch { .. }))
+        {
+            return Err(PureError::ConfigError(
+                "ChatGPT request.tools.web_search requires the account's hosted search capability"
+                    .into(),
+            ));
+        }
+    }
     validate(model.binding.transport.protocol, &request.input)?;
     if model.binding.transport.protocol == WireApi::ChatCompletions
         && model
@@ -78,20 +92,41 @@ pub(super) fn project_request(
             "typed reasoning_details cannot be reconstructed from text reasoning history".into(),
         ));
     }
-    drop_unreadable_cross_provider_reasoning(
-        &mut request,
-        crate::runtime::binding_cache_namespace(account_id, endpoint).as_str(),
-    );
+    let isolation = crate::runtime::binding_cache_namespace(account_id, endpoint);
+    if endpoint.chatgpt_session.is_some() {
+        if request.replay_spans.iter().any(|span| {
+            span.source_isolation
+                .as_deref()
+                .is_some_and(|source| source != isolation)
+                && span.output.iter().any(|item| {
+                    item.get("type").and_then(serde_json::Value::as_str) == Some("reasoning")
+                })
+        }) {
+            return Err(PureError::ConfigError(
+                "ChatGPT cannot replay input[*].reasoning from a different credential owner".into(),
+            ));
+        }
+    } else {
+        drop_unreadable_cross_provider_reasoning(&mut request, isolation.as_str());
+    }
     let capabilities = model
         .capabilities
         .clone()
         .with_native_custom_tools(endpoint.uses_native_custom_tools());
     let projection = ToolProjection::for_endpoint(endpoint, &capabilities);
-    let mut request = request.provider_compatible(projection);
-    if !request
-        .tools
-        .iter()
-        .any(crate::completion::ToolSpec::is_programmatic_tool_calling)
+    let mut request = if endpoint.chatgpt_session.is_some() {
+        // The SIWC plan is frozen: do not convert custom tools to functions (or synthesize
+        // apply_patch grammar) as the generic API compatibility path is allowed to do.
+        request.tools = crate::completion::stable_tool_schemas(request.tools);
+        request
+    } else {
+        request.provider_compatible(projection)
+    };
+    if endpoint.chatgpt_session.is_none()
+        && !request
+            .tools
+            .iter()
+            .any(crate::completion::ToolSpec::is_programmatic_tool_calling)
     {
         for tool in &mut request.tools {
             match tool {

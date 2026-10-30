@@ -26,10 +26,18 @@ tokio-tungstenite = { workspace = true }
 futures = { workspace = true }
 reqwest = { workspace = true, features = ["multipart"] }
 hyper = { workspace = true }
+hyper-util = { workspace = true }
 eventsource-stream = { workspace = true }
 enum_dispatch = { workspace = true }
+oauth2 = { workspace = true }
+openidconnect = { workspace = true }
+url = { workspace = true }
+fs4 = { workspace = true }
+secrecy = { workspace = true }
+axum = { workspace = true }
 
 [dev-dependencies]
+tempfile = { workspace = true }
 pl-provider-fixture = { workspace = true }
 pretty_assertions = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }

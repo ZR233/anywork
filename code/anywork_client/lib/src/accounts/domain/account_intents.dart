@@ -1,6 +1,7 @@
 import '../../models/studio_commands.dart';
 import '../../models/delegation_models.dart';
 import 'account_identity.dart';
+import 'account_authentication.dart';
 
 sealed class AccountTextPatch {
   const AccountTextPatch();
@@ -48,6 +49,7 @@ final class CreateAccountCommand {
   CreateAccountCommand({
     required this.identity,
     required this.name,
+    this.authentication = const AccountAuthenticationIntent.keep(),
     required this.protocol,
     this.templateId,
     required this.baseUrl,
@@ -61,6 +63,7 @@ final class CreateAccountCommand {
        modelAutoCompactLimits = List.unmodifiable(modelAutoCompactLimits);
   final NativeAccountIdentity identity;
   final String name;
+  final AccountAuthenticationIntent authentication;
   final String protocol;
   final String? templateId;
   final String baseUrl;
@@ -74,6 +77,7 @@ final class CreateAccountCommand {
 final class PatchAccountCommand {
   const PatchAccountCommand({
     required this.identity,
+    this.authentication = const AccountAuthenticationIntent.keep(),
     this.name = const AccountTextPatch.keep(),
     this.protocol = const AccountTextPatch.keep(),
     this.templateId = const AccountTextPatch.keep(),
@@ -82,6 +86,7 @@ final class PatchAccountCommand {
     this.customModels = const AccountModelsPatch.keep(),
   });
   final NativeAccountIdentity identity;
+  final AccountAuthenticationIntent authentication;
   final AccountTextPatch name;
   final AccountTextPatch protocol;
   final AccountTextPatch templateId;

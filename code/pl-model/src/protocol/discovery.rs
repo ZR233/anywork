@@ -25,6 +25,8 @@ const BODY_LIMIT: usize = 4 * 1024 * 1024;
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum ModelCatalogQueryError {
     #[error(transparent)]
+    Authentication(#[from] super::chatgpt::ChatGptAuthError),
+    #[error(transparent)]
     Definition(#[from] crate::model::ModelDefinitionError),
     #[error("model discovery is not supported by this adapter/catalog source")]
     Unsupported,
@@ -75,7 +77,6 @@ pub enum ModelCatalogQueryResult {
 pub struct ModelCatalogQuery {
     endpoint: ProtocolEndpoint,
     url: Url,
-    headers: reqwest::header::HeaderMap,
     identity: String,
     /// 上一版查询身份，仅用于配置迁移定位旧缓存文件。
     legacy_v1_identity: String,
@@ -147,6 +148,14 @@ impl ModelCatalogQuery {
             url.as_str(),
             &headers,
         );
+        let identity = if let Some(session) = &endpoint.chatgpt_session {
+            let mut hash = Sha256::new();
+            hash.update(identity.as_bytes());
+            hash.update(session.registration_id().as_bytes());
+            hex::encode(hash.finalize())
+        } else {
+            identity
+        };
         let legacy_v1_identity = query_identity(
             b"model-catalog-query-v1",
             None,
@@ -158,7 +167,6 @@ impl ModelCatalogQuery {
         Ok(Self {
             endpoint,
             url,
-            headers,
             identity,
             legacy_v1_identity,
             defaults,
@@ -219,6 +227,16 @@ impl ModelCatalogQuery {
         &self,
         previous: Option<&ModelCatalogQueryCache>,
     ) -> Result<ModelCatalogQueryResult, ModelCatalogQueryError> {
+        let token = if let Some(session) = &self.endpoint.chatgpt_session {
+            super::chatgpt::ChatGptSession::validate_resource(&self.endpoint.base_url)?;
+            Some(session.access_token().await?)
+        } else {
+            self.endpoint.bearer_token.clone()
+        };
+        let headers = self
+            .endpoint
+            .request_headers(token.as_deref(), &HashMap::new())
+            .map_err(|_| ModelCatalogQueryError::Configuration)?;
         let client = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .retry(reqwest::retry::never())
@@ -226,7 +244,7 @@ impl ModelCatalogQuery {
             .timeout(Duration::from_secs(10))
             .build()
             .map_err(query_transport_error)?;
-        let mut request = client.get(self.url.clone()).headers(self.headers.clone());
+        let mut request = client.get(self.url.clone()).headers(headers);
         if let Some(etag) = previous.and_then(|cache| cache.etag.as_deref()) {
             let mut value = reqwest::header::HeaderValue::from_str(etag)
                 .map_err(|_| ModelCatalogQueryError::Configuration)?;

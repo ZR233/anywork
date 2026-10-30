@@ -41,6 +41,7 @@ pub async fn patch_account(
                 operation_id,
                 expected_revision: expected_settings_revision,
                 account_id,
+                authentication: input.authentication.into(),
                 name: text(input.name),
                 base_url: text(input.base_url),
                 template_id: text(input.template_id),

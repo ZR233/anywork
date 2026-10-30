@@ -230,6 +230,7 @@ abstract final class AccountPreviewFixtures {
     canSetDefault: true,
     content: AccountDetailsContent.native(
       NativeAccountDetailsPresentation(
+        authentication: AccountAuthenticationMethod.apiKey,
         credentialReady: true,
         billing: billing,
         catalog: catalog,

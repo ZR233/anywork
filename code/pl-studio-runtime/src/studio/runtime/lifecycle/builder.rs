@@ -184,6 +184,7 @@ impl StudioRuntime {
             thread_modes,
             account_usage,
             acp_auth,
+            chatgpt_auth: super::super::chatgpt_auth::ChatGptAuthRuntime::new(),
             acp_install,
             model_performance,
             updater,
