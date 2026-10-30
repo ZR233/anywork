@@ -279,11 +279,11 @@ struct SessionSwitchReport {
     returned_to_original: bool,
 }
 
-/// 有界行内预览的跨渲染块选择/复制证据。
+/// 有界行内预览的真实渲染原文与选择复制证据。
 ///
-/// `renderedParagraphCount` 是实际参与选择的渲染块数；canonical 预览是连续纯文本，
-/// 渲染分块不在原文里插入分隔符，因此不存在另一份“复制段数”。复制保真由整段文本的
-/// 长度与 hash 和同一份 canonical 预览一致证明，不能用子串或两个实际副本互相相等代替。
+/// `renderedParagraphCount` 来自生产 RenderParagraph；标准 Text 合法地只有一个段落，
+/// 本纯文本样例不证明跨块选择。Driver 精确比对剪贴板与 canonical 预览，宿主继续核对
+/// 渲染及复制的完整长度与 hash，不能用子串或两个实际副本互相相等代替原文。
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct PreviewCopyReport {
@@ -5316,7 +5316,7 @@ fn run_stress_body_scenario(
         session_switch.returned_to_original,
         "stress-body journey did not return to the original session"
     );
-    // 行内预览的跨块选择/复制：交付的是产品 32 KiB 预算内的有界预览，复制内容必须与
+    // 行内预览的真实渲染原文与选择复制：交付的是产品 32 KiB 预算内的有界预览，复制内容必须与
     // 该预览逐字节一致（不是全文）；完整正文由下面的详情查看器证明。
     ensure!(
         preview_copy.pass,
@@ -5331,7 +5331,7 @@ fn run_stress_body_scenario(
         "stress-body preview copy did not use the product callback or disturbed the view: \
          {preview_copy:?}"
     );
-    // 跨渲染块选择分别核实际参与选择的渲染块数与整段复制文本：渲染与复制的长度必须
+    // 分别核至少一个实际生产 RenderParagraph 与整段复制文本：渲染与复制的长度必须
     // 等于预览长度，两者的 hash 都必须等于同一份 canonical 预览，不能用子串包含或
     // 只比较两个实际副本代替原文。
     ensure!(
@@ -5339,13 +5339,13 @@ fn run_stress_body_scenario(
             && preview_copy.copied_matches_preview
             && preview_copy
                 .rendered_paragraph_count
-                .is_some_and(|count| count >= 2)
+                .is_some_and(|count| count >= 1)
             && preview_copy.rendered_characters == Some(preview_copy.preview_characters)
             && preview_copy.rendered_hash.as_deref() == Some(preview_copy.expected_hash.as_str())
             && preview_copy.copied_length == Some(preview_copy.preview_characters)
             && preview_copy.copied_hash.as_deref() == Some(preview_copy.expected_hash.as_str()),
-        "stress-body preview was not rendered/copied as multiple real blocks of the canonical \
-         preview: {preview_copy:?}"
+        "stress-body preview was not rendered/copied exactly as the canonical preview: \
+         {preview_copy:?}"
     );
     ensure!(
         (1..=32 * 1024).contains(&preview_copy.preview_characters),
@@ -5396,8 +5396,8 @@ fn run_stress_body_scenario(
         // 同一身份至少两帧真实增长且展示保持 Live 贴底。默认 220000B 场景不产生该
         // 观测，因此这里不得读取 `streamingGrowth`，也不为默认场景造假字段。
         //
-        // 进入 History 后冻结、后台仍有新输出的 companion 事实由 Driver 在证据缺失时
-        // 抛错，使 `status` 变成 `failed`；这里不另读 `streamingCompanion`。
+        // 流中阅读已完成历史的拖动、滚动条和分页由 timeline-history 验收：它先生成
+        // 完成历史，再启动独立正文流。单项场景的未完成正文只在实时栏，不充当历史种子。
         let growth = streaming_growth
             .as_ref()
             .context("stress-body-large report has no streaming growth observation")?;

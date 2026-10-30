@@ -4,7 +4,10 @@ import 'dart:io';
 import 'package:flutter_driver/flutter_driver.dart';
 
 import 'flutter_driver_session.dart';
+import 'pointer_drag.dart';
 import 'pointer_scroll.dart';
+import 'scrollbar_drag.dart';
+import 'scrolling_journey.dart' show assessThumbDrag;
 import 'timeline_observation.dart';
 
 /// Real paced output overlaps independent durable page reads in one generation.
@@ -136,6 +139,116 @@ Future<Map<String, Object?>> observeStreamingHistory(
     );
   }
 
+  final interactions = <Map<String, Object?>>[];
+  Future<void> observeReadingInteraction(
+    String stage,
+    Command command, {
+    required bool increasing,
+    bool thumb = false,
+  }) async {
+    final beforeState = await until('before $stage', (state) {
+      if (!busy(state)) {
+        throw StateError('$stage missed the busy response window');
+      }
+      return settled(state) &&
+          TimelineObservation.parse(state).isHistory &&
+          readProgress(state) != null;
+    });
+    final before = TimelineObservation.parse(beforeState);
+    final beforeScroll = TimelineScrollObservation.parse(beforeState);
+    final beforeActivity = readProgress(beforeState)!;
+    if (beforeScroll.threadId != before.threadId ||
+        (beforeScroll.pixels ?? 0) <= 0.5 ||
+        beforeScroll.pixels! >= beforeScroll.maxScrollExtent! - 0.5) {
+      throw StateError('$stage has no interior History scroll position');
+    }
+    final evidence = <String, Object?>{
+      'stage': stage,
+      'command': command.serialize(),
+      'before': before.summary(),
+      'scrollBefore': beforeScroll.toJson(),
+      'busyBefore': busy(beforeState),
+      'activityBefore': beforeActivity.summary(),
+      'responseCharactersBefore': beforeActivity.text.length,
+    };
+    interactions.add(evidence);
+    Object? interactionFailure;
+    try {
+      final input = await driver.sendCommand(command);
+      evidence['inputResult'] = input;
+      final afterState = await until('$stage with response growth', (state) {
+        final current = TimelineObservation.parse(state);
+        final scroll = TimelineScrollObservation.optional(state);
+        final progress = readProgress(state);
+        evidence['after'] = current.summary();
+        evidence['scrollAfter'] = scroll?.toJson();
+        evidence['busyAfter'] = busy(state);
+        evidence['activityAfter'] = progress?.summary();
+        evidence['responseCharactersAfter'] = progress?.text.length;
+        if (!busy(state)) {
+          throw StateError('$stage ended outside the busy response window');
+        }
+        // 在已有窗口内部操作；发生分页就不能把前插造成的像素变化当作拖动证据。
+        if (current.threadId != before.threadId ||
+            current.timelineEpoch != before.timelineEpoch ||
+            current.generation != before.generation ||
+            current.loadingOlder ||
+            current.olderCursor != before.olderCursor ||
+            current.hasOlder != before.hasOlder ||
+            current.completedThrough != before.completedThrough ||
+            jsonEncode(current.itemIds) != jsonEncode(before.itemIds)) {
+          throw StateError('$stage changed the loaded History window');
+        }
+        if (progress != null) {
+          progress.requireContinuationOf(beforeActivity);
+        }
+        return settled(state) &&
+            current.isHistory &&
+            scroll?.threadId == current.threadId &&
+            progress != null &&
+            progress.text.length > beforeActivity.text.length;
+      });
+      final afterScroll = TimelineScrollObservation.parse(afterState);
+      final delta = afterScroll.pixels! - beforeScroll.pixels!;
+      evidence['pixelDelta'] = delta;
+      if (afterScroll.pixels! <= 0.5 ||
+          !delta.isFinite ||
+          (increasing ? delta <= 0.5 : delta >= -0.5)) {
+        throw StateError('$stage did not move History in the input direction');
+      }
+      if (thumb) {
+        final assessment = assessThumbDrag(
+          input['samples'] as List,
+          increasing,
+        );
+        evidence['thumbAssessment'] = assessment;
+        if (assessment['continuous'] != true) {
+          throw StateError(
+            '$stage thumb samples were not directional/continuous',
+          );
+        }
+      }
+      evidence['responseGrew'] = true;
+      evidence['frozenFieldsRetained'] = true;
+      evidence['pass'] = true;
+    } catch (error) {
+      interactionFailure = error;
+      evidence['error'] = '$error';
+      rethrow;
+    } finally {
+      // 中途失败也保留实际输入、两端几何和活动身份；整体通过只由末尾报告给出。
+      try {
+        await File('${output.path}/streaming-history.json').writeAsString(
+          const JsonEncoder.withIndent('  ')
+              .convert({'interactions': interactions, 'pass': false}),
+        );
+      } catch (error) {
+        if (interactionFailure == null) rethrow;
+        stderr.writeln('$stage interaction evidence write failed: $error');
+      }
+    }
+  }
+
   final running = await until(
     'live content',
     (state) =>
@@ -235,6 +348,25 @@ Future<Map<String, Object?>> observeStreamingHistory(
       'frozenFieldsRetained': true,
     });
   }
+  // 三次真实分页先扩展完成历史窗口，使原幅度的 thumb 输入位于窗口内部；
+  // 否则小页边界会触发合法前插，无法单独比较同一窗口内的像素位移。
+  await observeReadingInteraction(
+    'smallUpwardDrag',
+    PointerDrag(find.byValueKey('timeline-scrollable'), 40),
+    increasing: true,
+  );
+  await observeReadingInteraction(
+    'thumbUp',
+    ScrollbarDrag(find.byValueKey('timeline-scrollable'), -60),
+    increasing: true,
+    thumb: true,
+  );
+  await observeReadingInteraction(
+    'thumbDown',
+    ScrollbarDrag(find.byValueKey('timeline-scrollable'), 30),
+    increasing: false,
+    thumb: true,
+  );
   final start = lastContent!;
   await File('${output.path}/streaming-history-boundary.png')
       .writeAsBytes(await driver.screenshot());
@@ -301,6 +433,7 @@ Future<Map<String, Object?>> observeStreamingHistory(
     'initial': initial.summary(),
     'initialActivity': initialActivity.summary(),
     'firstReturnLive': returnedLive.summary(),
+    'interactions': interactions,
     'pages': pages,
     'beforeCompletion': start.summary(),
     'completedInHistory': end.summary(),
@@ -310,7 +443,9 @@ Future<Map<String, Object?>> observeStreamingHistory(
     'completedResponseOmittedPreviewBytes': response.omittedBytes,
     'frozenFieldsRetained': true,
     'returnedLive': live.summary(),
-    'pass': true,
+    'pass':
+        interactions.length == 3 &&
+        interactions.every((interaction) => interaction['pass'] == true),
   };
   await File('${output.path}/streaming-history.json')
       .writeAsString(const JsonEncoder.withIndent('  ').convert(report));

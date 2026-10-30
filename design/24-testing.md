@@ -58,6 +58,10 @@ FRB 慢消费者的严格等待证据来自同一 producer 的实际 credit 等�
 
 人工验收 harness 使用官方 Cargo `release` profile 构建独立的 `pl-provider-fixture` 可执行文件，构建和产物定位仍由 Cargo 负责并在服务期限开始前完成；这不改变 GUI 的 Driver/debug/profile 选择，也不改变自动化测试链接 fixture 库的构建模式。优化构建用于避免大型完整请求证据的序列化成本挤占退出预算，不允许因此删减记录、改变受控协议步骤或放宽既定停止期限。最终证据仍须完整写入并原子发布，且必须观察到供应商进程真实退出；两者缺一均视为验收失败。
 
+Windows 原生验收可通过独立的 `Native Acceptance` 工作流显式启用：PR 使用 `native-acceptance` 标签，合入后的独立调用使用 `workflow_dispatch`。它沿用根目录 `cargo xtask manual-gui`、同次源码构建并校验的双架构 remote-helper 资源及受管 Driver 生命周期，不属于默认 PR Quality Gate，也不以静态 Windows CI 代替真实原生执行。运行记录实际源码身份、Windows/显卡环境、场景报告、帧样本、截图和退出证据；托管 runner 的显示或渲染失败保留为环境事实，不降低正文规模或交互门槛。
+
+CI 采集的 profile 帧与截图只代表该 Windows runner、构建模式和场景，人工结论仍须独立核对，不能外推为用户硬件的稳态性能。工作流仅归档正式场景证据，排除隔离环境目录、home、数据库及保留环境清单；截图作为 PR 图片交付前仍须检查内容并按仓库附件规则上传回读。未产出的指标和未执行场景保持缺失，不由工作流退出成功补造。
+
 升级恢复验收可通过 `cargo xtask manual-gui --scenario gui --seed-home-copy <DIR>` 消费已关闭、经 SQLite backup API 制作的一致性 home 副本。工具只读复制该输入到自有隔离环境，拒绝带 WAL/SHM 或符号链接的输入；保留项目、会话及账本事实，将账号端点切换为本地模拟供应商，并在启动前禁用机器人外发、MCP、LSP 与 ACP。来源副本和真实数据根都不修改；截图、快照、迁移前后数据库核对及进程回收共同构成证据。副本模式通过原生启动器运行，Driver 收束后请求产品退出，并核对原生退出报告中的退出码和子进程回收结果。
 
 ## 24.4 呈现诊断与受控账号对端

@@ -90,6 +90,45 @@ void main() {
     expect(markdown.height, lessThan(40));
   });
 
+  testWidgets('外层正文选择包含代码块并保留代码缩进和内部换行', (tester) async {
+    const code = 'void example() {\n  print("preserve indentation");\n}';
+    String? copied;
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(SystemChannels.platform, (call) async {
+      if (call.method == 'Clipboard.setData') {
+        copied = (call.arguments as Map)['text'] as String;
+      }
+      return null;
+    });
+    addTearDown(
+      () => messenger.setMockMethodCallHandler(SystemChannels.platform, null),
+    );
+    await pumpMarkdown(
+      tester,
+      text: 'Before the code.\n\n```dart\n$code\n```\n\nAfter the code.',
+      size: const Size(420, 640),
+    );
+    final selection = tester.state<SelectableRegionState>(
+      find.byType(SelectableRegion),
+    );
+    selection.selectAll(SelectionChangedCause.keyboard);
+    await tester.pump();
+    final copy = selection.contextMenuButtonItems
+        .firstWhere((item) => item.type == ContextMenuButtonType.copy)
+        .onPressed;
+    expect(copy, isNotNull);
+    copy!();
+    await tester.pump();
+    expect(copied, contains(code));
+    expect(
+      copied!.indexOf('Before the code.'),
+      lessThan(copied!.indexOf(code)),
+    );
+    expect(copied!.indexOf(code), lessThan(copied!.indexOf('After the code.')));
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('生产多行普通正文原样显示并复制缩进、段落和尾随换行', (tester) async {
     const text = '    raw paragraph: user@example.test\n\nlast line  \r\n';
     String? copied;
