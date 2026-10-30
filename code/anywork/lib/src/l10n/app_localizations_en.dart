@@ -2906,6 +2906,16 @@ class AppLocalizationsEn extends AppLocalizations {
       'Keep new timeline output pinned to the latest turn.';
 
   @override
+  String get settingsInterfaceLanguage => 'Interface language';
+
+  @override
+  String get settingsInterfaceLanguageSubtitle =>
+      'Change the interface language without changing conversation content.';
+
+  @override
+  String get settingsLanguageSystem => 'Follow system';
+
+  @override
   String get settingsCompactTimeline => 'Compact timeline';
 
   @override

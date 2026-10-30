@@ -2753,6 +2753,15 @@ class AppLocalizationsZh extends AppLocalizations {
   String get settingsFollowActiveTurnSubtitle => '让新的时间线输出始终停留在最新轮次。';
 
   @override
+  String get settingsInterfaceLanguage => '界面语言';
+
+  @override
+  String get settingsInterfaceLanguageSubtitle => '立即切换界面语言，不影响对话内容。';
+
+  @override
+  String get settingsLanguageSystem => '跟随系统';
+
+  @override
   String get settingsCompactTimeline => '紧凑时间线';
 
   @override

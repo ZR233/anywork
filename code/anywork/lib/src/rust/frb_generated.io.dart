@@ -2749,6 +2749,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   BridgeTurnState dco_decode_bridge_turn_state(dynamic raw);
 
   @protected
+  BridgeUiLanguage dco_decode_bridge_ui_language(dynamic raw);
+
+  @protected
   BridgeUninitializedResource dco_decode_bridge_uninitialized_resource(
     dynamic raw,
   );
@@ -6977,6 +6980,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeTurnState sse_decode_bridge_turn_state(SseDeserializer deserializer);
+
+  @protected
+  BridgeUiLanguage sse_decode_bridge_ui_language(SseDeserializer deserializer);
 
   @protected
   BridgeUninitializedResource sse_decode_bridge_uninitialized_resource(
@@ -12021,6 +12027,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_bridge_turn_state(
     BridgeTurnState self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_ui_language(
+    BridgeUiLanguage self,
     SseSerializer serializer,
   );
 
