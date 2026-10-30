@@ -82,6 +82,19 @@ impl StudioStore {
     pub(crate) async fn prepare_database(path: &Path) -> Result<Self> {
         let path = resolve_configured_database_path(path).await?;
         let paths = StudioPaths::resolve(Some(studio_home_from_database(&path)?))?;
+        // Inspect installation facts before any SQLite owner can create or migrate a file.
+        let installation = detect_installation(&paths).await?;
+        if installation == InstallationState::Existing {
+            for (path, name) in [
+                (paths.catalog_file(), "catalog.toml"),
+                (paths.settings_file(), "settings.toml"),
+                (paths.workspaces_file(), "workspaces.toml"),
+                (paths.database(), "studio.sqlite"),
+                (paths.calls_database(), "calls/calls.sqlite"),
+            ] {
+                require_canonical_document(&path, name).await?;
+            }
+        }
         let database_exists = tokio::fs::try_exists(&path).await?;
         let family_exists = database_family_exists(&path).await?;
         if database_exists {
@@ -92,13 +105,6 @@ impl StudioStore {
             }
             .into());
         }
-        // The data root is resolved once; every session, call and attachment path comes from the
-        // canonical layout instead of being re-joined by each consumer.
-        // Old-version publication state lives outside this version's data root and is never read.
-        // Decide the canonical-document contract before opening anything that creates state of its
-        // own: this classification must see the home as it was left by the previous run, and every
-        // store below (calls, database) materializes files on a fresh open.
-        let installation = detect_installation(&paths).await?;
         let db = connect_sqlite(
             sqlite_file_options(&path, SqliteFileMode::Create, |options| {
                 configure_sqlite(options, SqliteSynchronous::Full)
@@ -246,18 +252,11 @@ pub(in crate::studio) struct ProjectRow {
 
 /// Classifies the resolved Studio home before any store-owned file is created.
 async fn detect_installation(paths: &StudioPaths) -> Result<InstallationState> {
-    for candidate in [
-        paths.database(),
-        paths.layout_file(),
-        paths.workspaces_dir(),
-        paths.migrations_dir(),
-        paths.calls_database(),
-        paths.attachment_drafts_dir(),
-        paths.catalog_file(),
-        paths.settings_file(),
-        paths.workspaces_file(),
-    ] {
-        if tokio::fs::try_exists(&candidate).await? {
+    let mut entries = tokio::fs::read_dir(paths.data_dir()).await?;
+    while let Some(entry) = entries.next_entry().await? {
+        if !entry.file_type().await?.is_dir()
+            || !matches!(entry.file_name().to_str(), Some("model-catalogs" | "temp"))
+        {
             return Ok(InstallationState::Existing);
         }
     }
@@ -601,6 +600,41 @@ fn sidecar_path(path: &Path, suffix: &str) -> PathBuf {
 #[cfg(test)]
 mod major_version_storage_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn existing_installation_requires_both_databases_before_any_creation() -> Result<()> {
+        for missing_calls in [false, true] {
+            let temp = tempfile::tempdir()?;
+            let paths = StudioPaths::from_home(temp.path().to_owned());
+            let store = StudioStore::prepare_database(&paths.database()).await?;
+            store.close().await?;
+            let path = if missing_calls {
+                paths.calls_database()
+            } else {
+                paths.database()
+            };
+            for member in database_family_paths(&path) {
+                if member.exists() {
+                    tokio::fs::remove_file(member).await?;
+                }
+            }
+            let catalog = tokio::fs::read(paths.catalog_file()).await?;
+            for _ in 0..2 {
+                let error = StudioStore::prepare_database(&paths.database())
+                    .await
+                    .err()
+                    .context("missing database must not be recreated")?;
+                assert!(format!("{error:#}").contains("is missing on an existing installation"));
+                assert!(
+                    database_family_paths(&path)
+                        .iter()
+                        .all(|path| !path.exists())
+                );
+                assert_eq!(tokio::fs::read(paths.catalog_file()).await?, catalog);
+            }
+        }
+        Ok(())
+    }
 
     #[tokio::test]
     async fn retired_database_locations_are_rejected_before_open_or_rebuild() -> Result<()> {

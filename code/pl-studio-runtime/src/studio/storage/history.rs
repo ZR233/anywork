@@ -23,6 +23,7 @@ mod parent_report;
 mod producer;
 mod review_delivery;
 mod schema;
+pub(crate) use schema::validate_layout_source;
 /// 单页返回的总 payload 字节预算；达到预算即停止装入更多条目。
 const PAGE_BYTE_BUDGET: usize = 2 * 1024 * 1024;
 /// 单条预览预算必须小于整页预算，否则一条预览都无法落入一页。

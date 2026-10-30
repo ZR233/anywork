@@ -199,7 +199,8 @@ async fn read_frozen_owner(
     // Query a disposable copy, never the preserved SQLite family: even a read-only SQLite handle
     // can update its SHM coordination bytes.
     let history = source.join("history.sqlite");
-    let payload = if history.try_exists()? {
+    validate_family(&history)?;
+    let committed = if history.try_exists()? {
         if !proof.join("copied").try_exists()? {
             for suffix in ["", "-wal", "-shm"] {
                 let from = source.join(format!("history.sqlite{suffix}"));
@@ -211,9 +212,12 @@ async fn read_frozen_owner(
         }
         let db = read_only(&proof.join("history.sqlite")).await?;
         let result = async {
+            crate::studio::storage::history::validate_layout_source(&db, thread_id).await?;
+            // Supported early schemas can predate the checkpoint table. The official preflight
+            // above, not table absence alone, proves whether that layout is legitimate.
             if db
                 .query_one_raw(sql(
-                    "SELECT name FROM sqlite_schema WHERE name='session_checkpoint'",
+                    "SELECT name FROM sqlite_schema WHERE type='table' AND name='session_checkpoint'",
                 ))
                 .await?
                 .is_none()
@@ -241,12 +245,18 @@ async fn read_frozen_owner(
         let value = result?;
         closed?;
         value
-    } else if let Some(content) = optional_text(&source.join("state.toml")).await? {
-        Some(serde_json::to_value(toml::from_str::<toml::Value>(
-            &content,
-        )?)?)
     } else {
         None
+    };
+    // Only a committed SQLite checkpoint supersedes TOML. Schema creation can precede import;
+    // use the recovery owner's frozen DTO/materialization rules in that explicit migration window.
+    let payload = match committed {
+        Some(payload) => Some(payload),
+        None => crate::studio::storage::state::StateStore::new(source.to_owned(), thread_id)
+            .load_legacy()
+            .await?
+            .map(serde_json::to_value)
+            .transpose()?,
     };
     let Some(payload) = payload else {
         return Ok(None);

@@ -78,6 +78,8 @@ async fn fixture(home: &Path, grouped: bool, standalone: bool) -> Result<(Studio
     let calls =
         crate::studio::storage::calls::CallsStore::open(&legacy.join("calls/calls.sqlite")).await?;
     calls.close().await?;
+    // A canonical v2 installation owns both necessary database families.
+    wal_family(&legacy.join("studio.sqlite"), true).await?;
     tokio::fs::write(
         legacy.join("calls/logs/preserved.txt"),
         b"original raw log bytes\0",
@@ -143,6 +145,10 @@ async fn grouped_and_flat_v2_preserve_sqlite_families_and_share_resources() -> R
         let temp = tempfile::tempdir()?;
         let (paths, old_session) = fixture(temp.path(), grouped, standalone).await?;
         let family = wal_family(&old_session.join("history.sqlite"), false).await?;
+        // Exercise split roots without duplicating the fixture's authoritative product family.
+        for suffix in ["", "-wal", "-shm"] {
+            tokio::fs::remove_file(temp.path().join(format!("v2/studio.sqlite{suffix}"))).await?;
+        }
         let product = wal_family(&temp.path().join("studio/v2/studio.sqlite"), true).await?;
         let bot = wal_family(
             &temp.path().join("v2/bots/bot-test-one/state.sqlite"),
@@ -417,6 +423,148 @@ async fn invalid_inputs_keep_originals_and_never_publish_default_layout() -> Res
 }
 
 #[tokio::test]
+async fn registered_v2_sessions_without_sources_fail_on_every_restart() -> Result<()> {
+    for grouped in [false, true] {
+        let temp = tempfile::tempdir()?;
+        let (paths, source) = fixture(temp.path(), grouped, !grouped).await?;
+        let catalog = tokio::fs::read(temp.path().join("v2/catalog.toml")).await?;
+        tokio::fs::remove_dir_all(source).await?;
+        for _ in 0..2 {
+            let error = prepare(&paths)
+                .await
+                .expect_err("missing registered session");
+            assert!(format!("{error:#}").contains("registered v2 session source missing"));
+            assert!(!paths.data_dir().exists());
+            let journal =
+                decode_journal(&tokio::fs::read_to_string(temp.path().join(JOURNAL)).await?)?;
+            assert_eq!(journal.phase, Phase::Building);
+            assert_eq!(
+                tokio::fs::read(backup_root(&paths, &journal).join("v2/catalog.toml")).await?,
+                catalog
+            );
+            let stage = staging(&paths, &journal);
+            assert!(!stage.layout_file().exists());
+            assert!(
+                !stage
+                    .session_paths(OWNER, THREAD)?
+                    .root()
+                    .join("session.toml")
+                    .exists()
+            );
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn canonical_v2_missing_database_families_never_create_replacements() -> Result<()> {
+    for name in ["studio.sqlite", "calls/calls.sqlite"] {
+        let temp = tempfile::tempdir()?;
+        let (paths, _) = fixture(temp.path(), true, false).await?;
+        let catalog = tokio::fs::read(temp.path().join("v2/catalog.toml")).await?;
+        for suffix in ["", "-wal", "-shm"] {
+            let member = temp.path().join(format!("v2/{name}{suffix}"));
+            if member.exists() {
+                tokio::fs::remove_file(member).await?;
+            }
+        }
+        for _ in 0..2 {
+            let error = prepare(&paths).await.expect_err(name);
+            assert!(
+                format!("{error:#}").contains(&format!("v2 authoritative {name} missing")),
+                "{error:#}"
+            );
+            assert!(!paths.data_dir().exists());
+            let journal =
+                decode_journal(&tokio::fs::read_to_string(temp.path().join(JOURNAL)).await?)?;
+            let stage = staging(&paths, &journal);
+            assert!(!stage.data_dir().join(name).exists());
+            assert!(!stage.layout_file().exists());
+            let backup = backup_root(&paths, &journal);
+            assert_eq!(
+                tokio::fs::read(backup.join("v2/catalog.toml")).await?,
+                catalog
+            );
+            assert!(backup.join("v2/calls/logs/preserved.txt").exists());
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn orphan_database_sidecars_in_other_v2_root_are_not_ignored() -> Result<()> {
+    for name in ["studio.sqlite", "calls/calls.sqlite"] {
+        let temp = tempfile::tempdir()?;
+        let (paths, _) = fixture(temp.path(), false, false).await?;
+        let sidecar = temp.path().join(format!("studio/v2/{name}-wal"));
+        tokio::fs::create_dir_all(sidecar.parent().context("sidecar parent")?).await?;
+        tokio::fs::write(&sidecar, b"orphan database bytes").await?;
+        for _ in 0..2 {
+            prepare(&paths).await.expect_err(name);
+            assert!(!paths.layout_file().exists());
+        }
+        let journal = decode_journal(&tokio::fs::read_to_string(temp.path().join(JOURNAL)).await?)?;
+        assert_eq!(
+            tokio::fs::read(backup_root(&paths, &journal).join(sidecar.strip_prefix(temp.path())?))
+                .await?,
+            b"orphan database bytes"
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn fresh_and_cache_only_v2_homes_create_complete_current_installations() -> Result<()> {
+    for cache_only in [false, true] {
+        let temp = tempfile::tempdir()?;
+        let paths = StudioPaths::from_home(temp.path().to_owned());
+        if cache_only {
+            tokio::fs::create_dir_all(temp.path().join("v2/model-catalogs")).await?;
+            tokio::fs::write(
+                temp.path().join("v2/model-catalogs/cache"),
+                b"rebuildable catalog bytes",
+            )
+            .await?;
+        }
+        prepare(&paths).await?;
+        prepare(&paths).await?;
+        let store = StudioStore::prepare_database(&paths.database()).await?;
+        assert!(store.catalog().entries().is_empty());
+        assert!(paths.calls_database().exists());
+        assert!(paths.database().exists());
+        assert!(paths.layout_file().exists());
+        store.close().await?;
+        if cache_only {
+            assert_eq!(
+                tokio::fs::read(paths.model_catalogs_dir().join("cache")).await?,
+                b"rebuildable catalog bytes"
+            );
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn unknown_v2_material_is_not_a_fresh_installation() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let paths = StudioPaths::from_home(temp.path().to_owned());
+    tokio::fs::create_dir_all(temp.path().join("v2")).await?;
+    tokio::fs::write(temp.path().join("v2/unknown"), b"unclassified state").await?;
+    for _ in 0..2 {
+        prepare(&paths)
+            .await
+            .expect_err("unknown installation evidence");
+        assert!(!paths.data_dir().exists());
+    }
+    let journal = decode_journal(&tokio::fs::read_to_string(temp.path().join(JOURNAL)).await?)?;
+    assert_eq!(
+        tokio::fs::read(backup_root(&paths, &journal).join("v2/unknown")).await?,
+        b"unclassified state"
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn failed_shared_attachment_batch_keeps_tool_and_prior_attachment_resources() -> Result<()> {
     let temp = tempfile::tempdir()?;
     let (paths, _) = fixture(temp.path(), false, false).await?;
@@ -608,6 +756,27 @@ async fn checkpoint_family(
     Ok(())
 }
 
+async fn prepared_history_family(target: &Path, thread: &str, fence: u64) -> Result<()> {
+    let donor = tempfile::tempdir()?;
+    let live = donor.path().join("history.sqlite");
+    let history = crate::studio::storage::history::HistoryStore::open(&live, thread).await?;
+    // The real history owner initializes its schema and commits facts, but no checkpoint import
+    // has happened yet. Capture only a quiescent donor, never open the migration fixture in flight.
+    history.commit(fence, &[], &[]).await?;
+    assert!(history.checkpoint().await?.is_none());
+    for suffix in ["", "-wal", "-shm"] {
+        let from = donor.path().join(format!("history.sqlite{suffix}"));
+        if from.exists() {
+            tokio::fs::copy(
+                from,
+                target.with_file_name(format!("history.sqlite{suffix}")),
+            )
+            .await?;
+        }
+    }
+    Ok(())
+}
+
 async fn bot_binding_fixture(home: &Path, frozen_bot: &str) -> Result<(StudioPaths, String)> {
     let (paths, session) = fixture(home, true, false).await?;
     let old_root = home
@@ -682,7 +851,7 @@ async fn bot_binding_fixture(home: &Path, frozen_bot: &str) -> Result<(StudioPat
 }
 
 async fn frozen_workspace_identity(home: &Path, root: &str) -> Result<()> {
-    let database = home.join("studio/v2/studio.sqlite");
+    let database = home.join("v2/studio.sqlite");
     wal_family(&database, true).await?;
     let mut db = sea_orm::sqlx::SqliteConnection::connect_with(
         &sea_orm::sqlx::sqlite::SqliteConnectOptions::new().filename(&database),
@@ -797,6 +966,233 @@ async fn proven_bot_root_and_child_relocate_only_typed_fields_on_demand() -> Res
         );
     }
     store.close().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn prepared_history_without_checkpoint_recovers_verified_toml_and_keeps_sqlite_canonical()
+-> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let (paths, old_root) = bot_binding_fixture(temp.path(), "bot-test-one").await?;
+    let sessions = temp
+        .path()
+        .join("v2/projects")
+        .join(storage_key(OWNER, "Workspace")?)
+        .join("sessions");
+    let child = sessions.join(storage_key("bot-child", "Thread")?);
+    prepared_history_family(&child.join("history.sqlite"), "bot-child", 7).await?;
+    let mut original = bot_checkpoint("bot-child", "bot-test-one", &old_root, true)?;
+    original.history_fence = 7;
+    original.state_revision = 37;
+    original.state.commit_sequence = 37;
+    // Freeze an already-current delegation fact so this test isolates relocation rather than
+    // the independent model-access migration that adds an absent delegation extension.
+    original.state.extensions.insert(
+        crate::studio::delegation::EXTENSION.into(),
+        pl_core::thread::extensions::ExtensionRecord {
+            revision: 8,
+            payload: crate::studio::delegation::encode(Default::default())?,
+        },
+    );
+    let (externalized, bodies) = original.externalize_bodies(0);
+    assert!(!bodies.is_empty());
+    tokio::fs::create_dir_all(child.join("blobs/checkpoint")).await?;
+    for body in bodies {
+        let hash = body
+            .entry
+            .reference
+            .digest()
+            .strip_prefix("sha256:")
+            .context("body hash")?;
+        let directory = child.join("blobs/checkpoint").join(&hash[..2]);
+        tokio::fs::create_dir_all(&directory).await?;
+        tokio::fs::write(directory.join(hash), body.bytes).await?;
+    }
+    let toml_bytes = toml::to_string(&externalized)?;
+    tokio::fs::write(child.join("state.toml"), &toml_bytes).await?;
+    // Root already has a committed SQLite checkpoint: even a contradictory/future stale TOML
+    // must not supersede it or make owner evidence depend on the wrong source.
+    tokio::fs::write(
+        sessions
+            .join(storage_key(THREAD, "Thread")?)
+            .join("state.toml"),
+        "schemaVersion = 999\nthreadId = 'stale-foreign-thread'\n",
+    )
+    .await?;
+    prepare(&paths).await?;
+    let session = paths.session_paths(OWNER, "bot-child")?;
+    let mapping = bot_roots::for_history(&session.history_database(), "bot-child")
+        .await?
+        .context("published bot proof")?;
+    assert!(mapping.threads["bot-child"].proven_local_root);
+    let store = StudioStore::prepare_database(&paths.database()).await?;
+    let history = store.history_for(OWNER, "bot-child").await?;
+    store
+        .state_for(OWNER, "bot-child")?
+        .prepare_recovery(&history)
+        .await?;
+    let recovered = history
+        .prepare_model_access()
+        .await?
+        .context("recovered checkpoint")?;
+    assert_eq!(recovered.thread_id, original.thread_id);
+    assert_eq!(recovered.history_fence, 7);
+    assert_eq!(history.watermark().await?, 7);
+    assert_eq!(recovered.state_revision, 37);
+    assert_eq!(recovered.saved_at, original.saved_at);
+    assert_eq!(
+        recovered.state.extension_sequence,
+        original.state.extension_sequence
+    );
+    assert_eq!(
+        serde_json::to_value(&recovered.state.extensions["unrelated.opaque"])?,
+        serde_json::to_value(&original.state.extensions["unrelated.opaque"])?
+    );
+    let assignment = crate::studio::workspace_receipt::from_snapshot(&recovered.state)?
+        .context("child workspace assignment")?;
+    assert_eq!(assignment.root, mapping.new_root);
+    assert_eq!(assignment.project_root, mapping.new_root);
+    assert_eq!(assignment.writable_paths, Some(Vec::new()));
+    assert_eq!(recovered.state.extensions["studio.workspace"].revision, 9);
+    let owner: crate::studio::WorkspaceRecord = serde_json::from_str(
+        recovered.state.extensions["studio.project"]
+            .payload
+            .content(),
+    )?;
+    assert_eq!(owner.id, OWNER);
+    assert_eq!(owner.path, mapping.new_root);
+    assert_eq!(recovered.state.extensions["studio.project"].revision, 5);
+    assert_eq!(
+        store
+            .workspaces()
+            .get(OWNER)
+            .context("business workspace")?
+            .path,
+        "/isolated-workspace"
+    );
+    let canonical_root = store.history_for(OWNER, THREAD).await?;
+    assert_eq!(
+        canonical_root
+            .prepare_model_access()
+            .await?
+            .context("root checkpoint")?
+            .thread_id,
+        THREAD
+    );
+    assert_eq!(
+        serde_json::to_value(history.prepare_model_access().await?.context("restart")?)?,
+        serde_json::to_value(recovered)?
+    );
+    store.close().await?;
+    let journal = decode_journal(&tokio::fs::read_to_string(temp.path().join(JOURNAL)).await?)?;
+    assert_eq!(
+        tokio::fs::read_to_string(
+            backup_root(&paths, &journal)
+                .join(child.strip_prefix(temp.path())?)
+                .join("state.toml")
+        )
+        .await?,
+        toml_bytes
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn prepared_history_toml_window_rejects_unknown_or_conflicting_evidence() -> Result<()> {
+    for fault in [
+        "foreign-history",
+        "future-history",
+        "missing-checkpoint-table",
+        "unversioned-history",
+        "corrupt-history",
+        "future-toml",
+        "foreign-toml",
+        "owner-conflict",
+        "missing-body",
+        "corrupt-toml",
+    ] {
+        let temp = tempfile::tempdir()?;
+        let (paths, old_root) = bot_binding_fixture(temp.path(), "bot-test-one").await?;
+        let child = temp
+            .path()
+            .join("v2/projects")
+            .join(storage_key(OWNER, "Workspace")?)
+            .join("sessions")
+            .join(storage_key("bot-child", "Thread")?);
+        let database = child.join("history.sqlite");
+        let thread = if fault == "foreign-history" {
+            "other-thread"
+        } else {
+            "bot-child"
+        };
+        prepared_history_family(&database, thread, 7).await?;
+        let mut checkpoint = bot_checkpoint("bot-child", "bot-test-one", &old_root, true)?;
+        checkpoint.history_fence = 7;
+        checkpoint.state_revision = 37;
+        checkpoint.state.commit_sequence = 37;
+        match fault {
+            "future-history" | "missing-checkpoint-table" => {
+                let mut db = sea_orm::sqlx::SqliteConnection::connect_with(
+                    &sea_orm::sqlx::sqlite::SqliteConnectOptions::new().filename(&database),
+                )
+                .await?;
+                db.execute(if fault == "future-history" {
+                    "UPDATE history_meta SET schema_version=999"
+                } else {
+                    "DROP TABLE session_checkpoint"
+                })
+                .await?;
+                db.close().await?;
+            }
+            "unversioned-history" | "corrupt-history" => {
+                for suffix in ["", "-wal", "-shm"] {
+                    let member = child.join(format!("history.sqlite{suffix}"));
+                    if member.exists() {
+                        tokio::fs::remove_file(member).await?;
+                    }
+                }
+                tokio::fs::write(
+                    &database,
+                    if fault == "corrupt-history" {
+                        b"not sqlite".as_slice()
+                    } else {
+                        &[]
+                    },
+                )
+                .await?;
+            }
+            "future-toml" => checkpoint.schema_version = 999,
+            "foreign-toml" => checkpoint.thread_id = "foreign-thread".into(),
+            "owner-conflict" => {
+                checkpoint = bot_checkpoint("bot-child", "bot-other", &old_root, true)?
+            }
+            "missing-body" => {
+                checkpoint = checkpoint.externalize_bodies(0).0;
+                assert!(!checkpoint.external_bodies.is_empty());
+            }
+            _ => {}
+        }
+        let content = if fault == "corrupt-toml" {
+            "broken = [".to_owned()
+        } else {
+            toml::to_string(&checkpoint)?
+        };
+        tokio::fs::write(child.join("state.toml"), &content).await?;
+        for _ in 0..2 {
+            prepare(&paths).await.expect_err(fault);
+            assert!(!paths.layout_file().exists(), "{fault}");
+        }
+        let journal = decode_journal(&tokio::fs::read_to_string(temp.path().join(JOURNAL)).await?)?;
+        assert_eq!(
+            tokio::fs::read_to_string(
+                backup_root(&paths, &journal)
+                    .join(child.strip_prefix(temp.path())?)
+                    .join("state.toml")
+            )
+            .await?,
+            content
+        );
+    }
     Ok(())
 }
 
