@@ -757,6 +757,46 @@ mod schema_upgrade_tests {
                 db.execute_unprepared("DROP TABLE agent_evaluations")
                     .await?;
             }
+            for missing in [
+                "threads",
+                "projects",
+                "app_settings",
+                "studio_objects",
+                "agent_evaluations",
+            ] {
+                if missing == "agent_evaluations" && version < 24 {
+                    continue;
+                }
+                db.execute_unprepared("SAVEPOINT missing_product_table")
+                    .await?;
+                db.execute_unprepared(&format!("DROP TABLE {missing}"))
+                    .await?;
+                let before = schema_fingerprint(&db).await?;
+                let error = migrate(&db)
+                    .await
+                    .expect_err("incomplete v2 must fail before writes");
+                assert!(
+                    format!("{error:#}").contains(&format!(
+                        "required Studio product table {missing} is missing"
+                    )),
+                    "{error:#}"
+                );
+                assert_eq!(database_schema_version(&db).await?, version);
+                assert_eq!(schema_fingerprint(&db).await?, before);
+                assert!(
+                    db.query_one_raw(Statement::from_string(
+                        DatabaseBackend::Sqlite,
+                        "SELECT 1 FROM sqlite_schema WHERE name='seaql_migrations'",
+                    ))
+                    .await?
+                    .is_none(),
+                    "a rejected source must not be enrolled"
+                );
+                db.execute_unprepared(
+                    "ROLLBACK TO missing_product_table; RELEASE missing_product_table",
+                )
+                .await?;
+            }
             migrate(&db).await?;
             validate_database(&db).await?;
             let row = db.query_one_raw(Statement::from_string(DatabaseBackend::Sqlite,"SELECT revision,schema_version,payload_json,payload_hash,updated_at FROM studio_objects WHERE owner_id='kept-owner'")).await?.context("retained product fact")?;
@@ -790,6 +830,18 @@ mod schema_upgrade_tests {
                 );
             }
             migrate(&db).await?;
+            // A current file retains its independent facts when only framework bookkeeping is
+            // lost. Adoption must not reset the marker or replay retired mirror deletion.
+            db.execute_unprepared("DROP TABLE seaql_migrations").await?;
+            migrate(&db).await?;
+            validate_database(&db).await?;
+            let row = db.query_one_raw(Statement::from_string(
+                DatabaseBackend::Sqlite,
+                "SELECT revision,payload_json,payload_hash FROM studio_objects WHERE owner_id='kept-owner'",
+            )).await?.context("adopted independent fact")?;
+            assert_eq!(row.try_get_by_index::<i64>(0)?, 7);
+            assert_eq!(row.try_get_by_index::<String>(1)?, "opaque bytes");
+            assert_eq!(row.try_get_by_index::<String>(2)?, "original hash");
             db.close().await?;
         }
         Ok(())

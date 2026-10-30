@@ -27,6 +27,26 @@ pub(super) async fn preflight(db: &DatabaseConnection) -> Result<()> {
                 }
             )
         );
+        let manager = SchemaManager::new(db);
+        for table in [
+            "studio_objects",
+            "agent_evaluations",
+            "threads",
+            "projects",
+            "app_settings",
+        ] {
+            // The marker proves which tables this generation owns. Current format 27 has
+            // retired directory mirrors; v2 must still contain them before any migration writes.
+            if (table == "agent_evaluations" && version < 24)
+                || (matches!(table, "threads" | "projects" | "app_settings") && version >= 27)
+            {
+                continue;
+            }
+            ensure!(
+                manager.has_table(table).await?,
+                "required Studio product table {table} is missing; existing data preserved"
+            );
+        }
     }
     let pending = Migrator::get_pending_migrations_read_only(db)
         .await
@@ -108,6 +128,11 @@ impl MigrationTrait for RemoveDirectoryMirrors {
         Some(true)
     }
     async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        if version(manager.get_connection()).await? >= STUDIO_DATABASE_SCHEMA_VERSION {
+            // The current schema was validated before opening the writer. SeaORM may be
+            // enrolling a current file whose migration records are absent, not upgrading v2.
+            return Ok(());
+        }
         super::agent_close::upgrade_bindings(manager.get_connection())
             .await
             .map_err(|error| DbErr::Migration(format!("{error:#}")))?;
@@ -220,6 +245,10 @@ impl MigrationTrait for AgentCloseBinding {
     }
     async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
         let db = manager.get_connection();
+        if version(db).await? >= 26 {
+            // Re-enrolling a current file must never downgrade its format marker.
+            return Ok(());
+        }
         super::agent_close::upgrade_bindings(db)
             .await
             .map_err(|error| DbErr::Migration(format!("{error:#}")))?;
