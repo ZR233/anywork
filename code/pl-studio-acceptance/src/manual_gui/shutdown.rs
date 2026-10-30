@@ -194,7 +194,7 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
         write_config(extra, &ready, None, false)?;
     }
     // The runtime is never allowed to install here: a regular file occupies the
-    // path where the v2 data root must be created, so the runtime fails with a
+    // path where the current data root must be created, so the runtime fails with a
     // real typed startup error on any host (a read-only directory is ignored
     // when the acceptance runs as root, which proves nothing). The Dart app and
     // its Driver still start and stay alive to be asked to exit. (Pointing
@@ -203,7 +203,7 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
     // start.)
     fs::create_dir(&home_unavailable)?;
     write_config(&home_unavailable, &ready, None, false)?;
-    fs::write(home_unavailable.join("v2"), b"not a directory\n")?;
+    fs::write(home_unavailable.join("data"), b"not a directory\n")?;
 
     // Driver-only fault homes: the two injected startup faults, the
     // subscription fault and the temp-fallback diagnostics home share the

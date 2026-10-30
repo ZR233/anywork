@@ -2011,7 +2011,7 @@ fn scan_bot_ordinary_store(
     files: &mut usize,
     bytes: &mut u64,
 ) -> Result<()> {
-    let bots = home.join("v2").join("bots");
+    let bots = home.join("data").join("bots");
     match std::fs::read_dir(&bots) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(_) => bail!("ordinary bot store could not be listed"),

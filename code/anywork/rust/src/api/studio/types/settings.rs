@@ -637,7 +637,7 @@ pub struct BridgeGeneralSettingsDto {
     #[serde(default)]
     pub pinned_thread_ids: Vec<String>,
     #[serde(default)]
-    pub pinned_workspace_ids: Vec<String>,
+    pub pinned_project_ids: Vec<String>,
 }
 
 impl Default for BridgeGeneralSettingsDto {
@@ -647,7 +647,7 @@ impl Default for BridgeGeneralSettingsDto {
             compact_timeline: false,
             sidebar_width: None,
             pinned_thread_ids: Vec::new(),
-            pinned_workspace_ids: Vec::new(),
+            pinned_project_ids: Vec::new(),
         }
     }
 }

@@ -223,7 +223,7 @@ impl StudioRuntime {
                                 "at most 64 pinned projects are supported".to_string(),
                             ));
                         }
-                        config.ui.pinned_workspace_ids = normalized_string_list(value);
+                        config.ui.pinned_project_ids = normalized_string_list(value);
                     }
                     SettingsFieldUpdate::WebSearchMode { value } => {
                         config.web_search.mode = parse_web_search_mode(&value)?;

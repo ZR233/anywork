@@ -3343,7 +3343,7 @@ fn write_copy_fixture_config(home: &Path, ready: &FixtureReady) -> Result<()> {
     config.skills.user_dir = home.join("skills").to_string_lossy().into_owned();
     // Bots have their own canonical documents. Disable them before runtime startup, including
     // each original identity, without deleting their ledger or touching its selected credential.
-    let bots = home.join("v2/bots");
+    let bots = home.join("data/bots");
     if bots.is_dir() {
         for entry in fs::read_dir(bots)? {
             let path = entry?.path().join("config.toml");
@@ -3897,8 +3897,8 @@ fn seed_startup_fault(home: &Path, fault: &str) -> Result<()> {
     fs::write(home.join("sessions/old/retained"), b"old session")?;
     match fault {
         "config" => fs::write(home.join("config.toml"), b"schema_version = invalid"),
-        "database" => fs::write(home.join("studio/v2/studio.sqlite"), b"invalid database"),
-        "log" => fs::write(home.join("v2/calls/logs/calls-0000020000-000001.jsonl"), b"invalid complete record\n"),
+        "database" => fs::write(home.join("data/studio.sqlite"), b"invalid database"),
+        "log" => fs::write(home.join("data/calls/logs/calls-0000020000-000001.jsonl"), b"invalid complete record\n"),
         "cache" => fs::write(home.join("v2/settings.toml"), b"schemaVersion = 1\nrevision = 2\n[[entries]]\nkey = 'observed:providerUsage:v2'\nvalue = 'invalid JSON'\nupdatedAt = 1\n"),
         _ => bail!("unknown startup fault"),
     }?;
@@ -4097,7 +4097,7 @@ fn run_statistics_scenario(
                 interrupt,
                 Duration::from_secs(120),
             )?;
-            let calls_db = home.join("v2/calls/calls.sqlite");
+            let calls_db = home.join("data/calls/calls.sqlite");
             ensure!(
                 calls_db.is_file(),
                 "GUI did not initialize isolated calls.sqlite"
@@ -4545,7 +4545,7 @@ fn wait_for_statistics_driver(
 }
 
 fn statistics_db_counts(home: &Path) -> Result<StatisticsDbCounts> {
-    let database = home.join("v2/calls/calls.sqlite");
+    let database = home.join("data/calls/calls.sqlite");
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
@@ -6252,7 +6252,7 @@ struct HistoryLockTurnItems {
 /// is isolated to this run and holds exactly one Thread, so more than one
 /// candidate (or none) is reported instead of guessing which library to lock.
 fn history_lock_database(home: &Path) -> Result<std::path::PathBuf> {
-    let projects = home.join("v2/projects");
+    let projects = home.join("data/workspaces");
     let mut candidates = Vec::new();
     if projects.is_dir() {
         for project in fs::read_dir(&projects)? {

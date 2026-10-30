@@ -121,7 +121,7 @@
 - **共用 Studio 会话与发送记录**：授权消息进入关联项目的 Thread，仅把正式可见回复发回原会话。设置页可浏览平台群与已观察单聊、按权限查询历史并手动发送；成功、拒绝、部分完成和结果未知分别展示，未知或部分结果不自动重放。
 - **按项目开放四项工具**：`list_bots`、`list_bot_conversations`、`read_bot_messages`、`send_bot_message` 只在明确授权的关联项目根会话中安装，不向智能体开放注册、凭据或联系人授权管理。
 
-机器人配置与操作记录统一保存在 `<StudioHome>/v2/bots/`（默认 `~/.anywork/v2/bots/`），App Secret 使用系统凭据服务；仅有进程 secret lease 的环境会明确显示“仅当前进程”。远程消息可能触发本机 full-access 工具，**关联项目不等于操作系统沙箱**。本地模拟平台验收不代表真实飞书兼容；真实手机授权与应用发布仍需使用者自行确认。详见[机器人接入设计与边界](design/27-bots.md)。
+机器人配置与操作记录统一保存在 `<StudioHome>/data/bots/`（默认 `~/.anywork/data/bots/`），App Secret 使用系统凭据服务；仅有进程 secret lease 的环境会明确显示“仅当前进程”。远程消息可能触发本机 full-access 工具，**关联项目不等于操作系统沙箱**。本地模拟平台验收不代表真实飞书兼容；真实手机授权与应用发布仍需使用者自行确认。详见[机器人接入设计与边界](design/27-bots.md)。
 
 ---
 
@@ -163,8 +163,9 @@ cargo xtask build-gui
 ### 5. 数据与临时文件在哪里？
 
 - **用户配置**默认位于 `~/.anywork/config.toml`（Windows 为 `%USERPROFILE%\.anywork\config.toml`），密钥保存在系统凭据库。可用 `--studio-home` 或 `ANYWORK_HOME` 指定独立数据根。
-- **项目与会话数据**按稳定身份收在 `<studio-home>/v2/projects/<project-key>/sessions/<thread-key>/`；历史、附件和可靠工具输出随会话保存。归档不是删除历史，既有 v2 平铺会话通过可接续迁移整理到新目录。
-- **智能体临时文件**位于实际工作区的 `.anywork/sessions/<thread-key>/scratch/`，待交付产物位于同级 `artifacts/`；SSH 会话使用远端工作区路径。系统提示词会给出本会话的准确位置，运行池内的忽略文件避免把临时产物误提交到 Git。
+- **统一会话数据**位于无版本号的 `<studio-home>/data/workspaces/<workspace-key>/sessions/<thread-key>/`；项目和无项目归属复用同一结构，历史与可靠资源随会话保存。仅支持 v2 数据可接续迁入当前布局，更早数据不导入、不删除。
+- **智能体临时文件**归入实际工作区的 `.anywork/sessions/<thread-key>/temp/`，待交付产物放在同级 `artifacts/`；SSH 会话使用远端路径。归档在停止执行并确认可靠保存后清理专用临时目录，不删除历史、可靠资源、artifacts 或工作文件；清理失败不宣称归档成功。
+- **用户技能**直接只读标准用户主目录的 `.agents/skills/`，不使用产品私有 `skills/`，也不受 Studio home 覆盖影响；项目技能和内置系统技能保持独立来源。
 
 内部数据库和归属清单由应用管理，不要手工编辑。目录职责、迁移与 helper 传输边界详见
 [存储契约](design/17-studio-storage.md) 和 [SSH 远程开发](design/22-ssh-remote.md)。
