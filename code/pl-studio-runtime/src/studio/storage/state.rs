@@ -156,6 +156,15 @@ impl StateStore {
             self.cleanup_legacy(history).await?;
             return Ok(Some(checkpoint));
         }
+        // Current SQLite recovery must not carry the legacy parser, accounting and import
+        // temporaries in every poll frame. Allocate that owned branch only when import is needed.
+        Box::pin(self.clone().import_legacy(history.clone())).await
+    }
+
+    async fn import_legacy(
+        self,
+        history: super::history::HistoryStore,
+    ) -> Result<Option<ThreadCheckpoint>> {
         let Some(mut checkpoint) = self.load_legacy().await? else {
             ensure!(
                 history.watermark().await? == 0,
@@ -223,7 +232,7 @@ impl StateStore {
             .checkpoint()
             .await?
             .context("imported checkpoint is absent")?;
-        self.cleanup_legacy(history).await?;
+        self.cleanup_legacy(&history).await?;
         Ok(Some(restored))
     }
 
