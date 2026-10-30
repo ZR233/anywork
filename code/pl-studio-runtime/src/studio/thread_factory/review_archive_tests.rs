@@ -5,7 +5,7 @@ use crate::{
         StudioStore,
         agent_host::worktree_lease::{WorkspaceEndpoint, WorkspaceIdentity},
         storage_fault_test_support::{
-            ThreadStorageSink, close_factory, register_test_thread, save_terminal_report,
+            ThreadStorageSink, close_factory, save_terminal_report,
             spawn_live_projection_for_thread,
         },
         store::{
@@ -22,27 +22,76 @@ use pl_core::{
     thread::{ThreadHandle, cold::ColdStoreHandle, inbox::ThreadMessage},
 };
 
+async fn register(
+    store: &StudioStore,
+    protocol: &pl_protocol::Thread,
+    root: &str,
+) -> anyhow::Result<()> {
+    let mut delta = DirectoryDelta::upsert_project(ProjectDirectoryRecord {
+        id: protocol.workspace_id.clone(),
+        kind: pl_protocol::studio::WorkspaceKind::Project,
+        name: "Review fixture".into(),
+        path: root.into(),
+        ssh_alias: None,
+        created_at: 1,
+        updated_at: 1,
+        last_opened_at: None,
+        closed: false,
+    });
+    delta.thread_upserts.push(protocol.clone());
+    store.persist_directory_summaries(&delta).await
+}
+
 async fn restore_delivery(
     owner: &StudioThreadAssembler,
     store: &StudioStore,
     id: &str,
     assignment: &pl_protocol::AgentWorkspaceAssignmentSnapshot,
-) -> anyhow::Result<(ThreadHandle, tokio::task::JoinHandle<()>)> {
+) -> anyhow::Result<(ThreadHandle, tokio::task::JoinHandle<()>, String)> {
     let mut protocol = pl_protocol::Thread::placeholder(id);
     protocol.workspace_id = "review-workspace".into();
     protocol.parent_thread_id = Some("root".into());
     protocol.root_thread_id = "root".into();
     protocol.workspace_path = assignment.root.clone();
-    register_test_thread(store, &protocol).await?;
+    register(store, &protocol, &assignment.project_root).await?;
+    let turn = pl_core::thread::TurnRecord {
+        turn_id: "original-terminal-turn".into(),
+        input_id: None,
+        state: pl_core::thread::TurnState::Finished(pl_core::thread::TurnOutcome::Completed),
+        model_steps: 0,
+        elapsed_ms: None,
+    };
+    let review = (assignment.mode == pl_protocol::AgentWorkspaceMode::Review).then(|| {
+        serde_json::json!({
+            "target": assignment.review_target,
+            "disposition": pl_tool::finish_turn::ReviewDisposition::NeedsChanges,
+            "reason": null,
+        })
+    });
+    let body = serde_json::to_string(&serde_json::json!({
+        "childId": id,
+        "commitSequence": 1,
+        "turn": turn,
+        "turnId": "original-terminal-turn",
+        "inputId": null,
+        "review": review,
+        "message": "immutable original review evidence",
+        "messages": [],
+        "runningTasks": [],
+        "pendingInteractions": [],
+        "permissions": [],
+    }))?;
     save_terminal_report(
         store,
         &protocol,
         ThreadMessage {
             id: crate::studio::agent_close::terminal_report_id(id, 1),
             kind: pl_core::context::AgentMessageKind::Report,
-            source_id: format!("agent:{id}"),
-            payload: OpaquePayload::text("immutable original review evidence"),
-            context: Vec::new(),
+            source_id: format!("studio.child:{id}"),
+            payload: OpaquePayload::new("pl.studio.turn-report", 3, body.clone())?,
+            context: vec![pl_core::context::ContextContent::Text {
+                text: body.clone().into(),
+            }],
         },
     )
     .await?;
@@ -69,7 +118,7 @@ async fn restore_delivery(
     prepared.cold_store = Some(ColdStoreHandle::new(sink));
     let thread = owner.assemble(prepared).await?;
     thread.flush().await?;
-    Ok((thread, projection))
+    Ok((thread, projection, body))
 }
 
 #[tokio::test]
@@ -86,7 +135,8 @@ async fn archive_sealed_review_feedback_remains_rejected_after_volatile_seal_dro
     let mut protocol = pl_protocol::Thread::placeholder("root");
     protocol.workspace_id = "review-workspace".into();
     protocol.root_thread_id = "root".into();
-    register_test_thread(&store, &protocol).await?;
+    protocol.workspace_path = root.clone();
+    register(&store, &protocol, &root).await?;
     owner
         .assemble(spec("root".into(), None, temp.path()))
         .await?;
@@ -98,7 +148,7 @@ async fn archive_sealed_review_feedback_remains_rejected_after_volatile_seal_dro
         review_target: None,
         worktree: None,
     };
-    let (target, target_projection) =
+    let (target, target_projection, _) =
         restore_delivery(&owner, &store, "target", &assignment).await?;
     let snapshot = target.snapshot();
     let turn = store
@@ -126,23 +176,12 @@ async fn archive_sealed_review_feedback_remains_rejected_after_volatile_seal_dro
         feedback: Some(pl_protocol::AgentReviewFeedback::ToExecutor),
         baseline: Some(baseline),
     });
-    let (_, reviewer_projection) =
+    let (_, reviewer_projection, original_body) =
         restore_delivery(&owner, &store, "reviewer", &review_assignment).await?;
-    store
-        .persist_directory_summaries(&DirectoryDelta::upsert_project(ProjectDirectoryRecord {
-            id: "review-workspace".into(),
-            kind: pl_protocol::studio::WorkspaceKind::Project,
-            name: "Review fixture".into(),
-            path: root.clone(),
-            ssh_alias: None,
-            created_at: 1,
-            updated_at: 1,
-            last_opened_at: None,
-            closed: false,
-        }))
-        .await?;
     let binding = WorkspaceIdentity::canonical(WorkspaceEndpoint::Local, root)?;
-    store.bind_workspace_identity("target", &binding).await?;
+    for id in ["root", "target", "reviewer"] {
+        store.bind_workspace_identity(id, &binding).await?;
+    }
     // Prove this is an otherwise valid physical/frozen target, not a rejection by a bad fixture.
     drop(
         physical
@@ -150,23 +189,28 @@ async fn archive_sealed_review_feedback_remains_rejected_after_volatile_seal_dro
             .verify_review_workspace("target", &assignment)
             .await?,
     );
-    let paths = store.registered_session_paths("target")?;
-    let seal = owner.seal_archive_scope(&["target".into()])?;
+    let seal = owner.seal_archive_scope(&["root".into()])?;
+    let mut members = Vec::new();
+    for id in seal.thread_ids() {
+        let paths = store.registered_session_paths(&id)?;
+        members.push(ArchiveMember {
+            parent_id: (id != "root").then(|| "root".into()),
+            thread_id: id,
+            workspace_id: "review-workspace".into(),
+            root_id: "root".into(),
+            host_session: paths.root().into(),
+            host_temp: paths.temp_dir(),
+            execution: binding.clone(),
+            host_cleaned: false,
+            execution_cleaned: false,
+        });
+    }
+    assert_eq!(members.len(), 3, "freeze the whole admitted registry scope");
     store
         .save_thread_archive(&ThreadArchiveOperation {
-            scope: ArchiveScope::Thread("target".into()),
+            scope: ArchiveScope::Thread("root".into()),
             revision: 1,
-            members: vec![ArchiveMember {
-                thread_id: "target".into(),
-                workspace_id: "review-workspace".into(),
-                parent_id: Some("root".into()),
-                root_id: "root".into(),
-                host_session: paths.root().into(),
-                host_temp: paths.temp_dir(),
-                execution: binding,
-                host_cleaned: false,
-                execution_cleaned: false,
-            }],
+            members,
             private_members: Vec::new(),
             phase: ArchivePhase::Sealed,
         })
@@ -181,7 +225,7 @@ async fn archive_sealed_review_feedback_remains_rejected_after_volatile_seal_dro
             turn_id: "original-terminal-turn",
             terminal_sequence: 1,
             assignment: &review_assignment,
-            body: "immutable original review evidence",
+            body: &original_body,
             source: ReviewDeliverySource::LiveTerminal,
             revocation: None,
         })
@@ -211,6 +255,17 @@ async fn archive_sealed_review_feedback_remains_rejected_after_volatile_seal_dro
             .terminal_report_sequences(0)
             .await?,
         vec![1]
+    );
+    assert_eq!(
+        store
+            .history("reviewer")
+            .await?
+            .parent_report(1)
+            .await?
+            .unwrap()
+            .payload
+            .content(),
+        original_body
     );
     owner.close_tree("root").await?;
     target_projection.await?;

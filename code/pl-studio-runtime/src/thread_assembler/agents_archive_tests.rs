@@ -222,6 +222,10 @@ struct FailClosedFlush {
     fail: Arc<AtomicBool>,
 }
 impl pl_core::thread::cold::ColdStore for FailClosedFlush {
+    fn pressure(&self, thread_id: &str) -> pl_core::thread::cold::StoragePressure {
+        self.sink.pressure(thread_id)
+    }
+
     fn admit(
         &self,
         thread_id: &str,
@@ -238,6 +242,9 @@ impl pl_core::thread::cold::ColdStore for FailClosedFlush {
         thread_id: &str,
         sequence: u64,
     ) -> Result<(), pl_core::thread::cold::ColdStoreError> {
+        // The real writer may have committed Closed even though its caller never received a
+        // successful flush ACK. Preserve its real pressure; never invent a durable watermark.
+        self.sink.flush(thread_id, sequence).await?;
         if self.fail.load(Ordering::SeqCst) {
             return Err(pl_core::thread::cold::ColdStoreError {
                 source: Box::new(std::io::Error::other(
@@ -245,7 +252,7 @@ impl pl_core::thread::cold::ColdStore for FailClosedFlush {
                 )),
             });
         }
-        self.sink.flush(thread_id, sequence).await
+        Ok(())
     }
 }
 
@@ -270,6 +277,13 @@ async fn archive_setup_failure_before_observer_retains_original_storage_until_re
     protocol.workspace_id = "workspace".into();
     protocol.root_thread_id = protocol.id.clone();
     register_test_thread(&store, &protocol).await?;
+    let host_temp = store.registered_session_paths(&protocol.id)?.temp_dir();
+    let pending_file = host_temp.join("pending-private-setup");
+    tokio::fs::write(
+        &pending_file,
+        b"not disposable before the original save ACK",
+    )
+    .await?;
     store
         .begin_thread_preparation(PreparationIdentity {
             thread_id: protocol.id.clone(),
@@ -300,6 +314,7 @@ async fn archive_setup_failure_before_observer_retains_original_storage_until_re
     let retained = owner
         .observed_thread(&protocol.id)
         .expect("original storage owner");
+    assert!(retained.flush().await.is_err());
     assert_eq!(retained.snapshot().lifecycle, ThreadLifecycle::Closed);
     {
         let state = owner.0.state();
@@ -322,6 +337,10 @@ async fn archive_setup_failure_before_observer_retains_original_storage_until_re
         "Closed is not an ACK"
     );
     assert!(owner.observed_thread(&protocol.id).is_some());
+    assert_eq!(
+        tokio::fs::read(&pending_file).await?,
+        b"not disposable before the original save ACK"
+    );
     failure.store(false, Ordering::SeqCst);
     owner.close(&protocol.id).await?;
     assert!(owner.observed_thread(&protocol.id).is_none());
