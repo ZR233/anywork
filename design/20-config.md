@@ -8,7 +8,7 @@
 
 主配置文件固定为 `~/.anywork/config.toml`（Windows 下为 `%USERPROFILE%\.anywork\config.toml`）。会话、产品数据库与调试日志的数据布局由 [存储契约](./17-studio-storage.md) 统一定义。用户自定义智能体模板单独保存于 `~/.anywork/agents/*.toml`。配置结构版本号以代码常量为准。
 
-机器人期望配置（desired config）独立保存于 `<StudioHome>/v2/bots/<bot-id>/config.toml`，拥有独立的结构版本与 `configRevision`，不在主配置文件中混入 Node、MCP 或供应商伪配置。应用密钥（App Secret）使用独立的 `bot:<bot-id>` 凭据作用域；字段定义、首次配对与在线应用边界见 [27](./27-bots.md)，物理存储布局见 [17](./17-studio-storage.md)。机器人配置可保存非敏感的所选凭据版本引用（不含凭据明文），所选引用、候选凭据材料及待确认提交的恢复由机器人所有者统一协调。
+机器人期望配置（desired config）独立保存于 `<StudioHome>/data/bots/<bot-id>/config.toml`，拥有独立的结构版本与 `configRevision`，不在主配置文件中混入 Node、MCP 或供应商伪配置。应用密钥（App Secret）使用独立的 `bot:<bot-id>` 凭据作用域；字段定义、首次配对与在线应用边界见 [27](./27-bots.md)，物理存储布局见 [17](./17-studio-storage.md)。机器人配置可保存非敏感的所选凭据版本引用（不含凭据明文），所选引用、候选凭据材料及待确认提交的恢复由机器人所有者统一协调。
 
 配置运行时在 Studio 启动时读取配置文件；此后普通对话与设置查询仅读取内存中的权威快照（canonical snapshot）。配置文件不存在时设置页展示内存默认配置；外部文件修改须通过显式重载命令应用。支持在线模型发现的账号在启动时各并行同步一次，运行期允许显式账号级同步；普通读取、订阅与组件重建不联网，也不设置周期自动同步。首屏使用成功缓存或内置定义，不等待网络；在线观察不写回 `config.toml`（详见 §20.5）。普通设置项即时保存；新增或编辑页维护独立草稿，经保存才写入磁盘，离开有修改的草稿须选择保存、放弃或取消。模型启用与压缩阈值为详情中的独立窄命令，不属于整账号编辑草稿（交互与错误反馈见 [19](./19-studio-ui.md)）。
 
@@ -132,7 +132,6 @@ env = {}
 enabled = true
 auto_learn = true
 project_dir = ".agents/skills"
-user_dir = "~/.anywork/skills"
 
 [mode_model_routes."mode.simple"]
 account_id = "deepseek"
@@ -231,13 +230,12 @@ Runtime 发布的目录修订同时覆盖完整的能力补齐后快照与 `pl-m
 - `enabled`：是否启用技能目录扫描、提示词注入、工具注册与用户 `/name` 斜杠指令，默认 `true`。
 - `auto_learn`：是否在主会话轮次结束后启动后台审查智能体自动沉淀项目技能，默认 `true`。
 - `project_dir`：项目级技能目录（相对工作区根目录解析），默认 `.agents/skills`。
-- `user_dir`：用户级只读技能目录，默认 `~/.anywork/skills`。
 - `system.enabled`：是否启用内置系统技能，默认 `true`。
 - `external_dirs`：额外只读技能目录列表，默认空列表。
 - `disabled`：禁用的技能名称列表，默认空列表。
 - `auto_learn_min_tool_calls`：触发自学习审查所需的最少工具调用次数，默认 `5`。
 
-目录优先级、前置元数据（frontmatter）格式、工具契约与自学习语义见 [10](./10-skills.md)。系统内置的 `studio-config` 技能是面向智能体的 `anywork` 配置指南；任何涉及配置文件路径、结构版本、配置段字段及默认值、凭据解析优先级或保存重载语义的变更，均须在同一提交中同步更新该技能文档。
+用户技能直接读取平台用户主目录 `.agents/skills/`，不配置 `user_dir`，不受 Studio home 覆盖影响。配置升级在具名迁移中移除旧字段且保留其他选择；旧内容只保全，不向标准目录复制或覆盖。目录优先级、前置元数据（frontmatter）格式、工具契约与自学习语义见 [10](./10-skills.md)。系统内置的 `studio-config` 技能是面向智能体的 `anywork` 配置指南；任何涉及配置文件路径、结构版本、配置段字段及默认值、凭据解析优先级或保存重载语义的变更，均须在同一提交中同步更新该技能文档。
 
 ## 20.10 配置草稿与保存前校验
 
