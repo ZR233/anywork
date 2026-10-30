@@ -284,7 +284,6 @@ String settingsFieldMutationKey(SettingsFieldCommand command) =>
       SkillsAutoLearnCommand() => 'skills:auto-learn',
       SkillsSystemEnabledCommand() => 'skills:system-enabled',
       SkillsProjectDirCommand() => 'skills:project-dir',
-      SkillsUserDirCommand() => 'skills:user-dir',
       SkillsExternalDirsCommand() => 'skills:external-dirs',
       SkillsDisabledCommand() => 'skills:disabled',
       SkillsAutoLearnMinToolCallsCommand() =>

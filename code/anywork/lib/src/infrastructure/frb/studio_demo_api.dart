@@ -2630,7 +2630,6 @@ class DemoStudioTransport extends StudioTransport
       s.skills.autoLearn,
       s.skills.systemEnabled,
       s.skills.projectDir,
-      s.skills.userDir,
       s.skills.externalDirs,
       s.skills.disabled,
       s.skills.autoLearnMinToolCalls,
@@ -2931,8 +2930,6 @@ class DemoStudioTransport extends StudioTransport
         _skills = _skills.copyWith(systemEnabled: value);
       case SkillsProjectDirCommand(:final value):
         _skills = _skills.copyWith(projectDir: value);
-      case SkillsUserDirCommand(:final value):
-        _skills = _skills.copyWith(userDir: value);
       case SkillsExternalDirsCommand(:final value):
         _skills = _skills.copyWith(externalDirs: value);
       case SkillsDisabledCommand(:final value):

@@ -14,14 +14,13 @@ impl SkillCatalog {
     /// Discovers the effective Skills catalog for one workspace.
     ///
     /// Studio passes its product-owned system directory explicitly. Product-neutral
-    /// callers pass `None` and never infer a system directory from `user_dir`. Both
-    /// use the platform user home's `.agents/skills` compatibility directory.
+    /// callers pass `None` and never infer a system directory from the user home.
+    /// Both use only the platform user home's standard `.agents/skills` directory.
     ///
     /// # Errors
     ///
-    /// Returns an error when a configured source path cannot be resolved or the
-    /// project Skills directory escapes the workspace. An unavailable platform
-    /// user home only omits the optional Agents compatibility source.
+    /// Returns an error when a source path cannot be resolved, the platform user
+    /// home is unavailable, or the project Skills directory escapes the workspace.
     pub fn discover(
         workspace_root: &Path,
         config: &SkillsConfig,
@@ -93,24 +92,20 @@ impl SkillCatalog {
 
 /// Resolves the ordered local read-only Skill sources shared by local and remote workspaces.
 ///
-/// Sources are returned in winner priority order: the configured user directory, the platform
-/// user's `.agents/skills` compatibility directory when distinct, the enabled Studio system
-/// directory, and configured external directories. A missing platform user home only omits the
-/// optional compatibility source.
+/// Sources are returned in winner priority order: the standard platform user directory,
+/// the enabled Studio system directory, and configured external directories.
 ///
 /// # Errors
 ///
-/// Returns an error when the configured user directory or an external directory cannot be
-/// resolved.
+/// Returns an error when the platform user home or an external directory cannot be resolved.
 pub fn resolve_local_readonly_skill_sources(
     config: &SkillsConfig,
     system_dir: Option<&Path>,
 ) -> Result<Vec<super::SkillDirectorySource>> {
-    let agents_user_dir = super::util::agents_user_skills_dir().ok();
-    resolve_local_readonly_skill_sources_with_agents_user_dir(
+    resolve_local_readonly_skill_sources_with_user_dir(
         config,
         system_dir,
-        agents_user_dir.as_deref(),
+        &super::util::agents_user_skills_dir()?,
     )
 }
 
@@ -246,25 +241,16 @@ fn skill_sources_from_readonly(
     Ok(sources)
 }
 
-fn resolve_local_readonly_skill_sources_with_agents_user_dir(
+fn resolve_local_readonly_skill_sources_with_user_dir(
     config: &SkillsConfig,
     system_dir: Option<&Path>,
-    agents_user_dir: Option<&Path>,
+    user_dir: &Path,
 ) -> Result<Vec<super::SkillDirectorySource>> {
     let mut sources = Vec::new();
-    let configured_user_dir = super::resolve_user_skills_dir(config)?;
     sources.push(super::SkillDirectorySource::new(
-        configured_user_dir.clone(),
+        user_dir,
         SkillSourceKind::User,
     ));
-    if let Some(root) = agents_user_dir
-        && root != configured_user_dir
-    {
-        sources.push(super::SkillDirectorySource::new(
-            root,
-            SkillSourceKind::User,
-        ));
-    }
     if config.system.enabled
         && let Some(root) = system_dir
     {
@@ -280,4 +266,90 @@ fn resolve_local_readonly_skill_sources_with_agents_user_dir(
         ));
     }
     Ok(sources)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn readonly_sources_have_one_standard_user_source_and_keep_priority_order() {
+        let home = Path::new("/isolated-home");
+        let user_dir = super::super::util::agents_user_skills_dir_from_home(home);
+        let system_dir = Path::new("/studio/studio/skills/.system");
+        let config = SkillsConfig {
+            external_dirs: vec!["/extra/skills".into()],
+            ..SkillsConfig::default()
+        };
+
+        let sources = resolve_local_readonly_skill_sources_with_user_dir(
+            &config,
+            Some(system_dir),
+            &user_dir,
+        )
+        .unwrap();
+
+        assert_eq!(
+            sources,
+            [
+                super::super::SkillDirectorySource::new(
+                    "/isolated-home/.agents/skills",
+                    SkillSourceKind::User
+                ),
+                super::super::SkillDirectorySource::new(
+                    "/studio/studio/skills/.system",
+                    SkillSourceKind::System
+                ),
+                super::super::SkillDirectorySource::new("/extra/skills", SkillSourceKind::External),
+            ]
+        );
+    }
+
+    #[test]
+    fn source_priority_is_project_then_user_then_system_then_external() {
+        let root = tempfile::tempdir().unwrap();
+        let mut sources = Vec::new();
+        for (index, kind) in [
+            SkillSourceKind::Project,
+            SkillSourceKind::User,
+            SkillSourceKind::System,
+            SkillSourceKind::External,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let source = root.path().join(index.to_string());
+            let skill = source.join("shared");
+            std::fs::create_dir_all(&skill).unwrap();
+            std::fs::write(
+                skill.join("SKILL.md"),
+                format!("---\nname: shared\ndescription: {kind:?}\n---\n"),
+            )
+            .unwrap();
+            sources.push(SkillSource {
+                root: source,
+                kind,
+                priority: index as u16,
+            });
+        }
+
+        for (winner_index, expected) in [
+            SkillSourceKind::Project,
+            SkillSourceKind::User,
+            SkillSourceKind::System,
+            SkillSourceKind::External,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let catalog = SkillCatalog::discover_from_sources(
+                root.path(),
+                &SkillsConfig::default(),
+                sources[winner_index..].to_vec(),
+            )
+            .unwrap();
+
+            assert_eq!(catalog.find("shared").unwrap().source, expected);
+        }
+    }
 }

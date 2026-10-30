@@ -3340,7 +3340,6 @@ fn write_copy_fixture_config(home: &Path, ready: &FixtureReady) -> Result<()> {
     config.mcp.servers.clear();
     config.lsp.servers.clear();
     config.acp = Default::default();
-    config.skills.user_dir = home.join("skills").to_string_lossy().into_owned();
     // Bots have their own canonical documents. Disable them before runtime startup, including
     // each original identity, without deleting their ledger or touching its selected credential.
     let bots = home.join("v2/bots");
@@ -3685,7 +3684,6 @@ fn fixture_config(
         route.model_id = "fixture-model".into();
         route.effort = None;
     }
-    config.skills.user_dir = home.join("skills").to_string_lossy().into_owned();
     Ok(config)
 }
 
@@ -6077,6 +6075,8 @@ fn start_recovery_gui(workspace: &Path, home: &Path, log_path: &Path) -> Result<
         .current_dir(workspace)
         .args(["xtask", "run-gui", "--driver"])
         .env("ANYWORK_HOME", home)
+        .env("HOME", home)
+        .env("USERPROFILE", home)
         .stdout(Stdio::from(log.try_clone()?))
         .stderr(Stdio::from(log));
     OwnedProcess::start(&mut command, false)

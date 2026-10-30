@@ -7,7 +7,6 @@ use std::sync::Arc;
 use crate::studio::ids::unix_seconds;
 use anyhow::{Context, Result};
 use pl_protocol::ObservedResource;
-use pl_tool::skill::SkillsConfig;
 use pl_tool::skill::{
     FileSystemSkillProvider, FrozenSkillCatalog, SkillProviderRegistration, SkillRegistry,
     SkillSummary,
@@ -72,22 +71,16 @@ impl SkillCatalogRuntime {
         }
     }
 
-    pub(in crate::studio::runtime) async fn refresh_system_skills(
-        &self,
-        config: &SkillsConfig,
-    ) -> Result<()> {
+    pub(in crate::studio::runtime) async fn refresh_system_skills(&self) -> Result<()> {
         let system_skills_dir = self
             .system_skills_dir
             .as_ref()
             .context("system Skills directory is not configured")?
             .as_ref()
             .clone();
-        let config = config.clone();
-        tokio::task::spawn_blocking(move || {
-            system::refresh_system_skills(&system_skills_dir, &config)
-        })
-        .await
-        .map_err(|error| anyhow::anyhow!("system Skills refresh task failed: {error}"))?
+        tokio::task::spawn_blocking(move || system::refresh_system_skills(&system_skills_dir))
+            .await
+            .map_err(|error| anyhow::anyhow!("system Skills refresh task failed: {error}"))?
     }
 }
 

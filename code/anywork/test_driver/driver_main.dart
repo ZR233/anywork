@@ -1881,7 +1881,6 @@ Map<String, Object?> _driverSkillsConfigDiagnostics() {
     'enabled': skills.enabled,
     'systemEnabled': skills.systemEnabled,
     'projectDir': skills.projectDir,
-    'userDir': skills.userDir,
     'externalDirs': List<String>.of(skills.externalDirs),
     'disabledCount': skills.disabled.length,
   };

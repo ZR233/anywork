@@ -224,7 +224,6 @@ pub(super) fn write_config(home: &Path, ready: &FixtureReady, fault: WebSearchFa
         },
     );
 
-    config.skills.user_dir = home.join("skills").to_string_lossy().into_owned();
     config.validate()?;
     let file = home.join("config.toml");
     fs::write(&file, toml::to_string_pretty(&config)?)
@@ -243,6 +242,8 @@ fn start_gui(
         .current_dir(workspace)
         .args(["xtask", "run-gui", "--driver"])
         .env("ANYWORK_HOME", home)
+        .env("HOME", home)
+        .env("USERPROFILE", home)
         .stdout(Stdio::from(log.try_clone()?))
         .stderr(Stdio::from(log));
     let openai_value = match fault {
