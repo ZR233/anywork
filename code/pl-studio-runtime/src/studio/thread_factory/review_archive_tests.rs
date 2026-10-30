@@ -17,6 +17,7 @@ use crate::{
         ReviewDeliverySource, ReviewFeedbackDelivery, ReviewForward, ReviewForwardReason,
     },
 };
+use anyhow::Context;
 use pl_core::{
     context::OpaquePayload,
     thread::{ThreadHandle, cold::ColdStoreHandle, inbox::ThreadMessage},
@@ -128,7 +129,13 @@ async fn archive_sealed_review_feedback_remains_rejected_after_volatile_seal_dro
     let root = dunce::canonicalize(temp.path())?
         .to_string_lossy()
         .into_owned();
-    let store = StudioStore::open(temp.path().join("home/studio.sqlite")).await?;
+    let database = temp.path().join("home/data/studio.sqlite");
+    let store = StudioStore::open(&database).await.with_context(|| {
+        format!(
+            "open current review fixture product database {}",
+            database.display()
+        )
+    })?;
     let physical = close_factory(&store)?;
     let owner = StudioThreadAssembler::default();
     physical.install(&owner)?;
