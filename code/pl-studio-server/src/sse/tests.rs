@@ -14,6 +14,70 @@ async fn resume(uri: &str) -> Result<Option<TimelineCompletionCursor>, ApiError>
     query.resume_after()
 }
 
+async fn product_topic(uri: &str) -> Result<pl_studio_runtime::StudioProductTopic, ApiError> {
+    let (mut parts, _) = Request::builder().uri(uri).body(()).unwrap().into_parts();
+    let ApiQuery(query) =
+        ApiQuery::<ProductTopicQuery>::from_request_parts(&mut parts, &()).await?;
+    parse_product_topic(&query)
+}
+
+#[tokio::test]
+async fn product_resync_preserves_topic_and_encoded_scope() {
+    use pl_studio_runtime::StudioProductTopic;
+
+    let identity = " 宿主 /?&=+#% ";
+    for topic in [
+        StudioProductTopic::ProjectDirectory,
+        StudioProductTopic::Skills {
+            workspace_id: identity.into(),
+        },
+        StudioProductTopic::SessionCosts {
+            root_thread_id: identity.into(),
+        },
+        StudioProductTopic::ChildInteractions {
+            host_thread_id: identity.into(),
+        },
+    ] {
+        let resync = topic_resync_path(&topic);
+        let uri: axum::http::Uri = resync.parse().unwrap();
+        assert_eq!(uri.path(), "/api/v1/state/product");
+        let parsed = product_topic(&resync)
+            .await
+            .unwrap_or_else(|error| panic!("invalid resync URI {resync}: {}", error.0));
+        assert_eq!(parsed, topic);
+    }
+}
+
+#[tokio::test]
+async fn child_interactions_query_requires_exactly_its_host_scope() {
+    use pl_studio_runtime::StudioProductTopic;
+
+    let valid = "/?topic=childInteractions&hostThreadId=host-a";
+    assert!(matches!(
+        product_topic(valid).await,
+        Ok(StudioProductTopic::ChildInteractions { host_thread_id }) if host_thread_id == "host-a"
+    ));
+    for uri in [
+        "/?topic=childInteractions",
+        "/?topic=childInteractions&hostThreadId=",
+        "/?topic=childInteractions&hostThreadId=%20%09",
+        "/?topic=childInteractions&workspaceId=host-a",
+        "/?topic=childInteractions&rootThreadId=host-a",
+        "/?topic=childInteractions&hostThreadId=host-a&workspaceId=workspace-a",
+        "/?topic=childInteractions&hostThreadId=host-a&rootThreadId=root-a",
+        "/?topic=childInteractions&hostThreadId=host-a&hostThreadId=host-b",
+        "/?topic=childInteractions&host_thread_id=host-a",
+        "/?topic=projectDirectory&hostThreadId=host-a",
+        "/?topic=skills&workspaceId=workspace-a&hostThreadId=host-a",
+        "/?topic=sessionCosts&rootThreadId=root-a&hostThreadId=host-a",
+    ] {
+        let Err(error) = product_topic(uri).await else {
+            panic!("invalid topic scope was admitted: {uri}");
+        };
+        assert_eq!(error.0.code, StudioErrorCode::InvalidArgument, "{uri}");
+    }
+}
+
 #[tokio::test]
 async fn conversation_resume_requires_an_explicit_valid_completion_prefix() {
     assert!(matches!(resume("/").await, Ok(None)));

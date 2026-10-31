@@ -144,7 +144,7 @@ fn query_rejection(rejection: QueryRejection) -> ApiError {
     ApiError(StudioError::invalid_argument("invalid query parameters"))
 }
 
-/// typed 产品 topic 的查询参数；`workspaceId`/`rootThreadId` 只服务带作用域 topic。
+/// typed 产品 topic 的查询参数；作用域身份只服务对应的带作用域 topic。
 ///
 /// 字段按 camelCase 反序列化并与 OpenAPI 文档一致；未知查询参数直接 400，
 /// 不允许以 snake_case 或多余身份静默扩大输入。
@@ -154,6 +154,7 @@ pub(crate) struct ProductTopicQuery {
     pub(crate) topic: String,
     pub(crate) workspace_id: Option<String>,
     pub(crate) root_thread_id: Option<String>,
+    pub(crate) host_thread_id: Option<String>,
 }
 
 /// 把 HTTP 查询参数解析为 typed 产品 topic。
@@ -192,6 +193,9 @@ pub(crate) fn parse_product_topic(
         "persistenceQueue" => StudioProductTopic::PersistenceQueue,
         "agentProfiles" => StudioProductTopic::AgentProfiles,
         "bots" => StudioProductTopic::Bots,
+        "childInteractions" => StudioProductTopic::ChildInteractions {
+            host_thread_id: query.host_thread_id.clone().unwrap_or_default(),
+        },
         other => {
             return Err(invalid(&format!("unknown product topic: {other}")));
         }
@@ -200,15 +204,24 @@ pub(crate) fn parse_product_topic(
         &topic,
         query.workspace_id.is_some(),
         query.root_thread_id.is_some(),
+        query.host_thread_id.is_some(),
     ) {
-        (StudioProductTopic::Skills { .. }, true, false) => {}
-        (StudioProductTopic::SessionCosts { .. }, false, true) => {}
-        (StudioProductTopic::Skills { .. } | StudioProductTopic::SessionCosts { .. }, _, _) => {
+        (StudioProductTopic::Skills { .. }, true, false, false) => {}
+        (StudioProductTopic::SessionCosts { .. }, false, true, false) => {}
+        (StudioProductTopic::ChildInteractions { .. }, false, false, true) => {}
+        (
+            StudioProductTopic::Skills { .. }
+            | StudioProductTopic::SessionCosts { .. }
+            | StudioProductTopic::ChildInteractions { .. },
+            _,
+            _,
+            _,
+        ) => {
             return Err(invalid(
                 "scoped product topic requires exactly one scope parameter",
             ));
         }
-        (_, false, false) => {}
+        (_, false, false, false) => {}
         _ => {
             return Err(invalid(
                 "global product topics do not accept scope parameters",
@@ -338,7 +351,8 @@ async fn read_state(State(state): State<AppState>) -> Result<impl IntoResponse, 
     params(
         ("topic" = String, Query, description = "typed 产品 topic（camelCase 标签）"),
         ("workspaceId" = Option<String>, Query, description = "Skills topic 的项目作用域"),
-        ("rootThreadId" = Option<String>, Query, description = "SessionCosts topic 的根会话作用域")
+        ("rootThreadId" = Option<String>, Query, description = "SessionCosts topic 的根会话作用域"),
+        ("hostThreadId" = Option<String>, Query, description = "ChildInteractions topic 的宿主会话作用域")
     ),
     responses(StudioApiErrors, (status = 200, description = "Canonical topic baseline"))
 )]

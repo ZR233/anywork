@@ -54,7 +54,8 @@ enum Delivery {
     params(
         ("topic" = String, Query, description = "typed 产品 topic（camelCase 标签）"),
         ("workspaceId" = Option<String>, Query, description = "Skills topic 的项目作用域"),
-        ("rootThreadId" = Option<String>, Query, description = "SessionCosts topic 的根会话作用域")
+        ("rootThreadId" = Option<String>, Query, description = "SessionCosts topic 的根会话作用域"),
+        ("hostThreadId" = Option<String>, Query, description = "ChildInteractions topic 的宿主会话作用域")
     ),
     responses(StudioApiErrors, (status = 200, description = "Product topic event stream", body = String, content_type = "text/event-stream"))
 )]
@@ -160,7 +161,7 @@ pub(crate) async fn product_events(
 /// 作用域值经 form-urlencoded 百分号编码：身份不假设为 UUID 等安全字符集。
 fn topic_resync_path(topic: &pl_studio_runtime::StudioProductTopic) -> String {
     use pl_studio_runtime::StudioProductTopic;
-    let mut query = url::form_urlencoded::Serializer::new(String::from("/api/v1/state/product"));
+    let mut query = url::form_urlencoded::Serializer::new(String::new());
     match topic {
         StudioProductTopic::Skills { workspace_id } => {
             query.append_pair("topic", "skills");
@@ -170,11 +171,15 @@ fn topic_resync_path(topic: &pl_studio_runtime::StudioProductTopic) -> String {
             query.append_pair("topic", "sessionCosts");
             query.append_pair("rootThreadId", root_thread_id);
         }
+        StudioProductTopic::ChildInteractions { host_thread_id } => {
+            query.append_pair("topic", "childInteractions");
+            query.append_pair("hostThreadId", host_thread_id);
+        }
         other => {
             query.append_pair("topic", topic_token(other));
         }
     }
-    query.finish()
+    format!("/api/v1/state/product?{}", query.finish())
 }
 
 /// topic 的查询标签；与 `parse_product_topic` 接受的标签一一对应。
@@ -201,6 +206,7 @@ fn topic_token(topic: &pl_studio_runtime::StudioProductTopic) -> &'static str {
         StudioProductTopic::PersistenceQueue => "persistenceQueue",
         StudioProductTopic::AgentProfiles => "agentProfiles",
         StudioProductTopic::Bots => "bots",
+        StudioProductTopic::ChildInteractions { .. } => "childInteractions",
     }
 }
 
