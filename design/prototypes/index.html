@@ -309,7 +309,7 @@
         <mdui-chip class="chip-tag" tabindex="-1"><span slot="icon"><i data-lucide="palette"></i></span>暹罗浅色色板</mdui-chip>
         <mdui-chip class="chip-tag" tabindex="-1"><span slot="icon"><i data-lucide="layers"></i></span>Material 3 组件</mdui-chip>
         <mdui-chip class="chip-tag" tabindex="-1"><span slot="icon"><i data-lucide="check-circle-2"></i></span>62 个账户与模型场景</mdui-chip>
-        <mdui-chip class="chip-tag" tabindex="-1"><span slot="icon"><i data-lucide="layout"></i></span>20 屏工作台与设置基线</mdui-chip>
+        <mdui-chip class="chip-tag" tabindex="-1"><span slot="icon"><i data-lucide="activity"></i></span>13 个会话与状态栏场景</mdui-chip>
       </div>
       <div class="swatch-strip" aria-label="暹罗浅色主题色板">
         <div class="swatch light" style="background:#F6F0E7"><span>Lowest</span><small>#F6F0E7</small></div>
@@ -392,100 +392,72 @@
       </div>
     </section>
 
-    <section class="sec" aria-label="工作台与运行时设计稿">
+    <section class="sec" aria-label="会话时间线与实时状态栏设计稿">
       <div class="sec-head">
         <div class="sec-title">
-          <mdui-chip class="chip-tag" tabindex="-1">分组 1</mdui-chip>
-          <h2>工作台与运行时</h2>
+          <mdui-chip class="chip-tag" tabindex="-1">核心交互稿</mdui-chip>
+          <h2>会话时间线与实时状态栏</h2>
         </div>
-        <span class="sec-cnt">11 屏</span>
+        <span class="sec-cnt">共享 conversation-shared · 13 个场景</span>
       </div>
       <div class="grid-2">
-        <mdui-card variant="outlined" clickable href="06-claude-warm-workspace.html" class="proto-card">
-          <div>
-            <div class="card-top">
-              <h3>Workspace &amp; Runtime<span class="card-zh">聊天工作台与状态栏</span></h3>
-              <span class="card-arrow"><i data-lucide="arrow-up-right" aria-hidden="true"></i></span>
-            </div>
-            <p>侧栏项目与会话管理、主工作台四态（空闲 / 流式 / 空会话 / 无项目）、状态栏常驻指示器与悬停详情浮层。</p>
-          </div>
-          <div class="tags">
-            <mdui-chip class="chip-tag" tabindex="-1">工作台 4 状态</mdui-chip>
-            <mdui-chip class="chip-tag" tabindex="-1">状态栏与详情浮层</mdui-chip>
-            <mdui-chip class="chip-tag" tabindex="-1">7 屏</mdui-chip>
-          </div>
-        </mdui-card>
-
-        <mdui-card variant="outlined" clickable href="06-claude-warm-interactions.html" class="proto-card">
-          <div>
-            <div class="card-top">
-              <h3>Interaction Docks<span class="card-zh">输入区交互停靠栏</span></h3>
-              <span class="card-arrow"><i data-lucide="arrow-up-right" aria-hidden="true"></i></span>
-            </div>
-            <p>分步问答与只读完成回执，复用完整会话稿的共享组件；三个窗口各自独立操作。</p>
-          </div>
-          <div class="tags">
-            <mdui-chip class="chip-tag" tabindex="-1">分步问答</mdui-chip>
-            <mdui-chip class="chip-tag" tabindex="-1">userInput</mdui-chip>
-            <mdui-chip class="chip-tag" tabindex="-1">完成回执</mdui-chip>
-            <mdui-chip class="chip-tag" tabindex="-1">3 屏</mdui-chip>
-          </div>
-        </mdui-card>
-
         <mdui-card variant="outlined" clickable href="live-status/index.html" class="proto-card">
           <div>
             <div class="card-top">
-              <h3>Timeline &amp; Live Status<span class="card-zh">时间线与状态栏联动稿</span></h3>
+              <h3>工作组与实时状态栏<span class="card-zh">主交互入口</span></h3>
               <span class="card-arrow"><i data-lucide="arrow-up-right" aria-hidden="true"></i></span>
             </div>
-            <p>状态栏承载当前工作组：成员逐个插入，完成的打勾留在组内；出现正文、提问或轮次结束等新分组信息时整组移入时间线。时间线只收录已结束的内容。尚无信息时显示不可展开的「思考中」，支持停止与继续、问答及压缩记录。</p>
+            <p>状态栏承载当前工作组：成员逐个插入，完成的打勾留在组内；出现正文、提问或轮次结束等新分组信息时整组一次移入时间线。时间线只收录已结束内容。</p>
           </div>
           <div class="tags">
-            <mdui-chip class="chip-tag" tabindex="-1">轻量柔底无框文本流</mdui-chip>
             <mdui-chip class="chip-tag" tabindex="-1">整组交接</mdui-chip>
-            <mdui-chip class="chip-tag" tabindex="-1">共享组件与交互</mdui-chip>
-          </div>
-        </mdui-card>
-      </div>
-    </section>
-
-    <section class="sec" aria-label="设置页历史参考设计稿">
-      <div class="sec-head">
-        <div class="sec-title">
-          <mdui-chip class="chip-tag" tabindex="-1">分组 2</mdui-chip>
-          <h2>设置页其余分组参考</h2>
-        </div>
-        <span class="sec-cnt">10 屏</span>
-      </div>
-      <div class="grid-2">
-        <mdui-card variant="outlined" clickable href="06-claude-warm-providers.html" class="proto-card">
-          <div>
-            <div class="card-top">
-              <h3>Providers (Legacy)<span class="card-zh">早期供应商参考稿</span></h3>
-              <span class="card-arrow"><i data-lucide="arrow-up-right" aria-hidden="true"></i></span>
-            </div>
-            <p>早期供应商列表、详情、新增与编辑布局参考；最新 Material 3 账号与模型设计以顶部三份核心交互稿为准。</p>
-          </div>
-          <div class="tags">
-            <mdui-chip class="chip-tag" tabindex="-1">列表与配额卡</mdui-chip>
-            <mdui-chip class="chip-tag" tabindex="-1">新增与编辑</mdui-chip>
-            <mdui-chip class="chip-tag" tabindex="-1">4 屏</mdui-chip>
+            <mdui-chip class="chip-tag" tabindex="-1">单步与连续播放</mdui-chip>
+            <mdui-chip class="chip-tag" tabindex="-1">工具输出详情</mdui-chip>
           </div>
         </mdui-card>
 
-        <mdui-card variant="outlined" clickable href="06-claude-warm-settings.html" class="proto-card">
+        <mdui-card variant="outlined" clickable href="live-status/index.html?scenario=text" class="proto-card">
           <div>
             <div class="card-top">
-              <h3>Settings Tabs<span class="card-zh">其余 6 个设置标签页</span></h3>
+              <h3>实时文本与上下文压缩<span class="card-zh">流式阅读与压缩回执</span></h3>
               <span class="card-arrow"><i data-lucide="arrow-up-right" aria-hidden="true"></i></span>
             </div>
-            <p>涵盖指令（Instructions）、技能（Skills）、角色（Roles）、MCP 服务、安全（Security）与通用（General）设置。</p>
+            <p>正文开始时上一工作组已整组入时间线，流式 Markdown 正文在状态栏输出并支持手动阅读时暂停跟随；上下文压缩以单行展示并在完成后追加时间线回执。</p>
           </div>
           <div class="tags">
-            <mdui-chip class="chip-tag" tabindex="-1">Instructions</mdui-chip>
-            <mdui-chip class="chip-tag" tabindex="-1">Skills &amp; MCP</mdui-chip>
-            <mdui-chip class="chip-tag" tabindex="-1">Roles &amp; General</mdui-chip>
-            <mdui-chip class="chip-tag" tabindex="-1">6 屏</mdui-chip>
+            <mdui-chip class="chip-tag" tabindex="-1">流式 Markdown</mdui-chip>
+            <mdui-chip class="chip-tag" tabindex="-1">暂停跟随</mdui-chip>
+            <mdui-chip class="chip-tag" tabindex="-1">手动与自动压缩</mdui-chip>
+          </div>
+        </mdui-card>
+
+        <mdui-card variant="outlined" clickable href="live-status/index.html?scenario=questions" class="proto-card">
+          <div>
+            <div class="card-top">
+              <h3>分步问答停靠区<span class="card-zh">待决提问与交互</span></h3>
+              <span class="card-arrow"><i data-lucide="arrow-up-right" aria-hidden="true"></i></span>
+            </div>
+            <p>提问到达时此前的工作组整组移入时间线，状态栏收起并在输入区上方展开分步问答停靠面板，支持单选、多选、补充说明与敏感输入。</p>
+          </div>
+          <div class="tags">
+            <mdui-chip class="chip-tag" tabindex="-1">分步问答</mdui-chip>
+            <mdui-chip class="chip-tag" tabindex="-1">敏感输入保护</mdui-chip>
+            <mdui-chip class="chip-tag" tabindex="-1">跳过或提交</mdui-chip>
+          </div>
+        </mdui-card>
+
+        <mdui-card variant="outlined" clickable href="live-status/index.html?scenario=receipts" class="proto-card">
+          <div>
+            <div class="card-top">
+              <h3>问答回执与终态记录<span class="card-zh">回执 / 停止 / 失败</span></h3>
+              <span class="card-arrow"><i data-lucide="arrow-up-right" aria-hidden="true"></i></span>
+            </div>
+            <p>回答后在时间线生成默认折叠的只读回执（敏感回答自动隐藏）；停止或执行失败时生成独立折叠的终态行，输入区复用唯一纯图标主按钮切换停止、继续与发送。</p>
+          </div>
+          <div class="tags">
+            <mdui-chip class="chip-tag" tabindex="-1">只读问答回执</mdui-chip>
+            <mdui-chip class="chip-tag" tabindex="-1">独立折叠终态</mdui-chip>
+            <mdui-chip class="chip-tag" tabindex="-1">唯一主操作按钮</mdui-chip>
           </div>
         </mdui-card>
       </div>
@@ -509,8 +481,8 @@
     </mdui-card>
 
     <div class="foot">
-      <span>原型目录：<code>design/prototypes/</code> · 架构规范：<a href="../19-studio-ui.md">design/19-studio-ui.md</a></span>
-      <span>历史暖色索引归档：<a href="06-claude-warm-index.html">06-claude-warm-index.html</a></span>
+      <span>原型目录：<code>design/prototypes/</code> · 界面规范：<a href="../19-studio-ui.md">design/19-studio-ui.md</a></span>
+      <span>时间线契约：<a href="../26-timeline-content.md">design/26-timeline-content.md</a> · 会话模块说明：<a href="conversation-shared/README.md">conversation-shared/README.md</a></span>
     </div>
   </div>
   <script>

@@ -114,6 +114,8 @@
     { id: 'compacting', label: '正在压缩', live: 'compacting', hint: '单行展示；成功后时间线追加一行「已完成压缩」。' },
     { id: 'questions', label: '等待回答', pending: questions,
       hint: '提问是新分组信息：此前的工作组已整组移入时间线，待处理问题在停靠区，回答后成为只读回执。' },
+    { id: 'receipts', label: '问答回执',
+      hint: '问题回答或跳过后，在时间线中形成默认折叠的只读回执；敏感回答保持隐藏。' },
     { id: 'stopped', label: '已停止', outcome: 'stopped', hint: '工作组连同未完成成员一起结束并移入时间线，另附折叠的停止记录；主按钮切换为继续。' },
     { id: 'failed', label: '执行失败', outcome: 'failed', hint: '失败成员在组内标记，原因在独立的失败记录中按需展开；仍可通过主按钮继续。' },
     { id: 'idle', label: '时间线阅读', hint: '状态栏收起。展开时间线中的过程、复制正文，或开始下一轮。' },

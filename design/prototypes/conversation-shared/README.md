@@ -8,7 +8,7 @@
 - `components.js`：时间线和状态栏共用的 Markdown、工作组、工具详情、回执、终态行、压缩完成行及停靠面板。
 - `preview.js`：页面装配、局部视图状态、事件绑定和详情查看。
 
-页面通过相对路径的普通 `defer` 脚本按上述顺序加载，使用 `data-conversation-preview` 挂载，`data-scenario` 指定默认场景，`data-controls="false"` 隐藏演示工具。各挂载点拥有自己的控制器、详情窗口和定时任务。旧工作台通过 `data-theme="warm"` 映射其暖白／赭橙主题。
+页面通过相对路径的普通 `defer` 脚本按上述顺序加载，使用 `data-conversation-preview` 挂载，`data-scenario`（或 URL 查询参数 `?scenario=<id>`）指定初始场景，`data-controls="false"` 隐藏演示工具。各挂载点拥有自己的控制器、详情窗口和定时任务。
 
 状态栏（输入区上方）只允许「思考中」、当前工作组、文本输出、上下文压缩四种互斥内容；时间线只收录已结束的内容。Runtime 仍按 [原子完成契约](../../26-timeline-content.md) 逐条发布不可变完成事实，展示分组则由前端决定：
 

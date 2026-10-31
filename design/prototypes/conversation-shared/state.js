@@ -56,7 +56,7 @@
       this.urls.forEach(url => URL.revokeObjectURL(url));
       this.urls.clear();
       const spec = app.fixtures.scenarios.find(item => item.id === scenario);
-      if (!spec && scenario !== 'question-last' && scenario !== 'receipts') throw new Error('Unknown scenario: ' + scenario);
+      if (!spec) throw new Error('Unknown scenario: ' + scenario);
       this.state = {
         scenario, history: [], live: null, pending: null, draft: '', attachments: [],
         context: 42, playing: false, running: false, resumable: false, retryCompression: false,
@@ -70,17 +70,13 @@
         while (this.state.cursor <= target) this.advance();
       } else if (spec?.live === 'compacting') {
         this.startCompression();
-      } else if (spec?.pending || scenario === 'question-last') {
+      } else if (spec?.pending) {
         const sealed = app.fixtures.group(this.id('group'), true);
         sealed.members = sealed.members.slice(0, 2);
         sealed.elapsed = 4;
         this.snapshot(sealed);
-        this.state.pending = clone(spec?.pending || app.fixtures.questions);
+        this.state.pending = clone(spec.pending);
         this.state.pending.id = this.id('interaction');
-        if (scenario === 'question-last') {
-          this.state.pending.index = 1;
-          this.state.pending.answers[0] = ['默认折叠，按需展开'];
-        }
         this.note('提问到达 · 此前的工作组已整组移入时间线');
       } else if (spec?.outcome) {
         this.state.live = app.fixtures.group(this.id('group'));
@@ -88,6 +84,7 @@
       } else if (scenario === 'receipts') {
         this.snapshot({ id: this.id('receipt'), kind: 'receipt', type: 'questions', title: '用户已回答',
           subtitle: '2 个问题', content: '### 工作组默认如何展示？\n默认折叠，按需展开\n\n### 重点检查哪些场景？\n长文本与代码、停止与继续\n\n敏感回答已隐藏' });
+        this.note('问答已完成 · 时间线保留只读回执，敏感回答已隐藏');
       }
       this.state.running = Boolean(this.state.live || this.state.pending);
       this.emit('reset');

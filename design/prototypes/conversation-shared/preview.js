@@ -8,7 +8,11 @@
     constructor(root) {
       this.root = root;
       this.id = 'conversation-preview-' + (++instanceSequence);
-      this.controller = new app.ConversationController(root.dataset.scenario || 'workgroup');
+      const urlScenario = new URLSearchParams(window.location.search).get('scenario');
+      const initialScenario = (urlScenario && app.fixtures.scenarios.some(item => item.id === urlScenario))
+        ? urlScenario
+        : (root.dataset.scenario || 'workgroup');
+      this.controller = new app.ConversationController(initialScenario);
       this.signal = new AbortController();
       this.historyNodes = new Map();
       this.followHistory = true;
@@ -39,7 +43,6 @@
       const controller = this.controller;
       root.classList.add('cv-preview');
       if (root.dataset.controls === 'false') root.classList.add('cv-no-controls');
-      if (root.dataset.embedded === 'true') root.classList.add('cv-embedded');
       root.innerHTML = `<div class="cv-demo-layout">
         <section class="cv-window" aria-label="会话概念预览">
           <header class="cv-window-header"><span class="cv-brand">${icon('sparkles')}</span>
@@ -178,7 +181,7 @@
     }
     submit() {
       const state = this.controller.state;
-      if (this.root.dataset.locked || state.pending || (!state.draft.trim() && !state.attachments.length)) return;
+      if (state.pending || (!state.draft.trim() && !state.attachments.length)) return;
       this.followHistory = true;
       this.controller.submit();
     }
@@ -194,10 +197,7 @@
       if (this.textarea.value !== state.draft) this.textarea.value = state.draft;
       if (!state.draft) this.textarea.style.height = '';
       const hasDraft = Boolean(state.draft.trim() || state.attachments.length);
-      this.textarea.disabled = Boolean(this.root.dataset.locked);
-      this.attachButton.disabled = Boolean(this.root.dataset.locked);
-      if (this.root.dataset.locked) this.textarea.placeholder = this.root.dataset.locked;
-      this.mainButton.disabled = Boolean(this.root.dataset.locked) || (!state.live && !state.resumable && !hasDraft);
+      this.mainButton.disabled = !state.live && !state.resumable && !hasDraft;
       const stopping = Boolean(state.live && !hasDraft);
       const continuing = Boolean(!state.live && state.resumable && !hasDraft);
       this.mainButton.classList.toggle('cv-primary', !stopping);
@@ -302,11 +302,6 @@
           this.controller.setDraft('帮我细化会话界面，完整演示历史和实时状态的切换。');
           this.textarea.focus();
         }));
-        if (this.root.dataset.locked) {
-          empty.querySelector('h2').textContent = this.root.dataset.locked;
-          empty.querySelector('p').textContent = '添加项目后，可以开始新的会话。';
-          empty.querySelector('button').remove();
-        }
         this.historyList.append(empty);
       }
       if (state.history.length && this.historyList.querySelector('.cv-empty')) this.historyList.replaceChildren();
@@ -328,8 +323,8 @@
       this.compressButton.querySelector('span').textContent = state.retryCompression ? '重试压缩' : '立即压缩';
       this.contextExplanation.textContent = state.live || state.pending ? '当前正在执行，结束后可以手动压缩。' : state.history.length ? '压缩后仍保留原始历史记录。当前为示例用量。' : '有历史记录后可以压缩上下文。';
       const currentScenario = app.fixtures.scenarios.find(item => item.id === state.scenario);
-      this.scenarioSelect.value = currentScenario?.id || (state.scenario === 'question-last' ? 'questions' : 'idle');
-      this.root.querySelector('.cv-scenario-hint').textContent = currentScenario?.hint || '查看已经完成的问答回执。';
+      this.scenarioSelect.value = currentScenario?.id || 'idle';
+      this.root.querySelector('.cv-scenario-hint').textContent = currentScenario?.hint || '';
       const available = !state.pending && state.cursor < state.queue.length;
       this.playButton.disabled = !available;
       this.stepButton.disabled = !available || state.playing;

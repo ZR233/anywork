@@ -21,13 +21,6 @@
   --cv-mono: "JetBrains Mono", "Cascadia Code", "SFMono-Regular", Consolas, monospace;
   color: var(--cv-ink); font: 13px/1.6 var(--cv-font); text-align: left; min-width: 0;
 }
-.cv-preview[data-theme="warm"] {
-  --cv-canvas: var(--paper, #faf9f7); --cv-panel: var(--paper-2, #f3eeea); --cv-surface: var(--paper, #faf9f7);
-  --cv-elevated: #fff; --cv-soft: var(--paper-2, #f3eeea); --cv-bubble: var(--paper-3, #ece5de);
-  --cv-line: var(--line, #e6ddd6); --cv-rail: var(--line-2, #dcd2c8); --cv-ink: var(--ink, #2b2520);
-  --cv-secondary: var(--ink-soft, #6b635a); --cv-muted: #8b7f75; --cv-primary: var(--clay, #d97757);
-  --cv-font: var(--font-sans, Inter, sans-serif);
-}
 .cv-preview *, .cv-preview *::before, .cv-preview *::after { box-sizing: border-box; }
 .cv-preview [hidden] { display: none !important; }
 .cv-preview svg { display: inline-block; width: 15px; height: 15px; flex: 0 0 auto; vertical-align: middle; }
@@ -271,18 +264,6 @@
 .cv-dialog-body pre { white-space: pre-wrap; font: 12px/1.8 var(--cv-mono); margin: 14px 0 0; }
 .cv-dialog-path { font: 10.5px/1.7 var(--cv-mono); color: var(--cv-muted); }
 .cv-toast { position: absolute; left: 50%; bottom: 20px; transform: translateX(-50%); z-index: 7; color: var(--cv-elevated); background: var(--cv-primary); font-size: 11px; padding: 7px 14px; border-radius: 7px; box-shadow: 0 3px 12px #40362f20; max-width: 90%; text-align: center; pointer-events: none; }
-.cv-embedded { width: 100%; height: 100%; min-height: 0; }
-.cv-embedded .cv-demo-layout { height: 100%; display: flex; }
-.cv-embedded .cv-window { width: 100%; height: 100%; min-height: 0; border: 0; border-radius: 0; box-shadow: none; }
-.cv-embedded .cv-window-header { display: none; }
-.cv-embedded .cv-history { padding: 18px 24px 10px; }
-.cv-embedded .cv-bottom { padding: 0 24px 14px; }
-.cv-embedded .cv-history-start { margin-bottom: 14px; }
-.cv-embedded .cv-history-list { gap: 14px; }
-.cv-embedded .cv-live .cv-group-rail { max-height: 180px; }
-.cv-embedded .cv-response-scroll { max-height: 180px; }
-.cv-embedded .cv-dock { max-height: 380px; }
-.cv-embedded .cv-history { min-height: 65px; }
 .cv-member[data-status="running"] .cv-member-symbol svg,
 .cv-status-symbol[data-status="running"] svg { animation: cv-spin 2s linear infinite; }
 @keyframes cv-spin { to { transform: rotate(360deg); } }
@@ -331,6 +312,4 @@
   .cv-composer-hint { display: none; }
   .cv-wait-target { flex-wrap: wrap; }
   .cv-file-tab span { overflow-wrap: anywhere; }
-  .cv-embedded .cv-bottom { padding: 0 12px 12px; }
-  .cv-embedded .cv-history { padding: 15px 14px 10px; }
 }
