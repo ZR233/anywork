@@ -1,0 +1,14 @@
+**
+!rust-toolchain.toml
+!docker/
+!docker/linux/
+!docker/linux/Dockerfile
+!docker/linux/Dockerfile.dockerignore
+!docker/linux/versions.env
+!docker/linux/scripts/
+!docker/linux/scripts/install-common.sh
+!docker/linux/scripts/install-flutter.sh
+!docker/linux/scripts/install-rust.sh
+!docker/linux/scripts/install-tools.sh
+!docker/linux/scripts/entrypoint.sh
+!docker/linux/scripts/smoke.sh

@@ -1,0 +1,157 @@
+name: Prepare Linux Build Environment
+
+on:
+  workflow_call:
+    inputs:
+      sourceRef:
+        description: Exact source commit whose environment inputs are consumed
+        required: true
+        type: string
+      mode:
+        description: prepare validates a candidate; resolve requires publication; publish enables trusted bootstrap
+        default: prepare
+        type: string
+    outputs:
+      key:
+        value: ${{ jobs.prepare.outputs.key }}
+      imageRef:
+        value: ${{ jobs.prepare.outputs.imageRef }}
+      imageId:
+        value: ${{ jobs.prepare.outputs.imageId }}
+      artifactId:
+        value: ${{ jobs.prepare.outputs.artifactId }}
+      archiveSha256:
+        value: ${{ jobs.prepare.outputs.archiveSha256 }}
+
+permissions: {}
+
+jobs:
+  prepare:
+    name: Resolve or validate exact Linux environment
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    outputs:
+      key: ${{ steps.identity.outputs.key }}
+      imageRef: ${{ steps.resolve.outputs.imageRef }}
+      imageId: ${{ steps.checkpoint.outputs.imageId }}
+      artifactId: ${{ steps.archive.outputs.artifact-id }}
+      archiveSha256: ${{ steps.checkpoint.outputs.archiveSha256 }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.sourceRef || github.sha }}
+          persist-credentials: false
+
+      - name: Identify build inputs
+        id: identity
+        shell: bash
+        env:
+          MODE: ${{ inputs.mode || 'prepare' }}
+        run: |
+          set -euo pipefail
+          case "$MODE" in prepare|resolve|publish) ;; *) echo "Invalid image mode: $MODE" >&2; exit 1 ;; esac
+          key="$(python3 docker/linux/scripts/image-key.py)"
+          [[ "$key" =~ ^[0-9a-f]{64}$ ]]
+          echo "key=$key" >> "$GITHUB_OUTPUT"
+          echo "tag=ghcr.io/zr233/anywork-linux-build:inputs-$key" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Resolve published environment without credentials
+        id: resolve
+        shell: bash
+        env:
+          IMAGE_TAG: ${{ steps.identity.outputs.tag }}
+          MODE: ${{ inputs.mode || 'prepare' }}
+          TRUSTED_IMAGE_PUBLISH: ${{ inputs.mode == 'publish' && github.repository == 'ZR233/anywork' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
+        run: |
+          set -euo pipefail
+          if docker buildx imagetools inspect "$IMAGE_TAG" --format '{{json .Manifest}}' \
+              > "$RUNNER_TEMP/linux-manifest.json" 2> "$RUNNER_TEMP/linux-manifest-error.txt"; then
+            digest="$(jq -er '.digest | select(test("^sha256:[0-9a-f]{64}$"))' "$RUNNER_TEMP/linux-manifest.json")"
+            echo "imageRef=ghcr.io/zr233/anywork-linux-build@$digest" >> "$GITHUB_OUTPUT"
+            echo 'build=false' >> "$GITHUB_OUTPUT"
+          else
+            cat "$RUNNER_TEMP/linux-manifest-error.txt" >&2
+            if [ "$MODE" = resolve ]; then
+              echo 'The immutable source requires a published, publicly readable build environment. Run Linux Build Image first.' >&2
+              exit 1
+            fi
+            # Only an absent manifest permits a candidate. DNS, rate limits, auth
+            # failures and unavailable registries must not silently change the path.
+            missing=false
+            if grep -Eqi 'manifest unknown|manifest_unknown|name_unknown|not found' "$RUNNER_TEMP/linux-manifest-error.txt"; then
+              missing=true
+            elif [ "$TRUSTED_IMAGE_PUBLISH" = true ] &&
+                grep -Eq 'failed to fetch anonymous token:.*403 Forbidden' "$RUNNER_TEMP/linux-manifest-error.txt"; then
+              # GHCR also returns anonymous-token 403 before a package is first
+              # created. Only the trusted publisher may bootstrap a candidate;
+              # its authenticated write stage must still check the existing tag,
+              # and publication must end with anonymous access verification.
+              echo 'Bootstrapping registry package; public access is not yet established.' >> "$GITHUB_STEP_SUMMARY"
+              missing=true
+            fi
+            if [ "$missing" != true ]; then
+              exit 1
+            fi
+            echo 'build=true' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Check Dockerfile
+        if: steps.resolve.outputs.build == 'true'
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: docker/linux/Dockerfile
+          target: linux-build
+          call: check
+
+      - name: Build candidate without registry credentials
+        if: steps.resolve.outputs.build == 'true'
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: docker/linux/Dockerfile
+          target: linux-build
+          platforms: linux/amd64
+          tags: ${{ steps.identity.outputs.tag }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/ZR233/anywork
+            org.opencontainers.image.revision=${{ inputs.sourceRef || github.sha }}
+            io.anywork.build-inputs=${{ steps.identity.outputs.key }}
+          outputs: type=docker,dest=${{ runner.temp }}/linux-build-image.tar
+          cache-from: type=gha,scope=linux-build
+          cache-to: ${{ github.event_name != 'pull_request' && 'type=gha,scope=linux-build,mode=max' || '' }}
+
+      - name: Smoke-test and identify candidate
+        id: checkpoint
+        if: steps.resolve.outputs.build == 'true'
+        shell: bash
+        env:
+          IMAGE_TAG: ${{ steps.identity.outputs.tag }}
+        run: |
+          set -euo pipefail
+          docker load --input "$RUNNER_TEMP/linux-build-image.tar"
+          image_id="$(docker image inspect --format '{{.Id}}' "$IMAGE_TAG")"
+          [[ "$image_id" =~ ^sha256:[0-9a-f]{64}$ ]]
+          docker run --rm --init --network none --entrypoint bash \
+            --mount "type=bind,src=$GITHUB_WORKSPACE,dst=/workspace,readonly" \
+            "$image_id" /workspace/docker/linux/scripts/smoke.sh
+          echo "imageId=$image_id" >> "$GITHUB_OUTPUT"
+          echo "archiveSha256=$(sha256sum "$RUNNER_TEMP/linux-build-image.tar" | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
+          docker image inspect --format 'Image bytes: {{.Size}}' "$image_id" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Preserve read-only candidate for this run
+        id: archive
+        if: steps.resolve.outputs.build == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: linux-build-image-${{ steps.identity.outputs.key }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/linux-build-image.tar
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 7
+
