@@ -1,0 +1,89 @@
+name: Linux Build Image
+
+on:
+  push:
+    paths:
+      - 'rust-toolchain.toml'
+      - 'docker/linux/Dockerfile'
+      - 'docker/linux/Dockerfile.dockerignore'
+      - 'docker/linux/versions.env'
+      - 'docker/linux/scripts/**'
+      - '.github/workflows/linux-build-image.yml'
+      - '.github/workflows/linux-build-environment.yml'
+      - '.github/scripts/linux-build-handoff.sh'
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  prepare:
+    name: Build and validate environment without publishing credentials
+    uses: ./.github/workflows/linux-build-environment.yml
+    permissions:
+      contents: read
+    with:
+      sourceRef: ${{ github.sha }}
+      mode: publish
+
+  publish:
+    name: Publish validated environment
+    needs: prepare
+    if: >-
+      github.repository == 'ZR233/anywork' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      needs.prepare.outputs.artifactId != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    concurrency:
+      group: linux-build-publish-${{ needs.prepare.outputs.key }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ needs.prepare.outputs.artifactId }}
+          merge-multiple: true
+          path: ${{ runner.temp }}/linux-build-image
+      - name: Verify candidate handoff
+        shell: bash
+        env:
+          LINUX_IMAGE_ARTIFACT_ID: ${{ needs.prepare.outputs.artifactId }}
+          LINUX_IMAGE_ARCHIVE_SHA256: ${{ needs.prepare.outputs.archiveSha256 }}
+          LINUX_IMAGE_ID: ${{ needs.prepare.outputs.imageId }}
+          LINUX_IMAGE_REF: ''
+        run: bash .github/scripts/linux-build-handoff.sh
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Publish without replacing an existing input identity
+        shell: bash
+        env:
+          IMAGE_KEY: ${{ needs.prepare.outputs.key }}
+          IMAGE_ID: ${{ needs.prepare.outputs.imageId }}
+        run: |
+          set -euo pipefail
+          tag="ghcr.io/zr233/anywork-linux-build:inputs-$IMAGE_KEY"
+          if docker buildx imagetools inspect "$tag" --format '{{json .Image}}' \
+              > "$RUNNER_TEMP/existing-image.json" 2> "$RUNNER_TEMP/existing-image-error.txt"; then
+            # A concurrent publisher may have completed first. Never replace it.
+            test "$(jq -er '.config.Labels["io.anywork.build-inputs"]' "$RUNNER_TEMP/existing-image.json")" = "$IMAGE_KEY"
+            echo "Preserving existing environment $tag" >> "$GITHUB_STEP_SUMMARY"
+          else
+            cat "$RUNNER_TEMP/existing-image-error.txt" >&2
+            grep -Eqi 'manifest unknown|manifest_unknown|name_unknown|not found' "$RUNNER_TEMP/existing-image-error.txt"
+            docker tag "$IMAGE_ID" "$tag"
+            docker push "$tag"
+          fi
+          docker buildx imagetools inspect "$tag" >> "$GITHUB_STEP_SUMMARY"
+          # GitHub Packages initially defaults to private. Publication alone does
+          # not prove that fork PRs or developers can anonymously consume it.
+          mkdir -p "$RUNNER_TEMP/anonymous-docker"
+          DOCKER_CONFIG="$RUNNER_TEMP/anonymous-docker" \
+            docker manifest inspect "$tag" > /dev/null

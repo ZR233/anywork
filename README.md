@@ -155,9 +155,12 @@ sequenceDiagram
 
 ## 🚀 快速开始
 
-### 1. 安装
+本地 Git 项目依赖系统 Git，SSH 远程项目还需系统 OpenSSH 客户端。Linux 的工具前置要求、Ubuntu 22.04 默认 Git 的能力限制，以及安装／首帧与业务验证的区别，见 [发布与更新](design/23-release-update.md#linux-debian-包与兼容边界)；构建镜像内的工具不会随 DEB 安装。
+
+### 1. 安装与启动
 
 - **Windows**：从 [Releases](https://github.com/ZR233/pure-lang/releases/latest) 下载 `anywork-<版本>-windows-x86_64-setup.exe` 安装，应用内支持检查更新。
+- **Linux**：可从 Releases 下载 DEB 安装包；版本、安装布局与发行版兼容范围见 [发布与更新](design/23-release-update.md)。
 - **从源码运行（Windows / Linux）**：在仓库根目录执行
 
   ```bash
@@ -171,7 +174,7 @@ sequenceDiagram
   cargo xtask build-gui
   ```
 
-  Linux 需要 Clang、CMake、Ninja、pkg-config 与 GTK 3 开发包，详见 [AGENTS.md](AGENTS.md#桌面-gui)。
+  Linux 本地构建需要 Clang、CMake、Ninja、pkg-config 与 GTK 3 开发包（详见 [AGENTS.md](AGENTS.md#桌面-gui)）。Linux 开发者也可使用 [项目级 Docker 构建环境](docker/linux/README.md)，无需自行安装 Rust、Flutter 和原生开发依赖；本地构建与 CI 使用同一环境，Rust 配置来自根 `rust-toolchain.toml`。
 
 ### 2. 三步开始第一个任务
 
@@ -186,14 +189,14 @@ sequenceDiagram
 3. 在飞书后台确认机器人、长连接、`im.message.receive_v1` 事件与所需权限，完成管理员审批和应用发布。
 4. 启用连接，等界面显示“已连接”后再发第一条消息；陌生联系人需要在本机批准配对后重发。
 
-### 4. 数据存在哪里？
+### 4. 数据与临时文件在哪里？
 
-- **配置**：`~/.anywork/config.toml`（Windows 为 `%USERPROFILE%\.anywork\config.toml`），密钥保存在系统凭据库；可用 `--studio-home` 或 `ANYWORK_HOME` 指定独立数据目录。
-- **会话与统计**：`<studio-home>/data/` 下，由应用管理，请勿手工编辑。
-- **AI 的临时文件**：放在项目内 `.anywork/sessions/<会话>/` 的 `temp/` 与 `artifacts/`；归档会话时只清理临时目录。
-- **用户技能**：只读标准目录 `~/.agents/skills/`；项目技能和内置技能各自独立。
+- **用户配置**：默认位于 `~/.anywork/config.toml`（Windows 为 `%USERPROFILE%\.anywork\config.toml`），密钥保存在系统凭据库；可用 `--studio-home` 或 `ANYWORK_HOME` 指定独立数据目录。
+- **会话与统计**：位于 `<studio-home>/data/workspaces/<workspace-key>/sessions/<thread-key>/`，历史与可靠资源随会话保存。
+- **AI 临时文件**：归入实际工作区的 `.anywork/sessions/<thread-key>/temp/`，待交付产物放在同级 `artifacts/`；SSH 会话使用远端路径。归档在确认保存后清理专用临时目录，不删除历史、工作文件或产物。
+- **用户技能**：直接只读标准用户主目录 `.agents/skills/`；项目技能和内置技能各自独立。
 
-升级时，受支持版本的账号配置、凭据关联、v2 会话与统计会自动迁入当前布局，原件和迁移备份保留；更早的数据不导入也不删除。详见[存储契约](design/17-studio-storage.md)与[配置契约](design/20-config.md)。
+升级时，受支持版本的账号配置、凭据关联、v2 会话与统计会自动迁入当前布局，原件和迁移备份保留；更早的数据不导入也不删除。目录职责与迁移边界详见 [存储契约](design/17-studio-storage.md) 与 [配置契约](design/20-config.md)。
 
 ---
 

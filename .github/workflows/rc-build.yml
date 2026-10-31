@@ -10,8 +10,16 @@ permissions:
   contents: read
 
 jobs:
+  linux-environment:
+    name: Resolve published Linux build environment
+    uses: ./.github/workflows/linux-build-environment.yml
+    with:
+      sourceRef: ${{ github.sha }}
+      mode: resolve
+
   helper:
     name: Build Linux remote helper (${{ matrix.target }})
+    needs: linux-environment
     outputs:
       x64ArtifactId: ${{ steps.helper-x64.outputs.artifact-id }}
       arm64ArtifactId: ${{ steps.helper-arm64.outputs.artifact-id }}
@@ -26,35 +34,21 @@ jobs:
           - aarch64-unknown-linux-musl
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
         with:
-          toolchain: 1.99.1
-          targets: ${{ matrix.target }}
+          ref: ${{ github.sha }}
+          persist-credentials: false
 
-      - name: Set up cargo-binstall
-        uses: cargo-bins/cargo-binstall@8a2045612414e945291083f820cd50b4d8fc2218 # v1.26.0
-        with:
-          version: 1.26.0
-      - name: Install pinned Zig and cargo-zigbuild
-        shell: bash
+      - name: Pull and verify published environment
         env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          archive="$RUNNER_TEMP/zig-0.16.0.tar.xz"
-          curl --fail --location --silent --show-error \
-            https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz \
-            --output "$archive"
-          echo '70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00  '"$archive" | sha256sum --check
-          tool_dir="$RUNNER_TEMP/zig-0.16.0"
-          mkdir -p "$tool_dir"
-          tar -xJf "$archive" --strip-components=1 -C "$tool_dir"
-          echo "$tool_dir" >> "$GITHUB_PATH"
-          cargo binstall --no-confirm --force --disable-strategies compile cargo-zigbuild@0.23.4
+          LINUX_IMAGE_REF: ${{ needs.linux-environment.outputs.imageRef }}
+        run: bash .github/scripts/linux-build-handoff.sh
+
       - name: Build remote helper architecture
         env:
-          PURE_REMOTE_HELPER_BUILDER: zigbuild
-        run: cargo xtask build-remote-helper --target ${{ matrix.target }}
+          HELPER_TARGET: ${{ matrix.target }}
+        run: |
+          bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" \
+            env PURE_REMOTE_HELPER_BUILDER=zigbuild cargo xtask build-remote-helper --target "$HELPER_TARGET"
       - name: Preserve x64 helper
         id: helper-x64
         if: matrix.target == 'x86_64-unknown-linux-musl'

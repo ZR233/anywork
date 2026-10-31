@@ -42,7 +42,29 @@ function Get-StudioReleaseAssetNames {
         "$setup.minisig"
         'latest.json'
         'SHA256SUMS.txt'
+        "anywork-$Version-linux-x86_64.deb"
+        "anywork-$Version-linux-x86_64.deb.sha256"
     )
+}
+
+function Assert-StudioDebianChecksum {
+    param(
+        [Parameter(Mandatory)]
+        [string] $Version,
+
+        [Parameter(Mandatory)]
+        [string] $AssetDirectory
+    )
+
+    $name = "anywork-$Version-linux-x86_64.deb"
+    $package = Join-Path $AssetDirectory $name
+    $sidecar = Join-Path $AssetDirectory "$name.sha256"
+    $digest = (Get-FileHash -LiteralPath $package -Algorithm SHA256).Hash.ToLowerInvariant()
+    $expected = "$digest  $name`n"
+    $actual = [IO.File]::ReadAllText($sidecar).Replace("`r`n", "`n")
+    if ($actual -cne $expected) {
+        throw 'Debian checksum does not match the exact package name and bytes'
+    }
 }
 
 function Assert-StudioReleaseRemoteAssets {
@@ -63,7 +85,7 @@ function Assert-StudioReleaseRemoteAssets {
         throw "Release contains duplicate assets: $($duplicateNames -join ', ')"
     }
 
-    $unknownNames = @($names | Where-Object { $_ -notin $ExpectedNames })
+    $unknownNames = @($names | Where-Object { $_ -cnotin $ExpectedNames })
     if ($unknownNames.Count -ne 0) {
         throw "Release contains unknown assets: $($unknownNames -join ', ')"
     }
@@ -80,7 +102,7 @@ function Assert-StudioReleaseRemoteAssets {
     }
 
     if ($RequireComplete -and ($names.Count -ne $ExpectedNames.Count)) {
-        $missingNames = @($ExpectedNames | Where-Object { $_ -notin $names })
+        $missingNames = @($ExpectedNames | Where-Object { $_ -cnotin $names })
         throw "Published Release is missing assets: $($missingNames -join ', ')"
     }
 }
@@ -116,7 +138,7 @@ function Get-StudioReleaseAssetPlan {
             throw "Local release asset is empty: $path"
         }
         $localDigest = "sha256:$((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant())"
-        $remote = @($assets | Where-Object name -eq $name)
+        $remote = @($assets | Where-Object name -ceq $name)
         if ($remote.Count -eq 0) {
             $missingNames.Add($name)
             continue
