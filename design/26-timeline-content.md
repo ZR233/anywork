@@ -1,143 +1,136 @@
-# 26 - 原子完成时间线与原生列表
+# 26 - 按需会话加载与有序聊天交付
 
-本文是 Timeline 完成事实、统一读取、完成事件、Flutter 展示分组及读取预算的唯一权威契约，依据 [#220](https://github.com/ZR233/anywork/issues/220)。本文描述批准的目标架构，不以文档更新冒充实现或原生验收通过。存储升级归 [17](./17-studio-storage.md)，传输流控归 [07](./07-streaming.md)，客户端资源所有权归 [25](./25-frontend-state.md)，视觉与交互归 [19](./19-studio-ui.md)。
+本文是完成历史、按需读取、聊天批次、current 展示及组件消息所有权的唯一权威契约，依据 [#243](https://github.com/ZR233/anywork/issues/243)，替代 #220 的对外页/基线/完成游标和两端展示分组方案。本文描述批准的目标，不以文档更新冒充实现或性能验收。存储布局与迁移归 [17](./17-studio-storage.md)，可靠保存归 [15](./15-session-storage.md)，传输归 [07](./07-streaming.md)，客户端生命周期归 [25](./25-frontend-state.md)，视觉归 [19](./19-studio-ui.md)。
 
 ## 26.1 完成事实与唯一所有者
 
-Timeline 只包含不可变的最小完成事实：已接纳输入、完整文本或思考摘要段、一次执行结果、一项确定文件变更、技能激活、交互回执、计划快照、压缩回执或终止回执。最小事实应可独立理解、标识与读取，不按 token、换行或 patch 行拆分。运行正文、参数生成、工具进度、活动计时、待决交互、当前计划和保存状态属于相应实时领域，不进入完成历史。
+历史只包含可靠结束后的不可变最小事实：已接纳输入、完整文本/思考 part、一次工具调用自身终态、确定文件变更、技能激活、交互/计划/压缩或终止回执。不按 token、换行、停顿、EOF 或整组是否安静猜测完成；工具 A 完成不等并行 B 或整个 Turn。后台启动回执和后台任务最终结果是不同事实。
 
-Runtime 依据可靠业务事实封口。文本只采用模型适配与 Runtime 确认的语义结束；没有独立 part-completed 事实时以最终 attempt 输出为依据，不按停顿、标点、换行或 UI debounce 猜测完成。无内容的等待不产生历史占位。中断时已冻结的保留文本须明确标记为中断内容，失败或停止原因另以独立终止回执表达，不重复附加到正文和工具组。
+Core Thread 先向既有可靠队列准入 effect，再发布执行观察。Studio 单一产品投影按可靠 effect 顺序及批内稳定顺序冻结 draft，调用 Session 整批发布并分配完成 seq；同一冻结记录由 pending、短读和 writer 共享。完成发布立即可查询、可推送，不等待 SQLite；PendingHandoff 只是将准备结果附到已经准入的义务，不是首次入队或 durable 确认。
 
-一次调用的启动收据和后台任务最终结果是两个不同事实。工具 A 完成、B 仍运行时立即发布 A，B 留在实时活动中；跨 Turn 后台执行不因 Turn 完成而变为历史中的可变成员。
-
-SDK 与展示租约的所有权分工见 [25](./25-frontend-state.md) §25.15；本文规定其内容读取、展示和预算行为。唯一已加载展示集合覆盖文本、媒体及领域回执，不因所用组件另建业务可写事实源，也不在每帧执行全表差异比对。
-
-Rust、数据库、FRB、HTTP、分页和 SDK 领域类型不包含展示 group ID、组边界、标题、members 或封口策略。真实 turn/call/来源身份及时间可作为发布时已确定的元数据；输入发布时未知的消费 Turn 不得后补修改。改变展示分组只影响 Flutter，不改变原子身份、数据库或 FRB。
-
-核心层 `Session` 是完成集合、pending 与统一读取所有者，保持产品无关；业务封口与可变执行事实归 Runtime。HistoryStore 与既有 writer 负责事务、恢复和可靠预算。SDK 仅传递完成页及有限未交付批次；唯一 Flutter 呈现所有者持有当前已加载原子引用并决定分组，ViewState 不拥有 feed、Session 或查询句柄。
+| 所有者 | 唯一职责 | 不承担 |
+| --- | --- | --- |
+| Core Thread | 执行事实、可靠准入 | 产品卡片、UI 分页 |
+| Studio 产品投影 | 可靠封口、current 小投影和查询成员资格 | UI 窗口/像素/展示 diff |
+| Core Session | 完成序号、完整 pending、幂等、scope 索引和一致读取 | 业务 payload/工具 renderer |
+| HistoryStore 与原 writer | 初始化/迁移、独立短读、完整批事务和确认 | GUI 接纳或绘制 |
+| ConversationFeed/传输 | 切点、Set/Append、有界传输与取消 | 已加载消息镜像 |
+| SDK/Flutter 现有 owner | 机械映射、串行 applyBatch、current 发布、游标与资源资格 | 历史合并、业务完成归约 |
+| Chat/current 组件 | 消息、布局、滚动及当前态呈现 | 存储一致性 |
 
 ### 模型成员的可靠封口与交接
 
-本节描述可靠成员交接的目标边界；本次流式容量验收按用户指定的现实模型输出规模执行，不以单次生成 20,000 个微小 item 作为必须修复的规模。公开单次输出 token 上限不等于 item 数、UTF-8 字节数或元数据大小；本次选用已公开的 128,000 output token 作为常规单次输出基准，思考与回答合计，不把百万级上下文窗口或需额外后台续接的长解码当作同一单次请求。来源、查证时间及测例换算见 [24 §24.7](./24-testing.md#247-流式输出的现实规模基准)。
+厂商提供独立且权威的成员结束事实时，模型层校验真实身份、内容、重复冲突及输出预算，再通过原调用内的有界可靠通道交 Core 形成 effect；不能用可合并 progress watch 代替。没有可靠成员结束的协议以最终 attempt 输出为依据，不根据通道切换猜测。模型上下文、调用用量和 Turn 终态不因此提前推进。
 
-容量验证分别覆盖同一 item 的长正文与较低 item 数的多成员形态，并测量实际编码的完整 Begin 和客户端结构计费峰值。元数据限额按所声明形态的真实边界设定，正文仍分块且独立限额；不将工具输出、跨调用累计历史套用单次模型 token 限额。若现实规模内仍因成员累积触发预算错误，修复其完成交接或相应有界传输，不以降到已知失败点以下、静默丢弃或仅跳过测例制造通过；若只有超出已声明成员形态的极端碎片化触发，则保留失败证据并在 Issue/PR 列为非阻塞已知限制，不能声称全部输出形态均受 token 上限保证。
+Runtime 沿同一 prepared handoff 和可靠预算封口；最终回执再次含同一成员时按冻结身份/字节幂等，冲突明确失败。停止或失败不撤销已经接纳的成员；生产者先收束并交接已接纳事实，再撤销观察，恢复不重跑旧请求。中断内容如实标识，原因以独立回执表达。
 
-厂商已经给出独立、权威的成员结束事实时，必须按该成员封口，不能因为整个模型调用仍运行而继续等待 attempt 终态。例如 Responses 的 `output_item.done` 所携完整 message、reasoning summary 或 raw reasoning 成员，经模型层校验后可成为独立完成来源；通道切换、增量 block 关闭或单纯出现下一个 index 都不是等价来源。没有可靠成员结束事实的协议仍遵循本节的最终 attempt 输出规则，不猜测边界。
+已完成成员从 current 退出由同源完成交接决定；先进入可查询集合，再公开退役后的 current。现实模型输出与极端碎片化的容量边界见 [24](./24-testing.md)，不以提高帧上限掩盖现实规模内的成员交接问题。
 
-模型层先完成该成员的身份、权威内容、重复冲突、输出与 replay 预算校验，再向 Core 交付类型化的完成事实。该交付与可合并的实时 progress watch 分开：watch 只表示最新预览，不能承担逐条完成事实或充当接纳确认。交付使用现有模型调用所有权内的有界可靠通道；满载产生背压，等待不持锁，不增加平行历史库、通用事件框架或第二个模型调用执行者。
+## 26.2 身份、顺序与动态 payload
 
-Core 在原调用仍运行时接纳这些事实，保留真实 attempt、恢复 generation、provider item 与 part 身份，立即形成现有不可变 effect/checkpoint 交接；不提前推进模型上下文、调用用量或 Turn 终态。Runtime 只沿原 prepared handoff、可靠预算和 writer 路径生成、发布并保存完成项，不能由模型回调直接写产品历史。完成通道的在途载荷及新 effect 必须由同一次调用已有的可靠输出准入承担；接纳前失败保留原责任，接纳后失败沿同一 pending 重试，不把内容移入无预算旁路。
+每会话定义 H 为已发布最新完成序号，D 为已实际提交的连续完成前缀，pending 完整覆盖 `(D,H]`。seq 在发布时分配，不是开始顺序、effect write_seq 或 UI 下标，必须为 SQLite 有符号 64 位范围内的正数。过滤后 seq 可有间隔，不要求 Flutter 验证连续。
 
-模型最终回执再次包含同一成员时，按相同完成身份和冻结载荷幂等，不重新分配完成序号；冲突明确失败，不能改写已经发布的历史。后续模型失败、停止或恢复不撤销已经接纳的成员，原因由独立终止事实表达。调用结束，包括取消和失败，须先收束生产者并交接已接纳的成员，再撤销相应观察；恢复只能依据已保存的 effect/checkpoint，不重发旧请求来重建成员。持久化结构的升级与旧数据未知来源处理仍遵循 [17](./17-studio-storage.md)。
+稳定 item_id 从可靠来源身份派生；相同身份重试沿用首次冻结字节，不用最新工具 decoder 重建旧内容比较。载荷冲突、序号冲突与溢出明确失败，整批不部分发布。工具名、参数/结果、状态、时间、角色、格式标识和公开语义引用属于自由 UTF-8 JSON payload；索引列只表达查询成员资格和真实父域，不镜像 renderer 联合类型。
 
-成员从 live 退出由 Runtime 同源完成交接决定，不由 progress 端提前删正文或由 Flutter 猜测。发布对应完成上界后才生成不再含该成员的活动快照，并沿已有 Activity Commit 与完成批次协调交付。容量修复按本节的现实规模判定执行：允许根据实测重新校准明确的元数据限额，但这不等于已经实现逐成员提前发布，也不保证任意碎片化输出。不得静默丢成员，或为了仅覆盖 20k 极端场景无限扩大帧与暂存上限。
+query_class 由写入/迁移确定，未知 payload 保留原类别，不被 reader 隐藏。parent_id 使用无歧义类型身份，允许引用真实 Turn/Call 而非 item，不能加 item 自关联外键。Main 对应 conversation；Children 对应指定真实父域的 activity。折叠摘要只从可靠产品事实增量形成，不能在打开时扫描/分组全部历史；缺失旧统计、时间或来源保持未知。
 
-## 26.2 身份、顺序与不可变性
+## 26.3 完整 pending 与保存交接
 
-产品完成项包含稳定 `id`、`append_seq`、可选 `source_effect_seq`、可选 `sealed_at`、冻结来源与强类型完成载荷。载荷没有 `streaming`、`running`、`queued`、`pendingApproval`、动态 elapsed、`saved` 或内容 revision。最终耗时、返回码、错误及稳定资源引用属于完成事实，可以保存。
+pending 不是 UI 缓存，不随意 LRU 淘汰。主索引与 class/parent 有序辅助索引引用同一冻结记录，读取不能先扫描全部 pending 再过滤。预算沿原可靠准入/retention 计算，保存失败保留事实并背压，不能无限增长或丢最旧项。
 
-稳定 ID 从业务来源及部件封口身份派生；相同身份且内容相同为幂等，不同载荷为契约错误，不 overwrite。一次 effect 可生成零项或多项，一段文本也可能由多个 effect 累积；`append_seq` 不等于 effect sequence 或执行 ordinal。
+writer 只提交已准备的连续 effect 前缀；事务成功后按本批实际完成项的连续前缀推进 D，不能读此时 Session.head 或取跨空洞最大值。没有 completion 的 effect 不凭空推进 D；保存 ACK 不产生第二次 Append。已提交项仍被已接纳短读引用而短暂存活是正常所有权，不强制销毁引用。
 
-`append_seq` 在 Session 的短临界区中校验整批、分配并原子加入可查询集合时递增。后开始先完成的 B 必须排在之后才完成的 A 前，完成记录不得按启动位置插回旧历史。序号严格为正且不超过 SQLite 有符号 64 位范围，溢出明确失败；FRB/Dart 保持精确整数，不经 JSON double 转换。
+显示不等保存、writer 不等 Flutter。关闭等待原保存屏障；进程提交前崩溃可能丢失 RAM 尾段，不能承诺不等落盘和崩溃零丢失同时成立。批处理、回执、accounting 及故障恢复见 [15](./15-session-storage.md)。
 
-`timelineEpoch` 标识完成集合的运行代际：进程重启或重建可能重用未落盘尾部序号时必须换代，不能只用 cursor 是否超过当前 head 判断有效。它不同于 Session/incarnation、领域 revision、活动 generation/revision 和传输 deliverySequence。迁移无法确认的原始 effect 或首次封口时间保持未知，不把最后修订时间、零或迁移时间伪装为封口时间。
+## 26.4 按需分页与 continuation
 
-## 26.3 内存可见性与落盘交接
+一个读取需求包含 `max_items` 与 `max_bytes`：条数必须大于零，由当前展示需求决定；字节至少容纳一个合法轻量 envelope，否则返回 InvalidDemand。服务端校验资源上限，但不恢复固定 32 条或固定正文预览长度的 UI 合同。预算覆盖实际编码开销、身份、header/current 和引用；不能用返回条数或估算驻留量冒充传输字节上限。
 
-Session 维护完成可见上界 H、已成功提交的连续持久化前缀 D，以及按序不可变 pending。Runtime 一次准备完整冻结载荷，Session 原子发布后整个批次立即可查询，事件生产者直接取得同形载荷；同一 PreparedEffect 再交现有 writer。writer 成功提交原有事务后推进 D 并释放相应 pending，保存 ACK 不产生历史内容更新。
+latest 捕获固定 H0；before 还要求 seq 小于游标排他边界。一次读取如下：
 
-分页、详情及 Rust 内部事件补发统一采用以下次序：
+1. Session 短临界区捕获 D、H、源资格及匹配 scope 的有界 pending 引用；所有候选不超过 H0，数据库上界为 `min(captured_D,H0)`。
+2. 按 scope 索引倒序取预算内候选。内存已满足需求或任一预算耗尽，直接返回，数据库 page/existence 查询为零。
+3. 仅匹配候选不足且条数/字节仍有余量时，锁外建立捕获之后的新 SQLite 短读快照，只补持久化前缀的同 scope 数据。
+4. SQL 先按索引选择头部和 payload 长度，再一次或有界批次读预算内 payload，不逐项完整解码工具。两个天然不重叠区间拼接为 seq 升序消息。
 
-1. 在同一短锁内捕获 `timelineEpoch`、H 和请求范围内有界 pending 引用。
-2. 锁外开启新的短数据库读，限制 `append_seq <= H`，不可复用捕获之前建立的旧 SQLite 快照。
-3. 按身份与序号校验、去重、排序并按条数及字节预算裁剪；epoch 已变则拒绝旧请求。
+不能跨 await 持 Session 锁、复用捕获前旧快照、查询触发 flush/执行恢复/完整性检查，或跳过较新的大项去库里凑旧小项；超预算 payload 以 Deferred 表达。捕获后 writer 清 pending 时短读仍持 Arc；捕获前清理则后开的 DB 快照已能看到提交。
 
-若提交/回收发生在捕获后，读取仍持有不可变引用；若发生在捕获前，后开的数据库读已经能看见；两边命中只返回一项。不得先取走 pending 再等提交，不跨 await 持锁，不先 flush、不靠 Dart 二次查找弥补空洞。候选为 limit 加一等有界选择，不克隆全部 pending；同 ID 或序号不同载荷必须报错。
+before 是绑定原库身份、ChatScope、排他边界和读取作用域的不透明字符串，Flutter 原样回传、不解析来源或 seq。不返回 totalCount，不 COUNT，不为 UI 计算全历史空占位。
 
-内部 after-range 起点不早于捕获的 D 时可只读 pending，latest 候选足够证明结果时也可走内存；旧历史允许数据库 I/O。“立即可查”指不等待本项落盘，不承诺所有查询零 I/O。此能力不是客户端实时补查循环。
+非空 before 仅表示可继续请求，不保证下一页非空。只有内存和库均已确认耗尽才返回 null；内存恰好够页时不为精确 hasOlder 额外查库。允许一次空末页返回 null，非空页 cursor 必须前进，空页不得原地 continuation；短页和字节截页不自动表示 EOF。
 
-pending 的条数和实际字节沿用可靠队列预算。保存失败保留已接纳完成事实、继续允许读取并报告独立存储故障；预算用尽在既有安全点背压，不能丢最旧项或无限增长。正常关闭等待 flush；尚未提交的 RAM 在崩溃后可能丢失，不能同时承诺不等待可靠写入和崩溃零丢失。
+## 26.5 唯一 ChatMessage 与 ChatBatch
 
-## 26.4 独立历史分页与冻结详情
+Rust 产品契约统一归 pl-protocol，FRB/HTTP 同语义；Core 仅持产品无关完成记录。
 
-历史查询通过 thread 与不透明原子 cursor 独立执行，不挂在 feed、ACK credit 或订阅 attempt 上。整个请求持有注册的同一 Session 与 epoch，不跨 await 重解析目标。显式存储 preparation 完成后才发布当前 reader；冷历史不激活模型、工具或执行所有者，不创建缺失历史库，不重放副作用。准入、身份和 durable checkpoint 栅栏继续归存储所有者；迁移失败、损坏、Busy 和真实空页不可混淆。
-
-独立查询 scope 持有同一注册 reader 的强引用，覆盖分页、详情及在途打开；不能仅在单次 Future 内保留引用，让冷 Session 在两次查询之间被回收并更换 epoch。FRB 只提供该 reader 的薄句柄，关闭先封闭查询准入，再通过 Tokio 的任务跟踪能力等待已受理读取结算并释放引用，不另建历史缓存、读取队列或通用生命周期框架。
-
-分页只支持 Latest 与 Before，返回升序原子 items、`beforeCursor`、`hasOlder` 和 epoch；默认 32 项，显式 limit 为 1..=100。游标绑定 Thread、epoch 和严格完成序号，不按 offset、展示组或可见消息数推进。短页不自动等于 EOF；字节预算截页仍保留真实更早边界。客户端首屏由事件 Baseline 自带小页，不先 query 再 subscribe。
-
-普通完整文本、结果说明与必要元数据直接随页面和完成事件交付，不让每条普通消息再读正文。超大日志、附件、明确折叠扩展或超预算正文可用冻结预览、准确总字节数与稳定详情引用。第一版允许存一份冻结展示快照；不能指向可 upsert 的执行行或会被覆盖的临时文件后宣称不可变。
-
-详情绑定 record、field、不可变内容身份和 UTF-8 安全 continuation，无历史 revision。默认块 64 KiB，范围 4 字节至 256 KiB，非空块须推进；不存在字段与空字段分开，错误不伪装 EOF。取消不发布部分结果，关闭查看器或读取 scope 释放自己的缓存和在途责任；不后台预热全部正文或原图。已关闭智能体仍可按相同保存事实读历史，不要求绑定工作树存在，也不因此续跑执行。
-
-## 26.5 完成页与传输预算
-
-沿用有界预览入口：核心单项结构及正文合计不超过 256 KiB，产品常规正文总预览 32 KiB、工具参数与结果各最多 4 KiB，单页总预算 2 MiB；低于预算的普通正文完整交付。预算同时覆盖 UTF-8 正文、静态来源/判别数据、身份、字段槽位、长度声明及详情引用，不以返回条数证明内存有界，也不把预算估算等同精确 wire/heap/RSS。
-
-不可省略的身份、来源和强类型决定不得截断。计划批准/修订/取消决定等判别事实不因正文裁剪退化；无法容纳不可缩结构时明确报告 Overloaded，不删字段、不偷偷超限。自由正文按 UTF-8 边界裁剪并保留准确长度和稳定详情入口。Demo 执行同样的产品条数、正文和错误语义，不复制另一套权威序列化器。
-
-SDK 不保留 recent tail 或历史镜像；传输仅保留 credit 范围内未完成交付批次。实时内容、pending、完成页、在途帧、图片与详情各自受所属预算约束。已加载历史随访问页数增长，不宣称列表惰性构建使业务数据恒定内存；第一版小页、有界预览，不引入双向窗口、尾部裁剪或 around-anchor。
-
-## 26.6 事件首帧、恢复与接纳
-
-会话事件包含以下封闭语义，不以 HeadChanged 或 revision 通知要求客户端查询：
-
-| 事件 | 语义 |
+| 类型 | 字段/语义 |
 | --- | --- |
-| Baseline | 最新完成小页、epoch、before/hasOlder、completedCursor 和各域初值 |
-| ResumeStarted | 最新域快照与目标完成 cursor，不把最新页直接插入旧窗口 |
-| Update | 完成批次及相应实时/当前态变化；正常在线的完成交接使用同一提交回合 |
-| CompletedBatch | fromCursor、throughCursor 与实际连续交付的不可变 items |
-| CatchupComplete | 已交付到的连续完成位置 |
-| TimelineReset | 新 epoch 与最新小页，仅替换历史窗口、分页和分组派生 |
-| DomainSnapshot、Failure、Closed | 所属域恢复或明确失败/关闭 |
+| ChatMessage | `id`、动态 `payload` |
+| PayloadData | `Inline(bytes)` 或 `Deferred(reference,byte_length)` |
+| ChatBatch | `placement`、`messages`、`before`、可选 `current` |
+| ChatPlacement | Set、Prepend、Append |
+| CurrentProjection | source effect、逻辑状态、有界 active turn/活动、Plan/交互头部和内容/集合引用的具体快照 |
 
-初订阅先登记观察再捕获基线；建基线期间出现的完成事实由后续事件连续覆盖。同代重连携带唯一呈现 owner 最后实际连续接纳的位置，Rust 从完成集合按预算补发，不能跳到当前 head 或在 SDK 收到时提前推进 cursor。实时恢复与完成追赶公平调度，不让 token 饿死完成项；不重放旧 token、命令或另存全量 UI 日志。
+seq/query_class/parent_id 不原样放进每条外部消息；H/D/through/source incarnation 留在 Rust，诊断另行记录。Message.custom 是 Flutter 组件自己的类型，不能假定同名 FRB 类自动兼容；不复制 Flyer 的全部消息联合、oldMessage/index 或任意列表 diff。
 
-首个基线按既有顺序交付；后续会话状态、完成批次与活动内容按来源仲裁。对数据持续就绪、持续满足发布门控的来源，在各源一次轮询与处理有限、接收调用持续推进的前提下，至多四次来源仲裁内至少处理一次该来源。活动快照接纳也计入该来源的一次仲裁，分块正文逐帧推进。此上界按仲裁次数计，不是墙钟时限；尚未就绪或被明确门控的来源不据此承诺交付。
+| 来源 | placement | before | current |
+| --- | --- | --- | --- |
+| Main 首屏，messages 可空 | Set | 设置该 scope 的 continuation | 必须有具体快照，可明确空 active |
+| Children 首屏 | Set | 设置该 scope 的 continuation | None |
+| 旧页，末页可空 | Prepend | 替换 continuation，None 为已知 EOF | None |
+| 新完整项 | Append | 必须 None，不修改原游标 | Main 可有；Children 必须 None |
+| 纯 current 更新，messages 为空 | Append | 必须 None，不修改原游标 | 必须有，仅 Main |
 
-来源等待与仲裁状态由同一 feed 持续持有，跨次接收及一次接收的取消继续保留；取消不能丢掉已取得的完成批次或重置轮询位置。暂时门控不解释为来源结束。同代重连仍先交最新活动再追赶完成，Activity Commit 仍须等其依赖的完成上界连续交付，并保留完成批次与活动退出的同次交接。接纳新活动快照后同样复核门控；受阻 Commit 已失去完成来源时明确失败，不能永久等待。关闭先取消和唤醒，再汇合已捕获的原始来源等待及句柄，不增加旁路队列或后台接收任务。
+`current=None` 始终保持不变，具体空快照才清空。完全无变化的空 Append 不发送。每个 handle 首个成功 Chat 必须 Set，之后只有 Append；重同步终结旧 handle 并以新 handle 取得 Set，不在原流偷偷 reset。合法组合由 Rust 构造与测试保证，Flutter 不再跑一套业务切点校验。
 
-正常在线的完成发布许可不能取当前 Session head，也不能由“队首尚非 Commit”推定。订阅实际连续交付位置、已公开活动状态许可的完成上界和当前活动事务依赖的完成上界分别维护：首基线建立其已含完成位置的许可，同代重连先公开最新活动再建立其追赶许可，不能因此提前推进实际交付位置。后续未获许可的完成项，即使早于对应活动快照到达，也须等待相应事务；已开始的 Begin/Text 事务不能被较新快照中途替换。到 Commit 才开放该事务新增的完成范围，较早批次可连续推进，恰好达到该事务上界的最终前缀与 Commit 同次交付并更新许可。此前已获许可的追赶范围仍可与活动分块公平交错。
+## 26.6 被动打开、首屏切点与有序推送
 
-完成来源只持有一个当前在途责任：原始等待或其已取得但未交完的结果与原句柄。允许按上述许可水位移动不可变原子，将同一原始批次分成连续前缀与后缀；容器边界不是完成身份，不改原子的身份、顺序或载荷。未交后缀耗尽前不得启动下一次尾读取，分段不复制载荷、不扩大原批次总预算，也不建立额外预读缓存。跨次接收及取消继续保留该责任；关闭须汇合仍在运行的原等待，并收回已取得结果及原句柄。
+open 在 Rust 内完成观察登记、切点捕获和有界基线准备，events 仅安装唯一消费者交付既定序列，不能等 events 才登记。主 owner 串行边界一起发布 `(sealedHead,current)`；初始页固定 H0，之后变化进入有界待发区，后继 Append 只包含 H0 之后本 scope 的完成事实。打开不追逐最新 head 无限重试。
 
-原本没有活动来源的冷历史观察无需活动交接门控；曾有活动来源的观察不能因该来源结束而降级绕过门控。正常结束和错误的观察不受数据发布门控吞没；仍有未获许可的完成结果却已失去活动来源，或受阻活动 Commit 已失去完成来源时，均明确失败，不能永久等待或独立发布作为兜底。
+冷读在同一短快照中取得轻量完成水位、current 与初始页，不读/校验/解码完整 checkpoint/current_context，不激活模型、工具、SSH 或执行 owner。current 表示最后已提交的逻辑状态，是否真有执行 source 由 registry 判定，重启前 running 不冒充当前运行。
 
-SDK 的唯一消费 owner 准备整帧，唯一 presentation consumer 接纳完成原子，当前态 Repository 提交，再公开更新和标记 ready；各 owner 只写自己的数据。live 结束不能先公开、再异步等待历史查询。提交回合不等待数据库、Markdown 绘制或动画。连续 ACK、两帧窗口、分块 snapshot 和主动取消见 [07](./07-streaming.md)。presentation detach 必须取消未完成交付并退订，不能提前 ACK 或永久占 credit。
+复用 ThreadObservations 的稳定 observation slot 登记并捕获单调 epoch/位置；冷读后复核，覆盖 absent→live→absent 的 ABA。来源判断看 resident/pending，不只看业务 running；idle 也可有未落库尾段。源退役先安全交接 pending/writer。可连续接续由 Rust 完成握手，否则以现有 Failure 明确要求 ConversationResyncRequired，旧分页资格同时失效，不能返回空页或吞错。
 
-实时 long text 的 Append/Replace/Remove 与 generation/revision 仅由 SDK 对应 Repository 归约；失配从所属域事件 snapshot 恢复，不调用详情 query。完成历史完全不使用该可变协议。
+对 Main，本 scope 的完成消息先进入可查询集合，Append 同时携带该项和退役后的 current；先交组件，再发布同批 current。scope 外完成不为补 seq 混入 Main，只更新必要摘要，成员按 Children 读取。current 可合并中间状态，但不能越过尚未交付的本 scope 完成转换；无法在总预算内保持边界则明确重同步。
 
-活动正文只共享当前运行成员的 canonical `ContentBlock`，摘要不变但正文增长也须通知；已完成成员退出须与所依赖的完成上界协调交付，不回填已提交正文。工具输出沿原始 part 身份与顺序逐段传递：区域键为真实 `(call_id, part_id)`，元数据声明每段字节数，SDK 保留同形分段值，Flutter 用标准布局逐段展示；不得在每次变化时将多个 part 物化为累计全文或另存合并镜像。无输出事实与已观察到空输出保持区别。
+保留现役 Frame 的 thread/subscription/delivery sequence 和 State/Failure/Closed，只把 ContentBaseline/ContentUpdate/ActivityContent 合为 Chat。State 继续同步输入、workspace、元数据等其他领域，但不拼正文、推断 terminal 或覆盖 Main Chat.current；Children 不倒灌 Main current。
 
-活动来源可早于 Turn：以真实 `ActiveExecution.id` 标识准备、存储等待、准入等待与停止，`execution_id` 和 `turn_id` 分别按真实可用性填写，Turn 尚未建立时 `turn_id` 为未知，不借上一 Turn 或占位字符串伪造。进入 Turn 后仍引用同一 execution；跨 Turn 后台工具和待决交互用自身已知 Turn 事实。准备与存储等待不冒充等待 API，停止须来自真实取消事实。实时活动没有历史完成序号。
+## 26.7 内容与 current 集合按需读取
 
-## 26.7 Flutter 两端纯展示投影
+公开读取复用原 read lease 与内容 owner：listContents 取得 manifest，readContent 按 range 返回窗口，watchContent 取得有界当前窗口，pageCurrent 读取 revision 绑定的当前集合页。它们不是聊天列表操作，不强行塞为 ChatBatch。
 
-Flutter 先按原子分类/相邻分组，再映射强类型展示项。用户输入和完整助手文本独立展示并分隔活动组；同 Turn 的相邻完成思考、执行和技能可组成一个活动展示组。问答、计划、压缩和终止回执独立；不解析 ID 文本或本地化标题猜来源。正文含多个附件仍为一个原子/展示项，内部复用媒体组件，不制造附件兄弟拓扑。
+ContentRef 区分 ItemPayload(itemId) 与 Body(owner,key)，绑定原库/读取资格。ItemPayload 按 item_id 定位原 payload BLOB 范围；Body 按 offset 索引定位目标块及必要边界块，不能先读/拼全文再切片。ContentWindow 统一携带实际 offset、bytes、generation、availableThrough、sealed。
 
-推理统计与正常完成的轮次回执可由 hidden 展示 owner 持有，不创建可见消息；恢复来源仍保留独立展示。隐藏只影响展示，原子顺序、完成游标、冻结字段与 owner 关系完整保留。
+具有 item 身份的正文从 active 即使用 Item(item_id)，完成前没有完成 seq；seal 移交已有共享块/manifest，不改名复制全文。append-only generation 不随 token 改变，替换才变代；非 item 当前文档用 Current(domain,id,revision)，过期明确 StaleContent。当前集合以领域 position 稳定排序并绑定 revision，过期重取所需页，不混接不同代次。
 
-末端追加只观察现有尾组，最多替换一个边界组并新增若干项；更早页前插对首组对称。不拆旧组、不把新项拉回跨正文的旧组、不做成员迁移、全历史 diff 或通用重排。组内技能/工具配对及静态摘要只由本组稳定成员纯计算。
+current 只推有界预览和引用；展开时订阅所需正文范围，Rust 组装窗口，Flutter 不归约原始文本 delta。折叠/未订阅正文不推全文。manifest 由 producer 明确提交，不解析未知 payload 查引用；完成内容随 item 保留，current 随 owner 退役且保障已接纳短读结束，不另建全局 GC。存储布局、内容发布屏障和缺失投影处理见 [17](./17-studio-storage.md)。
 
-组初建选已见原子作为固定 anchorRecordId，之后两端扩展保留该 ID；单活动原子即使用组壳，第二项到来不换消息类型。页边界不是组边界，整页可能全并入首组而不新增可见消息，但原子 beforeCursor 必须推进；摘要只描述已加载成员，不冒称未知历史总数。
+## 26.8 Flutter 唯一组件消息集合
 
-列表只通过组件公开控制器更新：首屏建立集合与旧页前插均无插入动画，完成批次追加，边界组定向更新，其余旧消息不动。具体 API 留在实现中。token、进度、计时与保存 ACK 不产生历史 controller 操作。Message 和呈现模型共享不可变原子引用，不另复制正文。分组策略在生命周期内固定；显式换规则只对已加载引用一次重新投影，不做身份/展开迁移框架。
+使用已有 InMemoryChatController，不另写 ChatController；它持有当前会话实际加载的 Message，Chat 负责 Widget 惰性构建/释放。只保留一个 applyBatch：Set 调 setMessages；Prepend 以 index=0 调 insertAllMessages；Append 调 insertAllMessages；空消息更新跳过插入。初始/旧页无插入动画，正常新增不 set 整表，不手动重复发组件 operation。
 
-分页和完成接纳串行提交；旧页返回时按当前首边界分组，不用请求时旧组覆盖已到事件。保留一个页面请求 generation、一个在途标志和连续完成 cursor，拒绝 A→B→A 的旧回包。历史 query 不抢 feed credit，也不冻结实时更新。
+一条 ChatMessage 对应一条 Message.custom，id 使用原 id；当前 payload 可靠提供作者/时间时使用真实值，未知/Deferred 用明确中性作者且时间为空。单项 card 由其 Message.metadata 持有，不另存全局 raw item/map/分组缓存。转换逐项隔离，未知/坏 payload 保留非零高度、不影响邻居、分页或订阅；真正读取错误不改成不兼容。
 
-## 26.8 阅读、原生组件与布局
+删除历史身份/顺序全表重验、跨页合组和追读整个 Turn 的机制；业务类别在 Rust LIMIT 前选择。折叠成员只按真实 parent 查询，不从加载的原子拼组。controller 的同步 messages getter 不通过异步 FRB 实现；SDK 保持纯 Dart，不依赖 Flyer 或 app 生成代码，仅一次 transport→SDK 机械映射。
 
-数据层没有 Live/History 两种模型。用户可跟随最新或阅读旧位置；阅读期间完成项仍追加或扩展尾组，回到最新使用列表组件与 Flutter 的公开能力，不清 controller、不重开业务基线。首组前插、尾组扩容、组内阈值和缩放下的阅读位置需要原生证据；稳定 ID 不等于任意高度的像素保证。
+查询 IO 在串行应用段外；分页返回和事件都进入现有串行接纳链。捕获原 lease/controller，组件 await 后、before/current 发布和 ACK 前均复核原资格；不能重新读取当前选择绑定旧结果。只在 Set/Prepend 更新 before；同方向 single-flight，Append 不改变旧页边界。错误保留原 cursor，EOF/失败/取消都结束分页 Future，不等待物理绘制或数据库保存。
 
-聊天列表、折叠、选择与布局/滚动复用成熟组件的公开能力，具体选型与 API 留在实现中；不自写列表、像素锚点、逐行测量、滚轮倍率或持续帧末预取。真实滚动/度量/分页事件可合并触发不足一屏补页，不按帧轮询。普通空基线也保留列表挂载，由空状态与消息通知接纳首条内容；键盘、滚动条、焦点与减少动画沿用 Flutter。
+首批条数按视口与估计行高决定；真实布局缺口才有界补读，EOF、不推进、错误、关闭或启动预算耗尽即停。不兼容/Deferred 不能因零高度被跳过后无限翻页。保留经真实输入验证的外层滚动信号，并与组件 onEndReached 共用同一 single-flight，不新增第二分页状态机或持续帧末轮询。
 
-Markdown、回答和 Plan 卡片的视觉归 [19](./19-studio-ui.md)。完成与实时语义正文共享安全 Markdown 展示边界，标题、分隔线、列表与链接语法候选交由现有组件解释；没有语法的普通正文复用 Flutter 标准 Text，保留多行、缩进及尾随换行的选择复制。所有正文服从有限宽度，优先使用现有 Markdown 的 wrap、公开 builder 与 Flutter 原生软换行；不新增解析器、文本修复或自制排版分块算法。换行不改变原文、缩进或复制。工具参数/结果按字面代码显示。安全链接和授权图片边界保留。
+已浏览 Message 在本会话打开期间保留，长期浏览会增长，不宣称默认数据内存恒定；切换/关闭释放旧 controller 和 Message 的所有引用，不能仅 dispose 后继续缓存。列表前插仍有组件移动成本，不承诺无限长已加载列表 O(1)。阅读旧位置时继续接纳新增，回最新走组件公开能力，不重开订阅、不做像素补偿。
 
-## 26.9 只读展示诊断
+## 26.9 工具当前契约与单条降级
 
-诊断从公开状态派生，不建立第二事实源或控制业务。分别记录已接纳原子数、展示项/组数、原子分页及连续 cursor、完成发布至接收/Model/controller/首帧延迟、页查询延迟、build/raster、预览/pending/在途字节、实时全文发送量、数据库事务与写入量。
+当前执行 schema 与专用 renderer 各只维护一套。展示契约标识在请求冻结时确定，随真实调用/结果保留；同名同形字段不证明旧语义兼容。当前 renderer 只解析它声明支持的契约；无标识/未知标识或当前完整正文非法仅该项不兼容，保留身份、顺序、合法公开原文和可靠通用事实，不虚构时间、状态或工具参数。
 
-展示诊断的 `items` 来自当前 lease 的完整原子集合；`presentationItems` 仅记录真实可见消息的 owner，`hiddenPresentationItems` 从同一 lease 的已有 hidden owner 读取，并按 owner 身份去重。两类成员必须无重复、无遗漏地覆盖已加载原子；不能只按可见消息数判断历史完整，也不为诊断给隐藏原子制造消息。全部诊断只在读取时借用现有 owner，序列化后不保留引用。
+合法但截断的预览、Deferred、custom/freeform 非 JSON 正文与真正 Malformed 分别处理，首屏不自动批量拉详情。generic MCP 的通用形状不依赖在线目录；敏感/redacted 继续受公开资源规则约束。数据库错误、内容缺失、身份冲突及执行恢复错误保持独立诊断，不将所有异常吞入“不兼容”。
 
-无新完成原子或分页时，token、计时和保存 ACK 的历史 controller 操作应为零；活动更新及展开的实时详情 query 应为零。区分原生、静态概念稿、模拟供应商、真实供应商及平台覆盖，不以日志采集或组件构建成功替代人工观察结论。
+工具形状改变不改五列 SQL 或追加历史 decoder/别名，旧工具业务字节只在正式容器迁移边界处理；续聊使用冻结模型上下文，不从当前 UI payload 重建或重跑历史工具。
+
+## 26.10 验收与只读诊断
+
+普通当前格式打开的 full_context_rows、quick_check、execution_activation、tool_or_ssh_initialization、query_triggered_flush 均为零。相同需求下增加总历史、隐藏活动或上下文，不增加线性全量读取/检查/解码。记录 SQL/pending 候选与返回量、payload/content/编码字节、逐项解码数、controller/实际构建行数及排队时间；诊断只临时借用 controller/owner，不反建第二历史集合。
+
+性能主指标为真实 selection 到同 generation 首个实际内容完成布局，另报目标视口填充和 build/raster。迁移已完成、同硬件/构建模式下冷打开和普通切换目标 p95≤500ms；进程冷启动、read scope 冷打开、OS 页缓存、数据规模/样本量/p50/p95及迁移耗时分别报告。Rust/Dart 各用单调时钟经 trace ID 关联，不能跨时钟相减或用批 FrameTiming 回调到达时间代替各帧时间。
+
+需覆盖内存足页零 SQL、提交/清 pending 交错、固定切点/持续新增、并发上翻、源 ABA、同批 current 退役、超长内容、未知工具、慢消费者、独立 query、A→B→A、关闭/保存故障和非空迁移。原生、模拟供应商、真实供应商及各平台证据分开，不以日志采集、组件成功或文档目标冒充验收通过。

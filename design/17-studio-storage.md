@@ -222,7 +222,7 @@ ChatGPT 安装身份保存在 `<Studio home>/data/chatgpt-host.toml`，具有独
 
 调用诊断明细遵循 7 天日志保留期；模型性能汇总则使用全局独立的有界样本表，按调用完成时间与复合调用身份稳定排序，仅保留最近 `3000` 条有效成功调用样本，并在每批统计写事务提交前自动裁剪超出窗口的更早样本；会话可靠累计费用、执行幂等身份与对话历史正文不受性能样本淘汰影响。性能样本作为独立投影存储，不持有指向已轮转淘汰的原始日志表的外键。在本版本将生成速率统计口径从“纯解码速率（decode TPS）”切换为“含首字等待的总响应速率（end-to-end TPS）”时，旧口径的性能样本直接作废丢弃，不执行近似折算或迁移；性能历史与速率汇总仅读取新口径样本，禁止从旧 JSONL 日志或历史账单中回填复活旧速率统计。旧检查点中缓存的最近速率派生值同步作废，待新口径下的有效样本产生后重新建立；除此之外的累计词元用量、累计费用、原始调用日志、账单明细与对话历史全部完整保留。性能样本自身内含模型标识、词元用量与计时摘要，聚合查询无需回读已过期的 JSONL 日志正文。统计写入器按批次共用单个 SQLite 事务，批次内部单条记录写入失败通过事务保存点（`SAVEPOINT`）局部隔离，整批成功记录的完成水位严格在外部事务正式提交后才推进；可重试的写入失败按原顺序重新入队，不可恢复的硬错误则显式记入统计缺口并终结对应写入票据（ticket）。
 
-完成 Session 从已提交 timeline_records 取得序号上界，并在每次完成原子发布时递增 append_seq；writer 仅持久化已经分配的序号。内部 history_items 的 ordinal/revision 仍归执行投影，消费 Turn 绑定与资源修复不得修改已冻结完成项。进程重建更换 timelineEpoch，以拒绝可能重用 RAM 尾部序号的旧 cursor。
+完成 Session 从已提交 conversation_items 取得序号上界，在每次完成发布时递增 seq；writer 仅持久化已分配的序号。内部 history_items 的 ordinal/revision 仍归执行投影，消费 Turn 绑定与资源修复不修改冻结完成项。进程重建的读取代次拒绝可能重用 RAM 尾部序号的旧游标，代次与水位留 Rust。
 
 模型传输层透明恢复产生的展示事实随模型所有者的最终调用回执一并持久化（观察契约见 [16](./16-core-contracts.md) §16.3）。引入观察代次扩展不会重写既有时间线条目的身份或历史排序号；早期 `v2` 回执若缺少观察代次与失败子尝试字段，在其生产者迁移边界按该版本约定转换为“首次尝试且无透明恢复记录”，原有回复正文与计费数据保持不变，正常运行只读取转换后的当前回执。任何新增持久化字段均须明确定义缺省值或版本迁移规则，禁止因旧记录缺少新增恢复字段而清空历史库、重置默认配置或回退读取已隔离的旧版本数据根。
 
@@ -230,11 +230,11 @@ ChatGPT 安装身份保存在 `<Studio home>/data/chatgpt-host.toml`，具有独
 
 对于已先行写入 `history_items` 但当时尚未关联具体轮次的独立消息条目，后续模型消费该消息时可使用原条目身份与原 `ordinal` 将其绑定至消费它的轮次（`turn_id`）。若该消息条目的 `ordinal` 小于目标轮次在 `history_turns` 表中已记录的 `first_ordinal`，历史写入器必须在更新该消息条目的同一 SQLite 事务中将 `history_turns.first_ordinal` 向前扩展至该消息的 `ordinal`；除这一合法的消费绑定扩展外，任何轮次的首条序号均禁止被随意改写。
 
-history_input_identities 与内部执行事实同事务保存输入展示属性；可见输入在 history_items 保留执行恢复记录，隐藏续接仅保留明确隐藏身份。不能因缺内部记录就猜隐藏，冲突/缺身份按失败关闭。旧隐藏标记只由迁移边界从匹配回执/continuation 回填；正常 reader 不升级或激活执行。公开完成历史唯一读取 timeline_records，其输入原子不随后续消费绑定修改。
+history_input_identities 与内部执行事实同事务保存输入展示属性；可见输入在 history_items 保留执行恢复记录，隐藏续接只保留明确隐藏身份。不能因缺记录猜隐藏，冲突/缺身份按失败关闭。旧标记只在迁移边界回填；普通 reader 不恢复执行。公开完成历史唯一读取 conversation_items，其输入完成项不随后续消费绑定修改。
 
-Studio 产品投影一次准备业务事实与不可变完成项，先在 Session 原子可见，再由同一 PreparedEffect 经既有 writer 将完成记录、执行事实、checkpoint、上下文及身份/回执同事务提交，附件仍先通过 blob fence。不增加第二队列或延时保存计时器，不降低 SQLite 同步保证。
+Studio 产品投影一次准备业务事实与不可变完成项，先在 Session 原子可见，再由同一 PreparedEffect 经原 writer 将完成记录、内容/current、执行事实、checkpoint、上下文和回执合批同事务提交，附件先过 blob fence。不增加第二队列或独立保存计时器；原 writer 合批与 flush 语义见 [15](./15-session-storage.md)，SQLite 同步保证不降低。
 
-history_items、任务、checkpoint、输入身份和工具交付索引保留执行恢复及审查职责；timeline_records 是对外完成历史的唯一读取模型，不能将内部执行表直接改成只存完成项。冻结快照的必要重复是不可变语义成本，资源可共享的前提是真正不可变。
+history_items、任务、checkpoint、输入身份和工具交付索引保留执行恢复及审查职责；conversation_items 是对外完成历史唯一读模型，不能把内部执行表改成只存完成项。冻结快照的必要重复是不可变语义成本；资源共享以真正不可变为前提。
 
 实时状态与新增完成项经相应事件流直接交付，历史和冻结详情通过统一 Session 独立查询；冷历史准备不激活执行。前端只保留本次加载的展示选择，SDK 不持历史镜像，接口与预算见 [26](./26-timeline-content.md)。
 
@@ -382,7 +382,7 @@ Thread 的可靠队列、投影驻留、终态交付材料与执行身份索引�
 
 所有自有 SQLite 存储（Studio 产品库、单会话历史库、调用统计库、机器人账本和内核通用会话库）统一采用 SeaORM 官方迁移系统。各存储所有者定义有序、具名且发布后不可改写的迁移，新建库与内存库也执行同一序列；迁移所需的历史结构固定在迁移边界，不随当前领域类型自动变化。`seaql_migrations` 是已完成步骤的唯一事实源；旧数字版本仅用于首次接管时识别已完成转换和存储格式校验，不再由独立调度器推进。接管前只读核验身份、格式和完整性，未知未来版本及无法验证的非空无版本库在任何 schema 写入前拒绝。数据库内的每个迁移显式启用框架事务，使转换、格式标识和该步骤的完成记录共同提交；失败保留原数据，按未完成步骤重试。迁移错误保留存储归属、步骤和底层原因，归入迁移失败，不触发损坏数据自动重建。
 
-检查点信封版本与历史数据库结构版本分别演进；检查点格式升级必须有独立的具名数据迁移，不能依赖此前的上下文来源迁移顺带转换，也不能因数据库表结构未变化而跳过。显式打开会话订阅时，先由该会话唯一的历史写入器完成存储准备，再读取关闭意图、恢复状态或发布首个快照；冷根会话、子会话与已关闭子会话遵循同一顺序。子任务交互列举与打开/恢复共用现有生命周期准入锁，等待并发的存储准备完成后再只读投影，不自行迁移或激活子会话。转换与迁移记录在同一事务中提交，失败保留原检查点和未完成步骤以供重试，普通快照与历史分页仍严格只读。已保存的用量来源、上下文来源、业务扩展、历史水位与未知供应商正文完整保留，不重复应用更早版本的来源推断。
+检查点信封与历史 schema 分别演进，检查点升级须有独立具名迁移，不能由上下文来源转换顺带替代。执行恢复在安装 owner 前完成所需检查点准备；被动聊天打开只做当前内容版本/身份准入，必要升级由 HistoryStore 原迁移屏障协调，不启动可靠执行 writer 或解码完整 checkpoint。冷根、子会话和已关闭子会话均可按 §17.18 冷读。子任务交互列举仍在自身生命周期准入内等待已在途准备，不自行激活子会话。转换/迁移记录同事务，失败保留原件及重试步骤；用量、上下文、业务扩展、水位和未知供应商正文完整保留，不重复来源推断。
 
 冷存储准备须能在原生宿主的默认线程栈上组合调用。历史写入器初始化隔离自身迁移状态，跨异步等待保留的完整检查点及原始／候选表示使用堆上所有权，避免内容准备、根会话激活和冷子会话恢复逐层内联复制大型状态。此内存边界不派生独立任务、不转移初始化锁或事务所有权，也不改变调用方取消与失败传播；不能依赖增大线程栈或调整测试运行参数来维持正确性。
 
@@ -535,7 +535,7 @@ Workspaces 根版本 2 为每条记录新增必填的 `kind`，明确区分 `pro
 
 在现有 SeaORM 唯一迁移序列中新增具名 AtomicTimeline 内容步骤，位于 ReviewReceipt 之后、生命周期 ProjectKind 与 ModelAccess 之前，保证仅内容 preparation 的冷库也能升级。ProjectKind 保留其检查点项目种类表示迁移与生命周期准入语义；两步骤各自保留具名记录，不互相替代。已发布步骤继续校验和推进它自己的格式，不因当前格式新增表而改写旧迁移含义。
 
-preflight 按格式与迁移记录共同分派：合法早期链按原 adoption 继续；旧 v9 要求原子与计量内容迁移 pending，并通过冻结的 v9 表校验。格式 `10` 必须有已完成的原子或计量步骤作为来源证明；原子步骤已完成时必须具备并校验 `timeline_records`，尚待原子迁移时不得已有其输出表；组合确认须仍待执行。当前格式 `11` 要求原子、计量与组合确认均已完成，并通过当前表校验。未来版本、身份不符及版本/迁移记录矛盾明确拒绝，不宽松 OR、不缺表 fallback。
+此前已发布迁移按格式与迁移记录共同分派：合法早期链按原 adoption 继续；旧 v9 要求原子与计量内容迁移 pending，并通过冻结 v9 表校验。格式 10 需有原子或计量步骤来源证明，原子已完成时具备 timeline_records，未完成时不能已有其输出；组合确认仍待执行。其输出格式 11 要求原子、计量和组合确认均完成，作为 §17.18 的迁移输入，不再是正常读取终点。未来版本、身份不符及版本/记录矛盾明确拒绝，不缺表 fallback。
 
 结构校验必须证明实际读取和写入依赖的键语义，不以列存在代替主键或唯一性。用于稳定身份查找、关联或唯一约束的已有列采用精确二进制比较；列默认比较规则与索引规则分别核验，不能因一个 `BINARY` 唯一索引而接受默认 `NOCASE` 的身份列。空表也必须拒绝这种矛盾，不靠扫描当前数据或等首次冲突才发现。等价约束不依赖索引名称或 DDL 拼写，部分、表达式或复合超集索引不能冒充所需身份键。
 
@@ -546,3 +546,60 @@ preflight 按格式与迁移记录共同分派：合法早期链按原 adoption 
 迁移创建以 append_seq 为主键、record_id 唯一的 timeline_records，保留来源 effect、可选封口时间、类型和冻结 payload，无展示组表或 accumulator。按旧 ordinal 及稳定部件次序确定性拆分完成事实并回填序号，保留已知来源、正文、附件和 identity；旧数据不声称重建真实完成次序，不伪造首次完成时间。未完成内部事实留原恢复路径。
 
 所有 DDL、转换、回填验证与 schema 标记通过 migration manager 同一事务连接执行，use_transaction 为 true；SeaORM 的迁移完成记录也同事务，失败全部回滚，重试幂等。只在显式准备边界保留旧格式解码，当前 reader 只接受新模型。升级不清空当前数据或 v2 迁移源，不删除迁移备份及隔离旧根，不损坏工具回执、输入身份和审查事实。
+
+## 17.18 按需聊天内容、当前投影与迁移
+
+在既有 SeaORM 序列中增加一次按需聊天内容迁移，衔接已发布完成历史；旧转换仅保留在迁移边界。普通运行只消费下列当前结构，schema 版号以代码常量为准，不双读双写 timeline_records 或保留旧 API 别名。
+
+```sql
+CREATE TABLE conversation_items (
+    seq         INTEGER PRIMARY KEY CHECK (seq > 0),
+    item_id     TEXT NOT NULL UNIQUE,
+    query_class TEXT NOT NULL,
+    parent_id   TEXT,
+    payload     BLOB NOT NULL
+);
+CREATE INDEX conversation_items_by_class
+    ON conversation_items(query_class, seq);
+CREATE INDEX conversation_items_by_parent_class
+    ON conversation_items(parent_id, query_class, seq);
+
+CREATE TABLE conversation_contents (
+    owner_key   TEXT NOT NULL,
+    content_key TEXT NOT NULL,
+    payload     BLOB NOT NULL,
+    PRIMARY KEY (owner_key, content_key)
+) WITHOUT ROWID;
+CREATE TABLE conversation_content_chunks (
+    owner_key   TEXT NOT NULL,
+    content_key TEXT NOT NULL,
+    byte_offset INTEGER NOT NULL CHECK (byte_offset >= 0),
+    data        BLOB NOT NULL,
+    PRIMARY KEY (owner_key, content_key, byte_offset),
+    FOREIGN KEY (owner_key, content_key)
+        REFERENCES conversation_contents(owner_key, content_key)
+) WITHOUT ROWID;
+
+CREATE TABLE conversation_view_state (
+    singleton_id INTEGER PRIMARY KEY CHECK (singleton_id = 1),
+    payload      BLOB NOT NULL
+);
+CREATE TABLE conversation_view_entries (
+    collection TEXT NOT NULL,
+    position   INTEGER NOT NULL,
+    entry_id   TEXT NOT NULL,
+    payload    BLOB NOT NULL,
+    PRIMARY KEY (collection, position),
+    UNIQUE (collection, entry_id)
+) WITHOUT ROWID;
+```
+
+item 表仅保存查询/排序/身份五列；每会话已有独立库，不重复 thread_id。业务为原始 UTF-8 JSON payload，不设工具名、状态、时间、格式或无索引用途的 payload_bytes 列；BLOB 长度由 length(payload) 取得。query_class 和带类型 parent 的含义归 [26](./26-timeline-content.md)，不以当前 renderer 能否解释决定是否保存/返回。parent 可能引用真实 Turn/Call，不加指向 item_id 的自关联外键。
+
+contents 的 owner_key 为带类型通用身份，content_key 不透明，目录 payload 只含有界通用描述；长度/媒体类型不再拆无查询用途的列。producer 显式提交 manifest，不从未知业务 payload 猜引用。块有大小上限，按 byte_offset 索引定位和顺序读预算范围，不先恢复全文。active item 内容在 seal 时移交已有共享块与 manifest；目录/chunk 在原 writer 事务/附件屏障下公开，不能发永久缺失引用。完成内容随 item 保留，current 内容归原 owner 退役且允许已接纳短读结束，不另建全局 GC。
+
+view singleton 只含 sourceEffectSeq、逻辑摘要、active turn/Plan/交互有界头部及引用；可能增长的集合按 collection/position 按需读，游标绑定集合 revision。不塞完整 ThreadSnapshot、Plan 正文、全部交互或身份 map。产品 owner 随真实事实维护，PreparedEffect 冻结原 effect 的 current/变更，writer 按序保存，不能提交时读取最新 live 替代而越过提交前缀。
+
+冷打开在一个短读快照中取得轻量水位、current 和初始页，不调用完整 checkpoint decoder；普通版本/身份准入不执行 quick_check、不读 current_context、不触发 flush。完整性检查、迁移和执行恢复分别有显式边界；轻量投影缺失进入明确修复/迁移错误，不回退恢复全 checkpoint。独立只读池与 writer 同属 HistoryStore，保留创建/迁移及数据库身份屏障，不使用 immutable 忽略活跃写入。
+
+迁移有界遍历旧完成容器和原公开字段，保留已有 item_id/seq/公开原始字节、附件与执行恢复事实；未知工具不经当前 decoder，必要时存有界不兼容描述与原文引用。不能伪造旧完成事件、来源、计数或时间。新表/内容/current 回填、非空/排序/唯一性/manifest/回执校验、schema 和 SeaORM 完成记录在同一真实事务连接原子公开；按锁定组件实证回滚，不以 use_transaction 声明代替证明。失败保留旧数据并可重试，普通 reader 不见半升级状态；不清库、不删除原件、备份或 v2 前隔离数据。
