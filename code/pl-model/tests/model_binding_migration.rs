@@ -536,6 +536,7 @@ fn producer_migration_preserves_opaque_material_precision_and_is_idempotent() {
         serde_json::from_str(legacy_frame_payload(2).content()).unwrap();
     let vendor = "{ \"opaque\": 9007199254740993, \"text\": \"原始材料\" }";
     let binding = pl_core::model::ModelToolCall {
+        presentation_contract: None,
         rejection: None,
         call_id: "call-frozen".into(),
         tool_id: "tool-frozen".into(),

@@ -5,6 +5,7 @@ mod agent;
 mod agent_profile;
 pub mod agent_session;
 mod billing;
+pub mod conversation;
 mod delegation;
 mod error;
 mod event;
@@ -71,6 +72,7 @@ pub use billing::{
     InferenceOrchestrationMetrics, InferenceTiming, InferenceTokenUsage, ModelMatchState,
     ModelPricingSnapshot,
 };
+pub use conversation::*;
 pub use delegation::{
     AGENT_EVALUATION_COMMENT_MAX_CHARS, AGENT_EVALUATION_WINDOW, AgentEvaluation,
     AgentEvaluationOutcome, AgentEvaluationSummary, AgentEvaluationWrite, AgentTaskCategory,

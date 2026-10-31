@@ -1,134 +1,282 @@
-//! 按记录、字段与字节偏移分块读取完整正文。
-//!
-//! 详情不是“整条全文入口”：请求给出条目身份、字段身份与可选 continuation，结果是一段落在
-//! UTF-8 边界上的有界正文块、字段完整字节数和下一块游标。读取只取所需区间，不先物化整个前缀或
-//! 剩余全文。完成记录不可变，因此没有内容版本：continuation 绑定记录身份、字段身份与偏移，读取
-//! 时逐项校验，从一个字段取得的 continuation 不能被带到另一个字段或另一条记录上，也不会被当成
-//! “附近某个位置”的猜测。不存在字段与空字段是两种不同的事实。
+//! Explicit content manifests and true bounded byte ranges, independent of product payloads.
 
-use crate::chat::{ChatError, ChatField};
+use crate::{
+    chat::{ChatError, ChatKey, ReadDemand, TimelineEpoch},
+    model::ContentBlock,
+};
+use std::{ops::Range, sync::Arc};
 
-/// 详情块默认字节数。
-pub const DEFAULT_DETAIL_BYTES: usize = 64 * 1024;
-/// 详情块最多接纳的字节数。
-pub const MAX_DETAIL_BYTES: usize = 256 * 1024;
-/// 详情块最少接纳的字节数：4 个 UTF-8 字节，即一个标量的最大编码长度。
-///
-/// 取 4 字节而不是更大的缓冲是为了让边界行为真实可测：一个非空块一定能推进至少一个标量，同时调用
-/// 方不会被强制读取远超所需的字节。
-pub const MIN_DETAIL_BYTES: usize = 4;
-
-/// 字段内的一段位置游标：绑定记录身份、字段身份与字节偏移的 continuation。
-///
-/// 它不是 Dart 字符下标，也不是可跨字段复用的偏移：`item_id` 与 `field` 一起构成它的语义，读取时
-/// 逐项校验。偏移本身始终落在已交付正文的 UTF-8 边界上。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ChatDetailCursor {
-    item_id: String,
-    field: ChatField,
-    offset: u64,
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ChatContentKey {
+    pub owner: ChatKey,
+    pub key: String,
 }
 
-impl ChatDetailCursor {
-    /// 由绑定事实与字段内字节偏移构造 continuation。
-    pub fn new(item_id: impl Into<String>, field: ChatField, offset: u64) -> Self {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContentDescriptor {
+    pub key: ChatContentKey,
+    pub byte_length: u64,
+    pub generation: u64,
+    pub media_type: Option<String>,
+}
+
+/// A sealed text owner with a shared byte-offset index built once at ownership handoff.
+#[derive(Debug, Clone)]
+pub struct IndexedText {
+    block: Arc<ContentBlock>,
+    chunks: Arc<[(usize, Arc<str>)]>,
+}
+
+impl IndexedText {
+    pub fn new(block: Arc<ContentBlock>) -> Self {
+        let chunks = block.shared_chunks().into();
+        Self { block, chunks }
+    }
+
+    pub fn block(&self) -> &Arc<ContentBlock> {
+        &self.block
+    }
+
+    pub fn len(&self) -> usize {
+        self.block.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.block.is_empty()
+    }
+
+    fn bytes(&self) -> impl Iterator<Item = &u8> {
+        self.chunks.iter().flat_map(|(_, chunk)| chunk.as_bytes())
+    }
+
+    fn range(&self, start: usize, len: usize) -> ContentBytes {
+        self.range_with_visit(start, len, || {})
+    }
+
+    fn range_with_visit(&self, start: usize, len: usize, mut visit: impl FnMut()) -> ContentBytes {
+        let end = start + len;
+        let mut bytes = Vec::with_capacity(len);
+        if len != 0 {
+            let first = self
+                .chunks
+                .partition_point(|(offset, _)| *offset <= start)
+                .saturating_sub(1);
+            for (offset, chunk) in &self.chunks[first..] {
+                if *offset >= end {
+                    break;
+                }
+                visit();
+                let from = start.saturating_sub(*offset);
+                let through = (end - offset).min(chunk.len());
+                bytes.extend_from_slice(&chunk.as_bytes()[from..through]);
+            }
+        }
+        ContentBytes::from(Arc::<[u8]>::from(bytes))
+    }
+}
+
+impl PartialEq for IndexedText {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.block, &other.block)
+            || (self.len() == other.len() && self.bytes().eq(other.bytes()))
+    }
+}
+
+impl Eq for IndexedText {}
+
+/// Model chunks are indexed without flattening. Binary bodies retain shared immutable storage.
+/// Neither representation is copied by page queries.
+#[derive(Debug, Clone)]
+pub enum ContentData {
+    Text(Arc<IndexedText>),
+    Bytes(Arc<[u8]>),
+}
+impl ContentData {
+    pub fn text(block: Arc<ContentBlock>) -> Self {
+        Self::Text(Arc::new(IndexedText::new(block)))
+    }
+
+    pub fn len(&self) -> usize {
+        match self {
+            Self::Text(block) => block.len(),
+            Self::Bytes(bytes) => bytes.len(),
+        }
+    }
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+    pub fn range(&self, offset: u64, max_bytes: usize) -> Result<ContentBytes, ChatError> {
+        let start = checked_start(offset, self.len())?;
+        let len = max_bytes.min(self.len() - start);
+        match self {
+            Self::Bytes(bytes) => Ok(ContentBytes {
+                storage: bytes.clone(),
+                range: start..start + len,
+            }),
+            Self::Text(text) => Ok(text.range(start, len)),
+        }
+    }
+}
+
+// Storage may materialize a text owner as binary chunks. Immutable identity is the byte sequence,
+// not its in-memory representation or the boundaries the producer originally appended at.
+impl PartialEq for ContentData {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Text(left), Self::Text(right)) => left == right,
+            (Self::Bytes(left), Self::Bytes(right)) => left == right,
+            (Self::Text(text), Self::Bytes(bytes)) | (Self::Bytes(bytes), Self::Text(text)) => {
+                text.len() == bytes.len() && text.bytes().eq(bytes.iter())
+            }
+        }
+    }
+}
+
+impl Eq for ContentData {}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChatContent {
+    pub descriptor: ContentDescriptor,
+    pub data: ContentData,
+}
+
+/// An accepted range can keep its original Arc alive after commit/clear, without copying a payload.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContentBytes {
+    pub storage: Arc<[u8]>,
+    pub range: Range<usize>,
+}
+impl ContentBytes {
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.storage[self.range.clone()]
+    }
+}
+impl From<Arc<[u8]>> for ContentBytes {
+    fn from(storage: Arc<[u8]>) -> Self {
+        let end = storage.len();
         Self {
-            item_id: item_id.into(),
-            field,
-            offset,
+            storage,
+            range: 0..end,
         }
     }
+}
 
-    /// 该 continuation 所属的条目身份。
-    pub fn item_id(&self) -> &str {
-        &self.item_id
-    }
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ContentRef {
+    ItemPayload(String),
+    Body(ChatContentKey),
+}
 
-    /// 该 continuation 所属的字段身份。
-    pub fn field(&self) -> &ChatField {
-        &self.field
-    }
-
-    /// 字段内字节偏移。
-    pub fn offset(&self) -> u64 {
-        self.offset
-    }
-
-    /// 校验 continuation 属于这次读取请求，否则返回类型化拒绝。
-    pub(crate) fn validate(&self, request: &ChatDetailRequest) -> Result<(), ChatError> {
-        if self.item_id != request.item_id {
-            return Err(ChatError::InvalidArgument(format!(
-                "detail continuation belongs to item {} instead of {}",
-                self.item_id, request.item_id
-            )));
-        }
-        if self.field != request.field {
-            return Err(ChatError::InvalidArgument(format!(
-                "detail continuation belongs to field {} instead of {}",
-                self.field, request.field
-            )));
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContentReadRequest {
+    pub epoch: TimelineEpoch,
+    pub reference: ContentRef,
+    pub offset: u64,
+    pub max_bytes: usize,
+    pub generation: Option<u64>,
+}
+impl ContentReadRequest {
+    pub(crate) fn validate(&self) -> Result<(), ChatError> {
+        if !(1..=super::MAX_READ_BYTES).contains(&self.max_bytes) {
+            return Err(ChatError::InvalidDemand(
+                "invalid content range size".into(),
+            ));
         }
         Ok(())
     }
 }
 
-/// 一次详情读取请求。
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ChatDetailRequest {
-    pub item_id: String,
-    pub field: ChatField,
-    pub continuation: Option<ChatDetailCursor>,
-    pub max_bytes: Option<usize>,
+pub struct ContentWindow {
+    pub offset: u64,
+    pub bytes: ContentBytes,
+    pub generation: u64,
+    pub available_through: u64,
+    pub sealed: bool,
 }
 
-impl ChatDetailRequest {
-    /// 从字段开头读取一块。
-    pub fn new(item_id: impl Into<String>, field: ChatField) -> Self {
-        Self {
-            item_id: item_id.into(),
-            field,
-            continuation: None,
-            max_bytes: None,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContentManifestRequest {
+    pub epoch: TimelineEpoch,
+    pub item_id: String,
+    pub after: Option<ChatContentKey>,
+    pub demand: ReadDemand,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContentManifestPage {
+    pub entries: Vec<ContentDescriptor>,
+    pub next: Option<ChatContentKey>,
+}
+
+pub(crate) fn checked_start(offset: u64, len: usize) -> Result<usize, ChatError> {
+    usize::try_from(offset)
+        .ok()
+        .filter(|start| *start <= len)
+        .ok_or_else(|| ChatError::InvalidArgument("content offset exceeds length".into()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn indexed_suffix_and_boundary_reads_visit_only_the_target_chunks() {
+        for count in [2, 128, 8192] {
+            let mut block = ContentBlock::empty();
+            for _ in 0..count {
+                block = ContentBlock::append(&block, "汉📖");
+            }
+            let text = IndexedText::new(block.clone());
+            assert!(Arc::ptr_eq(text.block(), &block));
+            assert_eq!(text.chunks.len(), count);
+            for (start, len, expected_visits, expected) in [
+                (text.len() - 1, 1, 1, &"📖".as_bytes()[3..]),
+                (0, 1, 1, &"汉".as_bytes()[..1]),
+                (6, 2, 2, &[0x96, 0xe6][..]),
+                (text.len(), 0, 0, &[][..]),
+            ] {
+                let mut visited = 0;
+                let window = text.range_with_visit(start, len, || visited += 1);
+                assert_eq!(window.as_bytes(), expected);
+                assert_eq!(
+                    visited,
+                    expected_visits,
+                    "range {start}..{} in {count} chunks",
+                    start + len
+                );
+            }
         }
     }
 
-    /// 从给定 continuation 继续读取。
-    pub fn with_continuation(mut self, continuation: ChatDetailCursor) -> Self {
-        self.continuation = Some(continuation);
-        self
-    }
-
-    /// 指定本块最多字节数。
-    pub fn with_max_bytes(mut self, max_bytes: usize) -> Self {
-        self.max_bytes = Some(max_bytes);
-        self
-    }
-
-    /// 校验后的块大小：缺省 64 KiB，显式值必须在 4..=256 KiB。
-    ///
-    /// # Errors
-    /// 显式块大小低于 [`MIN_DETAIL_BYTES`] 或高于 [`MAX_DETAIL_BYTES`] 时返回
-    /// [`ChatError::InvalidArgument`]。
-    pub fn block_bytes(&self) -> Result<usize, ChatError> {
-        match self.max_bytes {
-            None => Ok(DEFAULT_DETAIL_BYTES),
-            Some(bytes) if (MIN_DETAIL_BYTES..=MAX_DETAIL_BYTES).contains(&bytes) => Ok(bytes),
-            Some(bytes) => Err(ChatError::InvalidArgument(format!(
-                "detail block {bytes} is outside {MIN_DETAIL_BYTES}..={MAX_DETAIL_BYTES}"
-            ))),
+    #[test]
+    fn indexed_ranges_handle_empty_eof_and_split_code_points_without_widening() {
+        let empty = IndexedText::new(ContentBlock::empty());
+        let mut visited = 0;
+        assert!(
+            empty
+                .range_with_visit(0, 0, || visited += 1)
+                .as_bytes()
+                .is_empty()
+        );
+        assert_eq!(visited, 0);
+        let chunks = ["汉", "📖", "abc", "语"];
+        let body = chunks.concat();
+        let mut block = ContentBlock::empty();
+        for chunk in chunks {
+            block = ContentBlock::append(&block, chunk);
         }
+        let data = ContentData::text(block);
+        for offset in 0..=body.len() {
+            for size in [0, 1, 2, 5, usize::MAX] {
+                let window = data.range(offset as u64, size).unwrap();
+                let end = offset.saturating_add(size).min(body.len());
+                assert_eq!(window.as_bytes(), &body.as_bytes()[offset..end]);
+            }
+        }
+        assert!(matches!(
+            data.range(body.len() as u64 + 1, 1),
+            Err(ChatError::InvalidArgument(_))
+        ));
     }
-}
-
-/// 一段完整正文块。
-///
-/// `total_bytes` 是该字段完整正文的 UTF-8 字节数，`continuation` 只在仍有后续字节时给出。空字段
-/// 返回空正文且没有下一块：空字段与不存在的字段是两种不同的事实。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ChatDetailChunk {
-    pub item_id: String,
-    pub field: ChatField,
-    pub text: String,
-    pub total_bytes: u64,
-    pub continuation: Option<ChatDetailCursor>,
 }

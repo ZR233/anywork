@@ -31,6 +31,9 @@ impl<B: WorkspaceFileBackend + 'static> ThreadWriteFileTool<B> {
     pub fn registration(self, declaration: OpaquePayload) -> Result<Registration, RegistryError> {
         let authorization = self.workspace.authorization();
         Ok(Registration::new("write_file".into(), declaration, self)?
+            .with_presentation_contract(pl_core::model::ToolPresentationContract::new(
+                "builtin.write_file@1",
+            ))
             .foreground_coexisting()
             .with_authorization(authorization))
     }

@@ -27,6 +27,7 @@ impl ModelSession for RepeatingModel {
         self.0 += 1;
         let calls = if self.0 <= 24 {
             vec![ModelToolCall {
+                presentation_contract: None,
                 rejection: None,
                 call_id: format!("call-{}", self.0),
                 tool_id: "tick".into(),
@@ -144,6 +145,7 @@ impl ModelSession for ReusedCallModel {
                     vec![]
                 } else {
                     vec![ModelToolCall {
+                        presentation_contract: None,
                         rejection: None,
                         call_id: "fixed-call".into(),
                         tool_id: "tick".into(),
@@ -259,12 +261,20 @@ impl ModelSession for FailsOnce {
 #[tokio::test]
 async fn retry_uses_latest_failure_and_rejects_changed_context_or_tool_plan() {
     use pl_core::thread::{ContextReplacementReason, ReplaceContext, StepInput, ThreadError};
-    for mutation in ["none", "context", "tools"] {
+    for mutation in ["none", "context", "tools", "presentation"] {
         let thread = ThreadHandle::start(
             format!("retry-{mutation}"),
             DynModelSession::new(FailsOnce(true)),
         )
         .unwrap();
+        if mutation == "presentation" {
+            thread
+                .register_tools(vec![
+                    Registration::new("tick".into(), OpaquePayload::text("tick"), Tick).unwrap(),
+                ])
+                .await
+                .unwrap();
+        }
         thread
             .step(StepInput {
                 turn_id: "turn".into(),
@@ -296,6 +306,17 @@ async fn retry_uses_latest_failure_and_rejects_changed_context_or_tool_plan() {
             thread
                 .register_tools(vec![
                     Registration::new("tick".into(), OpaquePayload::text("tick"), Tick).unwrap(),
+                ])
+                .await
+                .unwrap();
+        } else if mutation == "presentation" {
+            thread
+                .register_tools(vec![
+                    Registration::new("tick".into(), OpaquePayload::text("tick"), Tick)
+                        .unwrap()
+                        .with_presentation_contract(pl_core::model::ToolPresentationContract::new(
+                            "vendor.tick@changed",
+                        )),
                 ])
                 .await
                 .unwrap();

@@ -80,6 +80,7 @@ impl ModelSession for HeldSkillCall {
                 content: Vec::new(),
                 tool_calls: if first {
                     vec![ModelToolCall {
+                        presentation_contract: None,
                         rejection: None,
                         call_id: "frozen-skill-call".into(),
                         tool_id: "skill_view".into(),

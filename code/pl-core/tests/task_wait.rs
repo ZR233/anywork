@@ -108,6 +108,7 @@ impl ModelSession for SwitchModel {
                 .expect("tool script")
                 .iter()
                 .map(|tool_id| ModelToolCall {
+                    presentation_contract: None,
                     rejection: None,
                     call_id: format!("{}-{tool_id}", request.turn_id),
                     tool_id: tool_id.clone(),

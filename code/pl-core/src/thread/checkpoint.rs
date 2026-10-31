@@ -1487,6 +1487,7 @@ fn externalize_tool(
     ModelToolDeclaration {
         tool_id: tool.tool_id.clone(),
         declaration: externalize_payload(&tool.declaration, slot, threshold, extracted),
+        presentation_contract: tool.presentation_contract.clone(),
     }
 }
 
