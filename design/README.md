@@ -44,7 +44,7 @@
 配套资产：`concepts/` 保存产品概念设计（如项目侧栏），`prototypes/` 保存视觉原型（HTML 静态稿，不作为架构契约），`assets/` 保存文档引用的图像资源。
 
 - Material 3 账号设计稿按界面分目录：[账号列表](./prototypes/accounts-list/index.html)、[账号详情](./prototypes/account-details/index.html)、[模型详情、价格与评价](./prototypes/model-details/index.html)。对应 [#168](https://github.com/ZR233/anywork/issues/168)，包含 62 个账户场景、计费方式选择后保存及带评价模型标识的模拟评价。三个入口共用 `prototypes/accounts-shared/` 中的样式、示例数据与交互代码，分别从对应界面打开；维护时修改共享文件，避免页面间漂移。浏览器直接打开即可交互，需要联网加载固定版本的 MDUI 和图标库；金额、价格、性能和评价均为设计样例，不连接真实账户，也不作为原生实现或验收证据。
-- 会话交互概念稿：[Timeline 与实时状态栏](./prototypes/live-status/index.html)。以 [26](./26-timeline-content.md) 的逐条完成事实为准，Flutter 可把相邻完成项派生成活动组；未完成活动/正文/压缩留唯一实时区，无信息显示不可展开“思考中”。旋转前置图标、独立折叠终态、问答 dock 与输入主按钮复用 [conversation-shared](./prototypes/conversation-shared/README.md)。概念稿为本地模拟和视觉参照，可按 issue 调整，不是原生或真实供应商验收证据。
+- 会话交互概念稿：[Timeline 与实时状态栏](./prototypes/live-status/index.html)。以 [26](./26-timeline-content.md) 的逐条完成事实为准，Flutter 把相邻完成项派生成活动组；当前工作组（含已完成成员）、正文与压缩留唯一状态栏，遇到正文、问答、轮次结束等分组边界时工作组整组进入 Timeline，无信息显示不可展开“思考中”。旋转前置图标、独立折叠终态、问答 dock 与输入主按钮复用 [conversation-shared](./prototypes/conversation-shared/README.md)。概念稿为本地模拟和视觉参照，可按 issue 调整，不是原生或真实供应商验收证据。
 
 ## 写作规范
 
