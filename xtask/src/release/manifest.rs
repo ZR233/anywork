@@ -42,6 +42,9 @@ struct UpdateAsset {
 }
 
 pub(super) fn finalize(workspace_root: &Path, release_dir: &Path, version: &Version) -> Result<()> {
+    if !cfg!(target_os = "windows") {
+        bail!("release-gui finalize supports Windows only; Linux stage produces final assets");
+    }
     ensure_staged_assets(release_dir, version)?;
     let setup_name = asset_name(version, "setup.exe");
     let setup_path = release_dir.join(&setup_name);
@@ -82,6 +85,10 @@ pub(super) fn finalize(workspace_root: &Path, release_dir: &Path, version: &Vers
 }
 
 pub(super) fn verify(workspace_root: &Path, release_dir: &Path, version: &Version) -> Result<()> {
+    #[cfg(target_os = "linux")]
+    if cfg!(target_os = "linux") {
+        return super::linux::verify(release_dir, version);
+    }
     ensure_staged_assets(release_dir, version)?;
     let expected = expected_files(version);
     let mut actual = fs::read_dir(release_dir)
@@ -211,7 +218,7 @@ fn expected_files(version: &Version) -> Vec<String> {
     files
 }
 
-fn sha256_file(path: &Path) -> Result<String> {
+pub(super) fn sha256_file(path: &Path) -> Result<String> {
     let mut reader = BufReader::new(
         File::open(path).with_context(|| format!("failed to open {}", path.display()))?,
     );

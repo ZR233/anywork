@@ -22,6 +22,8 @@ Zig/cargo-zigbuild、GTK/C++ 原生构建和 Debian 打包工具。容器内仍�
 身份核验。它不挂载真实 HOME、Docker socket 或个人凭据，也不需要 GitHub 环境变量。
 工程产物仍写到仓库既有 `target/`、`dist/` 等位置；按运行脚本的用户映射处理宿主
 写权限，不用特权容器解决目录权限问题。不要将镜像发布 token 传给项目构建。
+宿主须支持 Linux amd64 容器、可读写的 checkout 挂载、`/proc` 与子进程 subreaper；
+建议以普通开发用户运行脚本，容器使用相同 UID/GID，避免留下 root 所有的产物。
 
 已准备好辅助进程成品时，可以复用它们而不重新编译：
 
@@ -57,6 +59,19 @@ python3 docker/linux/scripts/image-key.py
 发布镜像位于 `ghcr.io/zr233/anywork-linux-build`。输入标签 `inputs-<hash>` 用于发现
 匹配环境，实际执行应使用解析后的 `@sha256:...` 引用，不依赖 `latest`。开发者也可
 完全不使用 registry，直接从对应源码本地构建。
+
+例如，当前环境已发布的公开镜像可匿名拉取并运行：
+
+```sh
+image='ghcr.io/zr233/anywork-linux-build@sha256:4714cd5d3e764fc3c3afa2825c3742176a49f47c0582edc67e5c2a2c6f9b9b43'
+docker pull "$image"
+test "$(docker image inspect "$image" --format '{{index .Config.Labels "io.anywork.build-inputs"}}')" \
+  = "$(python3 docker/linux/scripts/image-key.py)"
+bash docker/linux/scripts/run.sh "$image" cargo test --locked -p pl-xtask
+```
+
+此 digest 是对应环境输入的示例，不是自动升级指针；源码环境输入变化时，须解析匹配
+输入标签的新 digest 或本地重建。身份核对失败时不要跳过检查继续使用旧环境。
 
 ## 镜像制作与 CI
 

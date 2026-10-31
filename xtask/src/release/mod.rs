@@ -1,5 +1,7 @@
-//! Windows stable release orchestration.
+//! Platform-local stable release orchestration.
 
+#[cfg(target_os = "linux")]
+mod linux;
 mod manifest;
 mod package;
 

@@ -160,6 +160,12 @@ cargo xtask run-gui --demo
 cargo xtask build-gui
 ```
 
+该命令生成当前平台的运行 bundle，位于 `dist/anywork-release/`。Linux 开发者也可使用
+[项目级 Docker 构建环境](docker/linux/README.md)，无需自行安装 Rust、Flutter 和原生开发依赖；
+本地构建与 CI 使用同一环境，Rust 配置来自根 `rust-toolchain.toml`。
+Linux DEB 由显式预构建 bundle 打包，版本、安装布局和发行版兼容范围见
+[发布与更新](design/23-release-update.md)，不将构建成功等同于跨发行版验收通过。
+
 ### 5. 数据与临时文件在哪里？
 
 - **用户配置**默认位于 `~/.anywork/config.toml`（Windows 为 `%USERPROFILE%\.anywork\config.toml`），密钥保存在系统凭据库。可用 `--studio-home` 或 `ANYWORK_HOME` 指定独立数据根。
