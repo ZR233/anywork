@@ -7,11 +7,11 @@ use super::event::BridgeProductEventEnvelope;
 use super::{
     BridgeAccountUsageStateSnapshot, BridgeAcpAuthSnapshot, BridgeAcpInstallSnapshot,
     BridgeAgentDirectoryState, BridgeAgentProfilesStateSnapshot, BridgeBotsStateSnapshot,
-    BridgeLspStateSnapshot, BridgeMcpStateSnapshot, BridgeModelCatalogStateSnapshot,
-    BridgePersistenceQueueStateSnapshot, BridgePersistenceStateSnapshot,
-    BridgeProjectDirectoryState, BridgeRecoveryStateSnapshot, BridgeSessionCostsState,
-    BridgeSettingsConfigStateSnapshot, BridgeSkillsStateSnapshot, BridgeThreadDirectoryPage,
-    BridgeThreadModeCatalogSnapshot, BridgeUpdaterStateSnapshot,
+    BridgeChildInteractionSummary, BridgeLspStateSnapshot, BridgeMcpStateSnapshot,
+    BridgeModelCatalogStateSnapshot, BridgePersistenceQueueStateSnapshot,
+    BridgePersistenceStateSnapshot, BridgeProjectDirectoryState, BridgeRecoveryStateSnapshot,
+    BridgeSessionCostsState, BridgeSettingsConfigStateSnapshot, BridgeSkillsStateSnapshot,
+    BridgeThreadDirectoryPage, BridgeThreadModeCatalogSnapshot, BridgeUpdaterStateSnapshot,
 };
 
 /// 产品订阅 topic；带 payload 的变体表达作用域，不存在无作用域组合形式。
@@ -32,6 +32,7 @@ pub enum BridgeProductTopic {
     AcpAuth,
     AcpInstall,
     SessionCosts { root_thread_id: String },
+    ChildInteractions { host_thread_id: String },
     Updater,
     Persistence,
     PersistenceQueue,
@@ -49,6 +50,9 @@ impl BridgeProductTopic {
             }
             Self::SessionCosts { root_thread_id } if root_thread_id.trim().is_empty() => Err(
                 invalid("SessionCosts topic requires a non-empty rootThreadId"),
+            ),
+            Self::ChildInteractions { host_thread_id } if host_thread_id.trim().is_empty() => Err(
+                invalid("ChildInteractions topic requires a non-empty hostThreadId"),
             ),
             _ => Ok(()),
         }
@@ -72,6 +76,9 @@ impl BridgeProductTopic {
             Self::AcpInstall => StudioProductTopic::AcpInstall,
             Self::SessionCosts { root_thread_id } => {
                 StudioProductTopic::SessionCosts { root_thread_id }
+            }
+            Self::ChildInteractions { host_thread_id } => {
+                StudioProductTopic::ChildInteractions { host_thread_id }
             }
             Self::Updater => StudioProductTopic::Updater,
             Self::Persistence => StudioProductTopic::Persistence,
@@ -100,11 +107,22 @@ pub enum BridgeProductBaseline {
     AcpAuth(Box<BridgeAcpAuthSnapshot>),
     AcpInstall(Box<BridgeAcpInstallSnapshot>),
     SessionCosts(Box<BridgeSessionCostsState>),
+    ChildInteractions(Box<BridgeChildInteractionsState>),
     Updater(BridgeUpdaterStateSnapshot),
     Persistence(BridgePersistenceStateSnapshot),
     PersistenceQueue(Box<BridgePersistenceQueueStateSnapshot>),
     AgentProfiles(Box<BridgeAgentProfilesStateSnapshot>),
     Bots(Box<BridgeBotsStateSnapshot>),
+}
+
+/// One host's committed pending-child projection; revision belongs to this domain only.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BridgeChildInteractionsState {
+    pub host_thread_id: String,
+    pub revision: u64,
+    pub updated_at: i64,
+    pub items: Vec<BridgeChildInteractionSummary>,
 }
 
 /// typed topic 订阅交付的帧。

@@ -39,25 +39,9 @@ impl StudioRuntime {
         self.ensure_root_host(host_thread_id).await?;
         let mut summaries = Vec::new();
         for (child_id, snapshot) in self.child_states(host_thread_id).await? {
-            for local_id in snapshot
-                .interactions
-                .keys()
-                .chain(snapshot.permissions.keys())
-            {
-                let Some(interaction) = crate::thread_assembler::project_thread_interaction(
-                    &child_id, local_id, &snapshot,
-                )?
-                else {
-                    continue;
-                };
-                if interaction.status() != pl_protocol::InteractionStatus::Pending {
-                    continue;
-                }
-                if is_child_plan_diagnostic(&snapshot, local_id) {
-                    continue;
-                }
-                summaries.push(ChildInteractionSummary::new(interaction));
-            }
+            summaries.extend(crate::thread_assembler::project_pending_child_interactions(
+                &child_id, &snapshot,
+            )?);
         }
         Ok(summaries)
     }
@@ -375,13 +359,6 @@ fn notice_text(
              whether and how to schedule that member again.\n{content}"
         ),
     }
-}
-
-/// Whether this record is a Plan interaction, which is a main-session capability.
-fn is_child_plan_diagnostic(snapshot: &ThreadSnapshot, local_id: &str) -> bool {
-    snapshot.interactions.get(local_id).is_some_and(|record| {
-        record.request.payload.format() == crate::plan_tool::PLAN_CONFIRMATION_FORMAT
-    })
 }
 
 /// The local interaction identity inside its owning Thread.

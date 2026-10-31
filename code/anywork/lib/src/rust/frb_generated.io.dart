@@ -1135,6 +1135,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeChildInteractionsState dco_decode_box_bridge_child_interactions_state(
+    dynamic raw,
+  );
+
+  @protected
   BridgeInteractionRequest dco_decode_box_bridge_interaction_request(
     dynamic raw,
   );
@@ -1671,6 +1676,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeChildInteractionSummary dco_decode_bridge_child_interaction_summary(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeChildInteractionsState dco_decode_bridge_child_interactions_state(
     dynamic raw,
   );
 
@@ -5075,6 +5085,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeChildInteractionsState sse_decode_box_bridge_child_interactions_state(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   BridgeInteractionRequest sse_decode_box_bridge_interaction_request(
     SseDeserializer deserializer,
   );
@@ -5777,6 +5792,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeChildInteractionSummary sse_decode_bridge_child_interaction_summary(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeChildInteractionsState sse_decode_bridge_child_interactions_state(
     SseDeserializer deserializer,
   );
 
@@ -9855,6 +9875,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_box_bridge_child_interactions_state(
+    BridgeChildInteractionsState self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_box_bridge_interaction_request(
     BridgeInteractionRequest self,
     SseSerializer serializer,
@@ -10706,6 +10732,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_bridge_child_interaction_summary(
     BridgeChildInteractionSummary self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_child_interactions_state(
+    BridgeChildInteractionsState self,
     SseSerializer serializer,
   );
 

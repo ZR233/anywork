@@ -111,7 +111,7 @@ final class ComposerDockViewModelProvider
 }
 
 String _$composerDockViewModelHash() =>
-    r'8bf030e6587eaa036546cfc0b5f9fd38ff3d48ee';
+    r'dd1d5b11f69614492e2761c24ed9a7ba48258fcb';
 
 final class ComposerDockViewModelFamily extends $Family
     with

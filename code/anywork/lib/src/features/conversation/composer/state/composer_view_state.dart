@@ -78,7 +78,7 @@ abstract class ComposerDockViewState with _$ComposerDockViewState {
     /// 不显示执行入口，历史仍展示、草稿不清。
     required bool executionClosed,
     required List<ChildInteractionSummary> childInteractions,
-    required int childInteractionGeneration,
+    required DomainSyncStatus? childInteractionSync,
     required Map<String, String> childInteractionSources,
     required ThreadModelRouteView? modelRoute,
     ModelRouteDisplay? routeDisplay,

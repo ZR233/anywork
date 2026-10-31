@@ -2274,18 +2274,7 @@ class FrbStudioTransport
     final response = await _bridgeCall(
       () => frb.readChildInteractions(threadId: threadId),
     );
-    return [
-      for (final summary in response)
-        ChildInteractionSummary(
-          childThreadId: summary.childThreadId,
-          interactionId: summary.interactionId,
-          kind:
-              _interactionKindFromLabel(summary.kind) ??
-              _interactionFromFrb(summary.interaction).kind,
-          revision: summary.revision.toInt(),
-          interaction: _interactionFromFrb(summary.interaction),
-        ),
-    ];
+    return response.map(_childInteractionFromFrb).toList();
   }
 
   @override

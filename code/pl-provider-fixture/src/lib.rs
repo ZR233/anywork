@@ -2,6 +2,7 @@
 
 use std::{
     net::SocketAddr,
+    num::NonZeroUsize,
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -169,7 +170,7 @@ pub fn gui_markdown_answer() -> String {
 /// control/observation routes, and it verifies the real requests against them.
 /// The GUI side is driven by the optional delegation Driver
 /// (`--delegation-driver`), or by the manual flow when it is absent.
-pub const GUI_SCENARIOS: [&str; 32] = [
+pub const GUI_SCENARIOS: [&str; 33] = [
     "gui",
     "markdown-layout",
     "single-instance",
@@ -193,6 +194,7 @@ pub const GUI_SCENARIOS: [&str; 32] = [
     "shutdown",
     "provider-usage",
     "timeline-history",
+    "timeline-history-20k",
     "wait-events",
     "delegation-routing",
     "delegation-lifecycle",
@@ -689,6 +691,33 @@ pub const GUI_STREAMING_OUTPUT_REFERENCE_TOKENS: usize = 128_000;
 /// A second, single-item output lets native paging overlap real provider work
 /// without treating unfinished text as already-completed history.
 pub const GUI_TIMELINE_STREAM_PROMPT: &str = "Stream the local timeline reading fixture";
+/// Seed batches in the Linux-only cumulative history scenario.
+pub const GUI_TIMELINE_HISTORY_20K_SEED_BATCHES: usize = 10;
+/// Independently completed text items in each seed batch.
+pub const GUI_TIMELINE_HISTORY_20K_SEED_ITEMS: usize = 2_000;
+/// Growth batches appended after the three process-cold observations.
+pub const GUI_TIMELINE_HISTORY_20K_GROWTH_BATCHES: usize = 20;
+/// Independently completed text items in each growth batch.
+pub const GUI_TIMELINE_HISTORY_20K_GROWTH_ITEMS: usize = 100;
+/// Exact UTF-8 body carried by every cumulative-history text item.
+pub const GUI_TIMELINE_HISTORY_20K_TEXT: &str = " a a a a a a a a a a a a a a a a";
+/// Milliseconds between growth response events.
+pub const GUI_TIMELINE_HISTORY_20K_GROWTH_STEP_MILLIS: u64 = 5;
+/// Bounded fixture-only request capacity for cumulative context replay.
+pub const GUI_TIMELINE_HISTORY_20K_REQUEST_BODY_BYTES: NonZeroUsize =
+    NonZeroUsize::new(16 * 1024 * 1024).expect("16 MiB is nonzero");
+
+/// Prompt for one seed batch. The batch number is one-based and part of the
+/// strict request identity.
+pub fn gui_timeline_history_20k_seed_prompt(batch: usize) -> String {
+    format!("Seed timeline history batch {batch:02} of {GUI_TIMELINE_HISTORY_20K_SEED_BATCHES}")
+}
+
+/// Prompt for one growth batch. The batch number is one-based and part of the
+/// strict request identity.
+pub fn gui_timeline_history_20k_growth_prompt(batch: usize) -> String {
+    format!("Grow timeline history batch {batch:02} of {GUI_TIMELINE_HISTORY_20K_GROWTH_BATCHES}")
+}
 
 /// Realtime acceptance prompts. Each prompt drives one deterministic state of the
 /// realtime journey; the tool follow-up steps reuse the same prompt text so the
@@ -1788,6 +1817,7 @@ struct ScriptState {
 #[derive(Clone)]
 struct AppState {
     script: Arc<Mutex<ScriptState>>,
+    request_body_limit: usize,
     stopping: CancellationToken,
     stress: Arc<Mutex<StressProgress>>,
     web_search: Arc<Mutex<web_search::WebSearchState>>,
@@ -1801,6 +1831,9 @@ struct AppState {
 /// Optional fixture behaviours layered on top of the strict step script.
 #[derive(Debug, Clone, Default)]
 pub struct FixtureOptions {
+    /// Maximum buffered request bytes. `None` keeps the ordinary 1 MiB limit;
+    /// large-history scenarios opt into an explicit nonzero bounded capacity.
+    pub request_body_limit: Option<NonZeroUsize>,
     /// Serve the native web-search / MCP acceptance endpoints. `None` keeps the
     /// listener limited to the classic conversation surfaces.
     pub web_search: Option<WebSearchOptions>,
@@ -1860,6 +1893,9 @@ impl FixtureServer {
         let agent_definitions_enabled = options.agent_definitions.is_some();
         let stopping = CancellationToken::new();
         let state = AppState {
+            request_body_limit: options
+                .request_body_limit
+                .map_or(1024 * 1024, NonZeroUsize::get),
             script: Arc::new(Mutex::new(ScriptState {
                 steps,
                 ..Default::default()
@@ -2495,6 +2531,154 @@ pub fn gui_timeline_history_script() -> Vec<Step> {
             gui_streaming_output_reply(1, 15),
         ),
     ]
+}
+
+/// Thirty normal provider turns for the Linux cumulative-history acceptance.
+///
+/// The first ten turns seed 20,000 independently completed text items. The
+/// following twenty turns append 2,000 more items while the Driver separately
+/// observes Live and History windows. Optional title requests remain normal
+/// product traffic, but only the batch prompts create the measured output.
+pub fn gui_timeline_history_20k_script() -> Vec<Step> {
+    let mut steps = Vec::new();
+    for batch in 1..=GUI_TIMELINE_HISTORY_20K_SEED_BATCHES {
+        push_timeline_history_20k_batch(
+            &mut steps,
+            "seed",
+            batch,
+            gui_timeline_history_20k_seed_prompt(batch),
+            GUI_TIMELINE_HISTORY_20K_SEED_ITEMS,
+            0,
+        );
+    }
+    for batch in 1..=GUI_TIMELINE_HISTORY_20K_GROWTH_BATCHES {
+        push_timeline_history_20k_batch(
+            &mut steps,
+            "growth",
+            batch,
+            gui_timeline_history_20k_growth_prompt(batch),
+            GUI_TIMELINE_HISTORY_20K_GROWTH_ITEMS,
+            GUI_TIMELINE_HISTORY_20K_GROWTH_STEP_MILLIS,
+        );
+    }
+    steps
+}
+
+fn push_timeline_history_20k_batch(
+    steps: &mut Vec<Step>,
+    phase: &str,
+    batch: usize,
+    prompt: String,
+    item_count: usize,
+    step_millis: u64,
+) {
+    let title_step = steps.len();
+    steps.push(
+        Step::prompt(
+            Protocol::ResponsesHttp,
+            session_title_prompt(&prompt),
+            title_step,
+            Reply::Sse(responses_text(
+                "Fixture Session",
+                &format!("timeline-history-20k-{phase}-{batch:02}-title"),
+                "fixture-model",
+            )),
+        )
+        .optional(),
+    );
+    let response_step = steps.len();
+    steps.push(Step::prompt(
+        Protocol::ResponsesHttp,
+        prompt.clone(),
+        response_step,
+        gui_timeline_history_20k_reply(phase, batch, item_count, step_millis),
+    ));
+    let trailing_title_step = steps.len();
+    steps.push(
+        Step::prompt(
+            Protocol::ResponsesHttp,
+            session_title_prompt(&prompt),
+            trailing_title_step,
+            Reply::Sse(responses_text(
+                "Fixture Session",
+                &format!("timeline-history-20k-{phase}-{batch:02}-title"),
+                "fixture-model",
+            )),
+        )
+        .optional(),
+    );
+}
+
+fn gui_timeline_history_20k_reply(
+    phase: &str,
+    batch: usize,
+    item_count: usize,
+    step_millis: u64,
+) -> Reply {
+    assert!(item_count > 0);
+    assert_eq!(GUI_TIMELINE_HISTORY_20K_TEXT.len(), 32);
+    let response_id = format!("timeline-history-20k-{phase}-{batch:02}-response");
+    let mut events = Vec::with_capacity(item_count * 3 + 2);
+    events.push(json!({
+        "type": "response.created",
+        "response": {"id": response_id, "model": "fixture-model"}
+    }));
+    for ordinal in 0..item_count {
+        let item_id = format!("timeline-history-20k-{phase}-{batch:02}-item-{ordinal:04}");
+        let part_id = format!("timeline-history-20k-{phase}-{batch:02}-part-{ordinal:04}");
+        events.push(json!({
+            "type": "response.output_item.added",
+            "output_index": ordinal,
+            "item": {
+                "id": item_id,
+                "type": "message",
+                "role": "assistant",
+                "phase": "final_answer",
+                "content": []
+            }
+        }));
+        events.push(json!({
+            "type": "response.output_text.delta",
+            "item_id": item_id,
+            "output_index": ordinal,
+            "content_index": 0,
+            "delta": GUI_TIMELINE_HISTORY_20K_TEXT
+        }));
+        events.push(json!({
+            "type": "response.output_item.done",
+            "output_index": ordinal,
+            "item": {
+                "id": item_id,
+                "type": "message",
+                "role": "assistant",
+                "phase": "final_answer",
+                "content": [{
+                    "id": part_id,
+                    "type": "output_text",
+                    "text": GUI_TIMELINE_HISTORY_20K_TEXT
+                }]
+            }
+        }));
+    }
+    // Fixture usage is deliberately synthetic and is not reported as a
+    // tokenizer measurement by the acceptance journey.
+    events.push(json!({
+        "type": "response.completed",
+        "response": {
+            "id": response_id,
+            "model": "fixture-model",
+            "usage": {
+                "input_tokens": 1,
+                "output_tokens": item_count * 16,
+                "total_tokens": item_count * 16 + 1
+            }
+        }
+    }));
+    Reply::PacedEvents {
+        initial_delay_ms: 0,
+        step_millis,
+        events,
+    }
 }
 
 /// Deterministic output-limit load over the existing paced SSE fixture transport.
@@ -4040,7 +4224,7 @@ pub fn responses_tool_calls(id: &str, model: &str, calls: &[RealtimeToolCall<'_>
 async fn handle(State(state): State<AppState>, request: axum::extract::Request) -> Response {
     let path = canonical_script_path(request.uri().path());
     let method = request.method().as_str().to_owned();
-    let bytes = match axum::body::to_bytes(request.into_body(), 1024 * 1024).await {
+    let bytes = match axum::body::to_bytes(request.into_body(), state.request_body_limit).await {
         Ok(bytes) => bytes,
         Err(_) => return StatusCode::PAYLOAD_TOO_LARGE.into_response(),
     };
@@ -5043,4 +5227,145 @@ fn paced_sse_reply(
         Body::from_stream(body),
     )
         .into_response()
+}
+
+#[cfg(test)]
+mod timeline_history_20k_tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    #[tokio::test]
+    async fn large_history_request_capacity_is_explicit_and_still_bounded() {
+        let client = reqwest::Client::new();
+        let body = json!({"padding": "a".repeat(1024 * 1024)});
+        let ordinary = FixtureServer::start(Vec::new()).await.unwrap();
+        let response = client
+            .post(format!("{}/responses", ordinary.base_url()))
+            .json(&body)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        ordinary.finish().await.unwrap();
+
+        let large = FixtureServer::start_with_options(
+            vec![Step::exact(
+                Protocol::ResponsesHttp,
+                body.clone(),
+                Reply::Sse(responses_text("ok", "large-request", "fixture-model")),
+            )],
+            FixtureOptions {
+                request_body_limit: Some(GUI_TIMELINE_HISTORY_20K_REQUEST_BODY_BYTES),
+                ..FixtureOptions::default()
+            },
+        )
+        .await
+        .unwrap();
+        let response = client
+            .post(format!("{}/responses", large.base_url()))
+            .body(vec![
+                b' ';
+                GUI_TIMELINE_HISTORY_20K_REQUEST_BODY_BYTES.get() + 1
+            ])
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        let response = client
+            .post(format!("{}/responses", large.base_url()))
+            .json(&body)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(response.text().await.unwrap().contains("large-request"));
+        assert_eq!(large.finish().await.unwrap().len(), 1);
+    }
+
+    fn paced_events(step: &Step) -> (&[Value], u64) {
+        match &step.reply {
+            Reply::PacedEvents {
+                events,
+                step_millis,
+                ..
+            } => (events, *step_millis),
+            reply => panic!("expected paced events, got {reply:?}"),
+        }
+    }
+
+    #[test]
+    fn cumulative_history_script_has_exact_batches_items_and_unique_identities() {
+        let script = gui_timeline_history_20k_script();
+        let required: Vec<&Step> = script.iter().filter(|step| !step.optional).collect();
+        assert_eq!(
+            required.len(),
+            GUI_TIMELINE_HISTORY_20K_SEED_BATCHES + GUI_TIMELINE_HISTORY_20K_GROWTH_BATCHES
+        );
+        assert_eq!(GUI_TIMELINE_HISTORY_20K_TEXT.len(), 32);
+
+        let mut identities = HashSet::new();
+        let mut completed_text_items = 0usize;
+        for (index, step) in required.iter().enumerate() {
+            let (events, step_millis) = paced_events(step);
+            let (phase, batch, expected_items, expected_step_millis) =
+                if index < GUI_TIMELINE_HISTORY_20K_SEED_BATCHES {
+                    ("seed", index + 1, GUI_TIMELINE_HISTORY_20K_SEED_ITEMS, 0)
+                } else {
+                    (
+                        "growth",
+                        index - GUI_TIMELINE_HISTORY_20K_SEED_BATCHES + 1,
+                        GUI_TIMELINE_HISTORY_20K_GROWTH_ITEMS,
+                        GUI_TIMELINE_HISTORY_20K_GROWTH_STEP_MILLIS,
+                    )
+                };
+            assert_eq!(step_millis, expected_step_millis);
+            assert_eq!(events.len(), expected_items * 3 + 2);
+            let done: Vec<&Value> = events
+                .iter()
+                .filter(|event| event["type"] == "response.output_item.done")
+                .collect();
+            assert_eq!(done.len(), expected_items);
+            for (ordinal, event) in done.into_iter().enumerate() {
+                let item = &event["item"];
+                assert_eq!(item["type"], "message");
+                assert_eq!(item["phase"], "final_answer");
+                assert_eq!(item["content"][0]["text"], GUI_TIMELINE_HISTORY_20K_TEXT);
+                let id = item["id"].as_str().expect("completed item id");
+                assert_eq!(
+                    id,
+                    format!("timeline-history-20k-{phase}-{batch:02}-item-{ordinal:04}")
+                );
+                assert!(identities.insert(id.to_owned()), "duplicate item id {id}");
+                completed_text_items += 1;
+            }
+        }
+        assert_eq!(
+            completed_text_items,
+            GUI_TIMELINE_HISTORY_20K_SEED_BATCHES * GUI_TIMELINE_HISTORY_20K_SEED_ITEMS
+                + GUI_TIMELINE_HISTORY_20K_GROWTH_BATCHES * GUI_TIMELINE_HISTORY_20K_GROWTH_ITEMS
+        );
+    }
+
+    #[test]
+    fn existing_timeline_history_keeps_2000_items_and_128k_reference_payload() {
+        let script = gui_timeline_history_script();
+        assert_eq!(script.len(), 4);
+        assert_eq!(GUI_TIMELINE_HISTORY_ITEMS, 2_000);
+        assert_eq!(GUI_STREAMING_OUTPUT_REFERENCE_TOKENS, 128_000);
+        let (events, step_millis) = paced_events(&script[1]);
+        assert_eq!(step_millis, 1);
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event["type"] == "response.output_item.done")
+                .count(),
+            GUI_TIMELINE_HISTORY_ITEMS
+        );
+        assert_eq!(
+            events
+                .last()
+                .and_then(|event| { event["response"]["usage"]["output_tokens"].as_u64() }),
+            Some(GUI_STREAMING_OUTPUT_REFERENCE_TOKENS as u64)
+        );
+    }
 }

@@ -1,6 +1,8 @@
 //! Product interaction routing reads only canonical Thread snapshots.
 use super::{StudioThreadAssembler, decode_interaction_key};
-use pl_protocol::{InteractionRequest, InteractionResolution, InteractionStatus};
+use pl_protocol::{
+    ChildInteractionSummary, InteractionRequest, InteractionResolution, InteractionStatus,
+};
 
 #[derive(Debug, thiserror::Error)]
 pub enum StudioInteractionError {
@@ -41,6 +43,39 @@ pub fn project_thread_interaction(
         },
         (None, None) => Ok(None),
     }
+}
+
+/// Projects the pending user-input and tool-approval interactions visible to a direct parent.
+///
+/// The same predicate is used by the explicit list query and by the root-scoped product projection,
+/// so Plan diagnostics and terminal records cannot drift between the two surfaces.
+pub(crate) fn project_pending_child_interactions(
+    thread_id: &str,
+    snapshot: &pl_core::thread::ThreadSnapshot,
+) -> Result<Vec<ChildInteractionSummary>, StudioInteractionError> {
+    let mut summaries = Vec::new();
+    for local_id in snapshot
+        .interactions
+        .keys()
+        .chain(snapshot.permissions.keys())
+    {
+        let Some(interaction) = project_thread_interaction(thread_id, local_id, snapshot)? else {
+            continue;
+        };
+        if interaction.status() != InteractionStatus::Pending
+            || is_child_plan_diagnostic(snapshot, local_id)
+        {
+            continue;
+        }
+        summaries.push(ChildInteractionSummary::new(interaction));
+    }
+    Ok(summaries)
+}
+
+fn is_child_plan_diagnostic(snapshot: &pl_core::thread::ThreadSnapshot, local_id: &str) -> bool {
+    snapshot.interactions.get(local_id).is_some_and(|record| {
+        record.request.payload.format() == crate::plan_tool::PLAN_CONFIRMATION_FORMAT
+    })
 }
 
 impl StudioThreadAssembler {

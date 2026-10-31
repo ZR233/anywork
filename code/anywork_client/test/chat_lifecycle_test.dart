@@ -196,10 +196,6 @@ void main() {
         fixture.repository.setVisibleThread('A');
         expect(closing, isNotNull);
         expect(fixture.transport.opens, isEmpty);
-        expect(
-          fixture.client.childInteractions.state.visibleHostThreadId,
-          isNull,
-        );
         expect((await closing!).complete, isTrue);
         expect(fixture.client.budget.usage, isEmpty);
         expect(session.content.state.value, isA<ChatClosed<bool>>());
@@ -368,23 +364,16 @@ void main() {
         scope.page(),
         throwsA(isA<StaleConversationScope>()),
       );
-      final generation =
-          fixture.client.childInteractions.state.displayGeneration;
       final visibleTargets = <String?>[];
-      final observation = fixture.client.childInteractions.source.watch((
-        state,
-      ) {
-        visibleTargets.add(state.visibleHostThreadId);
-        if (state.visibleHostThreadId == 'B') {
-          fixture.repository.setVisibleThread('A');
-        }
+      final observation = fixture.repository.visibleThreadId.watch((target) {
+        visibleTargets.add(target);
+        if (target != 'B') return;
+        // B 的会话 demand 已建立、原生打开尚未发起：在同一导航 drain 内直接返回
+        // A，B 不成为可见终点也不留下打开中的 feed。
+        fixture.repository.setVisibleThread('A');
       });
       fixture.repository.setVisibleThread('B');
-      expect(visibleTargets, ['B', 'A']);
-      expect(
-        fixture.client.childInteractions.state.displayGeneration,
-        generation + 2,
-      );
+      expect(visibleTargets, [null, 'B', null, 'A']);
       expect(oldA.requestCloseStarted.isCompleted, isTrue);
       expect(scope.isActive, isTrue);
       expect(scope.pendingQueries, 1);
@@ -457,18 +446,12 @@ void main() {
         initial: baseline(1, items: [timelineItem(1, threadId: 'A')]),
       );
       Future<CloseReport>? closing;
-      final observation = fixture.client.childInteractions.source.watch((
-        state,
-      ) {
-        if (state.visibleHostThreadId != 'B') return;
+      final observation = fixture.repository.visibleThreadId.watch((target) {
+        if (target != 'B') return;
         fixture.repository.setVisibleThread('A');
         closing = fixture.close();
       });
       fixture.repository.setVisibleThread('B');
-      expect(
-        fixture.client.childInteractions.state.visibleHostThreadId,
-        isNull,
-      );
       expect(fixture.session('A').isActive, isFalse);
       expect(fixture.transport.opens.map((open) => open.threadId), ['A']);
       expect(oldA.requestCloseStarted.isCompleted, isTrue);

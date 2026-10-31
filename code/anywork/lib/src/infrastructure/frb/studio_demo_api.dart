@@ -2903,6 +2903,8 @@ class DemoStudioTransport extends StudioTransport
         removed: removedThreadIds,
       ),
     );
+    // 归档真实提交后撤下该宿主的待决集合投影（成员同被移除）。
+    _publishChildInteractionsIfChanged(threadId);
     return ArchiveThreadCommandReply(
       result: ArchiveThreadResult(
         archivedRootId: threadId,
@@ -3866,6 +3868,9 @@ class DemoStudioTransport extends StudioTransport
       AcpAuthTopic() => AcpAuthBaseline(_demoAcpAuth.snapshot),
       AcpInstallTopic() => AcpInstallBaseline(_demoInstallSnapshot()),
       BotsTopic() => BotsBaseline(_demoBotsState()),
+      ChildInteractionsTopic(:final hostThreadId) => ChildInteractionsBaseline(
+        _demoChildInteractionsState(hostThreadId),
+      ),
     };
     final revision = switch (baseline) {
       ProjectDirectoryBaseline(:final state) => state.revision,
@@ -3887,6 +3892,7 @@ class DemoStudioTransport extends StudioTransport
       AcpAuthBaseline(:final state) => state.revision,
       AcpInstallBaseline(:final state) => state.revision,
       BotsBaseline(:final state) => state.revision,
+      ChildInteractionsBaseline(:final state) => state.revision,
     };
     return ProductTopicBaselineFrame(
       topic: topic,
@@ -4754,9 +4760,19 @@ class DemoStudioTransport extends StudioTransport
   Future<List<ChildInteractionSummary>> readChildInteractions(
     String hostThreadId,
   ) async {
+    return _collectChildInteractions(hostThreadId);
+  }
+
+  /// 主会话可见的子任务待决交互集合；child Plan 是诊断事实，不进入集合。
+  List<ChildInteractionSummary> _collectChildInteractions(String hostThreadId) {
+    // 归档的宿主或成员不再是可见事实来源：集合排除已归档子树。
+    if (_archivedThreadIds.contains(hostThreadId)) return const [];
     final summaries = <ChildInteractionSummary>[];
     for (final workspace in _workspaces.values) {
       if (workspace.thread.parentThreadId != hostThreadId) continue;
+      if (_archivedThreadIds.contains(workspace.thread.effectiveRootThreadId)) {
+        continue;
+      }
       for (final interaction in workspace.interactions) {
         // 子会话的计划请求是诊断事实：生产侧的目录与决议入口都按计划确认问题身份排除它，
         // 演示数据据同一判据不把它提供给主会话决议。
@@ -4773,6 +4789,66 @@ class DemoStudioTransport extends StudioTransport
       }
     }
     return summaries;
+  }
+
+  final Map<String, int> _childInteractionRevisions = {};
+  final Map<String, List<ChildInteractionSummary>> _childInteractionPublished =
+      {};
+
+  ChildInteractionsStateView _demoChildInteractionsState(String hostThreadId) {
+    // Baseline reads the currently published projection; a host never
+    // published before starts at its first snapshot without bumping revision.
+    final published = _childInteractionPublished[hostThreadId];
+    final items =
+        published ??
+        _childInteractionPublished.putIfAbsent(
+          hostThreadId,
+          () => List.unmodifiable(_collectChildInteractions(hostThreadId)),
+        );
+    return ChildInteractionsStateView(
+      hostThreadId: hostThreadId,
+      revision: _childInteractionRevisions[hostThreadId] ?? 0,
+      updatedAt: DateTime.now(),
+      items: items,
+    );
+  }
+
+  /// 交互事实变化后重算宿主集合：未变集合不提升领域 revision。
+  void _publishChildInteractionsIfChanged(String hostThreadId) {
+    final current = _collectChildInteractions(hostThreadId);
+    final previous = _childInteractionPublished[hostThreadId];
+    if (previous != null && _sameChildInteractionSummaries(previous, current)) {
+      return;
+    }
+    _childInteractionPublished[hostThreadId] = List.unmodifiable(current);
+    final revision = (_childInteractionRevisions[hostThreadId] ?? 0) + 1;
+    _childInteractionRevisions[hostThreadId] = revision;
+    _publishProductPayload(
+      ChildInteractionsChangedPayload(
+        ChildInteractionsStateView(
+          hostThreadId: hostThreadId,
+          revision: revision,
+          updatedAt: DateTime.now(),
+          items: current,
+        ),
+      ),
+    );
+  }
+
+  bool _sameChildInteractionSummaries(
+    List<ChildInteractionSummary> left,
+    List<ChildInteractionSummary> right,
+  ) {
+    if (left.length != right.length) return false;
+    for (var i = 0; i < left.length; i++) {
+      if (left[i].childThreadId != right[i].childThreadId ||
+          left[i].interactionId != right[i].interactionId ||
+          left[i].kind != right[i].kind ||
+          left[i].revision != right[i].revision) {
+        return false;
+      }
+    }
+    return true;
   }
 
   bool _interruptDemoTurn(String threadId, String turnId) {
@@ -5962,6 +6038,11 @@ class DemoStudioTransport extends StudioTransport
         _demoUpdateInteraction(workspace, revision, interaction, pending),
     };
     _workspaces[threadId] = updated;
+    // 子会话的交互事实变化同时刷新宿主主会话的待决集合投影。
+    if (update is ThreadInteractionUpdate) {
+      final host = updated.thread.parentThreadId;
+      if (host != null) _publishChildInteractionsIfChanged(host);
+    }
     if (update case ThreadTurnUpdate(:final turn) when turn.state.isTerminal) {
       _completeDemoItem(
         _demoItem(
@@ -6236,6 +6317,31 @@ ThreadWorkspace _demoUpdateInteraction(
 /// Deterministic demo fixture exposed only by the dedicated Driver build.
 class DriverDemoStudioTransport extends DemoStudioTransport {
   DriverDemoStudioTransport({super.lspActivityLoop});
+
+  /// 为子任务交互旅程准备真实 demo 工作区；订阅与归档仍走原所有者。
+  void prepareChildInteractionScenario() {
+    _ensureWorkspaceFixture();
+    final child = _workspaces['thread-reviewer']!;
+    _workspaces[child.thread.id] = child.copyWith(
+      interactions: const [
+        PendingInteraction(
+          id: 'driver-child-approval',
+          threadId: 'thread-reviewer',
+          turnId: 'driver-child-turn',
+          revision: 1,
+          kind: InteractionKind.toolApproval,
+          title: 'Review command',
+          body: 'Approve the reviewer command.',
+          payload: ToolApprovalInteractionPayload(
+            toolName: 'exec',
+            arguments: {'command': 'git diff --check'},
+            workingDirectory: '/demo',
+          ),
+        ),
+      ],
+    );
+    _publishChildInteractionsIfChanged('thread-main');
+  }
 
   bool _retiredPlannerScenario = false;
   int _fixtureScenarioRevision = 0;

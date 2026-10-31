@@ -65,20 +65,18 @@ class AnyworkClient {
     botsCommands = BotsCommands(this);
     botsQueries = BotsQueries(this);
     // Test seam: the wall clock used to record command start facts.
-    threadCommands = ThreadCommands(
-      this,
-      childInteractions: _childInteractions,
-      nowMs: threadCommandsClock,
-    );
+    threadCommands = ThreadCommands(this, nowMs: threadCommandsClock);
     remote = RemoteActions(transport);
     final conversationOwner = ConversationRepositoryImpl(
       transport: transport,
       directory: threadDirectory,
       budget: this.budget,
       onRevision: observeResource,
-      onVisibleThreadChanged: _childInteractions.setVisibleHostThread,
     );
     conversations = conversationOwner;
+    _childInteractionVisibleWatch = conversationOwner.visibleThreadId.watch(
+      _onChildInteractionVisibleMirror,
+    );
     drafts = DraftsRepositoryImpl(
       DraftsDependencies(
         budget: this.budget,
@@ -230,11 +228,10 @@ class AnyworkClient {
   final persistence = PersistenceStore();
   final bots = BotsStore();
   final botsSends = BotsSendStore();
-  final _childInteractions = ChildInteractionStore();
-  ChildInteractionsView get childInteractions => _childInteractions;
   final bootstrapState = LatestValue(const StudioBootstrapState());
   final Map<String, SkillsStore> _skills = {};
   final Map<String, SessionCostsStore> _sessionCosts = {};
+  final Map<String, ChildInteractionStore> _childInteractions = {};
   final Map<String, UnresolvedResource> _unresolved = {};
   final Map<String, CloseReport> _closeReports = {};
   final Map<String, int> _reportGenerations = {};
@@ -273,9 +270,13 @@ class AnyworkClient {
   SkillsStore? existingSkills(String workspaceId) => _skills[workspaceId];
   SessionCostsStore? existingSessionCosts(String rootThreadId) =>
       _sessionCosts[rootThreadId];
+  ChildInteractionStore? existingChildInteractions(String hostThreadId) =>
+      _childInteractions[hostThreadId];
   Iterable<SkillsStore> get ownedSkills => List.unmodifiable(_skills.values);
   Iterable<SessionCostsStore> get ownedSessionCosts =>
       List.unmodifiable(_sessionCosts.values);
+  Iterable<ChildInteractionStore> get ownedChildInteractions =>
+      List.unmodifiable(_childInteractions.values);
   List<ProductTopic> get applicationTopics =>
       _applicationTopics?.topics ?? const [];
 
@@ -291,6 +292,113 @@ class AnyworkClient {
           () => SessionCostsStore(rootThreadId),
         ),
       );
+  ChildInteractionStore childInteractions(String hostThreadId) =>
+      _childInteractions.putIfAbsent(
+        hostThreadId,
+        () => _mirror(
+          'child-interactions:$hostThreadId',
+          () => ChildInteractionStore(hostThreadId),
+        ),
+      );
+
+  // ---- 根可见子任务待决交互的页面主题需求 ----
+  //
+  // 当前页面观察与在途 child 决议各自持有必要需求：这里只管理页面份额。可见
+  // 镜像在会话 demand 建立后发布，因此这里只借用已存在的会话；主题在当前会话
+  // 首帧已准备且宿主是主会话后获取，避免先于根准备把未初始化误当空已决议。
+  // 导航离开只释放页面份额，不撤销在途决议的事实观察。
+  String? _childInteractionPageHost;
+  BridgeTopicLease? _childInteractionPageLease;
+  Observation? _childInteractionPageWatch;
+  late final Observation _childInteractionVisibleWatch;
+
+  void _onChildInteractionVisibleMirror(String? threadId) {
+    if (_closed) return;
+    if (threadId == _childInteractionPageHost &&
+        (threadId == null || _childInteractionPageLease != null)) {
+      // Same visible host keeps its page share; A -> B -> A re-arms through
+      // the null transition instead of duplicating leases.
+      return;
+    }
+    _releaseChildInteractionPageDemand();
+    if (threadId == null) return;
+    _childInteractionPageHost = threadId;
+    _armChildInteractionPageWatch(threadId);
+  }
+
+  void _armChildInteractionPageWatch(String hostThreadId) {
+    final session = conversations.existingSession(hostThreadId);
+    if (session == null) return;
+    final source = session.source;
+    var settled = false;
+    void evaluate(ThreadSessionState state) {
+      if (settled || _closed) return;
+      if (!state.hasSnapshot) return;
+      final thread = state.workspace?.thread;
+      if (thread == null || !thread.isRoot) {
+        // 非宿主页面没有子交互主题需求；不再等待该会话的进一步变化。
+        settled = true;
+        _childInteractionPageWatch?.cancel();
+        _childInteractionPageWatch = null;
+        return;
+      }
+      settled = true;
+      _acquireChildInteractionPageLease(hostThreadId);
+      _childInteractionPageWatch?.cancel();
+      _childInteractionPageWatch = null;
+    }
+
+    final watched = source.watchLatest(evaluate);
+    _childInteractionPageWatch = watched.observation;
+    evaluate(watched.value);
+  }
+
+  void _acquireChildInteractionPageLease(String hostThreadId) {
+    if (_closed || _childInteractionPageLease != null) return;
+    try {
+      _childInteractionPageLease = channels.acquireChildInteractions(
+        hostThreadId,
+      );
+    } catch (error) {
+      resourceFailure.publish(
+        UnresolvedResource(
+          owner: 'child-interactions-page:$hostThreadId',
+          attemptId: const AttemptId(0),
+          reason: error,
+        ),
+      );
+    }
+  }
+
+  void _releaseChildInteractionPageDemand() {
+    _childInteractionPageWatch?.cancel();
+    _childInteractionPageWatch = null;
+    _childInteractionPageHost = null;
+    final lease = _childInteractionPageLease;
+    _childInteractionPageLease = null;
+    if (lease == null) return;
+    // The registry retains the exact handle and permit if cancel fails.
+    unawaited(
+      lease.release().catchError((Object error) {
+        resourceFailure.publish(
+          UnresolvedResource(
+            owner: 'child-interactions-page',
+            attemptId: const AttemptId(0),
+            reason: error,
+          ),
+        );
+      }),
+    );
+  }
+
+  void _retryChildInteractionPageDemand(String hostThreadId) {
+    if (_closed || _childInteractionPageHost != hostThreadId) return;
+    if (_childInteractionPageLease != null) return;
+    _releaseChildInteractionPageDemand();
+    _childInteractionPageHost = hostThreadId;
+    _armChildInteractionPageWatch(hostThreadId);
+  }
+
   void observeResource(String key, int revision) {
     final epoch = _runtimeOwnerEpoch;
     if (epoch == null) return;
@@ -323,6 +431,10 @@ class AnyworkClient {
       // Admission may have failed before a topic owner existed. Retry logical
       // demand here rather than asking an observer to create that owner.
       _selectionChanged(selected);
+    }
+    if (topic is ChildInteractionsTopic) {
+      // Same admission-failure case: the page share re-arms its own owner.
+      _retryChildInteractionPageDemand(topic.hostThreadId);
     }
     channels.retryTopic(topic);
   }
@@ -553,6 +665,8 @@ class AnyworkClient {
   Future<CloseReport> _close(DateTime? deadline) async {
     _closed = true;
     _selectionObservation.cancel();
+    _childInteractionVisibleWatch.cancel();
+    _releaseChildInteractionPageDemand();
     _queries.seal();
     // Both domains seal synchronously before independent close joins await.
     final draftWork = drafts.close();

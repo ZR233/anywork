@@ -689,6 +689,11 @@ void main() {
     expect(operation.state.value.observed, isTrue);
     expect(operation.state.value.effective, isTrue);
     expect(operation.state.value.durable, isTrue);
+    // The visible root page keeps one child-interactions observer share;
+    // releasing the page withdraws it before the budget conservation check.
+    client.conversations.setVisibleThread(null);
+    await Future<void>.delayed(Duration.zero);
+    await Future<void>.delayed(Duration.zero);
     expect(client.budget.used(ResourceKind.observer), initialObservers);
     selected.cancel();
     await _close(client, transport);

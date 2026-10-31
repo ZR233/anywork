@@ -418,16 +418,27 @@ Future<String> _handleDriverData(String? message) async {
       final queue = _client.persistence.state.queue?.queue;
       return jsonEncode({
         'pendingOperations': queue?.pendingOperations,
+        'pendingBytes': queue?.pendingBytes,
+        'inFlightBytes': queue?.inFlightBytes,
+        'oldestPendingAgeMillis': queue?.oldestPendingAgeMillis,
+        'lastError': queue?.lastError,
+        'pressurePaused': queue?.pressurePaused,
         'threads': [
           for (final thread in queue?.threads ?? const [])
             {
+              'threadId': thread.threadId,
               'fault': thread.fault,
               'generation': thread.faultGeneration,
               'stateDirty': thread.stateDirtyRevision,
+              'stateSaving': thread.stateSavingRevision,
               'stateDurable': thread.stateDurableRevision,
               'historyAdmitted': thread.historyAdmittedSequence,
               'historyDurable': thread.historyDurableSequence,
               'pending': thread.pendingOperations,
+              'pendingBytes': thread.pendingBytes,
+              'inFlightBytes': thread.inFlightBytes,
+              'oldestPendingAgeMillis': thread.oldestPendingAgeMillis,
+              'pressurePaused': thread.pressurePaused,
               'error': thread.lastError,
             },
         ],

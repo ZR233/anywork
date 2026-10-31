@@ -79,10 +79,10 @@ class ComposerDockConnector extends ConsumerWidget {
       childInteractions: thread.isAgent
           ? null
           : ChildInteractionConnector(
-              key: ValueKey((thread.id, view.childInteractionGeneration)),
+              key: ValueKey(thread.id),
               hostThreadId: thread.id,
-              displayGeneration: view.childInteractionGeneration,
               items: view.childInteractions,
+              sync: view.childInteractionSync,
               sources: view.childInteractionSources,
             ),
       content: thread.isRetiredAgent

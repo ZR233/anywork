@@ -259,6 +259,8 @@ impl ProductEventBus {
             }
             self.bump(&self.revisions.thread);
         }
+        self.prepare_child_interaction_directory(&upserted);
+        self.remove_child_interaction_directory(&removed);
         // State and tombstones are visible before observers receive removal.
         let (revision, updated_at) = self.revision(&self.revisions.thread);
         self.emit(StudioProductEventKind::ThreadDirectoryChanged(
@@ -388,6 +390,7 @@ impl ProductEventBus {
         if entries.is_empty() {
             return;
         }
+        self.prepare_child_interaction_directory(&entries);
         let mut index = self
             .thread_index
             .lock()

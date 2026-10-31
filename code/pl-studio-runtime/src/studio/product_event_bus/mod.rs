@@ -4,6 +4,7 @@
 //! 与目录事实提交在 `thread_directory`，其余低频状态快照与事件发射在
 //! `snapshots`，topic 通道注册与分发路由在 `topics`。
 
+mod child_interactions;
 mod project;
 mod snapshots;
 mod thread_directory;
@@ -56,6 +57,7 @@ pub struct ProductEventBus {
     thread_index: Arc<std::sync::Mutex<HashMap<String, Thread>>>,
     /// 已发布的 Mode catalog revision；按真变才发，避免重复装载空转发布。
     mode_catalog_revision: Arc<std::sync::Mutex<u64>>,
+    child_interactions: Arc<std::sync::Mutex<ChildInteractionsProjection>>,
 }
 
 #[derive(Default)]
@@ -63,6 +65,25 @@ struct ProductStateRevisions {
     project: DomainRevision,
     thread: DomainRevision,
     agent: DomainRevision,
+}
+
+#[derive(Default)]
+struct ChildInteractionsProjection {
+    hosts: BTreeMap<String, ChildInteractionsHost>,
+    members: BTreeMap<String, ChildInteractionsMember>,
+}
+
+#[derive(Default)]
+struct ChildInteractionsHost {
+    revision: u64,
+    updated_at: i64,
+    children: BTreeMap<String, Vec<pl_protocol::ChildInteractionSummary>>,
+}
+
+struct ChildInteractionsMember {
+    host_thread_id: String,
+    commit_sequence: Option<u64>,
+    active: bool,
 }
 
 #[derive(Default)]
@@ -109,6 +130,9 @@ impl ProductEventBus {
             agents: Arc::new(Mutex::new(BTreeMap::new())),
             thread_index: Arc::new(std::sync::Mutex::new(HashMap::new())),
             mode_catalog_revision: Arc::new(std::sync::Mutex::new(0)),
+            child_interactions: Arc::new(std::sync::Mutex::new(
+                ChildInteractionsProjection::default(),
+            )),
         }
     }
 

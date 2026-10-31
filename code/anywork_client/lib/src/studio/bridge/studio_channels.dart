@@ -40,6 +40,8 @@ class StudioChannels {
         _client.skills(workspaceId);
       case SessionCostsTopic(:final rootThreadId):
         _client.sessionCosts(rootThreadId);
+      case ChildInteractionsTopic(:final hostThreadId):
+        _client.childInteractions(hostThreadId);
       default:
         break;
     }
@@ -60,6 +62,10 @@ class StudioChannels {
 
   BridgeTopicLease acquireSessionCosts(String rootThreadId) =>
       acquireTopic(SessionCostsTopic(rootThreadId: rootThreadId));
+
+  /// 页面或在途决议按宿主租用子任务待决交互主题。
+  BridgeTopicLease acquireChildInteractions(String hostThreadId) =>
+      acquireTopic(ChildInteractionsTopic(hostThreadId: hostThreadId));
 
   void retryTopic(ProductTopic topic) => _topics.retry(topic);
 
@@ -104,6 +110,12 @@ class StudioChannels {
     final incoming = _incomingRevision(frame);
     final current = _loadedRevision(frame);
     if (incoming == null || current == null) return false;
+    // Child interactions admit an equal-watermark full first frame so the
+    // store can confirm this observation generation's baseline qualification;
+    // every other domain keeps rejecting `<=` as before.
+    if (_frameTopic(frame) is ChildInteractionsTopic) {
+      return incoming < current;
+    }
     if (_isThreadDirectoryDelta(frame)) return incoming < current;
     return incoming <= current;
   }
@@ -149,6 +161,9 @@ class StudioChannels {
       AccountUsageTopic() => throw StateError('Use account usage domain'),
       SessionCostsTopic(:final rootThreadId) => _clock(
         _client.existingSessionCosts(rootThreadId)?.state,
+      ),
+      ChildInteractionsTopic(:final hostThreadId) => _clock(
+        _client.existingChildInteractions(hostThreadId)?.state.canonical,
       ),
       UpdaterTopic() => _clock(_client.updater.state),
       PersistenceTopic() => _loaded(
@@ -210,6 +225,8 @@ class StudioChannels {
         throw StateError('Use account domain observation');
       case SessionCostsBaseline(:final state):
         _client.existingSessionCosts(state.rootThreadId)?.apply(state);
+      case ChildInteractionsBaseline(:final state):
+        _client.existingChildInteractions(state.hostThreadId)?.accept(state);
       case UpdaterBaseline(:final state):
         _client.updater.apply(state);
       case PersistenceBaseline(:final state):
@@ -272,6 +289,8 @@ class StudioChannels {
         throw StateError('Use account domain observation');
       case SessionCostsChangedPayload(:final state):
         _client.existingSessionCosts(state.rootThreadId)?.apply(state);
+      case ChildInteractionsChangedPayload(:final state):
+        _client.existingChildInteractions(state.hostThreadId)?.accept(state);
       case UpdaterStateChangedPayload(:final state):
         _client.updater.apply(state);
       case PersistenceStateChangedPayload(:final state):
@@ -317,6 +336,8 @@ class StudioChannels {
         throw StateError('Use account domain observation');
       case SessionCostsTopic(:final rootThreadId):
         _client.existingSessionCosts(rootThreadId)?.applyTransport(sync);
+      case ChildInteractionsTopic(:final hostThreadId):
+        _client.existingChildInteractions(hostThreadId)?.applyTransport(sync);
       case UpdaterTopic():
         _client.updater.applyTransport(sync);
       case PersistenceTopic():
@@ -380,6 +401,7 @@ int? _incomingRevision(ProductTopicFrame frame) {
         ThreadModeCatalogBaseline(:final state) => state.revision,
         AccountUsageBaseline(:final state) => state.revision,
         SessionCostsBaseline(:final state) => state.revision,
+        ChildInteractionsBaseline(:final state) => state.revision,
         UpdaterBaseline(:final state) => state.revision,
         PersistenceBaseline(:final state) => state.revision,
         PersistenceQueueBaseline(:final state) => state.revision,
@@ -402,6 +424,7 @@ int? _incomingRevision(ProductTopicFrame frame) {
       ThreadModeCatalogChangedPayload(:final state) => state.revision,
       AccountUsageStateChangedPayload(:final state) => state.revision,
       SessionCostsChangedPayload(:final state) => state.revision,
+      ChildInteractionsChangedPayload(:final state) => state.revision,
       UpdaterStateChangedPayload(:final state) => state.revision,
       PersistenceStateChangedPayload(:final state) => state.revision,
       PersistenceQueueStateChangedPayload(:final state) => state.revision,

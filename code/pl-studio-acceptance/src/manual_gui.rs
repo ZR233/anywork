@@ -8,6 +8,7 @@ mod mode_editor;
 mod model_catalog;
 mod shutdown;
 mod skill_activity;
+mod timeline_history_20k;
 mod wait_events;
 mod web_search;
 mod websocket_recovery;
@@ -864,17 +865,22 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
                     | "single-instance"
                     | "tool-scroll"
                     | "timeline-history"
+                    | "timeline-history-20k"
                     | "stress-body-large"
                     | "wait-events"
                     | "acp-auto-install"
             )
             || pl_provider_fixture::delegation::Scenario::parse(&options.scenario).is_some(),
         "--retain-environment is supported by --scenario gui, single-instance, tool-scroll, \
-         timeline-history, stress-body-large, wait-events, acp-auto-install and the delegation scenes"
+         timeline-history, timeline-history-20k, stress-body-large, wait-events, acp-auto-install and the delegation scenes"
     );
     ensure!(
         !options.timeline_displacement || options.scenario == "timeline-history",
         "--timeline-displacement requires --scenario timeline-history"
+    );
+    ensure!(
+        options.scenario != "timeline-history-20k" || cfg!(target_os = "linux"),
+        "--scenario timeline-history-20k is supported only on Linux"
     );
     ensure!(
         options.acp_install_from.is_none() || options.scenario == "acp-auto-install",
@@ -960,6 +966,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
             | "provider-usage"
             | "shutdown"
             | "timeline-history"
+            | "timeline-history-20k"
             | "skill-activity"
             | "wait-events"
             | "acp-auto-install"
@@ -1162,6 +1169,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
             | "call-lifecycle-recovery"
             | "shutdown"
             | "timeline-history"
+            | "timeline-history-20k"
             | "skill-activity"
     ) {
         fixture_command.arg("--status-file").arg(&status_file);
@@ -1568,6 +1576,28 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
             fixture,
         );
         // 保留整个临时根与配置绝对路径（不只 home），供发布视觉复查复用。
+        if result.is_ok() && options.retain_environment {
+            keep_isolated_environment(working, &home, &output, Some(&project))?;
+        }
+        return result;
+    }
+
+    if options.scenario == "timeline-history-20k" {
+        let project = working.path().join("timeline-history-20k-project");
+        let result = timeline_history_20k::run(
+            &timeline_history_20k::Scenario {
+                workspace: &workspace,
+                app_dir: &app_dir,
+                home: &home,
+                working: working.path(),
+                output: &output,
+                fixture_log: &fixture_log_path,
+                requests_file: &requests_file,
+                status_file: &status_file,
+                interrupt: &interrupt_rx,
+            },
+            fixture,
+        );
         if result.is_ok() && options.retain_environment {
             keep_isolated_environment(working, &home, &output, Some(&project))?;
         }
@@ -3610,7 +3640,10 @@ fn fixture_config(ready: &FixtureReady, profile: ModelTransportProfile) -> Resul
         field: pl_model::model::ReasoningInterleavedField::ReasoningContent,
     });
     model.display_name = "Local GUI fixture".into();
-    if ready.scenario == "timeline-history" {
+    if matches!(
+        ready.scenario.as_str(),
+        "timeline-history" | "timeline-history-20k"
+    ) {
         model.context_window = Some(1_050_000);
         model.max_context_window = Some(1_050_000);
         model.max_output_tokens = Some(128_000);

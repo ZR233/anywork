@@ -9057,6 +9057,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  BridgeChildInteractionsState dco_decode_box_bridge_child_interactions_state(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return dco_decode_bridge_child_interactions_state(raw);
+  }
+
+  @protected
   BridgeInteractionRequest dco_decode_box_bridge_interaction_request(
     dynamic raw,
   ) {
@@ -11351,6 +11359,22 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  BridgeChildInteractionsState dco_decode_bridge_child_interactions_state(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 4)
+      throw Exception('unexpected arr length: expect 4 but see ${arr.length}');
+    return BridgeChildInteractionsState(
+      hostThreadId: dco_decode_String(arr[0]),
+      revision: dco_decode_u_64(arr[1]),
+      updatedAt: dco_decode_i_64(arr[2]),
+      items: dco_decode_list_bridge_child_interaction_summary(arr[3]),
+    );
+  }
+
+  @protected
   BridgeClosedAgent dco_decode_bridge_closed_agent(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
@@ -13165,22 +13189,26 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           dco_decode_box_bridge_session_costs_state(raw[1]),
         );
       case 14:
+        return BridgeProductBaseline_ChildInteractions(
+          dco_decode_box_bridge_child_interactions_state(raw[1]),
+        );
+      case 15:
         return BridgeProductBaseline_Updater(
           dco_decode_box_autoadd_bridge_updater_state_snapshot(raw[1]),
         );
-      case 15:
+      case 16:
         return BridgeProductBaseline_Persistence(
           dco_decode_box_autoadd_bridge_persistence_state_snapshot(raw[1]),
         );
-      case 16:
+      case 17:
         return BridgeProductBaseline_PersistenceQueue(
           dco_decode_box_bridge_persistence_queue_state_snapshot(raw[1]),
         );
-      case 17:
+      case 18:
         return BridgeProductBaseline_AgentProfiles(
           dco_decode_box_bridge_agent_profiles_state_snapshot(raw[1]),
         );
-      case 18:
+      case 19:
         return BridgeProductBaseline_Bots(
           dco_decode_box_bridge_bots_state_snapshot(raw[1]),
         );
@@ -13268,22 +13296,26 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           dco_decode_box_bridge_session_costs_state(raw[1]),
         );
       case 14:
+        return BridgeProductEventPayload_ChildInteractionsChanged(
+          dco_decode_box_bridge_child_interactions_state(raw[1]),
+        );
+      case 15:
         return BridgeProductEventPayload_UpdaterStateChanged(
           dco_decode_box_autoadd_bridge_updater_state_snapshot(raw[1]),
         );
-      case 15:
+      case 16:
         return BridgeProductEventPayload_PersistenceStateChanged(
           dco_decode_box_autoadd_bridge_persistence_state_snapshot(raw[1]),
         );
-      case 16:
+      case 17:
         return BridgeProductEventPayload_PersistenceQueueStateChanged(
           dco_decode_box_bridge_persistence_queue_state_snapshot(raw[1]),
         );
-      case 17:
+      case 18:
         return BridgeProductEventPayload_AgentProfilesStateChanged(
           dco_decode_box_bridge_agent_profiles_state_snapshot(raw[1]),
         );
-      case 18:
+      case 19:
         return BridgeProductEventPayload_BotsStateChanged(
           dco_decode_box_bridge_bots_state_snapshot(raw[1]),
         );
@@ -13329,14 +13361,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           rootThreadId: dco_decode_String(raw[1]),
         );
       case 14:
-        return BridgeProductTopic_Updater();
+        return BridgeProductTopic_ChildInteractions(
+          hostThreadId: dco_decode_String(raw[1]),
+        );
       case 15:
-        return BridgeProductTopic_Persistence();
+        return BridgeProductTopic_Updater();
       case 16:
-        return BridgeProductTopic_PersistenceQueue();
+        return BridgeProductTopic_Persistence();
       case 17:
-        return BridgeProductTopic_AgentProfiles();
+        return BridgeProductTopic_PersistenceQueue();
       case 18:
+        return BridgeProductTopic_AgentProfiles();
+      case 19:
         return BridgeProductTopic_Bots();
       default:
         throw Exception("unreachable");
@@ -21198,6 +21234,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  BridgeChildInteractionsState sse_decode_box_bridge_child_interactions_state(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return (sse_decode_bridge_child_interactions_state(deserializer));
+  }
+
+  @protected
   BridgeInteractionRequest sse_decode_box_bridge_interaction_request(
     SseDeserializer deserializer,
   ) {
@@ -24196,6 +24240,25 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  BridgeChildInteractionsState sse_decode_bridge_child_interactions_state(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_hostThreadId = sse_decode_String(deserializer);
+    var var_revision = sse_decode_u_64(deserializer);
+    var var_updatedAt = sse_decode_i_64(deserializer);
+    var var_items = sse_decode_list_bridge_child_interaction_summary(
+      deserializer,
+    );
+    return BridgeChildInteractionsState(
+      hostThreadId: var_hostThreadId,
+      revision: var_revision,
+      updatedAt: var_updatedAt,
+      items: var_items,
+    );
+  }
+
+  @protected
   BridgeClosedAgent sse_decode_bridge_closed_agent(
     SseDeserializer deserializer,
   ) {
@@ -26491,27 +26554,32 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         );
         return BridgeProductBaseline_SessionCosts(var_field0);
       case 14:
+        var var_field0 = sse_decode_box_bridge_child_interactions_state(
+          deserializer,
+        );
+        return BridgeProductBaseline_ChildInteractions(var_field0);
+      case 15:
         var var_field0 = sse_decode_box_autoadd_bridge_updater_state_snapshot(
           deserializer,
         );
         return BridgeProductBaseline_Updater(var_field0);
-      case 15:
+      case 16:
         var var_field0 =
             sse_decode_box_autoadd_bridge_persistence_state_snapshot(
               deserializer,
             );
         return BridgeProductBaseline_Persistence(var_field0);
-      case 16:
+      case 17:
         var var_field0 = sse_decode_box_bridge_persistence_queue_state_snapshot(
           deserializer,
         );
         return BridgeProductBaseline_PersistenceQueue(var_field0);
-      case 17:
+      case 18:
         var var_field0 = sse_decode_box_bridge_agent_profiles_state_snapshot(
           deserializer,
         );
         return BridgeProductBaseline_AgentProfiles(var_field0);
-      case 18:
+      case 19:
         var var_field0 = sse_decode_box_bridge_bots_state_snapshot(
           deserializer,
         );
@@ -26617,29 +26685,34 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         );
         return BridgeProductEventPayload_SessionCostsChanged(var_field0);
       case 14:
+        var var_field0 = sse_decode_box_bridge_child_interactions_state(
+          deserializer,
+        );
+        return BridgeProductEventPayload_ChildInteractionsChanged(var_field0);
+      case 15:
         var var_field0 = sse_decode_box_autoadd_bridge_updater_state_snapshot(
           deserializer,
         );
         return BridgeProductEventPayload_UpdaterStateChanged(var_field0);
-      case 15:
+      case 16:
         var var_field0 =
             sse_decode_box_autoadd_bridge_persistence_state_snapshot(
               deserializer,
             );
         return BridgeProductEventPayload_PersistenceStateChanged(var_field0);
-      case 16:
+      case 17:
         var var_field0 = sse_decode_box_bridge_persistence_queue_state_snapshot(
           deserializer,
         );
         return BridgeProductEventPayload_PersistenceQueueStateChanged(
           var_field0,
         );
-      case 17:
+      case 18:
         var var_field0 = sse_decode_box_bridge_agent_profiles_state_snapshot(
           deserializer,
         );
         return BridgeProductEventPayload_AgentProfilesStateChanged(var_field0);
-      case 18:
+      case 19:
         var var_field0 = sse_decode_box_bridge_bots_state_snapshot(
           deserializer,
         );
@@ -26688,14 +26761,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         var var_rootThreadId = sse_decode_String(deserializer);
         return BridgeProductTopic_SessionCosts(rootThreadId: var_rootThreadId);
       case 14:
-        return BridgeProductTopic_Updater();
+        var var_hostThreadId = sse_decode_String(deserializer);
+        return BridgeProductTopic_ChildInteractions(
+          hostThreadId: var_hostThreadId,
+        );
       case 15:
-        return BridgeProductTopic_Persistence();
+        return BridgeProductTopic_Updater();
       case 16:
-        return BridgeProductTopic_PersistenceQueue();
+        return BridgeProductTopic_Persistence();
       case 17:
-        return BridgeProductTopic_AgentProfiles();
+        return BridgeProductTopic_PersistenceQueue();
       case 18:
+        return BridgeProductTopic_AgentProfiles();
+      case 19:
         return BridgeProductTopic_Bots();
       default:
         throw UnimplementedError('');
@@ -36757,6 +36835,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_box_bridge_child_interactions_state(
+    BridgeChildInteractionsState self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_bridge_child_interactions_state(self, serializer);
+  }
+
+  @protected
   void sse_encode_box_bridge_interaction_request(
     BridgeInteractionRequest self,
     SseSerializer serializer,
@@ -39146,6 +39233,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_bridge_child_interactions_state(
+    BridgeChildInteractionsState self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(self.hostThreadId, serializer);
+    sse_encode_u_64(self.revision, serializer);
+    sse_encode_i_64(self.updatedAt, serializer);
+    sse_encode_list_bridge_child_interaction_summary(self.items, serializer);
+  }
+
+  @protected
   void sse_encode_bridge_closed_agent(
     BridgeClosedAgent self,
     SseSerializer serializer,
@@ -40922,29 +41021,32 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       case BridgeProductBaseline_SessionCosts(field0: final field0):
         sse_encode_i_32(13, serializer);
         sse_encode_box_bridge_session_costs_state(field0, serializer);
-      case BridgeProductBaseline_Updater(field0: final field0):
+      case BridgeProductBaseline_ChildInteractions(field0: final field0):
         sse_encode_i_32(14, serializer);
+        sse_encode_box_bridge_child_interactions_state(field0, serializer);
+      case BridgeProductBaseline_Updater(field0: final field0):
+        sse_encode_i_32(15, serializer);
         sse_encode_box_autoadd_bridge_updater_state_snapshot(
           field0,
           serializer,
         );
       case BridgeProductBaseline_Persistence(field0: final field0):
-        sse_encode_i_32(15, serializer);
+        sse_encode_i_32(16, serializer);
         sse_encode_box_autoadd_bridge_persistence_state_snapshot(
           field0,
           serializer,
         );
       case BridgeProductBaseline_PersistenceQueue(field0: final field0):
-        sse_encode_i_32(16, serializer);
+        sse_encode_i_32(17, serializer);
         sse_encode_box_bridge_persistence_queue_state_snapshot(
           field0,
           serializer,
         );
       case BridgeProductBaseline_AgentProfiles(field0: final field0):
-        sse_encode_i_32(17, serializer);
+        sse_encode_i_32(18, serializer);
         sse_encode_box_bridge_agent_profiles_state_snapshot(field0, serializer);
       case BridgeProductBaseline_Bots(field0: final field0):
-        sse_encode_i_32(18, serializer);
+        sse_encode_i_32(19, serializer);
         sse_encode_box_bridge_bots_state_snapshot(field0, serializer);
     }
   }
@@ -41044,8 +41146,13 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       case BridgeProductEventPayload_SessionCostsChanged(field0: final field0):
         sse_encode_i_32(13, serializer);
         sse_encode_box_bridge_session_costs_state(field0, serializer);
-      case BridgeProductEventPayload_UpdaterStateChanged(field0: final field0):
+      case BridgeProductEventPayload_ChildInteractionsChanged(
+        field0: final field0,
+      ):
         sse_encode_i_32(14, serializer);
+        sse_encode_box_bridge_child_interactions_state(field0, serializer);
+      case BridgeProductEventPayload_UpdaterStateChanged(field0: final field0):
+        sse_encode_i_32(15, serializer);
         sse_encode_box_autoadd_bridge_updater_state_snapshot(
           field0,
           serializer,
@@ -41053,7 +41160,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       case BridgeProductEventPayload_PersistenceStateChanged(
         field0: final field0,
       ):
-        sse_encode_i_32(15, serializer);
+        sse_encode_i_32(16, serializer);
         sse_encode_box_autoadd_bridge_persistence_state_snapshot(
           field0,
           serializer,
@@ -41061,7 +41168,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       case BridgeProductEventPayload_PersistenceQueueStateChanged(
         field0: final field0,
       ):
-        sse_encode_i_32(16, serializer);
+        sse_encode_i_32(17, serializer);
         sse_encode_box_bridge_persistence_queue_state_snapshot(
           field0,
           serializer,
@@ -41069,10 +41176,10 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       case BridgeProductEventPayload_AgentProfilesStateChanged(
         field0: final field0,
       ):
-        sse_encode_i_32(17, serializer);
+        sse_encode_i_32(18, serializer);
         sse_encode_box_bridge_agent_profiles_state_snapshot(field0, serializer);
       case BridgeProductEventPayload_BotsStateChanged(field0: final field0):
-        sse_encode_i_32(18, serializer);
+        sse_encode_i_32(19, serializer);
         sse_encode_box_bridge_bots_state_snapshot(field0, serializer);
     }
   }
@@ -41114,16 +41221,21 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       case BridgeProductTopic_SessionCosts(rootThreadId: final rootThreadId):
         sse_encode_i_32(13, serializer);
         sse_encode_String(rootThreadId, serializer);
-      case BridgeProductTopic_Updater():
+      case BridgeProductTopic_ChildInteractions(
+        hostThreadId: final hostThreadId,
+      ):
         sse_encode_i_32(14, serializer);
-      case BridgeProductTopic_Persistence():
+        sse_encode_String(hostThreadId, serializer);
+      case BridgeProductTopic_Updater():
         sse_encode_i_32(15, serializer);
-      case BridgeProductTopic_PersistenceQueue():
+      case BridgeProductTopic_Persistence():
         sse_encode_i_32(16, serializer);
-      case BridgeProductTopic_AgentProfiles():
+      case BridgeProductTopic_PersistenceQueue():
         sse_encode_i_32(17, serializer);
-      case BridgeProductTopic_Bots():
+      case BridgeProductTopic_AgentProfiles():
         sse_encode_i_32(18, serializer);
+      case BridgeProductTopic_Bots():
+        sse_encode_i_32(19, serializer);
     }
   }
 

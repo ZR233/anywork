@@ -16,13 +16,11 @@ final class ConversationRepositoryImpl
     required this.directory,
     required this.budget,
     required this.onRevision,
-    this.onVisibleThreadChanged,
   });
   final ConversationTransport transport;
   final ThreadDirectoryStore directory;
   final ResourceBudget budget;
   final void Function(String key, int revision) onRevision;
-  final void Function(String?)? onVisibleThreadChanged;
   final Map<String, ConversationSessionImpl> _sessions = {};
   final Map<String, ResourcePermit> _permits = {};
   final Map<String, Observation> _observations = {};
@@ -135,14 +133,12 @@ final class ConversationRepositoryImpl
           if (_visibleThreadId.value != null) _visibleThreadId.publish(null);
           // Reentrant navigation only registers intent until this departure
           // retires its obsolete demand.
-          if (!_closed) onVisibleThreadChanged?.call(null);
           _revokeObsoleteDemand();
           continue;
         }
         if (_visibleThread != target) {
           _visibleThread = target;
           if (_visibleThreadId.value != null) _visibleThreadId.publish(null);
-          if (!_closed) onVisibleThreadChanged?.call(target);
           // The pre-transition withdrawal above already retired every obsolete
           // active demand; re-read the request after the reentrant callback.
           _revokeObsoleteDemand();
@@ -243,10 +239,8 @@ final class ConversationRepositoryImpl
   Future<CloseReport> _close(DateTime? deadline) async {
     _closed = true;
     _requestedVisibleThread = null;
-    final hadVisibleThread = _visibleThread != null;
     _visibleThread = null;
     if (_visibleThreadId.value != null) _visibleThreadId.publish(null);
-    if (hadVisibleThread) onVisibleThreadChanged?.call(null);
     final tasks = {
       for (final entry in _sessions.entries)
         entry.key: entry.value.close(deadline: deadline),

@@ -24,7 +24,39 @@ import 'updater.dart';
 part 'product_topic.freezed.dart';
 
 // These functions are ignored because they are not marked as `pub`: `to_runtime`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `hash`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `hash`
+
+/// One host's committed pending-child projection; revision belongs to this domain only.
+class BridgeChildInteractionsState {
+  final String hostThreadId;
+  final BigInt revision;
+  final PlatformInt64 updatedAt;
+  final List<BridgeChildInteractionSummary> items;
+
+  const BridgeChildInteractionsState({
+    required this.hostThreadId,
+    required this.revision,
+    required this.updatedAt,
+    required this.items,
+  });
+
+  @override
+  int get hashCode =>
+      hostThreadId.hashCode ^
+      revision.hashCode ^
+      updatedAt.hashCode ^
+      items.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeChildInteractionsState &&
+          runtimeType == other.runtimeType &&
+          hostThreadId == other.hostThreadId &&
+          revision == other.revision &&
+          updatedAt == other.updatedAt &&
+          items == other.items;
+}
 
 @freezed
 sealed class BridgeProductBaseline with _$BridgeProductBaseline {
@@ -68,6 +100,9 @@ sealed class BridgeProductBaseline with _$BridgeProductBaseline {
   const factory BridgeProductBaseline.sessionCosts(
     BridgeSessionCostsState field0,
   ) = BridgeProductBaseline_SessionCosts;
+  const factory BridgeProductBaseline.childInteractions(
+    BridgeChildInteractionsState field0,
+  ) = BridgeProductBaseline_ChildInteractions;
   const factory BridgeProductBaseline.updater(
     BridgeUpdaterStateSnapshot field0,
   ) = BridgeProductBaseline_Updater;
@@ -112,6 +147,9 @@ sealed class BridgeProductTopic with _$BridgeProductTopic {
   const factory BridgeProductTopic.sessionCosts({
     required String rootThreadId,
   }) = BridgeProductTopic_SessionCosts;
+  const factory BridgeProductTopic.childInteractions({
+    required String hostThreadId,
+  }) = BridgeProductTopic_ChildInteractions;
   const factory BridgeProductTopic.updater() = BridgeProductTopic_Updater;
   const factory BridgeProductTopic.persistence() =
       BridgeProductTopic_Persistence;

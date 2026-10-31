@@ -105,6 +105,46 @@ ProductTopicBaselineFrame _updater(int revision) => ProductTopicBaselineFrame(
   ),
 );
 
+ChildInteractionSummary _hostedChildSummary(
+  String hostThreadId,
+  String childThreadId,
+  int revision,
+) => ChildInteractionSummary(
+  childThreadId: childThreadId,
+  interactionId: 'interaction-$childThreadId',
+  kind: InteractionKind.userInput,
+  revision: revision,
+  interaction: PendingInteraction(
+    id: 'interaction-$childThreadId',
+    threadId: childThreadId,
+    turnId: 'turn-$childThreadId',
+    kind: InteractionKind.userInput,
+    title: 'Question from $childThreadId',
+    body: 'Hosted by $hostThreadId',
+    revision: revision,
+  ),
+);
+
+ProductTopicDataFrame _childEvent(
+  String hostThreadId,
+  int revision,
+  List<ChildInteractionSummary> items,
+) => ProductTopicDataFrame(
+  topic: ChildInteractionsTopic(hostThreadId: hostThreadId),
+  event: ProductTopicEventEnvelope(
+    eventId: 'child-$hostThreadId-$revision',
+    sequence: BigInt.from(revision),
+    createdAt: DateTime.now(),
+    payload: ChildInteractionsChangedPayload(
+      ChildInteractionsStateView(
+        hostThreadId: hostThreadId,
+        revision: revision,
+        items: items,
+      ),
+    ),
+  ),
+);
+
 void main() {
   test(
     'scoped topic demand installs mirrors before the first native callback',
@@ -168,6 +208,181 @@ void main() {
       expect(budget.usage, isEmpty);
     },
   );
+
+  test(
+    'child interactions topics are per-host mirrors with revision ordering',
+    () async {
+      final transport = _TopicTransport();
+      final budget = ResourceBudget(
+        capacities: {ResourceKind.observer: 2, ResourceKind.readModel: 2},
+      );
+      final client = AnyworkClient(
+        transport: transport,
+        clientId: 'child-topics',
+        budget: budget,
+      );
+      expect(client.existingChildInteractions('host-a'), isNull);
+      final leaseA = client.channels.acquireChildInteractions('host-a');
+      final storeA = client.existingChildInteractions('host-a')!;
+      expect(storeA.state.canonical.loaded, isFalse);
+      final sourceA = await transport.opened(0);
+      // 非空首帧基线在首个原生回调前已有自己的宿主镜像。
+      sourceA.emit(
+        ProductTopicBaselineFrame(
+          topic: const ChildInteractionsTopic(hostThreadId: 'host-a'),
+          revision: 2,
+          state: ChildInteractionsBaseline(
+            ChildInteractionsStateView(
+              hostThreadId: 'host-a',
+              revision: 2,
+              items: [_hostedChildSummary('host-a', 'child-1', 5)],
+            ),
+          ),
+        ),
+      );
+      expect(storeA.state.canonical.loaded, isTrue);
+      expect(storeA.state.hasCurrentBaseline, isTrue);
+      expect(storeA.state.canonical.revision, 2);
+      expect(
+        storeA.state.canonical.value?.items.single.interactionId,
+        'interaction-child-1',
+      );
+
+      // 另一个宿主有独立镜像；互不覆盖。
+      final leaseB = client.channels.acquireChildInteractions('host-b');
+      final storeB = client.existingChildInteractions('host-b')!;
+      final sourceB = await transport.opened(1);
+      sourceB.emit(
+        ProductTopicBaselineFrame(
+          topic: const ChildInteractionsTopic(hostThreadId: 'host-b'),
+          revision: 7,
+          state: ChildInteractionsBaseline(
+            ChildInteractionsStateView(hostThreadId: 'host-b', revision: 7),
+          ),
+        ),
+      );
+      expect(storeB.state.canonical.revision, 7);
+      expect(storeB.state.hasCurrentBaseline, isTrue);
+      expect(storeB.state.canonical.value?.items, isEmpty);
+      expect(storeA.state.canonical.revision, 2);
+
+      // 旧 revision 事件被拒；新 revision 事件替换集合。
+      sourceA.emit(
+        _childEvent('host-a', 2, [_hostedChildSummary('host-a', 'child-1', 9)]),
+      );
+      expect(storeA.state.canonical.value?.items.single.revision, 5);
+      sourceA.emit(_childEvent('host-a', 3, const []));
+      expect(storeA.state.canonical.value?.items, isEmpty);
+      expect(storeA.state.canonical.revision, 3);
+
+      // 同租约内的短暂滞后/重连只更新 sync：资格与集合身份保持不变。
+      final canonicalBeforeLag = storeA.state.canonical;
+      sourceA.emit(
+        const ProductTopicLaggedFrame(
+          topic: ChildInteractionsTopic(hostThreadId: 'host-a'),
+          dropped: 2,
+        ),
+      );
+      expect(storeA.state.hasCurrentBaseline, isTrue);
+      expect(
+        identical(storeA.state.canonical.value, canonicalBeforeLag.value),
+        isTrue,
+        reason: '重连窗口保留同一集合对象',
+      );
+      expect(storeA.state.canonical.sync.phase, DomainSyncPhase.reconnecting);
+
+      // 全部租约释放到 idle：撤销资格并推进观察代次，lastKnown 集合保留。
+      final canonicalBeforeIdle = storeA.state.canonical;
+      await leaseA.release();
+      await leaseB.release();
+      expect(sourceA.cancelCalls, 1);
+      expect(sourceB.cancelCalls, 1);
+      expect(client.channels.activeTopicRefCountViews(), isEmpty);
+      expect(storeA.state.hasCurrentBaseline, isFalse);
+      expect(storeA.state.observationGeneration, 1);
+      expect(storeA.state.canonical.sync.phase, DomainSyncPhase.idle);
+      expect(
+        identical(storeA.state.canonical.value, canonicalBeforeIdle.value),
+        isTrue,
+        reason: 'idle 只撤资格，不清 lastKnown 集合',
+      );
+      // 一个新的页面需求重订本域：更旧帧不得恢复资格或改变内容；同 revision
+      // 的完整新基线恢复本代资格，且不重写 canonical 对象。
+      final canonicalAtIdle = storeA.state.canonical;
+      final thirdLease = client.channels.acquireChildInteractions('host-a');
+      // 滞后触发的自动重订在租约释放后不再建立；本次新需求即第二个真实源。
+      final thirdSourceA = await transport.opened(2);
+      thirdSourceA.emit(
+        ProductTopicBaselineFrame(
+          topic: const ChildInteractionsTopic(hostThreadId: 'host-a'),
+          revision: 1,
+          state: ChildInteractionsBaseline(
+            ChildInteractionsStateView(
+              hostThreadId: 'host-a',
+              revision: 1,
+              items: [_hostedChildSummary('host-a', 'child-9', 1)],
+            ),
+          ),
+        ),
+      );
+      expect(storeA.state.hasCurrentBaseline, isFalse);
+      expect(storeA.state.canonical.revision, 3);
+      expect(storeA.state.canonical.value?.items, isEmpty);
+      thirdSourceA.emit(
+        ProductTopicBaselineFrame(
+          topic: const ChildInteractionsTopic(hostThreadId: 'host-a'),
+          revision: 3,
+          state: ChildInteractionsBaseline(
+            ChildInteractionsStateView(hostThreadId: 'host-a', revision: 3),
+          ),
+        ),
+      );
+      expect(storeA.state.hasCurrentBaseline, isTrue);
+      expect(
+        identical(storeA.state.canonical.value, canonicalAtIdle.value),
+        isTrue,
+        reason: '等 revision 首帧只确认资格，不重写 canonical 集合值',
+      );
+      expect(storeA.state.canonical.revision, 3);
+      await thirdLease.release();
+      expect((await client.close()).complete, isTrue);
+      expect(budget.usage, isEmpty);
+    },
+  );
+
+  test('child interactions state view freezes its items', () {
+    final input = <ChildInteractionSummary>[
+      _hostedChildSummary('host-a', 'child-1', 5),
+    ];
+    final view = ChildInteractionsStateView(
+      hostThreadId: 'host-a',
+      revision: 1,
+      items: input,
+    );
+    input.clear();
+    expect(view.items, hasLength(1), reason: '构造边界复制输入列表');
+    expect(
+      () => view.items.clear(),
+      throwsUnsupportedError,
+      reason: '读取到的列表不可变异',
+    );
+    expect(view.hostThreadId, 'host-a');
+    expect(view.revision, 1);
+  });
+
+  test('child observation released before baseline advances once', () {
+    final store = ChildInteractionStore('host-a');
+    store.applyTransport(
+      const DomainSyncStatus(phase: DomainSyncPhase.connecting),
+    );
+    store.applyTransport(const DomainSyncStatus());
+    expect(store.state.hasCurrentBaseline, isFalse);
+    expect(store.state.observationGeneration, 1);
+    expect(store.state.canonical.sync.phase, DomainSyncPhase.idle);
+    final released = store.state;
+    store.applyTransport(const DomainSyncStatus());
+    expect(identical(store.state, released), isTrue);
+  });
 
   test(
     'shared topic reopens only after the original real cancel ACK',

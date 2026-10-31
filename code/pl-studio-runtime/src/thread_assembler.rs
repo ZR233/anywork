@@ -23,6 +23,7 @@ pub use user_input::{UserInteractionError, project_user_input};
 mod interaction_router;
 pub(crate) use interaction_key::encode as encode_interaction_key;
 pub use interaction_key::{InteractionKeyError, decode_interaction_key};
+pub(crate) use interaction_router::project_pending_child_interactions;
 pub use interaction_router::{StudioInteractionError, project_thread_interaction};
 mod approval;
 mod permission_projection;

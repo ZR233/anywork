@@ -9,11 +9,11 @@ use serde::{Deserialize, Serialize};
 use crate::statistics::StudioModelPerformanceSnapshot;
 use crate::{
     AccountUsageStateSnapshot, PersistenceStateSnapshot, StudioAgentDirectoryState,
-    StudioAgentProfilesStateSnapshot, StudioLspStateSnapshot, StudioMcpStateSnapshot,
-    StudioModelCatalogStateSnapshot, StudioPersistenceQueueStateSnapshot, StudioProductEventKind,
-    StudioProjectDirectoryState, StudioRecoveryStateSnapshot, StudioSessionCostsState,
-    StudioSettingsConfigStateSnapshot, StudioSkillsStateSnapshot, StudioThreadDirectoryPage,
-    StudioUpdateStateSnapshot,
+    StudioAgentProfilesStateSnapshot, StudioChildInteractionsState, StudioLspStateSnapshot,
+    StudioMcpStateSnapshot, StudioModelCatalogStateSnapshot, StudioPersistenceQueueStateSnapshot,
+    StudioProductEventKind, StudioProjectDirectoryState, StudioRecoveryStateSnapshot,
+    StudioSessionCostsState, StudioSettingsConfigStateSnapshot, StudioSkillsStateSnapshot,
+    StudioThreadDirectoryPage, StudioUpdateStateSnapshot,
 };
 
 /// 一个产品订阅 topic；带 payload 的变体表达作用域，不存在无作用域组合形式。
@@ -45,6 +45,7 @@ pub enum StudioProductTopic {
     PersistenceQueue,
     AgentProfiles,
     Bots,
+    ChildInteractions { host_thread_id: String },
 }
 
 /// typed topic 请求的唯一失败形态：带作用域 topic 的身份为空。
@@ -64,6 +65,9 @@ impl StudioProductTopic {
             }
             Self::SessionCosts { root_thread_id } if root_thread_id.trim().is_empty() => {
                 Err(scope_error("sessionCosts", "rootThreadId"))
+            }
+            Self::ChildInteractions { host_thread_id } if host_thread_id.trim().is_empty() => {
+                Err(scope_error("childInteractions", "hostThreadId"))
             }
             _ => Ok(()),
         }
@@ -96,6 +100,9 @@ impl StudioProductTopic {
             StudioProductEventKind::PersistenceQueueStateChanged(_) => Self::PersistenceQueue,
             StudioProductEventKind::AgentProfilesStateChanged(_) => Self::AgentProfiles,
             StudioProductEventKind::BotsStateChanged(_) => Self::Bots,
+            StudioProductEventKind::ChildInteractionsChanged(state) => Self::ChildInteractions {
+                host_thread_id: state.host_thread_id.clone(),
+            },
         }
     }
 }
@@ -140,6 +147,7 @@ pub enum StudioProductBaselineState {
     PersistenceQueue(Box<StudioPersistenceQueueStateSnapshot>),
     AgentProfiles(Box<StudioAgentProfilesStateSnapshot>),
     Bots(Box<pl_protocol::studio::BotsStateSnapshot>),
+    ChildInteractions(Box<StudioChildInteractionsState>),
 }
 
 impl StudioProductBaselineState {
@@ -166,6 +174,7 @@ impl StudioProductBaselineState {
             Self::PersistenceQueue(state) => state.revision,
             Self::AgentProfiles(state) => revision_of(&state.state),
             Self::Bots(state) => state.revision,
+            Self::ChildInteractions(state) => revision_of(&state.state),
         }
     }
 }

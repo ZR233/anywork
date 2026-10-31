@@ -6766,6 +6766,17 @@ impl SseDecode for Box<crate::api::studio::types::bots::BridgeBotsStateSnapshot>
     }
 }
 
+impl SseDecode for Box<crate::api::studio::types::product_topic::BridgeChildInteractionsState> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        return Box::new(
+            <crate::api::studio::types::product_topic::BridgeChildInteractionsState>::sse_decode(
+                deserializer,
+            ),
+        );
+    }
+}
+
 impl SseDecode for Box<crate::api::studio::types::thread_stream::BridgeInteractionRequest> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -10256,6 +10267,24 @@ impl SseDecode for crate::api::studio::types::thread_stream::BridgeChildInteract
     }
 }
 
+impl SseDecode for crate::api::studio::types::product_topic::BridgeChildInteractionsState {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_hostThreadId = <String>::sse_decode(deserializer);
+        let mut var_revision = <u64>::sse_decode(deserializer);
+        let mut var_updatedAt = <i64>::sse_decode(deserializer);
+        let mut var_items = <Vec<
+            crate::api::studio::types::thread_stream::BridgeChildInteractionSummary,
+        >>::sse_decode(deserializer);
+        return crate::api::studio::types::product_topic::BridgeChildInteractionsState {
+            host_thread_id: var_hostThreadId,
+            revision: var_revision,
+            updated_at: var_updatedAt,
+            items: var_items,
+        };
+    }
+}
+
 impl SseDecode for crate::api::studio::types::runtime::BridgeClosedAgent {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -12917,6 +12946,12 @@ impl SseDecode for crate::api::studio::types::product_topic::BridgeProductBaseli
                 return crate::api::studio::types::product_topic::BridgeProductBaseline::SessionCosts(var_field0);
             }
             14 => {
+                let mut var_field0 = <Box<
+                    crate::api::studio::types::product_topic::BridgeChildInteractionsState,
+                >>::sse_decode(deserializer);
+                return crate::api::studio::types::product_topic::BridgeProductBaseline::ChildInteractions(var_field0);
+            }
+            15 => {
                 let mut var_field0 =
                     <crate::api::studio::types::updater::BridgeUpdaterStateSnapshot>::sse_decode(
                         deserializer,
@@ -12925,23 +12960,23 @@ impl SseDecode for crate::api::studio::types::product_topic::BridgeProductBaseli
                     var_field0,
                 );
             }
-            15 => {
+            16 => {
                 let mut var_field0 = <crate::api::studio::types::response::BridgePersistenceStateSnapshot>::sse_decode(deserializer);
                 return crate::api::studio::types::product_topic::BridgeProductBaseline::Persistence(var_field0);
             }
-            16 => {
+            17 => {
                 let mut var_field0 = <Box<
                     crate::api::studio::types::response::BridgePersistenceQueueStateSnapshot,
                 >>::sse_decode(deserializer);
                 return crate::api::studio::types::product_topic::BridgeProductBaseline::PersistenceQueue(var_field0);
             }
-            17 => {
+            18 => {
                 let mut var_field0 = <Box<
                     crate::api::studio::types::response::BridgeAgentProfilesStateSnapshot,
                 >>::sse_decode(deserializer);
                 return crate::api::studio::types::product_topic::BridgeProductBaseline::AgentProfiles(var_field0);
             }
-            18 => {
+            19 => {
                 let mut var_field0 =
                     <Box<crate::api::studio::types::bots::BridgeBotsStateSnapshot>>::sse_decode(
                         deserializer,
@@ -13068,29 +13103,35 @@ impl SseDecode for crate::api::studio::types::event::BridgeProductEventPayload {
                 return crate::api::studio::types::event::BridgeProductEventPayload::SessionCostsChanged(var_field0);
             }
             14 => {
+                let mut var_field0 = <Box<
+                    crate::api::studio::types::product_topic::BridgeChildInteractionsState,
+                >>::sse_decode(deserializer);
+                return crate::api::studio::types::event::BridgeProductEventPayload::ChildInteractionsChanged(var_field0);
+            }
+            15 => {
                 let mut var_field0 =
                     <crate::api::studio::types::updater::BridgeUpdaterStateSnapshot>::sse_decode(
                         deserializer,
                     );
                 return crate::api::studio::types::event::BridgeProductEventPayload::UpdaterStateChanged(var_field0);
             }
-            15 => {
+            16 => {
                 let mut var_field0 = <crate::api::studio::types::response::BridgePersistenceStateSnapshot>::sse_decode(deserializer);
                 return crate::api::studio::types::event::BridgeProductEventPayload::PersistenceStateChanged(var_field0);
             }
-            16 => {
+            17 => {
                 let mut var_field0 = <Box<
                     crate::api::studio::types::response::BridgePersistenceQueueStateSnapshot,
                 >>::sse_decode(deserializer);
                 return crate::api::studio::types::event::BridgeProductEventPayload::PersistenceQueueStateChanged(var_field0);
             }
-            17 => {
+            18 => {
                 let mut var_field0 = <Box<
                     crate::api::studio::types::response::BridgeAgentProfilesStateSnapshot,
                 >>::sse_decode(deserializer);
                 return crate::api::studio::types::event::BridgeProductEventPayload::AgentProfilesStateChanged(var_field0);
             }
-            18 => {
+            19 => {
                 let mut var_field0 =
                     <Box<crate::api::studio::types::bots::BridgeBotsStateSnapshot>>::sse_decode(
                         deserializer,
@@ -13156,18 +13197,22 @@ impl SseDecode for crate::api::studio::types::product_topic::BridgeProductTopic 
                 return crate::api::studio::types::product_topic::BridgeProductTopic::SessionCosts{root_thread_id: var_rootThreadId};
             }
             14 => {
-                return crate::api::studio::types::product_topic::BridgeProductTopic::Updater;
+                let mut var_hostThreadId = <String>::sse_decode(deserializer);
+                return crate::api::studio::types::product_topic::BridgeProductTopic::ChildInteractions{host_thread_id: var_hostThreadId};
             }
             15 => {
-                return crate::api::studio::types::product_topic::BridgeProductTopic::Persistence;
+                return crate::api::studio::types::product_topic::BridgeProductTopic::Updater;
             }
             16 => {
-                return crate::api::studio::types::product_topic::BridgeProductTopic::PersistenceQueue;
+                return crate::api::studio::types::product_topic::BridgeProductTopic::Persistence;
             }
             17 => {
-                return crate::api::studio::types::product_topic::BridgeProductTopic::AgentProfiles;
+                return crate::api::studio::types::product_topic::BridgeProductTopic::PersistenceQueue;
             }
             18 => {
+                return crate::api::studio::types::product_topic::BridgeProductTopic::AgentProfiles;
+            }
+            19 => {
                 return crate::api::studio::types::product_topic::BridgeProductTopic::Bots;
             }
             _ => {
@@ -26052,6 +26097,35 @@ impl
     }
 }
 // Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart
+    for crate::api::studio::types::product_topic::BridgeChildInteractionsState
+{
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.host_thread_id.into_into_dart().into_dart(),
+            self.revision.into_into_dart().into_dart(),
+            self.updated_at.into_into_dart().into_dart(),
+            self.items.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::studio::types::product_topic::BridgeChildInteractionsState
+{
+}
+impl
+    flutter_rust_bridge::IntoIntoDart<
+        crate::api::studio::types::product_topic::BridgeChildInteractionsState,
+    > for crate::api::studio::types::product_topic::BridgeChildInteractionsState
+{
+    fn into_into_dart(
+        self,
+    ) -> crate::api::studio::types::product_topic::BridgeChildInteractionsState {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
 impl flutter_rust_bridge::IntoDart for crate::api::studio::types::runtime::BridgeClosedAgent {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         Vec::<u8>::new().into_dart()
@@ -29403,20 +29477,23 @@ impl flutter_rust_bridge::IntoDart
             crate::api::studio::types::product_topic::BridgeProductBaseline::SessionCosts(
                 field0,
             ) => [13.into_dart(), field0.into_into_dart().into_dart()].into_dart(),
+            crate::api::studio::types::product_topic::BridgeProductBaseline::ChildInteractions(
+                field0,
+            ) => [14.into_dart(), field0.into_into_dart().into_dart()].into_dart(),
             crate::api::studio::types::product_topic::BridgeProductBaseline::Updater(field0) => {
-                [14.into_dart(), field0.into_into_dart().into_dart()].into_dart()
+                [15.into_dart(), field0.into_into_dart().into_dart()].into_dart()
             }
             crate::api::studio::types::product_topic::BridgeProductBaseline::Persistence(
                 field0,
-            ) => [15.into_dart(), field0.into_into_dart().into_dart()].into_dart(),
+            ) => [16.into_dart(), field0.into_into_dart().into_dart()].into_dart(),
             crate::api::studio::types::product_topic::BridgeProductBaseline::PersistenceQueue(
                 field0,
-            ) => [16.into_dart(), field0.into_into_dart().into_dart()].into_dart(),
+            ) => [17.into_dart(), field0.into_into_dart().into_dart()].into_dart(),
             crate::api::studio::types::product_topic::BridgeProductBaseline::AgentProfiles(
                 field0,
-            ) => [17.into_dart(), field0.into_into_dart().into_dart()].into_dart(),
+            ) => [18.into_dart(), field0.into_into_dart().into_dart()].into_dart(),
             crate::api::studio::types::product_topic::BridgeProductBaseline::Bots(field0) => {
-                [18.into_dart(), field0.into_into_dart().into_dart()].into_dart()
+                [19.into_dart(), field0.into_into_dart().into_dart()].into_dart()
             }
             _ => {
                 unimplemented!("");
@@ -29493,15 +29570,17 @@ crate::api::studio::types::event::BridgeProductEventPayload::AcpInstallStateChan
 field0.into_into_dart().into_dart()].into_dart() }
 crate::api::studio::types::event::BridgeProductEventPayload::SessionCostsChanged(field0) => { [13.into_dart(),
 field0.into_into_dart().into_dart()].into_dart() }
-crate::api::studio::types::event::BridgeProductEventPayload::UpdaterStateChanged(field0) => { [14.into_dart(),
+crate::api::studio::types::event::BridgeProductEventPayload::ChildInteractionsChanged(field0) => { [14.into_dart(),
 field0.into_into_dart().into_dart()].into_dart() }
-crate::api::studio::types::event::BridgeProductEventPayload::PersistenceStateChanged(field0) => { [15.into_dart(),
+crate::api::studio::types::event::BridgeProductEventPayload::UpdaterStateChanged(field0) => { [15.into_dart(),
 field0.into_into_dart().into_dart()].into_dart() }
-crate::api::studio::types::event::BridgeProductEventPayload::PersistenceQueueStateChanged(field0) => { [16.into_dart(),
+crate::api::studio::types::event::BridgeProductEventPayload::PersistenceStateChanged(field0) => { [16.into_dart(),
 field0.into_into_dart().into_dart()].into_dart() }
-crate::api::studio::types::event::BridgeProductEventPayload::AgentProfilesStateChanged(field0) => { [17.into_dart(),
+crate::api::studio::types::event::BridgeProductEventPayload::PersistenceQueueStateChanged(field0) => { [17.into_dart(),
 field0.into_into_dart().into_dart()].into_dart() }
-crate::api::studio::types::event::BridgeProductEventPayload::BotsStateChanged(field0) => { [18.into_dart(),
+crate::api::studio::types::event::BridgeProductEventPayload::AgentProfilesStateChanged(field0) => { [18.into_dart(),
+field0.into_into_dart().into_dart()].into_dart() }
+crate::api::studio::types::event::BridgeProductEventPayload::BotsStateChanged(field0) => { [19.into_dart(),
 field0.into_into_dart().into_dart()].into_dart() }
  _ => { unimplemented!(""); }}
     }
@@ -29565,20 +29644,23 @@ impl flutter_rust_bridge::IntoDart
             crate::api::studio::types::product_topic::BridgeProductTopic::SessionCosts {
                 root_thread_id,
             } => [13.into_dart(), root_thread_id.into_into_dart().into_dart()].into_dart(),
+            crate::api::studio::types::product_topic::BridgeProductTopic::ChildInteractions {
+                host_thread_id,
+            } => [14.into_dart(), host_thread_id.into_into_dart().into_dart()].into_dart(),
             crate::api::studio::types::product_topic::BridgeProductTopic::Updater => {
-                [14.into_dart()].into_dart()
-            }
-            crate::api::studio::types::product_topic::BridgeProductTopic::Persistence => {
                 [15.into_dart()].into_dart()
             }
-            crate::api::studio::types::product_topic::BridgeProductTopic::PersistenceQueue => {
+            crate::api::studio::types::product_topic::BridgeProductTopic::Persistence => {
                 [16.into_dart()].into_dart()
             }
-            crate::api::studio::types::product_topic::BridgeProductTopic::AgentProfiles => {
+            crate::api::studio::types::product_topic::BridgeProductTopic::PersistenceQueue => {
                 [17.into_dart()].into_dart()
             }
-            crate::api::studio::types::product_topic::BridgeProductTopic::Bots => {
+            crate::api::studio::types::product_topic::BridgeProductTopic::AgentProfiles => {
                 [18.into_dart()].into_dart()
+            }
+            crate::api::studio::types::product_topic::BridgeProductTopic::Bots => {
+                [19.into_dart()].into_dart()
             }
             _ => {
                 unimplemented!("");
@@ -36924,6 +37006,15 @@ impl SseEncode for Box<crate::api::studio::types::bots::BridgeBotsStateSnapshot>
     }
 }
 
+impl SseEncode for Box<crate::api::studio::types::product_topic::BridgeChildInteractionsState> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <crate::api::studio::types::product_topic::BridgeChildInteractionsState>::sse_encode(
+            *self, serializer,
+        );
+    }
+}
+
 impl SseEncode for Box<crate::api::studio::types::thread_stream::BridgeInteractionRequest> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -39805,6 +39896,18 @@ impl SseEncode for crate::api::studio::types::thread_stream::BridgeChildInteract
     }
 }
 
+impl SseEncode for crate::api::studio::types::product_topic::BridgeChildInteractionsState {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <String>::sse_encode(self.host_thread_id, serializer);
+        <u64>::sse_encode(self.revision, serializer);
+        <i64>::sse_encode(self.updated_at, serializer);
+        <Vec<crate::api::studio::types::thread_stream::BridgeChildInteractionSummary>>::sse_encode(
+            self.items, serializer,
+        );
+    }
+}
+
 impl SseEncode for crate::api::studio::types::runtime::BridgeClosedAgent {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {}
@@ -41995,8 +42098,14 @@ impl SseEncode for crate::api::studio::types::product_topic::BridgeProductBaseli
                     field0, serializer,
                 );
             }
-            crate::api::studio::types::product_topic::BridgeProductBaseline::Updater(field0) => {
+            crate::api::studio::types::product_topic::BridgeProductBaseline::ChildInteractions(
+                field0,
+            ) => {
                 <i32>::sse_encode(14, serializer);
+                <Box<crate::api::studio::types::product_topic::BridgeChildInteractionsState>>::sse_encode(field0, serializer);
+            }
+            crate::api::studio::types::product_topic::BridgeProductBaseline::Updater(field0) => {
+                <i32>::sse_encode(15, serializer);
                 <crate::api::studio::types::updater::BridgeUpdaterStateSnapshot>::sse_encode(
                     field0, serializer,
                 );
@@ -42004,7 +42113,7 @@ impl SseEncode for crate::api::studio::types::product_topic::BridgeProductBaseli
             crate::api::studio::types::product_topic::BridgeProductBaseline::Persistence(
                 field0,
             ) => {
-                <i32>::sse_encode(15, serializer);
+                <i32>::sse_encode(16, serializer);
                 <crate::api::studio::types::response::BridgePersistenceStateSnapshot>::sse_encode(
                     field0, serializer,
                 );
@@ -42012,17 +42121,17 @@ impl SseEncode for crate::api::studio::types::product_topic::BridgeProductBaseli
             crate::api::studio::types::product_topic::BridgeProductBaseline::PersistenceQueue(
                 field0,
             ) => {
-                <i32>::sse_encode(16, serializer);
+                <i32>::sse_encode(17, serializer);
                 <Box<crate::api::studio::types::response::BridgePersistenceQueueStateSnapshot>>::sse_encode(field0, serializer);
             }
             crate::api::studio::types::product_topic::BridgeProductBaseline::AgentProfiles(
                 field0,
             ) => {
-                <i32>::sse_encode(17, serializer);
+                <i32>::sse_encode(18, serializer);
                 <Box<crate::api::studio::types::response::BridgeAgentProfilesStateSnapshot>>::sse_encode(field0, serializer);
             }
             crate::api::studio::types::product_topic::BridgeProductBaseline::Bots(field0) => {
-                <i32>::sse_encode(18, serializer);
+                <i32>::sse_encode(19, serializer);
                 <Box<crate::api::studio::types::bots::BridgeBotsStateSnapshot>>::sse_encode(
                     field0, serializer,
                 );
@@ -42078,15 +42187,17 @@ crate::api::studio::types::event::BridgeProductEventPayload::AcpInstallStateChan
  }
 crate::api::studio::types::event::BridgeProductEventPayload::SessionCostsChanged(field0) => { <i32>::sse_encode(13, serializer); <Box<crate::api::studio::types::response::BridgeSessionCostsState>>::sse_encode(field0, serializer);
  }
-crate::api::studio::types::event::BridgeProductEventPayload::UpdaterStateChanged(field0) => { <i32>::sse_encode(14, serializer); <crate::api::studio::types::updater::BridgeUpdaterStateSnapshot>::sse_encode(field0, serializer);
+crate::api::studio::types::event::BridgeProductEventPayload::ChildInteractionsChanged(field0) => { <i32>::sse_encode(14, serializer); <Box<crate::api::studio::types::product_topic::BridgeChildInteractionsState>>::sse_encode(field0, serializer);
  }
-crate::api::studio::types::event::BridgeProductEventPayload::PersistenceStateChanged(field0) => { <i32>::sse_encode(15, serializer); <crate::api::studio::types::response::BridgePersistenceStateSnapshot>::sse_encode(field0, serializer);
+crate::api::studio::types::event::BridgeProductEventPayload::UpdaterStateChanged(field0) => { <i32>::sse_encode(15, serializer); <crate::api::studio::types::updater::BridgeUpdaterStateSnapshot>::sse_encode(field0, serializer);
  }
-crate::api::studio::types::event::BridgeProductEventPayload::PersistenceQueueStateChanged(field0) => { <i32>::sse_encode(16, serializer); <Box<crate::api::studio::types::response::BridgePersistenceQueueStateSnapshot>>::sse_encode(field0, serializer);
+crate::api::studio::types::event::BridgeProductEventPayload::PersistenceStateChanged(field0) => { <i32>::sse_encode(16, serializer); <crate::api::studio::types::response::BridgePersistenceStateSnapshot>::sse_encode(field0, serializer);
  }
-crate::api::studio::types::event::BridgeProductEventPayload::AgentProfilesStateChanged(field0) => { <i32>::sse_encode(17, serializer); <Box<crate::api::studio::types::response::BridgeAgentProfilesStateSnapshot>>::sse_encode(field0, serializer);
+crate::api::studio::types::event::BridgeProductEventPayload::PersistenceQueueStateChanged(field0) => { <i32>::sse_encode(17, serializer); <Box<crate::api::studio::types::response::BridgePersistenceQueueStateSnapshot>>::sse_encode(field0, serializer);
  }
-crate::api::studio::types::event::BridgeProductEventPayload::BotsStateChanged(field0) => { <i32>::sse_encode(18, serializer); <Box<crate::api::studio::types::bots::BridgeBotsStateSnapshot>>::sse_encode(field0, serializer);
+crate::api::studio::types::event::BridgeProductEventPayload::AgentProfilesStateChanged(field0) => { <i32>::sse_encode(18, serializer); <Box<crate::api::studio::types::response::BridgeAgentProfilesStateSnapshot>>::sse_encode(field0, serializer);
+ }
+crate::api::studio::types::event::BridgeProductEventPayload::BotsStateChanged(field0) => { <i32>::sse_encode(19, serializer); <Box<crate::api::studio::types::bots::BridgeBotsStateSnapshot>>::sse_encode(field0, serializer);
  }
  _ => { unimplemented!(""); }}
     }
@@ -42144,20 +42255,26 @@ impl SseEncode for crate::api::studio::types::product_topic::BridgeProductTopic 
                 <i32>::sse_encode(13, serializer);
                 <String>::sse_encode(root_thread_id, serializer);
             }
-            crate::api::studio::types::product_topic::BridgeProductTopic::Updater => {
+            crate::api::studio::types::product_topic::BridgeProductTopic::ChildInteractions {
+                host_thread_id,
+            } => {
                 <i32>::sse_encode(14, serializer);
+                <String>::sse_encode(host_thread_id, serializer);
             }
-            crate::api::studio::types::product_topic::BridgeProductTopic::Persistence => {
+            crate::api::studio::types::product_topic::BridgeProductTopic::Updater => {
                 <i32>::sse_encode(15, serializer);
             }
-            crate::api::studio::types::product_topic::BridgeProductTopic::PersistenceQueue => {
+            crate::api::studio::types::product_topic::BridgeProductTopic::Persistence => {
                 <i32>::sse_encode(16, serializer);
             }
-            crate::api::studio::types::product_topic::BridgeProductTopic::AgentProfiles => {
+            crate::api::studio::types::product_topic::BridgeProductTopic::PersistenceQueue => {
                 <i32>::sse_encode(17, serializer);
             }
-            crate::api::studio::types::product_topic::BridgeProductTopic::Bots => {
+            crate::api::studio::types::product_topic::BridgeProductTopic::AgentProfiles => {
                 <i32>::sse_encode(18, serializer);
+            }
+            crate::api::studio::types::product_topic::BridgeProductTopic::Bots => {
+                <i32>::sse_encode(19, serializer);
             }
             _ => {
                 unimplemented!("");
