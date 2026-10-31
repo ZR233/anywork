@@ -169,6 +169,10 @@ class _TimelineViewState extends State<TimelineView> {
     // Keep our explicit reading intent/footer, but delegate geometry and timing
     // to Flyer's public builder callback for this mounted list.
     scrollToBottom();
+    // The official callback only registers a postFrameCallback, which never
+    // schedules a frame itself. If this continuation lands after the last
+    // scheduled frame, guarantee one frame so that scroll can actually run.
+    WidgetsBinding.instance.ensureVisualUpdate();
   }
 
   Widget _body(ConversationItem item, String text) => TimelineMarkdown(

@@ -99,8 +99,9 @@ void main() {
     'accepts a Windows drive-letter cwd identical to an extended path',
     () async {
       final root = await _createTemp('host-cwd-proof-win-');
-      final workspace = await Directory('${root.path}/workspace').create();
-      final cwd = await Directory('${root.path}/cwd').create();
+      final workspace = await Directory.fromUri(root.uri.resolve('workspace/'))
+          .create();
+      final cwd = await Directory.fromUri(root.uri.resolve('cwd/')).create();
       final drivePath = Directory(cwd.path).absolute.path;
       final extendedPath = '\\\\?\\$drivePath';
 

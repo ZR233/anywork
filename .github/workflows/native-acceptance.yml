@@ -148,6 +148,13 @@ jobs:
           $identity | ConvertTo-Json -Depth 6 | Set-Content -Encoding utf8 (Join-Path $evidence 'platform.json')
           cargo flutter doctor -v
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Verify native Driver directory identity
+        if: github.event_name != 'workflow_dispatch' || inputs.scenario == 'all' || inputs.scenario == 'realtime'
+        shell: pwsh
+        run: |
+          cargo flutter pub get --enforce-lockfile
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo flutter test --no-pub test/driver/host_cwd_directory_proof_test.dart
       - name: Build Rust bridge for native profile
         if: github.event_name != 'workflow_dispatch' || inputs.scenario != 'plan-recovery'
         run: cargo build --locked -p pl-studio-bridge --release

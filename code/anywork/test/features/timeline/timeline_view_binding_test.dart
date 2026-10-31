@@ -937,36 +937,114 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
-    await _appendCompleted(tester, lease, [textItem('new', appendSeq: 2)]);
+    // History 中送达真实完成批次（发送 + 回答）；发送不抢走阅读位置。
+    await _appendCompleted(tester, lease, [
+      textItem('send-after-history', appendSeq: 2, body: '继续'),
+      textItem('reply-1', appendSeq: 3, body: '回答第一段\n' * 6),
+      textItem('reply-2', appendSeq: 4, body: '回答第二段\n' * 6),
+    ]);
     await tester.pumpAndSettle();
-    await tester.drag(
-      find.byKey(StudioDriverKeys.timeline),
-      const Offset(0, 280),
-    );
-    await tester.pumpAndSettle();
-    expect(lease.scrollController.position.pixels, greaterThan(200));
+    // 真实拖动深读历史，达到与原生旅程同量级的深位。
+    final position = lease.scrollController.position;
+    for (var step = 0; step < 12 && position.pixels <= 600; step++) {
+      await tester.drag(
+        find.byKey(StudioDriverKeys.timeline),
+        const Offset(0, 240),
+      );
+      await tester.pumpAndSettle();
+    }
+    expect(position.pixels, greaterThan(600));
+    expect(owner.source.value?.mode, TimelineDisplayMode.history);
     expect(find.textContaining('有新输出'), findsOneWidget);
     await tester.tap(find.byKey(StudioDriverKeys.timelineReturnLive));
-    await tester.pumpAndSettle();
+    await _pumpScheduledFrames(tester);
     expect(owner.source.value?.mode, TimelineDisplayMode.live);
     expect(owner.source.value?.hasNewOutput, isFalse);
     expect(owner.lease('thread'), same(lease));
-    expect(lease.scrollController.position.pixels, closeTo(0, 0.5));
-    expect(
-      lease.scrollController.position.extentBefore.abs(),
-      lessThanOrEqualTo(1),
-    );
-    expect(lease.loadedCount, 2);
-    expect(lease.completedCursor?.appendSeq, 2);
+    expect(position.pixels, closeTo(0, 0.5));
+    expect(position.extentBefore.abs(), lessThanOrEqualTo(1));
+    expect(lease.loadedCount, 4);
+    expect(lease.completedCursor?.appendSeq, 4);
     expect(
       find.byKey(
-        StudioDriverKeys.timelineRow(lease.presentationFor('new')!.id),
+        StudioDriverKeys.timelineRow(lease.presentationFor('reply-2')!.id),
       ),
       findsOneWidget,
     );
     expect(transport.openCalls, 1);
     expect(transport.readerOpens, 0);
     expect(transport.queryAdmissions, 0);
+
+    // slop 后仅个位数像素的小位移 History（原生快照的残留形态），再次
+    // 显式返回仍必须沿用同一 lease 与订阅落到真实 0 底端。
+    await tester.drag(
+      find.byKey(StudioDriverKeys.timeline),
+      const Offset(0, 24),
+    );
+    await tester.pumpAndSettle();
+    expect(owner.source.value?.mode, TimelineDisplayMode.history);
+    expect(position.pixels, allOf(greaterThan(.5), lessThan(40)));
+    await tester.tap(find.byKey(StudioDriverKeys.timelineReturnLive));
+    await _pumpScheduledFrames(tester);
+    expect(owner.source.value?.mode, TimelineDisplayMode.live);
+    expect(position.pixels, closeTo(0, 0.5));
+    expect(owner.lease('thread'), same(lease));
+    expect(transport.openCalls, 1, reason: '返回最新不得重开 feed');
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('异步 onReturnLive 在帧排空后完成时组件自行调度贴底帧', (tester) async {
+    final lease = await leaseFor(
+      tester,
+      items: [
+        for (var i = 0; i < 12; i++)
+          textItem('row-$i', appendSeq: i + 1, body: '第 $i 段历史正文\n' * 8),
+      ],
+      before: 'cursor',
+      hasOlder: true,
+    );
+    final returnLiveGate = Completer<void>();
+    Future<void> render(TimelineDisplayMode mode) => tester.pumpWidget(
+      host(
+        componentTimeline(
+          threadId: 'thread',
+          view: viewState(mode: mode, hasOlder: true),
+          lease: lease,
+          onLoadOlder: () async {},
+          onRetryOlder: () async {},
+          onReturnLive: () => returnLiveGate.future,
+          onEnterHistory: () {},
+          onRetryConnection: () async {},
+        ),
+      ),
+    );
+    await render(TimelineDisplayMode.history);
+    await tester.pumpAndSettle();
+    await tester.drag(
+      find.byKey(StudioDriverKeys.timeline),
+      const Offset(0, 120),
+    );
+    await tester.pumpAndSettle();
+    expect(lease.scrollController.position.pixels, greaterThan(.5));
+
+    // 原生等价交错：点击先挂起在 onReturnLive，模式翻转的发布帧已渲染并
+    // 排空回到 idle，之后 onReturnLive 的 Future 才完成。此时登记官方
+    // 滚动后组件必须自行保证存在后续帧，让 Flyer 的 postFrame 回调能执行。
+    await tester.tap(find.byKey(StudioDriverKeys.timelineReturnLive));
+    await render(TimelineDisplayMode.live);
+    await tester.pumpAndSettle();
+    expect(WidgetsBinding.instance.hasScheduledFrame, isFalse);
+    returnLiveGate.complete();
+    await Future<void>.value();
+    await Future<void>.value();
+    expect(
+      WidgetsBinding.instance.hasScheduledFrame,
+      isTrue,
+      reason: '登记官方贴底回调后组件必须自行请求帧，不依赖外部供帧',
+    );
+    await _pumpScheduledFrames(tester);
+    expect(lease.scrollController.position.pixels, closeTo(0, 0.5));
+    expect(tester.takeException(), isNull);
   });
 
   testWidgets('详情查看器按字段打开、可关闭，且不改动历史行预览', (tester) async {
@@ -3320,6 +3398,26 @@ Future<void> _appendCompleted(
   );
   expect(owner.lease('thread'), same(lease));
   expect(lease.completedCursor?.appendSeq, through);
+}
+
+/// Consume only frames the app itself scheduled after an action; bounded so a
+/// stuck view reports its real geometry instead of hanging the suite.
+Future<void> _pumpScheduledFrames(
+  WidgetTester tester, {
+  int limit = 120,
+}) async {
+  for (
+    var frame = 0;
+    frame < limit && WidgetsBinding.instance.hasScheduledFrame;
+    frame++
+  ) {
+    await tester.pump(const Duration(milliseconds: 16));
+  }
+  expect(
+    WidgetsBinding.instance.hasScheduledFrame,
+    isFalse,
+    reason: '应用自身调度的帧应在有限帧内排空',
+  );
 }
 
 Future<void> _emitTailAdditions(
