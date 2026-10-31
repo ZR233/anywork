@@ -1,6 +1,6 @@
 //! Timeline 内容源的类型化失败。
 //!
-//! 分类只由类型决定，调用方不解析错误文本：非法参数与游标、不存在的 item／field、序号耗尽、
+//! 分类只由类型决定，调用方不解析错误文本：非法参数与游标、不存在的 item／内容、序号耗尽、
 //! 代际失配、预算耗尽与存储故障彼此独立，损坏、迁移失败、空库和取消不会被压成同一种“到头”。
 
 use crate::chat::TimelineEpoch;
@@ -20,13 +20,17 @@ pub enum ChatError {
     /// instead of wrapping or reusing sequences.
     #[error("chat completion sequence exceeds the persistent store's range")]
     SeqExhausted,
-    /// A request carried an unsupported value (page limit, detail block size, continuation offset).
+    /// A request carried an unsupported identity, cursor, ceiling or content offset.
     ///
     /// The rejected input is reported instead of being silently clamped, so a caller never believes
     /// it read a wider page or a larger block than it asked for.
     #[error("invalid chat request: {0}")]
     InvalidArgument(String),
-    /// The addressed item or field does not exist in this session.
+    #[error("invalid chat read demand: {0}")]
+    InvalidDemand(String),
+    #[error("chat content generation is stale")]
+    StaleContent,
+    /// The addressed item or explicitly declared content does not exist in this session.
     #[error("chat content not found: {0}")]
     NotFound(String),
     /// A cursor or request belongs to a completion epoch this session no longer runs.
@@ -38,11 +42,8 @@ pub enum ChatError {
         cursor: TimelineEpoch,
         session: TimelineEpoch,
     },
-    /// The bounded preview of one record cannot be represented within the caller's budget.
-    ///
-    /// A structure that cannot shrink any further is reported instead of falling back to the whole
-    /// payload.
-    #[error("chat content exceeds the preview budget: {0}")]
+    /// A history port returned more items or encoded bytes than its reserved demand allowed.
+    #[error("chat history exceeds the reserved read budget: {0}")]
     Overloaded(String),
     /// The observation was closed; the caller must not treat it as a normal end of content.
     #[error("chat content observation is closed")]

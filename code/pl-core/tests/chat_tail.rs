@@ -1,61 +1,57 @@
-//! 完成批次订阅契约：一致基线、连续补发与单消费者生命周期。
-//!
-//! 订阅先登记唤醒再捕获基线，因此建基线期间发布的完成事实不丢；补发从实际交付位置继续，落后时
-//! 由存储回填而不跳到 head；预算截断的批次停在真实交付的最后一条上；保存确认不唤醒订阅。
-
+//! Fixed-cut baselines, bounded scoped replay and cancellation-safe single-consumer delivery.
 #[path = "support/timeline.rs"]
 mod support;
 
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
 
-use pl_core::chat::{ChatError, ChatTailUpdate, Session, TimelineEpoch};
-use support::{
-    BoundedReads, GatedHistory, HistoryGate, Stored, draft, epoch, publish_and_commit, take_initial,
-};
+use futures::FutureExt as _;
+use pl_core::chat::*;
+use support::*;
+
+async fn subscribe(session: &Session, items: usize) -> ChatTail {
+    session
+        .subscribe_tail(query(), demand(items), Arc::new(Budget::default()))
+        .await
+        .unwrap()
+}
+
+async fn batch(tail: &mut ChatTail) -> ChatCompletedBatch {
+    let ChatTailUpdate::Batch(batch) = tail.next().await.unwrap() else {
+        panic!("open tail")
+    };
+    batch
+}
+
+fn assert_parked(tail: &mut ChatTail) {
+    assert!(tail.next().now_or_never().is_none());
+}
 
 #[tokio::test]
-async fn a_first_subscription_registers_before_the_baseline_and_covers_a_publish_during_capture() {
-    let history = GatedHistory::new(Stored::default());
+async fn a_first_subscription_registers_before_baseline_and_covers_a_publish_during_capture() {
+    let stored = Stored::with([record(1, "durable")]);
     let gate = Arc::new(HistoryGate::new());
-    let gated = {
-        let mut gated = history;
-        gated.page_gate = Some(gate.clone());
-        gated
+    let mut history = GatedHistory::new(stored);
+    history.page_gate = Some(gate.clone());
+    let session = Session::new(history, epoch("run-1"));
+    let subscribing = {
+        let session = session.clone();
+        tokio::spawn(async move { subscribe(&session, 10).await })
     };
-    let session = Session::new(gated, epoch("run-1"));
-    let subscribing_session = session.clone();
-    let subscribing = tokio::spawn(async move { subscribing_session.subscribe_tail().await });
     gate.entered().await;
-    // The completion lands while the baseline's storage read is held open.
+    assert!(session.has_subscribers());
     session
-        .publish_batch(vec![draft("a", "during the baseline")])
+        .publish_batch(vec![draft("during", "during capture")])
         .await
-        .expect("the completion is admitted");
+        .unwrap();
     gate.release();
-    let mut tail = subscribing
-        .await
-        .expect("the subscription finishes")
-        .expect("the baseline is readable");
-    assert!(session.has_subscribers(), "the open tail declares demand");
-    let baseline = take_initial(&mut tail);
-    assert!(
-        baseline.items.is_empty(),
-        "the baseline stays at its captured head"
-    );
-    assert_eq!(baseline.completed_cursor, None);
-    let ChatTailUpdate::Batch(batch) = tail.next().await.unwrap() else {
-        panic!("the publication after capture belongs to the next batch");
-    };
-    assert_eq!(batch.from_seq, 0);
-    assert_eq!(batch.through_seq, 1);
-    assert_eq!(batch.items[0].item_id, "a");
-    // With that publication delivered, the next read parks.
-    let parked = tokio::time::timeout(Duration::from_millis(50), tail.next()).await;
-    assert!(
-        parked.is_err(),
-        "no completion is invented after the baseline"
-    );
-    tail.close();
+    let mut tail = subscribing.await.unwrap();
+    let baseline = tail.initial().unwrap();
+    assert_eq!(baseline.through_seq, 1);
+    assert_eq!(sequences(&baseline.items), [1]);
+    let next = batch(&mut tail).await;
+    assert_eq!((next.from_seq, next.through_seq), (1, 2));
+    assert_eq!(next.items[0].header.item_id, "during");
+    assert_parked(&mut tail);
 }
 
 #[tokio::test]
@@ -63,8 +59,8 @@ async fn more_than_one_window_of_pending_completions_keeps_the_oldest_prefix() {
     for durable_count in [0, 7] {
         let stored = Stored::default();
         let session = Session::new(stored.clone(), epoch("run-1"));
-        let mut tail = session.subscribe_tail().await.unwrap();
-        take_initial(&mut tail);
+        let mut tail = subscribe(&session, 23).await;
+        tail.initial().unwrap();
         let records = session
             .publish_batch(
                 (1..=150)
@@ -76,115 +72,108 @@ async fn more_than_one_window_of_pending_completions_keeps_the_oldest_prefix() {
         for record in records.iter().take(durable_count) {
             stored.insert((**record).clone());
         }
-        if durable_count > 0 {
-            session.confirm_durable(durable_count as u64).unwrap();
+        session.confirm_durable(durable_count as u64).unwrap();
+        let mut delivered = Vec::new();
+        while delivered.len() < 150 {
+            let next = batch(&mut tail).await;
+            assert_eq!(next.from_seq, delivered.len() as u64);
+            assert!(next.items.len() <= 23);
+            delivered.extend(sequences(&next.items));
         }
-        let mut sequences = Vec::new();
-        while sequences.len() < 150 {
-            let ChatTailUpdate::Batch(batch) = tail.next().await.unwrap() else {
-                panic!("the subscription must remain open");
-            };
-            assert_eq!(batch.from_seq, sequences.len() as u64);
-            sequences.extend(batch.items.iter().map(|item| item.append_seq));
-        }
-        assert_eq!(sequences, (1..=150).collect::<Vec<u64>>());
+        assert_eq!(delivered, (1..=150).collect::<Vec<_>>());
+        assert_parked(&mut tail);
     }
 }
 
 #[tokio::test]
 async fn a_cold_history_seeds_the_wake_head_and_parks_after_catch_up() {
     for after in [None, Some(0), Some(2)] {
-        let stored = Stored::with((1..=5).map(|i| support::record(i, "body")));
-        let session = Session::new(stored, epoch("run-1"));
+        let session = Session::new(
+            Stored::with((1..=5).map(|seq| record(seq, "body"))),
+            epoch("run-1"),
+        );
         let mut tail = match after {
-            None => session.subscribe_tail().await.unwrap(),
+            None => subscribe(&session, 10).await,
             Some(seq) => session
-                .subscribe_after(pl_core::chat::ChatCompletionCursor::new(
-                    epoch("run-1"),
-                    seq,
-                ))
+                .subscribe_after(
+                    ChatCompletionCursor::new(epoch("run-1"), seq),
+                    None,
+                    demand(10),
+                    Arc::new(Budget::default()),
+                )
                 .await
                 .unwrap(),
         };
-        take_initial(&mut tail);
+        let baseline = tail.initial().unwrap();
+        assert_eq!(baseline.through_seq, after.unwrap_or(5));
         if let Some(after) = after {
-            let ChatTailUpdate::Batch(batch) = tail.next().await.unwrap() else {
-                panic!("cold durable history must catch up immediately");
-            };
-            assert_eq!(batch.from_seq, after);
-            assert_eq!(batch.through_seq, 5);
-            assert_eq!(batch.items[0].append_seq, after + 1);
+            let next = batch(&mut tail).await;
+            assert_eq!((next.from_seq, next.through_seq), (after, 5));
+            assert_eq!(next.items[0].header.append_seq, after + 1);
         }
-        assert!(
-            tokio::time::timeout(Duration::from_millis(20), tail.next())
-                .await
-                .is_err()
-        );
+        assert_parked(&mut tail);
     }
 }
 
 #[tokio::test]
-async fn a_baseline_does_not_mix_a_new_pending_record_across_a_committed_capture_gap() {
-    let stored = Stored::default();
+async fn a_baseline_does_not_mix_new_pending_across_a_committed_capture_gap() {
+    let stored = Stored::with([record(1, "old")]);
     let gate = Arc::new(HistoryGate::new());
     let mut history = GatedHistory::new(stored.clone());
     history.page_gate = Some(gate.clone());
     let session = Session::new(history, epoch("run-1"));
     let subscribing = {
         let session = session.clone();
-        tokio::spawn(async move { session.subscribe_tail().await })
+        tokio::spawn(async move { subscribe(&session, 10).await })
     };
     gate.entered().await;
-    let first = session
-        .publish_batch(vec![draft("one", "1")])
-        .await
-        .unwrap();
-    stored.insert((*first[0]).clone());
-    session.confirm_durable(1).unwrap();
+    publish_and_commit(&session, &stored, vec![draft("two", "2")]).await;
     session
-        .publish_batch(vec![draft("two", "2")])
+        .publish_batch(vec![draft("three", "3")])
         .await
         .unwrap();
     gate.release();
-    let mut tail = subscribing.await.unwrap().unwrap();
-    let baseline = take_initial(&mut tail);
-    assert!(baseline.items.is_empty());
-    assert_eq!(baseline.completed_cursor, None);
-    let ChatTailUpdate::Batch(batch) = tail.next().await.unwrap() else {
-        panic!("both completions must be caught up from the captured head");
-    };
-    assert_eq!(
-        batch
-            .items
-            .iter()
-            .map(|item| item.append_seq)
-            .collect::<Vec<_>>(),
-        [1, 2]
-    );
+    let mut tail = subscribing.await.unwrap();
+    let baseline = tail.initial().unwrap();
+    assert_eq!(baseline.through_seq, 1);
+    assert_eq!(sequences(&baseline.items), [1]);
+    assert_eq!(sequences(&batch(&mut tail).await.items), [2, 3]);
 }
 
 #[tokio::test]
-async fn a_gap_in_stored_completion_sequences_is_rejected_without_advancing() {
-    let stored = Stored::with([support::record(1, "one"), support::record(3, "three")]);
-    let session = Session::new(stored, epoch("run-1"));
+async fn a_gap_in_unfiltered_stored_sequences_is_rejected_without_advancing() {
+    let session = Session::new(
+        Stored::with([record(1, "one"), record(3, "three")]),
+        epoch("run-1"),
+    );
     let mut tail = session
-        .subscribe_after(pl_core::chat::ChatCompletionCursor::new(epoch("run-1"), 0))
+        .subscribe_after(
+            ChatCompletionCursor::new(epoch("run-1"), 0),
+            None,
+            demand(10),
+            Arc::new(Budget::default()),
+        )
         .await
         .unwrap();
-    take_initial(&mut tail);
+    tail.initial().unwrap();
     assert!(matches!(tail.next().await, Err(ChatError::Conflict(_))));
     assert!(matches!(tail.next().await, Err(ChatError::Conflict(_))));
 }
 
 #[tokio::test]
-async fn an_empty_stored_range_below_a_known_head_is_a_gap_not_a_wait() {
-    let stored = Stored::with([support::record(1, "one")]);
+async fn an_empty_unfiltered_stored_range_below_known_head_is_a_gap_not_a_wait() {
+    let stored = Stored::with([record(1, "one")]);
     let session = Session::new(stored.clone(), epoch("run-1"));
     let mut tail = session
-        .subscribe_after(pl_core::chat::ChatCompletionCursor::new(epoch("run-1"), 0))
+        .subscribe_after(
+            ChatCompletionCursor::new(epoch("run-1"), 0),
+            None,
+            demand(10),
+            Arc::new(Budget::default()),
+        )
         .await
         .unwrap();
-    take_initial(&mut tail);
+    tail.initial().unwrap();
     stored.remove(1);
     assert!(matches!(tail.next().await, Err(ChatError::Conflict(_))));
     assert!(matches!(tail.next().await, Err(ChatError::Conflict(_))));
@@ -193,24 +182,14 @@ async fn an_empty_stored_range_below_a_known_head_is_a_gap_not_a_wait() {
 #[tokio::test]
 async fn the_first_frame_is_handed_over_once_and_next_requires_it() {
     let session = Session::new(Stored::default(), epoch("run-1"));
-    let mut tail = session
-        .subscribe_tail()
-        .await
-        .expect("the baseline is readable");
-    let error = tail
-        .next()
-        .await
-        .expect_err("the first frame must be taken before awaiting updates");
-    assert!(matches!(error, ChatError::Conflict(_)));
-    take_initial(&mut tail);
-    let error = tail
-        .initial()
-        .expect_err("the first frame is a single hand-off");
-    assert!(matches!(error, ChatError::Conflict(_)));
+    let mut tail = subscribe(&session, 10).await;
+    assert!(matches!(tail.next().await, Err(ChatError::Conflict(_))));
+    tail.initial().unwrap();
+    assert!(matches!(tail.initial(), Err(ChatError::Conflict(_))));
 }
 
 #[tokio::test]
-async fn batches_deliver_consecutive_completions_from_the_delivered_position() {
+async fn batches_deliver_completions_from_the_delivered_position_and_ack_does_not_repeat() {
     let stored = Stored::default();
     let session = Session::new(stored.clone(), epoch("run-1"));
     publish_and_commit(
@@ -219,304 +198,309 @@ async fn batches_deliver_consecutive_completions_from_the_delivered_position() {
         vec![draft("a", "1"), draft("b", "2"), draft("c", "3")],
     )
     .await;
-    let mut tail = session
-        .subscribe_tail()
+    let mut tail = subscribe(&session, 10).await;
+    assert_eq!(tail.initial().unwrap().through_seq, 3);
+    let records = session
+        .publish_batch(vec![draft("d", "4"), draft("e", "5"), draft("f", "6")])
         .await
-        .expect("the baseline is readable");
-    let baseline = take_initial(&mut tail);
-    assert_eq!(baseline.items.len(), 3);
-    assert_eq!(baseline.completed_cursor.expect("cursor").append_seq, 3);
-
-    publish_and_commit(
-        &session,
-        &stored,
-        vec![draft("d", "4"), draft("e", "5"), draft("f", "6")],
-    )
-    .await;
-    let batch = match tail.next().await.expect("the batch is delivered") {
-        ChatTailUpdate::Batch(batch) => batch,
-        other => panic!("expected a completion batch, got {other:?}"),
-    };
-    assert_eq!(batch.from_seq, 3, "the batch continues the baseline cursor");
-    assert_eq!(batch.through_seq, 6);
-    let sequences: Vec<u64> = batch.items.iter().map(|item| item.append_seq).collect();
-    assert_eq!(sequences, [4, 5, 6], "the batch is ascending and gap-free");
-    // With everything delivered, the next read parks instead of inventing a frame.
-    let parked = tokio::time::timeout(Duration::from_millis(50), tail.next()).await;
-    assert!(parked.is_err());
-    tail.close();
+        .unwrap();
+    let next = batch(&mut tail).await;
+    assert_eq!((next.from_seq, next.through_seq), (3, 6));
+    assert_eq!(sequences(&next.items), [4, 5, 6]);
+    for record in records.iter() {
+        stored.insert((**record).clone());
+    }
+    session.confirm_durable(6).unwrap();
+    assert_parked(&mut tail);
 }
 
 #[tokio::test]
 async fn a_lagging_subscription_is_refilled_from_storage_without_skipping_to_head() {
     let stored = Stored::default();
-    let bounded = BoundedReads::new(stored.clone());
-    let session = Session::new(bounded.clone(), epoch("run-1"));
-    let mut tail = session
-        .subscribe_tail()
-        .await
-        .expect("the baseline is readable");
-    assert!(take_initial(&mut tail).is_empty(), "history starts empty");
-
-    let drafts: Vec<_> = (1..=150)
-        .map(|seq| draft(&format!("item-{seq}"), "row"))
-        .collect();
-    publish_and_commit(&session, &stored, drafts).await;
-
-    // The delivered position is far below the durable prefix: the refill must come from storage in
-    // bounded windows, covering every sequence exactly once instead of jumping to the head.
-    let first = match tail.next().await.expect("the first refill is delivered") {
-        ChatTailUpdate::Batch(batch) => batch,
-        other => panic!("expected a completion batch, got {other:?}"),
-    };
-    assert_eq!(first.from_seq, 0);
-    assert_eq!(first.items.len(), 100, "the item cap bounds one batch");
-    assert_eq!(first.through_seq, 100);
-    assert_eq!(first.items.first().expect("non-empty").append_seq, 1);
-
-    let second = match tail.next().await.expect("the second refill is delivered") {
-        ChatTailUpdate::Batch(batch) => batch,
-        other => panic!("expected a completion batch, got {other:?}"),
-    };
-    assert_eq!(second.from_seq, 100, "the second batch continues exactly");
-    assert_eq!(second.through_seq, 150);
-    assert_eq!(second.items.len(), 50);
-    let mut delivered: Vec<u64> = first
-        .items
-        .iter()
-        .chain(second.items.iter())
-        .map(|item| item.append_seq)
-        .collect();
-    delivered.sort_unstable();
-    let expected: Vec<u64> = (1..=150).collect();
+    let session = Session::new(stored.clone(), epoch("run-1"));
+    let mut tail = subscribe(&session, 100).await;
+    assert!(tail.initial().unwrap().items.is_empty());
+    publish_and_commit(
+        &session,
+        &stored,
+        (1..=150)
+            .map(|seq| draft(&format!("item-{seq}"), "row"))
+            .collect(),
+    )
+    .await;
+    let first = batch(&mut tail).await;
+    assert_eq!((first.from_seq, first.through_seq), (0, 100));
+    let second = batch(&mut tail).await;
+    assert_eq!((second.from_seq, second.through_seq), (100, 150));
     assert_eq!(
-        delivered, expected,
-        "every completion arrives once, none skipped"
+        [sequences(&first.items), sequences(&second.items)].concat(),
+        (1..=150).collect::<Vec<_>>()
     );
+    assert_eq!(stored.reads.afters.lock().unwrap().len(), 2);
     assert!(
-        *bounded.largest_after.lock().unwrap() <= 100,
-        "the catch-up read stays bounded"
+        stored
+            .reads
+            .afters
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|request| request.demand.max_items == 100)
     );
-    let parked = tokio::time::timeout(Duration::from_millis(50), tail.next()).await;
-    assert!(parked.is_err(), "the refill ends at the head");
-    tail.close();
+    assert_parked(&mut tail);
 }
 
 #[tokio::test]
-async fn a_budget_truncated_batch_continues_where_it_stopped() {
+async fn a_byte_truncated_deferred_batch_continues_where_it_stopped() {
     let session = Session::new(Stored::default(), epoch("run-1"));
     let mut tail = session
-        .subscribe_tail()
+        .subscribe_tail(
+            query(),
+            ReadDemand::new(12, 500),
+            Arc::new(Budget::default()),
+        )
         .await
-        .expect("the baseline is readable");
-    assert!(take_initial(&mut tail).is_empty());
-    let drafts: Vec<_> = (1..=12)
-        .map(|seq| draft(&format!("item-{seq}"), &"x".repeat(300 * 1024)))
-        .collect();
+        .unwrap();
+    tail.initial().unwrap();
     session
-        .publish_batch(drafts)
+        .publish_batch(
+            (1..=12)
+                .map(|seq| draft(&format!("item-{seq}"), &"x".repeat(300 * 1024)))
+                .collect(),
+        )
         .await
-        .expect("the large completions are admitted");
-
-    let first = match tail.next().await.expect("a first batch is delivered") {
-        ChatTailUpdate::Batch(batch) => batch,
-        other => panic!("expected a completion batch, got {other:?}"),
-    };
-    assert!(
-        first.items.len() < 12,
-        "the page budget splits the window before the item cap"
-    );
-    assert!(
-        first.through_seq < 12,
-        "through names the last delivered record"
-    );
-
-    let mut delivered: Vec<u64> = first.items.iter().map(|item| item.append_seq).collect();
-    let mut through = first.through_seq;
+        .unwrap();
+    let mut delivered = Vec::new();
+    let mut through = 0;
     while delivered.len() < 12 {
-        let next = match tail.next().await.expect("the continuation is delivered") {
-            ChatTailUpdate::Batch(batch) => batch,
-            other => panic!("expected a completion batch, got {other:?}"),
-        };
-        assert_eq!(
-            next.from_seq, through,
-            "each batch continues the previous one"
+        let next = batch(&mut tail).await;
+        assert_eq!(next.from_seq, through);
+        assert!(next.items.len() < 12);
+        assert!(
+            next.items
+                .iter()
+                .all(|item| matches!(item.payload, PayloadData::Deferred { .. }))
         );
         through = next.through_seq;
-        delivered.extend(next.items.iter().map(|item| item.append_seq));
+        delivered.extend(sequences(&next.items));
     }
-    delivered.sort_unstable();
-    let expected: Vec<u64> = (1..=12).collect();
-    assert_eq!(delivered, expected, "the budget cut loses no completion");
+    assert_eq!(delivered, (1..=12).collect::<Vec<_>>());
     assert_eq!(through, 12);
-    tail.close();
+    assert_parked(&mut tail);
 }
 
 #[tokio::test]
-async fn a_cancelled_next_future_leaves_the_subscription_usable() {
-    let stored = Stored::default();
-    let session = Session::new(stored.clone(), epoch("run-1"));
-    let mut tail = session
-        .subscribe_tail()
+async fn a_cancelled_next_during_io_retains_the_original_delivery_cut_and_pending_arcs() {
+    let stored = Stored::with([record(1, "one")]);
+    let gate = Arc::new(HistoryGate::new());
+    let mut history = GatedHistory::new(stored.clone());
+    history.after_gate = Some(gate.clone());
+    let session = Session::new(history, epoch("run-1"));
+    let records = session
+        .publish_batch(vec![draft("two", "two")])
         .await
-        .expect("the baseline is readable");
-    take_initial(&mut tail);
-    // A caller cancels the parked read; nothing is delivered by the cancelled future.
-    let parked = tokio::time::timeout(Duration::from_millis(20), tail.next()).await;
-    assert!(parked.is_err(), "there is nothing to deliver yet");
-    publish_and_commit(&session, &stored, vec![draft("a", "1")]).await;
-    let batch = match tail.next().await.expect("the batch is delivered") {
-        ChatTailUpdate::Batch(batch) => batch,
-        other => panic!("expected a completion batch, got {other:?}"),
-    };
-    assert_eq!(batch.through_seq, 1);
-    assert_eq!(batch.items.len(), 1);
-    tail.close();
+        .unwrap();
+    let mut tail = session
+        .subscribe_after(
+            ChatCompletionCursor::new(epoch("run-1"), 0),
+            None,
+            demand(10),
+            Arc::new(Budget::default()),
+        )
+        .await
+        .unwrap();
+    tail.initial().unwrap();
+    {
+        let mut next = Box::pin(tail.next());
+        tokio::select! { () = gate.entered() => {}, result = &mut next => panic!("unexpected completion: {result:?}") }
+    }
+    stored.insert((*records[0]).clone());
+    session.confirm_durable(2).unwrap();
+    session
+        .publish_batch(vec![draft("three", "three")])
+        .await
+        .unwrap();
+    gate.release();
+    let next = batch(&mut tail).await;
+    assert_eq!((next.from_seq, next.through_seq), (0, 3));
+    assert_eq!(sequences(&next.items), [1, 2, 3]);
+    assert_parked(&mut tail);
 }
 
 #[tokio::test]
 async fn closing_the_subscription_cancels_demand_and_further_reads() {
     let stored = Stored::default();
     let session = Session::new(stored.clone(), epoch("run-1"));
-    let mut tail = session
-        .subscribe_tail()
-        .await
-        .expect("the baseline is readable");
-    take_initial(&mut tail);
+    let mut tail = subscribe(&session, 10).await;
+    tail.initial().unwrap();
     assert!(session.has_subscribers());
+    assert_parked(&mut tail);
     tail.close();
-    assert!(
-        !session.has_subscribers(),
-        "a closed tail declares no demand"
-    );
-    let error = tail
-        .next()
-        .await
-        .expect_err("a closed subscription refuses further reads");
-    assert!(matches!(error, ChatError::Cancelled));
-    let error = tail
-        .initial()
-        .expect_err("a closed subscription hands out no first frame");
-    assert!(matches!(error, ChatError::Cancelled));
-    // Closing one subscription stops neither the producer nor page reads.
+    assert!(!session.has_subscribers());
+    assert!(matches!(tail.next().await, Err(ChatError::Cancelled)));
+    assert!(matches!(tail.initial(), Err(ChatError::Cancelled)));
     publish_and_commit(&session, &stored, vec![draft("a", "1")]).await;
-    let page = session
-        .page(pl_core::chat::ChatPageRequest::latest())
-        .await
-        .expect("pages do not hang on the tail lifecycle");
-    assert_eq!(page.items.len(), 1);
+    assert_eq!(
+        session
+            .page(latest(10), &Budget::default())
+            .await
+            .unwrap()
+            .items
+            .len(),
+        1
+    );
 }
 
 #[tokio::test]
 async fn a_resumed_subscription_refills_from_its_own_position_without_skipping() {
-    let stored = Stored::default();
+    let stored = Stored::with((1..=150).map(|seq| record(seq, "row")));
     let session = Session::new(stored.clone(), epoch("run-1"));
-    let drafts: Vec<_> = (1..=150)
-        .map(|seq| draft(&format!("item-{seq}"), "row"))
-        .collect();
-    publish_and_commit(&session, &stored, drafts).await;
-    let after = pl_core::chat::ChatCompletionCursor::new(TimelineEpoch::new("run-1").unwrap(), 20);
     let mut tail = session
-        .subscribe_after(after.clone())
+        .subscribe_after(
+            ChatCompletionCursor::new(epoch("run-1"), 20),
+            None,
+            demand(100),
+            Arc::new(Budget::default()),
+        )
         .await
-        .expect("the resume is accepted");
-
-    // The first frame is the placeholder echo of the resume position, never the latest page.
-    let placeholder = take_initial(&mut tail);
+        .unwrap();
+    let baseline = tail.initial().unwrap();
+    assert!(baseline.items.is_empty());
+    assert!(baseline.before.is_none());
+    assert_eq!(baseline.through_seq, 20);
+    let first = batch(&mut tail).await;
+    let second = batch(&mut tail).await;
+    assert_eq!((first.from_seq, first.through_seq), (20, 120));
+    assert_eq!((second.from_seq, second.through_seq), (120, 150));
+    assert_eq!(
+        [sequences(&first.items), sequences(&second.items)].concat(),
+        (21..=150).collect::<Vec<_>>()
+    );
     assert!(
-        placeholder.items.is_empty(),
-        "no latest page is substituted"
+        stored.reads.pages.lock().unwrap().is_empty(),
+        "resume never substitutes latest()"
     );
-    assert_eq!(placeholder.before, None);
-    assert!(!placeholder.has_older);
-    assert_eq!(placeholder.completed_cursor, Some(after));
-    assert_eq!(placeholder.epoch, epoch("run-1"));
-
-    let first = match tail.next().await.expect("the first refill is delivered") {
-        ChatTailUpdate::Batch(batch) => batch,
-        other => panic!("expected a completion batch, got {other:?}"),
-    };
-    assert_eq!(
-        first.from_seq, 20,
-        "the refill starts at the resume position"
-    );
-    assert_eq!(first.items.first().expect("non-empty").append_seq, 21);
-    assert_eq!(first.through_seq, 120, "the item cap bounds one batch");
-    let second = match tail.next().await.expect("the second refill is delivered") {
-        ChatTailUpdate::Batch(batch) => batch,
-        other => panic!("expected a completion batch, got {other:?}"),
-    };
-    assert_eq!(second.from_seq, 120);
-    assert_eq!(
-        second.through_seq, 150,
-        "the refill ends at the head, not past it"
-    );
-    let delivered: Vec<u64> = first
-        .items
-        .iter()
-        .chain(second.items.iter())
-        .map(|item| item.append_seq)
-        .collect();
-    let expected: Vec<u64> = (21..=150).collect();
-    assert_eq!(delivered, expected, "the refill is complete and gap-free");
-    let parked = tokio::time::timeout(Duration::from_millis(50), tail.next()).await;
-    assert!(parked.is_err(), "nothing is invented past the head");
-    tail.close();
+    assert_parked(&mut tail);
 }
 
 #[tokio::test]
-async fn a_resumed_subscription_at_the_head_delivers_only_new_completions() {
-    let stored = Stored::default();
-    let session = Session::new(stored.clone(), epoch("run-1"));
-    publish_and_commit(
-        &session,
-        &stored,
-        vec![draft("a", "1"), draft("b", "2"), draft("c", "3")],
-    )
-    .await;
-    let head_cursor =
-        pl_core::chat::ChatCompletionCursor::new(TimelineEpoch::new("run-1").unwrap(), 3);
+async fn a_resumed_subscription_at_head_delivers_only_new_completions() {
+    let session = Session::new(
+        Stored::with((1..=3).map(|seq| record(seq, "row"))),
+        epoch("run-1"),
+    );
     let mut tail = session
-        .subscribe_after(head_cursor)
+        .subscribe_after(
+            ChatCompletionCursor::new(epoch("run-1"), 3),
+            None,
+            demand(10),
+            Arc::new(Budget::default()),
+        )
         .await
-        .expect("resuming at the head is legal");
-    take_initial(&mut tail);
-    // The writer is paused: the new completions stay pending, and the resumed tail still delivers
-    // them from its own position instead of waiting for durability.
+        .unwrap();
+    tail.initial().unwrap();
+    assert_parked(&mut tail);
     session
-        .publish_batch(vec![draft("item-4", "4"), draft("item-5", "5")])
+        .publish_batch(vec![draft("four", "4"), draft("five", "5")])
         .await
-        .expect("the completions are admitted");
-    let batch = match tail.next().await.expect("the batch is delivered") {
-        ChatTailUpdate::Batch(batch) => batch,
-        other => panic!("expected a completion batch, got {other:?}"),
-    };
-    assert_eq!(batch.from_seq, 3);
-    assert_eq!(batch.through_seq, 5);
-    assert_eq!(batch.items.len(), 2);
-    tail.close();
+        .unwrap();
+    let next = batch(&mut tail).await;
+    assert_eq!((next.from_seq, next.through_seq), (3, 5));
+    assert_eq!(sequences(&next.items), [4, 5]);
 }
 
 #[tokio::test]
-async fn a_resume_position_beyond_the_head_is_rejected() {
-    let stored = Stored::with([support::record(1, "one")]);
-    let session = Session::new(stored, epoch("run-1"));
-    let beyond = pl_core::chat::ChatCompletionCursor::new(TimelineEpoch::new("run-1").unwrap(), 99);
-    let error = session
-        .subscribe_after(beyond)
-        .await
-        .expect_err("a position this run never published cannot be resumed");
-    assert!(matches!(error, ChatError::InvalidArgument(_)));
+async fn a_resume_position_beyond_head_is_rejected() {
+    let session = Session::new(Stored::with([record(1, "one")]), epoch("run-1"));
+    assert!(matches!(
+        session
+            .subscribe_after(
+                ChatCompletionCursor::new(epoch("run-1"), 99),
+                None,
+                demand(10),
+                Arc::new(Budget::default())
+            )
+            .await,
+        Err(ChatError::InvalidArgument(_))
+    ));
+    assert!(!session.has_subscribers());
 }
 
 #[tokio::test]
 async fn a_resume_from_another_epoch_is_rejected() {
-    let stored = Stored::with([support::record(1, "one")]);
-    let session = Session::new(stored, epoch("run-2"));
-    let stale = pl_core::chat::ChatCompletionCursor::new(TimelineEpoch::new("run-1").unwrap(), 1);
-    let error = session
-        .subscribe_after(stale)
+    let session = Session::new(Stored::with([record(1, "one")]), epoch("run-2"));
+    assert!(matches!(
+        session
+            .subscribe_after(
+                ChatCompletionCursor::new(epoch("run-1"), 1),
+                None,
+                demand(10),
+                Arc::new(Budget::default())
+            )
+            .await,
+        Err(ChatError::EpochMismatch { .. })
+    ));
+}
+
+#[tokio::test]
+async fn scope_gaps_advance_private_cut_without_empty_append_or_mixing_other_scopes() {
+    let stored = Stored::default();
+    let session = Session::new(stored.clone(), epoch("run-1"));
+    let mut tail = subscribe(&session, 10).await;
+    tail.initial().unwrap();
+    let mut hidden = draft("hidden", "activity");
+    hidden.query_class = "activity".into();
+    publish_and_commit(&session, &stored, vec![hidden.clone()]).await;
+    assert_parked(&mut tail);
+    hidden.item_id = "hidden-2".into();
+    session
+        .publish_batch(vec![draft("main", "visible"), hidden])
         .await
-        .expect_err("a cursor from the previous run generation is rejected");
-    assert!(matches!(error, ChatError::EpochMismatch { .. }));
+        .unwrap();
+    let next = batch(&mut tail).await;
+    assert_eq!((next.from_seq, next.through_seq), (1, 3));
+    assert_eq!(sequences(&next.items), [2]);
+    assert_parked(&mut tail);
+}
+
+#[tokio::test]
+async fn replay_captures_pending_before_history_io_and_never_chases_the_head_after_clear() {
+    let stored = Stored::with([record(1, "one")]);
+    let gate = Arc::new(HistoryGate::new());
+    let mut history = GatedHistory::new(stored.clone());
+    history.after_gate = Some(gate.clone());
+    let session = Session::new(history, epoch("run-1"));
+    let records = session
+        .publish_batch(vec![draft("two", "two")])
+        .await
+        .unwrap();
+    let replay = {
+        let session = session.clone();
+        tokio::spawn(async move {
+            session
+                .completed_after(
+                    ChatCompletionCursor::new(epoch("run-1"), 0),
+                    None,
+                    Some(2),
+                    demand(10),
+                    &Budget::default(),
+                )
+                .await
+        })
+    };
+    gate.entered().await;
+    stored.insert((*records[0]).clone());
+    session.confirm_durable(2).unwrap();
+    session
+        .publish_batch(vec![draft("three", "three")])
+        .await
+        .unwrap();
+    gate.release();
+    let next = replay.await.unwrap().unwrap();
+    assert_eq!((next.from_seq, next.through_seq), (0, 2));
+    assert_eq!(sequences(&next.items), [1, 2]);
+    assert_eq!(stored.reads.afters.lock().unwrap()[0].ceiling, 1);
+    let PayloadData::Inline(bytes) = &next.items[1].payload else {
+        panic!("inline")
+    };
+    assert!(Arc::ptr_eq(bytes, &records[0].payload));
 }

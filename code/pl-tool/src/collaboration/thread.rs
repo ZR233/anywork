@@ -264,7 +264,17 @@ impl<H: AgentControlHost> ThreadAgentControl<H> {
             AgentControlKind::Close => "close_agent",
         };
         let kind = self.kind;
-        let registration = Registration::new(name.into(), declaration, self)?;
+        let contract = match kind {
+            AgentControlKind::Spawn => Some("builtin.spawn_agent@1"),
+            AgentControlKind::Send => Some("builtin.send_message@1"),
+            AgentControlKind::List | AgentControlKind::Interrupt | AgentControlKind::Close => None,
+        };
+        let mut registration = Registration::new(name.into(), declaration, self)?;
+        if let Some(contract) = contract {
+            registration = registration.with_presentation_contract(
+                pl_core::model::ToolPresentationContract::new(contract),
+            );
+        }
         Ok(match kind {
             AgentControlKind::List => registration,
             AgentControlKind::Spawn

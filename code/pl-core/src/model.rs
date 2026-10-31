@@ -66,12 +66,36 @@ pub trait ModelSession: Send + 'static {
     fn close(&mut self) -> impl Future<Output = Result<(), ModelError>> + Send;
 }
 
+/// Opaque, non-authorizing identity of the presentation contract frozen for a tool call.
+///
+/// Unknown strings are valid data. Core neither parses versions nor chooses a renderer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ToolPresentationContract(String);
+
+impl ToolPresentationContract {
+    pub fn new(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
+
+    pub fn generic() -> Self {
+        Self::new("generic@1")
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 /// Declaration sent alongside context. Core does not interpret its producer-owned schema.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelToolDeclaration {
     pub tool_id: String,
     pub declaration: OpaquePayload,
+    /// Not part of the provider's ToolSpec; missing saved metadata remains unknown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub presentation_contract: Option<ToolPresentationContract>,
 }
 
 /// Maximum tool-call concurrency admitted by the frozen executor catalog.
@@ -268,6 +292,24 @@ impl ContentBlock {
             prefix: None,
             len,
         })
+    }
+
+    /// Captures shared chunks with their absolute byte offsets in ascending order.
+    ///
+    /// This walks the lineage once when a content owner builds or hands off its range index.
+    /// Only Arc handles are cloned; no text is flattened. Range readers should retain that index
+    /// instead of enumerating this chain for every requested window.
+    pub fn shared_chunks(&self) -> Vec<(usize, Arc<str>)> {
+        let mut chunks = Vec::new();
+        let mut node = Some(self);
+        while let Some(block) = node {
+            if !block.chunk.is_empty() {
+                chunks.push((block.len - block.chunk.len(), Arc::clone(&block.chunk)));
+            }
+            node = block.prefix.as_deref();
+        }
+        chunks.reverse();
+        chunks
     }
 
     /// Observation of `delta` appended after every byte `block` already observed.
@@ -2112,6 +2154,9 @@ pub struct ModelToolCall {
     pub call_id: String,
     pub tool_id: String,
     pub arguments: OpaquePayload,
+    /// Taken from this request's frozen declaration, never from a refreshed registry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub presentation_contract: Option<ToolPresentationContract>,
     /// Absent in successful calls and old history; absence does not imply a historical rejection.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rejection: Option<ModelToolCallRejection>,

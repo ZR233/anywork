@@ -57,7 +57,12 @@ impl ThreadWebSearchTool {
     /// # Errors
     /// Returns an invalid tool identity error.
     pub fn registration(self, declaration: OpaquePayload) -> Result<Registration, RegistryError> {
-        Registration::new(TOOL_WEB_SEARCH.into(), declaration, self)
+        Ok(
+            Registration::new(TOOL_WEB_SEARCH.into(), declaration, self)?
+                .with_presentation_contract(pl_core::model::ToolPresentationContract::new(
+                    "builtin.web_search@1",
+                )),
+        )
     }
 }
 
@@ -198,7 +203,12 @@ impl ThreadDeepSeekWebSearchTool {
     /// # Errors
     /// Returns an invalid tool identity error.
     pub fn registration(self, declaration: OpaquePayload) -> Result<Registration, RegistryError> {
-        Registration::new(TOOL_DEEPSEEK_WEB_SEARCH.into(), declaration, self)
+        Ok(
+            Registration::new(TOOL_DEEPSEEK_WEB_SEARCH.into(), declaration, self)?
+                .with_presentation_contract(pl_core::model::ToolPresentationContract::new(
+                    "builtin.deepseek_web_search@1",
+                )),
+        )
     }
 }
 
@@ -268,7 +278,12 @@ impl ThreadDeepSeekWebFetchTool {
     /// # Errors
     /// Returns an invalid tool identity error.
     pub fn registration(self, declaration: OpaquePayload) -> Result<Registration, RegistryError> {
-        Registration::new(TOOL_DEEPSEEK_WEB_FETCH.into(), declaration, self)
+        Ok(
+            Registration::new(TOOL_DEEPSEEK_WEB_FETCH.into(), declaration, self)?
+                .with_presentation_contract(pl_core::model::ToolPresentationContract::new(
+                    "builtin.deepseek_web_fetch@1",
+                )),
+        )
     }
 }
 

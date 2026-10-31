@@ -1,410 +1,448 @@
-//! 统一读取：Latest/Before 完成页、订阅基线、内部 after 补发窗口与按身份详情。
-//!
-//! 三条读取能力都不拥有可见行、阅读位置或视口几何，也都不跨 `.await` 持有时间线锁。统一次序固定：
-//!
-//! 1. 同一短锁内捕获完成代际、上界 H 与范围内 `limit + 1` 条有界 pending 引用；
-//! 2. 锁外开启一次新的短数据库读（端口契约），限制 `append_seq <= H`，不复用捕获前的旧快照；
-//! 3. 再入短锁，把捕获引用、存储行与当前 pending 合并：按身份与序号校验、去重、排序；
-//! 4. 预算与有界预览在所有锁之外计算。
-//!
-//! 提交/回收发生在捕获之后时，读取仍持有不可变引用；发生在捕获之前时，后开的数据库读已经能看见；
-//! 两边命中只返回一项。读取不 flush、不触发 writer，也不克隆全部 pending。
+//! Demand reads capture D/H and bounded scope-indexed pending Arcs in one short lock. Committed
+//! and pending intervals never overlap; no read-after-IO merge, payload decoder or existence query.
 
-use std::{collections::BTreeMap, sync::Arc};
-
-use crate::chat::{
-    ChatCompletionCursor, ChatCursor, ChatDetailChunk, ChatDetailCursor, ChatDetailRequest,
-    ChatError, ChatItem, ChatPage, ChatPageRequest, MAX_PAGE_ITEMS, PAGE_PREVIEW_BYTES, Session,
-    item::same_payload,
+use crate::chat::*;
+use std::{
+    ops::Bound::{Excluded, Included, Unbounded},
+    sync::Arc,
 };
 
-/// 单个补发批次最多交付的条目数；与单页上限一致。
-const MAX_BATCH_ITEMS: usize = MAX_PAGE_ITEMS;
-
-impl Session {
-    /// Reads one stateless page: newest, or strictly older than `before`.
-    ///
-    /// The page is assembled from two bounded sources — the session's pending records, which hold
-    /// completions that are visible but not necessarily durable yet, and one short keyset read of
-    /// committed history limited to the captured head — and the two are merged and validated again
-    /// under the timeline lock after the read. `has_older` only comes from a proven older identity
-    /// (a dropped candidate or the store's existence check), never from a short page.
-    ///
-    /// # Errors
-    /// [`ChatError::InvalidArgument`] for an unsupported limit, [`ChatError::EpochMismatch`] when
-    /// `before` was minted by another run generation, [`ChatError::Conflict`] when the merged
-    /// candidates disagree about one identity or one sequence, plus the host's own typed storage
-    /// and preview failures.
-    pub async fn page(&self, request: ChatPageRequest) -> Result<ChatPage, ChatError> {
-        let limit = request.limit()?;
-        if let Some(before) = &request.before {
-            before.validate_epoch(&self.0.epoch)?;
-        }
-        self.ensure_initialized().await?;
-        let before = request.before;
-        // Step 1: capture the head and a bounded pending window for the requested range.
-        let (head, captured) = self.with_timeline(|state| {
-            let before_seq = before.as_ref().map_or(u64::MAX, |cursor| cursor.append_seq);
-            (
-                state.head,
-                state.pending_window(0, before_seq, limit.saturating_add(1)),
-            )
-        });
-        // Step 2: one fresh short storage read outside every lock.
-        let stored = self.0.history.page(before.as_ref(), head, limit).await?;
-        // The captured head and Arc records form this read's snapshot. Publications
-        // after that head belong to the already-registered tail, never this page.
-        let mut records = captured;
-        records.extend(stored.items.into_iter().map(Arc::new));
-        let candidates = merge_records(records)?;
-        // Step 4: bound and select outside every lock; the host codec may refuse a budget.
-        let bounded = self.bound_all(candidates)?;
-        Ok(self.select_page(bounded, limit, stored.has_more, before.as_ref()))
-    }
-
-    /// Captures the latest small page as one consistent subscription baseline.
-    ///
-    /// This is the single builder of a tail baseline: the first frame of a subscription uses it, so a
-    /// first frame can never present a memory-only tail as if it were the authoritative newest page.
-    /// The shape is the shared page contract — newest [`DEFAULT_PAGE_ITEMS`] records inside the page
-    /// preview budget, the real older boundary and a proven `has_older` — plus the completed cursor
-    /// of the newest record.
-    ///
-    /// # Errors
-    /// Same as [`Session::page`].
-    pub(crate) async fn capture_latest_baseline(
-        &self,
-    ) -> Result<crate::chat::ChatTailBaseline, ChatError> {
-        let page = self.page(ChatPageRequest::latest()).await?;
-        let epoch = page.epoch.clone();
-        Ok(crate::chat::ChatTailBaseline {
-            epoch: page.epoch,
-            completed_cursor: page
-                .items
-                .last()
-                .map(|item| ChatCompletionCursor::new(epoch, item.append_seq)),
-            items: page.items,
-            before: page.before,
-            has_older: page.has_older,
-        })
-    }
-
-    /// Opens one bounded tail subscription over this session.
-    ///
-    /// The wake receiver is registered **before** the consistent baseline is captured, so nothing
-    /// published while the capture awaits can be missed: a completion that lands during the read is
-    /// either already inside the baseline page or still ahead of the baseline cursor, and the first
-    /// wake delivers it. The registered receiver stays owned by this future until the tail takes
-    /// it; a failed or cancelled capture drops it and releases demand without spawning background
-    /// work.
-    ///
-    /// # Errors
-    /// The host's own typed storage and preview failures, plus [`ChatError::Conflict`] when merged
-    /// candidates disagree about one identity or sequence.
-    pub async fn subscribe_tail(&self) -> Result<crate::chat::ChatTail, ChatError> {
-        let watch = self.0.changed.subscribe();
-        let baseline = self.capture_latest_baseline().await?;
-        Ok(crate::chat::ChatTail::new(self.clone(), watch, baseline))
-    }
-
-    /// Resumes one bounded tail subscription from an already-delivered completion position.
-    ///
-    /// The wake receiver is registered before the state capture, so completions landing in between
-    /// are delivered by the first batch. The subscription never captures the latest page as its
-    /// baseline: it continues from `after` exactly — a reconnecting consumer is refilled from its
-    /// own last accepted position, not skipped to the head. The one-shot
-    /// [`ChatTail::initial`](crate::chat::ChatTail::initial) frame is a placeholder that echoes the
-    /// resume cursor (empty items, no boundary, `completed_cursor = after`); the runtime consumes it
-    /// and does not publish it to the presentation owner. A resume position is the accepted sequence,
-    /// not a paging boundary, so it carries no synthetic item identity.
-    ///
-    /// # Errors
-    /// [`ChatError::EpochMismatch`] when `after` was minted by another run generation,
-    /// [`ChatError::InvalidArgument`] when `after` names a sequence beyond the published head, plus
-    /// the host's own typed storage failures from the seed read.
-    pub async fn subscribe_after(
-        &self,
-        after: ChatCompletionCursor,
-    ) -> Result<crate::chat::ChatTail, ChatError> {
-        if after.epoch != self.0.epoch {
-            return Err(ChatError::EpochMismatch {
-                cursor: after.epoch,
-                session: self.0.epoch.clone(),
-            });
-        }
-        let watch = self.0.changed.subscribe();
-        self.ensure_initialized().await?;
-        let head = self.with_timeline(|state| state.head);
-        if after.append_seq > head {
-            return Err(ChatError::InvalidArgument(format!(
-                "resume position {} is beyond the published head {head}",
-                after.append_seq
-            )));
-        }
-        Ok(crate::chat::ChatTail::new(
-            self.clone(),
-            watch,
-            crate::chat::ChatTailBaseline {
-                epoch: self.0.epoch.clone(),
-                items: Vec::new(),
-                before: None,
-                has_older: false,
-                completed_cursor: Some(after),
-            },
-        ))
-    }
-
-    /// One bounded ascending window of the completions in `(after, head]`.
-    ///
-    /// This is the internal catch-up read behind a tail, independent of the public Latest/Before
-    /// paging. When the range starts at or after the captured durable prefix the pending records
-    /// already prove the whole window and no database read is opened; otherwise one fresh
-    /// `page_after` read fills the committed part and the merge under the timeline lock adds the
-    /// rest. The window is bounded by item count and page preview bytes from the newest end of the
-    /// window, so a lagging consumer is refilled continuously instead of being skipped to the head.
-    ///
-    /// # Errors
-    /// [`ChatError::Conflict`] when the merged candidates disagree about one identity or one
-    /// sequence, plus the host's own typed storage and preview failures.
-    pub(crate) async fn completed_after(
-        &self,
-        after_seq: u64,
-    ) -> Result<(Vec<ChatItem>, u64), ChatError> {
-        self.ensure_initialized().await?;
-        let (head, durable, captured) = self.with_timeline(|state| {
-            (
-                state.head,
-                state.durable,
-                state.pending_after(after_seq, state.head, MAX_BATCH_ITEMS.saturating_add(1)),
-            )
-        });
-        if head <= after_seq {
-            return Ok((Vec::new(), after_seq));
-        }
-        if after_seq >= durable {
-            // Everything in (after, head] is still pending; the memory window is complete.
-            let merged = merge_records(captured)?;
-            let bounded = self.bound_all(merged)?;
-            return self.take_batch(bounded, after_seq);
-        }
-        let stored = self
-            .0
-            .history
-            .page_after(after_seq, head, MAX_BATCH_ITEMS)
-            .await?;
-        let mut records = captured;
-        records.extend(stored.items.into_iter().map(Arc::new));
-        let candidates = merge_records(records)?;
-        let bounded = self.bound_all(candidates)?;
-        self.take_batch(bounded, after_seq)
-    }
-
-    /// Reads one bounded block of a field's complete body.
-    ///
-    /// A pending record is served from the session's own complete copy without any storage IO; a
-    /// record the writer already confirmed is read once from history. Records are immutable, so
-    /// there is no revision to go stale and no re-check after the await: whichever source answers
-    /// carries the same sealed payload for that identity.
-    ///
-    /// A continuation is only valid for the item and field it was produced for: reusing a token from
-    /// another field or identity is rejected instead of silently reading from a guessed offset.
-    ///
-    /// # Errors
-    /// [`ChatError::InvalidArgument`] for an unsupported block size or an illegal continuation,
-    /// [`ChatError::NotFound`] for an unknown item or field, and the host's own storage failures.
-    pub async fn read_detail(
-        &self,
-        request: ChatDetailRequest,
-    ) -> Result<ChatDetailChunk, ChatError> {
-        let block_bytes = request.block_bytes()?;
-        if let Some(cursor) = &request.continuation {
-            cursor.validate(&request)?;
-        }
-        let offset = request
-            .continuation
-            .as_ref()
-            .map_or(0, ChatDetailCursor::offset);
-        if let Some(record) = self.with_timeline(|state| state.pending_record(&request.item_id)) {
-            return detail_chunk(&record, &request, offset, block_bytes);
-        }
-        let stored = self
-            .0
-            .history
-            .item(&request.item_id)
-            .await?
-            .ok_or_else(|| ChatError::NotFound(request.item_id.clone()))?;
-        detail_chunk(&stored, &request, offset, block_bytes)
-    }
-
-    /// Bounds every record through the host codec, outside every lock.
-    fn bound_all(&self, records: Vec<Arc<ChatItem>>) -> Result<Vec<ChatItem>, ChatError> {
-        let mut bounded = Vec::with_capacity(records.len());
-        for record in records {
-            bounded.push(self.0.history.bounded(&record)?);
-        }
-        Ok(bounded)
-    }
-
-    /// Selects the returned page from ascending candidates that are already strictly older.
-    fn select_page(
-        &self,
-        items: Vec<ChatItem>,
-        limit: usize,
-        proven_older: bool,
-        before: Option<&ChatCursor>,
-    ) -> ChatPage {
-        let mut items = items;
-        if let Some(before) = before {
-            items.retain(|item| item.append_seq < before.append_seq);
-        }
-        let mut has_older = proven_older;
-        let excess = items.len().saturating_sub(limit);
-        if excess > 0 {
-            items.drain(..excess);
-            has_older = true;
-        }
-        // Page preview bytes are bounded from the newest end, so a page dropped by the budget still
-        // reports a real next boundary instead of pretending the history ended.
-        let mut used = 0usize;
-        let mut keep = 0usize;
-        for item in items.iter().rev() {
-            let bytes = item.resident_bytes();
-            if keep > 0 && used.saturating_add(bytes) > PAGE_PREVIEW_BYTES {
-                break;
-            }
-            used = used.saturating_add(bytes);
-            keep += 1;
-        }
-        if keep < items.len() {
-            items.drain(..items.len() - keep);
-            has_older = true;
-        }
-        let has_older = has_older && !items.is_empty();
-        let before = if has_older {
-            items
-                .first()
-                .map(|item| ChatCursor::of(&self.0.epoch, item))
-        } else {
-            None
-        };
-        ChatPage {
-            epoch: self.0.epoch.clone(),
-            items,
-            before,
-            has_older,
-        }
-    }
-
-    /// Bounds one ascending catch-up window by item count and page bytes over its oldest prefix.
-    ///
-    /// The window continues an already-delivered position, so a budget cut keeps the oldest part and
-    /// leaves the remainder for the next batch; the returned sequence names the record actually
-    /// delivered last, never a position the caller did not receive.
-    fn take_batch(
-        &self,
-        mut items: Vec<ChatItem>,
-        after_seq: u64,
-    ) -> Result<(Vec<ChatItem>, u64), ChatError> {
-        items.retain(|item| item.append_seq > after_seq);
-        if items.is_empty() {
-            return Err(ChatError::Conflict(format!(
-                "completion history ended before the captured head after {after_seq}"
-            )));
-        }
-        let mut used = 0usize;
-        let mut keep = 0usize;
-        for item in items.iter().take(MAX_BATCH_ITEMS) {
-            let expected = after_seq + keep as u64 + 1;
-            if item.append_seq != expected {
-                return Err(ChatError::Conflict(format!(
-                    "completion gap after {after_seq}: expected {expected}, found {}",
-                    item.append_seq
-                )));
-            }
-            let bytes = item.resident_bytes();
-            if keep > 0 && used.saturating_add(bytes) > PAGE_PREVIEW_BYTES {
-                break;
-            }
-            used = used.saturating_add(bytes);
-            keep += 1;
-        }
-        if keep < items.len() {
-            items.truncate(keep);
-        }
-        if items.len() > MAX_BATCH_ITEMS {
-            items.truncate(MAX_BATCH_ITEMS);
-        }
-        let through = items.last().map_or(after_seq, |item| item.append_seq);
-        Ok((items, through))
-    }
+struct Selection {
+    records: Vec<(Arc<ChatItem>, PayloadMode)>,
+    remaining: ReadDemand,
+    exhausted: bool,
 }
 
-/// One block of a field's complete body, on a UTF-8 boundary.
-fn detail_chunk(
-    record: &ChatItem,
-    request: &ChatDetailRequest,
-    offset: u64,
-    block_bytes: usize,
-) -> Result<ChatDetailChunk, ChatError> {
-    let Some(preview) = record.fields.get(&request.field) else {
-        return Err(ChatError::NotFound(format!(
-            "{}:{}",
-            record.item_id, request.field
-        )));
+fn select_records<'a>(
+    records: impl Iterator<Item = &'a Arc<ChatItem>>,
+    demand: ReadDemand,
+    budget: &dyn ChatBudget,
+) -> Selection {
+    let mut selection = Selection {
+        records: Vec::new(),
+        remaining: demand,
+        exhausted: false,
     };
-    let total_bytes = preview.total_bytes;
-    if offset > total_bytes {
-        return Err(ChatError::InvalidArgument(format!(
-            "continued offset {offset} exceeds the {total_bytes} bytes of {}:{}",
-            record.item_id, request.field
-        )));
+    for record in records {
+        if selection.remaining.max_items == 0 || selection.remaining.max_bytes == 0 {
+            return selection;
+        }
+        let Some(mode) = select_payload(&record.header, selection.remaining.max_bytes, budget)
+        else {
+            return selection;
+        };
+        selection.remaining.max_bytes -= budget.item_bytes(&record.header, mode);
+        selection.remaining.max_items -= 1;
+        selection.records.push((record.clone(), mode));
     }
-    let start = usize::try_from(offset).map_err(|_| {
-        ChatError::InvalidArgument(format!(
-            "continued offset {offset} does not fit this platform"
-        ))
-    })?;
-    let (text, end) = preview.block.range(start, block_bytes).ok_or_else(|| {
-        ChatError::InvalidArgument(format!(
-            "continued offset {offset} is not a UTF-8 boundary of {}:{}",
-            record.item_id, request.field
-        ))
-    })?;
-    let continuation = (end < preview.block.len())
-        .then(|| ChatDetailCursor::new(record.item_id.clone(), request.field.clone(), end as u64));
-    Ok(ChatDetailChunk {
-        item_id: record.item_id.clone(),
-        field: request.field.clone(),
-        text,
-        total_bytes,
-        continuation,
+    // Exact count/byte fills deliberately keep conservative continuation; no lookahead is required.
+    selection.exhausted = selection.remaining.max_items > 0 && selection.remaining.max_bytes > 0;
+    selection
+}
+
+fn project(records: Vec<(Arc<ChatItem>, PayloadMode)>) -> Vec<ChatPageItem> {
+    records
+        .into_iter()
+        .map(|(record, mode)| ChatPageItem {
+            header: record.header.clone(),
+            payload: match mode {
+                PayloadMode::Inline => PayloadData::Inline(record.payload.clone()),
+                PayloadMode::Deferred => PayloadData::Deferred {
+                    item_id: record.header.item_id.clone(),
+                    byte_length: record.header.byte_length,
+                },
+            },
+        })
+        .collect()
+}
+
+pub(crate) fn reserve(
+    demand: ReadDemand,
+    budget: &dyn ChatBudget,
+) -> Result<ReadDemand, ChatError> {
+    demand.validate()?;
+    let max_bytes = demand
+        .max_bytes
+        .checked_sub(budget.fixed_bytes())
+        .filter(|bytes| *bytes > 0)
+        .ok_or_else(|| ChatError::InvalidDemand("demand cannot hold an item envelope".into()))?;
+    Ok(ReadDemand {
+        max_bytes,
+        ..demand
     })
 }
 
-/// Merges candidates from every source into one ordered, de-duplicated, validated list.
-///
-/// Records are immutable, so one identity appearing through both a captured pending reference and a
-/// committed storage row must be the very same record: a duplicate is collapsed, while the same
-/// identity or the same sequence carrying a different payload is a typed conflict rather than an
-/// arbitrary winner.
-fn merge_records(records: Vec<Arc<ChatItem>>) -> Result<Vec<Arc<ChatItem>>, ChatError> {
-    let mut by_seq: BTreeMap<u64, Arc<ChatItem>> = BTreeMap::new();
-    let mut by_id: BTreeMap<String, (u64, Arc<ChatItem>)> = BTreeMap::new();
-    for record in records {
-        if let Some((seq, existing)) = by_id.get(&record.item_id) {
-            if *seq != record.append_seq || !same_payload(existing, &record) {
-                return Err(ChatError::Conflict(record.item_id.clone()));
-            }
-            continue;
+/// Validate just the bounded port result, not the historical collection. No decoder or merge.
+fn validate_history(
+    page: &ChatHistoryPage,
+    request: &ChatHistoryRequest,
+    budget: &dyn ChatBudget,
+) -> Result<ReadDemand, ChatError> {
+    let mut remaining = request.demand;
+    let mut previous = request.after;
+    for item in &page.items {
+        let header = &item.header;
+        if header.append_seq <= previous
+            || header.append_seq > request.ceiling
+            || (request.query.is_none() && header.append_seq != previous + 1)
+            || request
+                .before
+                .is_some_and(|before| header.append_seq >= before)
+            || request
+                .query
+                .as_ref()
+                .is_some_and(|query| !query.matches(header))
+            || header.item_id.is_empty()
+        {
+            return Err(ChatError::Conflict(header.item_id.clone()));
         }
-        if let Some(existing) = by_seq.get(&record.append_seq) {
-            if existing.item_id != record.item_id || !same_payload(existing, &record) {
-                return Err(ChatError::Conflict(record.item_id.clone()));
-            }
-            continue;
+        match &item.payload {
+            PayloadData::Inline(bytes) if bytes.len() as u64 == header.byte_length => {}
+            PayloadData::Deferred {
+                item_id,
+                byte_length,
+            } if item_id == &header.item_id && *byte_length == header.byte_length => {}
+            _ => return Err(ChatError::Conflict(header.item_id.clone())),
         }
-        by_id.insert(record.item_id.clone(), (record.append_seq, record.clone()));
-        by_seq.insert(record.append_seq, record);
+        remaining.max_items = remaining
+            .max_items
+            .checked_sub(1)
+            .ok_or_else(|| ChatError::Overloaded("history exceeded item demand".into()))?;
+        remaining.max_bytes = remaining
+            .max_bytes
+            .checked_sub(budget.item_bytes(header, item.payload.mode()))
+            .ok_or_else(|| ChatError::Overloaded("history exceeded encoded byte demand".into()))?;
+        previous = header.append_seq;
     }
-    Ok(by_seq.into_values().collect())
+    if request.query.is_none() && page.exhausted && previous != request.ceiling {
+        return Err(ChatError::Conflict(
+            "incomplete unfiltered history interval".into(),
+        ));
+    }
+    Ok(remaining)
+}
+
+impl Session {
+    pub(crate) fn validate_epoch(&self, epoch: &TimelineEpoch) -> Result<(), ChatError> {
+        if epoch == &self.0.epoch {
+            Ok(())
+        } else {
+            Err(ChatError::EpochMismatch {
+                cursor: epoch.clone(),
+                session: self.0.epoch.clone(),
+            })
+        }
+    }
+
+    pub async fn page(
+        &self,
+        request: ChatPageRequest,
+        budget: &dyn ChatBudget,
+    ) -> Result<ChatPage, ChatError> {
+        request.query.validate()?;
+        let demand = reserve(request.demand, budget)?;
+        if let Some(before) = &request.before {
+            self.validate_epoch(&before.epoch)?;
+            if before.query != request.query
+                || request
+                    .ceiling
+                    .is_some_and(|ceiling| ceiling != before.ceiling)
+                || before.append_seq == 0
+                || before.append_seq > before.ceiling
+            {
+                return Err(ChatError::InvalidArgument(
+                    "cursor query or ceiling mismatch".into(),
+                ));
+            }
+        }
+        self.ensure_initialized().await?;
+        let (head, durable, mut selected) = self.with_timeline(|state| {
+            let head = request
+                .before
+                .as_ref()
+                .map(|cursor| cursor.ceiling)
+                .or(request.ceiling)
+                .unwrap_or(state.head);
+            if head > state.head {
+                return Err(ChatError::InvalidArgument(
+                    "ceiling exceeds published head".into(),
+                ));
+            }
+            let upper = request
+                .before
+                .as_ref()
+                .map_or(head, |cursor| head.min(cursor.append_seq - 1));
+            let records = state.pending_index(Some(&request.query));
+            let selection = if upper <= state.durable {
+                Selection {
+                    records: Vec::new(),
+                    remaining: demand,
+                    exhausted: true,
+                }
+            } else {
+                select_records(
+                    records.into_iter().flat_map(|index| {
+                        index
+                            .range((Excluded(state.durable), Included(upper)))
+                            .rev()
+                            .map(|(_, record)| record)
+                    }),
+                    demand,
+                    budget,
+                )
+            };
+            Ok((head, state.durable.min(head), selection))
+        })?;
+        let pending_exhausted = selected.exhausted;
+        let mut stored_exhausted = durable == 0;
+        let mut stored_items = Vec::new();
+        if pending_exhausted
+            && selected.remaining.max_items > 0
+            && selected.remaining.max_bytes > 0
+            && durable > 0
+        {
+            let history_request = ChatHistoryRequest {
+                query: Some(request.query.clone()),
+                after: 0,
+                before: request.before.as_ref().map(|cursor| cursor.append_seq),
+                ceiling: durable,
+                demand: selected.remaining,
+            };
+            let page = self.0.history.page(&history_request, budget).await?;
+            validate_history(&page, &history_request, budget)?;
+            stored_exhausted = page.exhausted;
+            stored_items = page.items;
+        }
+        selected.records.reverse();
+        stored_items.extend(project(selected.records));
+        if stored_items.is_empty() && !(pending_exhausted && stored_exhausted) {
+            return Err(ChatError::InvalidDemand(
+                "demand cannot hold the next item envelope".into(),
+            ));
+        }
+        let before = if pending_exhausted && stored_exhausted {
+            None
+        } else {
+            stored_items.first().map(|item| ChatCursor {
+                epoch: self.epoch(),
+                query: request.query,
+                ceiling: head,
+                append_seq: item.header.append_seq,
+            })
+        };
+        Ok(ChatPage {
+            epoch: self.epoch(),
+            ceiling: head,
+            items: stored_items,
+            before,
+        })
+    }
+
+    /// Bounded internal replay from a fixed epoch/position. Filtered sequences may have gaps.
+    pub async fn completed_after(
+        &self,
+        after: ChatCompletionCursor,
+        query: Option<ChatQuery>,
+        ceiling: Option<u64>,
+        demand: ReadDemand,
+        budget: &dyn ChatBudget,
+    ) -> Result<ChatCompletedBatch, ChatError> {
+        self.validate_epoch(&after.epoch)?;
+        if let Some(query) = &query {
+            query.validate()?;
+        }
+        let demand = reserve(demand, budget)?;
+        self.ensure_initialized().await?;
+        let (head, durable, captured) = self.with_timeline(|state| {
+            let head = ceiling.unwrap_or(state.head);
+            if head > state.head || after.append_seq > head {
+                return Err(ChatError::InvalidArgument("invalid replay interval".into()));
+            }
+            let lower = after.append_seq.max(state.durable);
+            // Capture bounded references now; a writer may clear them while history awaits.
+            let records = if lower < head {
+                state
+                    .pending_index(query.as_ref())
+                    .into_iter()
+                    .flat_map(|index| {
+                        index
+                            .range((Excluded(lower), Included(head)))
+                            .map(|(_, record)| record)
+                    })
+                    .take(demand.max_items)
+                    .cloned()
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            Ok((head, state.durable.min(head), records))
+        })?;
+        let mut remaining = demand;
+        let mut items = Vec::new();
+        if after.append_seq < durable {
+            let request = ChatHistoryRequest {
+                query: query.clone(),
+                after: after.append_seq,
+                before: None,
+                ceiling: durable,
+                demand: remaining,
+            };
+            let stored = self.0.history.page_after(&request, budget).await?;
+            remaining = validate_history(&stored, &request, budget)?;
+            if !stored.exhausted {
+                if stored.items.is_empty() {
+                    return Err(ChatError::InvalidDemand(
+                        "replay demand cannot hold next envelope".into(),
+                    ));
+                }
+                let through_seq = stored
+                    .items
+                    .last()
+                    .map_or(after.append_seq, |item| item.header.append_seq);
+                return Ok(ChatCompletedBatch {
+                    from_seq: after.append_seq,
+                    through_seq,
+                    items: stored.items,
+                });
+            }
+            items = stored.items;
+        }
+        let selected = select_records(captured.iter(), remaining, budget);
+        let exhausted = selected.exhausted;
+        items.extend(project(selected.records));
+        // A full captured window may hide additional matches; only advance over filtered gaps when
+        // the captured matching index itself was exhausted. Counting one extra reference is unnecessary:
+        // a full window advances to its last item and the next call confirms EOF.
+        let exhausted = exhausted && captured.len() < demand.max_items;
+        let through_seq = if exhausted {
+            head
+        } else {
+            items
+                .last()
+                .map_or(after.append_seq, |item| item.header.append_seq)
+        };
+        if through_seq == after.append_seq && head > after.append_seq {
+            return Err(ChatError::InvalidDemand(
+                "replay demand cannot hold next envelope".into(),
+            ));
+        }
+        Ok(ChatCompletedBatch {
+            from_seq: after.append_seq,
+            through_seq,
+            items,
+        })
+    }
+
+    pub async fn read_content(
+        &self,
+        request: ContentReadRequest,
+    ) -> Result<ContentWindow, ChatError> {
+        request.validate()?;
+        self.validate_epoch(&request.epoch)?;
+        let captured = self.with_timeline(|state| match &request.reference {
+            ContentRef::ItemPayload(id) => state
+                .pending_record(id)
+                .map(|record| (ContentData::Bytes(record.payload.clone()), 0)),
+            ContentRef::Body(key) => state
+                .pending_content(key)
+                .map(|content| (content.data.clone(), content.descriptor.generation)),
+        });
+        if let Some((data, generation)) = captured {
+            if request
+                .generation
+                .is_some_and(|expected| expected != generation)
+            {
+                return Err(ChatError::StaleContent);
+            }
+            return Ok(ContentWindow {
+                offset: request.offset,
+                bytes: data.range(request.offset, request.max_bytes)?,
+                generation,
+                available_through: data.len() as u64,
+                sealed: true,
+            });
+        }
+        let window = self.0.history.read_content(&request).await?;
+        if request
+            .generation
+            .is_some_and(|generation| generation != window.generation)
+        {
+            return Err(ChatError::StaleContent);
+        }
+        if window.offset != request.offset
+            || window.bytes.as_bytes().len() > request.max_bytes
+            || !window.sealed
+            || window.offset > window.available_through
+            || window.bytes.as_bytes().len() as u64 > window.available_through - window.offset
+            || (window.bytes.as_bytes().is_empty() && window.offset < window.available_through)
+        {
+            return Err(ChatError::Conflict("invalid history content range".into()));
+        }
+        Ok(window)
+    }
+
+    pub async fn list_contents(
+        &self,
+        request: ContentManifestRequest,
+        budget: &dyn ChatBudget,
+    ) -> Result<ContentManifestPage, ChatError> {
+        self.validate_epoch(&request.epoch)?;
+        let demand = reserve(request.demand, budget)?;
+        if let Some(record) = self.with_timeline(|state| state.pending_record(&request.item_id)) {
+            let mut entries = Vec::new();
+            let mut remaining = demand;
+            let lower = request.after.as_ref().map_or(Unbounded, Excluded);
+            let mut exhausted = true;
+            for (_, content) in record.contents.range((lower, Unbounded)) {
+                let cost = budget.manifest_bytes(&content.descriptor);
+                if remaining.max_items == 0 || cost > remaining.max_bytes {
+                    exhausted = false;
+                    break;
+                }
+                remaining.max_items -= 1;
+                remaining.max_bytes -= cost;
+                entries.push(content.descriptor.clone());
+            }
+            if entries.is_empty() && !exhausted {
+                return Err(ChatError::InvalidDemand(
+                    "manifest envelope exceeds demand".into(),
+                ));
+            }
+            let next = if exhausted {
+                None
+            } else {
+                entries.last().map(|entry| entry.key.clone())
+            };
+            return Ok(ContentManifestPage { entries, next });
+        }
+        let mut request = request;
+        request.demand = demand;
+        let page = self.0.history.list_contents(&request, budget).await?;
+        let mut remaining = demand;
+        let mut previous = request.after.as_ref();
+        for entry in &page.entries {
+            if previous.is_some_and(|previous| &entry.key <= previous) {
+                return Err(ChatError::Conflict("unordered content manifest".into()));
+            }
+            remaining.max_items = remaining
+                .max_items
+                .checked_sub(1)
+                .ok_or_else(|| ChatError::Overloaded("manifest item budget".into()))?;
+            remaining.max_bytes = remaining
+                .max_bytes
+                .checked_sub(budget.manifest_bytes(entry))
+                .ok_or_else(|| ChatError::Overloaded("manifest byte budget".into()))?;
+            previous = Some(&entry.key);
+        }
+        if page
+            .next
+            .as_ref()
+            .is_some_and(|next| Some(next) != page.entries.last().map(|entry| &entry.key))
+        {
+            return Err(ChatError::Conflict(
+                "non-progressing content manifest".into(),
+            ));
+        }
+        Ok(page)
+    }
 }

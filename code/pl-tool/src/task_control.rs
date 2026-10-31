@@ -45,7 +45,11 @@ impl TaskControlTool {
         };
         let registration = Registration::new(id.into(), declaration, self)?;
         Ok(match kind {
-            TaskControlKind::Wait => registration.with_task_waiting(),
+            TaskControlKind::Wait => registration
+                .with_presentation_contract(pl_core::model::ToolPresentationContract::new(
+                    "builtin.wait@1",
+                ))
+                .with_task_waiting(),
             TaskControlKind::Cancel => registration.with_task_cancellation(),
             TaskControlKind::Query => registration,
         })

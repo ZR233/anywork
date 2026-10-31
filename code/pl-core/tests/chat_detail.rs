@@ -1,233 +1,359 @@
-//! 冻结详情契约：按记录、字段与字节偏移分块读取完整正文。
-//!
-//! 详情绑定不可变记录身份与字段身份，没有内容版本；pending 记录从内存完整正文应答，已确认记录从
-//! 存储读取一次；continuation 绑定记录与字段并在 UTF-8 边界上推进；不存在字段与空字段分开。
-
+//! Explicit manifests and bounded byte windows replace the retired field/preview contract.
+//! UTF-8 may be split: callers join bytes, not independently decoded strings.
 #[path = "support/timeline.rs"]
 mod support;
 
-use std::{sync::Arc, time::Duration};
+use std::sync::{Arc, atomic::Ordering};
 
-use pl_core::chat::{ChatDetailCursor, ChatDetailRequest, ChatError, ChatField, Session};
-use support::{
-    Counting, GatedHistory, HistoryGate, Stored, draft, epoch, record_identified,
-    record_with_fields,
-};
+use pl_core::{chat::*, model::ContentBlock};
+use support::*;
 
-/// Reads one field to the end through its continuations and returns the joined text.
-async fn read_all(
-    session: &Session,
-    item_id: &str,
-    field: ChatField,
-    block_bytes: usize,
-) -> String {
-    let mut request = ChatDetailRequest::new(item_id, field).with_max_bytes(block_bytes);
-    let mut joined = String::new();
+async fn read_all(session: &Session, reference: ContentRef, size: usize) -> Vec<u8> {
+    let mut bytes = Vec::new();
     loop {
-        let chunk = session
-            .read_detail(request.clone())
+        let window = session
+            .read_content(content_request(reference.clone(), bytes.len() as u64, size))
             .await
-            .expect("the detail block is readable");
-        joined.push_str(&chunk.text);
-        let Some(next) = chunk.continuation else {
-            return joined;
-        };
-        request = request.with_continuation(next);
+            .unwrap();
+        assert!(window.sealed);
+        assert_eq!(window.offset, bytes.len() as u64);
+        bytes.extend_from_slice(window.bytes.as_bytes());
+        if bytes.len() as u64 == window.available_through {
+            return bytes;
+        }
+        assert!(
+            !window.bytes.as_bytes().is_empty(),
+            "a non-EOF window must progress"
+        );
     }
 }
 
 #[tokio::test]
-async fn a_multibyte_field_is_read_in_utf8_aligned_blocks_that_join_into_the_original() {
-    let body = "汉语文本 mixed with English and an emoji 📖 plus more text to span several blocks";
+async fn multibyte_payload_ranges_join_into_the_original_even_inside_code_points() {
+    let body = "汉语 mixed with English 📖 and more text";
     let stored = Stored::with([record_identified("x", 1, body)]);
-    let session = Session::new(stored, epoch("run-1"));
-    let joined = read_all(&session, "x", ChatField::Body, 7).await;
-    assert_eq!(joined, body, "every block boundary respects UTF-8");
+    let session = Session::new(stored.clone(), epoch("run-1"));
+    assert_eq!(
+        read_all(&session, ContentRef::ItemPayload("x".into()), 1).await,
+        body.as_bytes()
+    );
+    assert_eq!(
+        stored.reads.item.load(Ordering::SeqCst),
+        0,
+        "ranges never load item()"
+    );
+    assert_eq!(stored.reads.ranges.lock().unwrap().len(), body.len());
 }
 
 #[tokio::test]
-async fn a_durable_record_whose_page_preview_was_bounded_still_yields_its_whole_body() {
+async fn a_deferred_payload_is_read_only_through_requested_windows() {
     let body = "x".repeat(300 * 1024);
     let stored = Stored::with([record_identified("x", 1, &body)]);
-    let session = Session::new(stored, epoch("run-1"));
+    let session = Session::new(stored.clone(), epoch("run-1"));
     let page = session
-        .page(pl_core::chat::ChatPageRequest::latest())
+        .page(
+            ChatPageRequest::latest(query(), ReadDemand::new(1, 256)),
+            &Budget::default(),
+        )
         .await
-        .expect("the page is readable");
-    let preview = &page.items[0];
-    assert!(
-        preview.omitted_bytes() > 0,
-        "the page carries a bounded preview of the oversized body"
+        .unwrap();
+    assert!(matches!(
+        page.items[0].payload,
+        PayloadData::Deferred { .. }
+    ));
+    assert_eq!(stored.reads.payload_bytes.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        read_all(&session, ContentRef::ItemPayload("x".into()), 64 * 1024).await,
+        body.as_bytes()
     );
-    let joined = read_all(&session, "x", ChatField::Body, 64 * 1024).await;
-    assert_eq!(joined.len(), body.len());
-    assert_eq!(joined, body, "detail serves the complete frozen body");
+    let ranges = stored.reads.ranges.lock().unwrap();
+    assert_eq!(ranges.len(), 5);
+    assert!(ranges.iter().all(|request| request.max_bytes == 64 * 1024));
+    assert_eq!(stored.reads.item.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test]
-async fn a_missing_field_is_distinct_from_an_empty_field() {
-    let stored = Stored::with([record_with_fields(
-        "x",
-        1,
-        [
-            (ChatField::Body, String::new()),
-            (ChatField::host("args"), "arguments".to_owned()),
-        ],
-    )]);
+async fn missing_payload_and_body_are_not_empty_content_or_an_empty_manifest() {
+    let item = with_body(draft("x", ""), "empty", ContentData::Bytes(Arc::from([])));
+    let key = item.contents.keys().next().unwrap().clone();
+    let stored = Stored::with([ChatItem::complete(item, 1)]);
     let session = Session::new(stored, epoch("run-1"));
-    let empty = session
-        .read_detail(ChatDetailRequest::new("x", ChatField::Body))
-        .await
-        .expect("an empty field is a readable field");
-    assert_eq!(empty.text, "");
-    assert_eq!(empty.total_bytes, 0);
-    assert_eq!(empty.continuation, None, "an empty field is complete");
-    let error = session
-        .read_detail(ChatDetailRequest::new("x", ChatField::host("result")))
-        .await
-        .expect_err("a field the record never carried is not found");
-    assert!(matches!(error, ChatError::NotFound(_)));
-    let error = session
-        .read_detail(ChatDetailRequest::new("missing", ChatField::Body))
-        .await
-        .expect_err("an unknown record is not found");
-    assert!(matches!(error, ChatError::NotFound(_)));
-}
-
-#[tokio::test]
-async fn an_unsupported_block_size_is_rejected_instead_of_quietly_widened() {
-    let stored = Stored::with([record_identified("x", 1, "body")]);
-    let session = Session::new(stored, epoch("run-1"));
-    for block_bytes in [3, 256 * 1024 + 1] {
-        let error = session
-            .read_detail(ChatDetailRequest::new("x", ChatField::Body).with_max_bytes(block_bytes))
+    for reference in [
+        ContentRef::ItemPayload("x".into()),
+        ContentRef::Body(key.clone()),
+    ] {
+        let window = session
+            .read_content(content_request(reference, 0, 1))
             .await
-            .expect_err("an unsupported block size is rejected");
-        assert!(matches!(error, ChatError::InvalidArgument(_)));
+            .unwrap();
+        assert!(window.bytes.as_bytes().is_empty());
+        assert_eq!(window.available_through, 0);
+    }
+    let missing = ChatContentKey {
+        key: "missing".into(),
+        ..key
+    };
+    for reference in [
+        ContentRef::ItemPayload("missing".into()),
+        ContentRef::Body(missing),
+    ] {
+        assert!(matches!(
+            session.read_content(content_request(reference, 0, 1)).await,
+            Err(ChatError::NotFound(_))
+        ));
+    }
+    let empty = Session::new(Stored::default(), epoch("run-1"));
+    empty
+        .publish_batch(vec![draft("empty", "unknown payload, no inferred refs")])
+        .await
+        .unwrap();
+    let request = ContentManifestRequest {
+        epoch: epoch("run-1"),
+        item_id: "empty".into(),
+        after: None,
+        demand: demand(1),
+    };
+    assert!(
+        empty
+            .list_contents(request.clone(), &Budget::default())
+            .await
+            .unwrap()
+            .entries
+            .is_empty()
+    );
+    assert!(matches!(
+        empty
+            .list_contents(
+                ContentManifestRequest {
+                    item_id: "missing".into(),
+                    ..request
+                },
+                &Budget::default()
+            )
+            .await,
+        Err(ChatError::NotFound(_))
+    ));
+}
+
+#[tokio::test]
+async fn invalid_sizes_offsets_epochs_and_generations_remain_distinct() {
+    let session = Session::new(Stored::default(), epoch("run-1"));
+    session.publish_batch(vec![draft("x", "汉")]).await.unwrap();
+    let reference = ContentRef::ItemPayload("x".into());
+    for size in [0, MAX_READ_BYTES + 1] {
+        assert!(matches!(
+            session
+                .read_content(content_request(reference.clone(), 0, size))
+                .await,
+            Err(ChatError::InvalidDemand(_))
+        ));
+    }
+    for offset in [4, u64::MAX] {
+        assert!(matches!(
+            session
+                .read_content(content_request(reference.clone(), offset, 1))
+                .await,
+            Err(ChatError::InvalidArgument(_))
+        ));
+    }
+    let mut request = content_request(reference, 1, 1);
+    assert_eq!(
+        session
+            .read_content(request.clone())
+            .await
+            .unwrap()
+            .bytes
+            .as_bytes(),
+        &"汉".as_bytes()[1..2]
+    );
+    request.generation = Some(1);
+    assert!(matches!(
+        session.read_content(request.clone()).await,
+        Err(ChatError::StaleContent)
+    ));
+    request.epoch = epoch("old");
+    assert!(matches!(
+        session.read_content(request).await,
+        Err(ChatError::EpochMismatch { .. })
+    ));
+}
+
+#[tokio::test]
+async fn pending_ranges_reuse_the_original_arc_across_commit_clear() {
+    let stored = Stored::default();
+    let session = Session::new(stored.clone(), epoch("run-1"));
+    let records = session
+        .publish_batch(vec![draft("x", &"y".repeat(100 * 1024))])
+        .await
+        .unwrap();
+    let window = session
+        .read_content(content_request(ContentRef::ItemPayload("x".into()), 13, 17))
+        .await
+        .unwrap();
+    assert!(Arc::ptr_eq(&window.bytes.storage, &records[0].payload));
+    stored.insert((*records[0]).clone());
+    session.confirm_durable(1).unwrap();
+    drop(records);
+    assert_eq!(window.bytes.as_bytes(), &[b'y'; 17]);
+    assert_eq!(stored.reads.ranges.lock().unwrap().len(), 0);
+    let next = session
+        .read_content(content_request(ContentRef::ItemPayload("x".into()), 30, 17))
+        .await
+        .unwrap();
+    assert_eq!(next.bytes.as_bytes(), &[b'y'; 17]);
+    assert_eq!(stored.reads.ranges.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn explicit_manifest_is_paged_by_stable_key_and_encoded_demand_without_payload_reads() {
+    let mut item = draft("x", r#"{"unknown":"payload","ref":"not-a-body"}"#);
+    for key in ["c", "a", "b"] {
+        item = with_body(item, key, ContentData::Bytes(Arc::from([1, 2, 3])));
+    }
+    let stored = Stored::default();
+    let session = Session::new(stored.clone(), epoch("run-1"));
+    let records = session.publish_batch(vec![item]).await.unwrap();
+    let budget = Budget::default();
+    let first_descriptor = &records[0].contents.first_key_value().unwrap().1.descriptor;
+    let bytes = budget.fixed_bytes() + budget.manifest_bytes(first_descriptor);
+    let mut request = ContentManifestRequest {
+        epoch: epoch("run-1"),
+        item_id: "x".into(),
+        after: None,
+        demand: ReadDemand::new(5, bytes),
+    };
+    let first = session
+        .list_contents(request.clone(), &budget)
+        .await
+        .unwrap();
+    assert_eq!(first.entries.len(), 1);
+    assert_eq!(first.entries[0].key.key, "a");
+    request.after = first.next;
+    // Transfer to durable storage between pages, retaining the same manifest identity/order.
+    stored.insert((*records[0]).clone());
+    session.confirm_durable(1).unwrap();
+    let second = session
+        .list_contents(request.clone(), &budget)
+        .await
+        .unwrap();
+    assert_eq!(second.entries[0].key.key, "b");
+    request.after = second.next;
+    let third = session.list_contents(request, &budget).await.unwrap();
+    assert_eq!(third.entries[0].key.key, "c");
+    assert!(third.next.is_none());
+    assert_eq!(stored.reads.manifests.load(Ordering::SeqCst), 2);
+    assert_eq!(stored.reads.payload_bytes.load(Ordering::SeqCst), 0);
+    assert!(stored.reads.ranges.lock().unwrap().is_empty());
+    let reference = ContentRef::Body(third.entries[0].key.clone());
+    let mut range = content_request(reference, 1, 1);
+    range.generation = Some(8);
+    assert!(matches!(
+        session.read_content(range.clone()).await,
+        Err(ChatError::StaleContent)
+    ));
+    range.generation = Some(7);
+    assert_eq!(
+        session.read_content(range).await.unwrap().bytes.as_bytes(),
+        &[2]
+    );
+}
+
+#[tokio::test]
+async fn a_too_small_manifest_envelope_is_an_error_not_eof_or_a_skipped_entry() {
+    let item = with_body(
+        draft("x", "payload"),
+        "body",
+        ContentData::Bytes(Arc::from([1])),
+    );
+    let session = Session::new(Stored::default(), epoch("run-1"));
+    session.publish_batch(vec![item]).await.unwrap();
+    let request = ContentManifestRequest {
+        epoch: epoch("run-1"),
+        item_id: "x".into(),
+        after: None,
+        demand: ReadDemand::new(1, 65),
+    };
+    assert!(matches!(
+        session.list_contents(request, &Budget::default()).await,
+        Err(ChatError::InvalidDemand(_))
+    ));
+}
+
+#[tokio::test]
+async fn shared_model_blocks_support_byte_windows_without_flattening_the_body() {
+    let body = "汉📖abc".repeat(2048);
+    let mut block = ContentBlock::empty();
+    for chunk in body.as_bytes().chunks("汉📖abc".len()) {
+        block = ContentBlock::append(&block, std::str::from_utf8(chunk).unwrap());
+    }
+    let item = with_body(
+        draft("x", "opaque"),
+        "body",
+        ContentData::text(block.clone()),
+    );
+    let key = item.contents.keys().next().unwrap().clone();
+    let session = Session::new(Stored::default(), epoch("run-1"));
+    let records = session.publish_batch(vec![item]).await.unwrap();
+    let ContentData::Text(frozen) = &records[0].contents[&key].data else {
+        panic!("shared blocks")
+    };
+    assert!(Arc::ptr_eq(frozen.block(), &block));
+    for (offset, size) in [
+        (0, 1),
+        (1, 1),
+        (3, 1),
+        (6, 13),
+        (10001, 19),
+        (body.len(), 1),
+    ] {
+        let window = session
+            .read_content(content_request(
+                ContentRef::Body(key.clone()),
+                offset as u64,
+                size,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            window.bytes.as_bytes(),
+            &body.as_bytes()[offset..(offset + size).min(body.len())]
+        );
+        assert_eq!(window.generation, 7);
     }
 }
 
 #[tokio::test]
-async fn a_continuation_inside_a_code_point_is_rejected() {
-    let stored = Stored::with([record_identified("x", 1, "汉")]);
-    let session = Session::new(stored, epoch("run-1"));
-    // The first byte of the three-byte scalar is not a UTF-8 boundary.
-    let error =
-        session
-            .read_detail(
-                ChatDetailRequest::new("x", ChatField::Body)
-                    .with_continuation(ChatDetailCursor::new("x", ChatField::Body, 1)),
-            )
-            .await
-            .expect_err("an offset inside a code point is rejected");
-    assert!(matches!(error, ChatError::InvalidArgument(_)));
-}
-
-#[tokio::test]
-async fn a_continuation_is_bound_to_its_item_and_field() {
-    let stored = Stored::with([record_with_fields(
-        "x",
-        1,
-        [
-            (ChatField::Body, "body".repeat(90 * 1024)),
-            (ChatField::host("args"), "arguments".repeat(90 * 1024)),
-        ],
-    )]);
-    let session = Session::new(stored, epoch("run-1"));
-    let chunk = session
-        .read_detail(ChatDetailRequest::new("x", ChatField::Body))
-        .await
-        .expect("the first block is readable");
-    let continuation = chunk.continuation.expect("the body continues");
-    let error = session
-        .read_detail(
-            ChatDetailRequest::new("x", ChatField::host("args"))
-                .with_continuation(continuation.clone()),
-        )
-        .await
-        .expect_err("a continuation of another field is rejected");
-    assert!(matches!(error, ChatError::InvalidArgument(_)));
-    let error = session
-        .read_detail(ChatDetailRequest::new("y", ChatField::Body).with_continuation(continuation))
-        .await
-        .expect_err("a continuation of another record is rejected");
-    assert!(matches!(error, ChatError::InvalidArgument(_)));
-}
-
-#[tokio::test]
-async fn a_pending_record_is_served_from_memory_without_storage_io() {
-    let counting = Counting::new(Stored::default());
-    let session = Session::new(counting.clone(), epoch("run-1"));
-    let body = "y".repeat(100 * 1024);
-    session
-        .publish_batch(vec![draft("x", &body)])
-        .await
-        .expect("the completion is admitted, writer paused");
-    let reads_before_detail = counting
-        .item_reads
-        .load(std::sync::atomic::Ordering::SeqCst);
-    let joined = read_all(&session, "x", ChatField::Body, 64 * 1024).await;
-    assert_eq!(
-        joined, body,
-        "the whole frozen body is readable while pending"
-    );
-    assert_eq!(
-        counting
-            .item_reads
-            .load(std::sync::atomic::Ordering::SeqCst),
-        reads_before_detail,
-        "a pending record is served without any storage read"
-    );
-}
-
-#[tokio::test]
-async fn a_committed_record_detail_reads_storage_once() {
-    let counting = Counting::new(Stored::with([record_identified("x", 1, "body")]));
-    let session = Session::new(counting.clone(), epoch("run-1"));
-    let chunk = session
-        .read_detail(ChatDetailRequest::new("x", ChatField::Body))
-        .await
-        .expect("the committed record is readable");
-    assert_eq!(chunk.text, "body");
-    assert_eq!(
-        counting
-            .item_reads
-            .load(std::sync::atomic::Ordering::SeqCst),
-        1,
-        "one detail read of a reclaimed record is one storage read"
-    );
-}
-
-#[tokio::test]
-async fn a_cancelled_detail_read_publishes_nothing_and_leaves_the_session_usable() {
-    let history = GatedHistory::new(Stored::with([record_identified("x", 1, "body")]));
+async fn cancelled_range_read_publishes_nothing_and_leaves_the_session_usable() {
+    let stored = Stored::with([record_identified("x", 1, "body")]);
     let gate = Arc::new(HistoryGate::new());
-    let gated = {
-        let mut gated = history;
-        gated.item_gate = Some(gate.clone());
-        gated
+    let mut history = GatedHistory::new(stored.clone());
+    history.content_gate = Some(gate.clone());
+    let session = Session::new(history, epoch("run-1"));
+    let read = {
+        let session = session.clone();
+        tokio::spawn(async move {
+            session
+                .read_content(content_request(ContentRef::ItemPayload("x".into()), 1, 2))
+                .await
+        })
     };
-    let session = Session::new(gated, epoch("run-1"));
-    let mut read = Box::pin(session.read_detail(ChatDetailRequest::new("x", ChatField::Body)));
-    tokio::time::timeout(Duration::from_secs(2), async {
-        tokio::select! {
-            () = gate.entered() => {}
-            result = &mut read => panic!("the gated read completed before cancellation: {result:?}"),
-        }
-    })
-    .await
-    .expect("the detail future is polled into the storage barrier");
-    drop(read);
-    // The cancelled read publishes no partial result, and the session keeps working.
-    let page = session
-        .page(pl_core::chat::ChatPageRequest::latest())
-        .await
-        .expect("pages are unaffected by the cancelled detail read");
-    assert_eq!(page.items.len(), 1);
+    gate.entered().await;
+    read.abort();
+    assert!(read.await.unwrap_err().is_cancelled());
+    assert!(stored.reads.ranges.lock().unwrap().is_empty());
+    assert_eq!(
+        session
+            .page(latest(1), &Budget::default())
+            .await
+            .unwrap()
+            .items
+            .len(),
+        1
+    );
     gate.release();
-    let chunk = session
-        .read_detail(ChatDetailRequest::new("x", ChatField::Body))
+    let window = session
+        .read_content(content_request(ContentRef::ItemPayload("x".into()), 1, 2))
         .await
-        .expect("a fresh detail read completes once the gate opens");
-    assert_eq!(chunk.text, "body");
+        .unwrap();
+    assert_eq!(window.bytes.as_bytes(), b"od");
 }

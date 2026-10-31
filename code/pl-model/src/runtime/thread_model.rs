@@ -89,8 +89,8 @@ impl ThreadModel {
             .validate_context(&encoded.input)
             .map_err(|error| failure(ModelFailureKind::IncompatibleContext, error))?;
         let mut declarations = codec::declarations(&request.tools)?;
-        for (id, declaration) in &mut declarations {
-            if request.solo_tool_ids.contains(id) {
+        for (tool, declaration) in &mut declarations {
+            if request.solo_tool_ids.contains(&tool.tool_id) {
                 match declaration {
                     ToolSpec::Function { description, .. }
                     | ToolSpec::Custom { description, .. } => {
@@ -183,10 +183,14 @@ impl CoreModelSession for ThreadModelSession {
         let declarations = codec::declarations(&request.tools)?;
         let names = declarations
             .iter()
-            .map(|(id, spec)| {
+            .map(|(tool, spec)| {
                 (
                     spec.name().to_owned(),
-                    codec::ToolBinding::new(id.clone(), spec),
+                    codec::ToolBinding::new(
+                        tool.tool_id.clone(),
+                        spec,
+                        tool.presentation_contract.clone(),
+                    ),
                 )
             })
             .collect::<BTreeMap<_, _>>();
