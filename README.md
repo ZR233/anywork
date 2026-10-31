@@ -127,6 +127,10 @@
 
 ## 🚀 快速开始
 
+本地 Git 项目依赖系统 Git，SSH 远程项目还需系统 OpenSSH 客户端。Linux 的工具前置要求、
+Ubuntu 22.04 默认 Git 的能力限制，以及安装／首帧与业务验证的区别，见
+[发布与更新](design/23-release-update.md#linux-debian-包与兼容边界)；构建镜像内的工具不会随 DEB 安装。
+
 ### 1. 启动桌面端
 
 在仓库根目录下，通过一条命令即可构建并启动当前系统的原生桌面端（支持 Windows 与 Linux）：

@@ -6,6 +6,24 @@ trap 'rm -rf -- "$temporary"' EXIT
 cp /opt/anywork-toolchain/rust-toolchain.toml "$temporary/rust-toolchain.toml"
 cd "$temporary"
 
+test "$(git --version)" = "git version $GIT_VERSION"
+git init --quiet --initial-branch=main git-source
+git -C git-source -c user.name=smoke -c user.email=smoke@example.invalid \
+    commit --quiet --allow-empty -m smoke
+git -C git-source worktree add --quiet --detach "$temporary/git-checkout" HEAD
+git -C git-source worktree list --porcelain -z > worktrees
+python3 - <<'PYTHON'
+from pathlib import Path
+fields = Path("worktrees").read_bytes().split(b"\0")
+assert b"worktree " + str(Path("git-checkout").resolve()).encode() in fields
+PYTHON
+git -C git-source worktree remove "$temporary/git-checkout"
+ldd "$(git --exec-path)/git-remote-https" > git-loader
+! grep -q 'not found' git-loader
+# Configuration-only parsing exercises real SSH/getpwuid without network access.
+ssh -G -F /dev/null smoke@example.invalid > ssh-config
+grep -Fx 'hostname example.invalid' ssh-config
+
 rustup show
 rustc --version
 cargo --version
@@ -62,6 +80,8 @@ done
 mkdir src
 cp main.rs src/main.rs
 cat > Cargo.toml <<'TOML'
+[workspace]
+
 [package]
 name = "anywork-environment-smoke"
 version = "0.0.0"

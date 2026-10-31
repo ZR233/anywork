@@ -7,6 +7,7 @@
 !docker/linux/versions.env
 !docker/linux/scripts/
 !docker/linux/scripts/install-common.sh
+!docker/linux/scripts/install-git.sh
 !docker/linux/scripts/install-flutter.sh
 !docker/linux/scripts/install-rust.sh
 !docker/linux/scripts/install-tools.sh

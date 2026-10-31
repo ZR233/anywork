@@ -5,7 +5,7 @@ SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
 RUN test "$(dpkg --print-architecture)" = amd64 \
     && apt-get update \
     && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        bash ca-certificates curl git python3 xz-utils unzip zstd \
+        bash ca-certificates curl openssh-client libnss-wrapper python3 xz-utils unzip zstd \
         clang cmake ninja-build pkg-config build-essential libgtk-3-dev \
         binutils dpkg-dev desktop-file-utils xvfb xauth dbus-x11 \
         libgl1-mesa-dri libglx-mesa0 libegl1 libasound2 \
@@ -14,8 +14,24 @@ WORKDIR /opt/anywork-toolchain
 COPY docker/linux/versions.env /opt/anywork-image/versions.env
 COPY docker/linux/scripts/install-common.sh /opt/anywork-image/scripts/install-common.sh
 
+FROM native AS git-env
+RUN apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        libcurl4-openssl-dev libexpat1-dev libssl-dev zlib1g-dev \
+    && rm -rf /var/lib/apt/lists/*
+COPY docker/linux/scripts/install-git.sh /opt/anywork-image/scripts/install-git.sh
+RUN bash /opt/anywork-image/scripts/install-git.sh
+COPY docker/linux/Dockerfile /opt/git-source/Dockerfile
+
+FROM native AS build-base
+COPY --from=git-env /opt/git /opt/git
+RUN mkdir -p /opt/git/etc \
+    && ln -s "$(dpkg-query -L libnss-wrapper | grep '/libnss_wrapper\.so$')" \
+    /opt/anywork-image/libnss_wrapper.so
+ENV PATH=/opt/git/bin:$PATH
+
 # No dependency on rust-toolchain.toml: a Rust upgrade retains Flutter's layer.
-FROM native AS flutter-env
+FROM build-base AS flutter-env
 COPY docker/linux/scripts/install-flutter.sh /opt/anywork-image/scripts/install-flutter.sh
 RUN bash /opt/anywork-image/scripts/install-flutter.sh
 
@@ -25,7 +41,7 @@ FROM flutter-env AS flutter-tools-env
 COPY docker/linux/scripts/prepare-flutter-tools.sh /opt/anywork-image/scripts/prepare-flutter-tools.sh
 RUN bash /opt/anywork-image/scripts/prepare-flutter-tools.sh
 
-FROM native AS rust-env
+FROM build-base AS rust-env
 ENV CARGO_HOME=/opt/cargo \
     RUSTUP_HOME=/opt/rustup \
     PATH=/opt/cargo/bin:/opt/flutter/bin:/opt/zig:$PATH
@@ -45,6 +61,7 @@ COPY --from=flutter-tools-env /opt/flutter/packages/flutter_tools/.dart_tool /op
 COPY --from=flutter-tools-env /opt/flutter-pub-cache /opt/flutter-pub-cache
 COPY --chmod=644 docker/linux/versions.env /opt/anywork-image/versions.env
 COPY --chmod=755 docker/linux/scripts/entrypoint.sh docker/linux/scripts/smoke.sh /opt/anywork-image/scripts/
+COPY --from=git-env /opt/git-source /opt/anywork-image/git-source
 ENV HOME=/tmp/anywork-home \
     FLUTTER_SUPPRESS_ANALYTICS=true \
     DART_SUPPRESS_ANALYTICS=true

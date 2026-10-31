@@ -24,6 +24,9 @@ Zig/cargo-zigbuild、GTK/C++ 原生构建和 Debian 打包工具。容器内仍�
 写权限，不用特权容器解决目录权限问题。不要将镜像发布 token 传给项目构建。
 宿主须支持 Linux amd64 容器、可读写的 checkout 挂载、`/proc` 与子进程 subreaper；
 建议以普通开发用户运行脚本，容器使用相同 UID/GID，避免留下 root 所有的产物。
+镜像包含固定版本的 Git 与系统 OpenSSH 客户端，并验证 NUL 分隔的工作树清单及 SSH
+配置解析。宿主 UID 在镜像中没有账户记录时，使用 `nss_wrapper` 的容器内临时账户
+映射满足 OpenSSH 的身份查询，不修改 `/etc/passwd`、宿主账户或实际 UID/GID。
 
 已准备好辅助进程成品时，可以复用它们而不重新编译：
 
@@ -47,6 +50,8 @@ rustup 安装其 channel、profile、components 和 targets，不另设 `RUST_VE
 Flutter 与 Rust 使用独立制作阶段，避免升级 Rust 时无理由重复下载 Flutter。
 Flutter SDK 自用的工具依赖及其原生配置随镜像交付，供非 root 用户读取；这不包含本项目的
 pub 依赖缓存，也不引用镜像制作者的 `/root` 私有目录。
+固定 Git 的对应源码归档、许可证及构建输入保留在镜像内
+`/opt/anywork-image/git-source/`，不包含本项目源码或编译成品。
 
 ```sh
 python3 docker/linux/scripts/image-key.py
@@ -60,18 +65,23 @@ python3 docker/linux/scripts/image-key.py
 匹配环境，实际执行应使用解析后的 `@sha256:...` 引用，不依赖 `latest`。开发者也可
 完全不使用 registry，直接从对应源码本地构建。
 
-例如，当前环境已发布的公开镜像可匿名拉取并运行：
+已发布的匹配环境可匿名解析为固定 digest 后拉取并运行：
 
 ```sh
-image='ghcr.io/zr233/anywork-linux-build@sha256:4714cd5d3e764fc3c3afa2825c3742176a49f47c0582edc67e5c2a2c6f9b9b43'
+set -e
+repository='ghcr.io/zr233/anywork-linux-build'
+key="$(python3 docker/linux/scripts/image-key.py)"
+digest="$(docker buildx imagetools inspect "$repository:inputs-$key" --format '{{json .Manifest}}' |
+  python3 -c 'import json,sys; print(json.load(sys.stdin)["digest"])')"
+image="$repository@$digest"
 docker pull "$image"
 test "$(docker image inspect "$image" --format '{{index .Config.Labels "io.anywork.build-inputs"}}')" \
-  = "$(python3 docker/linux/scripts/image-key.py)"
+  = "$key"
 bash docker/linux/scripts/run.sh "$image" cargo test --locked -p pl-xtask
 ```
 
-此 digest 是对应环境输入的示例，不是自动升级指针；源码环境输入变化时，须解析匹配
-输入标签的新 digest 或本地重建。身份核对失败时不要跳过检查继续使用旧环境。
+此处需要 Docker 自带的 Buildx CLI，仅查询 registry，不创建 builder。环境尚未发布时
+解析会失败，应本地构建相同输入或等待环境发布，不跳过身份检查或继续使用旧环境。
 
 ## 镜像制作与 CI
 
