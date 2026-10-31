@@ -2,9 +2,10 @@
   'use strict';
   const app = window.AnyworkConversation;
   const clone = value => structuredClone(value);
-  const isWaitingForModel = live => live?.kind === 'workGroup'
-    ? !live.summary.trim() && live.members.length === 0
-    : live?.kind === 'textOutput' && !live.text.trim();
+  const runningCount = group => group.members.filter(member => member.status === 'running').length;
+  // The model has nothing new to show: no group yet, or the active group has no running member.
+  const isWaitingForModel = live => live?.kind === 'waiting'
+    || (live?.kind === 'workGroup' && runningCount(live) === 0);
   function freeze(value) {
     if (value && typeof value === 'object') {
       Object.values(value).forEach(freeze);
@@ -27,37 +28,20 @@
     emit(reason) {
       if (!this.disposed) this.dispatchEvent(new CustomEvent('change', { detail: { reason } }));
     }
+    note(text) { this.state.change = text; }
     snapshot(item) {
       if (this.state.history.some(existing => existing.id === item.id)) return;
       this.state.history = [...this.state.history, freeze(clone(item))];
     }
-    completeMember(group, member) {
-      if (this.state.history.some(item => item.members?.some(existing => existing.id === member.id))) return;
-      const tail = this.state.history.at(-1);
-      const frozenMember = freeze(clone(member));
-      // This is a replaceable browser presentation group, never a completion boundary.
-      if (tail?.kind === 'workGroup' && tail.sourceId === group.id) {
-        this.state.history = [
-          ...this.state.history.slice(0, -1),
-          freeze({ ...tail, members: [...tail.members, frozenMember] })
-        ];
-      } else {
-        this.snapshot({
-          id: member.id, sourceId: group.id, kind: 'workGroup', status: 'completed',
-          summary: group.summary, elapsed: member.elapsed, members: [frozenMember]
-        });
-      }
-    }
-    publishCompletedMembers(group) {
-      group.members.filter(member => member.status !== 'running')
-        .forEach(member => this.completeMember(group, member));
-      group.members = group.members.filter(member => member.status === 'running');
-    }
     recordOutcome(live, status, error = '') {
+      const interrupted = live?.kind === 'workGroup'
+        ? live.members.filter(member => member.status === 'stopped' || member.status === 'failed').length : 0;
       this.snapshot({
-        id: live.id + '-outcome', kind: 'outcome', status, sourceId: live.id,
-        subject: isWaitingForModel(live) ? '模型响应'
-          : live.kind === 'workGroup' ? live.summary : live.kind === 'textOutput' ? '文本输出' : '上下文压缩',
+        id: (live?.id || this.id('interaction')) + '-outcome', kind: 'outcome', status, sourceId: live?.id,
+        subject: !live ? '待回答的问题'
+          : live.kind === 'waiting' ? '模型响应'
+          : live.kind === 'workGroup' ? `工作组 · ${live.members.length} 步${interrupted ? ` · ${interrupted} 步未完成` : ''}`
+          : live.kind === 'textOutput' ? '文本输出' : '上下文压缩',
         error
       });
     }
@@ -65,12 +49,6 @@
       clearInterval(this.timer);
       this.timer = null;
       if (this.state) this.state.playing = false;
-    }
-    textSteps(offset = 0) {
-      return app.fixtures.responseEvents(this.id('group'), offset);
-    }
-    afterGroup(id) {
-      return [{ type: 'finishGroup' }, { type: 'startText', id }, { type: 'tick' }, ...this.textSteps()];
     }
 
     load(scenario) {
@@ -82,59 +60,36 @@
       this.state = {
         scenario, history: [], live: null, pending: null, draft: '', attachments: [],
         context: 42, playing: false, running: false, resumable: false, retryCompression: false,
-        queue: [], cursor: 0
+        queue: [], cursor: 0, change: ''
       };
       if (!spec?.empty) app.fixtures.history().forEach(item => this.snapshot(item));
-      const id = this.id('group');
-      if (spec?.waiting) {
-        if (spec.afterText) this.snapshot({ id: this.id('text'), kind: 'text', status: 'completed', text: app.fixtures.text });
-        this.state.queue = app.fixtures.story(id);
-        this.apply(this.state.queue[this.state.cursor++]);
-      } else if (spec?.live === 'workGroup') {
-        this.state.live = app.fixtures.group(id);
-        this.publishCompletedMembers(this.state.live);
-        this.state.queue = [
-          { type: 'appendCommand', line: 'test each_completed_fact_is_published_immediately ... ok' },
-          ...this.state.live.members.filter(item => item.status === 'running').map(item => ({ type: 'memberDone', id: item.id })),
-          ...this.afterGroup(this.id('text'))
-        ];
-      } else if (spec?.live === 'textOutput') {
-        this.state.live = { id: this.id('text'), kind: 'textOutput', text: app.fixtures.text.slice(0, 160), elapsed: 4 };
-        this.state.queue = this.textSteps(160);
+      if (spec?.at) {
+        this.state.queue = app.fixtures.story(this.id('group'));
+        const target = this.state.queue.findIndex(event => event.label === spec.at);
+        if (target < 0) throw new Error('Unknown story frame: ' + spec.at);
+        while (this.state.cursor <= target) this.advance();
       } else if (spec?.live === 'compacting') {
         this.startCompression();
       } else if (spec?.pending || scenario === 'question-last') {
+        const sealed = app.fixtures.group(this.id('group'), true);
+        sealed.members = sealed.members.slice(0, 2);
+        sealed.elapsed = 4;
+        this.snapshot(sealed);
         this.state.pending = clone(spec?.pending || app.fixtures.questions);
         this.state.pending.id = this.id('interaction');
         if (scenario === 'question-last') {
           this.state.pending.index = 1;
           this.state.pending.answers[0] = ['默认折叠，按需展开'];
         }
-        const active = app.fixtures.group(id);
-        active.summary = '等待你确认阅读偏好';
-        active.members = [active.members[0], {
-          id: id + '-input', kind: 'wait', title: '等待用户', target: '你的决定',
-          status: 'running', elapsed: 2, rule: '收到决定后继续', targets: []
-        }];
-        this.state.live = active;
+        this.note('提问到达 · 此前的工作组已整组移入时间线');
       } else if (spec?.outcome) {
-        const old = app.fixtures.group(id);
-        old.status = spec.outcome;
-        old.error = spec.outcome === 'failed' ? '命令退出码 1：示例断言未通过。已保留全部输出。' : '';
-        old.members.forEach(item => {
-          if (item.status === 'running') item.status = spec.outcome === 'failed' && item.kind === 'command' ? 'failed' : 'stopped';
-        });
-        const command = old.members.find(item => item.kind === 'command');
-        command.output += '\n' + (old.error || 'Process interrupted by user');
-        if (spec.outcome === 'failed') command.exitCode = 1;
-        this.snapshot(old);
-        this.recordOutcome(old, spec.outcome, old.error);
-        this.state.resumable = true;
+        this.state.live = app.fixtures.group(this.id('group'));
+        if (spec.outcome === 'failed') this.fail(); else this.stop();
       } else if (scenario === 'receipts') {
         this.snapshot({ id: this.id('receipt'), kind: 'receipt', type: 'questions', title: '用户已回答',
           subtitle: '2 个问题', content: '### 工作组默认如何展示？\n默认折叠，按需展开\n\n### 重点检查哪些场景？\n长文本与代码、停止与继续\n\n敏感回答已隐藏' });
       }
-      this.state.running = Boolean(this.state.live);
+      this.state.running = Boolean(this.state.live || this.state.pending);
       this.emit('reset');
     }
 
@@ -143,33 +98,47 @@
       this.state.queue = [{ type: 'tick' }, { type: 'tick' }, { type: 'finishCompression' }, { type: 'finishTurn' }];
       this.state.cursor = 0;
       this.state.running = true;
+      this.note('开始压缩 · 状态栏单行显示');
     }
     compact() {
-      if (this.state.live || !this.state.history.length) return;
+      if (this.state.live || this.state.pending || !this.state.history.length) return;
       this.state.resumable = false;
       this.state.retryCompression = false;
       this.startCompression();
       this.emit('live');
       this.play();
     }
+    // Ends the status bar item. A work group always moves to the timeline as one finished whole.
     seal(status = 'completed', error = '') {
       const live = this.state.live;
-      if (!live) return;
+      if (!live) return null;
       if (live.kind === 'workGroup') {
-        live.status = status;
-        live.error = error;
         live.members.forEach(member => {
-          if (member.status === 'running') member.status = status === 'completed' ? 'completed' : 'stopped';
+          if (member.status !== 'running') return;
+          member.status = status === 'completed' ? 'completed' : 'stopped';
+          member.targets?.forEach(target => { if (target.status === 'running') target.status = member.status; });
         });
-        this.publishCompletedMembers(live);
+        if (live.members.length) this.snapshot({ id: live.id, kind: 'workGroup', status, elapsed: live.elapsed, members: live.members });
       } else if (live.kind === 'textOutput') {
-        if (live.text.trim()) this.snapshot({ ...live, kind: 'text', status, error });
-      } else if (status === 'completed') {
+        if (live.text.trim()) this.snapshot({ id: live.id, kind: 'text', status, error, text: live.text });
+      } else if (live.kind === 'compacting' && status === 'completed') {
         this.snapshot({ id: live.id, kind: 'compression', status: 'completed' });
         this.state.context = 18;
       }
       this.state.live = null;
       return live;
+    }
+    // Information that cannot join the active group closes it first.
+    closeGroupFor(reason) {
+      const live = this.state.live;
+      if (live?.kind === 'workGroup') {
+        if (runningCount(live)) throw new Error('A work group with running members cannot be closed by ' + reason);
+        this.seal();
+        return true;
+      }
+      if (live?.kind === 'waiting') this.state.live = null;
+      else if (live) throw new Error('The status bar must be idle before ' + reason);
+      return false;
     }
 
     apply(event) {
@@ -177,19 +146,23 @@
       switch (event.type) {
         case 'tick': break;
         case 'waitForModel':
-          if (live) throw new Error('A live item must be sealed before waiting for the model');
-          this.state.live = { id: event.id, kind: 'workGroup', status: 'running', summary: '', members: [], elapsed: 0 };
+          if (live?.kind === 'workGroup') break;
+          if (live) throw new Error('A live item must end before waiting for the model');
+          this.state.live = { id: event.id, kind: 'waiting', elapsed: 0 };
           this.state.running = true;
+          this.note(this.state.history.at(-1)?.kind === 'text' ? '正文已进入时间线 · 继续等待模型' : '新轮次 · 尚无信息，显示「思考中」');
           break;
-        case 'startGroup':
-          if (live && !(live.kind === 'workGroup' && live.id === event.group.id && isWaitingForModel(live))) {
-            throw new Error('A live item must be sealed before starting a work group');
+        case 'addMember': {
+          if (live && live.kind !== 'waiting' && live.kind !== 'workGroup') throw new Error('Members join only the active work group');
+          if (live?.kind !== 'workGroup') {
+            this.state.live = { id: event.groupId, kind: 'workGroup', status: 'running', elapsed: live?.elapsed || 0, members: [] };
           }
-          this.state.live = clone(event.group);
-          this.state.live.elapsed = Math.max(this.state.live.elapsed, live?.elapsed || 0);
-          this.publishCompletedMembers(this.state.live);
+          const group = this.state.live;
+          group.members.push(clone(event.member));
           this.state.running = true;
+          this.note(group.members.length === 1 ? '新工作组 · 首个成员插入状态栏' : `插入成员 · 当前工作组共 ${group.members.length} 步`);
           break;
+        }
         case 'memberDone':
           if (live?.kind === 'workGroup') {
             const member = live.members.find(item => item.id === event.id);
@@ -197,10 +170,11 @@
               member.status = 'completed';
               if (member.kind === 'command') {
                 member.exitCode = 0;
-                member.output += '\ntest result: ok. 24 passed; 0 failed\nProcess exited with code 0';
+                member.output += member.target.startsWith('cargo test')
+                  ? '\ntest result: ok. 24 passed; 0 failed\nProcess exited with code 0' : '\nProcess exited with code 0';
               }
-              member.targets?.forEach(target => { target.status = 'completed'; target.report = '核对已完成，结果已返回。'; });
-              this.publishCompletedMembers(live);
+              member.targets?.forEach(target => { target.status = 'completed'; target.report = target.report.replace('正在检查', '已检查'); });
+              this.note(runningCount(live) ? '成员完成 · 打勾后留在当前工作组' : '组内成员全部完成 · 等待下一条信息决定去向');
             }
           }
           break;
@@ -210,25 +184,27 @@
             if (command) command.output += '\n' + event.line;
           }
           break;
-        case 'finishGroup':
-          if (live?.kind === 'workGroup' && live.members.every(member => member.status !== 'running')) this.seal();
-          break;
-        case 'startText':
-          if (live) throw new Error('A live item must be sealed before starting text output');
+        case 'startText': {
+          const moved = this.closeGroupFor('text output');
           this.state.live = { id: event.id, kind: 'textOutput', text: '', elapsed: 0 };
           this.state.running = true;
+          this.note(moved ? '正文开始 · 工作组整组移入时间线' : '开始输出正文');
           break;
+        }
         case 'appendText':
           if (live?.kind === 'textOutput') live.text += event.text;
           break;
         case 'finishText':
-          if (live?.kind === 'textOutput') this.seal();
+          if (live?.kind === 'textOutput') { this.seal(); this.note('正文结束 · 整段移入时间线'); }
           break;
         case 'finishCompression':
-          if (live?.kind === 'compacting' && (!event.id || event.id === live.id)) this.seal();
+          if (live?.kind === 'compacting' && (!event.id || event.id === live.id)) { this.seal(); this.note('压缩成功 · 时间线追加完成记录'); }
           break;
-        case 'finishTurn':
-          if (isWaitingForModel(live)) this.seal();
+        case 'finishTurn': {
+          if (live && live.kind !== 'compacting' && isWaitingForModel(live)) {
+            const moved = this.closeGroupFor('turn end');
+            this.note(moved ? '轮次结束 · 工作组移入时间线，状态栏收起' : '轮次结束 · 状态栏收起');
+          } else if (!live) this.note('轮次结束 · 状态栏收起');
           if (!this.state.live) {
             this.state.running = false;
             this.state.resumable = false;
@@ -236,14 +212,14 @@
             this.halt();
           }
           break;
+        }
         default: throw new Error('Unknown demo event: ' + event.type);
       }
     }
 
-    step() {
-      if (this.disposed || this.state.pending) return;
+    advance() {
       const event = this.state.queue[this.state.cursor];
-      if (!event) { this.halt(); this.emit('playback'); return; }
+      if (!event) return false;
       const live = this.state.live;
       if (live) {
         live.elapsed++;
@@ -251,9 +227,14 @@
       }
       this.state.cursor++;
       this.apply(event);
-      while (!this.state.live && ['waitForModel', 'startText', 'startGroup', 'finishTurn'].includes(this.state.queue[this.state.cursor]?.type)) {
+      while (!this.state.live && ['waitForModel', 'startText', 'addMember', 'finishTurn'].includes(this.state.queue[this.state.cursor]?.type)) {
         this.apply(this.state.queue[this.state.cursor++]);
       }
+      return true;
+    }
+    step() {
+      if (this.disposed || this.state.pending) return;
+      if (!this.advance()) { this.halt(); this.emit('playback'); return; }
       if (this.state.cursor >= this.state.queue.length) this.halt();
       this.emit('step');
     }
@@ -265,48 +246,48 @@
       this.emit('playback');
     }
     pause() { this.halt(); this.emit('playback'); }
-    stop() {
-      if (!this.state.live) return;
-      this.halt();
-      const ended = this.seal('stopped');
-      if (this.state.pending) this.snapshot({
-        id: this.state.pending.id, kind: 'receipt', title: '交互已取消',
-        subtitle: this.state.pending.title, content: '本轮已停止，没有提交决定。'
+    finishInterrupted(status, message) {
+      const pending = this.state.pending;
+      const ended = this.seal(status, message);
+      if (pending) this.snapshot({
+        id: pending.id, kind: 'receipt', title: status === 'failed' ? '交互未完成' : '交互已取消', subtitle: pending.title,
+        content: status === 'failed' ? message : '本轮已停止，没有提交决定。'
       });
-      this.recordOutcome(ended, 'stopped');
+      this.recordOutcome(ended, status, message);
       this.state.pending = null;
       this.state.queue = [];
       this.state.cursor = 0;
       this.state.running = false;
+    }
+    stop() {
+      if (!this.state.live && !this.state.pending) return;
+      this.halt();
+      this.finishInterrupted('stopped', '');
       this.state.resumable = true;
       this.state.retryCompression = false;
+      this.note('已停止 · 当前内容结束并移入时间线，附停止记录');
       this.emit('stop');
     }
     fail() {
-      if (!this.state.live) return;
+      const live = this.state.live;
+      if (!live && !this.state.pending) return;
       this.halt();
-      const compacting = this.state.live.kind === 'compacting';
+      const compacting = live?.kind === 'compacting';
       const message = compacting ? '压缩服务暂时不可用。原历史已保留，可以重试。'
-        : isWaitingForModel(this.state.live) ? '等待模型响应时连接中断，可以继续。'
-        : this.state.live.kind === 'textOutput' ? '文本输出连接中断。已保留接收到的内容，可以继续。'
-        : this.state.pending ? '交互已中断，尚未提交决定。'
+        : !live ? '交互已中断，尚未提交决定。'
+        : isWaitingForModel(live) ? '等待模型响应时连接中断，可以继续。'
+        : live.kind === 'textOutput' ? '文本输出连接中断。已保留接收到的内容，可以继续。'
         : '示例命令退出码 1：检查未通过，已保留当前结果。';
-      const command = this.state.live.members?.find(item => item.status === 'running' && item.kind === 'command');
+      const command = live?.members?.find(item => item.status === 'running' && item.kind === 'command');
       if (command) {
         command.status = 'failed';
         command.exitCode = 1;
         command.output += '\nerror: example assertion failed\nProcess exited with code 1';
       }
-      const ended = this.seal('failed', message);
-      if (this.state.pending) this.snapshot({ id: this.state.pending.id, kind: 'receipt',
-        title: '交互未完成', subtitle: this.state.pending.title, content: message });
-      this.recordOutcome(ended, 'failed', message);
-      this.state.pending = null;
-      this.state.queue = [];
-      this.state.cursor = 0;
-      this.state.running = false;
+      this.finishInterrupted('failed', message);
       this.state.resumable = !compacting;
       this.state.retryCompression = compacting;
+      this.note('执行失败 · 当前内容结束并移入时间线，附失败记录');
       this.emit('failure');
     }
     beginTask() {
@@ -378,7 +359,6 @@
         receipt.content = '用户选择跳过，未提交回答。';
       }
       this.halt();
-      this.seal();
       this.snapshot(receipt);
       this.state.pending = null;
       this.state.running = false;
