@@ -143,7 +143,7 @@ jobs:
           # An unregistered UID exercises the real entrypoint and NSS boundary.
           docker run --rm --init --network none --user 17321:17321 --workdir /workspace \
             --mount "type=bind,src=$GITHUB_WORKSPACE,dst=/workspace,readonly" \
-            "$image_id" bash /workspace/docker/linux/scripts/smoke.sh
+            "$image_id" bash /opt/anywork-image/scripts/smoke.sh
           echo "imageId=$image_id" >> "$GITHUB_OUTPUT"
           echo "archiveSha256=$(sha256sum "$RUNNER_TEMP/linux-build-image.tar" | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
           docker image inspect --format 'Image bytes: {{.Size}}' "$image_id" >> "$GITHUB_STEP_SUMMARY"
