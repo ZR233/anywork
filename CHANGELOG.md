@@ -5,6 +5,32 @@ anywork release notes are generated from Conventional Commits by Release Please.
 以下已发布记录保留当时的名称与行为，不作为当前工程规范；当前架构演进规则见
 [AGENTS.md](AGENTS.md)，数据迁移契约及实现缺口见[存储设计](design/17-studio-storage.md)。
 
+## [6.37.0](https://github.com/ZR233/anywork/compare/v6.36.0...v6.37.0) (2026-10-31)
+
+
+### ⚠ BREAKING CHANGES
+
+* **studio:** 历史页和详情改为独立 reader；唯一呈现消费者显式接纳完成批次，删除旧 patch、revision、历史归约与活动详情查询。
+* **studio:** 会话所属归属字段改为 workspaceId/workspace_id，ProjectRecord 改为 WorkspaceRecord。旧字段仅由明确的 v2 迁移边界读取。
+
+### Features
+
+* **assets:** 更新设计资源，新增与删除多个图像文件 ([7e51716](https://github.com/ZR233/anywork/commit/7e51716b72b4ca8da118c2b27064515a52ce7bca))
+* **release:** 增加项目级 Linux 构建环境与 DEB 发布 ([#241](https://github.com/ZR233/anywork/issues/241)) ([e57c755](https://github.com/ZR233/anywork/commit/e57c755202c853fa90c9f4e3927058dda41fe5d4))
+* **studio:** 支持 OpenAI ChatGPT 订阅登录 ([#239](https://github.com/ZR233/anywork/issues/239)) ([ca00f2e](https://github.com/ZR233/anywork/commit/ca00f2e5be7f023af81d109b6bfb684ca49b82ae))
+
+
+### Bug Fixes
+
+* **studio:** 精简上下文详情诊断展示 ([#245](https://github.com/ZR233/anywork/issues/245)) ([56dd582](https://github.com/ZR233/anywork/commit/56dd582d5d54d41cb9a3eb17500e783bf51171ea))
+
+
+### Refactoring
+
+* **studio:** 优化会话设计稿实时状态栏与工作组整组交接工况 ([#246](https://github.com/ZR233/anywork/issues/246)) ([ded3dcb](https://github.com/ZR233/anywork/commit/ded3dcb99f9f036233c56eeb853c8c7a847e0768))
+* **studio:** 实现原子完成 Timeline 与事件驱动会话 ([#222](https://github.com/ZR233/anywork/issues/222)) ([c8e6351](https://github.com/ZR233/anywork/commit/c8e6351ce0ea336fd66be2c3a93f77dff20cbb7e))
+* **studio:** 统一会话存储布局与归档生命周期 ([#236](https://github.com/ZR233/anywork/issues/236)) ([c5c4ebb](https://github.com/ZR233/anywork/commit/c5c4ebbebaffef054ea388e34c33ebae19a84cfc))
+
 ## [6.36.0](https://github.com/ZR233/anywork/compare/v6.35.0...v6.36.0) (2026-10-30)
 
 
