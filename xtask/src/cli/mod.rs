@@ -37,7 +37,7 @@ pub(crate) enum Command {
     RunGui(RunGuiOptions),
     /// Build release artifacts for the current desktop OS.
     BuildGui(BuildGuiOptions),
-    /// Stage, finalize, or verify a Windows stable release.
+    /// Stage or verify a platform release; finalize Windows signatures.
     ReleaseGui {
         #[command(subcommand)]
         action: ReleaseGuiOptions,
@@ -140,16 +140,16 @@ pub(crate) struct BuildGuiOptions {
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
 pub(crate) enum ReleaseGuiOptions {
-    /// Prepare a release staging directory from a prebuilt Windows bundle.
+    /// Package a prebuilt bundle for the current platform (Windows or Linux x64).
     Stage {
         /// Stable SemVer matching code/anywork/pubspec.yaml.
         #[arg(long)]
         version: String,
-        /// Path to the prebuilt Windows release bundle.
+        /// Path to the prebuilt release bundle for the current platform.
         #[arg(long, value_name = "PATH")]
         bundle: std::path::PathBuf,
     },
-    /// Sign and finalize staged release artifacts.
+    /// Sign and finalize staged Windows release artifacts (Windows only).
     Finalize {
         /// Stable SemVer matching code/anywork/pubspec.yaml.
         #[arg(long)]

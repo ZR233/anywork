@@ -127,6 +127,10 @@
 
 ## 🚀 快速开始
 
+本地 Git 项目依赖系统 Git，SSH 远程项目还需系统 OpenSSH 客户端。Linux 的工具前置要求、
+Ubuntu 22.04 默认 Git 的能力限制，以及安装／首帧与业务验证的区别，见
+[发布与更新](design/23-release-update.md#linux-debian-包与兼容边界)；构建镜像内的工具不会随 DEB 安装。
+
 ### 1. 启动桌面端
 
 在仓库根目录下，通过一条命令即可构建并启动当前系统的原生桌面端（支持 Windows 与 Linux）：
@@ -159,6 +163,12 @@ cargo xtask run-gui --demo
 ```bash
 cargo xtask build-gui
 ```
+
+该命令生成当前平台的运行 bundle，位于 `dist/anywork-release/`。Linux 开发者也可使用
+[项目级 Docker 构建环境](docker/linux/README.md)，无需自行安装 Rust、Flutter 和原生开发依赖；
+本地构建与 CI 使用同一环境，Rust 配置来自根 `rust-toolchain.toml`。
+Linux DEB 由显式预构建 bundle 打包，版本、安装布局和发行版兼容范围见
+[发布与更新](design/23-release-update.md)，不将构建成功等同于跨发行版验收通过。
 
 ### 5. 数据与临时文件在哪里？
 

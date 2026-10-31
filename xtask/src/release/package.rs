@@ -15,6 +15,10 @@ pub(super) fn stage(
     version: &Version,
     source_bundle: &Path,
 ) -> Result<()> {
+    #[cfg(target_os = "linux")]
+    if cfg!(target_os = "linux") {
+        return super::linux::stage(workspace_root, release_dir, version, source_bundle);
+    }
     ensure_windows()?;
     validate_bundle(source_bundle)?;
     reject_existing_release(release_dir)?;
