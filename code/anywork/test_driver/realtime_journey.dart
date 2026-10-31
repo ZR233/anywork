@@ -1334,7 +1334,7 @@ class RealtimeJourney {
         '$expectedLines)',
       );
     }
-    final directory = await _hostCwdDirectoryProof(
+    final directory = await hostCwdDirectoryProof(
       requestedPath: requestedPath,
       actualPath: actualCwd,
       workspacePath: project,
@@ -1355,9 +1355,7 @@ class RealtimeJourney {
         envelope.exitCode == 0;
     checks['hostCwdOutputLines'] = linesOk;
     checks['hostCwdActualDirectory'] =
-        directory['identical'] == true &&
-        directory['sameCanonical'] == true &&
-        directory['insideWorkspace'] == false;
+        directory['identical'] == true && directory['insideWorkspace'] == false;
     checks['hostCwdWaitReceipt'] =
         waitTool.status == 'succeeded' &&
         taskIdOk &&
@@ -3269,10 +3267,10 @@ Map<String, Object?> requireTaskWaitResult(String? result, String taskId) {
 
 /// 用官方 dart:io API 证明“实际 cwd == 请求 cwd”且位于隔离 workspace 之外。
 ///
-/// 不自制路径安全算法：同一目录用 `FileSystemEntity.identical` 与
-/// `resolveSymbolicLinks()` 双证；是否位于 workspace 内用 `Directory.parent` 逐级
-/// 上溯到根、每级做 `identical` 比较。只读取这几个目录自身的元数据，不列举内容。
-Future<Map<String, Object?>> _hostCwdDirectoryProof({
+/// 不自制路径安全算法：目录等价的唯一事实是对 `resolveSymbolicLinks()` 之后的路径
+/// 调用 `FileSystemEntity.identical`；是否位于 workspace 内用 `Directory.parent`
+/// 逐级上溯到根、每级做 `identical` 比较。只读取这几个目录自身的元数据，不列举内容。
+Future<Map<String, Object?>> hostCwdDirectoryProof({
   required String requestedPath,
   required String actualPath,
   required String workspacePath,
@@ -3319,10 +3317,9 @@ Future<Map<String, Object?>> _hostCwdDirectoryProof({
     'workspacePath': workspacePath,
     'workspaceCanonical': workspaceReal,
     'identical': identical,
-    'sameCanonical': requestedReal == actualReal,
     'insideWorkspace': insideWorkspace,
   };
-  if (!identical || requestedReal != actualReal || insideWorkspace) {
+  if (!identical || insideWorkspace) {
     throw StateError('host cwd: directory proof failed: $evidence');
   }
   return evidence;

@@ -320,20 +320,23 @@ impl ColdStore for RejectLaterPrivateWrites {
     }
 }
 
-async fn produce_private_storage_crash(base: &Path, receipt: bool) -> Result<()> {
-    eprintln!("private crash fixture: initialize receipt={receipt}");
+/// Seeds the isolated home with the durable facts the crashing private owner inherits: the
+/// project, the required root with a durable owner checkpoint, the required-private catalog
+/// row, and a real older incarnation's durable earlier checkpoint. This heavy preparation runs
+/// in the parent and shuts its runtime down cleanly, so the spawned producer's bounded crash
+/// window only has to cover the original owner's own work.
+async fn seed_private_crash_fixture(base: &Path) -> Result<()> {
+    eprintln!("private crash seed: start");
     let home = base.join("home");
     let workspace = base.join("workspace");
     let runtime = StudioRuntime::initialize(options(&home)).await?;
-    eprintln!("private crash fixture: runtime initialized");
+    eprintln!("private crash seed: runtime initialized");
     let project = runtime.open_project(&workspace).await?;
-    eprintln!("private crash fixture: project opened");
     let root = runtime
         .create_thread_with_id("required-root", &project.id, "root")
         .await?;
-    eprintln!("private crash fixture: root catalog created");
     runtime.ensure_thread_owner(&root.id).await?.flush().await?;
-    eprintln!("private crash fixture: root ready");
+    eprintln!("private crash seed: root ready");
     let mut protocol = pl_protocol::Thread::placeholder("required-private");
     protocol.agent_path = protocol.id.clone();
     protocol.workspace_id = project.id.clone();
@@ -361,14 +364,41 @@ async fn produce_private_storage_crash(base: &Path, receipt: bool) -> Result<()>
         .stop_and_join()
         .await?;
     projection.await?;
-    eprintln!("private crash fixture: earlier checkpoint saved");
+    runtime.shutdown_runtime().await?;
+    eprintln!("private crash seed: earlier checkpoint durable and seed runtime shut down");
+    Ok(())
+}
+
+async fn produce_private_storage_crash(base: &Path, receipt: bool) -> Result<()> {
+    eprintln!("private crash fixture: initialize receipt={receipt}");
+    let home = base.join("home");
+    let workspace = base.join("workspace");
+    let runtime = StudioRuntime::initialize(options(&home)).await?;
+    eprintln!("private crash fixture: runtime initialized");
+    let project = runtime.open_project(&workspace).await?;
+    eprintln!("private crash fixture: project reopened");
+    // The crashing owner still has to observe the seeded root: assembling required-private
+    // reserves against its live parent entry before the private AttachCold.
+    runtime
+        .ensure_thread_owner("required-root")
+        .await?
+        .flush()
+        .await?;
+    eprintln!("private crash fixture: root owner restored");
+    let protocol = runtime
+        .store
+        .catalog()
+        .get("required-private")
+        .context("seeded required-private catalog row")?
+        .to_thread();
     let checkpoint = runtime
         .store
         .history(&protocol.id)
         .await?
         .checkpoint()
         .await?
-        .unwrap();
+        .context("seeded durable earlier checkpoint")?;
+    eprintln!("private crash fixture: seeded protocol and checkpoint read");
     let old_fence = checkpoint.history_fence;
     let physical = close_factory(&runtime.store)?;
     runtime
@@ -376,8 +406,8 @@ async fn produce_private_storage_crash(base: &Path, receipt: bool) -> Result<()>
         .begin_thread_preparation(PreparationIdentity {
             thread_id: protocol.id.clone(),
             workspace_id: project.id.clone(),
-            parent_id: Some(root.id),
-            root_id: "required-root".into(),
+            parent_id: protocol.parent_thread_id.clone(),
+            root_id: protocol.root_thread_id.clone(),
         })
         .await?;
     let binding = WorkspaceIdentity::canonical(
@@ -459,6 +489,7 @@ async fn produce_private_storage_crash(base: &Path, receipt: bool) -> Result<()>
 }
 
 async fn crash_original_private_owner(base: &Path, receipt: bool) -> Result<serde_json::Value> {
+    seed_private_crash_fixture(base).await?;
     let mut command = tokio::process::Command::new(std::env::current_exe()?);
     command
         .arg("archive_original_required_receipt_is_not_replaced_by_a_cold_checkpoint_after_crash")
