@@ -17,6 +17,31 @@ test "$(cargo binstall -V)" = "$CARGO_BINSTALL_VERSION"
 cargo-zigbuild --version | grep -Fx "cargo-zigbuild $CARGO_ZIGBUILD_VERSION"
 flutter --version
 dart --version
+# No hosted dependencies: this must work offline in a fresh non-root HOME.
+# --version alone does not load the package configuration used by real pub.
+mkdir flutter-pub
+cat > flutter-pub/pubspec.yaml <<'YAML'
+name: anywork_flutter_environment_smoke
+environment:
+  sdk: '>=3.11.0 <4.0.0'
+YAML
+(cd flutter-pub && flutter pub get --offline)
+python3 - <<'PYTHON'
+import json
+from pathlib import Path
+from urllib.parse import unquote, urljoin, urlparse
+
+config = Path("/opt/flutter/packages/flutter_tools/.dart_tool/package_config.json")
+packages = json.loads(config.read_text())["packages"]
+for package in packages:
+    uri = urlparse(urljoin(config.as_uri(), package["rootUri"]))
+    assert uri.scheme == "file", package
+    root = Path(unquote(uri.path)).resolve()
+    assert root.is_relative_to("/opt/flutter") or root.is_relative_to("/opt/flutter-pub-cache"), root
+    (root / "pubspec.yaml").read_bytes()
+    # Asset-only packages (for example flutter_template_images) need no lib/.
+print(f"flutter-tools-package-roots-readable={len(packages)}; no-private-root-paths")
+PYTHON
 for tool in clang clang++ cmake ninja pkg-config dpkg-deb dpkg-shlibdeps \
     desktop-file-validate xvfb-run dbus-run-session; do
     command -v "$tool"

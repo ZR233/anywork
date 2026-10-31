@@ -10,5 +10,6 @@
 !docker/linux/scripts/install-flutter.sh
 !docker/linux/scripts/install-rust.sh
 !docker/linux/scripts/install-tools.sh
+!docker/linux/scripts/prepare-flutter-tools.sh
 !docker/linux/scripts/entrypoint.sh
 !docker/linux/scripts/smoke.sh

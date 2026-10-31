@@ -19,6 +19,12 @@ FROM native AS flutter-env
 COPY docker/linux/scripts/install-flutter.sh /opt/anywork-image/scripts/install-flutter.sh
 RUN bash /opt/anywork-image/scripts/install-flutter.sh
 
+# The SDK archive's tool configuration can refer to the producer's private
+# pub cache. Re-resolve only flutter_tools using pub's native cache contract.
+FROM flutter-env AS flutter-tools-env
+COPY docker/linux/scripts/prepare-flutter-tools.sh /opt/anywork-image/scripts/prepare-flutter-tools.sh
+RUN bash /opt/anywork-image/scripts/prepare-flutter-tools.sh
+
 FROM native AS rust-env
 ENV CARGO_HOME=/opt/cargo \
     RUSTUP_HOME=/opt/rustup \
@@ -35,6 +41,8 @@ RUN bash /opt/anywork-image/scripts/install-tools.sh \
     && git config --system --add safe.directory /opt/flutter \
     && chmod 1777 /opt/cargo \
     && chmod -R a+rwX /opt/flutter/bin/cache
+COPY --from=flutter-tools-env /opt/flutter/packages/flutter_tools/.dart_tool /opt/flutter/packages/flutter_tools/.dart_tool
+COPY --from=flutter-tools-env /opt/flutter-pub-cache /opt/flutter-pub-cache
 COPY --chmod=644 docker/linux/versions.env /opt/anywork-image/versions.env
 COPY --chmod=755 docker/linux/scripts/entrypoint.sh docker/linux/scripts/smoke.sh /opt/anywork-image/scripts/
 ENV HOME=/tmp/anywork-home \
